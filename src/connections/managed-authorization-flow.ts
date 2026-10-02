@@ -129,7 +129,28 @@ export async function startManagedAuthorizationFlow(
     const principalRef = ownerKind
       ? managedPrincipalRef(input.principal, ownerKind, dependencies.providerContext.platformEnv)
       : undefined;
-    if (!connector || !ownerKind || !principalRef) throw new ManagedAuthorizationError('invalid');
+    if (!connector || !ownerKind) throw new ManagedAuthorizationError('invalid');
+    // As in Admin: whether the deployment offers the connector comes before
+    // who may authorize it, so one without its Composio environment (which
+    // names no principal) reports the provider unavailable.
+    const liveCapabilities = dependencies.catalog
+      .capabilities(connector.toolkit, input.access ?? 'read')
+      .map(({ id }) => id);
+    const capabilities = replacementPolicy
+      ? [...replacementPolicy.allowedCapabilities]
+      : input.capabilities
+        ? frozenCapabilities(input.capabilities, liveCapabilities)
+        : liveCapabilities;
+    const provider = providers.get('composio');
+    const accessLane = connector.capabilities.some(({ id, accessLane }) =>
+      accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
+    if (!provider?.authorize || managedProviderAvailability(provider, {
+      toolkit: connector.toolkit,
+      accessLane,
+    }).status !== 'ready') {
+      throw new ManagedConnectionProviderUnavailableError('composio');
+    }
+    if (!principalRef) throw new ManagedAuthorizationError('invalid');
     if (replacement && (
       replacement.workspaceId !== input.workspaceId ||
       replacement.lifecycle === 'revoked' ||
@@ -159,23 +180,6 @@ export async function startManagedAuthorizationFlow(
       if (existingOwnerLane) {
         throw new ManagedConnectionLaneExistsError(ownerKind, connector.label);
       }
-    }
-    const liveCapabilities = dependencies.catalog
-      .capabilities(connector.toolkit, input.access ?? 'read')
-      .map(({ id }) => id);
-    const capabilities = replacementPolicy
-      ? [...replacementPolicy.allowedCapabilities]
-      : input.capabilities
-        ? frozenCapabilities(input.capabilities, liveCapabilities)
-        : liveCapabilities;
-    const provider = providers.get('composio');
-    const accessLane = connector.capabilities.some(({ id, accessLane }) =>
-      accessLane === 'write' && capabilities.includes(id)) ? 'write' : 'read';
-    if (!provider?.authorize || managedProviderAvailability(provider, {
-      toolkit: connector.toolkit,
-      accessLane,
-    }).status !== 'ready') {
-      throw new ManagedConnectionProviderUnavailableError('composio');
     }
     await cleanupExistingAttempt(
       dependencies,

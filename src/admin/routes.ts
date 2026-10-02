@@ -1659,6 +1659,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     generation: number;
     lineage: string;
     readOnly: boolean;
+    /** The env the providers were resolved for; it names remote principals. */
+    platformEnv?: PlatformEnv;
   };
   const resolvedManagedProvidersByContext = new WeakMap<
     object,
@@ -1717,12 +1719,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const resolvedManagedProviderContext = async (
     c: Context,
   ): Promise<ResolvedManagedProviderContext> => {
+    const platformEnv = c.env ? { platformEnv: c.env as PlatformEnv } : {};
     if (options.managedConnectionProviders) {
       return {
         providers: options.managedConnectionProviders,
         generation: 1,
         lineage: '0'.repeat(24),
         readOnly: false,
+        ...platformEnv,
       };
     }
     const cached = resolvedManagedProvidersByContext.get(c);
@@ -1738,6 +1742,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             generation: 1,
             lineage: '0'.repeat(24),
             readOnly: false,
+            ...platformEnv,
           };
         }
         throw error;
@@ -1750,6 +1755,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         generation: resolved.generation,
         lineage: resolved.keyFingerprint ?? resolved.lastKeyFingerprint ?? '0'.repeat(24),
         readOnly: resolved.readOnly,
+        ...platformEnv,
       };
     })();
     resolvedManagedProvidersByContext.set(c, resolving);
@@ -5304,10 +5310,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               config: store(c),
               settings: settings(c),
               catalog: managedCatalog,
-              providerContext: {
-                ...providerContext,
-                ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-              },
+              providerContext,
             }, {
               principal,
               browserSecret,
@@ -5593,10 +5596,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           config: store(c),
           settings: settings(c),
           catalog: managedCatalog,
-          providerContext: {
-            ...providerContext,
-            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-          },
+          providerContext,
         }, {
           principal,
           browserSecret,

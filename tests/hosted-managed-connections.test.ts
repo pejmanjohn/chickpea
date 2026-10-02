@@ -53,7 +53,10 @@ import {
   type ComposioClientLike,
   type ComposioConnectedAccount,
 } from '../src/connections/providers/composio.ts';
-import { ConnectionAccountService } from '../src/connections/store.ts';
+import {
+  ConnectionAccountService,
+  ManagedConnectionProviderUnavailableError,
+} from '../src/connections/store.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
@@ -234,7 +237,10 @@ interface Installation {
   close(): void;
 }
 
-async function installation(installationId: string): Promise<Installation> {
+async function installation(
+  installationId: string,
+  envOverrides: Record<string, unknown> = {},
+): Promise<Installation> {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const agent = await config.createAgent({
@@ -255,7 +261,7 @@ async function installation(installationId: string): Promise<Installation> {
     workspaceId: 'T_SHARED', transportMode: 'direct', defaultAgentId: agent.id,
   });
   return {
-    env: hostedEnv(installationId),
+    env: hostedEnv(installationId, envOverrides),
     config,
     settings,
     agent,
@@ -464,24 +470,30 @@ test('cancel, discard and start cleanup never delete what another installation\'
       };
       const fresh = { principal: principal(), agent: b.agent, workspaceId: 'T_SHARED' };
       const gmail = { ...fresh, ownerKind: 'member' as const, toolkit: 'gmail', access: 'read' as const };
+      // Planted under the live provider revision, so only the principal check
+      // stands between each path and deleting the remote request.
+      const provider = dependencies.providerContext;
       const scoped = await plantAttempt(b.settings, FLOW_ATTEMPT, foreignRef, {
-        attemptScopeId: 'setup_shared',
+        attemptScopeId: 'setup_shared', provider,
       });
       await assert.rejects(cancelManagedAuthorizationFlow(dependencies, {
         principal: principal(), browserSecret: scoped.browserSecret, attemptScopeId: 'setup_shared',
       }), AuthorizationError);
+      assert.deepEqual(project.revoked, []);
       await assert.rejects(discardManagedAuthorizationAfterAuthorityLoss(dependencies, {
         principal: principal(), browserSecret: scoped.browserSecret, attemptScopeId: 'setup_shared',
         attempt: scoped.attempt,
       }), AuthorizationError);
+      assert.deepEqual(project.revoked, []);
       await assert.rejects(startManagedAuthorizationFlow(dependencies, {
         ...gmail, attemptScopeId: 'setup_shared', existingBrowserSecret: scoped.browserSecret,
       }), AuthorizationError);
+      assert.deepEqual(project.revoked, []);
 
       // A stale member-wide attempt is cleaned up by the next start, unless it
       // names another installation.
       await plantAttempt(b.settings, FLOW_ATTEMPT, foreignRef, {
-        now: () => Date.now() - 2 * 60 * 60_000,
+        now: () => Date.now() - 2 * 60 * 60_000, provider,
       });
       await assert.rejects(startManagedAuthorizationFlow(dependencies, gmail), AuthorizationError);
 
@@ -806,7 +818,13 @@ async function plantAttempt(
   settings: SqliteSettingsStore,
   owner: { workspaceId: string; agentId: string; actorMembershipId: string },
   principalRef: string,
-  options: { attemptScopeId?: string; now?: () => number } = {},
+  options: {
+    attemptScopeId?: string;
+    now?: () => number;
+    /** The provider revision the attempt was started under; Admin's test registry is 1 / zeros. */
+    provider?: { generation: number; lineage: string };
+    ownerKind?: 'member' | 'team';
+  } = {},
 ) {
   const scope = options.attemptScopeId ? { attemptScopeId: options.attemptScopeId } : {};
   const clock = options.now ? { now: options.now } : {};
@@ -814,16 +832,17 @@ async function plantAttempt(
     settings,
     input: {
       ...owner, ...scope,
-      ownerKind: 'member', providerId: 'google', adapterId: 'composio', toolkit: 'gmail',
-      label: 'Gmail · Personal', principalRef,
+      ownerKind: options.ownerKind ?? 'member', providerId: 'google', adapterId: 'composio',
+      toolkit: 'gmail', label: 'Gmail · Personal', principalRef,
       allowedCapabilities: ['gmail.profile.read'], bindingCapabilities: ['gmail.profile.read'],
-      providerGeneration: 1, providerLineage: '0'.repeat(24),
+      providerGeneration: options.provider?.generation ?? 1,
+      providerLineage: options.provider?.lineage ?? '0'.repeat(24),
     },
     ...clock,
   });
   const attempt = await recordManagedAuthorizationRequest({
     settings, actorMembershipId: owner.actorMembershipId, ...scope, ...clock,
-    browserSecret: started.browserSecret, authorizationRef: 'ca_foreign_request',
+    browserSecret: started.browserSecret, authorizationRef: 'ca_planted_request',
   });
   return { attempt, browserSecret: started.browserSecret };
 }
@@ -1011,6 +1030,45 @@ test('hosted Admin cancel, start cleanup and recovery never delete what another 
   }
 });
 
+test('hosted Admin cleans up its own attempt after the starter loses Team authority', async () => {
+  const deleted: string[] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke(input) { deleted.push(input.policy.accountRef); },
+    async cleanupRemoteAccount({ accountRef }) { deleted.push(accountRef); },
+  };
+  const member: AuthPrincipal = {
+    userId: 'user_test_owner', membershipId: 'membership_test_owner', organizationId: 'org_oss',
+    role: 'member', authenticatorKind: 'test_slack_session', credentialId: 'session_test_owner',
+    correlationId: 'request_test_member', machine: false,
+  };
+  const admin = hostedAdmin('inst_admin', {
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+    ...testAdminAuthority(ADMIN_TOKEN, undefined, undefined, member),
+  });
+  try {
+    await seedAdminAgent(admin);
+    // A Team attempt this installation started, by someone now only a Member:
+    // the discard must recognize it as this installation's and clean it up.
+    const { browserSecret } = await plantAttempt(
+      admin.settings,
+      ADMIN_ATTEMPT,
+      'chickpea:staging:installation:inst_admin:organization:org_oss',
+      { ownerKind: 'team' },
+    );
+    const response = await admin.request('/admin/api/agents/agent_support/connections/managed/cancel', {
+      method: 'POST', body: '{}', headers: browserCookie(browserSecret),
+    });
+    assert.equal(response.status, 403, await response.clone().text());
+    assert.deepEqual(deleted, ['ca_planted_request']);
+    assert.equal(await admin.settings.getSetting(await attemptKey('membership_test_owner')), undefined);
+  } finally {
+    admin.close();
+  }
+});
+
 test('hosted Admin Retry refuses before inspecting any account, even mid-reconciliation', async () => {
   await withPlatform(async ({ platform, project }) => {
     await prepare(platform, project);
@@ -1055,17 +1113,32 @@ test('hosted Admin Retry refuses before inspecting any account, even mid-reconci
   });
 });
 
-test('hosted Admin reports a deployment without its Composio environment as not configured', async () => {
+test('Admin and the setup flow report a deployment without its Composio environment as not configured', async () => {
   await withPlatform(async ({ platform, project }) => {
     await prepare(platform, project);
-    const admin = hostedAdmin('inst_admin', {}, { CHICKPEA_COMPOSIO_ENVIRONMENT: '' });
+    const unnamed = { CHICKPEA_COMPOSIO_ENVIRONMENT: '' };
+    const admin = hostedAdmin('inst_admin', {}, unnamed);
+    const b = await installation('inst_b', unnamed);
     try {
       await seedAdminAgent(admin);
       const response = await startAdminConnection(admin);
       assert.equal(response.status, 503, await response.clone().text());
       assert.equal((await response.json() as { error: string }).error, 'managed_provider_unavailable');
+
+      await assert.rejects(startManagedAuthorizationFlow({
+        config: b.config,
+        settings: b.settings,
+        catalog: MANAGED_CONNECTOR_CATALOG,
+        providerContext: await resolveManagedAuthorizationProviderContext({
+          settings: b.settings, platformEnv: b.env,
+        }),
+      }, {
+        principal: principal(), agent: b.agent, workspaceId: 'T_SHARED',
+        ownerKind: 'member', toolkit: 'gmail', access: 'read',
+      }), ManagedConnectionProviderUnavailableError);
     } finally {
       admin.close();
+      b.close();
     }
   });
 });
