@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
 
-import { installationCacheKey } from '../config/installation-scope.ts';
+import {
+  deploymentServesManyInstallations,
+  installationCacheKey,
+} from '../config/installation-scope.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
+  getIdentityStore,
   getSettingsStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
@@ -157,15 +161,18 @@ export async function readSlackConnectionRevision(
   )).connectionRevision;
 }
 
-// --- Public URL resolution (env > stored) -----------------------------------
+// --- Public URL resolution (env > stored > canonical Admin origin) ----------
 //
 // The "Configure" reply-footer / onboarding deep link needs the install's own
 // public origin. On a Node deploy the operator usually sets SLACK_TAG_PUBLIC_URL;
 // on a Cloudflare button deploy nobody does, so the admin persists the origin it
 // resolved for the manifest link (slack.publicUrl) and this resolver reads it as
-// the fallback. Env still wins outright. Cached briefly per isolate like the
-// cred resolver so the events hot path pays no store read per turn, one entry
-// per installation.
+// the fallback. An install signed in through Slack never makes that unsigned
+// Admin request; its setup pinned the canonical Admin origin instead, the
+// origin its manifest's Request URLs name, and that is the last fallback.
+// Env still wins outright. Cached briefly per isolate like the cred resolver
+// so the events hot path pays no store read per turn, one entry per
+// installation.
 
 const MAX_PUBLIC_URL_CACHE_ENTRIES = 64;
 const publicUrlCache = new Map<string, { expiresAt: number; value: string | undefined }>();
@@ -185,9 +192,10 @@ function envPublicUrl(env?: PlatformEnv): string | undefined {
 
 /**
  * Resolve the install's public origin: `SLACK_TAG_PUBLIC_URL` (env) → stored
- * `slack.publicUrl` → undefined. An explicit `store` bypasses the cache (tests);
- * otherwise the stored read is cached for the TTL. Env is never cached — a
- * process env is already a cheap read and must reflect changes immediately.
+ * `slack.publicUrl` → a standalone install's canonical Admin origin →
+ * undefined. An explicit `store` bypasses the cache (tests); otherwise the
+ * stored read is cached for the TTL. Env is never cached — a process env is
+ * already a cheap read and must reflect changes immediately.
  */
 export async function resolveSlackPublicUrl(
   env?: PlatformEnv,
@@ -205,9 +213,19 @@ export async function resolveSlackPublicUrl(
   }
   const settings = store ?? getSettingsStore(env);
   const stored = await settings.getSetting(SLACK_SETTING_KEYS.publicUrl);
-  const value = stored ? stored.replace(/\/+$/, '') : undefined;
+  const value = stored ? stored.replace(/\/+$/, '') : await canonicalAdminOrigin(env);
   if (!store) cachePublicUrl(key, value, now);
   return value;
+}
+
+/** The Admin origin a standalone install's setup pinned; a host names its own URL. */
+async function canonicalAdminOrigin(env?: PlatformEnv): Promise<string | undefined> {
+  try {
+    if (deploymentServesManyInstallations(env)) return undefined;
+    return (await getIdentityStore(env).getAuthControl())?.canonicalAdminOrigin ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Prime the public-URL cache so the isolate that stored it resolves it now. */

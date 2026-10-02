@@ -937,12 +937,16 @@ async function seedAgentAppHomeThread(input: {
     return;
   }
   const avatarUrl = await resolvedAgentAvatarUrl(agent, input.stores, input.platformEnv);
-  if (!avatarUrl) return;
+  // Without an avatar URL the Agent's replies come from the app itself
+  // (selectSlackPresentationOwner), so the starter does too.
+  if (!avatarUrl) {
+    console.warn('[chickpea] App Home starter posted as the app: the Agent avatar URL is unavailable');
+  }
   const dm = await input.transport.openDirectConversation(input.userId);
   const root = await input.transport.postMessage({
     channelId: dm.id,
     text: agentAppHomeStarterMessage(agent.name),
-    persona: { name: agent.name, avatarUrl },
+    ...(avatarUrl ? { persona: { name: agent.name, avatarUrl } } : {}),
     ...(input.deliveryId
       ? { idempotencyKey: input.deliveryId }
       : {}),
