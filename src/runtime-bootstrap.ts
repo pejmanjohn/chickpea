@@ -5,8 +5,8 @@ import {
   setLocalStubPiProvider,
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
-// Installs Core's model access resolver unless a composing host installed one.
-import './config/installation-model-access.ts';
+import { installationModelAccessResolver } from './config/installation-model-access.ts';
+import { configureModelAccessResolver, modelAccessResolverConfigured } from './config/model-access.ts';
 import { PROVIDER_KEY_IDS } from './config/provider-keys.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import { openAiSubscriptionAvailable } from './openai-subscription/availability.ts';
@@ -22,11 +22,14 @@ let bootstrapped = false;
  * so `flue run src/agents/...` has the same provider surface as Vite.
  *
  * The key-backed providers are registered without credentials: each request
- * carries its run's model access (config/model-access.ts).
+ * carries its run's model access (config/model-access.ts), resolved by Core's
+ * resolver unless the composing host installed its own first.
  */
 export function bootstrapRuntimeProviders(): void {
   if (bootstrapped) return;
   bootstrapped = true;
+
+  if (!modelAccessResolverConfigured()) configureModelAccessResolver(installationModelAccessResolver);
 
   // Deployment-funded lane: a deployment serving many installations refuses it.
   const workersAiBaseUrl =

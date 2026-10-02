@@ -1,4 +1,4 @@
-import { deploymentTenancy, installationCacheKey } from './installation-scope.ts';
+import { installationCacheKey } from './installation-scope.ts';
 import { deploymentServesManyInstallations } from './model-access.ts';
 import { rotateStoredModelCredential } from './model-credential-refs.ts';
 import {
@@ -154,7 +154,7 @@ export async function deleteProviderApiKey(
  * of a deployment serving many uses the provider's own endpoint.
  */
 export function providerBaseUrl(id: ProviderKeyId, env: PlatformEnv | undefined): string | undefined {
-  if (deploymentTenancy(env) === 'installation') return undefined;
+  if (deploymentServesManyInstallations(env)) return undefined;
   return nonEmpty(process.env[PROVIDER_BASE_URL_ENV_VARS[id]]);
 }
 
@@ -162,7 +162,7 @@ export function providerBaseUrl(id: ProviderKeyId, env: PlatformEnv | undefined)
 export function deploymentModelKeyNames(env: PlatformEnv | undefined): string[] {
   return PROVIDER_KEY_IDS
     .map((id) => PROVIDER_KEY_ENV_VARS[id])
-    .filter((name) => nonEmpty(process.env[name]) || nonEmpty(stringValue(env?.[name])));
+    .filter((name) => nonEmpty(process.env[name]) || (typeof env?.[name] === 'string' && env[name] !== ''));
 }
 
 export function invalidateProviderKeyCache(): void {
@@ -203,16 +203,12 @@ function cacheStoredProviderKeys(
 ): void {
   const key = installationCacheKey(env);
   // An unscoped env under installation tenancy names no installation to cache for.
-  if (!key && deploymentTenancy(env) === 'installation') return;
+  if (!key && deploymentServesManyInstallations(env)) return;
   if (!storedCache.has(key) && storedCache.size >= STORED_CACHE_MAX_INSTALLATIONS) storedCache.clear();
   storedCache.set(key, entry);
 }
 
 function deploymentApiKey(id: ProviderKeyId, env: PlatformEnv | undefined): string | undefined {
-  if (deploymentTenancy(env) === 'installation') return undefined;
+  if (deploymentServesManyInstallations(env)) return undefined;
   return nonEmpty(process.env[PROVIDER_KEY_ENV_VARS[id]]);
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
 }

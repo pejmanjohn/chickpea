@@ -13,12 +13,12 @@ import { requireInstallationScope } from './installation-scope.ts';
 import {
   MODEL_ACCESS_PROVIDER_IDS,
   ModelAccessError,
-  configureModelAccessResolver,
   deploymentServesManyInstallations,
   isModelAccessProviderId,
   modelAccessProviderId,
-  modelAccessResolverConfigured,
+  providerPrefix,
   resolveModelAccessGrant,
+  withDeploymentLane,
   withModelAccess,
   type ModelAccessGrant,
   type ModelAccessProviderId,
@@ -30,13 +30,15 @@ import {
   customCredentialRefId,
   environmentCredentialRefId,
   environmentCredentialVersion,
-  readStoredModelCredential,
+  readStoredModelCredentials,
   resolveModelCredentialAttribution,
 } from './model-credential-refs.ts';
 import {
   PROVIDER_KEY_ENV_VARS,
   deploymentModelKeyNames,
+  isProviderKeyId,
   providerBaseUrl,
+  type ProviderKeyId,
 } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
@@ -104,7 +106,8 @@ export function createInstallationModelAccessResolver(options: {
         throw new ModelAccessError('funding_not_offered', 'This deployment offers only customer-funded model access.');
       }
       requireNoDeploymentModelKeys(env);
-      const current = await currentInstallationCredential(grant.providerId, env, settingsFor(env));
+      const current = (await currentInstallationCredentials([grant.providerId], env, settingsFor(env)))
+        .get(grant.providerId);
       if (
         !current ||
         current.credentialRefId !== grant.credentialRefId ||
@@ -120,10 +123,8 @@ export function createInstallationModelAccessResolver(options: {
   };
 }
 
-const installationModelAccessResolver = createInstallationModelAccessResolver();
-
-// Core's resolver, unless the composing host installs its own (which replaces it).
-if (!modelAccessResolverConfigured()) configureModelAccessResolver(installationModelAccessResolver);
+/** Core's resolver; runtime-bootstrap installs it unless the composing host installed its own. */
+export const installationModelAccessResolver = createInstallationModelAccessResolver();
 
 /** The grant for a credential a run froze at admission, when its provider takes run-scoped access. */
 export function frozenModelAccessGrant(
@@ -163,16 +164,26 @@ export async function installationModelAccessGrant(
     : undefined;
 }
 
-/** Standalone: every credential the one installation has, read live as each attempt starts. */
+/**
+ * Standalone: a grant for every credential the one installation has, read
+ * live (in one settings read) as each attempt starts.
+ */
 export async function installationModelAccessGrants(
   env: PlatformEnv | undefined,
   runId: string,
-  settings?: SettingsStore,
+  settings: SettingsStore = getSettingsStore(env),
 ): Promise<ModelAccessGrant[]> {
-  const grants = await Promise.all(
-    MODEL_ACCESS_PROVIDER_IDS.map((providerId) => installationModelAccessGrant(providerId, env, runId, settings)),
-  );
-  return grants.filter((grant) => grant !== undefined);
+  requireNoDeploymentModelKeys(env);
+  const installationId = modelAccessInstallationId(env);
+  const credentials = await currentInstallationCredentials(MODEL_ACCESS_PROVIDER_IDS, env, settings);
+  return [...credentials].map(([providerId, credential]) => Object.freeze({
+    installationId,
+    providerId,
+    credentialRefId: credential.credentialRefId,
+    credentialVersion: credential.version,
+    runId,
+    fundingSource: 'customer' as const,
+  }));
 }
 
 /**
@@ -187,15 +198,7 @@ export async function withStatelessModelAccess<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const providerId = modelAccessProviderId(providerPrefix(runtimeModel));
-  if (!providerId) {
-    if (deploymentServesManyInstallations(input.env)) {
-      throw new ModelAccessError(
-        'provider_not_offered',
-        `Model provider ${providerPrefix(runtimeModel)} is not offered on a deployment serving many installations.`,
-      );
-    }
-    return fn();
-  }
+  if (!providerId) return withDeploymentLane(input.env, fn);
   const grant = await installationModelAccessGrant(providerId, input.env, input.runId, input.settings);
   if (!grant) throw providerSetupRequired(providerId);
   return withModelAccess(grant, input.env, fn);
@@ -212,51 +215,61 @@ export async function resolveInstallationModelAccess(
   return grant ? resolveModelAccessGrant(grant, env) : undefined;
 }
 
-async function currentInstallationCredential(
-  providerId: ModelAccessProviderId,
+/**
+ * The installation's current credential for each provider that has one:
+ * standalone's environment key first (with its endpoint override), then the
+ * key saved in Admin; only the saved key on a deployment serving many.
+ */
+async function currentInstallationCredentials(
+  providerIds: readonly ModelAccessProviderId[],
   env: PlatformEnv | undefined,
   settings: SettingsStore,
-): Promise<InstallationCredential | undefined> {
-  if (providerId === 'local-stub') {
-    const baseUrl = localStubBaseUrl(env);
-    return baseUrl
-      ? {
-          credentialRefId: customCredentialRefId(providerId),
-          version: 1,
-          apiKey: process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key',
-          baseUrl,
-        }
-      : undefined;
+): Promise<Map<ModelAccessProviderId, InstallationCredential>> {
+  const credentials = new Map<ModelAccessProviderId, InstallationCredential>();
+  const localStub = providerIds.includes('local-stub') ? localStubBaseUrl(env) : undefined;
+  if (localStub) {
+    credentials.set('local-stub', {
+      credentialRefId: customCredentialRefId('local-stub'),
+      version: 1,
+      apiKey: process.env.LOCAL_STUB_API_KEY ?? 'offline-stub-key',
+      baseUrl: localStub,
+    });
   }
+  const hosted = deploymentServesManyInstallations(env);
+  const storedIds: ProviderKeyId[] = [];
+  for (const providerId of providerIds.filter(isProviderKeyId)) {
+    const environmentKey = hosted ? undefined : process.env[PROVIDER_KEY_ENV_VARS[providerId]];
+    if (environmentKey && trimmedNonEmpty(environmentKey)) {
+      credentials.set(providerId, withBaseUrl(providerId, env, {
+        credentialRefId: environmentCredentialRefId(providerId),
+        version: environmentCredentialVersion(providerId),
+        apiKey: environmentKey,
+      }));
+    } else {
+      storedIds.push(providerId);
+    }
+  }
+  if (storedIds.length === 0) return credentials;
+  for (const [providerId, stored] of await readStoredModelCredentials(storedIds, settings)) {
+    credentials.set(providerId, withBaseUrl(providerId, env, {
+      credentialRefId: stored.metadata.credentialRefId,
+      version: stored.metadata.version,
+      apiKey: stored.apiKey,
+    }));
+  }
+  return credentials;
+}
+
+function withBaseUrl(
+  providerId: ProviderKeyId,
+  env: PlatformEnv | undefined,
+  credential: InstallationCredential,
+): InstallationCredential {
   const baseUrl = providerBaseUrl(providerId, env);
-  const environmentKey = deploymentServesManyInstallations(env)
-    ? undefined
-    : process.env[PROVIDER_KEY_ENV_VARS[providerId]];
-  if (trimmedNonEmpty(environmentKey)) {
-    return {
-      credentialRefId: environmentCredentialRefId(providerId),
-      version: environmentCredentialVersion(providerId),
-      apiKey: environmentKey!,
-      ...(baseUrl ? { baseUrl } : {}),
-    };
-  }
-  const stored = await readStoredModelCredential(providerId, settings);
-  return stored
-    ? {
-        credentialRefId: stored.metadata.credentialRefId,
-        version: stored.metadata.version,
-        apiKey: stored.apiKey,
-        ...(baseUrl ? { baseUrl } : {}),
-      }
-    : undefined;
+  return baseUrl ? { ...credential, baseUrl } : credential;
 }
 
 /** The offline verifiers' stub, offered only on standalone. */
 function localStubBaseUrl(env: PlatformEnv | undefined): string | undefined {
   return deploymentServesManyInstallations(env) ? undefined : nonEmpty(process.env.LOCAL_STUB_URL);
-}
-
-function providerPrefix(model: string): string {
-  const separator = model.indexOf('/');
-  return separator > 0 ? model.slice(0, separator) : model;
 }

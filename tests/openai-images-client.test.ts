@@ -10,6 +10,11 @@ import {
   type ImageInput,
 } from '../src/images/openai-images-client.ts';
 import { resolveImageProvider } from '../src/images/provider.ts';
+import { installationModelAccessResolver } from '../src/config/installation-model-access.ts';
+import { configureModelAccessResolver } from '../src/config/model-access.ts';
+
+// As the runtime bootstrap installs it: image generation reads its key through the resolver.
+configureModelAccessResolver(installationModelAccessResolver);
 
 const BASE_URL = 'https://images.openai.invalid/v1';
 const PROFILE = findImageModel('openai/gpt-image-2.5-sunburst') as ImageModelProfile;

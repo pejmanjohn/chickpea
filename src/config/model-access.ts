@@ -77,7 +77,6 @@ export type ModelAccessErrorCode =
 
 export class ModelAccessError extends Error {
   readonly code: ModelAccessErrorCode;
-  readonly repairPath = '/admin/settings#model-providers';
 
   constructor(code: ModelAccessErrorCode, message: string) {
     super(message);
@@ -91,15 +90,19 @@ interface BoundAccess {
   readonly access: ResolvedModelAccess;
 }
 
-/** One attempt's access by provider (empty when it has none), and the instance it was bound for. */
+/**
+ * One attempt's access by provider (empty when it has none), the instance it
+ * was bound for, and whether its deployment serves many installations, which
+ * the proxy reads instead of any process-wide setting.
+ */
 interface ModelAccessCell {
   readonly instanceId: string | undefined;
+  readonly hosted: boolean;
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
 }
 
 const cells = new AsyncLocalStorage<ModelAccessCell>();
 let resolver: ModelAccessResolver | undefined;
-let servesManyInstallations = false;
 
 /** The composition seam: the deployment's resolver, installed before any model call. */
 export function configureModelAccessResolver(next: ModelAccessResolver): void {
@@ -116,21 +119,13 @@ function requireResolver(): ModelAccessResolver {
 }
 
 /**
- * Declared once by a deployment's entry. A deployment serving many
- * installations offers only run-scoped lanes: a provider that brings its own
- * deployment credential (Workers AI, subscriptions) is refused there.
+ * Whether the deployment serves many installations, from the env a caller
+ * passes and from the deployment's own variables, so a caller that passes no
+ * env still never gets standalone credential rules on such a deployment. A
+ * malformed declaration throws, as it does for installation routing.
  */
-export function declareDeploymentTenancy(tenancy: 'standalone' | 'installation'): void {
-  if (tenancy === 'installation') servesManyInstallations = true;
-}
-
 export function deploymentServesManyInstallations(env?: PlatformEnv): boolean {
-  if (servesManyInstallations) return true;
-  try {
-    return deploymentTenancy(env) === 'installation';
-  } catch {
-    return true;
-  }
+  return deploymentTenancy(env) === 'installation' || deploymentTenancy(process.env) === 'installation';
 }
 
 /** The installation-supplied provider a registered provider id routes for, if any. */
@@ -156,29 +151,35 @@ export function isModelAccessProviderId(value: unknown): value is ModelAccessPro
   return (MODEL_ACCESS_PROVIDER_IDS as readonly unknown[]).includes(value);
 }
 
+/** The provider part of a `provider/model` specifier. */
+export function providerPrefix(model: string): string {
+  const separator = model.indexOf('/');
+  return separator > 0 ? model.slice(0, separator) : model;
+}
+
 /** What the trusted host knows about one attempt before its first model call. */
 export type AttemptModelAccess =
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant }
   /** The run's model brings its own deployment credential (standalone lanes only). */
   | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true }
-  /** No persisted run names this attempt. */
+  /** An agent with no persisted run of its own (the coding worker). */
   | { readonly env: PlatformEnv | undefined };
 
 export interface ModelAccessInterceptorOptions {
   /** The attempt's run, from trusted persisted state; never from model-visible input. */
   lookup(context: FlueExecutionContext): Promise<AttemptModelAccess>;
   /**
-   * Standalone only: the one installation's current grants, for an attempt no
-   * persisted run names (the coding worker). It is today's live key read.
+   * Standalone only: the one installation's current grants, for an agent
+   * with no persisted run of its own. It is today's live key read.
    */
   installationGrants(env: PlatformEnv | undefined, runId: string): Promise<readonly ModelAccessGrant[]>;
 }
 
 /**
  * Binds each top-level agent operation to its run's grant. Nested operations
- * of the same instance (prompt, skill and task, and joined submissions) run
- * inside its cell, so `operationKind` is not consulted. An agent operation of
+ * of the same instance (prompt and skill, and joined submissions) run inside
+ * its cell, so `operationKind` is not consulted. An agent operation of
  * another instance never inherits a cell, even one started from inside it.
  */
 export function createModelAccessInterceptor(
@@ -186,8 +187,8 @@ export function createModelAccessInterceptor(
 ): FlueExecutionInterceptor {
   return async (operation, context, next) => {
     if (operation.type === 'model') {
-      // Defense in depth for a provider registered outside the proxy.
-      if (servesManyInstallations && !cells.getStore()?.bound.size) {
+      const cell = cells.getStore();
+      if (!cell || (cell.hosted && cell.bound.size === 0)) {
         throw new ModelAccessError('scope_missing', 'No model access is in scope for this model call.');
       }
       return next();
@@ -196,14 +197,14 @@ export function createModelAccessInterceptor(
     const active = cells.getStore();
     if (active && (context.instanceId === undefined || context.instanceId === active.instanceId)) return next();
     const attempt = await options.lookup(context);
-    const runId = context.submissionId ?? context.instanceId ?? 'attempt';
+    const hosted = deploymentServesManyInstallations(attempt.env);
     let grants: readonly ModelAccessGrant[] = [];
     if ('grant' in attempt) {
       grants = [attempt.grant];
-    } else if (!('deploymentLane' in attempt) && !deploymentServesManyInstallations(attempt.env)) {
-      grants = await options.installationGrants(attempt.env, runId);
+    } else if (!('deploymentLane' in attempt) && !hosted) {
+      grants = await options.installationGrants(attempt.env, context.submissionId ?? context.instanceId ?? 'attempt');
     }
-    return cells.run(await resolveCell(grants, attempt.env, context.instanceId), next);
+    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId), next);
   };
 }
 
@@ -213,7 +214,16 @@ export async function withModelAccess<T>(
   env: PlatformEnv | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return cells.run(await resolveCell([grant], env, undefined), fn);
+  return cells.run(await resolveCell([grant], env, deploymentServesManyInstallations(env), undefined), fn);
+}
+
+/**
+ * A stateless call on a lane that brings its own deployment credential
+ * (Workers AI, a subscription): offered only on standalone.
+ */
+export async function withDeploymentLane<T>(env: PlatformEnv | undefined, fn: () => Promise<T>): Promise<T> {
+  if (deploymentServesManyInstallations(env)) throw providerNotOffered('this provider');
+  return cells.run(await resolveCell([], env, false, undefined), fn);
 }
 
 /** The access for one grant, for a model client outside the provider proxy (image generation). */
@@ -227,6 +237,7 @@ export function resolveModelAccessGrant(
 async function resolveCell(
   grants: readonly ModelAccessGrant[],
   env: PlatformEnv | undefined,
+  hosted: boolean,
   instanceId: string | undefined,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
@@ -234,7 +245,14 @@ async function resolveCell(
     const access = await requireResolver().resolve(grant, env);
     bound.set(grant.providerId, Object.freeze({ grant, access }));
   }
-  return Object.freeze({ instanceId, bound });
+  return Object.freeze({ instanceId, hosted, bound });
+}
+
+function providerNotOffered(provider: string): ModelAccessError {
+  return new ModelAccessError(
+    'provider_not_offered',
+    `Model provider ${provider} is not offered on a deployment serving many installations.`,
+  );
 }
 
 interface ModelAccessRequest<TModel, TOptions> {
@@ -247,27 +265,25 @@ interface ModelAccessRequest<TModel, TOptions> {
 /**
  * The request the proxy of registered provider `registeredId` sends: the
  * cell's key, endpoint and headers injected over whatever the caller passed,
- * or a refusal before egress.
+ * or a refusal before egress. Every request needs a cell; one on a lane that
+ * brings its own credential is sent as it is, and only from a standalone cell.
  */
 export function modelAccessRequest<TModel extends Model<Api>, TOptions extends StreamOptions | undefined>(
   registeredId: string,
   model: TModel,
   options: TOptions,
 ): ModelAccessRequest<TModel, TOptions> {
+  const cell = cells.getStore();
+  if (!cell) throw new ModelAccessError('scope_missing', `No model access is in scope for provider ${registeredId}.`);
   const providerId = modelAccessProviderId(registeredId);
   if (!providerId) {
-    if (servesManyInstallations) {
-      throw new ModelAccessError(
-        'provider_not_offered',
-        `Model provider ${registeredId} is not offered on a deployment serving many installations.`,
-      );
-    }
+    if (cell.hosted) throw providerNotOffered(registeredId);
     return { model, options, redact: (stream) => stream };
   }
-  const bound = cells.getStore()?.bound.get(providerId);
+  const bound = cell.bound.get(providerId);
   if (!bound) {
     throw new ModelAccessError(
-      cells.getStore()?.bound.size ? 'provider_mismatch' : 'scope_missing',
+      cell.bound.size ? 'provider_mismatch' : 'scope_missing',
       `No model access is in scope for provider ${providerId}.`,
     );
   }
@@ -279,7 +295,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
     } as TOptions,
-    redact: (stream) => withoutKeyInErrors(stream, access.apiKey, model),
+    redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
   };
 }
 
@@ -287,11 +303,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
  * A provider may echo a rejected key in its error text, which Flue records in
  * the conversation. The proxy knows the key it sent, so it removes it there.
  */
-function withoutKeyInErrors(
-  source: AssistantMessageEventStream,
-  apiKey: string,
-  model: Model<Api>,
-): AssistantMessageEventStream {
+function withoutKeyInErrors(source: AssistantMessageEventStream, apiKey: string): AssistantMessageEventStream {
   if (apiKey.length < 8) return source;
   const redacted = (message: AssistantMessage): AssistantMessage =>
     message.errorMessage?.includes(apiKey)
@@ -299,35 +311,15 @@ function withoutKeyInErrors(
       : message;
   const target = createAssistantMessageEventStream();
   void (async () => {
-    try {
-      for await (const event of source) {
-        target.push(event.type === 'error' ? { ...event, error: redacted(event.error) } : event);
-      }
-      // As Pi forwards a stream: the final result, which may arrive without an event.
-      target.end(redacted(await source.result()));
-    } catch {
-      const failure: AssistantMessage = {
-        role: 'assistant',
-        content: [],
-        api: model.api,
-        provider: model.provider,
-        model: model.id,
-        usage: {
-          input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-        stopReason: 'error',
-        errorMessage: 'Model provider stream failed.',
-        timestamp: Date.now(),
-      };
-      target.push({ type: 'error', reason: 'error', error: failure });
-      target.end(failure);
+    for await (const event of source) {
+      target.push(event.type === 'error' ? { ...event, error: redacted(event.error) } : event);
     }
+    // As Pi forwards a stream: the final result, which may arrive without an event.
+    target.end(redacted(await source.result()));
   })();
   return target;
 }
 
 export function resetModelAccessForTests(): void {
   resolver = undefined;
-  servesManyInstallations = false;
 }

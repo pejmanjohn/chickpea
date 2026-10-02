@@ -11,8 +11,11 @@
  * not a binding point: Flue runs it outside the agent operation when it
  * reconciles a resumed attempt.
  *
- * The coding worker has no persisted run of its own here. Standalone binds
- * the installation's current keys for it (today's live read); a deployment
+ * A Slack or routine attempt whose run is not found fails closed: every turn
+ * is staged before its dispatch, and every occurrence persists its dispatch
+ * before it starts, so a miss means the lookup broke or the run settled. The
+ * coding worker has no persisted run of its own here. Standalone binds the
+ * installation's current keys for it (today's live read); a deployment
  * serving many installations does not run coding workers.
  */
 import type { FlueExecutionContext } from '@flue/runtime';
@@ -33,6 +36,7 @@ import {
   ModelAccessError,
   createModelAccessInterceptor,
   modelAccessProviderId,
+  providerPrefix,
   type AttemptModelAccess,
 } from '../config/model-access.ts';
 import {
@@ -44,28 +48,32 @@ import {
 import { currentFlueObservationContext } from '../work/model-invocation.ts';
 
 export const modelAccessInterceptor = createModelAccessInterceptor({
-  lookup: lookupAttemptModelAccess,
+  lookup: (context) => lookupAttemptModelAccess(context),
   installationGrants: installationModelAccessGrants,
 });
 
+/** `agentEnv`: the attempt's own env (the agent object's scoped env on Cloudflare). */
 export async function lookupAttemptModelAccess(
   context: FlueExecutionContext,
+  agentEnv: () => Promise<PlatformEnv | undefined> = currentPlatformEnv,
 ): Promise<AttemptModelAccess> {
-  const env = await currentPlatformEnv();
+  const env = await agentEnv();
   const { instanceId, submissionId } = context;
-  if (!instanceId || !submissionId) return { env };
-  const runAgent = context.agentName === CHICKPEA_SLACK_AGENT_NAME ||
-    context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME;
-  const plan = context.agentName === CHICKPEA_SLACK_AGENT_NAME
-    ? await slackTurnPlan(instanceId, submissionId, env)
-    : context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME
-      ? await routineOccurrencePlan(instanceId, env)
-      : undefined;
-  if (plan) return planModelAccess(plan, instanceId, submissionId, env);
-  // Standalone then binds the installation's current keys (an instance from
-  // before turn staging); a deployment serving many fails the attempt closed.
-  if (runAgent) console.warn('[chickpea] model access found no persisted run for an attempt');
-  return { env };
+  let plan: RuntimePlanV2 | undefined;
+  switch (context.agentName) {
+    case CHICKPEA_SLACK_AGENT_NAME:
+      if (instanceId && submissionId) plan = await slackTurnPlan(instanceId, submissionId, env);
+      break;
+    case CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME:
+      if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
+      break;
+    default:
+      return { env };
+  }
+  if (!plan || !instanceId) {
+    throw new ModelAccessError('scope_missing', 'No persisted run binds model access for this attempt.');
+  }
+  return planModelAccess(plan, instanceId, submissionId ?? instanceId, env);
 }
 
 /** A plan's frozen credential as a grant, or the installation's current one when it froze none. */
@@ -100,7 +108,7 @@ async function slackTurnPlan(
   submissionId: string,
   env: PlatformEnv | undefined,
 ): Promise<RuntimePlanV2 | undefined> {
-  // The work interceptor already matched this attempt to its TurnJob.
+  // Reuses the work interceptor's TurnJob match for this attempt.
   const observed = currentFlueObservationContext();
   const target = observed?.target && observed.instanceId === instanceId && observed.submissionId === submissionId
     ? observed.target
@@ -126,9 +134,4 @@ async function currentPlatformEnv(): Promise<PlatformEnv | undefined> {
   if (!isCloudflareTarget()) return undefined;
   const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
   return getCloudflareContext().env as PlatformEnv;
-}
-
-function providerPrefix(model: string): string {
-  const separator = model.indexOf('/');
-  return separator > 0 ? model.slice(0, separator) : model;
 }

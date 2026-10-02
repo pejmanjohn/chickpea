@@ -92,12 +92,9 @@ export async function resolveImageProvider(
 
   let apiKey: string | undefined;
   try {
-    // The installation's current key, through the same resolver as every
-    // model call (this client is outside Pi's provider proxy).
     apiKey = (await resolveInstallationModelAccess('openai', env, 'image-generation', store))?.apiKey;
   } catch (err) {
     if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
-    // Rotated between reading the credential and resolving it: the next call reads the new one.
     if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
     throw err;
   }

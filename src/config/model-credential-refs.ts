@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { deploymentTenancy } from './installation-scope.ts';
+import { deploymentServesManyInstallations, providerPrefix } from './model-access.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, getUsageStore, type PlatformEnv } from './state-backend.ts';
@@ -68,7 +68,7 @@ export async function resolveModelCredentialAttribution(
     : registeredCredential(usageStore ?? getUsageStore(platformEnv), input);
   // An installation of a deployment serving many uses only its own stored
   // keys; deployment credentials are never attributed to it.
-  const hosted = deploymentTenancy(platformEnv) === 'installation';
+  const hosted = deploymentServesManyInstallations(platformEnv);
 
   if (BUILTIN_PROVIDERS.has(providerId as ProviderKeyId)) {
     const id = providerId as ProviderKeyId;
@@ -272,25 +272,32 @@ export async function storedCredentialMetadata(
 }
 
 /**
- * A stored key and its version metadata in one read, so a concurrent
+ * Stored keys with their version metadata, all in one read, so a concurrent
  * rotation can never pair one version's key with another version's metadata.
+ * A provider with no active stored key is absent.
  */
-export async function readStoredModelCredential(
-  id: ProviderKeyId,
+export async function readStoredModelCredentials(
+  ids: readonly ProviderKeyId[],
   settings: SettingsStore,
-): Promise<{ apiKey: string; metadata: StoredCredentialMetadata } | null> {
-  const [apiKey, ref, versionRaw, activeRaw, activeFromRaw] = await settings.getSettings([
+): Promise<Map<ProviderKeyId, { apiKey: string; metadata: StoredCredentialMetadata }>> {
+  const keysPerProvider = (id: ProviderKeyId) => [
     providerApiKeySetting(id),
     credentialRefSetting(id),
     credentialVersionSetting(id),
     credentialActiveSetting(id),
     credentialActiveFromSetting(id),
-  ]);
-  const version = positiveEpoch(versionRaw);
-  const activeFrom = nonNegativeInteger(activeFromRaw);
-  if (!apiKey || !trimmedNonEmpty(apiKey) || !ref || version === null || activeFrom === null ||
-      activeRaw !== 'true') return null;
-  return { apiKey, metadata: { credentialRefId: ref, version, active: true, activeFrom } };
+  ];
+  const values = await settings.getSettings(ids.flatMap(keysPerProvider));
+  const credentials = new Map<ProviderKeyId, { apiKey: string; metadata: StoredCredentialMetadata }>();
+  ids.forEach((id, index) => {
+    const [apiKey, ref, versionRaw, activeRaw, activeFromRaw] = values.slice(index * 5, index * 5 + 5);
+    const version = positiveEpoch(versionRaw);
+    const activeFrom = nonNegativeInteger(activeFromRaw);
+    if (apiKey && trimmedNonEmpty(apiKey) && ref && version !== null && activeFrom !== null && activeRaw === 'true') {
+      credentials.set(id, { apiKey, metadata: { credentialRefId: ref, version, active: true, activeFrom } });
+    }
+  });
+  return credentials;
 }
 
 /** The reference a deployment environment key is attributed under. */
@@ -366,11 +373,6 @@ function credentialAttribution(row: CredentialRegistration): ModelCredentialAttr
     scopeLabel: row.scopeLabel,
     unknownRotation: row.unknownRotation,
   };
-}
-
-function providerPrefix(modelSpecifier: string): string {
-  const slash = modelSpecifier.indexOf('/');
-  return slash > 0 ? modelSpecifier.slice(0, slash) : modelSpecifier;
 }
 
 function providerApiKeySetting(id: ProviderKeyId): string {

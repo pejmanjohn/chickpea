@@ -14,6 +14,7 @@ import {
 import {
   configureModelAccessResolver,
   modelAccessProviderId,
+  withDeploymentLane,
   withModelAccess,
 } from '../src/config/model-access.ts';
 import { joinContinuation } from '../src/slack/flue-dispatch.ts';
@@ -96,7 +97,7 @@ test('only a text partial without tool calls is restored; everything else is pas
   }
 });
 
-test('every registered provider streams through the seam and keeps its other members', () => {
+test('every registered provider streams through the seam and keeps its other members', async () => {
   const seen: Context[] = [];
   class ClassProvider {
     readonly id = 'continuation-test';
@@ -110,8 +111,10 @@ test('every registered provider streams through the seam and keeps its other mem
   registerPiProvider(new ClassProvider() as unknown as Provider);
   const registered = registeredPiProvider('continuation-test')!;
   assert.deepEqual(registered.getModels(), [model], 'private members still reachable');
-  registered.streamSimple(model, recoveredContext(PARTIAL));
-  registered.stream(model, recoveredContext(PARTIAL));
+  await withDeploymentLane(undefined, async () => {
+    registered.streamSimple(model, recoveredContext(PARTIAL));
+    registered.stream(model, recoveredContext(PARTIAL));
+  });
   for (const context of seen) {
     assert.equal((context.messages[1] as AssistantMessage).stopReason, 'stop');
   }

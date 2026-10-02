@@ -11,8 +11,11 @@ import {
   PROVIDER_KEY_SETTING_KEYS,
   resolveProviderApiKey,
 } from '../src/config/provider-keys.ts';
-import { withStatelessModelAccess } from '../src/config/installation-model-access.ts';
-import { modelAccessRequest } from '../src/config/model-access.ts';
+import {
+  installationModelAccessResolver,
+  withStatelessModelAccess,
+} from '../src/config/installation-model-access.ts';
+import { configureModelAccessResolver, modelAccessRequest } from '../src/config/model-access.ts';
 import { registerBuiltinPiProvider } from '../src/config/pi-provider.ts';
 import {
   invalidateProviderModelCache,
@@ -506,6 +509,7 @@ test('built-in provider requests honor explicit OpenAI-compatible base URLs', as
     },
     async () => {
       invalidateProviderKeyCache();
+      configureModelAccessResolver(installationModelAccessResolver);
       registerBuiltinPiProvider('openai');
       registerBuiltinPiProvider('openrouter');
       // The endpoint rides with the run's access and is applied per request.
