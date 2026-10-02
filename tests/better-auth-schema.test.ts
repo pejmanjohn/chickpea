@@ -11,6 +11,8 @@ import {
 const PRIOR_SCHEMA = new URL('./fixtures/better-auth/1.6.26/0001_better_auth.sql', import.meta.url);
 const CURRENT_SCHEMA = new URL('./fixtures/better-auth/1.7.1/0001_better_auth.sql', import.meta.url);
 const FORWARD_MIGRATION = new URL('../migrations/better-auth/0002_mcp_oauth.sql', import.meta.url);
+const POSTGRES_SCHEMA = new URL('./fixtures/better-auth/1.7.1/postgres/0001_better_auth.sql', import.meta.url);
+const POSTGRES_BASE_MIGRATION = new URL('../migrations/better-auth-postgres/0001_better_auth.sql', import.meta.url);
 
 test('Better Auth 1.7.1 fresh schema stays pinned to the configured plugins', async () => {
   assert.equal(PINNED_BETTER_AUTH_VERSION, '1.7.1');
@@ -27,6 +29,29 @@ test('Better Auth 1.7.1 fresh schema stays pinned to the configured plugins', as
     'account_issuer_accountId_uidx',
   ]) {
     assert.match(generated, new RegExp(required, 'i'), required);
+  }
+});
+
+test('the PostgreSQL fresh schema is generated from the same options and keeps Chickpea invariants', async () => {
+  const generated = await generateBetterAuthBootstrapSql('postgres');
+  assert.equal(generated, await readFile(POSTGRES_SCHEMA, 'utf8'));
+  // The first PostgreSQL migration is the reviewed 1.7.1 generation; later
+  // Better Auth versions add a forward migration and a new fresh fixture.
+  assert.equal(await readFile(POSTGRES_BASE_MIGRATION, 'utf8'), generated);
+  for (const required of [
+    /create table "user" \("id" uuid default pg_catalog\.gen_random_uuid\(\) not null primary key/,
+    /"absoluteExpiresAt" timestamptz default CURRENT_TIMESTAMP not null/,
+    /"issuer" text not null/,
+    /create table "oauthConsent"/,
+    /create table "oauthRefreshToken"/,
+    /create unique index "account_issuer_accountId_uidx" on "account" \("issuer", "accountId"\)/,
+    /create unique index "oauthClientResource_clientId_resourceId_uidx"/,
+    /CREATE UNIQUE INDEX "account_providerId_accountId_uidx" ON "account" \("providerId", "accountId"\)/,
+    /CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" \("organizationId", "userId"\)/,
+    /"expires_at" bigint NOT NULL/,
+    /"created_at" bigint NOT NULL/,
+  ]) {
+    assert.match(generated, required);
   }
 });
 

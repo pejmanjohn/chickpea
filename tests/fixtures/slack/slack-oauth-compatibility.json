@@ -46,7 +46,7 @@
       },
       {
         "path": "scripts/generate-better-auth-bootstrap.ts",
-        "sha256": "560b532b4f2c79c35520c4cddff7153ac6474dc315559f4a8b1c190b9f81dbf4"
+        "sha256": "37acd296994b021e757ec409d6f92cbbabe3695276f2c627e2b2515ad3347f6a"
       }
     ]
   },
