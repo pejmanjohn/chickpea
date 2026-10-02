@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 
 import type { BetterAuthDatabaseBackend } from '../src/auth/better-auth-backend.ts';
 import { withBetterAuthBackend } from '../src/auth/better-auth-environment.ts';
+import { START_AGENT_ACTION_ID } from '../src/slack/app-home.ts';
 import { channel as slackChannel } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
@@ -29,7 +30,7 @@ import {
   readStoredSlackTeamInfo,
   resolveSlackCredentials,
 } from '../src/slack/credentials.ts';
-import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   backfillHostedWorkspaceInstallation,
   syncHostedWorkspaceInstallation,
@@ -695,5 +696,35 @@ test('a hosted Agent posts with an avatar URL that names its installation', asyn
     const posted = h.calls.find(({ method }) => method === 'chat.postMessage')!;
     assert.equal(posted.token, BOT_TOKEN);
     assert.equal(posted.body.get('icon_url'), 'https://hosted.example/assets/i/inst_tenant_a/agents/agent_ops/avatar/1');
+  });
+});
+
+test('a hosted bot bundle that latches recovery on a direct delivery is answered not found, never a server error', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    t.mock.method(console, 'error', () => {});
+    // The bundle's key slot is gone from the deployment keyring: reading it latches recovery.
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!,
+      `${JSON.stringify({ version: 1, ...generateCredentialKeyring('key_unrelated') })}\n`, { mode: 0o600 });
+    invalidateSlackInstallationCredentialCache();
+    const home = await h.deliver('events', h.event({ type: 'app_home_opened', user: 'U1', tab: 'home' }));
+    assert.equal(home.status, 404, 'as the app\'s recovery gate answers');
+    assert.equal((await h.stores.identity.getAuthControl())?.healthGate, 'recovery_only');
+    const start = await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger_home',
+      actions: [{ action_id: START_AGENT_ACTION_ID, value: 'agent_home', action_ts: '1800000006.000100' }],
+    });
+    assert.equal(start.status, 404);
+    assert.deepEqual(h.calls, [], 'nothing reached Slack');
+  });
+});
+
+test('a hosted keyring that will not load stays a server error on a direct delivery, for Slack to retry', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    t.mock.method(console, 'error', () => {});
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, 'not a keyring', { mode: 0o600 });
+    invalidateSlackInstallationCredentialCache();
+    const home = await h.deliver('events', h.event({ type: 'app_home_opened', user: 'U1', tab: 'home' }));
+    assert.equal(home.status, 500);
+    assert.notEqual((await h.stores.identity.getAuthControl())?.healthGate, 'recovery_only', 'nothing latched');
   });
 });
