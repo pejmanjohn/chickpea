@@ -69,8 +69,14 @@ export interface ObjectEraseResult {
 /** What one object stopped: its alarm, and for a thread runner its open jobs. */
 export interface ObjectPendingWorkCancellation {
   readonly alarmCleared: true;
-  /** Thread runners: open jobs settled without running. */
+  /** Thread runners: open jobs not running, settled without running. */
   readonly runnerJobs?: number;
+  /**
+   * Thread runners: jobs still running, not stopped here. Each settles as
+   * its run ends; its turn is parked in the state store, which aborts its
+   * submission, and the installation's admission refuses its model calls.
+   */
+  readonly runnerJobsRunning?: number;
 }
 
 /** The host functions every installation object answers; each class delegates to `objectHostFunctions`. */

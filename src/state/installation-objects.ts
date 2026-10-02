@@ -122,8 +122,9 @@ export async function eraseInstallationObject(
  * Stop the work one object would start or deliver on its own: its alarm,
  * and for the state store every pending turn, unfinished routine occurrence
  * and undelivered notice or receipt (state/pending-work.ts); for a thread
- * runner its open jobs. Run while the installation is suspended, after a
- * restore. Safe to repeat.
+ * runner its open jobs that are not running (it reports those still
+ * running, which settle as their runs end). Run while the installation is
+ * suspended, after a restore. Safe to repeat.
  */
 export async function cancelInstallationObjectPendingWork(
   env: Record<string, unknown>,

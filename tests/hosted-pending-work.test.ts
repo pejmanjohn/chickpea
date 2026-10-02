@@ -276,7 +276,7 @@ test('a dispatched turn whose stored dispatch does not read is counted as not st
   assert.equal(warned.mock.callCount(), 1);
 });
 
-test('a thread runner settles its open jobs unrun and a Flue instance loses its alarm', async () => {
+test('a thread runner settles its waiting jobs unrun, reports the running one, and a Flue instance loses its alarm', async () => {
   const deployment = hostedDeployment(['inst_pending_runner']);
   const a = deployment.installation('inst_pending_runner');
   const pending = turns(a, 'T_A');
@@ -292,11 +292,20 @@ test('a thread runner settles its open jobs unrun and a Flue instance loses its 
   jobs.settle(pending.delivered.id, 'done', 2);
   await runner.storage.setAlarm(Date.now() + 1_000);
 
-  assert.deepEqual(await cancelInstallationObjectPendingWork(a.env, runnerObject), { alarmCleared: true, runnerJobs: 2 });
+  assert.deepEqual(await cancelInstallationObjectPendingWork(a.env, runnerObject), {
+    alarmCleared: true, runnerJobs: 1, runnerJobsRunning: 1,
+  });
   assert.equal(runner.storage.alarm, null);
-  assert.deepEqual(jobs.status().jobs, { done: 1, recovery_required: 2 });
-  assert.equal(jobs.hasRunning(), false);
+  // The running job's run goes on in its instance: it is reported, not claimed as stopped.
+  assert.deepEqual(jobs.status().jobs, { done: 1, recovery_required: 1, running: 1 });
+  assert.equal(jobs.get(pending.queued.id)?.state, 'recovery_required');
+  // Its run ends as the state store's abort makes it end, and it settles as that.
+  jobs.settle(pending.running.id, 'error', 3);
+  assert.deepEqual(jobs.status().jobs, { done: 1, error: 1, recovery_required: 1 });
   assert.deepEqual(jobs.runnable(Date.now() + 60_000), []);
+  assert.deepEqual(await cancelInstallationObjectPendingWork(a.env, runnerObject), {
+    alarmCleared: true, runnerJobs: 0, runnerJobsRunning: 0,
+  });
 
   const agent = deployment.object(CHICKPEA_SLACK_AGENT_BINDING, agentObject.name);
   await agent.storage.setAlarm(Date.now() + 1_000);

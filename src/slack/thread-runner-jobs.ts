@@ -421,16 +421,23 @@ export class ThreadRunnerJobStore {
 
   /**
    * An operator stops this runner's open jobs, as after restoring an
-   * installation's objects: each settles as `recovery_required`, so it is
-   * never run here again. The state store parks the same turns, so none is
-   * handed over again. Returns how many.
+   * installation's objects: each job not running settles as
+   * `recovery_required`, so it is never run here again. The state store
+   * parks the same turns, so none is handed over again. A running job is
+   * left to settle as its run ends, since its run goes on in this instance:
+   * the state store aborts its submission and the installation's admission
+   * refuses its model calls. Returns how many settled, and how many run on.
    */
-  cancelOpen(now: number): number {
-    return this.db.run(
+  cancelOpen(now: number): { settled: number; running: number } {
+    const settled = this.db.run(
       `UPDATE runner_jobs SET state = 'recovery_required', retry_at = NULL, settled_at = ?, deferred_checks = 0
-       WHERE state IN ${OPEN_STATES}`,
+       WHERE state IN ${OPEN_STATES} AND state != 'running'`,
       now,
     ).changes;
+    const running = Number(this.db.get(
+      "SELECT COUNT(*) AS n FROM runner_jobs WHERE state = 'running'",
+    )?.n ?? 0);
+    return { settled, running };
   }
 
   /** Jobs not yet settled. */

@@ -331,7 +331,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostErase(request);
   }
 
-  /** Settle every open job without running it, and clear the alarm. */
+  /** Settle every open job not running without running it, report the running ones, and clear the alarm. */
   async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
     return this.host().chickpeaHostCancelPendingWork(request);
   }
@@ -350,7 +350,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         this.targets.clear();
         this.carried.clear();
       },
-      cancel: (now) => ({ runnerJobs: this.store().cancelOpen(now) }),
+      cancel: (now) => {
+        const { settled, running } = this.store().cancelOpen(now);
+        return { runnerJobs: settled, runnerJobsRunning: running };
+      },
     });
   }
 

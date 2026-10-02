@@ -206,7 +206,12 @@ export function hostedDeployment(installationIds: readonly string[], options: {
         host: objectHostFunctions({
           env, storage,
           ...(binding === 'SLACK_THREAD_RUNNER'
-            ? { cancel: (now: number) => ({ runnerJobs: runnerJobs(storage).cancelOpen(now) }) }
+            ? {
+                cancel: (now: number) => {
+                  const { settled, running } = runnerJobs(storage).cancelOpen(now);
+                  return { runnerJobs: settled, runnerJobsRunning: running };
+                },
+              }
             : {}),
         }) as unknown as DeploymentObject['host'],
       };
