@@ -355,6 +355,7 @@ import {
   type WorkStore,
 } from './work/types.ts';
 import { runRoutineHeartbeat as runSharedRoutineHeartbeat } from './routines/heartbeat.ts';
+import { runHostedIdentityRetentionDuty } from './identity/hosted-retention.ts';
 
 // The generated default captures model and tool content. Register the native
 // Cloudflare adapter explicitly for this Cloudflare-only entry so Workers
@@ -3435,7 +3436,8 @@ function rpcError(
 export default createRoutineScheduledHandler({
   heartbeat: runRoutineHeartbeat,
   maintenance: runWorkMaintenance,
-  duties: [keepOAuthCredentialsAlive],
+  // Identity retention runs only under installation tenancy, once a day each.
+  duties: [keepOAuthCredentialsAlive, runHostedIdentityRetentionDuty],
 });
 
 /** Its own duty, so renewals never delay maintenance or the gateway wake. */
