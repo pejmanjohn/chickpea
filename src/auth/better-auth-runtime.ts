@@ -1,5 +1,6 @@
 import { Hono, type Context } from 'hono';
 
+import { deploymentTenancy } from '../config/installation-scope.ts';
 import {
   getIdentityStore,
   type PlatformEnv,
@@ -32,6 +33,14 @@ interface BetterAuthRuntimeOptions {
 const AUTH_ROUTE_BODY_LIMIT_BYTES = 32 * 1024;
 
 export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions = {}): Hono {
+  return betterAuthPublicRoutes((c) => dispatch(c, options));
+}
+
+/**
+ * Better Auth's public paths with their body cap, each answered by
+ * `dispatch`; a failure answers 503 without detail.
+ */
+export function betterAuthPublicRoutes(dispatch: (c: Context) => Promise<Response>): Hono {
   const app = new Hono();
 
   app.use('/api/auth/*', actualBodyLimit({
@@ -41,7 +50,7 @@ export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions 
 
   const handle = async (c: Context) => {
     try {
-      return await dispatch(c, options);
+      return await dispatch(c);
     } catch {
       return c.json({ error: 'auth_unavailable' }, 503);
     }
@@ -57,6 +66,10 @@ export function createBetterAuthRuntimeRoutes(options: BetterAuthRuntimeOptions 
 
 async function dispatch(c: Context, options: BetterAuthRuntimeOptions): Promise<Response> {
   const platformEnv = c.env as PlatformEnv | undefined;
+  // Every installation of a deployment serving many shares one Better Auth,
+  // which its host serves before resolving any installation
+  // (serveHostedSharedAuth), so token issuance always checks the installation.
+  if (deploymentTenancy(platformEnv) === 'installation') return new Response('Not Found', { status: 404 });
   const identity = options.identity ?? getIdentityStore(platformEnv);
   const control = await identity.getAuthControl();
   if (control?.authMode !== 'slack_active' || control.healthGate !== 'normal' ||

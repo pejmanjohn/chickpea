@@ -55,7 +55,8 @@ export function withBetterAuthBackend<E extends PlatformEnv>(
   return Object.freeze({ ...env, [HOST_BACKEND]: backend });
 }
 
-function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabaseBackend | undefined {
+/** The backend a host attached to `env` with withBetterAuthBackend, if any. */
+export function hostBetterAuthBackend(env: PlatformEnv | undefined): BetterAuthDatabaseBackend | undefined {
   return (env as { [HOST_BACKEND]?: BetterAuthDatabaseBackend } | undefined)?.[HOST_BACKEND];
 }
 
