@@ -146,3 +146,22 @@ export async function revokeBetterAuthUserAccess(
   await backend.revokeOAuthGrantsForUser(userId);
   await backend.deleteSessionsForUser(userId);
 }
+
+/**
+ * Ends the MCP OAuth grants and browser sessions of every member of one
+ * Better Auth organization: an installation's, when Slack uninstalls it or
+ * the host deletes it. Sessions name no organization, so each member's are
+ * all ended; a member is one Slack account in that installation's workspace,
+ * so no other workspace's people are touched. Safe to repeat: a retry after a
+ * failure revokes what is left.
+ */
+export async function revokeOrganizationAccess(
+  backend: BetterAuthAccessRevoker & Pick<BetterAuthDatabaseBackend, 'listMemberships'>,
+  organizationId: string,
+): Promise<{ members: number }> {
+  const members = await backend.listMemberships(organizationId);
+  for (const userId of new Set(members.map((member) => member.userId))) {
+    await revokeBetterAuthUserAccess(backend, userId);
+  }
+  return { members: members.length };
+}

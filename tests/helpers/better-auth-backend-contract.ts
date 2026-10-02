@@ -7,7 +7,10 @@ import {
   type BetterAuthAdmissionOperation,
   type ReconciledSlackIdentity,
 } from '../../src/auth/better-auth.ts';
-import type { BetterAuthDatabaseBackend } from '../../src/auth/better-auth-backend.ts';
+import {
+  revokeOrganizationAccess,
+  type BetterAuthDatabaseBackend,
+} from '../../src/auth/better-auth-backend.ts';
 import { createBetterAuthPublicHandler } from '../../src/auth/better-auth-routes.ts';
 
 export interface BetterAuthBackendSubject {
@@ -192,6 +195,35 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
       assert.deepEqual(await f.backend.revokeOAuthGrantsForUser(id),
         { consents: 0, accessTokens: 0, refreshTokens: 0 });
     }
+  });
+
+  it('revoking an installation\'s organization ends its members\' sessions and grants and spares another', async (f) => {
+    const owner = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const member = await f.reconcile('TAAAA', 'U0002', 'chickpea-org_a');
+    const other = await f.reconcile('TBBBB', 'U0001', 'chickpea-org_b');
+    assert.equal(member.organizationId, owner.organizationId);
+    const ownerCookie = await f.signIn(owner, 'TAAAA', 'U0001');
+    const memberCookie = await f.signIn(member, 'TAAAA', 'U0002');
+    const otherCookie = await f.signIn(other, 'TBBBB', 'U0001');
+    const ownerGrant = await f.grant(ownerCookie, { resource: false });
+    const memberGrant = await f.grant(memberCookie, { resource: true });
+    const otherGrant = await f.grant(otherCookie, { resource: true });
+
+    assert.deepEqual(await revokeOrganizationAccess(f.backend, owner.organizationId), { members: 2 });
+    assert.equal(await f.session(ownerCookie), null);
+    assert.equal(await f.session(memberCookie), null);
+    assert.equal((await f.session(otherCookie))?.user.id, other.userId);
+    for (const grant of [ownerGrant, memberGrant]) {
+      const refused = await f.refresh(grant);
+      assert.equal(refused.status, 400);
+      assert.equal((await refused.json() as { error: string }).error, 'invalid_grant');
+    }
+    assert.equal((await f.refresh(otherGrant)).status, 200);
+    assert.equal(await f.count('oauthConsent'), 1);
+    // A retry after a partial failure finds nothing left and changes nothing.
+    assert.deepEqual(await revokeOrganizationAccess(f.backend, owner.organizationId), { members: 2 });
+    assert.equal((await f.session(otherCookie))?.user.id, other.userId);
+    assert.deepEqual(await revokeOrganizationAccess(f.backend, randomUUID()), { members: 0 });
   });
 
   return cases;
