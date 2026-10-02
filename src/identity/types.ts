@@ -518,6 +518,18 @@ export interface AdmitSlackOidcAttemptInput {
   expiresAt: number;
 }
 
+/**
+ * A host's sign-in of a person its own Sign in with Slack attempt verified,
+ * with no OIDC attempt in this store (for example, a discovery sign-in kept
+ * in the host's registry). Admission is a standalone login's.
+ */
+export interface AdmitSlackLoginInput {
+  capabilityHash: string;
+  slackTeamId: string;
+  slackUserId: string;
+  expiresAt: number;
+}
+
 export interface SettleSlackOidcAttemptInput {
   attemptId: string;
   expectedLeaseGeneration: number;
@@ -688,6 +700,10 @@ export interface BindSlackMemberBrowserIdentityInput {
   contactEmail?: string | null;
   at?: number;
 }
+
+/** The browser binding of a login operation admitted by `admitSlackLogin`. */
+export type BindSlackLoginBrowserIdentityInput =
+  Omit<BindSlackMemberBrowserIdentityInput, 'attemptId' | 'expectedOidcLeaseGeneration'>;
 
 export interface EnsureOrganizationInput {
   displayName: string;
@@ -935,6 +951,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   acquireSlackOidcAttempt(input: AcquireSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
   admitSlackOidcAttempt(input: AdmitSlackOidcAttemptInput): Promise<AuthOperation>;
   settleSlackOidcAttempt(input: SettleSlackOidcAttemptInput): Promise<SlackOidcAttempt>;
+  admitSlackLogin(input: AdmitSlackLoginInput): Promise<AuthOperation>;
   createAuthOperation(input: CreateAuthOperationInput): Promise<AuthOperation>;
   reservePendingAuthOperation(input: CreateAuthOperationInput): Promise<{ operation: AuthOperation; created: boolean }>;
   reserveInstallerOwner(input: CreateAuthOperationInput): Promise<AuthOperation>;
@@ -955,6 +972,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
   activateInvitation(input: ActivateInvitationInput): Promise<IdentityResolution>;
   provisionSlackMember(input: ProvisionSlackMemberInput): Promise<SlackMemberProvisioningResult>;
   bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput): Promise<IdentityResolution>;
+  bindSlackLoginBrowserIdentity(input: BindSlackLoginBrowserIdentityInput): Promise<IdentityResolution>;
   resolveSlackIdentity(slackTeamId: string, slackUserId: string, organizationId?: string): Promise<IdentityResolution | undefined>;
   resolveBetterAuthIdentity(
     betterAuthUserId: string,
@@ -1040,6 +1058,7 @@ export type IdentityRpcRequest =
   | { kind: 'acquire_slack_oidc_attempt'; input: AcquireSlackOidcAttemptInput }
   | { kind: 'admit_slack_oidc_attempt'; input: AdmitSlackOidcAttemptInput }
   | { kind: 'settle_slack_oidc_attempt'; input: SettleSlackOidcAttemptInput }
+  | { kind: 'admit_slack_login'; input: AdmitSlackLoginInput }
   | { kind: 'create_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_pending_auth_operation'; input: CreateAuthOperationInput }
   | { kind: 'reserve_installer_owner'; input: CreateAuthOperationInput }
@@ -1060,6 +1079,7 @@ export type IdentityRpcRequest =
   | { kind: 'activate_invitation'; input: ActivateInvitationInput }
   | { kind: 'provision_slack_member'; input: ProvisionSlackMemberInput }
   | { kind: 'bind_slack_member_browser_identity'; input: BindSlackMemberBrowserIdentityInput }
+  | { kind: 'bind_slack_login_browser_identity'; input: BindSlackLoginBrowserIdentityInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'resolve_better_auth_identity'; betterAuthUserId: string; organizationId?: string }
   | { kind: 'list_external_identities' }

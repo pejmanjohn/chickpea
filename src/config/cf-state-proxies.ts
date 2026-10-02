@@ -96,9 +96,11 @@ import type {
   AdvanceAuthOperationInput,
   ActivateInvitationInput,
   ActivateFirstOwnerInput,
+  AdmitSlackLoginInput,
   AdmitSlackOidcAttemptInput,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BindSlackLoginBrowserIdentityInput,
   BindSlackMemberBrowserIdentityInput,
   AuthOperationKind,
   ClaimOwnerInput,
@@ -780,6 +782,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'slack_oidc_attempt' || !response.attempt) throw unexpectedIdentityResponse();
     return response.attempt;
   }
+  async admitSlackLogin(input: AdmitSlackLoginInput) {
+    const response = await this.execute({ kind: 'admit_slack_login', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
   async createAuthOperation(input: CreateAuthOperationInput) {
     const response = await this.execute({ kind: 'create_auth_operation', input });
     if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
@@ -885,6 +892,13 @@ export class CfIdentityStore implements IdentityStore {
   }
   async bindSlackMemberBrowserIdentity(input: BindSlackMemberBrowserIdentityInput) {
     const response = await this.execute({ kind: 'bind_slack_member_browser_identity', input });
+    if (response.kind !== 'identity_resolution' || !response.resolution) {
+      throw unexpectedIdentityResponse();
+    }
+    return response.resolution;
+  }
+  async bindSlackLoginBrowserIdentity(input: BindSlackLoginBrowserIdentityInput) {
+    const response = await this.execute({ kind: 'bind_slack_login_browser_identity', input });
     if (response.kind !== 'identity_resolution' || !response.resolution) {
       throw unexpectedIdentityResponse();
     }
