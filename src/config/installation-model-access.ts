@@ -120,7 +120,7 @@ export function createInstallationModelAccessResolver(options: {
   };
 }
 
-export const installationModelAccessResolver = createInstallationModelAccessResolver();
+const installationModelAccessResolver = createInstallationModelAccessResolver();
 
 // Core's resolver, unless the composing host installs its own (which replaces it).
 if (!modelAccessResolverConfigured()) configureModelAccessResolver(installationModelAccessResolver);

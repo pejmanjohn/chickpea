@@ -11,9 +11,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { resolveModel } from '@flue/runtime/internal';
+import { withStatelessModelAccess } from '../src/config/installation-model-access.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { resolveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import { bootstrapRuntimeProviders } from '../src/runtime-bootstrap.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { activateModelCatalog } from '../src/model-catalog/catalog.ts';
 import { parseModelCatalogBytes } from '../src/model-catalog/schema.ts';
@@ -85,6 +87,7 @@ globalThis.fetch = async (input, init) => {
   return nativeFetch(input, init);
 };
 
+bootstrapRuntimeProviders();
 const settings = new SqliteSettingsStore(statePath);
 try {
   if (provider === 'openai') {
@@ -115,22 +118,22 @@ try {
   const piProvider = registeredPiProvider(model.provider);
   assert.ok(piProvider, `Pi provider ${model.provider} must be registered`);
   const marker = 'CHICKPEA_MODEL_COMPATIBILITY_OK';
-  const result = await piProvider.stream(
-    model,
-    {
-      messages: [{
-        role: 'user',
-        content: `Return exactly ${marker} and nothing else.`,
-        timestamp: Date.now(),
-      }],
-    },
-    {
-      ...(lane === 'subscription'
-        ? { apiKey: 'chickpea-boundary-managed' }
-        : { apiKey: process.env[provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY'] }),
-      maxTokens: 64,
-    },
-  ).result();
+  // An API-key lane sends only inside model access, which reads the key from env.
+  const result = await withStatelessModelAccess(route.model, { env: undefined, settings, runId: 'live-model-compatibility' }, () =>
+    piProvider.stream(
+      model,
+      {
+        messages: [{
+          role: 'user',
+          content: `Return exactly ${marker} and nothing else.`,
+          timestamp: Date.now(),
+        }],
+      },
+      {
+        ...(lane === 'subscription' ? { apiKey: 'chickpea-boundary-managed' } : {}),
+        maxTokens: 64,
+      },
+    ).result());
   const output = result.content
     .filter((part) => part.type === 'text')
     .map((part) => part.text)
