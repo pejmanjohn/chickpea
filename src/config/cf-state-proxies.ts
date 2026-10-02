@@ -18,6 +18,7 @@ import type {
   ModelCredentialStore,
   PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
+  RewrapModelCredentialInput,
   SettingsPatch,
   SettingsStore,
 } from './settings-store.ts';
@@ -337,6 +338,8 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'slackTurnStopFinish', // the first stop ending stands and is returned again
   'slackTurnDirectThreads', 'slackRunFacts', // reads (a DM lookup keys old rows idempotently)
   'slackPresentationTransition', // compare-and-swap on the projection version
+  // Version-fenced; a replay finds exactly what the committed call wrote and succeeds.
+  'modelCredentialPublish', 'modelCredentialRewrap',
 ]);
 
 /** Kinds sent through a store's `*Execute` RPC. */
@@ -2428,6 +2431,10 @@ export class CfSettingsStore implements SettingsStore, EncryptedCredentialStore,
 
   async publishModelCredential(input: PublishModelCredentialInput) {
     return rpcVia(this.stub, 'modelCredentialPublish', (stub) => stub.modelCredentialPublish(input));
+  }
+
+  async rewrapModelCredential(input: RewrapModelCredentialInput) {
+    return rpcVia(this.stub, 'modelCredentialRewrap', (stub) => stub.modelCredentialRewrap(input));
   }
 }
 

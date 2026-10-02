@@ -2,6 +2,7 @@ import type {
   EncryptedCredentialRevision,
   ModelCredentialRecord,
   PublishModelCredentialInput,
+  RewrapModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
   SettingsPatch,
 } from './settings-store.ts';
@@ -624,6 +625,8 @@ export interface TagStateRpc {
   modelCredentialRead(providerId: string): Promise<StateRpcResult<ModelCredentialRecord | null>>;
   /** Version-fenced: metadata and envelope publish (or the envelope goes) in one transaction. */
   modelCredentialPublish(input: PublishModelCredentialInput): Promise<StateRpcResult<boolean>>;
+  /** Version- and key-fenced re-encryption of the current envelope; the version stays. */
+  modelCredentialRewrap(input: RewrapModelCredentialInput): Promise<StateRpcResult<boolean>>;
   // -- memory + generic audit envelope ------------------------------------
   memoryExecute(request: MemoryRpcRequest): Promise<StateRpcResult<MemoryRpcResponse>>;
   configDeleteAgentWithMemory(

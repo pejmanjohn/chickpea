@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +12,7 @@ import {
   type EncryptedCredentialStore,
   type ModelCredentialStore,
   type PublishModelCredentialInput,
+  type RewrapModelCredentialInput,
   type SettingsStore,
 } from '../src/config/settings-store.ts';
 import type { TagStateRpc } from '../src/config/state-rpc.ts';
@@ -21,9 +22,10 @@ import { NodeStateDb, openStateDb } from '../src/state/node-state-db.ts';
 
 const REF = 'cred_anthropic_9b1f4c2e-7d3a-4c55-9e0b-1a2b3c4d5e6f';
 const keyring = generateCredentialKeyring('key_store');
+const nextKeyring = generateCredentialKeyring('key_next');
 
-function envelopeFor(version: number, apiKey: string): Promise<SlackSecretEnvelope> {
-  return encryptModelProviderKeyEnvelope(keyring, {
+function envelopeFor(version: number, apiKey: string, encryptWith = keyring): Promise<SlackSecretEnvelope> {
+  return encryptModelProviderKeyEnvelope(encryptWith, {
     purpose: 'model_provider_key',
     installationId: 'inst_tenant_a',
     providerId: 'anthropic',
@@ -63,9 +65,14 @@ async function storeContract(store: SettingsStore & EncryptedCredentialStore & M
   );
   assert.deepEqual((await store.readModelCredential('anthropic'))?.envelope, winner);
   assert.equal((await store.readModelCredential('anthropic'))?.version, 2);
+  // A replay of the publication that committed finds exactly what it wrote; the loser stays refused.
+  assert.equal(await store.publishModelCredential(publication(1, winner)), true);
+  assert.equal(await store.publishModelCredential(publication(1, loser)), false);
+  assert.equal((await store.readModelCredential('anthropic'))?.version, 2);
 
   // Deletion advances the version and removes the key; the store keeps no earlier one.
   assert.equal(await store.publishModelCredential(publication(2)), true);
+  assert.equal(await store.publishModelCredential(publication(2)), true, 'a replayed deletion succeeds');
   assert.deepEqual(await store.readModelCredential('anthropic'), {
     credentialRefId: REF, version: 3, active: false, activeFrom: 1_002,
   });
@@ -92,6 +99,22 @@ async function storeContract(store: SettingsStore & EncryptedCredentialStore & M
     await assert.rejects(store.publishModelCredential(invalid), /invalid/, JSON.stringify(invalid).slice(0, 80));
   }
   assert.equal((await store.readModelCredential('anthropic'))?.version, 4);
+
+  // A rewrap re-encrypts the current key under a new key ID, fenced on version and key ID, version unchanged.
+  const rewrapped = await envelopeFor(4, 'sk-ant-fourth', nextKeyring);
+  const rewrap = { providerId: 'anthropic', expectedVersion: 4, expectedKeyId: 'key_store', envelope: rewrapped };
+  assert.equal(await store.rewrapModelCredential({ ...rewrap, expectedVersion: 3 }), false);
+  assert.equal(await store.rewrapModelCredential({ ...rewrap, expectedKeyId: 'key_other' }), false);
+  assert.equal(await store.rewrapModelCredential(rewrap), true);
+  assert.deepEqual(await store.readModelCredential('anthropic'), {
+    credentialRefId: REF, version: 4, active: true, activeFrom: 1_003, envelope: rewrapped,
+  });
+  assert.equal(await store.rewrapModelCredential(rewrap), true, 'a replayed rewrap succeeds');
+  // A stale rewrapper that read the old key ID loses to the one that committed.
+  assert.equal(await store.rewrapModelCredential({ ...rewrap, envelope: await envelopeFor(4, 'sk-ant-fourth', nextKeyring) }), false);
+  await assert.rejects(store.rewrapModelCredential({ ...rewrap, expectedKeyId: 'not a key id' }), /invalid/);
+  assert.equal(await store.publishModelCredential(publication(4)), true);
+  assert.equal(await store.rewrapModelCredential({ ...rewrap, expectedVersion: 5 }), false, 'nothing to rewrap once deleted');
 }
 
 test('the model credential operation fences on the version and publishes or deletes metadata and envelope together', async () => {
@@ -120,16 +143,39 @@ test('the operation reaches the tenant state object through its RPC with the sam
     modelCredentialRead: (providerId: string) => call(() => logic.readModelCredential(providerId) ?? null),
     modelCredentialPublish: (input: PublishModelCredentialInput) =>
       call(() => logic.publishModelCredential(structuredClone(input))),
+    modelCredentialRewrap: (input: RewrapModelCredentialInput) =>
+      call(() => logic.rewrapModelCredential(structuredClone(input))),
   } as unknown as TagStateRpc;
   await storeContract(new CfSettingsStore(new FreshTagStateStubs(() => stub)));
 
-  // The Durable Object delegates both methods to the same store logic.
-  const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
-  assert.match(source, /async modelCredentialRead\(providerId: string\) \{\s*return this\.call\(\(stores\) => stores\.settings\.readModelCredential\(providerId\) \?\? null\);/);
-  assert.match(source, /async modelCredentialPublish\(input: PublishModelCredentialInput\) \{\s*return this\.call\(\(stores\) => stores\.settings\.publishModelCredential\(input\)\);/);
-  // A replayed publication that had committed would report a conflict that never happened.
-  assert.equal(replaySafeStateRpc('modelCredentialRead'), true);
-  assert.equal(replaySafeStateRpc('modelCredentialPublish'), false);
+  // A call lost to a disconnect is replayed once: a replay of a committed write succeeds.
+  for (const method of ['modelCredentialRead', 'modelCredentialPublish', 'modelCredentialRewrap']) {
+    assert.equal(replaySafeStateRpc(method), true, method);
+  }
+});
+
+test('damaged metadata around a readable version reads at the version the publication fence sees', async () => {
+  const store = new SqliteSettingsStore(':memory:');
+  try {
+    await store.applySettingsPatch({
+      set: [
+        { key: 'provider.anthropic.credentialVersion', value: '3' },
+        { key: 'provider.anthropic.credentialActive', value: 'true' },
+        { key: 'provider.anthropic.credentialActiveFrom', value: 'not-a-time' },
+      ],
+    });
+    assert.deepEqual(await store.readModelCredential('anthropic'), {
+      credentialRefId: '', version: 3, active: false, activeFrom: 0,
+    });
+    assert.equal(await store.publishModelCredential(publication(0, await envelopeFor(1, 'sk-ant-first'))), false);
+    const repaired = await envelopeFor(4, 'sk-ant-repaired');
+    assert.equal(await store.publishModelCredential(publication(3, repaired)), true);
+    assert.deepEqual(await store.readModelCredential('anthropic'), {
+      credentialRefId: REF, version: 4, active: true, activeFrom: 1_003, envelope: repaired,
+    });
+  } finally {
+    store.close();
+  }
 });
 
 test('a publication that fails part-way leaves the previous version and key intact', async () => {

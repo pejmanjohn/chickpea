@@ -2,7 +2,11 @@ import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { promisify } from '../state/async-facade.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { SlackSecretEnvelope } from '../slack/secret-envelope.ts';
-import { modelCredentialRevision, modelCredentialSettingKeys } from './model-credential-settings.ts';
+import {
+  modelCredentialRevision,
+  modelCredentialSettingKeys,
+  type ModelCredentialSettingKeys,
+} from './model-credential-settings.ts';
 
 export interface EncryptedCredentialRevision {
   key: string;
@@ -32,6 +36,11 @@ export interface EncryptedCredentialStore {
 
 /** One provider's current model credential: version metadata and, while active, its key's envelope. */
 export interface ModelCredentialRecord {
+  /**
+   * Empty when the stored metadata is damaged around a readable version: the
+   * record is then inactive at that version, which the publication fence
+   * also sees, and the next save repairs it under a new reference.
+   */
   credentialRefId: string;
   version: number;
   active: boolean;
@@ -55,6 +64,16 @@ export interface PublishModelCredentialInput {
   envelope?: SlackSecretEnvelope;
 }
 
+export interface RewrapModelCredentialInput {
+  providerId: string;
+  /** The version whose envelope was re-encrypted; it does not change. */
+  expectedVersion: number;
+  /** The encryption key ID the stored envelope had when it was read. */
+  expectedKeyId: string;
+  /** The same key, encrypted again for the same reference and version under the current key ID. */
+  envelope: SlackSecretEnvelope;
+}
+
 /**
  * The model credentials of an installation of a deployment serving many. Its
  * one write compares the version and publishes metadata and envelope (or
@@ -67,14 +86,23 @@ export interface ModelCredentialStore {
   /**
    * On a version match, publish everything at once and remove any plaintext
    * key. False, with nothing written, when another writer moved the version.
+   * Replaying a publication that already committed returns true.
    */
   publishModelCredential(input: PublishModelCredentialInput): Promise<boolean>;
+  /**
+   * Replace the current envelope with the same key encrypted under the
+   * keyring's current key, for encryption-key rotation. Fenced on the version
+   * and the envelope's key ID; the version and every other field stay. False
+   * when either moved. Replaying a rewrap that already committed returns true.
+   */
+  rewrapModelCredential(input: RewrapModelCredentialInput): Promise<boolean>;
 }
 
 export function isModelCredentialStore(store: SettingsStore): store is SettingsStore & ModelCredentialStore {
   const candidate = store as Partial<ModelCredentialStore>;
   return typeof candidate.readModelCredential === 'function' &&
-    typeof candidate.publishModelCredential === 'function';
+    typeof candidate.publishModelCredential === 'function' &&
+    typeof candidate.rewrapModelCredential === 'function';
 }
 
 /**
@@ -263,21 +291,7 @@ export class SettingsStoreLogic {
 
   readModelCredential(providerId: string): ModelCredentialRecord | undefined {
     const keys = modelCredentialSettingKeys(modelCredentialProviderId(providerId));
-    return this.db.transaction(() => {
-      const [credentialRefId, versionRaw, activeRaw, activeFromRaw] = this.getSettings([
-        keys.credentialRefId, keys.version, keys.active, keys.activeFrom,
-      ]);
-      const version = storedModelCredentialVersion(versionRaw);
-      const activeFrom = activeFromRaw !== undefined && /^\d+$/.test(activeFromRaw) ? Number(activeFromRaw) : NaN;
-      if (!credentialRefId || version === 0 || !Number.isSafeInteger(activeFrom)) return undefined;
-      const active = activeRaw === 'true';
-      const row = active ? this.getEncryptedCredentialRevision(keys.envelope) : undefined;
-      // Only the envelope published with this exact reference and version is this version's key.
-      const envelope = row && row.revision === modelCredentialRevision(version) && row.contextId === credentialRefId
-        ? row.envelope
-        : undefined;
-      return { credentialRefId, version, active, activeFrom, ...(envelope ? { envelope } : {}) };
-    });
+    return this.db.transaction(() => this.currentModelCredential(keys));
   }
 
   publishModelCredential(input: PublishModelCredentialInput): boolean {
@@ -290,7 +304,13 @@ export class SettingsStoreLogic {
     const contextId = credentialContextId(input.credentialRefId);
     if (input.envelope) validEnvelope(input.envelope);
     return this.db.transaction(() => {
-      if (storedModelCredentialVersion(this.getSetting(keys.version)) !== input.expectedVersion) return false;
+      const current = this.currentModelCredential(keys);
+      if ((current?.version ?? 0) !== input.expectedVersion) {
+        // A replayed call whose publication already committed finds exactly what it wrote.
+        return current !== undefined && current.version === input.version &&
+          current.credentialRefId === input.credentialRefId && current.activeFrom === input.activeFrom &&
+          current.active === Boolean(input.envelope) && sameEnvelope(current.envelope, input.envelope);
+      }
       this.setSetting(keys.credentialRefId, input.credentialRefId);
       this.setSetting(keys.version, String(input.version));
       this.setSetting(keys.active, String(Boolean(input.envelope)));
@@ -307,6 +327,44 @@ export class SettingsStoreLogic {
       }
       return true;
     });
+  }
+
+  rewrapModelCredential(input: RewrapModelCredentialInput): boolean {
+    const keys = modelCredentialSettingKeys(modelCredentialProviderId(input.providerId));
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1 ||
+        !ENCRYPTION_KEY_ID.test(input.expectedKeyId)) {
+      throw new Error('Model credential rewrap is invalid.');
+    }
+    validEnvelope(input.envelope);
+    return this.db.transaction(() => {
+      const current = this.currentModelCredential(keys);
+      if (!current?.envelope || current.version !== input.expectedVersion) return false;
+      if (sameEnvelope(current.envelope, input.envelope)) return true;
+      if (current.envelope.keyId !== input.expectedKeyId) return false;
+      const row = this.getEncryptedCredentialRevision(keys.envelope)!;
+      this.writeEncryptedCredentialRevision(keys.envelope, row.revision, row.contextId, input.envelope, row.createdAt);
+      return true;
+    });
+  }
+
+  /** Damaged metadata around a readable version reads as an inactive credential at that version. */
+  private currentModelCredential(keys: ModelCredentialSettingKeys): ModelCredentialRecord | undefined {
+    const [credentialRefId, versionRaw, activeRaw, activeFromRaw] = this.getSettings([
+      keys.credentialRefId, keys.version, keys.active, keys.activeFrom,
+    ]);
+    const version = storedModelCredentialVersion(versionRaw);
+    if (version === 0) return undefined;
+    const activeFrom = storedNonNegativeInteger(activeFromRaw);
+    if (!credentialRefId || !CREDENTIAL_CONTEXT_ID.test(credentialRefId) || activeFrom === undefined) {
+      return { credentialRefId: '', version, active: false, activeFrom: 0 };
+    }
+    const active = activeRaw === 'true';
+    const row = active ? this.getEncryptedCredentialRevision(keys.envelope) : undefined;
+    // Only the envelope published with this exact reference and version is this version's key.
+    const envelope = row && row.revision === modelCredentialRevision(version) && row.contextId === credentialRefId
+      ? row.envelope
+      : undefined;
+    return { credentialRefId, version, active, activeFrom, ...(envelope ? { envelope } : {}) };
   }
 
   private writeEncryptedCredentialRevision(
@@ -405,8 +463,11 @@ function credentialRevision(value: string): string {
   return value;
 }
 
+const CREDENTIAL_CONTEXT_ID = /^[A-Za-z0-9_-]{16,128}$/;
+const ENCRYPTION_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
 function credentialContextId(value: string): string {
-  if (!/^[A-Za-z0-9_-]{16,128}$/.test(value)) {
+  if (!CREDENTIAL_CONTEXT_ID.test(value)) {
     throw new Error('Encrypted credential context is invalid.');
   }
   return value;
@@ -419,14 +480,26 @@ function modelCredentialProviderId(value: string): string {
 
 /** 0 when the provider has no (or no readable) version, as its first publication expects. */
 function storedModelCredentialVersion(raw: string | undefined): number {
-  if (!raw || !/^\d+$/.test(raw)) return 0;
-  const version = Number(raw);
-  return Number.isSafeInteger(version) && version > 0 ? version : 0;
+  const version = storedNonNegativeInteger(raw);
+  return version !== undefined && version > 0 ? version : 0;
+}
+
+function storedNonNegativeInteger(raw: string | undefined): number | undefined {
+  if (!raw || !/^\d+$/.test(raw)) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function sameEnvelope(left: SlackSecretEnvelope | undefined, right: SlackSecretEnvelope | undefined): boolean {
+  return left === undefined || right === undefined
+    ? left === right
+    : left.version === right.version && left.algorithm === right.algorithm && left.keyId === right.keyId &&
+      left.nonce === right.nonce && left.ciphertext === right.ciphertext;
 }
 
 function validEnvelope(envelope: SlackSecretEnvelope): void {
   if (envelope.version !== 1 || envelope.algorithm !== 'AES-GCM-256' ||
-      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(envelope.keyId) ||
+      !ENCRYPTION_KEY_ID.test(envelope.keyId) ||
       !/^[A-Za-z0-9_-]{16}$/.test(envelope.nonce) ||
       !/^[A-Za-z0-9_-]{1,32768}$/.test(envelope.ciphertext)) {
     throw new Error('Model credential envelope is invalid.');
