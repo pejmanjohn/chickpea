@@ -148,21 +148,10 @@ export class ComposioConfigurationStateError extends Error {
 }
 
 /**
- * Where a deployment serving many installations (`CHICKPEA_TENANCY=installation`)
- * keeps its one Composio preparation.
- *
- * Standalone owns its Composio project, so its preparation record and setup
- * lease live in its own settings. A deployment serving many installations
- * shares one project, key and set of auth configs across every installation.
- * Its preparation record and lease must therefore be one platform record:
- * kept in each installation's store, every installation would prepare the
- * shared project on its own and no lease would serialize them. The host
- * supplies that store once, at module scope, and the deployment owns the key
- * (`COMPOSIO_API_KEY`); no installation setting can replace either.
- *
- * Installations only read the prepared record: the store they get is wrapped
- * read-only, and Admin's key, disable and prepare actions are refused. Only
- * the operator's `prepareComposioPlatform` writes it.
+ * Under installation tenancy, the store holding the one preparation record and
+ * setup lease of the Composio project every installation shares. The host
+ * installs it once at module scope; installations get it read-only, and only
+ * `prepareComposioPlatform` writes it.
  */
 export type ComposioPlatformSettingsSource =
   (env: PlatformEnv) => ComposioSettingsStore | undefined;
@@ -208,10 +197,10 @@ export function composioEnvironmentName(env: PlatformEnv | undefined): string | 
 function platformPreparationStore(
   options: ComposioConfigurationOptions,
 ): { settings: ComposioSettingsStore; writable: boolean } | undefined {
-  const supplied = options.settings as { [PLATFORM_OPERATOR]?: true } | undefined;
-  if (options.settings && supplied?.[PLATFORM_OPERATOR]) {
-    return { settings: options.settings, writable: true };
-  }
+  const supplied = options.settings as
+    | (ComposioSettingsStore & { [PLATFORM_OPERATOR]?: true })
+    | undefined;
+  if (supplied?.[PLATFORM_OPERATOR]) return { settings: supplied, writable: true };
   const shared = options.env ? platformSettingsSource?.(options.env) : undefined;
   if (!shared) return undefined;
   return {

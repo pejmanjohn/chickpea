@@ -178,23 +178,23 @@ export async function prepareComposioPlatform(options: {
   /** Accept a changed deployment key (see `ComposioPlatformReconciliationRequiredError`). */
   reconcile?: boolean;
 } & Omit<ComposioSetupOptions, 'env' | 'settings' | 'credentials'>): Promise<ComposioPlatformPreparation> {
-  if (deploymentTenancy(options.env) !== 'installation') {
+  const { reconcile, settings, ...setup } = options;
+  if (deploymentTenancy(setup.env) !== 'installation') {
     throw new ComposioPlatformConfigurationError(
       'Only a deployment serving many installations prepares a platform Composio project.',
     );
   }
-  const apiKey = envValue(options.env, 'COMPOSIO_API_KEY');
+  const apiKey = envValue(setup.env, 'COMPOSIO_API_KEY');
   if (!apiKey) throw new ComposioPlatformConfigurationError('COMPOSIO_API_KEY is not set.');
-  if (!composioEnvironmentName(options.env)) {
+  if (!composioEnvironmentName(setup.env)) {
     throw new ComposioPlatformConfigurationError(
       'CHICKPEA_COMPOSIO_ENVIRONMENT must be a lowercase name such as staging or production.',
     );
   }
-  const { reconcile, ...setup } = options;
-  const configuration = { ...setup, settings: composioPlatformOperatorSettings(options.settings) };
+  const configuration = { ...setup, settings: composioPlatformOperatorSettings(settings) };
   await validateComposioProjectKey(apiKey, {
-    ...(options.createClient ? { createClient: options.createClient } : {}),
-    ...(options.signal ? { signal: options.signal } : {}),
+    ...(setup.createClient ? { createClient: setup.createClient } : {}),
+    ...(setup.signal ? { signal: setup.signal } : {}),
   });
   const resolved = await resolveComposioConfiguration(configuration);
   let reconciled = false;

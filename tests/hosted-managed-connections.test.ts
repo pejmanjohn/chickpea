@@ -149,13 +149,14 @@ class FakeComposioProject {
     };
   }
 
-  /** The provider an installation builds from the platform configuration it resolved. */
+  /** The provider an installation builds from the platform configuration it resolves. */
   async providerContext(
     env: Record<string, unknown>,
     settings: SqliteSettingsStore,
   ): Promise<ManagedAuthorizationProviderContext> {
     const resolved = await resolveComposioConfiguration({ env, settings });
-    const context = await resolveManagedAuthorizationProviderContext({ settings, platformEnv: env });
+    const generation = resolved.generation;
+    const lineage = resolved.keyFingerprint ?? '0'.repeat(24);
     const provider = new ComposioManagedConnectionProvider({
       ...(resolved.apiKey ? { apiKey: resolved.apiKey } : {}),
       authConfigIds: resolved.authConfigIds,
@@ -164,10 +165,10 @@ class FakeComposioProject {
       revokeAccount: async ({ accountRef }) => { this.revoked.push(accountRef); },
     });
     return {
-      ...context,
-      providers: createManagedConnectionProviderRegistry([provider], {
-        composio: { generation: context.generation, lineage: context.lineage },
-      }),
+      providers: createManagedConnectionProviderRegistry([provider], { composio: { generation, lineage } }),
+      generation,
+      lineage,
+      platformEnv: env,
     };
   }
 }
@@ -327,6 +328,12 @@ test('two installations connect at once against one preparation without creating
     const a = await installation('inst_a');
     const b = await installation('inst_b');
     try {
+      // The Slack setup flow's resolver hands the flow the env that names principals.
+      assert.equal(
+        (await resolveManagedAuthorizationProviderContext({ settings: a.settings, platformEnv: a.env }))
+          .platformEnv,
+        a.env,
+      );
       const [flowA, flowB] = await Promise.all([connect(project, a), connect(project, b)]);
       const poll = (target: Installation, flow: Awaited<ReturnType<typeof connect>>) =>
         pollManagedAuthorizationFlow(flow.dependencies, {
@@ -478,8 +485,11 @@ test('reconnect and revoke reach only their owner and keep resource restrictions
       const contextB = await project.providerContext(b.env, b.settings);
       await assert.rejects(new ConnectionAccountService({
         config: b.config, settings: b.settings, managedProviders: contextB.providers,
-      }).revoke({ principal: principal(), connectionAccountId: account.id }));
-      await assert.rejects(connect(project, b, { connectionAccountId: account.id }));
+      }).revoke({ principal: principal(), connectionAccountId: account.id }), /Unknown connection account/);
+      await assert.rejects(
+        connect(project, b, { connectionAccountId: account.id }),
+        /Unknown connection account/,
+      );
 
       // Another member of A neither reconnects nor revokes the owner's account.
       const contextA = await project.providerContext(a.env, a.settings);

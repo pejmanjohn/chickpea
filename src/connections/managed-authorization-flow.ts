@@ -581,15 +581,10 @@ export async function cancelManagedAuthorizationFlow(
 }
 
 /**
- * The Composio user a Personal or Team authorization belongs to: the Chickpea
- * authorization principal, never a caller-supplied label, email or mutable
- * external identity. Standalone owns its Composio project, so the reference
- * names only the membership or organization, as it always has. A deployment
- * serving many installations shares one project, so the reference also names
- * the deployment's Composio environment and the installation; two
- * installations never share a remote principal, even with colliding local
- * IDs or a reinstalled workspace. There it is undefined when either is
- * missing, so nothing is authorized under an unqualified name.
+ * The Composio user a Personal or Team authorization belongs to. Under
+ * installation tenancy it also names the deployment's Composio environment and
+ * the installation, so installations sharing one project never share a remote
+ * principal; without either it is undefined. Standalone forms are unchanged.
  */
 export function managedPrincipalRef(
   principal: AuthPrincipal,
