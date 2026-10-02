@@ -761,8 +761,9 @@ export interface UpdateMembershipAuthorityInput extends UpdateMembershipInput {
   correlationId: string;
   /**
    * `host_operator`: the operator of a host serving many installations makes
-   * a verified, active member Owner when no active Owner remains to do it
-   * (identity/hosted-owner-assignment.ts). Accepted for nothing else.
+   * an active member Owner when no active Owner remains to do it, after the
+   * host verified the requester with Slack (identity/hosted-owner-assignment.ts).
+   * Accepted for nothing else.
    */
   authenticationSurface: 'better_auth' | 'slack_event' | 'host_operator';
   reasonCode: string;

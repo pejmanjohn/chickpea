@@ -2575,10 +2575,13 @@ export class IdentityStoreLogic {
   }
 
   /**
-   * An operator may only make an active member Owner, and only the member
-   * whose Slack account they verified out of band; never through an acting
-   * member, never for a member whose access is suspended, never with evidence
-   * missing.
+   * An operator may only make an active member Owner, only while no active
+   * Owner remains to do it (every Owner is suspended, as a Slack deactivation
+   * leaves a sole Owner), and only the member the named Slack account is
+   * bound to; never through an acting member, never for a member whose
+   * access is suspended, never with evidence missing. This checks the
+   * binding, not Slack: verifying the requester with Slack is the host's,
+   * before it calls.
    */
   private assertOperatorOwnerAssignment(
     input: UpdateMembershipAuthorityInput,
@@ -2592,16 +2595,27 @@ export class IdentityStoreLogic {
       throw identityError('identity_invalid', 'An operator assignment needs its verified Slack account and evidence.');
     }
     safeAudit(input.operatorEvidence);
+    const activeOwner = this.db.get(
+      `SELECT 1 AS present FROM identity_memberships membership
+       LEFT JOIN identity_membership_access_overlays overlay ON overlay.membership_id = membership.membership_id
+       WHERE membership.organization_id = ? AND membership.role = 'owner' AND membership.status = 'active'
+         AND (overlay.access_status IS NULL OR overlay.access_status != 'suspended')
+       LIMIT 1`,
+      current.organizationId,
+    );
+    if (activeOwner) {
+      throw identityError('active_owner_present', 'An active Owner can change team authority; an operator may not.');
+    }
     if (current.status !== 'active' || this.getMembershipAccessOverlay(current.id)?.accessStatus === 'suspended') {
       throw identityError('membership_missing', 'Only an active member can be made Owner.');
     }
-    const verified = this.db.get(
+    const bound = this.db.get(
       `SELECT 1 AS present FROM identity_slack_bindings
        WHERE membership_id = ? AND slack_team_id = ? AND slack_user_id = ?`,
       current.id, input.slackTeamId, input.slackUserId,
     );
-    if (!verified) {
-      throw identityError('external_identity_conflict', 'The verified Slack account is not this member\'s.');
+    if (!bound) {
+      throw identityError('external_identity_conflict', 'The named Slack account is not bound to this member.');
     }
   }
 

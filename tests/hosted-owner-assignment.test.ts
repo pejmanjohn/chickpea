@@ -24,7 +24,7 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 const TEAM = 'T_OWNER_LEFT';
 const AUTH_SECRET = randomBytes(32).toString('base64url');
 
-async function installation(t: TestContext) {
+async function installation(t: TestContext, options: { ownerLeftSlack?: boolean } = {}) {
   const db = openStateDb(':memory:');
   const logic = new IdentityStoreLogic(db, {
     installation: () => ({ organizationId: 'org_oss', installationId: 'inst_owner_left' }),
@@ -39,10 +39,12 @@ async function installation(t: TestContext) {
   const other = (await identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'U_OTHER', displayName: 'Other' }))
     .resolution;
   // Slack's user_change: the sole Owner keeps the role, with access suspended.
-  await identity.updateMembershipAuthority({
-    membershipId: owner.membership.id, status: 'suspended', authenticationSurface: 'slack_event',
-    correlationId: 'slack_user_change', reasonCode: 'slack_user_deactivated',
-  });
+  if (options.ownerLeftSlack ?? true) {
+    await identity.updateMembershipAuthority({
+      membershipId: owner.membership.id, status: 'suspended', authenticationSurface: 'slack_event',
+      correlationId: 'slack_user_change', reasonCode: 'slack_user_deactivated',
+    });
+  }
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as PlatformEnv, { installationId: 'inst_owner_left' });
   return { db, identity, owner, member, other, env };
 }
@@ -117,7 +119,33 @@ test('an operator makes a verified, active member Owner, audited with their evid
   assert.equal((await identity.listAuditEvents()).filter((event) => event.eventType === 'identity.owner_assigned_by_operator').length, 1);
 });
 
-test('an operator cannot make Owner a member whose Slack account they did not verify, nor an inactive one', async (t) => {
+test('an operator assigns nobody while an active Owner remains, the one they assigned included', async (t) => {
+  const assignments = async (identity: IdentityStore) => (await identity.listAuditEvents())
+    .filter((event) => event.eventType === 'identity.owner_assigned_by_operator').length;
+
+  // The Owner never left Slack: they act for the team themselves.
+  const live = await installation(t, { ownerLeftSlack: false });
+  await assert.rejects(
+    assignInstallationOwnerByOperator(live.env, request(live.member.membership.id), { identity: live.identity }),
+    identityError('active_owner_present'),
+  );
+  assert.equal((await live.identity.getMembership(live.member.membership.id))?.role, 'member');
+  assert.equal(await assignments(live.identity), 0);
+
+  // Once an operator made one member Owner, that Owner acts; a later job assigns nobody.
+  const { identity, member, other, env } = await installation(t);
+  assert.equal((await assignInstallationOwnerByOperator(env, request(member.membership.id), { identity })).changed, true);
+  await assert.rejects(
+    assignInstallationOwnerByOperator(env, request(other.membership.id, {
+      slackUserId: 'U_OTHER', correlationId: 'opjob_456', idempotencyKey: 'operator:assign_owner:opjob_456',
+    }), { identity }),
+    identityError('active_owner_present'),
+  );
+  assert.equal((await identity.getMembership(other.membership.id))?.role, 'member');
+  assert.equal(await assignments(identity), 1);
+});
+
+test('an operator cannot make Owner a member the named Slack account is not bound to, nor an inactive one', async (t) => {
   const { identity, member, other, env } = await installation(t);
   await assert.rejects(
     assignInstallationOwnerByOperator(env, request(member.membership.id, { slackUserId: 'U_OTHER' }), { identity }),
