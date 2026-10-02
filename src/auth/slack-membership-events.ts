@@ -8,6 +8,8 @@ const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 interface ApplySlackUserChangeInput {
   identity: IdentityStore;
   betterAuth?: BetterAuthAccessRevoker;
+  /** The slot the delivery's bot lives in (slackInstallationCredentialId); the standalone slot by default. */
+  credentialIdentityId?: string;
   credentialRevision: string;
   payloadTeamId: string;
   apiAppId: string;
@@ -41,7 +43,7 @@ export async function applySlackUserChange(
     return { outcome: 'ignored' };
   }
   const active = await input.identity.getActiveSlackCredentialRevision(
-    WORKSPACE_SLACK_INSTALLATION_ID,
+    input.credentialIdentityId ?? WORKSPACE_SLACK_INSTALLATION_ID,
   );
   if (!active || active.status !== 'active' || active.purpose !== 'connected_credentials' ||
       active.revision !== input.credentialRevision || active.appId !== input.apiAppId ||

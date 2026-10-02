@@ -510,6 +510,7 @@ import {
   SlackAppCreationService,
 } from '../slack/app-creation.ts';
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
+import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
 import {
   clearSlackInstallationCredentials,
   resolveSlackInstallationCredentials,
@@ -2286,7 +2287,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     const credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(c.env as PlatformEnv | undefined),
       c.env as PlatformEnv | undefined,
       slackCredentialResolutionDependencies(c) ?? settings(c),
     );
@@ -2351,7 +2352,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!credentials) return { teamId };
     try {
       const resolved = await resolveSlackInstallationCredentials(
-        WORKSPACE_SLACK_INSTALLATION_ID,
+        slackInstallationCredentialId(c.env as PlatformEnv | undefined),
         c.env as PlatformEnv | undefined,
         credentials,
       );

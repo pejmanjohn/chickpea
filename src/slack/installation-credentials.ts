@@ -14,6 +14,7 @@ import type {
   StageSlackCredentialRevisionInput,
 } from '../identity/types.ts';
 import { generateCredentialKeyring, loadCredentialKeyring } from './credential-keyring.ts';
+import { assertSlackInstallationCredentialId } from './hosted-slack-app.ts';
 import {
   decryptSlackSecretEnvelope,
   encryptSlackSecretEnvelope,
@@ -167,7 +168,9 @@ let cacheByDeployment = new Map<string, Map<string, CachedCredentialBundle>>();
 let deploymentIdByState = new WeakMap<IdentityStore, string>();
 const testCompatibilityBySettings = new WeakMap<SettingsStore, SlackCredentialDependencies>();
 const MAX_CACHED_IDENTITIES = 64;
-const MAX_CACHED_DEPLOYMENTS = 8;
+// One "deployment" per store: a standalone deployment has one, and a host
+// serving many installations has one per installation it recently served.
+const MAX_CACHED_DEPLOYMENTS = 64;
 
 export async function stageSlackCredentialBundle(
   dependencies: SlackCredentialDependencies,
@@ -257,12 +260,15 @@ export async function promoteSlackCredentialBundle(
  * Resolve one active encrypted revision. Environment credential variables are
  * never an execution source; setup must import a complete bundle into this
  * encrypted store before Slack traffic or control-plane auth can use it.
+ * Asking for the other deployment mode's slot throws (see
+ * slackInstallationCredentialId).
  */
 export async function resolveSlackInstallationCredentials(
   identityId: string,
   env?: PlatformEnv,
   explicit?: SettingsStore | SlackCredentialResolutionDependencies,
 ): Promise<ResolvedSlackInstallationCredentials> {
+  assertSlackInstallationCredentialId(identityId, isStateDependencies(explicit) ? explicit.env ?? env : env);
   const state = isStateDependencies(explicit)
     ? explicit.state
     : explicit ? compatibilityDependencies(explicit).state : getIdentityStore(env);
@@ -324,6 +330,7 @@ export async function readActiveSlackCredentialMetadata(
   env?: PlatformEnv,
   explicit?: SettingsStore | SlackCredentialResolutionDependencies,
 ): Promise<ActiveSlackCredentialMetadata | undefined> {
+  assertSlackInstallationCredentialId(identityId, isStateDependencies(explicit) ? explicit.env ?? env : env);
   const state = isStateDependencies(explicit)
     ? explicit.state
     : explicit ? compatibilityDependencies(explicit).state : getIdentityStore(env);

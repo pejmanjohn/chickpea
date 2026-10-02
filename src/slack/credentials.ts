@@ -13,7 +13,7 @@ import {
   resolveSlackInstallationCredentials,
   type SlackCredentialResolutionDependencies,
 } from './installation-credentials.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
+import { slackInstallationCredentialId } from './hosted-slack-app.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
 import { nonEmpty } from '../security/content-validation.ts';
 
@@ -92,7 +92,7 @@ export async function resolveSlackCredentials(
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<ResolvedSlackCredentials> {
   const resolved = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
+    slackInstallationCredentialId(credentialDependencies?.env ?? env),
     env,
     credentialDependencies ?? store,
   );
@@ -110,7 +110,7 @@ export async function describeSlackCredentialSources(
   credentialDependencies?: SlackCredentialResolutionDependencies,
 ): Promise<SlackCredentialSources> {
   const resolved = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
+    slackInstallationCredentialId(credentialDependencies?.env ?? env),
     env,
     credentialDependencies ?? store,
   );
@@ -148,10 +148,11 @@ export function invalidateStoredSlackCredentials(): void {
 export async function readSlackConnectionRevision(
   store: SettingsStore,
   credentialDependencies?: SlackCredentialResolutionDependencies,
+  env?: PlatformEnv,
 ): Promise<SlackConnectionRevision> {
   return (await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
-    undefined,
+    slackInstallationCredentialId(credentialDependencies?.env ?? env),
+    env,
     credentialDependencies ?? store,
   )).connectionRevision;
 }
@@ -985,7 +986,7 @@ export async function readStoredSlackTeamInfo(
   const settings = store ?? getSettingsStore(env);
   const [active, teamName] = await Promise.all([
     readActiveSlackCredentialMetadata(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(credentialDependencies?.env ?? env),
       env,
       credentialDependencies ?? store,
     ),
