@@ -1,5 +1,5 @@
 import { nonEmpty } from '../security/content-validation.ts';
-import { createSecretCleanupKeys, encodeEnvSegment } from './secret-keys.ts';
+import { createSecretCleanupKeys, deploymentSecretOverride, encodeEnvSegment } from './secret-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 
@@ -11,8 +11,9 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
  * `mcp.<agentId>.<connectionId>.bearer` /
  * `mcp.<agentId>.<connectionId>.header.<name>` and are resolved live at turn
  * time. The agent scope is required because connection ids are user-chosen,
- * profile-local slugs. Environment variables use the same two-part scope and
- * always win over stored values, exactly like provider API keys.
+ * profile-local slugs. Environment variables use the same two-part scope and,
+ * on standalone, win over stored values, exactly like provider API keys; a
+ * deployment serving many installations reads only the stored values.
  *
  * No cache here: unlike provider keys, connection secrets are resolved
  * per-use (per test / per turn), so a stale cache would be a footgun.
@@ -123,7 +124,7 @@ export async function resolveMcpSecrets(
 ): Promise<ResolvedMcpSecrets> {
   const settings = store ?? getSettingsStore(env);
   const [bearer, headers] = await Promise.all([
-    resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings),
+    resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings, env),
     resolveMcpHeaders(ref, headerNames, env, settings),
   ]);
   return { ...(bearer !== undefined ? { bearer } : {}), headers };
@@ -137,7 +138,7 @@ export async function resolveMcpHeaders(
 ): Promise<Record<string, string>> {
   const settings = store ?? getSettingsStore(env);
   const headerValues = await Promise.all(headerNames.map((name) =>
-    resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings)
+    resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings, env)
   ));
   const headers: Record<string, string> = {};
   for (const [index, name] of headerNames.entries()) {
@@ -157,9 +158,9 @@ export async function describeMcpSecretSources(
 ): Promise<McpSecretSources> {
   const settings = store ?? getSettingsStore(env);
   const [bearer, ...headerSources] = await Promise.all([
-    sourceOf(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings),
+    sourceOf(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings, env),
     ...headerNames.map((name) =>
-      sourceOf(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings),
+      sourceOf(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings, env),
     ),
   ]);
   const headers: Record<string, McpSecretSource> = {};
@@ -224,8 +225,9 @@ async function resolveOne(
   envVar: string,
   settingKey: string,
   settings: SettingsStore,
+  env: PlatformEnv | undefined,
 ): Promise<string | undefined> {
-  const fromEnv = nonEmpty(process.env[envVar]);
+  const fromEnv = deploymentSecretOverride(envVar, env);
   if (fromEnv) {
     return fromEnv;
   }
@@ -236,8 +238,9 @@ async function sourceOf(
   envVar: string,
   settingKey: string,
   settings: SettingsStore,
+  env: PlatformEnv | undefined,
 ): Promise<McpSecretSource> {
-  if (nonEmpty(process.env[envVar])) {
+  if (deploymentSecretOverride(envVar, env)) {
     return 'env';
   }
   return nonEmpty(await settings.getSetting(settingKey)) ? 'stored' : 'missing';
