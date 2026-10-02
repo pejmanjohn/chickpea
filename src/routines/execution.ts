@@ -28,7 +28,7 @@ import {
   type FrozenRuntimeModelRoute,
   type ProviderAuthRoute,
 } from '../config/runtime-model.ts';
-import { installationRefusesWork } from '../config/installation-admission.ts';
+import { installationRefusesWork, isInstallationRefusal } from '../config/installation-admission.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import {
   imageCapabilityForResolution,
@@ -188,12 +188,14 @@ export async function executeRoutineOccurrence(
     .find((candidate) => candidate.attempt === input.attempt);
   if (!admission) return 'superseded';
   // A suspended or ended installation starts nothing and is delivered
-  // nothing. An occurrence not yet dispatched is skipped, never replayed on
-  // resume; a dispatched one waits, and retention fails it once past its
-  // deadline, so its result is never delivered late.
+  // nothing: the occurrence is skipped, with no notice, no pause and no
+  // failure counted, and never replayed on resume. An attempt already
+  // dispatched is stopped first; its result, if any, is never delivered.
   if (await installationRefusesWork(input.env)) {
-    if (current.status !== 'admitting') return 'resumable';
-    await skipRefusedRun(input.store, current.id, now());
+    if (admission.flueAgentReceipt && !current.flueAgentSettlement) {
+      await abortRefusedAttempt(current, admission.flueAgentReceipt, dependencies);
+    }
+    await skipRun(input.store, current.id, now(), REFUSED_SKIP);
     return 'completed';
   }
 
@@ -243,7 +245,11 @@ export async function executeRoutineOccurrence(
       current.status === 'admitting' &&
       routine.destination.kind === 'channel'
     ) {
-      await skipUnresolvedRun(input.store, current.id, failure.publicError, now());
+      await skipRun(input.store, current.id, now(), {
+        failureClass: 'assignment_missing',
+        publicError: failure.publicError,
+        skipReason: 'unresolved_assignment',
+      });
     } else {
       await failUnsettledRun(
         input.store,
@@ -290,6 +296,7 @@ export async function executeRoutineOccurrence(
   let receipt = prepared.receipt;
   const toolCalls = new ToolCallCounter('submit_routine_result');
   let modelSettled = false;
+  let refused = false;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
   // Only model execution and result validation belong to this catch. Once a
@@ -382,7 +389,9 @@ export async function executeRoutineOccurrence(
     };
   } catch (error) {
     const toolCallCount = toolCalls.count;
-    const failure = runtimeFailure(error, toolCallCount > 0);
+    // A model request the installation's admission refused ended the attempt.
+    refused = isInstallationRefusal(error);
+    const failure = refused ? REFUSED_SKIP : runtimeFailure(error, toolCallCount > 0);
     settlement = {
       schemaVersion: 1,
       outcome: error instanceof AgentRunError && error.outcome === 'aborted' ? 'aborted' : 'failed',
@@ -407,8 +416,16 @@ export async function executeRoutineOccurrence(
       occurrenceId: prepared.run.id,
       settlement,
     });
-    // Refused while the read ran: the settlement is kept, nothing is posted.
-    if (await installationRefusesWork(input.env)) return 'resumable';
+    // Refused while the attempt ran: the settlement is kept, the occurrence
+    // is skipped, and nothing is posted or counted against the routine.
+    if (refused || await installationRefusesWork(input.env)) {
+      await prepared.workLifecycle?.settleWithoutDelivery({
+        terminalDisposition: 'skipped',
+        safeFailureCode: 'installation_not_admitted',
+      });
+      await skipRun(input.store, prepared.run.id, now(), REFUSED_SKIP);
+      return 'completed';
+    }
     return await finalizeSettlement(prepared, settlement, now());
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
@@ -1241,39 +1258,41 @@ async function failUnsettledRun(
   });
 }
 
-async function skipUnresolvedRun(
+/** An occurrence the installation's admission refused: skipped, with no notice and no failure counted. */
+const REFUSED_SKIP = {
+  failureClass: 'policy_denied',
+  publicError: 'Routine admission was refused before execution began.',
+  skipReason: 'installation_not_admitted',
+} as const;
+
+/** Skip an occurrence that has not settled; one already terminal is left as it is. */
+async function skipRun(
   store: RoutineStore,
   occurrenceId: string,
-  publicError: string,
   at: number,
+  reason: { failureClass: RoutineFailureClass; publicError: string; skipReason: string },
 ): Promise<void> {
   const run = await store.getRun(occurrenceId);
-  if (!run || run.status !== 'admitting') return;
-  await store.transitionRun({
-    occurrenceId: run.id,
-    from: ['admitting'],
-    to: 'skipped',
-    at,
-    failureClass: 'assignment_missing',
-    publicError,
-    skipReason: 'unresolved_assignment',
-  });
+  if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;
+  await store.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });
 }
 
-async function skipRefusedRun(
-  store: RoutineStore,
-  occurrenceId: string,
-  at: number,
+/** Stop a dispatched attempt of a refused installation; its next model request is refused regardless. */
+async function abortRefusedAttempt(
+  run: RoutineRun,
+  receipt: RoutineAgentReceiptV1,
+  dependencies: RoutineExecutionDependencies,
 ): Promise<void> {
-  await store.transitionRun({
-    occurrenceId,
-    from: ['admitting'],
-    to: 'skipped',
-    at,
-    failureClass: 'policy_denied',
-    publicError: 'Routine admission was refused before execution began.',
-    skipReason: 'installation_not_admitted',
-  });
+  if (!run.flueAgentEnvelope) return;
+  try {
+    const handle = dependencies.handle ?? init(
+      (await import('../agents/routine-execution.ts')).ChickpeaRoutineExecution,
+      { id: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) },
+    );
+    await handle.abort();
+  } catch {
+    console.warn('[chickpea] a refused routine attempt could not be stopped; its next model request is refused');
+  }
 }
 
 async function deliverFailureNoticeBestEffort(

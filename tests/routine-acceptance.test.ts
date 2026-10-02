@@ -22,6 +22,7 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { closeNodeStateStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { drainRoutinePauseNotices } from '../src/routines/delivery.ts';
 import { ROUTINE_LIMITS } from '../src/routines/limits.ts';
 import { RoutineAdmissionController } from '../src/routines/admission.ts';
 import { hashRoutineValue, routineDestinationBindingDigest } from '../src/routines/ids.ts';
@@ -496,7 +497,25 @@ test('a refused installation\'s due slot is skipped before dispatch, and resume 
   }
 });
 
-test('a result that settles while its installation is refused is kept undelivered, and past its deadline it fails without delivery', async (context) => {
+/** What a resumed installation would see: its routine's state, failure count and pending notices. */
+async function afterResume(store: SqliteRoutineStore, routineId: string, env: Record<string, unknown>) {
+  const posts: unknown[] = [];
+  await drainRoutinePauseNotices({ store, env }, {
+    resolveAccess: async () => ({
+      config, accessHash: 'a'.repeat(64), botUserId: 'UBOT',
+      client: { chat: { postMessage: async (input: unknown) => { posts.push(input); return { ok: true, ts: '1.2' }; } } } as never,
+    }),
+  });
+  const routine = (await store.getRoutine(routineId))!;
+  return {
+    state: routine.state, consecutiveFailures: routine.consecutiveFailures,
+    pendingNotices: (await store.listPendingRecoveryDeliveries()).length, posts: posts.length,
+  };
+}
+
+const UNHARMED = { state: 'active', consecutiveFailures: 0, pendingNotices: 0, posts: 0 };
+
+test('a result that settles while its installation is refused is skipped: nothing posted, paused or counted, and nothing on resume', async (context) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-result-'));
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   let now = new Date().setUTCMinutes(59, 0, 0);
@@ -532,27 +551,70 @@ test('a result that settles while its installation is refused is kept undelivere
     }));
 
     now += 60_000;
-    const first = await scheduler().heartbeat(now, 'heartbeat-first');
-    assert.equal(first.admissions.deferred, 1);
-    const [settled] = await store.listRuns({ routineId: routine.id });
-    assert.equal(settled?.status, 'running');
-    assert.equal(settled?.flueAgentSettlement?.outcome, 'completed', 'the settlement is kept');
+    await scheduler().heartbeat(now, 'heartbeat-first');
+    const [skipped] = await store.listRuns({ routineId: routine.id });
+    assert.equal(skipped?.status, 'skipped');
+    assert.equal(skipped?.skipReason, 'installation_not_admitted');
+    assert.equal(skipped?.flueAgentSettlement?.outcome, 'completed', 'the settlement is kept');
     assert.deepEqual(posts, []);
 
-    // While refused, a later visit still delivers nothing.
-    now += 60_000;
-    await scheduler().heartbeat(now, 'heartbeat-refused');
-    assert.deepEqual(posts, []);
-
-    // Resumed only after its deadline: retention fails it before admission
-    // can reattach, so the stale result is never delivered late.
+    // Resumed well after the occurrence's deadline: nothing was held for retention to fail.
     registry.status = 'admitted';
-    now = settled!.deadlineAt + ROUTINE_LIMITS.deliveryLeaseMs + 1;
+    now = skipped!.deadlineAt + ROUTINE_LIMITS.deliveryLeaseMs + INSTALLATION_ADMISSION_TTL_MS;
     await scheduler().heartbeat(now, 'heartbeat-resumed');
-    const reconciled = await store.getRun(settled!.id);
-    assert.equal(reconciled?.status, 'failed');
-    assert.equal(reconciled?.failureClass, 'unknown_external_outcome');
+    assert.equal((await store.getRun(skipped!.id))?.status, 'skipped');
+    assert.deepEqual(await afterResume(store, routine.id, env), UNHARMED);
     assert.deepEqual(posts, []);
+  } finally {
+    store.close();
+  }
+});
+
+test('a dispatched occurrence of a refused installation is stopped and skipped, and a model request refused mid-run is skipped, not failed', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-refused-dispatched-'));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date().setUTCMinutes(59, 0, 0);
+  const store = new SqliteRoutineStore(join(directory, 'state.sqlite'), () => now);
+  const { env, registry } = hostedRoutineInstallation(context, () => now);
+  try {
+    const routine = await hourlyChannelRoutine(store, () => now, 'refused-dispatched:seed');
+    let aborts = 0;
+    const agent = handle(new DOMException('reader restarted', 'AbortError'));
+    agent.abort = async () => { aborts += 1; };
+    const scheduler = (attemptHandle: AgentInstanceHandle) => new RoutineScheduler(store, new RoutineAdmissionController(store, {
+      execute: (run, attempt) => executeRoutineOccurrence({
+        env, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, { ...executionDependencies(() => now), handle: attemptHandle }),
+    }));
+
+    // Dispatched, then the read is interrupted: the occurrence is running with a receipt.
+    now += 60_000;
+    await scheduler(agent).heartbeat(now, 'heartbeat-dispatched');
+    const [running] = await store.listRuns({ routineId: routine.id });
+    assert.equal(running?.status, 'running');
+    // Suspended before the next visit: the attempt is stopped and the occurrence skipped.
+    registry.status = 'refused';
+    now += INSTALLATION_ADMISSION_TTL_MS;
+    await scheduler(agent).heartbeat(now, 'heartbeat-refused');
+    assert.equal(aborts, 1);
+    const stopped = (await store.getRun(running!.id))!;
+    assert.equal(stopped.status, 'skipped');
+    assert.equal(stopped.skipReason, 'installation_not_admitted');
+
+    // The next slot: the agent's own model request is refused before the
+    // executor's cached answer changes, and the read fails with that refusal.
+    registry.status = 'admitted';
+    now += 60 * 60_000;
+    const refusedMidRun = handle({
+      name: 'AgentRunError', message: 'agent submission failed',
+      cause: { type: 'operation_failed', message: 'This installation is not admitted to start work (installation_not_admitted).' },
+    });
+    await scheduler(refusedMidRun).heartbeat(now, 'heartbeat-refused-mid-run');
+    const midRun = (await store.listRuns({ routineId: routine.id })).find((run) => run.id !== running!.id)!;
+    assert.equal(midRun.status, 'skipped');
+    assert.equal(midRun.failureClass, 'policy_denied');
+    assert.equal(midRun.flueAgentSettlement?.outcome, 'failed');
+    assert.deepEqual(await afterResume(store, routine.id, env), UNHARMED, 'no failure notice, pause or failure count');
   } finally {
     store.close();
   }

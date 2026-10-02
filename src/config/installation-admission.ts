@@ -134,6 +134,24 @@ export async function installationRefusesWork(env: Record<string, unknown> | und
   return await installationAdmission(scope.installationId) !== 'admitted';
 }
 
+/**
+ * Whether an error is a refusal by the admission check, however it travelled:
+ * thrown directly, or carried in the text of a Flue submission's failure.
+ */
+export function isInstallationRefusal(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = error, depth = 0; current && depth < 5 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (current instanceof InstallationNotAdmittedError) return true;
+    const record = current as { message?: unknown; type?: unknown; cause?: unknown };
+    if ([record.message, record.type].some((text) => typeof text === 'string' && text.includes('installation_not_admitted'))) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
+
 async function readAdmission(
   current: InstallationAdmissionCheck,
   installationId: string,
