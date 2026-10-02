@@ -116,6 +116,11 @@ test('operator skill stays discoverable and separate from contract assertions', 
   const readme = read('README.md');
   assert.match(entrypoint, /^---\nname: chickpea-live-verification\n/);
   assert.match(entrypoint, /\.\.\/\.\.\/\.\.\/qa\/live\/operator\/SKILL\.md/);
+  // This repository's entrypoint selects the standalone profile; a hosted consumer names its own.
+  assert.match(entrypoint, /selects the `standalone` profile/);
+  assert.match(entrypoint, /\.\.\/\.\.\/\.\.\/qa\/live\/operator\/profiles\/standalone\.md/);
+  assert.match(read('qa/live/operator/profiles/standalone.md'), /^# Standalone profile\n/);
+  assert.match(skill, /^## Profile$/m);
   assert.match(skill, /^---\nname: chickpea-live-verification\n/);
   assert.doesNotMatch(skill, /\bLC-\d{2}\b|\b(?:xox[baprs]-|sk-|gh[pousr]_)[A-Za-z0-9_-]{12,}/);
   assert.match(agents, /\$chickpea-live-verification/);

@@ -6,6 +6,9 @@ description: Verify Chickpea changes, core regressions, or release readiness usi
 # Chickpea live verification
 
 Read `../../../qa/live/operator/SKILL.md` completely and follow it as the canonical workflow for this repository.
+This entrypoint selects the `standalone` profile: read
+`../../../qa/live/operator/profiles/standalone.md` after it. The project root is
+the repository that contains this file.
 
 Default to its `changed` mode. A verification invocation authorizes the selected
 mode's declared QA actions and exact cleanup, including test OAuth and product

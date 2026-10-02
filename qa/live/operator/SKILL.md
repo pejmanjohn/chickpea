@@ -12,60 +12,31 @@ mode's checks. A request to review or edit the skill alone does not start a live
 Codex and Claude use the same workflow and commands. Read [hosts.md](hosts.md)
 once for browser ownership, evidence access, and the host's available tools.
 
-## Normal path card
+## Profile
 
-The commands of an ordinary deployed-lane run, in order. The sections below say
-why each step exists and what to do when one refuses.
+This file is the workflow every Chickpea verification shares. The repository's
+skill entrypoint names a profile and the project root; read that profile
+completely after this file. The profile owns the targets, claims, kickoff,
+deployment, candidate admission, fixtures, readback tools and declared QA
+actions for its targets. Everything else here applies to every profile.
 
-1. `npm run verify:live:kickoff`, then fix its blockers. Ask once, in one
-   message, for everything it lists under "Needs a person".
-2. `npm run verify:regression -- --plan` to choose the mode and areas.
-3. `npm run verify:live:record -- template ... --output <run>/spec.json`, plus
-   `case-add` for journeys the template lacks.
-4. `npm run env -- wait-claim <lane> --timeout-ms 0 --poll-ms 1000 --worktree <abs-worktree>`.
-5. The deploy command the doctor printed for that lane, for example
-   `CHICKPEA_DEPLOY_TARGET=<lane> npm run verify:host -- --wait-ms 300000 npm run deploy`.
-   It writes the telemetry receipt.
-6. Resolve the spec's contexts and capabilities against the deployed lane, then
-   `record init` and `record preflight`.
-7. `npm run verify:regression -- --record <run>/run.json` for the offline
-   checks; it takes the host reservation itself.
-8. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
-   background command, when the run needs Worker logs.
-9. For each case: `record begin`, act once through the lane browser, `record
-   resource` for every run-owned ID and fixture before-value, save the
-   readbacks, then `record finish`. Use `record blocked` for a case that
-   cannot run.
-10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
-    `record refresh`.
-11. Clean every run-owned resource and record `cleanup` with its readback.
-12. `record verdict` for each failed, blocked, ambiguous or stale case, `record report --output
-    <run>/report.md`, then `npm run env -- release <lane>`.
+- `standalone` ([profiles/standalone.md](profiles/standalone.md)) verifies this
+  repository on its QA lanes and borrowed fresh installs. It is valid only when
+  the project root is a checkout of this repository.
+- `hosted` verifies the private hosted edition. Its entrypoint and profile live
+  in that repository, which reads this workflow from its pinned copy of this one.
+
+Stop before claiming anything when the entrypoint names no profile, the named
+profile's file is missing, the project root does not belong to the profile, or
+more than one entrypoint for this skill is visible from the project root. Never
+choose a profile from a URL, credential, diff or target name, and never fall back
+to another profile's targets.
 
 ## Invocation authorizes the test
 
 An instruction to run this skill authorizes the selected mode's declared actions
 on identified QA resources, including their exact teardown. Do not ask again at
-each step. For established Local, Amber, Cobalt, or Violet test environments this includes:
-
-- Claiming an available lane, starting its existing local Worker, and guarded
-  deployment of the candidate to the explicitly selected QA Worker.
-- Installing the repository's lockfile dependencies and using its existing
-  verification tools with the documented Node version.
-- Sending synthetic Slack messages to the designated test channels and DMs;
-  creating, editing, archiving, and cleaning run-owned Agents, skills, memory,
-  schedules, and grants; restoring exact recorded fixture values.
-- Reviewing and approving the test's frozen Chickpea proposal. A product
-  `approve` message or confirmation dialog is an action for the verifier to
-  perform as the test actor, not another request for the operator's permission.
-- Installing or reconnecting the declared test integration, completing OAuth
-  consent with an already authenticated registered test account, accepting the
-  declared grant, and disconnecting its exact run-owned account during cleanup.
-  An account's use of a personal email does not by itself require another approval.
-- Reading or writing declared synthetic provider fixtures, recording their
-  before-values, and restoring them; using the configured test model for bounded
-  journeys and the selected real-model regression cases.
-- Dismissing ordinary native confirmation dialogs that implement those actions.
+each step. The selected profile lists those actions for its targets.
 
 Inspect the real target/account and requested grant before consent. A known QA
 action does not become a new authorization request because a UI labels it
@@ -75,15 +46,8 @@ declared QA action. Scope restrictions from the current user request still apply
 
 Production, the shared gateway/app configuration, purchases, workspace deletion,
 unrelated accounts/data, global upstream grant revocation, source merges, and
-release publication are outside this authorization. A fresh Slack installation
-may borrow any eligible free registered lane using the [installation reservation](environments.md#borrow-a-lane-for-a-fresh-install).
-Select it with `wait-claim any`; do not ask the user to permanently designate an
-installation workspace. Choose `node` for a local installation, including macOS,
-or `cloudflare` for a temporary Worker/D1 installation. Node uses newly allocated
-local state and the guarded local launcher; it requires no Cloudflare deployment.
-Preserve the standing installation and hold the claim through verified restoration.
-Missing credentials, occupied lanes and unresolved restoration remain blockers.
-Do not provision paid infrastructure outside the declared QA resources.
+release publication are outside this authorization. Do not provision paid
+infrastructure outside the declared QA resources.
 
 Only request human input when a required fact or capability is actually missing:
 an unregistered account/target, a broader grant, unavailable credentials, MFA,
@@ -130,11 +94,7 @@ widen the authorization above.
   credential-backed cases, which run on the lane's fixtures Agent
   ([fixtures.md](fixtures.md)). Keep "remember" or "save" wording out of
   prompts unless the case tests memory.
-- Test on the lane's configured model only, unless the request names others.
-- Advance a lane's schema with `npm run env -- schema-advance <lane>` whenever
-  the candidate needs it, merged or not. Prefer a lane already at the
-  candidate's generation, because an advance is permanent, and name it in the
-  run report.
+- Test on the target's configured model only, unless the request names others.
 
 ## Node baseline
 
@@ -161,31 +121,12 @@ the permission classifier instead of its allow rule (see
 
 ## Kickoff preflight
 
-Before claiming a lane, gather every human-dependent prerequisite in one pass,
+Before claiming a target, gather every human-dependent prerequisite in one pass,
 so a run does not stall mid-journey while the maintainer is away:
 
-1. Run `npm run verify:live:kickoff` (add `--lane <alias>` to check one). In
-   one pass that changes nothing but starting any stopped lane browser, it
-   checks host Node and `node_modules`, the host
-   reservation, source freshness against remote main, and for each lane its
-   health, claim, deploy profile and exact deploy command, schema generation
-   against the candidate, models, Worker secrets, actors, telemetry receipt,
-   and whether its browser daemon is signed in to Admin and Slack. It ends
-   with what needs a person and the ready lanes. Fix its blockers before
-   claiming. Then pick the lane by capability
-   ([choose a lane by capability](environments.md#choose-a-lane-by-capability)):
-   registered connector fixtures and the selected cases' models must also fit.
-   `npm run env -- --help` lists every lane command.
-2. Lane browsers are yours to run: the doctor starts a stopped one, and if a
-   `chrome-<lane>` tool cannot connect later, run
-   `npm run lane:browser -- start <lane>` yourself and retry (see
-   [hosts.md](hosts.md#lane-browsers)). Never ask the maintainer to start one.
-   A `held` profile belongs to another session; ask it to quit. Fall back to
-   the host's own browser tool only when no daemon can start. Request any desktop-control grant the run will use now (see
-   the [host adapter table](hosts.md#host-adapter-table)).
-3. Confirm the required credential fixtures exist on that lane (see
-   [fixtures.md](fixtures.md#credentials)). Never ask for a secret in chat.
-4. Name the checks that only a human can do, such as a real-phone view, and
+1. Run the selected profile's kickoff preflight and fix its blockers before
+   claiming a target.
+2. Name the checks that only a human can do, such as a real-phone view, and
    plan them for the end of the run.
 
 Ask for anything missing in a single message. If nobody answers, continue the
@@ -200,30 +141,21 @@ independent cases and record the rest as blocked.
    cleanup in the private case contract. A convenient adjacent happy path does
    not replace the reported failure. Read [records.md](records.md) for builders.
    Create the unresolved private template now, so fixture preflight has a spec.
-2. Check candidate freshness and fixture declarations before occupying a lane.
-   `npm run verify:live:candidate` observes canonical remote main without fetching;
-   handle its exact refusal using [environments.md](environments.md). This does
-   not synchronize a checkout, prove deployment, or grant deployment authority.
-   Check [fixtures.md](fixtures.md) for selected operations and missing accounts.
-   Pick one QA lane using [environments.md](environments.md), by capability
-   rather than by trial and error.
-   Reuse its claim. Prefer an owned local workerd/HTTP lane for repair cycles;
-   deployed due-time, gateway, bindings, and release proof require a deployed lane.
+2. Check candidate freshness and fixture declarations before occupying a target,
+   then pick one target by capability and reuse its claim, as the profile
+   describes. Candidate admission does not synchronize a checkout, prove
+   deployment, or grant deployment authority.
 3. Resolve that spec and initialize its run record using [records.md](records.md). Run
    `npm run verify:live:record -- preflight --run <private-run.json>` before
    browser work. Resolve actual signed-in actors, required fixtures, available
    browser tools, and disposable installation targets. A missing fixture blocks
    only dependent cases. Keep that gap in the selected scope; finish other cases.
    Bind each capability to that case's exact context and select independently
-   graded required variants. See the [fixture inventory](environments.md#fixture-inventory).
+   graded required variants.
    Start phase receipts for setup, lane/host/browser/human waits, diagnosis,
    observation, and cleanup. Missing measurements stay unknown.
    Before synthetic actions on a deployed target, attach the serving version's
-   [telemetry isolation receipt](environments.md#product-telemetry-isolation):
-   the guarded lane deploy writes it and prints its path, and
-   `npm run verify:telemetry -- --target <alias>` produces it for a lane you did
-   not deploy. This includes disposable fresh-install fixtures before their
-   first Slack connection.
+   telemetry isolation receipt as the profile describes.
 4. Run the selected offline checks serially with `verify:regression --record
    <private-run.json>`. For each attended case, record `begin`, act once, then
    use the typed `finish` command with real readbacks. Register exact owned resources and fixture
@@ -254,14 +186,6 @@ expensive-check host wait commands. No user recheck is needed when the existing
 owner releases normally. A deadline, unsafe ownership, stale source, orphan marker,
 unavailable account, or unreconciled action needs its specific recovery; waiting
 longer does not resolve it. Continue independent work and preserve the blocker.
-
-## Runner matrix mode
-
-The parallel-turns / runner-stack matrix (parity, first status, concurrent long
-turns with an interruption, mid-turn redeploys, a mention burst) is scripted.
-Follow [runner-matrix.md](runner-matrix.md): the verifier arms the page harness in
-the lane browser, starts the driver, collects the export, and records results in
-the same run record. It uses only the actions declared above.
 
 ## Delegation and live ownership
 
