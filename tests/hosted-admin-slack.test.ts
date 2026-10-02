@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { InstallationContextError, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
@@ -74,6 +74,29 @@ test('a hosted Agent avatar URL names its installation, and a standalone one is 
     publicOrigin: ORIGIN, installationId: 'inst_tenant_a',
   });
   assert.equal(uploaded.slackPresence?.avatar.url, `${ORIGIN}/assets/i/inst_tenant_a/agents/agent_support/avatar/2`);
+});
+
+test('a stored avatar URL from before installations were named is served in the named form', () => {
+  const stored = (url: string): CustomAgentConfig => ({
+    ...agent('agent_support'), revision: 1,
+    slackPresence: { ...agent('agent_support').slackPresence!, avatar: { kind: 'uploaded', revision: 2, url } },
+  });
+  const unnamed = stored(`${ORIGIN}/assets/agents/agent_support/avatar/2`);
+  assert.equal(agentAvatarUrlForPresentation(unnamed, ORIGIN, 'inst_tenant_a'),
+    `${ORIGIN}/assets/i/inst_tenant_a/agents/agent_support/avatar/2`);
+  assert.equal(agentAvatarUrlForPresentation(unnamed, ORIGIN), `${ORIGIN}/assets/agents/agent_support/avatar/2`,
+    'standalone keeps the stored URL');
+  assert.equal(agentAvatarUrlForPresentation(unnamed, undefined, 'inst_tenant_a'),
+    `${ORIGIN}/assets/agents/agent_support/avatar/2`, 'without an origin nothing can be checked');
+  for (const url of [
+    'https://avatars.example.test/agent_support.png',
+    'https://other.example/assets/agents/agent_support/avatar/2',
+    `${ORIGIN}/assets/agents/agent_support/avatar/2?v=1`,
+    `${ORIGIN}/assets/i/inst_tenant_a/agents/agent_support/avatar/2`,
+  ]) {
+    assert.equal(agentAvatarUrlForPresentation(stored(url), ORIGIN, 'inst_tenant_a'), url, url);
+  }
+  assert.throws(() => agentAvatarInstallation(HOSTED), InstallationContextError, 'an unscoped env names nothing');
 });
 
 test('the avatar route serves an installation\'s avatar only under that installation', async (t) => {

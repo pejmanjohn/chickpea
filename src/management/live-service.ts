@@ -37,7 +37,7 @@ import {
   resolveChickpeaGatewayUrl,
 } from '../slack/gateway/runtime.ts';
 import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
-import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
+import { agentAvatarInstallationField } from '../slack/agent-presence/avatar-assets.ts';
 import {
   resolveSlackInstallationCredentials,
   type SlackCredentialDependencies,
@@ -342,12 +342,7 @@ export function createLiveWorkspaceManagementService(
       });
       return config.deleteAgent(agentId, expectedRevision);
     },
-    ...avatarInstallation(env),
+    ...agentAvatarInstallationField(env),
     ...overrides,
   });
-}
-
-function avatarInstallation(env: PlatformEnv | undefined): { avatarInstallationId?: string } {
-  const avatarInstallationId = agentAvatarInstallation(env);
-  return avatarInstallationId ? { avatarInstallationId } : {};
 }

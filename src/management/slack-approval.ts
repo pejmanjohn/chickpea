@@ -59,8 +59,6 @@ export interface SlackManagementApprovalRpcRequest {
   proposalId: string;
   presentationRunId?: string;
   publicUrl?: string;
-  /** The installation the runner serves, which Agent avatar URLs name. */
-  avatarInstallationId?: string;
 }
 
 /** Applies one approval in the state owner (see SlackManagementApprovalRpcRequest). */

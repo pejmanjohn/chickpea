@@ -980,9 +980,10 @@ async function resolvedAgentAvatarUrl(
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
 ): Promise<string | undefined> {
-  if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
+  const installationId = agentAvatarInstallation(platformEnv);
+  if (agent.slackPresence?.avatar.url && !installationId) return agent.slackPresence.avatar.url;
   const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);
-  return agentAvatarUrlForPresentation(agent, origin, agentAvatarInstallation(platformEnv));
+  return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
 
 export async function postAgentRoutingFeedback(input: {

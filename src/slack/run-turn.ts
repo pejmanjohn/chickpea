@@ -1369,7 +1369,6 @@ async function runTurnAttempt(
         proposalId: turn.managementApprovalProposalId,
         ...(agentViewPresentation && options.runId ? { presentationRunId: options.runId } : {}),
         ...(publicUrl ? { publicUrl } : {}),
-        ...avatarInstallationOf(platformEnv),
       });
       if (approval.kind === 'agent_welcome_queued' && agentViewPresentation && options.runId) {
         // The state owner queued the welcome; this executor owns the run's
@@ -1426,10 +1425,9 @@ async function runTurnAttempt(
           ...(publicUrl ? { publicUrl } : {}),
         };
       });
-      const approvalDependencies = {
-        ...(dependencies.publicUrl || !publicUrl ? dependencies : { ...dependencies, publicUrl }),
-        ...(dependencies.avatarInstallationId ? {} : avatarInstallationOf(platformEnv)),
-      };
+      const approvalDependencies = dependencies.publicUrl || !publicUrl
+        ? dependencies
+        : { ...dependencies, publicUrl };
       const persisted = await workLifecycle?.prepareExecution('Slack management approval');
       void persisted;
       const approval = await executeHostSlackManagementApproval({
@@ -2750,12 +2748,6 @@ export async function deliverAgentFailureFinal(
       : {}),
   });
   await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text');
-}
-
-/** The installation Agent avatar URLs name, for a management approval's receipt. */
-function avatarInstallationOf(platformEnv: PlatformEnv | undefined): { avatarInstallationId?: string } {
-  const avatarInstallationId = agentAvatarInstallation(platformEnv);
-  return avatarInstallationId ? { avatarInstallationId } : {};
 }
 
 function resolvedAssignmentModel(assignment: ResolvedAssignment): string | undefined {

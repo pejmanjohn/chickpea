@@ -1,4 +1,4 @@
-import { deploymentTenancy, installationScopeOf } from '../../config/installation-scope.ts';
+import { requireInstallationScope } from '../../config/installation-scope.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
@@ -54,9 +54,15 @@ export function agentAvatarUrl(
     : `${new URL(origin).origin}/assets/${asset}`;
 }
 
-/** The installation an avatar URL names: none on standalone. */
+/** The installation an avatar URL names: none on standalone, and a refusal for an unscoped env. */
 export function agentAvatarInstallation(env: PlatformEnv | undefined): string | undefined {
-  return deploymentTenancy(env) === 'installation' ? installationScopeOf(env)?.installationId : undefined;
+  return requireInstallationScope(env)?.installationId;
+}
+
+/** The same, as the optional `avatarInstallationId` field of a dependency set. */
+export function agentAvatarInstallationField(env: PlatformEnv | undefined): { avatarInstallationId?: string } {
+  const avatarInstallationId = agentAvatarInstallation(env);
+  return avatarInstallationId ? { avatarInstallationId } : {};
 }
 
 export function agentAvatarUrlForPresentation(
@@ -64,9 +70,27 @@ export function agentAvatarUrlForPresentation(
   publicOrigin: string | undefined,
   installationId?: string,
 ): string | undefined {
-  if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
+  const stored = agent.slackPresence?.avatar.url;
+  if (stored) return namedAvatarUrl(stored, publicOrigin, installationId);
   if (!publicOrigin || !agent.slackPresence) return undefined;
   return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
+}
+
+/**
+ * A stored URL in the unnamed form on this origin, saved before avatar URLs
+ * named their installation, in the form a host serving many installations
+ * serves. Any other URL (a gateway-published avatar, another origin) is kept.
+ */
+function namedAvatarUrl(url: string, publicOrigin: string | undefined, installationId: string | undefined): string {
+  if (!installationId || !publicOrigin) return url;
+  try {
+    const parsed = new URL(url);
+    const unnamed = /^\/assets\/agents\/([^/]+)\/avatar\/(\d+)$/.exec(parsed.pathname);
+    if (!unnamed || parsed.search || parsed.hash || parsed.origin !== new URL(publicOrigin).origin) return url;
+    return `${parsed.origin}/assets/i/${encodeURIComponent(installationId)}/agents/${unnamed[1]}/avatar/${unnamed[2]}`;
+  } catch {
+    return url;
+  }
 }
 
 /** Upgrade a frozen legacy default for a new turn without changing its behavior. */
