@@ -6,7 +6,7 @@ import {
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
 
-import { resolveBetterAuthEnvironment } from '../auth/better-auth-environment.ts';
+import { resolveBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
   applyGatewaySlackUserChange,
   applySlackUserChange,
@@ -952,13 +952,13 @@ async function processSlackUserChange(
   credentialRevision: string | null,
 ): Promise<void> {
   if (payload.event.type !== 'user_change' || !credentialRevision) return;
-  const control = await stores.identity.getAuthControl();
-  const environment = control
-    ? await resolveBetterAuthEnvironment({ control, platformEnv })
-    : undefined;
+  const betterAuth = await resolveBetterAuthAccessRevoker({
+    control: await stores.identity.getAuthControl(),
+    platformEnv,
+  });
   await applySlackUserChange({
     identity: stores.identity,
-    ...(environment ? { betterAuth: environment.backend } : {}),
+    ...(betterAuth ? { betterAuth } : {}),
     credentialRevision,
     payloadTeamId: payload.team_id,
     apiAppId: payload.api_app_id,
@@ -1082,13 +1082,13 @@ export async function processGatewaySlackEnvelope(
     return 'accepted';
   }
   if (envelope.event.type === 'user_change') {
-    const control = await stores.identity.getAuthControl();
-    const environment = control
-      ? await resolveBetterAuthEnvironment({ control, platformEnv })
-      : undefined;
+    const betterAuth = await resolveBetterAuthAccessRevoker({
+      control: await stores.identity.getAuthControl(),
+      platformEnv,
+    });
     await applyGatewaySlackUserChange({
       identity: stores.identity,
-      ...(environment ? { betterAuth: environment.backend } : {}),
+      ...(betterAuth ? { betterAuth } : {}),
       payloadTeamId: envelope.workspaceId,
       apiAppId: installation.appId,
       eventId: envelope.eventId,
