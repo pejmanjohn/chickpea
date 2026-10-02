@@ -291,6 +291,16 @@ const TURN_JOB_SELECT_COLUMNS = `id, evt_key, msg_key, turn_json, assignment_jso
   stop_json`;
 
 const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
+/**
+ * Turns a host's operator parked after restoring an installation
+ * (`cancelPendingWork`). Neither run nor delivered again, they are left out
+ * of everything an installation's Owner reads (the recovery list and the
+ * runtime drain counts): the reason is the operator's, and the operator's
+ * record is the host function's result. Only that host function writes the
+ * reason, and it refuses on standalone.
+ */
+const OPERATOR_CANCELLED = 'operator_cancelled';
+const NOT_OPERATOR_CANCELLED = `recovery_reason IS NOT '${OPERATOR_CANCELLED}'`;
 
 /** One undelivered row of a thread, as a stop or check-in weighs it. */
 interface StopThreadRow {
@@ -1915,7 +1925,7 @@ export class TurnJobStoreLogic {
     const pending = (executionAuthority: RunExecutionAuthority): number => Number(
       this.db.get(
         `SELECT COUNT(*) AS count FROM turn_jobs
-         WHERE delivered = 0 AND execution_authority = ?`,
+         WHERE delivered = 0 AND execution_authority = ? AND ${NOT_OPERATOR_CANCELLED}`,
         executionAuthority,
       )?.count ?? 0,
     );
@@ -1931,7 +1941,7 @@ export class TurnJobStoreLogic {
       recoveryRequiredTurnJobs: Number(
         this.db.get(
           `SELECT COUNT(*) AS count FROM turn_jobs
-           WHERE delivered = 0 AND status = 'recovery_required'`,
+           WHERE delivered = 0 AND status = 'recovery_required' AND ${NOT_OPERATOR_CANCELLED}`,
         )?.count ?? 0,
       ),
     };
@@ -1944,7 +1954,7 @@ export class TurnJobStoreLogic {
     return this.db.all(
       `SELECT id, execution_authority, recovery_reason, enqueued_at
        FROM turn_jobs
-       WHERE delivered = 0 AND status = 'recovery_required'
+       WHERE delivered = 0 AND status = 'recovery_required' AND ${NOT_OPERATOR_CANCELLED}
        ORDER BY enqueued_at ASC, id ASC LIMIT ?`,
       limit,
     ).map((row) => ({
@@ -1981,7 +1991,8 @@ export class TurnJobStoreLogic {
    * An operator stops every turn not yet delivered, as after restoring an
    * installation's objects, so no message is answered twice: each is parked
    * as `recovery_required` (`operator_cancelled`), which no executor runs or
-   * delivers again, and its owed stop notice is dropped. Returns how many
+   * delivers again and the Owner's recovery list and drain counts leave out,
+   * and its owed stop notice is dropped. Returns how many
    * were parked, and the Flue instances of every cancelled turn whose
    * dispatch is admitted and unsettled, for the caller to abort (at most
    * `limit`; a repeat returns the same ones until they settle). Safe to repeat.
@@ -1989,12 +2000,12 @@ export class TurnJobStoreLogic {
   cancelPendingWork(limit = 100): { turns: number; dispatched: SlackThreadAgentTarget[] } {
     const turns = this.db.run(
       `UPDATE turn_jobs
-       SET status = 'recovery_required', recovery_reason = 'operator_cancelled', stop_notice_at = NULL
+       SET status = 'recovery_required', recovery_reason = '${OPERATOR_CANCELLED}', stop_notice_at = NULL
        WHERE ${PENDING_ROW}`,
     ).changes;
     const dispatched = this.db.all(
       `SELECT id FROM turn_jobs
-       WHERE delivered = 0 AND status = 'recovery_required' AND recovery_reason = 'operator_cancelled'
+       WHERE delivered = 0 AND status = 'recovery_required' AND recovery_reason = '${OPERATOR_CANCELLED}'
          AND dispatch_receipt_json IS NOT NULL AND flue_settlement_json IS NULL
        ORDER BY enqueued_at, id LIMIT ?`,
       limit,

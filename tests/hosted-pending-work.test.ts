@@ -231,6 +231,29 @@ test('cancelling an installation\'s pending work parks its turns, skips its occu
   assert.equal(reports.info.length, 1, 'a settled occurrence is not settled again');
 });
 
+test('an installation\'s Owner never sees the turns an operator parked, in the recovery list or the drain counts', async () => {
+  const deployment = hostedDeployment(['inst_pending_owner'], {
+    stopAgents: async (agents) => ({ stopped: agents.length, notStopped: 0 }),
+  });
+  const a = deployment.installation('inst_pending_owner');
+  turns(a, 'T_A');
+  // A turn held for its own reason before the restore: the Owner still sees and resolves it.
+  const held = job('tj_T_A_held', 'T_A', '1800000000.000400');
+  a.stores.turnJobs.enqueue(held);
+  a.stores.turnJobs.markRecoveryRequired(held.id, 'stored_turn_unreadable');
+
+  const cancelled = await cancelInstallationObjectPendingWork(a.env, installationStateStoreObject(a.env));
+  assert.equal((cancelled as { turns: number }).turns, 2, 'the operator\'s record counts the turns it parked');
+  assert.deepEqual(a.stores.turnJobs.listRecoveryRequired().map(({ id, reason }) => [id, reason]),
+    [[held.id, 'stored_turn_unreadable']]);
+  assert.deepEqual(a.stores.turnJobs.runtimeDrainCounts(), {
+    pendingLegacyTurnJobs: 1, pendingLedgerTurnJobs: 0, pendingSlackInteractionCleanups: 0, recoveryRequiredTurnJobs: 1,
+  });
+  assert.equal(a.stores.turnJobs.resolveRecoveryRequired(held.id), true);
+  assert.deepEqual(a.stores.turnJobs.listRecoveryRequired(), []);
+  assert.equal(a.stores.turnJobs.runtimeDrainCounts().recoveryRequiredTurnJobs, 0);
+});
+
 test('a thread runner settles its open jobs unrun and a Flue instance loses its alarm', async () => {
   const deployment = hostedDeployment(['inst_pending_runner']);
   const a = deployment.installation('inst_pending_runner');
