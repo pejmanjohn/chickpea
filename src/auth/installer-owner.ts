@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { IdentityStore } from '../identity/types.ts';
+import type { IdentityStore, OwnerClaim } from '../identity/types.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { activeAdmission } from './admission-operation.ts';
 import { createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
@@ -44,11 +44,6 @@ export async function activateInstallerOwner(input: {
   if (input.capability.length < 32) throw new Error('The install capability is too short.');
   const capabilityHash = createHash('sha256').update(input.capability).digest('hex');
   const origin = requireSupportedOrigin(input.environment.baseURL);
-  const claim = await identity.getOwnerClaim();
-  if (claim?.status === 'active' &&
-      (claim.slackTeamId !== proof.slackTeamId || claim.slackUserId !== proof.slackUserId)) {
-    throw new IdentityStateError('owner_already_claimed', 'The first Owner has already been claimed.');
-  }
   // Built only once a session or reconcile needs it, so a refusal starts nothing.
   let auth: ReturnType<typeof createBetterAuth> | undefined;
   const betterAuth = () => auth ??= createBetterAuth({
@@ -67,11 +62,17 @@ export async function activateInstallerOwner(input: {
   if (control.canonicalAdminOrigin && control.canonicalAdminOrigin !== origin) {
     throw new Error('This installation is pinned to another Admin origin.');
   }
-  if (claim?.status === 'active') {
-    const membership = claim.membershipId ? await identity.getMembership(claim.membershipId) : undefined;
+  // This installation's Owner is signed in again; anyone else is refused.
+  const signInOwner = async (owner: OwnerClaim) => {
+    if (owner.slackTeamId !== proof.slackTeamId || owner.slackUserId !== proof.slackUserId) {
+      throw new IdentityStateError('owner_already_claimed', 'The first Owner has already been claimed.');
+    }
+    const membership = owner.membershipId ? await identity.getMembership(owner.membershipId) : undefined;
     if (membership?.status !== 'active') throw new SlackOidcError('inactive_user');
-    return issue(claim.operationId);
-  }
+    return issue(owner.operationId);
+  };
+  const claim = await identity.getOwnerClaim();
+  if (claim?.status === 'active') return signInOwner(claim);
   if (!control.canonicalAdminOrigin) {
     await identity.updateAuthControl({ expectedRevision: control.revision, canonicalAdminOrigin: origin });
   }
@@ -79,15 +80,25 @@ export async function activateInstallerOwner(input: {
     displayName: 'Chickpea',
     slackTeamId: proof.slackTeamId,
   });
-  const operation = await identity.reserveInstallerOwner({
-    kind: 'first_owner_claim',
-    organizationId: organization.id,
-    expectedSlackTeamId: proof.slackTeamId,
-    expectedSlackUserId: proof.slackUserId,
-    chickpeaRole: 'owner',
-    capabilityHash,
-    expiresAt: (input.now ?? Date.now)() + SLACK_OIDC_ATTEMPT_TTL_MS,
-  });
+  let operation;
+  try {
+    operation = await identity.reserveInstallerOwner({
+      kind: 'first_owner_claim',
+      organizationId: organization.id,
+      expectedSlackTeamId: proof.slackTeamId,
+      expectedSlackUserId: proof.slackUserId,
+      chickpeaRole: 'owner',
+      capabilityHash,
+      expiresAt: (input.now ?? Date.now)() + SLACK_OIDC_ATTEMPT_TTL_MS,
+    });
+  } catch (error) {
+    // Another attempt of the same person's may have just made them Owner.
+    const current = error instanceof IdentityStateError && error.code === 'owner_already_claimed'
+      ? await identity.getOwnerClaim()
+      : undefined;
+    if (current?.status === 'active') return signInOwner(current);
+    throw error;
+  }
   // Named after the installation's organization, not the Slack team, so a
   // workspace that reinstalls into a new installation gets a new one.
   const reconciled = await betterAuth().chickpea.reconcileSlackIdentity({

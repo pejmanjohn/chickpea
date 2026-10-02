@@ -70,6 +70,14 @@ test('the installer becomes the first Owner and is signed in; nobody else can cl
     // Not even the Owner is signed in under another Admin origin.
     await assert.rejects(activate({ environment: { ...environment, baseURL: 'https://elsewhere.example' } }),
       /pinned to another Admin origin/);
+    // Nor once their membership is suspended (here, as the store reports it).
+    const suspended = new Proxy(identity, {
+      get(target, property, receiver) {
+        if (property !== 'getMembership') return Reflect.get(target, property, receiver);
+        return async (id: string) => ({ ...(await target.getMembership(id))!, status: 'suspended' });
+      },
+    });
+    await assert.rejects(activate({ identity: suspended }), code('inactive_user'));
   } finally {
     identity.close();
     backend.close();
@@ -128,6 +136,9 @@ test('an interrupted activation resumes, a new attempt by the same person replac
     const abandoned = await interrupt(live, 'first-install-attempt-0123456789abcdef', 'advance');
     assert.equal((await activate(live, 'second-install-attempt-0123456789abcdef')).ok, true);
     assert.notEqual((await live.getOwnerClaim())!.operationId, abandoned.id);
+    assert.equal((await live.getAuthOperation(abandoned.id))!.status, 'expired', 'the replaced attempt is dead');
+    // Its Owner is signed in again by any later attempt, including the dead one.
+    assert.equal((await activate(live, 'first-install-attempt-0123456789abcdef')).ok, true);
     const expired = fresh('org_replace_expired');
     await interrupt(expired, 'stale-install-attempt-0123456789abcdef', 'reserve');
     clock.now = NOW + 16 * 60_000;
@@ -142,6 +153,10 @@ test('an interrupted activation resumes, a new attempt by the same person replac
     await assert.rejects(activate(held, 'other-install-attempt-0123456789abcdef', other), code('owner_claim_conflict'));
     clock.now = NOW + 16 * 60_000;
     await assert.rejects(activate(held, 'other-retry-attempt-0123456789abcdef0', other), code('owner_claim_conflict'));
+    // A capability reused for another person never resumes the first person's attempt.
+    await assert.rejects(activate(held, 'holder-install-attempt-0123456789abcdef', other), code('auth_operation_conflict'));
+    assert.equal(backend.database.prepare("SELECT COUNT(*) AS count FROM account WHERE accountId LIKE '%UOTHER'").get()?.count, 0,
+      'a refusal starts nothing in Better Auth');
   } finally {
     for (const store of stores) store.close();
     backend.close();

@@ -1848,6 +1848,10 @@ export class IdentityStoreLogic {
       }
       const replay = this.findAuthOperation('first_owner_claim', input.capabilityHash);
       if (replay) {
+        if (replay.expectedSlackTeamId !== input.expectedSlackTeamId ||
+            replay.expectedSlackUserId !== input.expectedSlackUserId) {
+          throw identityError('auth_operation_conflict', 'This install attempt belongs to another person.');
+        }
         const live = ['reserved', 'reconciling'].includes(replay.status) && replay.expiresAt > this.now();
         if (live && claim?.operationId === replay.id) return replay;
         throw identityError('auth_operation_expired', 'This install attempt expired; start another.');
