@@ -4790,6 +4790,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       requirePermission(principal, 'admin.configure');
+      // A shared project is reconciled and prepared only by its operator;
+      // refuse before inspecting or re-stamping any account.
+      if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
+        throw new ComposioConfigurationMutationError();
+      }
       const reconciled = await resumeComposioReconciliation(c);
       if (!reconciled.apiKey || reconciled.desiredState !== 'enabled') {
         return c.json({

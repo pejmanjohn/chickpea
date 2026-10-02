@@ -1011,6 +1011,50 @@ test('hosted Admin cancel, start cleanup and recovery never delete what another 
   }
 });
 
+test('hosted Admin Retry refuses before inspecting any account, even mid-reconciliation', async () => {
+  await withPlatform(async ({ platform, project }) => {
+    await prepare(platform, project);
+    let inspections = 0;
+    const admin = hostedAdmin('inst_admin', {
+      composioCreateClient: async () => project.client(),
+      composioInspectAccount: async () => { inspections += 1; return 'match'; },
+    });
+    try {
+      await seedAdminAgent(admin);
+      const account = await admin.config.putConnectionAccount({
+        id: 'connection_admin_gmail', workspaceId: 'T_TEST', ownerKind: 'member',
+        ownerMembershipId: 'membership_test_owner', createdByMembershipId: 'membership_test_owner',
+        providerId: 'google', label: 'Gmail · Personal', secretRefId: 'secret_admin_gmail',
+        lifecycle: 'ready',
+        policy: {
+          kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+          principalRef: 'chickpea:staging:installation:inst_admin:membership:membership_test_owner',
+          accountRef: 'ca_admin_gmail', allowedCapabilities: ['gmail.profile.read'],
+          providerGeneration: 1, providerLineage: 'a'.repeat(24),
+        },
+      }, 0);
+      // A damaged record reads as a pending reconciliation of the shared project.
+      platform.values.set(PREPARATION, '{not json');
+      const writes = platform.writes;
+
+      const response = await admin.request('/admin/api/settings/connectors/composio/retry', {
+        method: 'POST', body: '{}',
+      });
+
+      assert.equal(response.status, 409, await response.clone().text());
+      assert.equal(
+        (await response.json() as { error: string }).error,
+        'composio_configuration_deployment_managed',
+      );
+      assert.equal(inspections, 0);
+      assert.equal(platform.writes, writes);
+      assert.deepEqual(await admin.config.listConnectionAccounts('T_TEST'), [account]);
+    } finally {
+      admin.close();
+    }
+  });
+});
+
 test('standalone ignores a configured platform store and keeps its own preparation', async () => {
   const untouchable: ComposioSettingsStore = {
     async getSetting() { throw new Error('standalone read the platform store'); },
