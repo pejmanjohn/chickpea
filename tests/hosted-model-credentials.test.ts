@@ -337,9 +337,9 @@ test('a key whose keyring slot was retired reads as missing everywhere, and a re
     const rotated = { currentKeyId: next.currentKeyId, keys: { ...keyring.keys, ...next.keys } };
     writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, `${JSON.stringify({ version: 1, ...rotated })}\n`, { mode: 0o600 });
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
-      { rewrapped: ['anthropic'], remaining: [] });
+      { rewrapped: ['anthropic'], alreadyCurrent: [], remaining: [] });
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envA, settings: settingsOf(envA), keyring: rotated }),
-      { rewrapped: [], remaining: [] }, 'nothing left under the old key');
+      { rewrapped: [], alreadyCurrent: [], remaining: [] }, 'nothing left under the old key');
     assert.equal((await settingsOf(envA).getEncryptedCredentialRevision('model_provider.anthropic'))?.envelope.keyId, 'key_next');
     assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envA)))?.version, savedA.version, 'the version stays');
 
@@ -360,7 +360,7 @@ test('a key whose keyring slot was retired reads as missing everywhere, and a re
       (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
     );
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envB, settings: settingsOf(envB), keyring: retired }),
-      { rewrapped: [], remaining: ['anthropic'] }, 'a key under a lost key ID cannot be rewrapped');
+      { rewrapped: [], alreadyCurrent: [], remaining: ['anthropic'] }, 'a key under a lost key ID cannot be rewrapped');
     // Saving the key again repairs it.
     await rotate(envB, { kind: 'save', apiKey: KEY_2 });
     assert.equal((await resolveProviderApiKey('anthropic', envB, settingsOf(envB))).apiKey, KEY_2);
