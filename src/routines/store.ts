@@ -1657,6 +1657,43 @@ export class RoutineStoreLogic {
       .map((row) => rowToRun(row as unknown as RunRow));
   }
 
+  /**
+   * An operator stops every occurrence that has not finished, as after
+   * restoring an installation's objects: each queued, admitting or running
+   * occurrence is skipped with `reason` (no notice, nothing delivered), and
+   * every recovery notice still pending is closed unsent. Returns how many,
+   * and the Flue instance of each skipped attempt that was dispatched and
+   * not settled, for the caller to abort. Safe to repeat.
+   */
+  cancelPendingWork(
+    at: number,
+    reason: Pick<TransitionRoutineRunInput, 'failureClass' | 'publicError' | 'skipReason'>,
+  ): { runs: number; notices: number; dispatched: Array<{ instanceId: string; uid?: string }> } {
+    const dispatched: Array<{ instanceId: string; uid?: string }> = [];
+    let runs = 0;
+    for (const row of this.db.all(
+      "SELECT id FROM routine_runs WHERE status IN ('queued', 'admitting', 'running') ORDER BY queued_at, id",
+    )) {
+      const run = this.getRun(String(row.id));
+      if (!run || !['queued', 'admitting', 'running'].includes(run.status)) continue;
+      if (run.flueAgentEnvelope && !run.flueAgentSettlement) {
+        const receipt = this.listAdmissions(run.id).map((admission) => admission.flueAgentReceipt)
+          .filter((candidate) => candidate !== null).at(-1);
+        if (receipt) {
+          dispatched.push({ instanceId: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) });
+        }
+      }
+      // Each occurrence is its own transaction: a retry finishes what one interrupted.
+      this.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });
+      runs += 1;
+    }
+    const notices = this.db.run(
+      "UPDATE routine_recovery_deliveries SET status = 'unknown', updated_at = ? WHERE status = 'pending'",
+      at,
+    ).changes;
+    return { runs, notices, dispatched };
+  }
+
   countAdmittingOrRunningOccurrences(): number {
     return Number(
       this.db.get(

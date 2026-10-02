@@ -42,6 +42,7 @@ import { parseSlackAgentCreationTerminalIntents } from './agent-creation-termina
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
+import type { SlackThreadAgentTarget } from './flue-dispatch.ts';
 import type { SlackRuntimeDrainCounts } from '../config/state-rpc.ts';
 import type { SlackTurnRecoveryItem } from '../config/state-rpc.ts';
 import type { RunExecutionAuthority } from '../work/types.ts';
@@ -167,6 +168,7 @@ const LOGGABLE_TURN_RECOVERY_REASONS = new Set([
   'flue_receipt_conflict',
   'flue_settlement_conflict',
   'flue_unexpected_existing_instance',
+  'operator_cancelled',
   'post_dispatch_attempts_exhausted',
   'post_dispatch_redrive_required',
   'slack_file_fallback_unavailable',
@@ -1973,6 +1975,40 @@ export class TurnJobStoreLogic {
          AND json_extract(turn_json, '$.workspaceId') = ?`,
       workspaceId,
     ).changes;
+  }
+
+  /**
+   * An operator stops every turn not yet delivered, as after restoring an
+   * installation's objects, so no message is answered twice: each is parked
+   * as `recovery_required` (`operator_cancelled`), which no executor runs or
+   * delivers again, and its owed stop notice is dropped. Returns how many
+   * were parked, and the Flue instances of every cancelled turn whose
+   * dispatch is admitted and unsettled, for the caller to abort (at most
+   * `limit`; a repeat returns the same ones until they settle). Safe to repeat.
+   */
+  cancelPendingWork(limit = 100): { turns: number; dispatched: SlackThreadAgentTarget[] } {
+    const turns = this.db.run(
+      `UPDATE turn_jobs
+       SET status = 'recovery_required', recovery_reason = 'operator_cancelled', stop_notice_at = NULL
+       WHERE ${PENDING_ROW}`,
+    ).changes;
+    const dispatched = this.db.all(
+      `SELECT id FROM turn_jobs
+       WHERE delivered = 0 AND status = 'recovery_required' AND recovery_reason = 'operator_cancelled'
+         AND dispatch_receipt_json IS NOT NULL AND flue_settlement_json IS NULL
+       ORDER BY enqueued_at, id LIMIT ?`,
+      limit,
+    ).flatMap((row): SlackThreadAgentTarget[] => {
+      const id = String(row.id);
+      try {
+        const envelope = this.getDispatchEnvelope(id);
+        const uid = this.getFlueReceipt(id)?.uid ?? envelope?.uid;
+        return envelope ? [{ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) }] : [];
+      } catch {
+        return [];
+      }
+    });
+    return { turns, dispatched };
   }
 
   /** Explicit operator terminalization; retained claims continue to dedupe. */

@@ -419,6 +419,20 @@ export class ThreadRunnerJobStore {
     return this.db.get("SELECT 1 AS running FROM runner_jobs WHERE state = 'running' LIMIT 1") !== undefined;
   }
 
+  /**
+   * An operator stops this runner's open jobs, as after restoring an
+   * installation's objects: each settles as `recovery_required`, so it is
+   * never run here again. The state store parks the same turns, so none is
+   * handed over again. Returns how many.
+   */
+  cancelOpen(now: number): number {
+    return this.db.run(
+      `UPDATE runner_jobs SET state = 'recovery_required', retry_at = NULL, settled_at = ?, deferred_checks = 0
+       WHERE state IN ${OPEN_STATES}`,
+      now,
+    ).changes;
+  }
+
   /** Jobs not yet settled. */
   openCount(): number {
     return Number(this.db.get(

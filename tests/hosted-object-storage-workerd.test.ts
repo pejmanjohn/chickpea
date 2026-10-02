@@ -20,6 +20,8 @@ interface Probe {
   whole: { text: string; pages: number };
   refused: string;
   afterRefusal: ObjectState;
+  cancelled: { alarmCleared: boolean };
+  afterCancel: ObjectState;
   erased: { erased: boolean };
   afterErase: ObjectState;
   reexported: { text: string; pages: number };
@@ -29,10 +31,10 @@ interface Probe {
  * The host functions over real workerd Durable Object storage, at the
  * production compatibility date and installation tenancy: an export reads
  * every SQL table (one without a rowid) and key-value entry, pages
- * concatenate to the whole, another installation is refused, and erasing
- * removes every table, entry and the alarm.
+ * concatenate to the whole, another installation is refused, cancelling
+ * clears the alarm, and erasing removes every table, entry and the alarm.
  */
-test('host functions export, refuse and erase a real Durable Object\'s storage', {
+test('host functions export, refuse, quiet and erase a real Durable Object\'s storage', {
   timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'chickpea-object-host-'));
@@ -84,6 +86,8 @@ test('host functions export, refuse and erase a real Durable Object\'s storage',
 
     assert.match(probe.refused, /another installation/);
     assert.deepEqual(probe.afterRefusal, probe.seeded);
+    assert.deepEqual(probe.cancelled, { alarmCleared: true });
+    assert.equal(probe.afterCancel.alarm, null);
 
     assert.deepEqual(probe.erased, { erased: true });
     assert.deepEqual(probe.afterErase, { tables: [], entries: 0, alarm: null });

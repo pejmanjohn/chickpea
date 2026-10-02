@@ -60,6 +60,10 @@ export class ProbeObject extends DurableObject {
     return this.host().chickpeaHostErase({ installationId });
   }
 
+  async cancel(installationId: string): Promise<unknown> {
+    return this.host().chickpeaHostCancelPendingWork({ installationId });
+  }
+
   async state(): Promise<{ tables: string[]; entries: number; alarm: number | null }> {
     const tables = this.ctx.storage.sql.exec(
       // Local workerd keeps each object's name in `__miniflare_do_name`; deployed storage has no such table.
@@ -91,11 +95,14 @@ export default {
         refused = error instanceof Error ? error.message : String(error);
       }
       const afterRefusal = await object.state();
+      const cancelled = await object.cancel('inst_probe');
+      const afterCancel = await object.state();
+      await object.setAlarmAgain();
       const erased = await object.erase('inst_probe');
       const afterErase = await object.state();
       const reexported = await object.exportAll('inst_probe', 4_096);
       return Response.json({
-        seeded, paged, whole, refused, afterRefusal, erased, afterErase, reexported,
+        seeded, paged, whole, refused, afterRefusal, cancelled, afterCancel, erased, afterErase, reexported,
       });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.stack ?? error.message : String(error) }, { status: 500 });

@@ -353,6 +353,7 @@ const ADDRESSING_SITES: Record<string, { count: number; covered: string }> = {
   'slack/bounded-agent-observation.ts': { count: 1, covered: 'slack_agent of a dispatched envelope' },
   'slack/flue-dispatch.ts': { count: 1, covered: 'slack_agent of a dispatched envelope (Flue init)' },
   'routines/execution.ts': { count: 2, covered: 'routine_agent, recorded with the attempt envelope (Flue init)' },
+  'state/pending-work.ts': { count: 1, covered: 'routine_agent of a persisted envelope (Flue init)' },
   'state/installation-objects.ts': { count: 2, covered: 'host functions, recorded names only' },
   'admin/routes.ts': { count: 2, covered: 'gateway session: standalone only' },
   'slack/gateway/cloudflare-session.ts': { count: 1, covered: 'gateway session: returns early under tenancy' },

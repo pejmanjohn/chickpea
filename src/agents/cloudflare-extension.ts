@@ -30,9 +30,9 @@ interface AgentObjectState {
  * installation's env (see installation-scope.ts). Standalone: unchanged.
  *
  * It also answers a host serving many installations (an operator job, see
- * state/installation-objects.ts): export its storage or erase it. Each
- * refuses on standalone and for any installation but the one the instance ID
- * scopes.
+ * state/installation-objects.ts): export its storage, erase it, or clear its
+ * alarm. Each refuses on standalone and for any installation but the one the
+ * instance ID scopes.
  */
 export function installationAgentObject(Base: AgentObjectClass): AgentObjectClass {
   const Agent = Base as new (ctx: ObjectContext, env: unknown) => object;
@@ -49,6 +49,15 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
     /** Host RPC: delete every table, key-value entry and the alarm of this instance. */
     async chickpeaHostErase(request: ObjectHostRequest) {
       return agentHost(this).chickpeaHostErase(request);
+    }
+
+    /**
+     * Host RPC: clear the alarm that resumes this instance's submissions. The
+     * state store aborts the submissions it cancels; one that still resumes is
+     * refused by the installation's admission check while it is suspended.
+     */
+    async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+      return agentHost(this).chickpeaHostCancelPendingWork(request);
     }
   };
 }

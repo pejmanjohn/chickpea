@@ -13,6 +13,7 @@ import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/
 import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
 import { objectHostFunctions } from '../../src/state/object-host.ts';
+import type { AgentStopTarget } from '../../src/state/pending-work.ts';
 import { stateStoreHostFunctions } from '../../src/state/state-store-host.ts';
 import { buildTagStateStores, type TagStateStores } from '../../src/state/tag-state-stores.ts';
 
@@ -168,7 +169,9 @@ interface DeploymentObject {
  * host functions its class delegates to. Objects are created on first
  * address, as Durable Objects are.
  */
-export function hostedDeployment(installationIds: readonly string[]) {
+export function hostedDeployment(installationIds: readonly string[], options: {
+  stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
+} = {}) {
   const objects = new Map<string, DeploymentObject>();
   const installations = new Map<string, HostedInstallation>();
   const platform: Record<string, unknown> = { CHICKPEA_TENANCY: 'installation' };
@@ -190,13 +193,19 @@ export function hostedDeployment(installationIds: readonly string[]) {
             new DoSqlStateDb(installation.storage.asDurableObjectStorage()), env, { gatewayLeaseOwner: 'test' },
           ),
           onErased: () => { stores = undefined; },
+          ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
         }) as unknown as DeploymentObject['host'],
       };
     } else {
       const storage = new FakeObjectStorage();
       object = {
         binding, name, storage, env,
-        host: objectHostFunctions({ env, storage }) as unknown as DeploymentObject['host'],
+        host: objectHostFunctions({
+          env, storage,
+          ...(binding === 'SLACK_THREAD_RUNNER'
+            ? { cancel: (now: number) => ({ runnerJobs: runnerJobs(storage).cancelOpen(now) }) }
+            : {}),
+        }) as unknown as DeploymentObject['host'],
       };
     }
     objects.set(key, object);

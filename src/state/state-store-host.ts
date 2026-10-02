@@ -11,16 +11,23 @@ import {
   type ObjectHostRequest,
 } from './object-host.ts';
 import type { InstallationObjectBackfill, InstallationObjectInventoryPage } from './object-inventory.ts';
+import {
+  cancelStatePendingWork,
+  stopCancelledAgents,
+  type AgentStopTarget,
+  type StatePendingWorkCancellation,
+} from './pending-work.ts';
 import type { TagStateStores } from './tag-state-stores.ts';
 
-/** The state store's host functions: every object's, and its inventory. */
-export interface StateStoreHostRpc extends InstallationObjectHostRpc {
+/** The state store's host functions: every object's, its inventory, and its own pending work. */
+export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chickpeaHostCancelPendingWork'> {
   chickpeaHostInventory(
     request: ObjectHostRequest & { cursor?: string | null; limit?: number },
   ): Promise<InstallationObjectInventoryPage>;
   chickpeaHostInventoryBackfill(request: ObjectHostRequest): Promise<InstallationObjectBackfill>;
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
+  chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<StatePendingWorkCancellation>;
 }
 
 /**
@@ -34,6 +41,7 @@ export function stateStoreHostFunctions(store: {
   readonly storage: HostObjectStorage;
   readonly stores: () => TagStateStores;
   readonly onErased: () => void;
+  readonly stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
 }): StateStoreHostRpc {
   const stores = (request: ObjectHostRequest): TagStateStores => {
     assertObjectHostCall(store.env, request);
@@ -69,6 +77,12 @@ export function stateStoreHostFunctions(store: {
       const erased = await eraseObjectStorage(store.storage);
       store.onErased();
       return erased;
+    },
+    async chickpeaHostCancelPendingWork(request) {
+      const { agents, ...cancelled } = cancelStatePendingWork(stores(request), Date.now());
+      await store.storage.deleteAlarm();
+      const { stopped, notStopped } = await (store.stopAgents ?? stopCancelledAgents)(agents);
+      return { alarmCleared: true, ...cancelled, agentsStopped: stopped, agentsNotStopped: notStopped };
     },
   };
 }

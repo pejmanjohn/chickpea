@@ -319,6 +319,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostErase(request);
   }
 
+  /** Settle every open job without running it, and clear the alarm. */
+  async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+    return this.host().chickpeaHostCancelPendingWork(request);
+  }
+
   private host(): InstallationObjectHostRpc {
     return objectHostFunctions({
       env: this.env as PlatformEnv,
@@ -328,6 +333,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         this.presentations = undefined;
         this.stopHandling = undefined;
       },
+      cancel: (now) => ({ runnerJobs: this.store().cancelOpen(now) }),
     });
   }
 

@@ -1093,6 +1093,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.host().chickpeaHostErase(request);
   }
 
+  async chickpeaHostCancelPendingWork(request: ObjectHostRequest) {
+    return this.host().chickpeaHostCancelPendingWork(request);
+  }
+
   private host(): StateStoreHostRpc {
     return stateStoreHostFunctions({
       env: this.env as PlatformEnv,

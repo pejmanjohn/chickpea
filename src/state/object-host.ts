@@ -64,10 +64,18 @@ export interface ObjectEraseResult {
   readonly erased: true;
 }
 
+/** What one object stopped: its alarm, and for a thread runner its open jobs. */
+export interface ObjectPendingWorkCancellation {
+  readonly alarmCleared: true;
+  /** Thread runners: open jobs settled without running. */
+  readonly runnerJobs?: number;
+}
+
 /** The host functions every installation object answers; each class delegates to `objectHostFunctions`. */
 export interface InstallationObjectHostRpc {
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
+  chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<ObjectPendingWorkCancellation>;
 }
 
 export const OBJECT_EXPORT_FORMAT = 'chickpea.object-export.v1';
@@ -91,12 +99,14 @@ export interface HostObjectStorage {
 /**
  * The host functions of one object (a thread runner or a Flue instance), over
  * its env (scoped by its own name) and storage. `onErased` drops whatever the
- * object holds in memory of its storage.
+ * object holds in memory of its storage; `cancel` stops its own pending work
+ * before the alarm is cleared.
  */
 export function objectHostFunctions(object: {
   readonly env: Record<string, unknown> | undefined;
   readonly storage: HostObjectStorage;
   readonly onErased?: () => void;
+  readonly cancel?: (now: number) => Omit<ObjectPendingWorkCancellation, 'alarmCleared'>;
 }): InstallationObjectHostRpc {
   return {
     async chickpeaHostExportPage(request) {
@@ -108,6 +118,12 @@ export function objectHostFunctions(object: {
       const erased = await eraseObjectStorage(object.storage);
       object.onErased?.();
       return erased;
+    },
+    async chickpeaHostCancelPendingWork(request) {
+      assertObjectHostCall(object.env, request);
+      const cancelled = object.cancel?.(Date.now()) ?? {};
+      await object.storage.deleteAlarm();
+      return { alarmCleared: true, ...cancelled };
     },
   };
 }

@@ -1,6 +1,6 @@
 /**
  * What a host serving many installations calls, from an operator job, to
- * enumerate, export and erase the Durable Objects one installation
+ * enumerate, export, erase and quiet the Durable Objects one installation
  * owns. Each function takes that installation's scoped env
  * (`scopeInstallationEnv`), addresses only objects its name scopes to it, and
  * passes the installation along so the object checks it against its own
@@ -29,12 +29,14 @@ import type {
   ObjectEraseResult,
   ObjectExportMode,
   ObjectExportPage,
+  ObjectPendingWorkCancellation,
 } from './object-host.ts';
 import type {
   InstallationObjectBackfill,
   InstallationObjectInventoryPage,
   InstallationObjectKind,
 } from './object-inventory.ts';
+import type { StatePendingWorkCancellation } from './pending-work.ts';
 import type { StateStoreHostRpc } from './state-store-host.ts';
 
 /** One object of an installation: its state store, or an inventoried object. */
@@ -103,6 +105,21 @@ export async function eraseInstallationObject(
   return objectStub(env, scope, object).chickpeaHostErase({ installationId: scope.installationId });
 }
 
+/**
+ * Stop the work one object would start or deliver on its own: its alarm,
+ * and for the state store every pending turn, unfinished routine occurrence
+ * and undelivered notice or receipt (state/pending-work.ts); for a thread
+ * runner its open jobs. Run while the installation is suspended, after a
+ * restore. Safe to repeat.
+ */
+export async function cancelInstallationObjectPendingWork(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation> {
+  const scope = hostScope(env);
+  return objectStub(env, scope, object).chickpeaHostCancelPendingWork({ installationId: scope.installationId });
+}
+
 function hostScope(env: Record<string, unknown>): InstallationScope {
   if (deploymentTenancy(env) !== 'installation') {
     throw new InstallationContextError(
@@ -126,12 +143,19 @@ interface IdNamespace {
   get(id: unknown): unknown;
 }
 
+/** Any object's host functions; the state store's cancellation reports more. */
+type AnyObjectHostRpc = Omit<InstallationObjectHostRpc, 'chickpeaHostCancelPendingWork'> & {
+  chickpeaHostCancelPendingWork(
+    request: { installationId: string },
+  ): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation>;
+};
+
 /** The stub of one object this installation owns, by kind and exact name. */
 function objectStub(
   env: Record<string, unknown>,
   scope: InstallationScope,
   object: InstallationObject,
-): InstallationObjectHostRpc {
+): AnyObjectHostRpc {
   if (object.kind === 'state_store') {
     if (object.name !== tagStateInstanceName(env)) throw foreignObject();
     return stateStore(env);
@@ -142,7 +166,7 @@ function objectStub(
   if (object.kind === 'thread_runner') {
     const namespace = env.SLACK_THREAD_RUNNER as NamedNamespace | undefined;
     if (typeof namespace?.getByName !== 'function') throw missingBinding('SLACK_THREAD_RUNNER');
-    return namespace.getByName(object.name) as InstallationObjectHostRpc;
+    return namespace.getByName(object.name) as AnyObjectHostRpc;
   }
   const bindingName = object.kind === 'slack_agent'
     ? CHICKPEA_SLACK_AGENT_BINDING
@@ -154,7 +178,7 @@ function objectStub(
   if (typeof namespace?.idFromName !== 'function' || typeof namespace.get !== 'function') {
     throw missingBinding(bindingName);
   }
-  return namespace.get(namespace.idFromName(object.name)) as InstallationObjectHostRpc;
+  return namespace.get(namespace.idFromName(object.name)) as AnyObjectHostRpc;
 }
 
 function foreignObject(): InstallationContextError {
