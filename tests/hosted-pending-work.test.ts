@@ -9,6 +9,7 @@ import { hashRoutineValue } from '../src/routines/ids.ts';
 import type { RoutineConfirmationDraft } from '../src/routines/types.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
+import { TURN_JOB_TTL_MS, TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import {
   cancelInstallationObjectPendingWork,
   installationStateStoreObject,
@@ -274,6 +275,60 @@ test('a dispatched turn whose stored dispatch does not read is counted as not st
   assert.deepEqual(stopped, [], 'nothing names its instance to abort');
   assert.equal(a.stores.turnJobs.runnerView(pending.running.id).status, 'recovery_required', 'it is parked all the same');
   assert.equal(warned.mock.callCount(), 1);
+});
+
+test('a settled operator-cancelled turn is purged after the redelivery window; one dispatched and unsettled is kept', async () => {
+  const deployment = hostedDeployment(['inst_pending_purge'], {
+    stopAgents: async (agents) => ({ stopped: agents.length, notStopped: 0 }),
+  });
+  const a = deployment.installation('inst_pending_purge');
+  const { env, stores } = a;
+  // Delivered; queued and never dispatched; dispatched and still running.
+  const pending = turns(a, 'T_A');
+  // Dispatched in another thread, its submission settled, not yet delivered.
+  const settled = job('tj_T_A_settled', 'T_A', '1800000000.000500');
+  stores.turnJobs.enqueue(settled);
+  stores.turnJobs.freezeRuntimePlan(settled.id, compileRuntimePlanV2({
+    installation: installationOwnershipOf(env)!, turn: settled.turn, assignment: settled.assignment,
+    instructions: 'Help.', memoryEpoch: 1,
+  }));
+  stores.turnJobs.prepareFlueDispatch(settled.id, settled.turn.text, { generation: settled.id });
+  stores.turnJobs.recordFlueReceipt(settled.id, {
+    submissionId: `sub_${settled.id}`, acceptedAt: '2027-01-15T08:00:00.000Z', uid: UID,
+  });
+  stores.turnJobs.recordFlueSettlement(settled.id, { outcome: 'aborted', settledAt: Date.now(), failureKind: 'agent' });
+  // Queued with its 👀 acknowledgment, which no cleanup sweep removes from an undelivered turn.
+  const acknowledged = job('tj_T_A_acknowledged', 'T_A', '1800000000.000600');
+  stores.turnJobs.enqueue({
+    ...acknowledged,
+    midRunReceipt: { channelId: acknowledged.turn.channelId, messageTs: acknowledged.turn.messageTs, name: 'eyes' },
+  });
+  assert.match(String(a.db.get('SELECT progress_json FROM turn_jobs WHERE id = ?', acknowledged.id)?.progress_json),
+    /"cleanup":"pending"/);
+  // Held for its own reason before the restore.
+  const held = job('tj_T_A_held', 'T_A', '1800000000.000400');
+  stores.turnJobs.enqueue(held);
+  stores.turnJobs.markRecoveryRequired(held.id, 'stored_turn_unreadable');
+  await cancelInstallationObjectPendingWork(env, installationStateStoreObject(env));
+
+  /** The turn rows left once a store on a clock `elapsedMs` later purges, as every enqueue does. */
+  const remainingAfter = (elapsedMs: number) => {
+    const probe = job('tj_probe', 'T_A', '1800000001.000100');
+    new TurnJobStoreLogic(a.db, () => Date.now() + elapsedMs, stores.objectInventory).enqueue(probe);
+    a.db.run('DELETE FROM turn_jobs WHERE id = ?', probe.id);
+    return a.db.all('SELECT id FROM turn_jobs ORDER BY id').map(({ id }) => String(id));
+  };
+  assert.deepEqual(remainingAfter(TURN_JOB_TTL_MS - 60_000),
+    [pending.delivered.id, pending.queued.id, pending.running.id, held.id, settled.id, acknowledged.id].sort(),
+    'nothing goes inside the redelivery window');
+  // Past it, the delivered turn goes, and so do the cancelled ones never dispatched. The settled
+  // one is its live binding's latest dispatched context, kept with the binding as a delivered one is.
+  assert.deepEqual(remainingAfter(TURN_JOB_TTL_MS + 60_000), [pending.running.id, held.id, settled.id].sort());
+  assert.deepEqual(remainingAfter(31 * 24 * 60 * 60_000), [pending.running.id, held.id].sort(),
+    'once its binding expires the settled one goes too; the unsettled dispatch and the held turn stay');
+  // The repeat-cancellation contract holds: the unsettled dispatch is asked to stop again.
+  const repeat = await cancelInstallationObjectPendingWork(env, installationStateStoreObject(env));
+  assert.deepEqual([(repeat as { turns: number }).turns, (repeat as { agentsStopped: number }).agentsStopped], [0, 1]);
 });
 
 test('a thread runner settles its waiting jobs unrun, reports the running one, and a Flue instance loses its alarm', async () => {
