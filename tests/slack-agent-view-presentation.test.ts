@@ -3255,11 +3255,12 @@ test('a refused run ends its open stream as shown, adds no text, and records it 
   const h = harness({ schemaVersion: 3 });
   try {
     openStream(h);
-    assert.equal(await h.presentation.sealStreamWithoutReply(), true);
-    const stops = h.calls.filter((call) => call.method === 'chat.stopStream');
-    assert.deepEqual(stops.map((call) => call.input), [{ channel: ROOT.channelId, ts: '1785700100.000201' }]);
+    await h.presentation.sealStreamWithoutReply();
+    const stops = () => h.calls.filter((call) => call.method === 'chat.stopStream');
+    assert.deepEqual(stops().map((call) => call.input), [{ channel: ROOT.channelId, ts: '1785700100.000201' }]);
     assert.equal(h.store.get(h.runId)!.stream.state, 'artifact_delivered', 'ended, not finalizing awaiting a repair');
-    assert.equal(await h.presentation.sealStreamWithoutReply(), false, 'an ended stream is not stopped again');
+    await h.presentation.sealStreamWithoutReply();
+    assert.equal(stops().length, 1, 'an ended stream is not stopped again');
   } finally {
     h.db.close();
   }
@@ -3283,7 +3284,7 @@ test('a refused run ends its open stream as shown, adds no text, and records it 
   const halted = harness({ schemaVersion: 3, stopStreamError: slackPlatformError('message_not_in_streaming_state') });
   try {
     openStream(halted);
-    assert.equal(await halted.presentation.sealStreamWithoutReply(), true);
+    await halted.presentation.sealStreamWithoutReply();
     assert.equal(halted.store.get(halted.runId)!.stream.state, 'artifact_delivered');
   } finally {
     halted.db.close();
@@ -3294,7 +3295,7 @@ test('a refused run closes a V2 native task card as failed while ending its stre
   const h = harness({ schemaVersion: 2, native: true, tasks: ['Read the thread', 'Draft a reply'] });
   try {
     openStream(h);
-    assert.equal(await h.presentation.sealStreamWithoutReply(), true);
+    await h.presentation.sealStreamWithoutReply();
     const stop = h.calls.find((call) => call.method === 'chat.stopStream')!;
     const chunks = stop.input.chunks as Array<{ type: string; status?: string }>;
     assert.ok(chunks.length > 0);

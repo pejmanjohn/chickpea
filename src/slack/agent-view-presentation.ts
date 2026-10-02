@@ -1670,13 +1670,13 @@ export class SlackAgentViewPresentation {
    * is recorded only once Slack accepts it (or reports the stream already
    * sealed): a stop that adds no text cannot repeat anything, and one whose
    * effect is unknown leaves the row streaming instead of claiming a repair
-   * that nothing performs. Slack seals an idle stream on its own. Returns
-   * whether there was an open stream to end.
+   * that nothing performs. Slack seals an idle stream on its own. A stream
+   * not open is left as it is.
    */
-  async sealStreamWithoutReply(): Promise<boolean> {
+  async sealStreamWithoutReply(): Promise<void> {
     let presentation = await this.requirePresentation();
     const messageTs = presentation.stream.messageTs;
-    if (presentation.stream.state !== 'streaming' || !messageTs || presentation.stream.pendingAppend) return false;
+    if (presentation.stream.state !== 'streaming' || !messageTs || presentation.stream.pendingAppend) return;
     const nativeTasks = presentationUsesNativeTasks(presentation);
     const chunks = nativeTasks ? terminalTaskChunks(presentation, 'error') : [];
     try {
@@ -1701,7 +1701,6 @@ export class SlackAgentViewPresentation {
       kind: 'mark_artifact_delivered',
       outcome: presentation.stream.presentationOutcome ?? 'terminal_only',
     });
-    return true;
   }
 
   async markCanonicalFinalized(): Promise<void> {
