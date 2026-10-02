@@ -2,7 +2,7 @@ import * as sqliteIdentityStoreModule from '../identity/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { IdentityStateError } from '../identity/errors.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
+import { HOSTED_SLACK_INSTALLATION_ID, WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type {
   IdentityStore,
   SlackCredentialRevision,
@@ -157,7 +157,7 @@ export async function prepareSlackCredentialBundle(
   dependencies: SlackCredentialDependencies,
   input: StageSlackCredentialBundleInput,
 ): Promise<StageSlackCredentialRevisionInput> {
-  validateBundleShape(input.identityClass, input.purpose, input.secrets);
+  validateBundleShape(input.identityId, input.identityClass, input.purpose, input.secrets);
   const existingControl = await dependencies.state.getSlackCredentialControl();
   const control = existingControl ?? await dependencies.state.ensureSlackCredentialControl({
     currentKeyId: dependencies.keyring.currentKeyId,
@@ -370,6 +370,34 @@ export async function writeSlackInstallationCredentials(
   });
   const promoted = await promoteSlackCredentialBundle(dependencies, {
     identityId,
+    candidateRevision: candidate.revision,
+    expectedActiveRevision: expectedRevision,
+  });
+  return promoted.revision;
+}
+
+/** An installation's granted bot token, with the app, team and bot user it was granted for. */
+export async function writeHostedSlackBotCredentials(
+  dependencies: SlackCredentialDependencies,
+  expectedRevision: string | null,
+  values: Required<Pick<SlackInstallationCredentialWrite,
+    'botToken' | 'botUserId' | 'appId' | 'teamId' | 'grantedScopes' | 'validatedAt'>>,
+): Promise<string> {
+  const candidate = await stageSlackCredentialBundle(dependencies, {
+    identityId: HOSTED_SLACK_INSTALLATION_ID,
+    identityClass: 'workspace_installation',
+    purpose: 'connected_credentials',
+    expectedActiveRevision: expectedRevision,
+    appId: values.appId,
+    teamId: values.teamId,
+    botUserId: values.botUserId,
+    grantedScopes: values.grantedScopes,
+    validatedAt: values.validatedAt,
+    manifestFingerprint: null,
+    secrets: { botToken: values.botToken },
+  });
+  const promoted = await promoteSlackCredentialBundle(dependencies, {
+    identityId: HOSTED_SLACK_INSTALLATION_ID,
     candidateRevision: candidate.revision,
     expectedActiveRevision: expectedRevision,
   });
@@ -626,6 +654,7 @@ function missingCredentials(): ResolvedSlackInstallationCredentials {
 }
 
 function validateBundleShape(
+  identityId: string,
   identityClass: SlackCredentialIdentityClass,
   purpose: SlackCredentialPurpose,
   secrets: Record<string, string>,
@@ -649,6 +678,12 @@ function validateBundleShape(
   const allowed = identityClass === 'workspace_installation' &&
     (purpose === 'app_credentials' || purpose === 'connected_credentials');
   if (!allowed) throw new Error('Slack credential purpose does not match its identity class.');
+  if (identityId === HOSTED_SLACK_INSTALLATION_ID) {
+    if (purpose !== 'connected_credentials' || names.join() !== 'botToken') {
+      throw new Error('A hosted Slack installation bundle holds only its bot token.');
+    }
+    return;
+  }
   const hasApp = names.includes('clientId') && names.includes('clientSecret');
   const partialApp = names.includes('clientId') !== names.includes('clientSecret');
   if (partialApp || !names.includes('signingSecret')) {

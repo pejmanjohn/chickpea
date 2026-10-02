@@ -784,6 +784,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'auth_operation_reservation') throw unexpectedIdentityResponse();
     return { operation: response.operation, created: response.created };
   }
+  async reserveInstallerOwner(input: CreateAuthOperationInput) {
+    const response = await this.execute({ kind: 'reserve_installer_owner', input });
+    if (response.kind !== 'auth_operation' || !response.operation) throw unexpectedIdentityResponse();
+    return response.operation;
+  }
   async getAuthOperation(operationId: string) {
     const response = await this.execute({ kind: 'get_auth_operation', operationId });
     if (response.kind !== 'auth_operation') throw unexpectedIdentityResponse();

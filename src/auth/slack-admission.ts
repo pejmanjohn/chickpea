@@ -15,15 +15,13 @@ import {
   type SlackCredentialDependencies,
 } from '../slack/installation-credentials.ts';
 import { safeSetupDestination, safeSlackLoginDestination } from './setup-handoff.ts';
-import {
-  createBetterAuth,
-  type BetterAuthAdmissionOperation,
-  type BetterAuthPrivateSeam,
-} from './better-auth.ts';
+import { activeAdmission } from './admission-operation.ts';
+import { createBetterAuth, type BetterAuthPrivateSeam } from './better-auth.ts';
 import type { BetterAuthEnvironment } from './better-auth-environment.ts';
 import {
   SlackOidcError,
   SlackOidcGateway,
+  standaloneSlackOidcCredentials,
   type SlackOidcProvider,
   type SlackOidcGatewayDependencies,
 } from './slack-oidc.ts';
@@ -108,7 +106,7 @@ export class SlackAdmissionService {
     this.now = dependencies.now ?? Date.now;
     this.randomBytes = dependencies.randomBytes ?? ((length) => nodeRandomBytes(length));
     this.gateway = dependencies.gateway ?? new SlackOidcGateway({
-      credentials: dependencies.credentials,
+      credentials: standaloneSlackOidcCredentials(dependencies.credentials),
       ...(dependencies.fetch ? { fetch: dependencies.fetch } : {}),
       ...(dependencies.slackApiBaseUrl
         ? {
@@ -751,22 +749,6 @@ export class SlackAdmissionService {
       resultCode,
     });
   }
-}
-
-function activeAdmission(operation: AuthOperation | undefined): BetterAuthAdmissionOperation | null {
-  if (!operation || operation.status !== 'active' || !operation.chickpeaRole ||
-      !operation.betterAuthUserId || !operation.betterAuthOrganizationId ||
-      !operation.betterAuthMembershipId || !operation.chickpeaMembershipId) return null;
-  return {
-    operationId: operation.id,
-    status: operation.status,
-    chickpeaRole: operation.chickpeaRole,
-    slackTeamId: operation.expectedSlackTeamId,
-    slackUserId: operation.expectedSlackUserId,
-    betterAuthUserId: operation.betterAuthUserId,
-    betterAuthOrganizationId: operation.betterAuthOrganizationId,
-    betterAuthMembershipId: operation.betterAuthMembershipId,
-  };
 }
 
 function requireBrowserBinding(value: string): void {

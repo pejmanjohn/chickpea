@@ -160,6 +160,27 @@ test('Cloudflare proxy forwards Slack-keyed operation reservations', async () =>
   assert.deepEqual(calls, [{ kind: 'reserve_pending_auth_operation', input }]);
 });
 
+test('Cloudflare proxy forwards an installer first-Owner reservation', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const input = {
+    kind: 'first_owner_claim' as const, organizationId: 'org_acme', chickpeaRole: 'owner' as const,
+    expectedSlackTeamId: 'T_ACME', expectedSlackUserId: 'U_OWNER',
+    capabilityHash: 'b'.repeat(64), expiresAt: 20,
+  };
+  const operation = {
+    id: 'authop_1', kind: 'first_owner_claim' as const, organizationId: 'org_acme',
+    expectedSlackTeamId: 'T_ACME', expectedSlackUserId: 'U_OWNER', chickpeaRole: 'owner' as const,
+    capabilityHash: 'b'.repeat(64), status: 'reserved' as const, step: 0,
+    betterAuthUserId: null, betterAuthOrganizationId: null, betterAuthMembershipId: null,
+    chickpeaMembershipId: null, expiresAt: 20, activatedAt: null, tombstonedAt: null,
+    createdAt: 10, updatedAt: 10,
+  };
+  const store = new CfIdentityStore(rpcStub(calls, { kind: 'auth_operation', operation }));
+
+  assert.deepEqual(await store.reserveInstallerOwner(input), operation);
+  assert.deepEqual(calls, [{ kind: 'reserve_installer_owner', input }]);
+});
+
 test('Cloudflare proxy forwards encrypted credential revisions without projection changes', async () => {
   const calls: IdentityRpcRequest[] = [];
   const input = {

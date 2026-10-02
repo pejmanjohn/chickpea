@@ -12,9 +12,11 @@ import {
   SLACK_OIDC_TOKEN_URL,
   SLACK_OIDC_USERINFO_URL,
   SlackOidcGateway,
+  standaloneSlackOidcCredentials,
 } from '../src/auth/slack-oidc.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { SlackOidcAttempt } from '../src/identity/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
   promoteSlackCredentialBundle,
@@ -75,7 +77,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     let userInfoTeam = 'TACME';
     let deleted = false;
     const gateway = new SlackOidcGateway({
-      credentials,
+      credentials: standaloneSlackOidcCredentials(credentials),
       now: () => now,
       jwks: createLocalJWKSet({ keys: [jwk] }),
       fetch: (async (input, init) => {
@@ -98,7 +100,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
       }) as typeof fetch,
     });
     const proof = await gateway.exchangeAndVerify({
-      attempt: {
+      attempt: storedAttempt({
         id: 'oidc_attempt', purpose: 'first_owner', operationId: 'operation', invitationId: null,
         setupId: 'setup_default', setupRevision: 9,
         stateHash: 'a'.repeat(64), nonceHash: sha256(nonce), browserHash: 'b'.repeat(64),
@@ -108,7 +110,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
         admittedTeamId: null, admittedSlackUserId: null,
         status: 'processing', leaseGeneration: 1, leaseExpiresAt: now + 60_000,
         resultCode: null, expiresAt: now + 15 * 60_000, createdAt: now, updatedAt: now,
-      },
+      }),
       code: 'oidc-code-secret', nonce,
     });
     assert.deepEqual(proof, {
@@ -127,7 +129,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     userInfoTeam = 'TOTHER';
     await assert.rejects(
       () => gateway.exchangeAndVerify({
-        attempt: {
+        attempt: storedAttempt({
           id: 'oidc_attempt_2', purpose: 'login', operationId: null, invitationId: null,
           setupId: null, setupRevision: null,
           stateHash: 'c'.repeat(64), nonceHash: sha256(nonce), browserHash: 'd'.repeat(64),
@@ -136,7 +138,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
           expectedTeamId: 'TACME', expectedSlackUserId: null, admittedTeamId: null, admittedSlackUserId: null,
           status: 'processing', leaseGeneration: 1, leaseExpiresAt: now + 60_000,
           resultCode: null, expiresAt: now + 15 * 60_000, createdAt: now, updatedAt: now,
-        },
+        }),
         code: 'second-code', nonce,
       }),
       (error: unknown) => error instanceof Error && 'code' in error && error.code === 'invalid_token',
@@ -145,7 +147,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     deleted = true;
     await assert.rejects(
       () => gateway.exchangeAndVerify({
-        attempt: {
+        attempt: storedAttempt({
           id: 'oidc_attempt_3', purpose: 'login', operationId: null, invitationId: null,
           setupId: null, setupRevision: null,
           stateHash: 'e'.repeat(64), nonceHash: sha256(nonce), browserHash: 'f'.repeat(64),
@@ -154,7 +156,7 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
           expectedTeamId: 'TACME', expectedSlackUserId: null, admittedTeamId: null, admittedSlackUserId: null,
           status: 'processing', leaseGeneration: 1, leaseExpiresAt: now + 60_000,
           resultCode: null, expiresAt: now + 15 * 60_000, createdAt: now, updatedAt: now,
-        },
+        }),
         code: 'third-code', nonce,
       }),
       (error: unknown) => error instanceof Error && 'code' in error && error.code === 'inactive_user',
@@ -163,6 +165,11 @@ test('confidential Slack OIDC validates pinned JWT, userinfo, and active human m
     identity.close();
   }
 });
+
+/** A whole stored attempt, as the admission service passes it. */
+function storedAttempt(attempt: SlackOidcAttempt): SlackOidcAttempt {
+  return attempt;
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
