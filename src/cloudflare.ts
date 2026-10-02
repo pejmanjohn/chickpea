@@ -73,7 +73,11 @@ import type {
   RuntimeDrainStatus,
 } from './config/state-rpc.ts';
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
-import { installationOwnershipOf, objectInstallationEnv } from './config/installation-scope.ts';
+import {
+  installationOwnershipOf,
+  objectInstallationEnv,
+  requireInstallationScope,
+} from './config/installation-scope.ts';
 import { promiseBackedStatePort } from './config/local-state-port.ts';
 import { localSlackStateStore } from './slack/local-state-store.ts';
 import { UiSurfaceStoreLogic, type UiSurfaceRpcRequest } from './slack/ui/surface-store.ts';
@@ -1035,6 +1039,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
    */
   private tryInit(): TagStateStores | undefined {
     try {
+      // An object no installation's name addresses serves nothing.
+      requireInstallationScope(this.env as PlatformEnv);
       const fingerprint = stateSchemaFingerprint(
         cloudflareWorkerVersionId(this.env),
         applicationIdentity,
@@ -1079,7 +1085,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
     // Same construction order as the node backend: each logic class creates
     // its own tables (and the config store runs migrations + seedOnce), so a
     // fresh DO is fully seeded before it answers its first RPC.
-    const installationBinding = new InstallationBindingLogic(db);
+    const installationBinding = new InstallationBindingLogic(db, this.env as PlatformEnv);
     const stores = {
       installationBinding,
       identity: new IdentityStoreLogic(db, {

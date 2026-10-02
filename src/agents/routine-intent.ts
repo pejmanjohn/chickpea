@@ -62,7 +62,6 @@ export function ChickpeaRoutineIntent() {
 
 // Must stay a static literal — see the note on ChickpeaRoutineExecution.
 ChickpeaRoutineIntent.agentName = 'chickpea-routine-intent-v2';
-/** Its object serves the installation its instance ID names (cloudflare-extension.ts). */
 export const cloudflare = installationAgentExtension;
 ChickpeaRoutineIntent.initialData = RoutineIntentInitialDataSchema;
 

@@ -586,7 +586,7 @@ function decodeJob(row: Record<string, unknown>): ThreadRunnerJobRecord {
     threadKey: String(row.thread_key),
     payload: JSON.parse(String(row.job_json)),
     ...(typeof row.installation_id === 'string'
-      ? { installation: parseInstallationOwnership({ version: 1, installationId: row.installation_id }) }
+      ? { installation: { version: 1, installationId: row.installation_id } }
       : {}),
     state: String(row.state) as ThreadRunnerJobState,
     ...(row.retry_at === null || row.retry_at === undefined ? {} : { retryAt: Number(row.retry_at) }),

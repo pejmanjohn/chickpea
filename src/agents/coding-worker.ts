@@ -161,7 +161,6 @@ export async function prepareCodingModel(
 
 // MUST stay a top-level string literal: see the note on ChickpeaRoutineExecution.
 CodingWorker.agentName = 'chickpea-coding-worker-v1';
-/** Its object serves the installation its instance ID names (cloudflare-extension.ts). */
 export const cloudflare = installationAgentExtension;
 CodingWorker.initialData = v.custom<CodingWorkerBindingV1>((value) => {
   try {

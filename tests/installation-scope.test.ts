@@ -24,10 +24,12 @@ test('standalone deployments keep every name and need no scope', () => {
   assert.equal(requireInstallationScope({}), undefined);
   assert.equal(installationObjectName({}, 'T1:C1:1.0'), 'T1:C1:1.0');
   assert.equal(tagStateInstanceName({}), 'singleton');
+  assert.equal(deploymentTenancy({ CHICKPEA_TENANCY: 'standalone' }), 'standalone');
   const env = {};
-  assert.equal(objectInstallationEnv({ id: { name: 'i1~inst_a~singleton' } }, env), env);
+  assert.equal(objectInstallationEnv({ id: { name: 'singleton' } }, env), env);
+  assert.throws(() => objectInstallationEnv({ id: { name: 'i1~inst_a~singleton' } }, env), /serves no installation/);
   assert.throws(() => scopeInstallationEnv({}, { installationId: 'inst_a' }), /installation tenancy/);
-  assert.throws(() => deploymentTenancy({ CHICKPEA_TENANCY: 'hosted' }), /must be "installation"/);
+  assert.throws(() => deploymentTenancy({ CHICKPEA_TENANCY: 'hosted' }), /must be "standalone", "installation" or unset/);
 });
 
 test('an installation scope is an immutable copy that keeps every binding', () => {

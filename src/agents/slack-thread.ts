@@ -1181,7 +1181,6 @@ export function useRuntimePlanAgent(
     turn?: TurnEnvelopeContext;
   } = {},
 ): void {
-  // This object's env serves the installation its instance ID names.
   assertRuntimePlanInstallation(plan, id);
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
   const fileCompletion = useFileDeliveryCompletion(plan, (fileIds) => {

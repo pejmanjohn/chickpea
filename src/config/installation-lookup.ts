@@ -1,4 +1,5 @@
 import type { InstallationIdentity } from '../identity/installation-binding.ts';
+import type { RoutineScheduledHandler } from '../routines/scheduler-adapter.ts';
 import { InstallationContextError, scopeInstallationEnv } from './installation-scope.ts';
 
 /** Where a host's registry says an installation stands. Only `active` admits work. */
@@ -44,36 +45,30 @@ export async function resolveInstallationEnv<E extends Record<string, unknown>>(
   return scopeInstallationEnv(env, { installationId: record.identity.installationId });
 }
 
-interface ScheduledController { scheduledTime: number }
-interface ScheduledContext { waitUntil(promise: Promise<unknown>): void }
-interface ScheduledHandler {
-  scheduled(controller: ScheduledController, env: Record<string, unknown>, context: ScheduledContext): void;
-}
-
 /**
  * A Worker `scheduled` handler that runs Core's once for each active
  * installation, each with that installation's env, so background work never
- * reaches a store without one.
+ * reaches a store without one. Each installation settles on its own: one
+ * failing, including on an unusable record, never holds back the others.
  */
 export function scheduledForEachInstallation(
-  handler: ScheduledHandler,
+  handler: RoutineScheduledHandler,
   lookupFor: (env: Record<string, unknown>) => InstallationLookup,
-): ScheduledHandler {
+): RoutineScheduledHandler {
   return {
     scheduled(controller, env, context) {
       context.waitUntil(lookupFor(env).listActive().then((installations) => {
         for (const installation of installations) {
-          if (installation.status !== 'active') continue;
-          // One unusable record never holds back every other installation's duties.
-          try {
-            handler.scheduled(
+          context.waitUntil(Promise.resolve()
+            .then(() => handler.scheduled(
               controller,
               scopeInstallationEnv(env, { installationId: installation.identity.installationId }),
               context,
-            );
-          } catch {
-            console.error('[chickpea] Scheduled duties skipped an installation with an invalid record');
-          }
+            ))
+            .catch((error: unknown) => {
+              console.error('[chickpea] Scheduled duties failed for one installation:',
+                error instanceof Error ? error.message : String(error));
+            }));
         }
       }));
     },

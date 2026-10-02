@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 
 import type { Api, Model } from '@earendil-works/pi-ai';
 
+import {
+  deploymentTenancy,
+  installationCacheKey,
+  InstallationContextError,
+} from './installation-scope.ts';
 import { forgetRegisteredProvider, recordRegisteredProvider } from './providers.ts';
 import { setBuiltinPiProvider } from './pi-provider.ts';
 import { rotateStoredModelCredential } from './model-credential-refs.ts';
@@ -48,7 +53,9 @@ const STORED_CACHE_TTL_MS = 5_000;
 type StoredProviderKeys = Partial<Record<ProviderKeyId, string>>;
 type ProviderRegistrationOptions = { apiKey?: string; baseUrl?: string };
 
-let storedCache: { expiresAt: number; values: StoredProviderKeys } | undefined;
+// Keyed by installation: a deployment serving many keeps each one's keys apart.
+const storedCache = new Map<string, { expiresAt: number; values: StoredProviderKeys }>();
+const STORED_CACHE_MAX_INSTALLATIONS = 64;
 const appliedProviderFingerprints = new Map<ProviderKeyId, string>();
 const appliedProviderModelOverlays = new Map<ProviderKeyId, Map<string, Model<Api>>>();
 // The credential each rebind applied, so an overlay added during a synchronous
@@ -124,7 +131,7 @@ export async function saveProviderApiKey(
   );
   await primeStoredProviderKeysFromStore(env, settings);
   const resolved = await resolveProviderApiKey(id, env, settings);
-  rebindBuiltinProvider(id, resolved.apiKey);
+  if (isolateBindsModelCredentials(env)) rebindBuiltinProvider(id, resolved.apiKey);
 }
 
 export async function deleteProviderApiKey(
@@ -142,7 +149,7 @@ export async function deleteProviderApiKey(
   );
   await primeStoredProviderKeysFromStore(env, settings);
   const resolved = await resolveProviderApiKey(id, env, settings);
-  rebindBuiltinProvider(id, resolved.apiKey);
+  if (isolateBindsModelCredentials(env)) rebindBuiltinProvider(id, resolved.apiKey);
   return resolved;
 }
 
@@ -150,6 +157,7 @@ export async function applyResolvedProviderKeys(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
+  if (!isolateBindsModelCredentials(env)) return;
   // One stored read covers every provider; resolving each id separately read
   // the same three settings once per provider on every Admin request.
   const stored = PROVIDER_KEY_IDS.every((id) => envApiKey(id))
@@ -166,8 +174,28 @@ export async function applyResolvedProviderKey(
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
+  requireIsolateModelCredentials(env);
   const { apiKey } = await resolveProviderApiKey(id, env, store);
   rebindBuiltinProvider(id, apiKey);
+}
+
+/**
+ * Standalone binds a provider's key to the isolate's built-in provider. A
+ * deployment serving many installations shares that isolate between them, so
+ * it never does: its model calls fail closed until credentials are bound per
+ * run.
+ */
+export function isolateBindsModelCredentials(env: PlatformEnv | undefined): boolean {
+  return deploymentTenancy(env) === 'standalone';
+}
+
+export function requireIsolateModelCredentials(env: PlatformEnv | undefined): void {
+  if (!isolateBindsModelCredentials(env)) {
+    throw new InstallationContextError(
+      'installation_context_invalid',
+      'A deployment serving many installations does not bind model credentials to the isolate.',
+    );
+  }
 }
 
 /**
@@ -222,7 +250,7 @@ export function builtinProviderModelOverlay(
 }
 
 export function invalidateProviderKeyCache(): void {
-  storedCache = undefined;
+  storedCache.clear();
   appliedProviderFingerprints.clear();
   appliedProviderModelOverlays.clear();
   appliedProviderApiKeys.clear();
@@ -233,17 +261,16 @@ async function readStoredProviderKeys(
   store?: SettingsStore,
 ): Promise<StoredProviderKeys> {
   const now = Date.now();
-  if (!store && storedCache && storedCache.expiresAt > now) {
-    return storedCache.values;
+  const cached = store ? undefined : storedCache.get(installationCacheKey(env));
+  if (cached && cached.expiresAt > now) {
+    return cached.values;
   }
   const settings = store ?? getSettingsStore(env);
   const entries = await Promise.all(
     PROVIDER_KEY_IDS.map(async (id) => [id, nonEmpty(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS[id]))] as const),
   );
   const values = Object.fromEntries(entries.filter((entry) => entry[1])) as StoredProviderKeys;
-  if (!store) {
-    storedCache = { expiresAt: now + STORED_CACHE_TTL_MS, values };
-  }
+  if (!store) cacheStoredProviderKeys(env, { expiresAt: now + STORED_CACHE_TTL_MS, values });
   return values;
 }
 
@@ -251,10 +278,19 @@ async function primeStoredProviderKeysFromStore(
   env: PlatformEnv | undefined,
   store: SettingsStore,
 ): Promise<void> {
-  storedCache = {
+  cacheStoredProviderKeys(env, {
     expiresAt: Date.now() + STORED_CACHE_TTL_MS,
     values: await readStoredProviderKeys(env, store),
-  };
+  });
+}
+
+function cacheStoredProviderKeys(
+  env: PlatformEnv | undefined,
+  entry: { expiresAt: number; values: StoredProviderKeys },
+): void {
+  const key = installationCacheKey(env);
+  if (!storedCache.has(key) && storedCache.size >= STORED_CACHE_MAX_INSTALLATIONS) storedCache.clear();
+  storedCache.set(key, entry);
 }
 
 function envApiKey(id: ProviderKeyId): string | undefined {

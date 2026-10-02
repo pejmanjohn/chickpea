@@ -1,4 +1,4 @@
-import { objectInstallationEnv } from '../config/installation-scope.ts';
+import { objectInstallationEnv, type ObjectContext } from '../config/installation-scope.ts';
 
 /**
  * The branded descriptor Flue's generated Cloudflare entry reads from an
@@ -10,7 +10,6 @@ import { objectInstallationEnv } from '../config/installation-scope.ts';
 export const FLUE_CLOUDFLARE_EXTENSION_BRAND = Symbol.for('@flue/runtime/cloudflare-extension');
 
 type AgentObjectClass = new (...args: never[]) => object;
-type AgentObjectContext = { id: { name?: string } };
 
 /**
  * An agent object serves the installation its instance ID names, so its
@@ -18,9 +17,9 @@ type AgentObjectContext = { id: { name?: string } };
  * installation's env (see installation-scope.ts). Standalone: unchanged.
  */
 export function installationAgentObject(Base: AgentObjectClass): AgentObjectClass {
-  const Agent = Base as new (ctx: AgentObjectContext, env: unknown) => object;
+  const Agent = Base as new (ctx: ObjectContext, env: unknown) => object;
   return class InstallationAgentObject extends Agent {
-    constructor(ctx: AgentObjectContext, env: unknown) {
+    constructor(ctx: ObjectContext, env: unknown) {
       super(ctx, objectInstallationEnv(ctx, env));
     }
   };

@@ -685,7 +685,6 @@ function installationId(
   platformEnv: PlatformEnv | undefined,
   processEnv: NodeJS.ProcessEnv = process.env,
 ): string {
-  // A deployment serving many installations records each one's own.
   const scope = installationScopeOf(platformEnv);
   if (scope) return scope.installationId;
   const configured = platformEnv?.CHICKPEA_INSTALLATION_ID ?? processEnv.CHICKPEA_INSTALLATION_ID;

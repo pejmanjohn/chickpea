@@ -101,7 +101,6 @@ export function routineArtifactPlan(
 // value for runtime policy, and `tests/agent-names.test.ts` asserts the two
 // never drift apart.
 ChickpeaRoutineExecution.agentName = 'chickpea-routine-execution-v2';
-/** Its object serves the installation its instance ID names (cloudflare-extension.ts). */
 export const cloudflare = installationAgentExtension;
 ChickpeaRoutineExecution.durability = CHICKPEA_SUBMISSION_DURABILITY;
 ChickpeaRoutineExecution.initialData = v.custom<RoutineExecutionInitialData>((value) => {

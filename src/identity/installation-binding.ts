@@ -1,4 +1,9 @@
-import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
+import {
+  deploymentTenancy,
+  InstallationContextError,
+  requireInstallationScope,
+  validInstallationIdentityId,
+} from '../config/installation-scope.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 
 /** The organization and installation an identity store's records belong to. */
@@ -13,21 +18,20 @@ export const STANDALONE_INSTALLATION_IDENTITY: InstallationIdentity = Object.fre
   installationId: 'installation_oss',
 });
 
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
 /**
  * The globally unique IDs a multi-installation host assigned to this state
- * store, written once when it provisions the installation. Kept outside the
- * identity schema ledger so a standalone store never migrates for it and an
- * earlier release ignores the table.
+ * store, written once when it provisions the installation. Only a store
+ * serving many installations creates its table, outside the identity schema
+ * ledger, so a standalone store never migrates for it and an earlier release
+ * ignores it.
  */
 export class InstallationBindingLogic {
   private readonly db: StateDb;
   private bound: InstallationIdentity | undefined;
 
-  constructor(db: StateDb) {
+  constructor(db: StateDb, env: Record<string, unknown> | undefined) {
     this.db = db;
-    if (schemaInstallRequired(db)) {
+    if (deploymentTenancy(env) === 'installation' && schemaInstallRequired(db)) {
       db.exec(`CREATE TABLE IF NOT EXISTS installation_binding (
         binding_key TEXT PRIMARY KEY CHECK (binding_key = 'installation'),
         organization_id TEXT NOT NULL,
@@ -53,8 +57,8 @@ export class InstallationBindingLogic {
   /** Idempotent for the same IDs; a store is never rebound to others. */
   bind(input: InstallationIdentity, now = Date.now()): InstallationIdentity {
     const identity = {
-      organizationId: validId(input.organizationId, 'organization'),
-      installationId: validId(input.installationId, 'installation'),
+      organizationId: validInstallationIdentityId(input.organizationId, 'organization'),
+      installationId: validInstallationIdentityId(input.installationId, 'installation'),
     };
     if (identity.organizationId === STANDALONE_INSTALLATION_IDENTITY.organizationId ||
         identity.installationId === STANDALONE_INSTALLATION_IDENTITY.installationId) {
@@ -106,15 +110,8 @@ export function bindStoreInstallation(
   identity: InstallationIdentity,
 ): InstallationIdentity {
   const scope = requireInstallationScope(env);
-  if (!scope || identity?.installationId !== scope.installationId) {
+  if (!scope || identity.installationId !== scope.installationId) {
     throw new InstallationContextError('installation_context_mismatch', 'Only this installation can be bound here.');
   }
   return binding.bind(identity);
-}
-
-function validId(value: unknown, kind: 'organization' | 'installation'): string {
-  if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
-    throw new InstallationContextError('installation_context_invalid', `The ${kind} ID is malformed.`);
-  }
-  return value;
 }

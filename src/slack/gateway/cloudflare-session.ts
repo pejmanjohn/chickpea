@@ -2,6 +2,7 @@ import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from './http-delivery.ts
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
+import { deploymentTenancy } from '../../config/installation-scope.ts';
 import { getSettingsStore, type PlatformEnv } from '../../config/state-backend.ts';
 import { tagStateStub } from '../../config/state-rpc.ts';
 import { cloudflareWorkerVersionId } from '../../config/cloudflare-version.ts';
@@ -231,6 +232,7 @@ export async function wakeCloudflareGatewaySession(
   // Custom Worker environments created before the shared-app lane may not
   // expose this binding yet. Maintenance must remain safe while the gateway
   // is unused; an actual shared-app setup still fails closed in the client.
-  if (!namespace) return;
+  // A deployment serving many installations has no shared-app session.
+  if (!namespace || deploymentTenancy(rawEnv) === 'installation') return;
   await namespace.get(namespace.idFromName('deployment')).wake();
 }

@@ -8,11 +8,13 @@ import { test } from 'node:test';
 import {
   assertRuntimePlanInstallation,
   compileRuntimePlanV2,
+  deriveLegacyRuntimePlanInstanceId,
   deriveRuntimePlanInstanceId,
   isRuntimePlanInstanceId,
   parseRuntimePlanV2,
   runtimePlanInstanceIdMatches,
 } from '../src/agents/runtime-plan.ts';
+import { installationAgentObject } from '../src/agents/cloudflare-extension.ts';
 import { createSlackTurnInput, parseSlackTurnInput } from '../src/agents/turn-input.ts';
 import { CfIdentityStore, CfSettingsStore, FreshTagStateStubs } from '../src/config/cf-state-proxies.ts';
 import {
@@ -28,7 +30,13 @@ import {
   installationScopeOf,
   objectInstallationEnv,
   scopeInstallationEnv,
+  splitInstallationObjectName,
 } from '../src/config/installation-scope.ts';
+import {
+  applyResolvedProviderKey,
+  applyResolvedProviderKeys,
+  isolateBindsModelCredentials,
+} from '../src/config/provider-keys.ts';
 import { SettingsStoreLogic } from '../src/config/settings-store.ts';
 import { tagStateStub, type TagStateRpc } from '../src/config/state-rpc.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
@@ -111,7 +119,7 @@ function stateNamespace() {
       if (!object) {
         const db = new NodeStateDb(new DatabaseSync(':memory:'));
         const env = objectInstallationEnv({ id: { name } }, HOSTED as Record<string, unknown>);
-        const binding = new InstallationBindingLogic(db);
+        const binding = new InstallationBindingLogic(db, env);
         const identity = new IdentityStoreLogic(db, { installation: () => storeInstallationIdentity(binding, env) });
         const settings = new SettingsStoreLogic(db);
         const call = <T>(fn: () => T) => {
@@ -181,9 +189,9 @@ test('the installation binding survives a restart and standalone keeps its fixed
     const file = join(dir, 'state.db');
     const env = objectInstallationEnv({ id: { name: 'i1~inst_tenant_a~singleton' } }, HOSTED);
     const first = new DatabaseSync(file);
-    assert.deepEqual(bindStoreInstallation(new InstallationBindingLogic(new NodeStateDb(first)), env, A), A);
+    assert.deepEqual(bindStoreInstallation(new InstallationBindingLogic(new NodeStateDb(first), env), env, A), A);
     first.close();
-    const restarted = new InstallationBindingLogic(new NodeStateDb(new DatabaseSync(file)));
+    const restarted = new InstallationBindingLogic(new NodeStateDb(new DatabaseSync(file)), env);
     assert.deepEqual(storeInstallationIdentity(restarted, env), A);
     assert.deepEqual(bindStoreInstallation(restarted, env, A), A);
     const otherObject = objectInstallationEnv({ id: { name: 'i1~inst_tenant_b~singleton' } }, HOSTED);
@@ -191,7 +199,13 @@ test('the installation binding survives a restart and standalone keeps its fixed
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-  const standalone = new InstallationBindingLogic(new NodeStateDb(new DatabaseSync(':memory:')));
+  const standaloneDb = new DatabaseSync(':memory:');
+  const standalone = new InstallationBindingLogic(new NodeStateDb(standaloneDb), {});
+  assert.equal(
+    standaloneDb.prepare("SELECT name FROM sqlite_master WHERE name = 'installation_binding'").get(),
+    undefined,
+    'a standalone store never creates the binding table',
+  );
   assert.deepEqual(storeInstallationIdentity(standalone, {}), STANDALONE_INSTALLATION_IDENTITY);
   assert.throws(() => bindStoreInstallation(standalone, {}, A), /Only this installation/);
   const hosted = objectInstallationEnv({ id: { name: 'i1~installation_oss~singleton' } }, HOSTED);
@@ -225,6 +239,12 @@ test('a hosted plan names its installation, and its instance is scoped to it', (
   assert.equal(deriveRuntimePlanInstanceId(restored), idA);
   assert.ok(runtimePlanInstanceIdMatches(restored, idA));
   assert.equal(runtimePlanInstanceIdMatches(restored, idB), false);
+  // The per-plan derivation of earlier releases is scoped the same way, so no
+  // derivation of a hosted plan names an unscoped object.
+  const legacyA = deriveLegacyRuntimePlanInstanceId(restored);
+  assert.match(legacyA, /^i1~inst_tenant_a~agent_[a-f0-9]{40}$/);
+  assert.ok(runtimePlanInstanceIdMatches(restored, legacyA));
+  assert.equal(runtimePlanInstanceIdMatches(restored, splitInstallationObjectName(legacyA).name), false);
   // The object named by the instance recovers the plan's installation.
   const objectEnv = objectInstallationEnv({ id: { name: idA } }, HOSTED);
   assertInstallationOwnership(restored.installation, objectEnv);
@@ -328,11 +348,18 @@ test('only an active installation resolves to an env, and cron runs once per act
   const seen: Array<string | undefined> = [];
   const waits: Promise<unknown>[] = [];
   const handler = scheduledForEachInstallation(
-    { scheduled: (_controller, scopedEnv) => { seen.push(installationScopeOf(scopedEnv)?.installationId); } },
+    {
+      scheduled: (_controller, scopedEnv) => {
+        const installationId = installationScopeOf(scopedEnv)?.installationId;
+        seen.push(installationId);
+        // A failure in one installation's duties stays with that installation.
+        if (installationId === A.installationId) throw new Error('duty failed');
+      },
+    },
     () => lookup,
   );
   handler.scheduled({ scheduledTime: 1 }, { ...HOSTED }, { waitUntil: (promise) => { waits.push(promise); } });
-  await Promise.all(waits);
+  while (waits.length) await waits.shift();
   assert.deepEqual(seen, [A.installationId, 'inst_c']);
 });
 
@@ -341,7 +368,7 @@ test('coding sandboxes are not offered to a deployment serving many installation
   assert.equal(sandboxBindingInstalled({ ...HOSTED, SANDBOX: {} } as never), false);
 });
 
-test('every Durable Object class serves the installation its name carries', () => {
+test('the state store, thread runners and Flue agents serve the installation their name carries', () => {
   const source = (path: string) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
   assert.match(source('cloudflare.ts'), /class TagStateStore[\s\S]*?super\(ctx, objectInstallationEnv\(ctx, env\)\)/);
   assert.match(source('slack/thread-runner.ts'), /super\(ctx, objectInstallationEnv\(ctx, env\)\)/);
@@ -350,4 +377,36 @@ test('every Durable Object class serves the installation its name carries', () =
     assert.match(source(`agents/${agent}`), /export const cloudflare = installationAgentExtension;/);
   }
   assert.match(source('agents/slack-thread.ts'), /export const cloudflare = slackThreadCloudflareExtension;/);
+});
+
+test('a Flue agent object hands its base the env of the installation its instance ID names', () => {
+  const received: unknown[] = [];
+  class FakeAgentBase {
+    constructor(_ctx: unknown, env: unknown) { received.push(env); }
+  }
+  const Agent = installationAgentObject(FakeAgentBase) as new (ctx: { id: { name?: string } }, env: unknown) => object;
+  new Agent({ id: { name: 'i1~inst_tenant_a~agent_x' } }, HOSTED);
+  new Agent({ id: { name: 'agent_x' } }, HOSTED);
+  const standalone = {};
+  new Agent({ id: { name: 'agent_x' } }, standalone);
+  assert.deepEqual(installationScopeOf(received[0] as Record<string, unknown>), { installationId: A.installationId });
+  assert.equal(received[1], HOSTED, 'an unscoped name keeps the unscoped env, which fails closed');
+  assert.equal(received[2], standalone, 'standalone is unchanged');
+  assert.throws(
+    () => new Agent({ id: { name: 'i1~inst_tenant_a~agent_x' } }, standalone),
+    /standalone deployment serves no installation/,
+    'a standalone deployment never runs an installation-scoped plan against its own stores',
+  );
+  assert.equal(received.length, 3);
+});
+
+test('a deployment serving many installations never binds a model key to the shared isolate', async () => {
+  const scoped = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
+  const reads: string[] = [];
+  const settings = { getSetting: async (key: string) => { reads.push(key); return 'sk-tenant-a'; } } as never;
+  assert.equal(isolateBindsModelCredentials({}), true);
+  assert.equal(isolateBindsModelCredentials(scoped), false);
+  await assert.rejects(applyResolvedProviderKey('anthropic', scoped, settings), /does not bind model credentials/);
+  await applyResolvedProviderKeys(scoped, settings);
+  assert.deepEqual(reads, [], 'neither reads a key it may not bind');
 });

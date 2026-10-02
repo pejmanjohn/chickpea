@@ -365,7 +365,7 @@ import {
   readRuntimeDrainStatus,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { installationCacheKey } from '../config/installation-scope.ts';
+import { deploymentTenancy, installationCacheKey } from '../config/installation-scope.ts';
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
@@ -11127,7 +11127,7 @@ async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
     idFromName(name: string): unknown;
     get(id: unknown): { restart(): Promise<void> };
   } | undefined;
-  if (!namespace) return;
+  if (!namespace || deploymentTenancy(env) === 'installation') return;
   await namespace.get(namespace.idFromName('deployment')).restart();
 }
 
@@ -11144,6 +11144,10 @@ async function readGatewaySessionStatus(
       confirmDelivery?(): Promise<GatewaySessionStatusSnapshot>;
     };
   } | undefined;
+  // A deployment serving many installations has no shared-app session.
+  if (namespace && deploymentTenancy(env) === 'installation') {
+    return reconcileGatewaySessionStatus(undefined, undefined);
+  }
   if (namespace) {
     try {
       const stub = namespace.get(namespace.idFromName('deployment'));
@@ -11499,7 +11503,9 @@ async function persistRequestOrigin(c: Context, store: SettingsStore): Promise<v
   try {
     await store.setSetting(SLACK_SETTING_KEYS.publicUrl, origin);
     primeStoredSlackPublicUrl(origin, env);
-    if (lastPersistedPublicUrls.size >= MAX_PERSISTED_PUBLIC_URLS) lastPersistedPublicUrls.clear();
+    if (!lastPersistedPublicUrls.has(key) && lastPersistedPublicUrls.size >= MAX_PERSISTED_PUBLIC_URLS) {
+      lastPersistedPublicUrls.clear();
+    }
     lastPersistedPublicUrls.set(key, origin);
   } catch (err) {
     console.error(

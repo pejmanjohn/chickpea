@@ -30,7 +30,7 @@ export interface InstallationScope {
   readonly installationId: string;
 }
 
-/** Nonsecret ownership persisted with the work an installation admits. */
+/** Nonsecret ownership persisted with the work an installation admits; versioned, unlike the in-memory scope. */
 export interface InstallationOwnership {
   readonly version: 1;
   readonly installationId: string;
@@ -60,11 +60,11 @@ const NAME_PREFIX = `${INSTALLATION_OBJECT_NAME_VERSION}${NAME_SEPARATOR}`;
 
 export function deploymentTenancy(env: Env | undefined): DeploymentTenancy {
   const declared = env?.[TENANCY_VARIABLE];
-  if (declared === undefined || declared === '') return 'standalone';
+  if (declared === undefined || declared === '' || declared === 'standalone') return 'standalone';
   if (declared === 'installation') return 'installation';
   throw new InstallationContextError(
     'installation_context_invalid',
-    `${TENANCY_VARIABLE} must be "installation" or unset.`,
+    `${TENANCY_VARIABLE} must be "standalone", "installation" or unset.`,
   );
 }
 
@@ -76,7 +76,7 @@ export function scopeInstallationEnv<E extends Env>(env: E, scope: InstallationS
       'Only a deployment with installation tenancy scopes its env.',
     );
   }
-  const installationId = validId(scope.installationId, 'installation');
+  const installationId = validInstallationIdentityId(scope.installationId, 'installation');
   const current = installationScopeOf(env);
   if (current) {
     if (current.installationId === installationId) return env;
@@ -92,8 +92,7 @@ export function scopeInstallationEnv<E extends Env>(env: E, scope: InstallationS
 }
 
 export function installationScopeOf(env: Env | undefined): InstallationScope | undefined {
-  const scope = (env as { [INSTALLATION_SCOPE]?: InstallationScope } | undefined)?.[INSTALLATION_SCOPE];
-  return scope;
+  return (env as { [INSTALLATION_SCOPE]?: InstallationScope } | undefined)?.[INSTALLATION_SCOPE];
 }
 
 /** Key of a process-wide cache entry holding one installation's data. */
@@ -122,7 +121,7 @@ export function installationObjectName(env: Env | undefined, name: string): stri
 
 export function scopedObjectName(scope: InstallationScope, name: string): string {
   if (!name) throw new InstallationContextError('installation_context_invalid', 'Object names are non-empty.');
-  return `${NAME_PREFIX}${validId(scope.installationId, 'installation')}${NAME_SEPARATOR}${name}`;
+  return `${NAME_PREFIX}${validInstallationIdentityId(scope.installationId, 'installation')}${NAME_SEPARATOR}${name}`;
 }
 
 /** An object name's installation, if it was scoped to one, and its standalone name. */
@@ -143,17 +142,31 @@ export function installationScopeOfObjectName(name: string | undefined): Install
   return name === undefined ? undefined : splitInstallationObjectName(name).scope;
 }
 
+/** What a Durable Object constructor knows about its own address. */
+export interface ObjectContext {
+  readonly id: { readonly name?: string };
+}
+
 /**
  * The env a Durable Object constructor hands its base class. Standalone: the
- * platform env, unchanged. Installation tenancy: scoped to the installation
- * the object's name carries; an object without one keeps an unscoped env, so
- * every store it touches fails closed.
+ * platform env, unchanged, and an object named under an installation refuses
+ * to run rather than serve the standalone stores. Installation tenancy:
+ * scoped to the installation the object's name carries; an object without
+ * one keeps an unscoped env, so every store it touches fails closed.
  */
-export function objectInstallationEnv<E>(ctx: { id: { name?: string } }, env: E): E {
+export function objectInstallationEnv<E>(ctx: ObjectContext, env: E): E {
   const platformEnv = env as Env | undefined;
-  if (deploymentTenancy(platformEnv) === 'standalone') return env;
   const scope = installationScopeOfObjectName(ctx.id.name);
-  return scope ? scopeInstallationEnv(platformEnv!, scope) as E : env;
+  if (!platformEnv || deploymentTenancy(platformEnv) === 'standalone') {
+    if (scope) {
+      throw new InstallationContextError(
+        'installation_context_mismatch',
+        'A standalone deployment serves no installation\'s objects.',
+      );
+    }
+    return env;
+  }
+  return scope ? scopeInstallationEnv(platformEnv, scope) as E : env;
 }
 
 /** The ownership work admitted through this env records: none on standalone. */
@@ -168,7 +181,7 @@ export function parseInstallationOwnership(value: unknown): InstallationOwnershi
       Object.keys(record).some((key) => key !== 'version' && key !== 'installationId')) {
     throw new InstallationContextError('installation_context_invalid', 'Installation ownership is malformed.');
   }
-  return Object.freeze({ version: 1, installationId: validId(record.installationId, 'installation') });
+  return Object.freeze({ version: 1, installationId: validInstallationIdentityId(record.installationId, 'installation') });
 }
 
 /**
@@ -190,7 +203,8 @@ export function assertInstallationOwnership(
   }
 }
 
-function validId(value: unknown, kind: 'installation'): string {
+/** An organization or installation ID a host assigned: short, and safe inside object names. */
+export function validInstallationIdentityId(value: unknown, kind: 'organization' | 'installation'): string {
   if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
     throw new InstallationContextError('installation_context_invalid', `The ${kind} ID is malformed.`);
   }
