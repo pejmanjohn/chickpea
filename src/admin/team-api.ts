@@ -1,6 +1,10 @@
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
+import {
+  revokeBetterAuthUserAccess,
+  type BetterAuthAccessRevoker,
+} from '../auth/better-auth-backend.ts';
 import { AuthorizationError, requirePermission, type Permission } from '../auth/permissions.ts';
 import { invalidRequest as invalid, readJson } from './api-support.ts';
 import { AuthRateLimitError, type AuthRateLimiter } from '../auth/rate-limit.ts';
@@ -30,13 +34,18 @@ interface TeamAdminApiOptions {
     slackTeamId: string,
     slackUserId: string,
   ) => Promise<SlackMember | undefined>;
-  revokeBetterAuthSessions?: (c: Context, betterAuthUserId: string) => Promise<number>;
+  /** This request's Better Auth backend; a changed membership ends its sessions and MCP grants. */
+  betterAuthBackend?: (c: Context) => Promise<BetterAuthAccessRevoker | undefined>;
   management?: (c: Context) => WorkspaceManagementService;
   rateLimiter?: (c: Context) => Promise<AuthRateLimiter | undefined>;
 }
 
 export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   const app = new Hono();
+  const revokeAccess = async (c: Context, betterAuthUserId: string) => {
+    const backend = await options.betterAuthBackend?.(c);
+    if (backend) await revokeBetterAuthUserAccess(backend, betterAuthUserId);
+  };
   // requiredPrincipal() runs before each handler's own try/catch, so in legacy
   // token mode (no request principal) its AuthorizationError would otherwise
   // escape to Hono as an uncaught 500. Route every uncaught handler error
@@ -143,9 +152,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         const membership = await identity.getMembership(membershipId);
         if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
         if (membership.role !== target.role || membership.status !== target.status) {
-          if (binding.betterAuthUserId) {
-            await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
-          }
+          if (binding.betterAuthUserId) await revokeAccess(c, binding.betterAuthUserId);
         }
         return c.json({ membership });
       }
@@ -167,7 +174,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         slackUserId: binding.slackUserId,
       });
       if (result.changed && binding.betterAuthUserId) {
-        await options.revokeBetterAuthSessions?.(c, binding.betterAuthUserId);
+        await revokeAccess(c, binding.betterAuthUserId);
       }
       return c.json({ membership: result.membership });
     } catch (error) {

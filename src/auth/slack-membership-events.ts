@@ -1,4 +1,4 @@
-import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
+import { revokeBetterAuthUserAccess, type BetterAuthAccessRevoker } from './better-auth-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import type { SlackUserChangeEvent } from '../slack/types.ts';
@@ -7,7 +7,7 @@ const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
 interface ApplySlackUserChangeInput {
   identity: IdentityStore;
-  betterAuth?: Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser'>;
+  betterAuth?: BetterAuthAccessRevoker;
   credentialRevision: string;
   payloadTeamId: string;
   apiAppId: string;
@@ -17,7 +17,7 @@ interface ApplySlackUserChangeInput {
 
 interface ApplyGatewaySlackUserChangeInput {
   identity: IdentityStore;
-  betterAuth?: Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser'>;
+  betterAuth?: BetterAuthAccessRevoker;
   payloadTeamId: string;
   apiAppId: string;
   eventId: string;
@@ -85,8 +85,8 @@ async function suspendSlackMember(
     credentialRevision,
   });
   if (!result.changed) return { outcome: 'duplicate' };
-  if (binding.binding.betterAuthUserId) {
-    await input.betterAuth?.deleteSessionsForUser(binding.binding.betterAuthUserId);
+  if (binding.binding.betterAuthUserId && input.betterAuth) {
+    await revokeBetterAuthUserAccess(input.betterAuth, binding.binding.betterAuthUserId);
   }
   return { outcome: 'suspended' };
 }
