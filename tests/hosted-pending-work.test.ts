@@ -18,7 +18,12 @@ import { stopCancelledAgents, type AgentStopTarget } from '../src/state/pending-
 import { promisify } from '../src/state/async-facade.ts';
 import { RoutineUsageRecorder } from '../src/usage/runtime-recorder.ts';
 import { opaqueId } from '../src/work/admission.ts';
-import { hostedDeployment, runnerJobs, type HostedInstallation } from './helpers/installation-objects.ts';
+import {
+  hostedDeployment,
+  hostedInstallation,
+  runnerJobs,
+  type HostedInstallation,
+} from './helpers/installation-objects.ts';
 
 /**
  * After restoring an installation's objects to an earlier moment, the host
@@ -366,6 +371,21 @@ test('a thread runner settles its waiting jobs unrun, reports the running one, a
   await agent.storage.setAlarm(Date.now() + 1_000);
   assert.deepEqual(await cancelInstallationObjectPendingWork(a.env, agentObject), { alarmCleared: true });
   assert.equal(agent.storage.alarm, null);
+});
+
+test('a cancelled running occurrence settles the attempt its envelope names, not merely the latest admission', async () => {
+  const a = hostedInstallation('inst_pending_attempt');
+  const { running } = await routines(a, 'T_A');
+  const preparing = a.stores.routines.getRun(running.id)!.flueAgentEnvelope!.attemptId;
+  // A later admission row the occurrence's dispatch never used.
+  a.db.run(
+    `INSERT INTO routine_run_admissions (occurrence_id, attempt, attempt_id, flue_run_id, flue_agent_receipt_json,
+       invoke_started_at, receipt_at, visible_at, status, safe_error)
+     VALUES (?, 2, ?, NULL, NULL, ?, NULL, NULL, 'attempting', NULL)`,
+    running.id, `${preparing}_later`, Date.now(),
+  );
+  const cancelled = a.stores.routines.cancelPendingWork(Date.now(), REFUSED_SKIP);
+  assert.deepEqual(cancelled.prepared.map(({ run, admission }) => [run.id, admission.attemptId]), [[running.id, preparing]]);
 });
 
 test('a submission whose abort fails is counted, never thrown', async (t) => {
