@@ -347,15 +347,21 @@ export class SlackInstallOAuthService {
         return setupResult('waiting_events', setup);
       }
       purgeReceipt = verification.purgeReceipt;
-      proof = await this.dependencies.identity.recordSlackEventsProof({
-        setupId: setup.id,
-        candidateRevision: setup.botCredentialRevision,
-        identityId: WORKSPACE_SLACK_INSTALLATION_ID,
-        appId: setup.appId,
-        teamId: setup.slackTeamId,
-        baseRevision: setup.credentialRevision,
-        verifiedAt: this.now(),
-      });
+      try {
+        proof = await this.dependencies.identity.recordSlackEventsProof({
+          setupId: setup.id,
+          candidateRevision: setup.botCredentialRevision,
+          identityId: WORKSPACE_SLACK_INSTALLATION_ID,
+          appId: setup.appId,
+          teamId: setup.slackTeamId,
+          baseRevision: setup.credentialRevision,
+          verifiedAt: this.now(),
+        });
+      } catch (error) {
+        const promoted = await this.promotedConcurrently(setup.id);
+        if (promoted) return promoted;
+        throw error;
+      }
     }
     const control = await this.dependencies.identity.getSlackCredentialControl();
     if (!control) {
@@ -374,7 +380,9 @@ export class SlackInstallOAuthService {
         verifiedAt: proof.verifiedAt,
         expectedRotationEpoch: control.rotationEpoch,
       });
-    } catch (error) {
+    } catch {
+      const promoted = await this.promotedConcurrently(setup.id);
+      if (promoted) return promoted;
       await this.failWaiting(setup, 'stale_revision');
       throw new SlackInstallOAuthError('stale_revision');
     }
@@ -387,6 +395,18 @@ export class SlackInstallOAuthService {
     }
     await this.syncWorkspaceInstallation(installed);
     return setupResult('bot_installed', installed);
+  }
+
+  /**
+   * The Events delivery finishes its install past the response while the
+   * setup page can check the same proof; whichever promotes second answers
+   * as a replay of the first instead of failing the installed setup.
+   */
+  private async promotedConcurrently(setupId: string): Promise<SlackInstallOAuthResult | undefined> {
+    const current = await this.dependencies.identity.getSlackSetupTransaction(setupId);
+    return current?.state === 'bot_installed'
+      ? this.finalizeWaitingInstallation(setupId)
+      : undefined;
   }
 
   private async acquireAttempt(

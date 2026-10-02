@@ -438,9 +438,13 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
       resolveStores(platformEnv).settings,
       { rawBody, signature, timestamp },
     );
+    // Slack allows the challenge three seconds, and a cold state store can
+    // take most of that. The recorded envelope is the proof, so answer now
+    // and promote the pending install past the response; the setup page's
+    // Events check finishes it from the same envelope if this is cut short.
     if (recorded.accepted) {
       const stores = resolveStores(platformEnv);
-      await finalizePendingWorkspaceInstallation(
+      detach(c, finalizePendingWorkspaceInstallation(
         stores,
         platformEnv,
         createPlatformProductTelemetry({
@@ -449,7 +453,7 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
           config: stores.config,
           lifecycle: createRequestTelemetryLifecycle(c),
         }),
-      );
+      ));
     }
   }
   return response;
