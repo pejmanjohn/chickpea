@@ -1,3 +1,4 @@
+import { installationCacheKey } from './installation-scope.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
@@ -71,8 +72,15 @@ const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PROVIDER_FETCH_TIMEOUT_MS = 8_000;
 const OPENAI_CHAT_MODEL_PREFIXES = ['gpt-', 'o1', 'o3', 'o4', 'o5', 'chatgpt-', 'codex-'];
 
-const modelCache = new Map<AdminProviderId, { expiresAt: number; models: ProviderModel[] }>();
-const cachedModelCounts = new Map<AdminProviderId, number>();
+// An Anthropic or OpenAI list is what one installation's key can see, so it
+// is cached per installation; OpenRouter's public catalog and the Workers AI
+// list are the same for every installation.
+const modelCache = new Map<string, { expiresAt: number; models: ProviderModel[] }>();
+const cachedModelCounts = new Map<string, number>();
+
+function modelCacheKey(id: AdminProviderId, env: PlatformEnv | undefined): string {
+  return id === 'anthropic' || id === 'openai' ? `${installationCacheKey(env)}|${id}` : `|${id}`;
+}
 
 export function isAdminProviderId(id: string): id is AdminProviderId {
   return isProviderKeyId(id) || id === 'workers-ai';
@@ -108,34 +116,46 @@ export async function listProviderModels(
   } = {},
 ): Promise<ProviderModelsResult> {
   if (!options.refresh) {
-    const cached = modelCache.get(id);
+    const cached = modelCache.get(modelCacheKey(id, options.env));
     if (cached && cached.expiresAt > Date.now()) {
       return { models: cached.models, cached: true };
     }
   }
 
   const models = await fetchProviderModels(id, options.env, options.store, options.timeoutMs);
-  primeProviderModelCache(id, models);
+  primeProviderModelCache(id, models, options.env);
   return { models, cached: false };
 }
 
-export function primeProviderModelCache(id: AdminProviderId, models: ProviderModel[]): void {
-  modelCache.set(id, { expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models });
-  cachedModelCounts.set(id, models.length);
+export function primeProviderModelCache(
+  id: AdminProviderId,
+  models: ProviderModel[],
+  env: PlatformEnv | undefined,
+): void {
+  const key = modelCacheKey(id, env);
+  modelCache.set(key, { expiresAt: Date.now() + MODEL_CACHE_TTL_MS, models });
+  cachedModelCounts.set(key, models.length);
 }
 
 export function invalidateProviderModelCache(id?: AdminProviderId): void {
   if (id) {
-    modelCache.delete(id);
-    cachedModelCounts.delete(id);
+    for (const key of [...modelCache.keys(), ...cachedModelCounts.keys()]) {
+      if (key.endsWith(`|${id}`)) {
+        modelCache.delete(key);
+        cachedModelCounts.delete(key);
+      }
+    }
     return;
   }
   modelCache.clear();
   cachedModelCounts.clear();
 }
 
-export function cachedProviderModelCount(id: AdminProviderId): number | undefined {
-  return cachedModelCounts.get(id);
+export function cachedProviderModelCount(
+  id: AdminProviderId,
+  env: PlatformEnv | undefined,
+): number | undefined {
+  return cachedModelCounts.get(modelCacheKey(id, env));
 }
 
 export async function getProviderFavorites(

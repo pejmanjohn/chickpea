@@ -208,7 +208,6 @@ import {
   type ConnectionUploadFetch,
 } from '../connections/file-upload-tool.ts';
 import { BrowserTurnSession } from '../browser/turn-session.ts';
-import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import {
   CODING_WORKSPACE_INSTRUCTION,
   codingWorkspaceSkill,
@@ -1709,9 +1708,11 @@ export async function resolveRuntimePlanBashRepositoryAccess(
 }
 
 /**
- * Bind the frozen model lane before any model call. With a turn envelope the
- * work runs once per turn render and later callers (image and screenshot
- * checks, attachment analysis) share it.
+ * Check the frozen model lane before any model call: the Agent still runs,
+ * its credential is the one frozen at admission, and its route is unchanged.
+ * It binds nothing; the key reaches a call only through the attempt's model
+ * access. With a turn envelope the work runs once per turn render and later
+ * callers (image and screenshot checks, attachment analysis) share it.
  */
 export async function prepareRuntimePlanModel(
   plan: RuntimePlanV2,
@@ -1740,11 +1741,10 @@ async function prepareRuntimePlanModelOnce(
       getUsageStore(env),
     );
   }
-  // Keep the canonical model as the public/audit identity. Resolve and bind its
-  // live billing lane immediately before the call, then verify that it still
+  // Keep the canonical model as the public/audit identity. Resolve its live
+  // billing lane immediately before the call, then verify that it still
   // matches the secret-free internal route frozen when the turn was admitted.
-  // The provider key itself is always read live; only non-secret routing
-  // settings come from the turn envelope.
+  // Only non-secret routing settings come from the turn envelope.
   const resolved = await withTurnSettings(turn, settings, (turnSettings) =>
     resolveRuntimeModel(plan.agentId, plan.model, {
       settings: turnSettings,
@@ -1938,12 +1938,12 @@ export function createRuntimePlanArtifactTools(
     reserveImageCall,
     resolveTransport: binding.resolveTransport,
     resolveClient: options.resolveImageClient ?? (() => resolveRuntimePlanImageClient(plan, options.turn)),
+    // Runs inside the turn's agent operation, so the call carries its model access.
     inspectOutput: async (input: ImageInspectionInput) => {
       try {
         const env = await resolveAgentPlatformEnv();
         const model = await prepareRuntimePlanModel(plan, env, options.turn);
-        const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
-        return await inspectImageOutput(model.model, input, apiKey);
+        return await inspectImageOutput(model.model, input);
       } catch {
         return { status: 'unavailable' as const, observations: 'Visual inspection is unavailable with the configured chat model.' };
       }
@@ -1995,12 +1995,11 @@ export function createRuntimePlanArtifactTools(
         retainRecording: async (input) => (await resolveRecordingStore()).save(input),
         transportMaxBytes: async () => (await resolveFileTransport()).maxBytes,
         // Same route as the image tool's inspection: the frozen chat model
-        // with the provider key read at call time.
+        // with the turn's model access.
         inspectScreenshot: async (input) => {
           const env = await resolveAgentPlatformEnv();
           const model = await prepareRuntimePlanModel(plan, env, options.turn);
-          const apiKey = await resolveModelApiKeyForStatelessCall(plan.model, env, getSettingsStore(env));
-          return answerScreenshotQuestion(model.model, input, apiKey);
+          return answerScreenshotQuestion(model.model, input);
         },
         log: { warn: (message) => console.warn(`[chickpea] ${message}`) },
       })

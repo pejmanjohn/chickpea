@@ -13,6 +13,7 @@ import { cloudflareWorkersAIProvider } from '@earendil-works/pi-ai/providers/clo
 import { cloudflareStreams } from '@earendil-works/pi-ai/providers/cloudflare-stream';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
+import { modelAccessProviderId } from './model-access.ts';
 import { registerPiProvider, registeredPiProvider } from './pi-provider-registry.ts';
 
 import { decorateAttachmentProviderStreams } from '../slack/attachment-model-context.ts';
@@ -41,33 +42,49 @@ const BUILTIN_PROVIDER_PARTS: Record<
   openrouter: { provider: openrouterProvider, api: openAICompletionsApi },
 };
 
+// Live-catalog models (OpenRouter) added after startup. Public metadata only,
+// shared by every installation like the static catalog itself.
+const builtinModelOverlays = new Map<PiBuiltinProviderId, Map<string, Model<Api>>>();
+
 /**
- * Replace one generated catalog provider with an app-owned Pi provider whose
- * auth resolver carries the credential selected at Chickpea's policy seam.
- * Replacing by id is intentional: deleting a browser-saved key must also
- * clear that key from a warm isolate instead of leaving the previous provider
- * object reachable.
+ * Register one generated catalog provider as a credential-free app provider.
+ * Its key and endpoint arrive per request from the run's model access
+ * (model-access.ts), so registering again, or in another order, changes no
+ * credential.
  */
-export function setBuiltinPiProvider(
-  id: PiBuiltinProviderId,
-  credential: PiProviderCredential,
-  modelOverlays: readonly Model<Api>[] = [],
-): void {
+export function registerBuiltinPiProvider(id: PiBuiltinProviderId): void {
   const parts = BUILTIN_PROVIDER_PARTS[id];
   const catalog = parts.provider();
-  const models = withProviderBaseUrl(
-    mergeProviderModels(catalog.getModels(), modelOverlays),
-    credential.baseUrl,
-  );
   registerPiProvider(
     createProvider({
       id,
       name: catalog.name,
-      auth: selectedApiKeyAuth(catalog.name, credential),
-      models,
+      auth: modelAccessAuth(catalog.name),
+      models: mergeProviderModels(catalog.getModels(), [...(builtinModelOverlays.get(id)?.values() ?? [])]),
       api: decorateAttachmentProviderStreams(parts.api()),
     }),
   );
+}
+
+/** Add a model's metadata to a built-in provider; it carries no credential. */
+export function addBuiltinProviderModelOverlay(id: PiBuiltinProviderId, model: Model<Api>): void {
+  const overlays = builtinModelOverlays.get(id) ?? new Map<string, Model<Api>>();
+  const current = overlays.get(model.id);
+  if (current && JSON.stringify(current) === JSON.stringify(model)) return;
+  overlays.set(model.id, model);
+  builtinModelOverlays.set(id, overlays);
+  registerBuiltinPiProvider(id);
+}
+
+export function builtinProviderModelOverlay(
+  id: PiBuiltinProviderId,
+  modelId: string,
+): Model<Api> | undefined {
+  return builtinModelOverlays.get(id)?.get(modelId);
+}
+
+export function resetBuiltinProviderModelOverlaysForTests(): void {
+  builtinModelOverlays.clear();
 }
 
 function mergeProviderModels(
@@ -124,15 +141,34 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
       },
     },
     models,
-    api: decorateAttachmentProviderStreams(
-      withWorkersAiOverflowPolicy(cloudflareStreams(decorateWorkersAiPayloadStreams(openAICompletionsApi()))),
+    api: withDeploymentToken(
+      decorateAttachmentProviderStreams(
+        withWorkersAiOverflowPolicy(cloudflareStreams(decorateWorkersAiPayloadStreams(openAICompletionsApi()))),
+      ),
+      options.apiKey && options.accountId ? options.apiKey : undefined,
     ),
   });
 }
 
+/**
+ * A direct call (a stateless classifier or visual check) skips Pi's auth
+ * step, so this deployment-funded lane applies its own token as that step
+ * would. It is a standalone lane: a deployment serving many installations
+ * refuses it at the provider proxy.
+ */
+function withDeploymentToken(streams: ProviderStreams, apiKey: string | undefined): ProviderStreams {
+  if (!apiKey) return streams;
+  return {
+    stream: (model, context, options) =>
+      streams.stream(model, context, { ...options, apiKey: options?.apiKey ?? apiKey }),
+    streamSimple: (model, context, options) =>
+      streams.streamSimple(model, context, { ...options, apiKey: options?.apiKey ?? apiKey }),
+  };
+}
+
+/** The offline verifiers' stub. Its key arrives per request, like a keyed provider's. */
 export function setLocalStubPiProvider(options: {
   baseUrl: string;
-  apiKey: string;
   modelIds: readonly string[];
 }): void {
   const models: Model<'openai-completions'>[] = [...new Set(options.modelIds)].map(
@@ -153,17 +189,18 @@ export function setLocalStubPiProvider(options: {
     createProvider({
       id: 'local-stub',
       name: 'Local stub',
-      auth: selectedApiKeyAuth('Local stub', {
-        apiKey: options.apiKey,
-        baseUrl: options.baseUrl,
-      }),
+      auth: modelAccessAuth('Local stub'),
       models,
       api: decorateAttachmentProviderStreams(openAICompletionsApi()),
     }),
   );
 }
 
-/** Build a custom Pi provider while keeping its auth policy uniform. */
+/**
+ * Build a custom Pi provider while keeping its auth policy uniform. A lane
+ * that brings its own boundary credential passes `apiKey`; without one the
+ * provider is credential-free and takes the run's model access per request.
+ */
 export function createChickpeaPiProvider<TApi extends Api>(options: {
   id: string;
   name?: string;
@@ -172,13 +209,16 @@ export function createChickpeaPiProvider<TApi extends Api>(options: {
   models: readonly Model<TApi>[];
   api: ProviderStreams | Partial<Record<TApi, ProviderStreams>>;
 }): Provider<TApi> {
+  const name = options.name ?? options.id;
   return createProvider({
     id: options.id,
     ...(options.name ? { name: options.name } : {}),
-    auth: selectedApiKeyAuth(options.name ?? options.id, {
-      ...(options.apiKey ? { apiKey: options.apiKey } : {}),
-      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
-    }),
+    auth: options.apiKey
+      ? selectedApiKeyAuth(name, {
+          apiKey: options.apiKey,
+          ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+        })
+      : modelAccessAuth(name),
     models: withProviderBaseUrl(options.models, options.baseUrl),
     api: decorateAttachmentProviderApi(options.api),
   });
@@ -216,6 +256,19 @@ function selectedApiKeyAuth(name: string, credential: PiProviderCredential) {
   };
 }
 
+/**
+ * Configured, and never a key: Pi's keyless shape, so a request reaches the
+ * provider proxy, which injects the run's access or refuses the request.
+ */
+function modelAccessAuth(name: string) {
+  return {
+    apiKey: {
+      name: `${name} API key`,
+      resolve: async () => ({ auth: {}, source: 'Chickpea model access' }),
+    },
+  };
+}
+
 function withProviderBaseUrl<TApi extends Api>(
   models: readonly Model<TApi>[],
   baseUrl: string | undefined,
@@ -231,13 +284,17 @@ const BUILTIN_API_STREAMS: Partial<Record<Api, () => ProviderStreams>> = {
 
 /**
  * Streams for a resolved model without pi-ai's compat dispatcher. The
- * registered app provider wins (it carries Chickpea's auth and attachment
- * policy); a built-in catalog provider Flue registered at boot falls back to
- * the matching API implementation, which reads `options.apiKey` directly.
+ * registered app provider wins (it carries Chickpea's model access and
+ * attachment policy); a built-in catalog provider Flue registered at boot
+ * falls back to the matching API implementation. A provider that takes the
+ * run's model access is never reached around the proxy.
  */
 export function providerStreamsForModel(model: Model<Api>): ProviderStreams {
   const registered = registeredPiProvider(model.provider);
   if (registered) return registered;
+  if (modelAccessProviderId(model.provider)) {
+    throw new Error(`Model provider ${model.provider} is not registered.`);
+  }
   const api = BUILTIN_API_STREAMS[model.api];
   if (!api) {
     throw new Error(`No API implementation is bundled for "${model.api}" (${model.provider}/${model.id}).`);

@@ -733,6 +733,8 @@ export interface RoutineStore {
   resolveAdmission(input: ResolveRoutineAdmissionInput): Promise<RoutineRun>;
   beginOccurrence(input: BeginRoutineOccurrenceInput): Promise<'started' | 'superseded'>;
   prepareAgentDispatch(input: PrepareRoutineAgentDispatchInput): Promise<'started' | 'superseded'>;
+  /** The persisted dispatch of the running occurrence whose agent instance this is. */
+  findRunningAgentDispatch(instanceId: string): Promise<RoutineAgentDispatchEnvelope | undefined>;
   recordAgentReceipt(input: RecordRoutineAgentReceiptInput): Promise<RoutineAdmissionAttempt>;
   recordAgentSettlement(input: RecordRoutineAgentSettlementInput): Promise<RoutineRun>;
   transitionRun(input: TransitionRoutineRunInput): Promise<RoutineRun>;
@@ -809,6 +811,7 @@ export type RoutineRpcRequest =
   | { kind: 'resolve_admission'; input: ResolveRoutineAdmissionInput }
   | { kind: 'begin_occurrence'; input: BeginRoutineOccurrenceInput }
   | { kind: 'prepare_agent_dispatch'; input: PrepareRoutineAgentDispatchInput }
+  | { kind: 'find_running_agent_dispatch'; instanceId: string }
   | { kind: 'record_agent_receipt'; input: RecordRoutineAgentReceiptInput }
   | { kind: 'record_agent_settlement'; input: RecordRoutineAgentSettlementInput }
   | { kind: 'transition_run'; input: TransitionRoutineRunInput }
@@ -839,6 +842,7 @@ export type RoutineRpcResponse =
   | { kind: 'admission'; admission: RoutineAdmissionAttempt }
   | { kind: 'admissions'; admissions: RoutineAdmissionAttempt[] }
   | { kind: 'begin'; outcome: 'started' | 'superseded' }
+  | { kind: 'agent_dispatch'; envelope: RoutineAgentDispatchEnvelope | null }
   | { kind: 'delivery_claim'; outcome: 'claimed' | 'superseded' }
   | { kind: 'recovery_delivery'; delivery: RoutineRecoveryDelivery | null }
   | { kind: 'recovery_deliveries'; deliveries: RoutineRecoveryDelivery[] }

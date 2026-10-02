@@ -40,7 +40,7 @@ test('subscription routing maps to the isolated provider without resolving the P
     await saveOpenAiAuthMethod(settings, 'subscription');
     const route = await resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
       settings,
-      applyProviderKey: async (id) => { applied.push(id); },
+      requireProviderKey: async (id) => { applied.push(id); },
       bindSubscription: async () => { subscriptionBinds += 1; },
     });
 
@@ -66,7 +66,7 @@ test('API-key routing preserves the canonical provider and never binds Subscript
     const agent = await agents.createAgent(profile());
     const route = await resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
       settings,
-      applyProviderKey: async (id) => { applied.push(id); },
+      requireProviderKey: async (id) => { applied.push(id); },
       bindSubscription: async () => { subscriptionBinds += 1; },
     });
 
@@ -90,7 +90,7 @@ test('invalid installation method state fails before either credential lane', as
     await assert.rejects(
       () => resolveRuntimeModel('agent_openai_route', 'openai/gpt-5.4', {
         settings,
-        applyProviderKey: async (id) => { events.push(`key:${id}`); },
+        requireProviderKey: async (id) => { events.push(`key:${id}`); },
         bindSubscription: async () => { events.push('subscription'); },
       }),
       /Stored OpenAI authentication method is invalid/,
@@ -110,7 +110,7 @@ test('a frozen OpenAI model follows the selected Subscription lane on the next c
     await saveOpenAiAuthMethod(settings, 'subscription');
     const route = await resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
       settings,
-      applyProviderKey: async (id) => { events.push(`key:${id}`); },
+      requireProviderKey: async (id) => { events.push(`key:${id}`); },
       bindSubscription: async () => { events.push('subscription'); },
     });
 
@@ -133,7 +133,7 @@ test('subscription failures and unsupported models fail closed without crossing 
     await assert.rejects(
       () => resolveRuntimeModel(agent.id, 'openai/gpt-5.4', {
         settings,
-        applyProviderKey: async (id) => { applied.push(id); },
+        requireProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => {
           binds += 1;
           throw new OpenAiSubscriptionError('auth_reconnect_required');
@@ -145,7 +145,7 @@ test('subscription failures and unsupported models fail closed without crossing 
     await assert.rejects(
       () => resolveRuntimeModel(agent.id, 'openai/../not-allowlisted', {
         settings,
-        applyProviderKey: async (id) => { applied.push(id); },
+        requireProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => { binds += 1; },
       }),
       (error: unknown) =>
@@ -170,7 +170,7 @@ test('non-OpenAI models bind only their selected key-backed provider', async () 
     assert.deepEqual(
       await resolveRuntimeModel(agent.id, 'anthropic/claude-sonnet-4-6', {
         settings,
-        applyProviderKey: async (id) => { applied.push(id); },
+        requireProviderKey: async (id) => { applied.push(id); },
         bindSubscription: async () => { throw new Error('must not bind'); },
       }),
       { model: 'anthropic/claude-sonnet-4-6' },
@@ -192,7 +192,7 @@ test('profiles cannot address the internal subscription provider directly', asyn
       'openai-subscription/gpt-5.4',
       {
         settings,
-        applyProviderKey: async () => { throw new Error('must not resolve a key'); },
+        requireProviderKey: async () => { throw new Error('must not resolve a key'); },
         bindSubscription: async () => { throw new Error('must not bind'); },
       },
     ),

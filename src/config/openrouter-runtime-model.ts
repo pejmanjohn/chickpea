@@ -1,13 +1,7 @@
 import type { Api, Model } from '@earendil-works/pi-ai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
-import {
-  addBuiltinProviderModelOverlay,
-  builtinProviderModelOverlay,
-  rebindBuiltinProvider,
-  requireIsolateModelCredentials,
-  resolveProviderApiKey,
-} from './provider-keys.ts';
+import { addBuiltinProviderModelOverlay, builtinProviderModelOverlay } from './pi-provider.ts';
 import { listProviderModels, type ProviderModel } from './provider-models.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
@@ -37,6 +31,8 @@ export interface FrozenOpenRouterLiveModelRoute {
  * reviewed static baseline, so a newly released model needs a small metadata
  * overlay before Flue can resolve it. This keeps selection and execution on
  * the same catalog without treating OpenRouter as a compatibility revision.
+ * The overlay is public metadata; the key reaches a call only through the
+ * run's model access.
  */
 export async function ensureOpenRouterRuntimeModel(
   canonicalModel: string,
@@ -64,10 +60,7 @@ export async function ensureOpenRouterRuntimeModel(
 
   const template = openRouterTemplate();
   if (!template) return false;
-  const runtimeModel = liveOpenRouterModel(discovered, template);
-  requireIsolateModelCredentials(env);
-  const { apiKey } = await resolveProviderApiKey('openrouter', env, settings);
-  rebindBuiltinProvider('openrouter', apiKey, [runtimeModel]);
+  addBuiltinProviderModelOverlay('openrouter', liveOpenRouterModel(discovered, template));
   return true;
 }
 

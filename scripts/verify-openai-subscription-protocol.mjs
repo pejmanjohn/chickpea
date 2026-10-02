@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { Type, validateToolCall } from '@earendil-works/pi-ai';
 
 import { assertNodeVersion } from './lib/node-version.mjs';
+import { withDeploymentLane } from '../src/config/model-access.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
@@ -145,10 +146,10 @@ try {
     tools: [tool],
   };
 
-  const first = await collect(provider.stream(model, context, {
+  const first = await withDeploymentLane(undefined, () => collect(provider.stream(model, context, {
     maxTokens: 128,
     signal: AbortSignal.timeout(requestTimeoutMs),
-  }));
+  })));
   const toolCalls = first.result.content.filter((part) => part.type === 'toolCall');
   failForModelError(first.result, 'tool_call_missing');
   if (toolCalls.length !== 1 || toolCalls[0].name !== tool.name) {
@@ -174,10 +175,10 @@ try {
     isError: false,
     timestamp: Date.now(),
   });
-  const second = await collect(provider.stream(model, context, {
+  const second = await withDeploymentLane(undefined, () => collect(provider.stream(model, context, {
     maxTokens: 128,
     signal: AbortSignal.timeout(requestTimeoutMs),
-  }));
+  })));
   const text = second.result.content
     .filter((part) => part.type === 'text')
     .map((part) => part.text)

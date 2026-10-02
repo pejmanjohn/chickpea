@@ -9,7 +9,6 @@ import { BrowserVisionUnavailableError, type ScreenshotInspectionInput } from '.
 export async function answerScreenshotQuestion(
   runtimeModel: string,
   input: ScreenshotInspectionInput,
-  apiKey?: string,
 ): Promise<string> {
   let answer: string;
   try {
@@ -24,7 +23,7 @@ export async function answerScreenshotQuestion(
         { type: 'image', data: Buffer.from(input.bytes).toString('base64'), mimeType: input.mimeType },
       ],
       ...(input.signal ? { signal: input.signal } : {}),
-    }, apiKey);
+    });
   } catch (error) {
     if (error instanceof VisionUnavailableError) throw new BrowserVisionUnavailableError();
     throw error;

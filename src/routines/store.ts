@@ -49,6 +49,7 @@ import {
   type RecordRoutineDeliveryInput,
   type RecordRoutineRecoveryDeliveryInput,
   type RoutineAdmissionAttempt,
+  type RoutineAgentDispatchEnvelope,
   type RoutineAdminPage,
   type RoutineAdminPageInput,
   type RoutineAgentUsageV1,
@@ -408,6 +409,11 @@ export class RoutineStoreLogic {
         return { kind: 'begin', outcome: this.beginOccurrence(request.input) };
       case 'prepare_agent_dispatch':
         return { kind: 'begin', outcome: this.prepareAgentDispatch(request.input) };
+      case 'find_running_agent_dispatch':
+        return {
+          kind: 'agent_dispatch',
+          envelope: this.findRunningAgentDispatch(request.instanceId) ?? null,
+        };
       case 'record_agent_receipt':
         return { kind: 'admission', admission: this.recordAgentReceipt(request.input) };
       case 'record_agent_settlement':
@@ -2011,6 +2017,22 @@ export class RoutineStoreLogic {
       );
       return 'started';
     });
+  }
+
+  findRunningAgentDispatch(instanceId: string): RoutineAgentDispatchEnvelope | undefined {
+    if (typeof instanceId !== 'string' || instanceId.length === 0 || instanceId.length > 256) {
+      return undefined;
+    }
+    // Running occurrences are few, and the status index bounds the scan.
+    const rows = this.db.all(
+      `SELECT flue_agent_envelope_json FROM routine_runs
+       WHERE status = 'running' AND flue_agent_envelope_json IS NOT NULL
+         AND json_extract(flue_agent_envelope_json, '$.instanceId') = ?
+       LIMIT 2`,
+      instanceId,
+    );
+    if (rows.length !== 1) return undefined;
+    return JSON.parse(String(rows[0]!.flue_agent_envelope_json)) as RoutineAgentDispatchEnvelope;
   }
 
   prepareAgentDispatch(input: PrepareRoutineAgentDispatchInput): 'started' | 'superseded' {

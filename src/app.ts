@@ -45,6 +45,7 @@ import { createPlatformProductTelemetry } from './telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
+import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
   observeResponseMetadata,
@@ -139,6 +140,16 @@ instrument({
 instrument({
   key: Symbol.for('chickpea.work-model-invocation'),
   interceptor: workModelInvocationInterceptor,
+  observe() {},
+  dispose() {},
+});
+
+// Every attempt of every agent binds its run's model access before its first
+// model call; the provider proxy refuses a call without it. Registered inside
+// the work interceptor, so a Slack attempt reuses its TurnJob match.
+instrument({
+  key: Symbol.for('chickpea.model-access'),
+  interceptor: modelAccessInterceptor,
   observe() {},
   dispose() {},
 });

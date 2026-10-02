@@ -1,9 +1,9 @@
 import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
+import { withStatelessModelAccess } from '../config/installation-model-access.ts';
 import { providerStreamsForModel } from '../config/pi-provider.ts';
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
-import { resolveModelApiKeyForStatelessCall } from '../config/provider-keys.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
@@ -481,19 +481,22 @@ async function promptSlackInteractionIntentAgent(
     ...(env ? { env } : {}),
   });
   const model = resolveModel(runtimeModel.model);
-  const apiKey = await resolveModelApiKeyForStatelessCall(requestedModel, env, settings);
-  const response = await providerStreamsForModel(model).streamSimple(
-    model,
-    interactionClassifierContext(context),
-    {
-      maxTokens: 512,
-      // ChatGPT's Codex Responses endpoint rejects temperature for subscription
-      // models. Keep the established deterministic option on every other lane.
-      ...(runtimeModel.providerAuthRoute === 'openai_subscription' ? {} : { temperature: 0 }),
-      maxRetries: 0,
-      ...(apiKey ? { apiKey } : {}),
-    },
-  ).result();
+  // A host boundary: the call carries this installation's current key.
+  const response = await withStatelessModelAccess(
+    runtimeModel.model,
+    { env, settings, runId: 'slack-interaction-intent' },
+    () => providerStreamsForModel(model).streamSimple(
+      model,
+      interactionClassifierContext(context),
+      {
+        maxTokens: 512,
+        // ChatGPT's Codex Responses endpoint rejects temperature for subscription
+        // models. Keep the established deterministic option on every other lane.
+        ...(runtimeModel.providerAuthRoute === 'openai_subscription' ? {} : { temperature: 0 }),
+        maxRetries: 0,
+      },
+    ).result(),
+  );
   if (response.stopReason === 'error') {
     throw new Error('Slack interaction classifier was unavailable.');
   }

@@ -150,7 +150,7 @@ test('a frozen OpenRouter live-catalog route registers its model in a fresh proc
     input: ['text', 'image'],
     cost: { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 2.5 },
   });
-  assert.equal(result.apiKey, 'openrouter-env-key');
+  assert.equal(result.apiKey, undefined, 'the registry never carries a key, even the deployment environment\'s');
 });
 
 test('a frozen hosted route registers its revisioned provider in a fresh process', () => {

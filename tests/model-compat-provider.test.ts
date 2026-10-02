@@ -19,11 +19,12 @@ import { catalogModelForLane } from '../src/model-catalog/index.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
   ANTHROPIC_COMPAT_API,
-  bindModelCompatibilityProvider,
   createModelCompatibilityStream,
   OPENAI_PLATFORM_COMPAT_API,
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
+  registerModelCompatibilityApis,
 } from '../src/model-compat/provider.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 
 function assistant(provider: string, model: string): AssistantMessage {
   return {
@@ -45,9 +46,12 @@ function assistant(provider: string, model: string): AssistantMessage {
   };
 }
 
-test('compatibility provider registration gives Flue bounded metadata under internal ids', () => {
-  bindModelCompatibilityProvider('openai', 'test-openai-key');
-  bindModelCompatibilityProvider('anthropic', 'test-anthropic-key');
+test('compatibility provider registration gives Flue bounded, credential-free metadata under internal ids', async () => {
+  registerModelCompatibilityApis();
+  for (const id of [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, ANTHROPIC_COMPAT_PROVIDER_ID]) {
+    const resolution = await registeredPiProvider(id)!.auth.apiKey!.resolve({} as never);
+    assert.deepEqual(resolution?.auth, {}, `${id} carries no key; each request takes the run's access`);
+  }
 
   const openAi = resolveModel(`${OPENAI_PLATFORM_COMPAT_PROVIDER_ID}/gpt-5.6-terra`);
   assert.equal(openAi.provider, OPENAI_PLATFORM_COMPAT_PROVIDER_ID);
@@ -142,7 +146,7 @@ test('runtime routing is native-first, lane-isolated, and explicit for unsupport
   const applied: string[] = [];
   const dependencies = {
     settings,
-    applyProviderKey: async (id: 'anthropic' | 'openai' | 'openrouter') => {
+    requireProviderKey: async (id: 'anthropic' | 'openai' | 'openrouter') => {
       applied.push(id);
     },
   };

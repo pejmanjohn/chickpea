@@ -134,11 +134,12 @@ async function codingWorkerTurn(
 }
 
 /**
- * Bind the coding model's provider credential for this isolate, exactly as
- * the coordinator binds its own model. A disabled Agent or a route that no
- * longer matches the frozen one fails the task instead of switching models.
- * With the coordinator's turn envelope, the Agent and the non-secret routing
- * settings are as of that turn's dispatch; the provider key is read live.
+ * Check the coding model's lane, exactly as the coordinator checks its own. A
+ * disabled Agent or a route that no longer matches the frozen one fails the
+ * task instead of switching models. With the coordinator's turn envelope, the
+ * Agent and the non-secret routing settings are as of that turn's dispatch.
+ * The key reaches a call only through the attempt's model access, which
+ * standalone reads live as each attempt starts.
  */
 export async function prepareCodingModel(
   binding: CodingWorkerBindingV1,

@@ -25,7 +25,12 @@ import {
   catalogModelForLane,
   listBundledCatalogModels,
 } from '../model-catalog/bundled.ts';
-import { isRevisionedAlias, revisionedAlias } from '../model-catalog/provider-alias.ts';
+import {
+  ANTHROPIC_COMPAT_PROVIDER_ID,
+  OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
+  isRevisionedAlias,
+  revisionedAlias,
+} from '../model-catalog/provider-alias.ts';
 import type { CatalogProviderId, ModelAuthLane } from '../model-catalog/types.ts';
 import { createChickpeaPiProvider } from '../config/pi-provider.ts';
 import {
@@ -34,8 +39,7 @@ import {
   type AttachmentNativePdfRequest,
 } from '../slack/attachment-model-context.ts';
 
-export const OPENAI_PLATFORM_COMPAT_PROVIDER_ID = 'chickpea-openai-platform-bundled-v1';
-export const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
+export { ANTHROPIC_COMPAT_PROVIDER_ID, OPENAI_PLATFORM_COMPAT_PROVIDER_ID };
 export const OPENAI_PLATFORM_COMPAT_API = 'chickpea-openai-platform-responses-bundled-v1';
 export const ANTHROPIC_COMPAT_API = 'chickpea-anthropic-messages-bundled-v1';
 
@@ -55,13 +59,7 @@ interface CapturedCompatibilityRegistration {
     Model<string> | undefined;
 }
 
-interface BoundCompatibilityCredential {
-  apiKey?: string;
-  baseUrl?: string;
-}
-
 const capturedRegistrations = new Map<string, CapturedCompatibilityRegistration>();
-const boundCredentials = new Map<ApiKeyCompatibilityProvider, BoundCompatibilityCredential>();
 
 interface ModelCompatibilityStreamAdapters {
   openAiStream?: typeof streamOpenAi;
@@ -80,48 +78,27 @@ interface ModelCompatibilityStreamAdapters {
   };
 }
 
+/**
+ * Credential-free provider metadata, installed at module startup so a fresh
+ * Agent isolate can resolve an internal route. These aliases route the
+ * Anthropic and OpenAI API-key lanes, so each request carries the run's
+ * access for that provider (model-access.ts), injected by the provider proxy.
+ */
 export function registerModelCompatibilityApis(): void {
-  // Flue resolves useModel() before it initializes the sandbox that binds live
-  // credentials. Install credential-free provider metadata at module startup
-  // so a fresh Agent isolate can resolve an internal route; the sandbox then
-  // replaces the same provider id with the boundary-selected credential before
-  // any stream starts.
   registerBundledCompatibilityProvider('openai');
   registerBundledCompatibilityProvider('anthropic');
 }
 
-/**
- * Bind the same boundary-resolved key as the canonical provider under an
- * internal provider id. The key never enters catalog data or model metadata.
- */
-export function bindModelCompatibilityProvider(
-  provider: ApiKeyCompatibilityProvider,
-  apiKey: string | undefined,
-  options: { baseUrl?: string } = {},
-): void {
-  boundCredentials.set(provider, {
-    ...(apiKey ? { apiKey } : {}),
-    ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
-  });
-  registerModelCompatibilityApis();
-  registerBundledCompatibilityProvider(provider);
-  for (const registration of capturedRegistrations.values()) {
-    if (registration.provider === provider) registerCapturedProviderBinding(registration);
-  }
-}
-
 function registerBundledCompatibilityProvider(provider: ApiKeyCompatibilityProvider): void {
-  const credential = boundCredentials.get(provider);
   const lane = laneForProvider(provider);
   const models = listBundledCatalogModels(lane);
   const providerId = compatibilityProviderId(provider);
   const api = provider === 'openai' ? OPENAI_PLATFORM_COMPAT_API : ANTHROPIC_COMPAT_API;
-  const baseUrl = credential?.baseUrl ?? models[0]?.baseUrl;
+  const baseUrl = models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No compiled compatibility models for ${provider}.`);
   registerPiProvider(createChickpeaPiProvider({
     id: providerId,
     name: provider === 'openai' ? 'OpenAI compatibility' : 'Anthropic compatibility',
-    ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
     baseUrl,
     models: compatibilityModels(models, providerId, api),
     api: compatibilityStreams(),
@@ -225,8 +202,8 @@ export function createModelCompatibilityStream(
   if (!compiled) {
     throw new Error(`Model ${incomingModel.id} is not in the active compatibility catalog.`);
   }
-  // The optional base URL is supplied only by Chickpea's trusted provider-key
-  // boundary (for example ANTHROPIC_BASE_URL), never by catalog data.
+  // The optional base URL is supplied only by the run's model access (for
+  // example a standalone ANTHROPIC_BASE_URL), never by catalog data.
   const adapterModel = {
     ...compiled,
     baseUrl: incomingModel.baseUrl,
@@ -436,15 +413,13 @@ function compatibilityRoute(provider: string): {
 function registerCapturedProviderBinding(
   registration: CapturedCompatibilityRegistration,
 ): void {
-  const credential = boundCredentials.get(registration.provider);
-  const baseUrl = credential?.baseUrl ?? registration.models[0]?.baseUrl;
+  const baseUrl = registration.models[0]?.baseUrl;
   if (!baseUrl) throw new Error(`No captured models for ${registration.provider}.`);
   registerPiProvider(createChickpeaPiProvider({
     id: registration.providerId,
     name: registration.provider === 'openai'
       ? 'OpenAI captured compatibility'
       : 'Anthropic captured compatibility',
-    ...(credential?.apiKey ? { apiKey: credential.apiKey } : {}),
     baseUrl,
     models: compatibilityModels(
       registration.models,

@@ -5,10 +5,13 @@ import { resetModelsForTests, resolveModel } from '@flue/runtime/internal';
 import {
   invalidateProviderKeyCache,
   PROVIDER_KEY_SETTING_KEYS,
-  rebindBuiltinProvider,
 } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
-import { setBuiltinPiProvider, setWorkersAiRestPiProvider } from '../src/config/pi-provider.ts';
+import {
+  registerBuiltinPiProvider,
+  resetBuiltinProviderModelOverlaysForTests,
+  setWorkersAiRestPiProvider,
+} from '../src/config/pi-provider.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   freezeRuntimeModelRoute,
@@ -22,6 +25,7 @@ const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   resetModelsForTests();
+  resetBuiltinProviderModelOverlaysForTests();
   invalidateProviderKeyCache();
   invalidateProviderModelCache();
 });
@@ -29,6 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   resetModelsForTests();
+  resetBuiltinProviderModelOverlaysForTests();
   invalidateProviderKeyCache();
   invalidateProviderModelCache();
 });
@@ -116,7 +121,8 @@ test('an OpenRouter model discovered live is registered before runtime resolutio
     assert.ok(Math.abs(model.cost.cacheRead - 0.2) < Number.EPSILON);
     assert.equal(model.cost.cacheWrite, 2.5);
 
-    rebindBuiltinProvider('openrouter', 'rotated-key');
+    // Registering the provider again (another installation's turn) keeps it.
+    registerBuiltinPiProvider('openrouter');
     assert.equal(
       resolveModel('openrouter/acme/fresh-live-model').name,
       'Acme Fresh Live Model',
@@ -177,11 +183,11 @@ test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate',
     assert.equal(nameless?.source === 'openrouter_live_catalog' && nameless.displayName, 'acme/nameless-live-model');
 
     // A fresh Durable Object isolate: only the bootstrap registration exists,
-    // and the agent render registers the route before the turn binds the
-    // stored key.
+    // and the agent render registers the route before the first model call.
     resetModelsForTests();
+    resetBuiltinProviderModelOverlaysForTests();
     invalidateProviderKeyCache();
-    setBuiltinPiProvider('openrouter', {});
+    registerBuiltinPiProvider('openrouter');
     assert.throws(() => resolveModel(canonical), /Unknown model ID/);
     registerFrozenRuntimeModelRoute(canonical, resolved.model, route);
     const recreated = resolveModel(canonical);
@@ -190,11 +196,11 @@ test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate',
     }
     assert.deepEqual(recreated.input, admitted.input);
     assert.deepEqual(recreated.cost, admitted.cost);
-    // Binding the stored key keeps the overlay.
-    rebindBuiltinProvider('openrouter', 'openrouter-stored-key');
+    // The overlay is metadata: registering again keeps it, and no key is bound.
+    registerBuiltinPiProvider('openrouter');
     assert.equal(resolveModel(canonical).name, admitted.name);
     const auth = await registeredPiProvider('openrouter')?.auth.apiKey?.resolve({} as never);
-    assert.equal(auth?.auth.apiKey, 'openrouter-stored-key');
+    assert.deepEqual(auth?.auth, {});
     // A route persisted before its model entered Pi's baseline keeps the
     // reviewed baseline entry instead of overlaying it.
     const baselineName = resolveModel(baseline).name;

@@ -1814,3 +1814,44 @@ test('audit failure rolls back confirmation consumption, routine, revision, and 
   assert.equal(logic.getConfirmation(tokenHash)?.consumedAt, null);
   db.close();
 });
+
+test('a running occurrence\'s persisted dispatch is found by its agent instance, and only while it runs', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => CREATED_AT);
+  try {
+    const routine = await confirmDraft(store, createDraft('routine_dispatch_lookup'), 'dispatch-lookup');
+    const run = await store.createOccurrence({
+      runId: 'rrun_dispatch_lookup',
+      idempotencyKey: 'routine:dispatch-lookup:slot',
+      routineId: routine.id,
+      routineVersion: routine.version,
+      scheduledFor: NEXT_RUN,
+      triggerSource: 'run_now',
+      requestedBy: 'U_MEMBER',
+      queuedAt: CREATED_AT,
+      deadlineAt: NEXT_RUN + 15 * 60 * 1_000,
+    });
+    const admission = await store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat', leaseUntil: CREATED_AT + 120_000, invokeStartedAt: CREATED_AT + 1,
+    });
+    const envelope = {
+      schemaVersion: 1 as const, attemptId: admission.attemptId, instanceId: 'routineagent_lookup',
+      idempotencyKey: admission.attemptId, message: 'Run the saved task.', initialData: { runtimePlan: 'frozen' },
+    };
+    assert.equal(await store.findRunningAgentDispatch(envelope.instanceId), undefined, 'not before dispatch');
+    assert.equal(await store.prepareAgentDispatch({
+      occurrenceId: run.id, attempt: admission.attempt, startedAt: CREATED_AT + 2, envelope,
+      resolvedAccessHash: 'a'.repeat(64), resolvedAgentId: 'agent_lookup',
+      resolvedAuthorityReceiptId: 'receipt_lookup', resolvedRunsAsMembershipId: 'membership_owner',
+      model: 'anthropic/claude-haiku-4-5', traceId: 'trace_lookup',
+    }), 'started');
+    assert.deepEqual(await store.findRunningAgentDispatch(envelope.instanceId), envelope);
+    assert.equal(await store.findRunningAgentDispatch('routineagent_other'), undefined);
+    await store.transitionRun({
+      occurrenceId: run.id, from: ['running'], to: 'failed', at: CREATED_AT + 3,
+      failureClass: 'deadline_exceeded', publicError: 'The routine occurrence expired.',
+    });
+    assert.equal(await store.findRunningAgentDispatch(envelope.instanceId), undefined, 'not once it settled');
+  } finally {
+    store.close();
+  }
+});
