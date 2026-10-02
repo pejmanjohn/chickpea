@@ -520,6 +520,7 @@ import {
 } from '../slack/installation-credentials.ts';
 import {
   AgentAvatarError,
+  agentAvatarInstallation,
   agentAvatarUrl,
   readAgentAvatarAsset,
   uploadAgentAvatar,
@@ -4398,10 +4399,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // Slack fetches persona images without a Chickpea browser session. Revisions
   // are immutable, so public caching cannot make a later upload appear stale.
-  app.get('/assets/agents/:agentId/avatar/:revision', async (c) => {
-    const agentId = c.req.param('agentId');
+  // Under installation tenancy the URL names the installation, and only the
+  // installation the host scoped this request to serves it.
+  const serveAgentAvatar = async (c: Context, installationId: string | undefined) => {
+    const agentId = c.req.param('agentId') ?? '';
     const revision = Number(c.req.param('revision'));
-    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1) {
+    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1 ||
+        installationId !== agentAvatarInstallation(c.env as PlatformEnv | undefined)) {
       return c.notFound();
     }
     try {
@@ -4421,7 +4425,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof UnknownAgentError) return c.notFound();
       return internalError(c, error);
     }
-  });
+  };
+  app.get('/assets/agents/:agentId/avatar/:revision', (c) => serveAgentAvatar(c, undefined));
+  app.get('/assets/i/:installationId/agents/:agentId/avatar/:revision',
+    (c) => serveAgentAvatar(c, c.req.param('installationId')));
 
   app.post(
     '/webhooks/composio',
@@ -7702,7 +7709,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           kind: 'generated',
           revision: 1,
           seed: randomUUID(),
-          url: agentAvatarUrl(requestOrigin(c), parsed.output.id, 1),
+          url: agentAvatarUrl(
+            requestOrigin(c), parsed.output.id, 1,
+            agentAvatarInstallation(c.env as PlatformEnv | undefined),
+          ),
         },
       },
     };
@@ -9374,6 +9384,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         bytes,
         contentType: parsed.output.contentType,
         publicOrigin: requestOrigin(c),
+        installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
         ...(gatewayClient && gatewayInstallation
           ? {
               publish: (avatar) => gatewayClient.publishAvatar({

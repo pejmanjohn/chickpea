@@ -263,6 +263,7 @@ import type {
   GatewayViewSubmissionDelivery,
 } from '../slack/gateway/protocol.ts';
 import {
+  agentAvatarInstallation,
   agentAvatarUrlForPresentation,
   refreshLegacyAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
@@ -985,7 +986,7 @@ async function resolvedAgentAvatarUrl(
 ): Promise<string | undefined> {
   if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
   const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);
-  return agentAvatarUrlForPresentation(agent, origin);
+  return agentAvatarUrlForPresentation(agent, origin, agentAvatarInstallation(platformEnv));
 }
 
 export async function postAgentRoutingFeedback(input: {

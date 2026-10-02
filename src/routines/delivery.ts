@@ -270,6 +270,7 @@ async function postClaimedRoutineMessage(
   const agentAvatarUrl = agentAvatarUrlForPresentation(
     input.access.config.agent,
     input.access.publicUrl,
+    input.access.avatarInstallationId,
   );
   const payload = {
     channel: input.routine.channelId,

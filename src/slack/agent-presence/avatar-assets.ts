@@ -1,4 +1,6 @@
+import { deploymentTenancy, installationScopeOf } from '../../config/installation-scope.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
+import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { AgentAvatarRevision, CustomAgentConfig } from '../../config/types.ts';
 import {
@@ -34,21 +36,37 @@ export class AgentAvatarError extends Error {
   }
 }
 
+/**
+ * Slack fetches an Agent's avatar without a session. A host serving many
+ * installations finds the installation from the URL itself, so there it names
+ * the installation (agentAvatarInstallation); the ID authorizes nothing, and
+ * the avatar is public either way.
+ */
 export function agentAvatarUrl(
   origin: string,
   agentId: string,
   revision: number,
+  installationId?: string,
 ): string {
-  return `${new URL(origin).origin}/assets/agents/${encodeURIComponent(agentId)}/avatar/${revision}`;
+  const asset = `agents/${encodeURIComponent(agentId)}/avatar/${revision}`;
+  return installationId
+    ? `${new URL(origin).origin}/assets/i/${encodeURIComponent(installationId)}/${asset}`
+    : `${new URL(origin).origin}/assets/${asset}`;
+}
+
+/** The installation an avatar URL names: none on standalone. */
+export function agentAvatarInstallation(env: PlatformEnv | undefined): string | undefined {
+  return deploymentTenancy(env) === 'installation' ? installationScopeOf(env)?.installationId : undefined;
 }
 
 export function agentAvatarUrlForPresentation(
   agent: CustomAgentConfig,
   publicOrigin: string | undefined,
+  installationId?: string,
 ): string | undefined {
   if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
   if (!publicOrigin || !agent.slackPresence) return undefined;
-  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
 }
 
 /** Upgrade a frozen legacy default for a new turn without changing its behavior. */
@@ -71,6 +89,8 @@ export async function uploadAgentAvatar(input: {
   bytes: Uint8Array;
   contentType: string;
   publicOrigin: string;
+  /** The installation the stored URL names (agentAvatarInstallation). */
+  installationId?: string | undefined;
   publish?: (input: {
     agentId: string;
     revision: number;
@@ -102,7 +122,7 @@ export async function uploadAgentAvatar(input: {
         contentType: normalized.contentType,
         bytes: normalized.bytes,
       })
-    : agentAvatarUrl(input.publicOrigin, input.agentId, revision);
+    : agentAvatarUrl(input.publicOrigin, input.agentId, revision, input.installationId);
   return input.config.updateAgent(
     input.agentId,
     {

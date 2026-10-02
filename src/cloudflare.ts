@@ -987,6 +987,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         management: appStores.management,
         service,
         ...(request.publicUrl ? { publicUrl: request.publicUrl } : {}),
+        ...(request.avatarInstallationId ? { avatarInstallationId: request.avatarInstallationId } : {}),
       },
       ...(request.presentationRunId ? { presentationRunId: request.presentationRunId } : {}),
     });

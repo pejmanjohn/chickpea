@@ -139,6 +139,7 @@ import {
   markCancelledMcpOAuthAccount,
 } from '../connections/store.ts';
 import {
+  agentAvatarInstallation,
   agentAvatarUrl,
   agentAvatarUrlForPresentation,
 } from '../slack/agent-presence/avatar-assets.ts';
@@ -1280,7 +1281,9 @@ async function managedConnectionPageInput(
 ) {
   try {
     const agent = await currentManagedAgent(setup, dependencies.config);
-    const avatarUrl = connectorPageAvatarUrl(agent, requestOrigin(c));
+    const avatarUrl = connectorPageAvatarUrl(
+      agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined),
+    );
     const writeCapabilities = new Set(dependencies.catalog
       .capabilities(setup.target.provider, 'write')
       .filter(({ accessLane }) => accessLane === 'write')
@@ -1316,7 +1319,9 @@ async function catalogConnectionPageInput(
     if (!preset || 'managedToolkit' in preset) return undefined;
     const agent = await dependencies.config.getAgent(setup.target.agentId);
     if (agent.lifecycle === 'archived') return undefined;
-    const avatarUrl = connectorPageAvatarUrl(agent, requestOrigin(c));
+    const avatarUrl = connectorPageAvatarUrl(
+      agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined),
+    );
     if (setup.status === 'authorizing' && principal &&
         'toolAccessMode' in preset && preset.toolAccessMode === 'review') {
       let account: ConnectionAccount | undefined;
@@ -2037,8 +2042,9 @@ function managedAuthorizationUrl(url: URL): string {
 function connectorPageAvatarUrl(
   agent: CustomAgentConfig,
   publicOrigin: string,
+  installationId: string | undefined,
 ): string | undefined {
-  const presentationUrl = agentAvatarUrlForPresentation(agent, publicOrigin);
+  const presentationUrl = agentAvatarUrlForPresentation(agent, publicOrigin, installationId);
   if (!presentationUrl || !agent.slackPresence) return presentationUrl;
   try {
     if (new URL(presentationUrl).origin === new URL(publicOrigin).origin) {
@@ -2049,7 +2055,7 @@ function connectorPageAvatarUrl(
   }
   // Gateway-published avatars are cross-origin. The immutable Chickpea avatar
   // route serves the same stored revision without widening this page's CSP.
-  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
 }
 
 function managedStartFailureMessage(error: unknown): string {
@@ -2277,7 +2283,9 @@ async function finishSetup(
   const connectionReceipt = ['managed_connection', 'catalog_connection'].includes(setup.action) &&
       setup.target.agentId
     ? await dependencies.config.getAgent(setup.target.agentId).then((agent) => {
-        const avatarUrl = agentAvatarUrlForPresentation(agent, requestOrigin(c));
+        const avatarUrl = agentAvatarUrlForPresentation(
+          agent, requestOrigin(c), agentAvatarInstallation(c.env as PlatformEnv | undefined),
+        );
         return {
           receiptKind: 'connector_connected' as const,
           agentId: agent.id,

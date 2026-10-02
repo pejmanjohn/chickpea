@@ -646,3 +646,25 @@ test('two installations with colliding channel, event and message IDs each admit
   }
   assert.deepEqual([...new Set(calls.map(({ token }) => token))].sort(), tenants.map(({ token }) => token).sort());
 });
+
+test('a hosted Agent posts with an avatar URL that names its installation', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    await h.stores.config.createAgent({
+      id: 'agent_ops', name: 'Ops', instructions: '', enabled: true, lifecycle: 'active',
+      creatorMembershipId: h.ownerMembershipId, editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'ops', normalizedHandle: 'ops', desiredState: 'unpublished', health: 'unpublished',
+        avatar: { kind: 'generated', revision: 1, seed: 'ops' },
+      },
+    });
+    assert.equal((await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger2',
+      actions: [{ action_id: 'chickpea.agent.start', value: 'agent_ops', action_ts: '1800000007.000100' }],
+    })).status, 200);
+    await h.settle(() => h.calls.some(({ method }) => method === 'chat.postMessage'));
+    const posted = h.calls.find(({ method }) => method === 'chat.postMessage')!;
+    assert.equal(posted.token, BOT_TOKEN);
+    assert.equal(posted.body.get('icon_url'), 'https://hosted.example/assets/i/inst_tenant_a/agents/agent_ops/avatar/1');
+  });
+});

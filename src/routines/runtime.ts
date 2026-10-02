@@ -22,6 +22,7 @@ import {
   slackWebClientUserFacts,
 } from '../slack/user-classification.ts';
 import { createSlackWebClient } from '../slack/web-client.ts';
+import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
   resolveRoutineAgentAuthority,
@@ -46,6 +47,8 @@ export interface RoutineRuntimeAccess {
   /** The exact authenticated client shared by context, memory, and delivery. */
   client?: WebClient;
   publicUrl?: string | undefined;
+  /** The installation the Agent's avatar URL names (agentAvatarInstallation). */
+  avatarInstallationId?: string | undefined;
   actorMembershipId?: string;
   actorSlackUserId?: string;
   authorityReceiptId?: string;
@@ -220,6 +223,7 @@ export async function resolveRoutineRuntimeAccess(
       botUserId,
       client: directClient,
       publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
+      avatarInstallationId: agentAvatarInstallation(env),
       actorMembershipId: authority.reference.runsAsMembershipId,
       actorSlackUserId,
       authorityReceiptId: authority.reference.authorityReceiptId,
@@ -315,6 +319,7 @@ export async function resolveRoutineRuntimeAccess(
     botUserId,
     ...(client ? { client } : {}),
     publicUrl: await resolveSlackPublicUrl(env).catch(() => undefined),
+    avatarInstallationId: agentAvatarInstallation(env),
     ...(authority
       ? {
           actorMembershipId: authority.reference.runsAsMembershipId,
