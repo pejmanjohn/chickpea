@@ -48,7 +48,8 @@ type ShadowLifecycleStage =
 
 type ShadowDeliveryOutcome = 'delivered' | 'failed' | 'unknown';
 
-function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunExecutionId {
+/** The execution a lifecycle opens for an attempt that does not resume a saved one. */
+export function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunExecutionId {
   return opaqueId('execution', `${runId}:${attemptNumber}`) as RunExecutionId;
 }
 

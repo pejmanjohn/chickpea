@@ -62,6 +62,7 @@ import {
   type ChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import {
+  recordRoutineTerminalWithoutRecorder,
   RoutineUsageRecorder,
   type UsagePersistenceEvent,
   usageRuntimeRecordingEnabled,
@@ -74,8 +75,8 @@ import {
 } from '../config/installation-scope.ts';
 import { externalActionAuthorityInstructions } from '../connections/runtime.ts';
 import { createWorkExecutionLifecycle } from '../work/executor.ts';
-import type { ShadowWorkLifecycle } from '../work/lifecycle.ts';
-import type { RunId } from '../work/types.ts';
+import { shadowRunExecutionId, type ShadowWorkLifecycle } from '../work/lifecycle.ts';
+import type { RunExecutionRecord, RunId } from '../work/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import {
@@ -195,13 +196,15 @@ export async function executeRoutineOccurrence(
   // A suspended or ended installation starts nothing and is delivered
   // nothing: the occurrence is skipped, with no notice, no pause and no
   // failure counted, and never replayed on resume. One never prepared is
-  // skipped here; one already prepared goes on below only to stop its
-  // attempt and settle what preparing it opened (its Work and usage).
+  // skipped here. One already prepared has its dispatched attempt stopped
+  // first, then goes on below only to settle what preparing it opened (its
+  // Work and usage).
   const refused = await installationRefusesWork(input.env);
   if (refused && current.status === 'admitting') {
     await skipRun(input.store, current.id, now(), REFUSED_SKIP);
     return 'completed';
   }
+  if (refused) await abortRefusedAttempt(current, admission, dependencies.handle);
 
   let prepared: PreparedExecution;
   let access: RoutineRuntimeAccess | undefined;
@@ -223,6 +226,10 @@ export async function executeRoutineOccurrence(
   } catch (error) {
     if (error instanceof RoutineSupersededError) return 'superseded';
     if (refused) {
+      await settleRefusedWithoutPreparation(
+        { env: input.env, run: current, admission, attempt: input.attempt },
+        dependencies,
+      );
       await skipRun(input.store, current.id, now(), REFUSED_SKIP);
       return 'completed';
     }
@@ -315,15 +322,8 @@ export async function executeRoutineOccurrence(
   // Only model execution and result validation belong to this catch. Once a
   // settlement is saved, delivery cannot rewrite it as a different execution.
   try {
-    if (refused) {
-      // Stop a dispatched attempt; the refusal then settles like one met mid-run.
-      if (receipt) {
-        await handle.abort().catch(() => {
-          console.warn('[chickpea] a refused routine attempt could not be stopped; its next model request is refused');
-        });
-      }
-      throw new InstallationNotAdmittedError();
-    }
+    // Its dispatched attempt was stopped above; the refusal settles like one met mid-run.
+    if (refused) throw new InstallationNotAdmittedError();
     if (!receipt) {
       if (now() >= prepared.run.deadlineAt) {
         throw new RoutineRuntimeError(
@@ -1317,6 +1317,101 @@ async function skipRun(
   const run = await store.getRun(occurrenceId);
   if (!run || (run.status !== 'admitting' && run.status !== 'running')) return;
   await store.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });
+}
+
+/**
+ * Stop a refused occurrence's dispatched attempt that has not settled. Only
+ * its envelope and receipt are needed, so this happens before preparing the
+ * occurrence again, which can fail once the installation has ended.
+ */
+async function abortRefusedAttempt(
+  run: RoutineRun,
+  admission: RoutineAdmissionAttempt,
+  handle: AgentInstanceHandle | undefined,
+): Promise<void> {
+  const receipt = admission.flueAgentReceipt;
+  if (!receipt || !run.flueAgentEnvelope || run.flueAgentSettlement) return;
+  const attempt = handle ?? init(
+    (await import('../agents/routine-execution.ts')).ChickpeaRoutineExecution,
+    { id: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) },
+  );
+  await attempt.abort().catch(() => {
+    console.warn('[chickpea] a refused routine attempt could not be stopped; its next model request is refused');
+  });
+}
+
+/**
+ * Settle what an earlier preparation of a refused occurrence opened when
+ * preparing it again fails, as it does once the installation has ended and
+ * access no longer resolves: its Work execution settles and its Run is
+ * skipped, and its usage terminal is recorded with spend unknown. Each part
+ * is best effort, and one already settled is left as it is.
+ */
+async function settleRefusedWithoutPreparation(
+  input: {
+    env: PlatformEnv;
+    run: RoutineRun;
+    admission: RoutineAdmissionAttempt;
+    attempt: number;
+  },
+  dependencies: RoutineExecutionDependencies,
+): Promise<void> {
+  const now = dependencies.now ?? Date.now;
+  const { run, admission } = input;
+  const receipt = admission.flueAgentReceipt ?? null;
+  const workStore = dependencies.workStore ?? getWorkStore(input.env);
+  const execution = run.canonicalRunId
+    ? await workStore.getRunExecution(shadowRunExecutionId(run.canonicalRunId as RunId, input.attempt))
+      .catch(() => undefined)
+    : undefined;
+  if (execution) await settleRefusedWork(workStore, execution, receipt, now()).catch(() => undefined);
+  const usageEnabled = dependencies.usageRecordingEnabled ?? usageRuntimeRecordingEnabled(input.env);
+  if (!usageEnabled || !admission.attemptId) return;
+  await recordRoutineTerminalWithoutRecorder({
+    store: dependencies.usageStore ?? getUsageStore(input.env),
+    operationId: run.id,
+    executionId: `exec:${run.id}:${admission.attemptId}`,
+    ...(execution ? { runExecutionId: execution.id } : {}),
+    status: 'failed',
+    unknownReason: 'provider_request_unknown',
+    at: now(),
+    platformEnv: input.env,
+  }).catch(() => undefined);
+}
+
+/** Settle a refused occurrence's Work execution by its id, then skip its Run. */
+async function settleRefusedWork(
+  store: WorkStore,
+  execution: RunExecutionRecord,
+  receipt: RoutineAgentReceiptV1 | null,
+  at: number,
+): Promise<void> {
+  if (execution.outcome === 'pending') {
+    // A dispatched attempt may have reached the model, and what it did there is never read.
+    const reached = execution.modelInvocationStatus === 'invoked' ||
+      (execution.modelInvocationStatus === 'ready' && receipt !== null);
+    const rawStatus = reached ? 'flue_ambiguous' : 'model_not_invoked';
+    await store.settleRunExecution({
+      executionId: execution.id,
+      fencingToken: execution.fencingToken,
+      outcome: reached ? 'ambiguous' : 'not_submitted',
+      modelInvocationStatus: reached ? 'settled' : 'not_invoked',
+      rawSettlementRef: opaqueId('settlement', `${execution.id}:${rawStatus}`),
+      rawSettlementStatus: rawStatus,
+      safeFailureCode: routineLifecycleFailureCode(REFUSED_SKIP.failureClass),
+      ...(receipt ? { flueSubmissionRef: opaqueId('fluesubmission', receipt.submissionId) } : {}),
+      finishedAt: at,
+    });
+  }
+  const workRun = await store.getRun(execution.runId);
+  if (!workRun || workRun.status === 'settled') return;
+  await store.settleRunWithoutDelivery({
+    runId: execution.runId,
+    fencingToken: execution.fencingToken,
+    terminalDisposition: 'skipped',
+    safeFailureCode: REFUSED_SKIP.skipReason,
+    settledAt: at,
+  });
 }
 
 /** Skip a prepared occurrence that ends without a result to post, settling its Work first. */

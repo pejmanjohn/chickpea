@@ -1540,6 +1540,77 @@ test('a dispatched occurrence a refused installation stops still settles its Wor
   }
 });
 
+test('a dispatched occurrence of an ended installation is stopped and settled though access no longer resolves', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-ended-settles-'));
+  const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_ended_work' });
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  t.after(() => resetInstallationAdmissionForTests());
+  try {
+    const fixture = await admittedFixture(
+      routines,
+      'ended_settles',
+      (routine) => linkAgentSchedule(configuration, routine),
+      'public',
+    );
+    assert.ok(fixture.run.canonicalRunId);
+    const events: string[] = [];
+    const base = { env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+    const stores = {
+      usageRecordingEnabled: true, usageStore: usage, workStore: work,
+      persistenceTelemetrySink: telemetrySink().sink,
+    };
+    // Dispatched, then the read is interrupted: its Work execution and Usage operation are open.
+    assert.equal(await executeRoutineOccurrence(base, {
+      ...dependencies(), ...stores,
+      handle: fakeHandle({ events, readError: new DOMException('restarted', 'AbortError') }),
+    }), 'resumable');
+
+    // Uninstalled: its Slack installation is revoked, so access fails the way
+    // the resolver fails it, and nothing can be prepared again.
+    configureInstallationAdmission(async () => 'refused');
+    const stopping = fakeHandle({ events });
+    stopping.abort = async () => { events.push('abort'); };
+    assert.equal(await executeRoutineOccurrence(base, {
+      ...dependencies(), ...stores, handle: stopping,
+      resolveAccess: async () => {
+        events.push('access');
+        throw new RoutineRuntimeError('credential_unavailable', 'The Slack connection is unavailable for this routine.');
+      },
+    }), 'completed');
+    assert.deepEqual(events.slice(-2), ['abort', 'access'], 'the attempt is stopped before access is tried');
+    assert.equal(events.filter((event) => event === 'abort').length, 1);
+
+    const skipped = await routines.getRun(fixture.run.id);
+    assert.equal(skipped?.status, 'skipped');
+    assert.equal(skipped?.skipReason, 'installation_not_admitted');
+    const routine = await routines.getRoutine(fixture.run.routineId);
+    assert.equal(routine?.state, 'active', 'an ended installation pauses nothing');
+    assert.equal(await routines.getRecoveryDelivery(fixture.run.id), undefined);
+
+    const workRun = await work.getRun(fixture.run.canonicalRunId as RunId);
+    assert.equal(workRun?.terminalDisposition, 'skipped');
+    const [execution] = await work.listRunExecutions(fixture.run.canonicalRunId as RunId);
+    assert.equal(execution?.outcome, 'ambiguous', 'what the stopped attempt did is never read');
+    const operation = await usage.getOperation(fixture.run.id);
+    assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
+    assert.equal(operation?.measurements[0]?.inputTokens, null);
+    assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+    assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
+  } finally {
+    work.close();
+    usage.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('permanent Work initialization failure is one gap and never redispatches', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-work-gap-'));
   const path = join(directory, 'state.sqlite');
