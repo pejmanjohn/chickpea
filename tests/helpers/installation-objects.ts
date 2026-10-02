@@ -2,9 +2,18 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 import type { DurableObjectStorage } from 'cloudflare:workers';
 
-import { scopeInstallationEnv } from '../../src/config/installation-scope.ts';
+import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../../src/agents/names.ts';
+import {
+  objectInstallationEnv,
+  scopeInstallationEnv,
+  splitInstallationObjectName,
+} from '../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
+import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
+import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
+import { objectHostFunctions } from '../../src/state/object-host.ts';
+import { stateStoreHostFunctions } from '../../src/state/state-store-host.ts';
 import { buildTagStateStores, type TagStateStores } from '../../src/state/tag-state-stores.ts';
 
 /**
@@ -142,4 +151,82 @@ export function hostedInstallation(
   const organizationId = `org_${installationId}`;
   stores.installationBinding.bind({ organizationId, installationId });
   return { installationId, organizationId, env, storage, db, stores };
+}
+
+interface DeploymentObject {
+  readonly binding: string;
+  readonly name: string;
+  readonly storage: FakeObjectStorage;
+  readonly env: PlatformEnv;
+  readonly host: Record<string, (request: never) => Promise<unknown>>;
+}
+
+/**
+ * A deployment serving many installations with every object namespace the
+ * host functions address: each object (state store, thread runner, Flue
+ * instance) gets the env its own name scopes and answers through the same
+ * host functions its class delegates to. Objects are created on first
+ * address, as Durable Objects are.
+ */
+export function hostedDeployment(installationIds: readonly string[]) {
+  const objects = new Map<string, DeploymentObject>();
+  const installations = new Map<string, HostedInstallation>();
+  const platform: Record<string, unknown> = { CHICKPEA_TENANCY: 'installation' };
+  const objectFor = (binding: string, name: string): DeploymentObject => {
+    const key = `${binding}\n${name}`;
+    let object = objects.get(key);
+    if (object) return object;
+    const env = objectInstallationEnv({ id: { name } }, platform as PlatformEnv);
+    const scope = splitInstallationObjectName(name).scope;
+    if (binding === 'TAG_STATE') {
+      const installation = scope ? installations.get(scope.installationId) : undefined;
+      if (!installation) throw new Error(`No installation serves ${name}.`);
+      let stores: TagStateStores | undefined = installation.stores;
+      object = {
+        binding, name, storage: installation.storage, env,
+        host: stateStoreHostFunctions({
+          env, storage: installation.storage,
+          stores: () => stores ??= buildTagStateStores(
+            new DoSqlStateDb(installation.storage.asDurableObjectStorage()), env, { gatewayLeaseOwner: 'test' },
+          ),
+          onErased: () => { stores = undefined; },
+        }) as unknown as DeploymentObject['host'],
+      };
+    } else {
+      const storage = new FakeObjectStorage();
+      object = {
+        binding, name, storage, env,
+        host: objectHostFunctions({ env, storage }) as unknown as DeploymentObject['host'],
+      };
+    }
+    objects.set(key, object);
+    return object;
+  };
+  const named = (binding: string) => ({ getByName: (name: string) => objectFor(binding, name).host });
+  const byId = (binding: string) => ({
+    idFromName: (name: string) => name,
+    get: (id: string) => objectFor(binding, id).host,
+  });
+  Object.assign(platform, {
+    TAG_STATE: named('TAG_STATE'),
+    SLACK_THREAD_RUNNER: named('SLACK_THREAD_RUNNER'),
+    [CHICKPEA_SLACK_AGENT_BINDING]: byId(CHICKPEA_SLACK_AGENT_BINDING),
+    [agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)]:
+      byId(agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)),
+  });
+  for (const installationId of installationIds) {
+    installations.set(installationId, hostedInstallation(installationId, platform));
+  }
+  return {
+    platform: platform as PlatformEnv,
+    installation: (installationId: string) => installations.get(installationId)!,
+    /** The object a host would reach, creating it as the platform would. */
+    object: (binding: string, name: string) => objectFor(binding, name),
+    objects: () => [...objects.values()],
+  };
+}
+
+/** A thread runner's job store over its storage. */
+export function runnerJobs(storage: FakeObjectStorage): ThreadRunnerJobStore {
+  return new ThreadRunnerJobStore(new DoSqlStateDb(storage.asDurableObjectStorage()));
 }

@@ -246,6 +246,8 @@ import {
 import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
+import type { ObjectExportRequest, ObjectHostRequest } from './state/object-host.ts';
+import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
 import { applicationIdentity, viteServeLane } from './release/identity.ts';
@@ -785,7 +787,7 @@ const RUNNER_DISPATCH_MAX_PAGES = 16;
  * migration live in wrangler.jsonc (TAG_STATE / migrations v2).
  */
 
-export class TagStateStore extends DurableObject implements TagStateRpc {
+export class TagStateStore extends DurableObject implements TagStateRpc, StateStoreHostRpc {
   private stores: TagStateStores | undefined;
   /**
    * Constructor failures are latched instead of thrown: a throwing DO
@@ -1069,6 +1071,40 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
   ): Promise<StateRpcResult<InstallationIdentity>> {
     return this.call((stores) =>
       bindStoreInstallation(stores.installationBinding, this.env as PlatformEnv, identity));
+  }
+
+  // ── host functions (installation tenancy; see state/installation-objects.ts) ──
+  // An operator job's: each refuses on standalone and for any installation
+  // but the one this store's name scopes (state/state-store-host.ts).
+
+  async chickpeaHostInventory(request: ObjectHostRequest & { cursor?: string | null; limit?: number }) {
+    return this.host().chickpeaHostInventory(request);
+  }
+
+  async chickpeaHostInventoryBackfill(request: ObjectHostRequest) {
+    return this.host().chickpeaHostInventoryBackfill(request);
+  }
+
+  async chickpeaHostExportPage(request: ObjectExportRequest) {
+    return this.host().chickpeaHostExportPage(request);
+  }
+
+  async chickpeaHostErase(request: ObjectHostRequest) {
+    return this.host().chickpeaHostErase(request);
+  }
+
+  private host(): StateStoreHostRpc {
+    return stateStoreHostFunctions({
+      env: this.env as PlatformEnv,
+      storage: this.ctx.storage,
+      stores: () => {
+        this.stores ??= this.tryInit();
+        if (!this.stores) throw new Error(`state store unavailable: init failed (${this.initError ?? 'unknown'})`);
+        return this.stores;
+      },
+      // Nothing of the erased store stays in memory; a later call builds an empty one.
+      onErased: () => { this.stores = undefined; },
+    });
   }
 
   // ── config: agents ───────────────────────────────────────────────────────

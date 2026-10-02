@@ -24,6 +24,12 @@ import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
+import {
+  objectHostFunctions,
+  type InstallationObjectHostRpc,
+  type ObjectExportRequest,
+  type ObjectHostRequest,
+} from '../state/object-host.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
   cacheSlackInstallationExecutionContexts,
@@ -91,7 +97,7 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
  * back to the state store, which stays the record of truth for turn rows.
  * Jobs already handed here always finish here, whatever the switch says.
  */
-export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc {
+export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
   /** Its turns' live status; run facts outlive an eviction in this object's storage. */
@@ -301,6 +307,28 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
 
   async alarm(): Promise<void> {
     await this.runSoon();
+  }
+
+  // ── host functions (installation tenancy; see state/installation-objects.ts) ──
+
+  async chickpeaHostExportPage(request: ObjectExportRequest) {
+    return this.host().chickpeaHostExportPage(request);
+  }
+
+  async chickpeaHostErase(request: ObjectHostRequest) {
+    return this.host().chickpeaHostErase(request);
+  }
+
+  private host(): InstallationObjectHostRpc {
+    return objectHostFunctions({
+      env: this.env as PlatformEnv,
+      storage: this.ctx.storage,
+      onErased: () => {
+        this.jobs = undefined;
+        this.presentations = undefined;
+        this.stopHandling = undefined;
+      },
+    });
   }
 
   /** The state store, over a fresh stub per call (see CfTurnJobsForRunner). */
