@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAdminRoutes } from '../src/admin/routes.ts';
+import { browserCapabilityForTurn } from '../src/browser/capability.ts';
+import { BROWSER_ENV_VARS } from '../src/browser/settings.ts';
 import {
   connectionAccountSecretEnvVar,
   connectorCredentialEnvVar,
@@ -24,7 +27,7 @@ import { withEnv } from './helpers/env.ts';
 /**
  * Features a deployment serving many installations must not share across
  * them: a deployment variable never answers for one installation's
- * connection credentials.
+ * connection credentials, and the browser is not offered at all.
  */
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
@@ -87,4 +90,48 @@ test('standalone still reads the deployment variable first, as before', async (t
     assert.deepEqual(await describeMcpSecretSources(MCP, ['X-Team'], undefined, settings),
       { bearer: 'env', headers: { 'X-Team': 'env' } });
   });
+});
+
+/** Stores that fail any read, so a response proves where the request stopped. */
+function untouchable<T extends object>(): T {
+  return new Proxy({} as T, { get(_target, property) {
+    if (property === 'then') return undefined;
+    throw new Error(`store read: ${String(property)}`);
+  } });
+}
+
+const BROWSER_ROUTES: Array<[string, string]> = [
+  ['GET', '/admin/api/browser/status'], ['PUT', '/admin/api/browser/key'], ['DELETE', '/admin/api/browser/key'],
+  ['GET', '/admin/api/agents/agent_shared/website-logins'], ['POST', '/admin/api/agents/agent_shared/website-logins'],
+  ['PATCH', '/admin/api/agents/agent_shared/website-logins/login_1'],
+  ['DELETE', '/admin/api/agents/agent_shared/website-logins/login_1'],
+];
+
+test('under tenancy Admin\'s browser key and website-login routes are not found, before any store is read', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
+  const variants = (path: string) => [
+    path, path.replace('/admin/api/', '/admin//api/'), `${path}/`,
+    path.replace('/browser/', '/%62rowser/').replace('/website-logins', '/%77ebsite-logins'),
+  ];
+  for (const [method, path] of BROWSER_ROUTES) {
+    for (const variant of new Set(variants(path))) {
+      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
+      assert.equal(response.status, 404, `${method} ${variant}`);
+    }
+  }
+  // An Agent's other routes, and standalone's browser routes, get past the guard.
+  assert.equal((await routes.request('https://hosted.example/admin/api/agents/agent_shared', {}, ENV_A)).status, 500);
+  for (const [method, path] of BROWSER_ROUTES) {
+    assert.equal((await routes.request(`http://localhost${path}`, { method })).status, 500, `standalone ${method} ${path}`);
+  }
+});
+
+test('under tenancy no turn or occurrence is offered the browser, even with a deployment Browserbase key', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  const key = { [BROWSER_ENV_VARS.apiKey]: 'bb_live_deployment_key_0000000000' };
+  assert.equal(await browserCapabilityForTurn(settings, { ...ENV_A, ...key }), undefined);
+  assert.equal(await browserCapabilityForTurn(settings, scopeInstallationEnv({ ...HOSTED, ...key }, { installationId: 'inst_guard_a' })), undefined);
+  assert.deepEqual(await browserCapabilityForTurn(settings, key), { provider: 'browserbase' }, 'standalone is unchanged');
 });

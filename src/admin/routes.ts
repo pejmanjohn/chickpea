@@ -1859,8 +1859,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return task();
   };
   // A host serving many installations owns first-run setup, recovery, Slack
-  // install and sign-in, the gateway and deployment activation; under
-  // installation tenancy those surfaces are not found, before any store read.
+  // install and sign-in, the gateway and deployment activation, and does not
+  // offer the browser; under installation tenancy those surfaces are not
+  // found, before any store read.
   app.use('*', async (c, next) => {
     if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
         standaloneOnlyRoute(c.req.method, c.req.path)) return c.notFound();
@@ -11668,8 +11669,8 @@ function isAdminPageGet(c: Context): boolean {
 
 // Standalone-only surfaces: first-run and manual setup, recovery, the Slack
 // app's install and sign-in, the gateway, deployment activation, the QA lane
-// environment bridge, the legacy configuration cutover and the ChatGPT plan
-// handoff.
+// environment bridge, the legacy configuration cutover, the ChatGPT plan
+// handoff, and the browser (its Browserbase key and website logins).
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11679,6 +11680,7 @@ const STANDALONE_ONLY_PREFIXES = [
   '/internal/environment',
   '/admin/api/chickpea-cutover',
   '/auth/chatgpt-plan',
+  '/admin/api/browser',
 ] as const;
 
 /** Whether a request names a standalone-only surface, however its path repeats or ends in slashes. */
@@ -11686,6 +11688,8 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
   // Removing the stored Slack credentials is the host's installation lifecycle.
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
+  // An Agent's website logins belong to the browser.
+  if (/^\/admin\/api\/agents\/[^/]+\/website-logins(?:\/|$)/.test(canonical)) return true;
   return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`));
 }
 
