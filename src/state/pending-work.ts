@@ -32,7 +32,11 @@ export interface StatePendingWorkCancellation {
   readonly managementReceipts: number;
   /** Flue instances of dispatched, unsettled turns and attempts asked to abort. */
   readonly agentsStopped: number;
-  /** Those whose abort failed; the installation's admission check still refuses their model calls. */
+  /**
+   * Those whose abort failed, and dispatched turns whose stored dispatch does
+   * not read, so nothing can address them; the installation's admission
+   * check still refuses their model calls.
+   */
   readonly agentsNotStopped: number;
 }
 
@@ -59,6 +63,8 @@ export function cancelStatePendingWork(
   at: number,
 ): Omit<StatePendingWorkCancellation, 'alarmCleared' | 'agentsStopped' | 'agentsNotStopped'> & {
   readonly agents: readonly AgentStopTarget[];
+  /** Dispatched turns with no submission to abort: their stored dispatch does not read. */
+  readonly agentsUnaddressable: number;
   readonly occurrences: readonly CancelledOccurrence[];
 } {
   const turns = stores.turnJobs.cancelPendingWork();
@@ -67,6 +73,9 @@ export function cancelStatePendingWork(
   // run history reads the same as for any refusal.
   const routines = stores.routines.cancelPendingWork(at, REFUSED_SKIP);
   const managementReceipts = stores.management.cancelPendingReceipts(at);
+  if (turns.unreadable > 0) {
+    console.warn('[chickpea] a cancelled turn\'s dispatch could not be read to stop it; its installation\'s admission refuses its model calls');
+  }
   return {
     turns: turns.turns,
     routineRuns: routines.runs,
@@ -76,6 +85,7 @@ export function cancelStatePendingWork(
       ...turns.dispatched.map((target) => ({ kind: 'slack_agent' as const, target })),
       ...routines.dispatched.map((target) => ({ kind: 'routine_agent' as const, target })),
     ],
+    agentsUnaddressable: turns.unreadable,
     occurrences: routines.prepared,
   };
 }

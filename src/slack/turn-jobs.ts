@@ -1992,17 +1992,19 @@ export class TurnJobStoreLogic {
    * installation's objects, so no message is answered twice: each is parked
    * as `recovery_required` (`operator_cancelled`), which no executor runs or
    * delivers again and the Owner's recovery list and drain counts leave out,
-   * and its owed stop notice is dropped. Returns how many
-   * were parked, and the Flue instances of every cancelled turn whose
-   * dispatch is admitted and unsettled, for the caller to abort (at most
-   * `limit`; a repeat returns the same ones until they settle). Safe to repeat.
+   * and its owed stop notice is dropped. Returns how many were parked; the
+   * Flue instances of every cancelled turn whose dispatch is admitted and
+   * unsettled, for the caller to abort (at most `limit`; a repeat returns the
+   * same ones until they settle); and how many such turns cannot be stopped
+   * because their stored dispatch does not read. Safe to repeat.
    */
-  cancelPendingWork(limit = 100): { turns: number; dispatched: SlackThreadAgentTarget[] } {
+  cancelPendingWork(limit = 100): { turns: number; dispatched: SlackThreadAgentTarget[]; unreadable: number } {
     const turns = this.db.run(
       `UPDATE turn_jobs
        SET status = 'recovery_required', recovery_reason = '${OPERATOR_CANCELLED}', stop_notice_at = NULL
        WHERE ${PENDING_ROW}`,
     ).changes;
+    let unreadable = 0;
     const dispatched = this.db.all(
       `SELECT id FROM turn_jobs
        WHERE delivered = 0 AND status = 'recovery_required' AND recovery_reason = '${OPERATOR_CANCELLED}'
@@ -2014,12 +2016,15 @@ export class TurnJobStoreLogic {
       try {
         const envelope = this.getDispatchEnvelope(id);
         const uid = this.getFlueReceipt(id)?.uid ?? envelope?.uid;
-        return envelope ? [{ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) }] : [];
+        if (envelope) return [{ instanceId: envelope.instanceId, ...(uid ? { uid } : {}) }];
       } catch {
-        return [];
+        // Counted below.
       }
+      // A dispatched turn whose stored dispatch cannot name its instance cannot be stopped.
+      unreadable += 1;
+      return [];
     });
-    return { turns, dispatched };
+    return { turns, dispatched, unreadable };
   }
 
   /** Explicit operator terminalization; retained claims continue to dedupe. */

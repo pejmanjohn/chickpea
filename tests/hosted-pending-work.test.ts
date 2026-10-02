@@ -254,6 +254,28 @@ test('an installation\'s Owner never sees the turns an operator parked, in the r
   assert.equal(a.stores.turnJobs.runtimeDrainCounts().recoveryRequiredTurnJobs, 0);
 });
 
+test('a dispatched turn whose stored dispatch does not read is counted as not stopped', async (t) => {
+  const warned = t.mock.method(console, 'warn', () => undefined);
+  const stopped: AgentStopTarget[] = [];
+  const deployment = hostedDeployment(['inst_pending_unreadable'], {
+    stopAgents: async (agents) => {
+      stopped.push(...agents);
+      return { stopped: agents.length, notStopped: 0 };
+    },
+  });
+  const a = deployment.installation('inst_pending_unreadable');
+  const pending = turns(a, 'T_A');
+  a.db.run('UPDATE turn_jobs SET dispatch_envelope_json = ? WHERE id = ?', '{"unreadable"', pending.running.id);
+
+  const cancelled = await cancelInstallationObjectPendingWork(a.env, installationStateStoreObject(a.env)) as {
+    turns: number; agentsStopped: number; agentsNotStopped: number;
+  };
+  assert.deepEqual([cancelled.turns, cancelled.agentsStopped, cancelled.agentsNotStopped], [2, 0, 1]);
+  assert.deepEqual(stopped, [], 'nothing names its instance to abort');
+  assert.equal(a.stores.turnJobs.runnerView(pending.running.id).status, 'recovery_required', 'it is parked all the same');
+  assert.equal(warned.mock.callCount(), 1);
+});
+
 test('a thread runner settles its open jobs unrun and a Flue instance loses its alarm', async () => {
   const deployment = hostedDeployment(['inst_pending_runner']);
   const a = deployment.installation('inst_pending_runner');

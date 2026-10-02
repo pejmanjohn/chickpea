@@ -89,7 +89,7 @@ export function stateStoreHostFunctions(store: {
     async chickpeaHostCancelPendingWork(request) {
       const local = stores(request);
       const at = Date.now();
-      const { agents, occurrences, ...cancelled } = cancelStatePendingWork(local, at);
+      const { agents, agentsUnaddressable, occurrences, ...cancelled } = cancelStatePendingWork(local, at);
       // This store's own Work and usage records, through their async views.
       await settleCancelledOccurrences(occurrences, store.env as PlatformEnv, {
         workStore: promisify(local.work, { close: () => undefined }),
@@ -99,7 +99,9 @@ export function stateStoreHostFunctions(store: {
       });
       await store.storage.deleteAlarm();
       const { stopped, notStopped } = await (store.stopAgents ?? stopCancelledAgents)(agents);
-      return { alarmCleared: true, ...cancelled, agentsStopped: stopped, agentsNotStopped: notStopped };
+      return {
+        alarmCleared: true, ...cancelled, agentsStopped: stopped, agentsNotStopped: notStopped + agentsUnaddressable,
+      };
     },
   };
 }
