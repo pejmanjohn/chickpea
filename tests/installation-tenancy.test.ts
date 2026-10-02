@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -15,6 +15,7 @@ import {
   runtimePlanInstanceIdMatches,
 } from '../src/agents/runtime-plan.ts';
 import { installationAgentObject } from '../src/agents/cloudflare-extension.ts';
+import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { createSlackTurnInput, parseSlackTurnInput } from '../src/agents/turn-input.ts';
 import { CfIdentityStore, CfSettingsStore, FreshTagStateStubs } from '../src/config/cf-state-proxies.ts';
 import {
@@ -42,6 +43,7 @@ import {
   saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
 import { forgetRegisteredProvider, knownProviderIds } from '../src/config/providers.ts';
+import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SettingsStoreLogic, SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { tagStateStub, type TagStateRpc } from '../src/config/state-rpc.ts';
@@ -367,6 +369,19 @@ test('only an active installation resolves to an env, and cron runs once per act
   handler.scheduled({ scheduledTime: 1 }, { ...HOSTED }, { waitUntil: (promise) => { waits.push(promise); } });
   while (waits.length) await waits.shift();
   assert.deepEqual(seen, [A.installationId, 'inst_c']);
+
+  // A lookup whose active list is wrong still never runs a suspended installation.
+  const stale: InstallationLookup = {
+    find: async () => undefined,
+    listActive: async () => [{ identity: B, slackTeamId: 'T_B', status: 'suspended' }],
+  };
+  const ranStale: Array<string | undefined> = [];
+  scheduledForEachInstallation(
+    { scheduled: (_controller, scopedEnv) => { ranStale.push(installationScopeOf(scopedEnv)?.installationId); } },
+    () => stale,
+  ).scheduled({ scheduledTime: 2 }, { ...HOSTED }, { waitUntil: (promise) => { waits.push(promise); } });
+  while (waits.length) await waits.shift();
+  assert.deepEqual(ranStale, []);
 });
 
 test('coding sandboxes are not offered to a deployment serving many installations', () => {
@@ -417,9 +432,18 @@ test('a deployment serving many installations never binds a model key to the sha
   assert.deepEqual(reads, [], 'neither reads a key it may not bind');
 });
 
-test('each installation saves and reads its own model keys without binding the isolate', async () => {
+test('each installation saves and reads its own model keys without binding the isolate', async (t) => {
   invalidateProviderKeyCache();
   forgetRegisteredProvider('anthropic');
+  // Any read that missed its installation's cache would open this store.
+  const sentinel = join(mkdtempSync(join(tmpdir(), 'chickpea-keys-')), 'ambient.db');
+  const previousPath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = sentinel;
+  t.after(() => {
+    if (previousPath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousPath;
+    rmSync(dirname(sentinel), { recursive: true, force: true });
+  });
   const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
   const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: B.installationId });
   const [settingsA, settingsB] = [new SqliteSettingsStore(':memory:'), new SqliteSettingsStore(':memory:')];
@@ -437,9 +461,32 @@ test('each installation saves and reads its own model keys without binding the i
     assert.equal((await resolveProviderApiKey('anthropic', envA)).apiKey, undefined);
     assert.equal((await resolveProviderApiKey('anthropic', envB)).apiKey, 'sk-tenant-b');
     assert.equal(knownProviderIds({}).has('anthropic'), false);
+    assert.equal(existsSync(sentinel), false, 'every read was served from its own installation');
   } finally {
     invalidateProviderKeyCache();
+    forgetRegisteredProvider('anthropic');
     for (const store of [settingsA, settingsB]) store.close();
     for (const store of [usageA, usageB]) store.close();
   }
+});
+
+test('a ChatGPT plan session is never bound to the isolate a deployment shares between installations', async (t) => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await saveOpenAiAuthMethod(settings, 'subscription');
+  const env = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
+  await assert.rejects(
+    resolveRuntimeModel('agent_plan', 'openai/gpt-5.4', {
+      settings,
+      env: env as never,
+      loadCatalog: async () => { throw new Error('must not load the catalog'); },
+    }),
+    /does not bind model credentials/,
+  );
 });

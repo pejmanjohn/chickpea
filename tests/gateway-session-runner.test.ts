@@ -117,6 +117,31 @@ test('durable alarm restores an evicted gateway owner without cron or Admin traf
   assert.equal(await storage.getAlarm(), null, 'unconfigured installations must not wake forever');
 });
 
+test('a deployment serving many installations disarms the shared gateway session instead of retrying', async () => {
+  const storage = alarmStorage();
+  await storage.setAlarm(NOW + 30_000);
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const Probe = vm.runInNewContext(compiled, {
+    Date: { now: () => NOW },
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
+    getSettingsStore: () => { throw new Error('the shared session must not read a store'); },
+    cloudflareWorkerVersionId: () => 'test-version',
+  }) as new (context: object, env: object) => { alarm(): Promise<void> };
+  // An alarm armed by an earlier build fires once and is not re-armed.
+  await new Probe({ storage, waitUntil() {} }, { CHICKPEA_TENANCY: 'installation' }).alarm();
+  assert.equal(await storage.getAlarm(), null);
+});
+
 test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
   // Execute the real DO class with a delayed cross-object settings read. The
   // runner supervisor is real; socket transport itself is covered below.
