@@ -258,7 +258,7 @@ test('the canonical signed Events URL answers before promoting its pending encry
   }
 });
 
-test('a finalization that loses the proof record to a completed one reports the installed bot', async () => {
+test('a finalization that loses the proof record to a completed install replays it as installed', async () => {
   const fixture = await installFixture();
   try {
     await waitForEvents(fixture, 'lost-proof-code');
