@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   createAssistantMessageEventStream,
@@ -30,6 +31,7 @@ import {
   ModelCredentialConflictError,
   ModelCredentialRevisionError,
   ModelCredentialUnavailableError,
+  migratePlaintextModelCredentials,
   readHostedModelCredential,
   resolveModelCredentialAttribution,
   rotateInstallationModelCredential,
@@ -348,4 +350,80 @@ test('an encrypted credential needs its installation, and a store that can hold 
     await assert.rejects(rotateInstallationModelCredential('openai' as ProviderKeyId, { kind: 'save', apiKey: KEY_2 },
       { env: envA, settings: plain, usage, keyring }), /cannot hold encrypted model credentials/);
   });
+});
+
+/** A key an earlier build saved in the clear for a hosted installation, with its metadata. */
+async function legacyPlaintextKey(store: SqliteSettingsStore, apiKey: string, active = true) {
+  await store.applySettingsPatch({
+    set: [
+      { key: 'provider.anthropic.apiKey', value: apiKey },
+      { key: 'provider.anthropic.credentialRefId', value: 'cred_anthropic_legacy-plaintext-reference' },
+      { key: 'provider.anthropic.credentialVersion', value: '1' },
+      { key: 'provider.anthropic.credentialActive', value: String(active) },
+      { key: 'provider.anthropic.credentialActiveFrom', value: '10' },
+    ],
+  });
+}
+
+test('the explicit migration encrypts a hosted plaintext key once, under the next version', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { envA, settingsOf, usage, keyring, read } = hostedInstallations(t);
+    const legacyRef = 'cred_anthropic_legacy-plaintext-reference';
+    await legacyPlaintextKey(settingsOf(envA), KEY_1);
+    assert.equal(await installationModelAccessGrant('anthropic', envA, 'run_legacy', settingsOf(envA)), undefined,
+      'a hosted installation never uses a key kept in the clear');
+    await usage.putCredential({
+      credentialRefId: legacyRef, version: 1, providerId: 'anthropic', sourceKind: 'stored',
+      label: 'Stored Anthropic credential', scopeLabel: null, unknownRotation: false, activeFrom: 10,
+    });
+
+    const migrate = () => migratePlaintextModelCredentials({ env: envA, settings: settingsOf(envA), usage, keyring });
+    assert.deepEqual(await migrate(), { migrated: ['anthropic'], removed: [] });
+    assert.equal(await settingsOf(envA).getSetting('provider.anthropic.apiKey'), undefined);
+    assert.equal((await read(envA, { credentialRefId: legacyRef, version: 2 }))?.apiKey, KEY_1);
+    await assert.rejects(read(envA, { credentialRefId: legacyRef, version: 1 }), ModelCredentialRevisionError);
+    const rows = await usage.listCredentials('anthropic');
+    assert.notEqual(rows.find((row) => row.version === 1)?.retiredAt, null);
+    assert.equal(rows.find((row) => row.version === 2)?.retiredAt, null);
+
+    // Idempotent: nothing is left to migrate.
+    assert.deepEqual(await migrate(), { migrated: [], removed: [] });
+    assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envA)))?.version, 2);
+  });
+});
+
+test('the migration removes a stale plaintext without reviving a deleted key, and refuses standalone', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { envA, envB, settingsOf, usage, keyring, rotate } = hostedInstallations(t);
+    await legacyPlaintextKey(settingsOf(envA), KEY_1, false);
+    assert.deepEqual(await migratePlaintextModelCredentials({ env: envA, settings: settingsOf(envA), usage, keyring }),
+      { migrated: [], removed: ['anthropic'] });
+    assert.equal(await settingsOf(envA).getSetting('provider.anthropic.apiKey'), undefined);
+    assert.equal(await settingsOf(envA).getEncryptedCredentialRevision('model_provider.anthropic'), undefined);
+    assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envA)))?.version, 1);
+
+    // Beside an encrypted key, the encrypted key stands and its version does not move.
+    await rotate(envB, { kind: 'save', apiKey: KEY_2 });
+    await settingsOf(envB).setSetting('provider.anthropic.apiKey', 'sk-ant-stray-plaintext');
+    assert.deepEqual(await migratePlaintextModelCredentials({ env: envB, settings: settingsOf(envB), usage, keyring }),
+      { migrated: [], removed: ['anthropic'] });
+    assert.equal((await readHostedModelCredential('anthropic', { env: envB, settings: settingsOf(envB), keyring }))?.apiKey, KEY_2);
+    assert.equal((await storedCredentialMetadata('anthropic', settingsOf(envB)))?.version, 1);
+
+    const standalone = new SqliteSettingsStore(':memory:');
+    t.after(() => standalone.close());
+    await standalone.setSetting('provider.anthropic.apiKey', KEY_1);
+    await assert.rejects(migratePlaintextModelCredentials({ env: undefined, settings: standalone, usage, keyring }),
+      /Only an installation of a deployment serving many/);
+    assert.equal(await standalone.getSetting('provider.anthropic.apiKey'), KEY_1);
+  });
+});
+
+test('nothing runs the plaintext migration on its own', () => {
+  const root = fileURLToPath(new URL('../src/', import.meta.url));
+  const callers = readdirSync(root, { recursive: true, encoding: 'utf8' })
+    .filter((path) => path.endsWith('.ts'))
+    .filter((path) => readFileSync(join(root, path), 'utf8').includes('migratePlaintextModelCredentials('));
+  assert.deepEqual(callers, [join('config', 'model-credential-refs.ts')],
+    'only its definition: an operator invokes it explicitly');
 });

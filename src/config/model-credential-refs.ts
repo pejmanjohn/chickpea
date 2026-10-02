@@ -283,7 +283,8 @@ async function rotateHostedModelCredential(
     const envelope = action.kind === 'save'
       ? await encryptModelProviderKeyEnvelope(keyring!, modelProviderKeyContext(installationId, id, next), action.apiKey)
       : undefined;
-    const previous = savedHostedCredential(current);
+    // Any active version is retired, including one whose key predates encryption.
+    const previous = current?.active ? current : undefined;
     if (previous) await input.usage.putCredential(storedRegistration(id, previous));
     const published = await store.publishModelCredential({
       providerId: id,
@@ -333,6 +334,53 @@ export async function readHostedModelCredential(
   }
   const { credentialRefId, version, activeFrom } = current;
   return { apiKey, metadata: { credentialRefId, version, active: true, activeFrom } };
+}
+
+/**
+ * An explicit, operator-run migration for one installation of a deployment
+ * serving many; nothing calls it on its own. A key an earlier build saved in
+ * the clear is published encrypted under the next version of the same
+ * reference, and its plaintext removed, in the store's one version-fenced
+ * write; runs frozen to the old version then fail as a revision change
+ * rather than reading a key the store no longer has in that form. A
+ * plaintext left beside a deleted or already-encrypted credential is
+ * removed without publishing anything. Running it again changes nothing.
+ * Standalone keeps its plaintext keys and is refused.
+ */
+export async function migratePlaintextModelCredentials(
+  input: Omit<InstallationModelCredentialInput, 'expectedVersion'>,
+): Promise<{ migrated: ProviderKeyId[]; removed: ProviderKeyId[] }> {
+  if (!deploymentServesManyInstallations(input.env)) {
+    throw new Error('Only an installation of a deployment serving many stores its model keys encrypted.');
+  }
+  hostedInstallationId(input.env);
+  const store = hostedModelCredentialStore(input.settings);
+  const migrated: ProviderKeyId[] = [];
+  const removed: ProviderKeyId[] = [];
+  for (const id of BUILTIN_PROVIDERS) {
+    const keys = modelCredentialSettingKeys(id);
+    const plaintext = await input.settings.getSetting(keys.apiKey);
+    if (plaintext === undefined) continue;
+    const current = await store.readModelCredential(id);
+    if (!trimmedNonEmpty(plaintext) || (current && (!current.active || current.envelope))) {
+      const cleared = await input.settings.applySettingsPatch({
+        expectedAll: [
+          { key: keys.apiKey, value: plaintext },
+          { key: keys.version, value: current ? String(current.version) : null },
+        ],
+        delete: [keys.apiKey],
+      });
+      if (!cleared) throw new ModelCredentialConflictError();
+      removed.push(id);
+      continue;
+    }
+    await rotateHostedModelCredential(id, { kind: 'save', apiKey: plaintext }, {
+      ...input,
+      expectedVersion: current?.version ?? 0,
+    });
+    migrated.push(id);
+  }
+  return { migrated, removed };
 }
 
 /** Whether an installation of a deployment serving many has a saved key, without decrypting it. */
