@@ -813,6 +813,33 @@ class FakeSlackTransport implements SlackTransport {
 }
 
 
+test('a workspace default Agent\'s denied archive takes its replacement now, so Retry can finish', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    await config.createAgent(agent('agent_backup', 'Backup', 'backup'));
+    await config.ensureWorkspaceInstallation({
+      workspaceId: 'TACME', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+    await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+    transport.disableError = new SlackTransportError('usergroups.disable', 'permission_denied');
+    await assert.rejects(
+      () => reconciler.archive('agent_support', { replacementDefaultAgentId: 'agent_backup' }),
+      (error: unknown) => error instanceof AgentPresenceError && error.code === 'user_group_policy_denied',
+    );
+    assert.equal((await config.getWorkspaceInstallation('TACME'))?.defaultAgentId, 'agent_backup');
+    assert.equal((await config.getAgent('agent_support')).slackPresence?.errorCode, 'user_group_policy_denied');
+    transport.groups[0]!.disabled = true; // An Owner deactivated it in Slack.
+    const archived = await reconciler.retry('agent_support');
+    assert.equal(archived.lifecycle, 'archived');
+    assert.equal((await config.getWorkspaceInstallation('TACME'))?.defaultAgentId, 'agent_backup');
+  } finally { config.close(); }
+});
+
 test('archive retry finishes when Slack says an Owner already deactivated the handle', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();

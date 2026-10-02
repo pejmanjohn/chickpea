@@ -558,6 +558,15 @@ export class AgentPresenceReconciler {
         `Choose a replacement default Agent before archiving ${agent.name}.`,
       );
     }
+    // The replacement comes with this request only. Apply it before Slack is
+    // asked, so a Retry after a denied disable no longer needs one.
+    for (const installation of defaultInstallations) {
+      await config.setWorkspaceDefaultAgent(
+        installation.workspaceId,
+        options.replacementDefaultAgentId!,
+        installation.revision,
+      );
+    }
     const presence = requiredPresence(agent);
     agent = await config.updateAgent(
       agent.id,
