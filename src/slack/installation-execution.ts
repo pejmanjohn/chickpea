@@ -4,15 +4,13 @@ import type { ConfigStore } from '../config/store.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getSettingsStore } from '../config/state-backend.ts';
-import {
-  WORKSPACE_SLACK_INSTALLATION_ID,
-  type WorkspaceInstallation,
-} from '../config/types.ts';
+import type { WorkspaceInstallation } from '../config/types.ts';
 import {
   isTransientSlackApiError,
   slackConversationsInfo,
   slackIdentityAuthTest,
 } from './credentials.ts';
+import { slackInstallationCredentialId } from './hosted-slack-app.ts';
 import {
   resolveSlackInstallationCredentials,
   type SlackCredentialResolutionDependencies,
@@ -129,7 +127,7 @@ export async function resolveSlackInstallationExecutionContext(
   let credentials: Awaited<ReturnType<typeof resolveSlackInstallationCredentials>>;
   try {
     credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(options.credentialDependencies?.env ?? env),
       env,
       options.credentialDependencies ?? options.settings,
     );

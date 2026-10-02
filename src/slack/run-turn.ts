@@ -78,7 +78,7 @@ import {
   type SlackFlueDispatchState,
 } from './flue-dispatch.ts';
 import { resolveSlackCredentials, resolveSlackPublicUrl } from './credentials.ts';
-import { agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
+import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './agent-presence/avatar-assets.ts';
 import type { SlackStatusUpdate } from './replies.ts';
 import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
@@ -497,7 +497,9 @@ async function runTurnAttempt(
       ? options.presentationState.getRunPresentation(options.runId)
       : undefined,
   ]);
-  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(
+    assignment.agent, publicUrl, agentAvatarInstallation(platformEnv),
+  );
   const visibleOwner: SlackPresentationOwner | undefined =
     frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
   // The Agent's model until the reply shows a coding worker ran; then the
@@ -2725,7 +2727,9 @@ export async function deliverAgentFailureFinal(
 ): Promise<void> {
   const resolvedModel = resolvedAssignmentModel(assignment);
   const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  const agentAvatarUrl = agentAvatarUrlForPresentation(assignment.agent, publicUrl);
+  const agentAvatarUrl = agentAvatarUrlForPresentation(
+    assignment.agent, publicUrl, agentAvatarInstallation(platformEnv),
+  );
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,

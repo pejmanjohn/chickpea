@@ -38,6 +38,8 @@ export interface SlackManagementApprovalDependencies {
   };
   service: WorkspaceManagementService;
   publicUrl?: string;
+  /** The installation Agent avatar URLs name (agentAvatarInstallation). */
+  avatarInstallationId?: string;
 }
 
 export type HostSlackManagementApprovalResult =
@@ -145,6 +147,9 @@ export async function executeHostSlackManagementApproval(input: {
         ? { prepareAgentWelcomeTerminal: input.prepareAgentWelcomeTerminal }
         : {}),
       ...(input.dependencies.publicUrl ? { publicUrl: input.dependencies.publicUrl } : {}),
+      ...(input.dependencies.avatarInstallationId
+        ? { avatarInstallationId: input.dependencies.avatarInstallationId }
+        : {}),
     });
   } catch (error) {
     if (error instanceof ManagementError) {
@@ -232,6 +237,7 @@ async function formatHostSlackManagementReceipt(input: {
   presentationRunId?: string;
   prepareAgentWelcomeTerminal?: () => Promise<void>;
   publicUrl?: string;
+  avatarInstallationId?: string;
 }): Promise<HostSlackManagementApprovalResult> {
   const { result } = input;
   const applied = result.outcomes.filter(({ disposition }) => disposition === 'applied');
@@ -268,7 +274,7 @@ async function formatHostSlackManagementReceipt(input: {
     const published = agent?.slackPresence?.health === 'healthy' && handle;
     if (agent && published) {
       const suggestedConnector = suggestedUnconnectedConnector(agent);
-      const avatarUrl = agentAvatarUrlForPresentation(agent, input.publicUrl);
+      const avatarUrl = agentAvatarUrlForPresentation(agent, input.publicUrl, input.avatarInstallationId);
       const receipt: ManagementAgentCreatedWelcome = {
         kind: 'agent_created_welcome',
         proposalId: input.proposalId,

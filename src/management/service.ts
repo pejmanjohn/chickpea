@@ -226,6 +226,8 @@ export interface WorkspaceManagementServiceInput {
   work?: Pick<WorkStore, 'getWork' | 'getBinding'>;
   routineSchedulingAvailable?: boolean | (() => boolean | Promise<boolean>);
   setupBaseUrl?: string | (() => string | undefined | Promise<string | undefined>);
+  /** The installation Agent avatar URLs name (agentAvatarInstallation). */
+  avatarInstallationId?: string;
   providerCredentialSource?: (
     providerId: ManagedProviderId,
   ) => Promise<ManagedProviderSource>;
@@ -1289,7 +1291,9 @@ export class WorkspaceManagementService {
       }
     }
     const handle = agent.slackPresence?.normalizedHandle ?? agent.slackPresence?.requestedHandle;
-    const avatarUrl = baseUrl ? agentAvatarUrlForPresentation(agent, baseUrl) : undefined;
+    const avatarUrl = baseUrl
+      ? agentAvatarUrlForPresentation(agent, baseUrl, this.stores.avatarInstallationId)
+      : undefined;
     const viewAgentUrl = creation.handoffUrl ?? (baseUrl
       ? new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href
       : undefined);

@@ -510,6 +510,7 @@ import {
   SlackAppCreationService,
 } from '../slack/app-creation.ts';
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
+import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
 import {
   clearSlackInstallationCredentials,
   resolveSlackInstallationCredentials,
@@ -519,6 +520,7 @@ import {
 } from '../slack/installation-credentials.ts';
 import {
   AgentAvatarError,
+  agentAvatarInstallation,
   agentAvatarUrl,
   readAgentAvatarAsset,
   uploadAgentAvatar,
@@ -2286,7 +2288,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
     }
     const credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(c.env as PlatformEnv | undefined),
       c.env as PlatformEnv | undefined,
       slackCredentialResolutionDependencies(c) ?? settings(c),
     );
@@ -2351,7 +2353,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!credentials) return { teamId };
     try {
       const resolved = await resolveSlackInstallationCredentials(
-        WORKSPACE_SLACK_INSTALLATION_ID,
+        slackInstallationCredentialId(c.env as PlatformEnv | undefined),
         c.env as PlatformEnv | undefined,
         credentials,
       );
@@ -4397,10 +4399,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // Slack fetches persona images without a Chickpea browser session. Revisions
   // are immutable, so public caching cannot make a later upload appear stale.
-  app.get('/assets/agents/:agentId/avatar/:revision', async (c) => {
-    const agentId = c.req.param('agentId');
+  // Under installation tenancy the URL names the installation, and only the
+  // installation the host scoped this request to serves it.
+  const serveAgentAvatar = async (c: Context, installationId: string | undefined) => {
+    const agentId = c.req.param('agentId') ?? '';
     const revision = Number(c.req.param('revision'));
-    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1) {
+    if (!AGENT_ID_PATTERN.test(agentId) || !Number.isSafeInteger(revision) || revision < 1 ||
+        installationId !== agentAvatarInstallation(c.env as PlatformEnv | undefined)) {
       return c.notFound();
     }
     try {
@@ -4420,7 +4425,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof UnknownAgentError) return c.notFound();
       return internalError(c, error);
     }
-  });
+  };
+  app.get('/assets/agents/:agentId/avatar/:revision', (c) => serveAgentAvatar(c, undefined));
+  app.get('/assets/i/:installationId/agents/:agentId/avatar/:revision',
+    (c) => serveAgentAvatar(c, c.req.param('installationId')));
 
   app.post(
     '/webhooks/composio',
@@ -7701,7 +7709,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           kind: 'generated',
           revision: 1,
           seed: randomUUID(),
-          url: agentAvatarUrl(requestOrigin(c), parsed.output.id, 1),
+          url: agentAvatarUrl(
+            requestOrigin(c), parsed.output.id, 1,
+            agentAvatarInstallation(c.env as PlatformEnv | undefined),
+          ),
         },
       },
     };
@@ -9373,6 +9384,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         bytes,
         contentType: parsed.output.contentType,
         publicOrigin: requestOrigin(c),
+        installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
         ...(gatewayClient && gatewayInstallation
           ? {
               publish: (avatar) => gatewayClient.publishAvatar({
@@ -10332,6 +10344,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const installation = connectedTeamId
         ? installations.find((candidate) => candidate.workspaceId === connectedTeamId)
         : installations[0];
+      if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
+        // The host owns the Slack app, its signing secret, Request URL and
+        // manifest; this installation stores only its bot.
+        if (installation && !teamInfo.teamName) {
+          const descriptor = await slackWorkspaceDescriptor(c);
+          if (descriptor?.teamId === installation.workspaceId && descriptor.teamName) {
+            teamInfo = { teamId: installation.workspaceId, teamName: descriptor.teamName };
+          }
+        }
+        return c.json({
+          credentials: { botToken: credentials.botToken, botUserId: credentials.botUserId },
+          connected: installation?.transportMode === 'direct' && credentials.botToken !== 'missing',
+          teamId: installation?.workspaceId ?? connectedTeamId ?? null,
+          teamName: teamInfo.teamName ?? null,
+          transportMode: 'direct',
+          health: installation?.health ?? 'pending',
+          healthDetail: installation?.healthDetail ?? null,
+          gateway: null,
+          hosted: true,
+        });
+      }
       const directConnected =
         credentials.botToken !== 'missing' && credentials.signingSecret !== 'missing';
       const gatewayConnected =

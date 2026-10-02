@@ -320,6 +320,7 @@ import {
   type HostSlackManagementApprovalResult,
   type SlackManagementApprovalRpcRequest,
 } from './management/slack-approval.ts';
+import { agentAvatarInstallationField } from './slack/agent-presence/avatar-assets.ts';
 import {
   invokeSlackScheduleAction,
   retryDueSlackScheduleActions,
@@ -987,6 +988,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc {
         management: appStores.management,
         service,
         ...(request.publicUrl ? { publicUrl: request.publicUrl } : {}),
+        // This store's own installation, never the runner's word for it.
+        ...agentAvatarInstallationField(this.env as PlatformEnv),
       },
       ...(request.presentationRunId ? { presentationRunId: request.presentationRunId } : {}),
     });

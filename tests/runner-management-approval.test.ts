@@ -10,6 +10,7 @@ import {
   executeHostSlackManagementApproval,
   type SlackManagementApprovalRpcRequest,
 } from '../src/management/slack-approval.ts';
+import { agentAvatarInstallationField } from '../src/slack/agent-presence/avatar-assets.ts';
 import { runTurn } from '../src/slack/run-turn.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
@@ -55,11 +56,13 @@ function productionApprovalRpc(collaborators: {
     'localGatewayAppStores',
     'localManagementRuntime',
     'executeHostSlackManagementApproval',
+    'agentAvatarInstallationField',
     `${compiled}\nreturn Probe;`,
   )(
     () => collaborators.appStores,
     () => ({ service: collaborators.service }),
     executeHostSlackManagementApproval,
+    agentAvatarInstallationField,
   ) as new () => {
     slackManagementApprovalInvoke(request: SlackManagementApprovalRpcRequest): Promise<unknown>;
   };

@@ -12,7 +12,6 @@ import {
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import {
   deleteProviderApiKey,
   describeProviderKeySources,
@@ -37,6 +36,8 @@ import {
   createGatewayDeploymentClient,
   resolveChickpeaGatewayUrl,
 } from '../slack/gateway/runtime.ts';
+import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
+import { agentAvatarInstallationField } from '../slack/agent-presence/avatar-assets.ts';
 import {
   resolveSlackInstallationCredentials,
   type SlackCredentialDependencies,
@@ -84,7 +85,7 @@ export function createLiveWorkspaceManagementService(
       return createGatewaySlackTransport(createGatewayDeploymentClient(env));
     }
     const credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(env),
       env,
       slackCredentials,
     );
@@ -341,6 +342,7 @@ export function createLiveWorkspaceManagementService(
       });
       return config.deleteAgent(agentId, expectedRevision);
     },
+    ...agentAvatarInstallationField(env),
     ...overrides,
   });
 }

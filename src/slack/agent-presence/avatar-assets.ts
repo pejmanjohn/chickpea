@@ -1,4 +1,6 @@
+import { requireInstallationScope } from '../../config/installation-scope.ts';
 import type { SettingsStore } from '../../config/settings-store.ts';
+import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { AgentAvatarRevision, CustomAgentConfig } from '../../config/types.ts';
 import {
@@ -34,21 +36,68 @@ export class AgentAvatarError extends Error {
   }
 }
 
+/**
+ * Slack fetches an Agent's avatar without a session. A host serving many
+ * installations finds the installation from the URL itself, so there it names
+ * the installation (agentAvatarInstallation); the ID authorizes nothing, and
+ * the avatar is public either way.
+ */
 export function agentAvatarUrl(
   origin: string,
   agentId: string,
   revision: number,
+  installationId?: string,
 ): string {
-  return `${new URL(origin).origin}/assets/agents/${encodeURIComponent(agentId)}/avatar/${revision}`;
+  const asset = `agents/${encodeURIComponent(agentId)}/avatar/${revision}`;
+  return installationId
+    ? `${new URL(origin).origin}/assets/i/${encodeURIComponent(installationId)}/${asset}`
+    : `${new URL(origin).origin}/assets/${asset}`;
+}
+
+/** The installation an avatar URL names: none on standalone, and a refusal for an unscoped env. */
+export function agentAvatarInstallation(env: PlatformEnv | undefined): string | undefined {
+  return requireInstallationScope(env)?.installationId;
+}
+
+/** The same, as the optional `avatarInstallationId` field of a dependency set. */
+export function agentAvatarInstallationField(env: PlatformEnv | undefined): { avatarInstallationId?: string } {
+  const avatarInstallationId = agentAvatarInstallation(env);
+  return avatarInstallationId ? { avatarInstallationId } : {};
 }
 
 export function agentAvatarUrlForPresentation(
   agent: CustomAgentConfig,
   publicOrigin: string | undefined,
+  installationId?: string,
 ): string | undefined {
-  if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
+  const stored = agent.slackPresence?.avatar.url;
+  if (stored) return namedAvatarUrl(stored, agent.id, publicOrigin, installationId);
   if (!publicOrigin || !agent.slackPresence) return undefined;
-  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision);
+  return agentAvatarUrl(publicOrigin, agent.id, agent.slackPresence.avatar.revision, installationId);
+}
+
+/**
+ * A stored URL in the unnamed form on this origin, saved before avatar URLs
+ * named their installation, in the form a host serving many installations
+ * serves. Any other URL (a gateway-published avatar, another origin, another
+ * Agent's path) is kept.
+ */
+function namedAvatarUrl(
+  url: string,
+  agentId: string,
+  publicOrigin: string | undefined,
+  installationId: string | undefined,
+): string {
+  if (!installationId || !publicOrigin) return url;
+  try {
+    const parsed = new URL(url);
+    const unnamed = /^\/assets\/agents\/([^/]+)\/avatar\/(\d+)$/.exec(parsed.pathname);
+    if (!unnamed || parsed.search || parsed.hash || parsed.origin !== new URL(publicOrigin).origin
+      || decodeURIComponent(unnamed[1]!) !== agentId) return url;
+    return `${parsed.origin}/assets/i/${encodeURIComponent(installationId)}/agents/${unnamed[1]}/avatar/${unnamed[2]}`;
+  } catch {
+    return url;
+  }
 }
 
 /** Upgrade a frozen legacy default for a new turn without changing its behavior. */
@@ -71,6 +120,8 @@ export async function uploadAgentAvatar(input: {
   bytes: Uint8Array;
   contentType: string;
   publicOrigin: string;
+  /** The installation the stored URL names (agentAvatarInstallation). */
+  installationId?: string | undefined;
   publish?: (input: {
     agentId: string;
     revision: number;
@@ -102,7 +153,7 @@ export async function uploadAgentAvatar(input: {
         contentType: normalized.contentType,
         bytes: normalized.bytes,
       })
-    : agentAvatarUrl(input.publicOrigin, input.agentId, revision);
+    : agentAvatarUrl(input.publicOrigin, input.agentId, revision, input.installationId);
   return input.config.updateAgent(
     input.agentId,
     {

@@ -26,6 +26,7 @@ import {
   ModelResolutionError,
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
@@ -47,10 +48,9 @@ import {
   type StateRpcResult,
   type TurnJob,
 } from '../config/state-rpc.ts';
-import {
-  WORKSPACE_SLACK_INSTALLATION_ID,
-  type CustomAgentConfig,
-  type ResolvedAssignment,
+import type {
+  CustomAgentConfig,
+  ResolvedAssignment,
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
@@ -97,9 +97,18 @@ import {
   slackAuthTest,
 } from '../slack/credentials.ts';
 import {
+  readActiveSlackCredentialMetadata,
   resolveSlackInstallationCredentials,
   type ResolvedSlackInstallationCredentials,
 } from '../slack/installation-credentials.ts';
+import {
+  hostedSlackAppOf,
+  hostedSlackEventRoute,
+  hostedSlackInteractionRoute,
+  hostedSlackLifecycleOutcome,
+  slackInstallationCredentialId,
+} from '../slack/hosted-slack-app.ts';
+import { recordFirstHostedSlackDelivery } from '../slack/hosted-installation.ts';
 import { recordPendingSlackChallenge } from '../slack/installation-handshake.ts';
 import { SlackInstallOAuthService } from '../slack/install-oauth.ts';
 import {
@@ -254,6 +263,7 @@ import type {
   GatewayViewSubmissionDelivery,
 } from '../slack/gateway/protocol.ts';
 import {
+  agentAvatarInstallation,
   agentAvatarUrlForPresentation,
   refreshLegacyAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
@@ -366,8 +376,8 @@ const verifiedChannels = new Map<string, VerifiedSlackChannel>();
 function channelForInstallation(
   signingSecret: string,
   credentialRevision: string | null,
+  key = credentialRevision ?? 'current',
 ): SlackChannel {
-  const key = credentialRevision ?? 'current';
   const cached = verifiedChannels.get(key);
   if (cached?.signingSecret === signingSecret) return cached.channel;
   const entry: VerifiedSlackChannel = {
@@ -409,19 +419,20 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const rawBody = new TextDecoder().decode(ingress.body);
   const signature = c.req.header('x-slack-signature') ?? '';
   const timestamp = c.req.header('x-slack-request-timestamp') ?? '';
-  const credentials = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
-    platformEnv,
-  );
-  if (!credentials.signingSecret) {
+  const verification = await slackDeliveryVerification(platformEnv);
+  if (!verification) {
     return c.json({ error: 'slack_not_configured' }, 401);
   }
   const route = channelForInstallation(
-    credentials.signingSecret,
-    credentials.connectionRevision,
+    verification.signingSecret,
+    verification.credentialRevision,
+    verification.cacheKey,
   ).routes.find((candidate) => candidate.path === '/events');
   if (!route) throw new Error('Slack channel lost its /events route');
   const response = await route.handler(c, next);
+  // A hosted app's Request URL is verified once, at the app; no installation
+  // waits on a per-install Events URL proof.
+  if (verification.hosted) return response;
   if (response.ok && isSlackUrlVerification(rawBody)) {
     const recorded = await recordPendingSlackChallenge(
       resolveStores(platformEnv).settings,
@@ -443,6 +454,41 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   }
   return response;
 };
+
+/**
+ * The signing secret a delivery must carry, and the bot credential revision
+ * its handlers act for. Standalone: both from the customer-owned app's
+ * bundle. Installation tenancy: the host's app alone, the same for every
+ * installation, so nothing is read before the signature is checked; the
+ * handlers read the installation's own state once it is.
+ */
+async function slackDeliveryVerification(
+  platformEnv: PlatformEnv | undefined,
+): Promise<{
+  signingSecret: string;
+  credentialRevision: string | null;
+  cacheKey: string;
+  hosted: boolean;
+} | undefined> {
+  if (requireInstallationScope(platformEnv)) {
+    const app = hostedSlackAppOf(platformEnv);
+    return app
+      ? { signingSecret: app.signingSecret, credentialRevision: null, cacheKey: `hosted:${app.appId}`, hosted: true }
+      : undefined;
+  }
+  const credentials = await resolveSlackInstallationCredentials(
+    slackInstallationCredentialId(platformEnv),
+    platformEnv,
+  );
+  return credentials.signingSecret
+    ? {
+        signingSecret: credentials.signingSecret,
+        credentialRevision: credentials.connectionRevision,
+        cacheKey: credentials.connectionRevision ?? 'current',
+        hosted: false,
+      }
+    : undefined;
+}
 
 async function readSlackIngressBody(
   request: Request,
@@ -489,16 +535,14 @@ function isSlackUrlVerification(rawBody: string): boolean {
 
 const verifiedInteractionsHandler: SlackRouteHandler = async (c, next) => {
   const platformEnv = c.env as PlatformEnv | undefined;
-  const credentials = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
-    platformEnv,
-  );
-  if (!credentials.signingSecret) {
+  const verification = await slackDeliveryVerification(platformEnv);
+  if (!verification) {
     return c.json({ error: 'slack_not_configured' }, 401);
   }
   const route = channelForInstallation(
-    credentials.signingSecret,
-    credentials.connectionRevision,
+    verification.signingSecret,
+    verification.credentialRevision,
+    verification.cacheKey,
   ).routes.find((candidate) => candidate.path === '/interactions');
   if (!route) throw new Error('Slack channel lost its /interactions route');
   return route.handler(c, next);
@@ -521,12 +565,18 @@ function handleDirectSlackEvents(
 ): NonNullable<SlackChannelOptions['events']> {
   return async ({ c, payload }) => {
     const platformEnv = c.env as PlatformEnv | undefined;
+    const hosted = deploymentTenancy(platformEnv) === 'installation';
+    // A host's delivery must be for its app, and for the workspace whose
+    // installation received it (hostedSlackEventRoute), before any record.
+    if (hosted && (payload.api_app_id !== hostedSlackAppOf(platformEnv)?.appId ||
+        hostedSlackEventRoute(payload).route !== 'installation')) return;
     const stores = resolveStores(platformEnv);
     const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
     if (
       !installation || installation.transportMode !== 'direct' ||
       installation.health === 'revoked' ||
-      (installation.appId && installation.appId !== payload.api_app_id)
+      (installation.appId && installation.appId !== payload.api_app_id) ||
+      (hosted && !installation.appId)
     ) return;
 
     const verifiedEventType = payload.type === 'event_callback' &&
@@ -534,12 +584,18 @@ function handleDirectSlackEvents(
       ? (payload.event as { type?: unknown }).type
       : undefined;
     if (verifiedEventType === 'app_uninstalled' || verifiedEventType === 'tokens_revoked') {
-      await recordSlackInstallationLifecycleEvent(
-        installation.workspaceId,
-        verifiedEventType,
-        stores,
-      );
+      // Hosted, only the installation's own bot token ends it, and an event
+      // from before this installation is about an earlier one. The host acts
+      // on these first (and ends the installation); this is the record's half.
+      if (hosted && hostedSlackLifecycleOutcome(payload, {
+        installedAt: installation.createdAt,
+        botUserId: installation.botUserId,
+      }) !== 'end') return;
+      await markSlackInstallationEnded(stores.config, installation.workspaceId, verifiedEventType);
       return;
+    }
+    if (hosted && payload.type === 'event_callback') {
+      await recordFirstHostedSlackDelivery(stores.config, installation);
     }
     if (verifiedEventType === 'user_change') {
       detach(
@@ -558,7 +614,7 @@ function handleDirectSlackEvents(
     if (payload.type !== 'event_callback') return;
 
     const credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(platformEnv),
       platformEnv,
     );
     const eventType = payload.event.type;
@@ -607,6 +663,8 @@ function handleDirectSlackEvents(
 
 function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['interactions']> {
   return async ({ c, payload }) => {
+    if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
+        !await admitHostedSlackInteraction(payload, c.env as PlatformEnv | undefined)) return;
     const uiAction = parseSlackUiBlockAction(payload);
     // A modal opens now, inside Slack's three-second trigger window; a click
     // that cannot open one goes on to ordinary admission, which says why.
@@ -648,7 +706,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       (installation.appId && payload.api_app_id !== installation.appId)
     ) return;
     const credentials = await resolveSlackInstallationCredentials(
-      WORKSPACE_SLACK_INSTALLATION_ID,
+      slackInstallationCredentialId(platformEnv),
       platformEnv,
     );
     const botUserId = await resolveInstallationBotUserId(
@@ -669,6 +727,27 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       }),
     );
   };
+}
+
+/**
+ * A host's interaction is for its app and for a direct installation of the
+ * signed team in this store; the first one marks the installation's events
+ * as arriving. Every handler below checks its own installation again.
+ */
+async function admitHostedSlackInteraction(
+  payload: { api_app_id?: string },
+  platformEnv: PlatformEnv | undefined,
+): Promise<boolean> {
+  const route = hostedSlackInteractionRoute(payload);
+  if (route.route !== 'installation' || payload.api_app_id !== hostedSlackAppOf(platformEnv)?.appId) {
+    return false;
+  }
+  const config = resolveStores(platformEnv).config;
+  const installation = await config.getWorkspaceInstallation(route.teamId);
+  if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked' ||
+      installation.appId !== payload.api_app_id) return false;
+  await recordFirstHostedSlackDelivery(config, installation);
+  return true;
 }
 export interface ResolvedAgentRoutingActor {
   requesterTimezone?: string;
@@ -901,9 +980,10 @@ async function resolvedAgentAvatarUrl(
   stores: AppStores,
   platformEnv: PlatformEnv | undefined,
 ): Promise<string | undefined> {
-  if (agent.slackPresence?.avatar.url) return agent.slackPresence.avatar.url;
+  const installationId = agentAvatarInstallation(platformEnv);
+  if (agent.slackPresence?.avatar.url && !installationId) return agent.slackPresence.avatar.url;
   const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);
-  return agentAvatarUrlForPresentation(agent, origin);
+  return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
 
 export async function postAgentRoutingFeedback(input: {
@@ -951,10 +1031,17 @@ async function processSlackUserChange(
   platformEnv: PlatformEnv | undefined,
   credentialRevision: string | null,
 ): Promise<void> {
-  if (payload.event.type !== 'user_change' || !credentialRevision) return;
+  if (payload.event.type !== 'user_change') return;
+  // A host's app verified it, so it is checked against the installation's
+  // current bot; standalone, against the bundle whose secret verified it.
+  const revision = hostedSlackAppOf(platformEnv)
+    ? (await readActiveSlackCredentialMetadata(slackInstallationCredentialId(platformEnv), platformEnv))?.revision
+    : credentialRevision;
+  if (!revision) return;
   const change = {
     identity: stores.identity,
-    credentialRevision,
+    credentialIdentityId: slackInstallationCredentialId(platformEnv),
+    credentialRevision: revision,
     payloadTeamId: payload.team_id,
     apiAppId: payload.api_app_id,
     eventId: payload.event_id,
@@ -966,25 +1053,31 @@ async function processSlackUserChange(
   }, (betterAuth) => applySlackUserChange({ ...change, ...(betterAuth ? { betterAuth } : {}) }));
 }
 
-async function recordSlackInstallationLifecycleEvent(
+/**
+ * Marks a workspace's installation record revoked after Slack uninstalled the
+ * app or revoked its token, once: a record already revoked is left as it is.
+ * Every Slack path drops a revoked record's events and clicks. A host that
+ * ends an installation calls this with the installation's config store.
+ */
+export async function markSlackInstallationEnded(
+  config: Pick<ConfigStore, 'getWorkspaceInstallation' | 'updateWorkspaceInstallation'>,
   workspaceId: string,
-  eventType: 'app_uninstalled' | 'tokens_revoked',
-  stores: AppStores,
+  reason: 'app_uninstalled' | 'tokens_revoked',
 ): Promise<void> {
-  const current = await stores.config.getWorkspaceInstallation(workspaceId);
+  const current = await config.getWorkspaceInstallation(workspaceId);
   if (!current || current.health === 'revoked') return;
   try {
-    await stores.config.updateWorkspaceInstallation(
+    await config.updateWorkspaceInstallation(
       workspaceId,
-      { health: 'revoked', healthDetail: eventType },
+      { health: 'revoked', healthDetail: reason },
       current.revision,
     );
   } catch {
-    const latest = await stores.config.getWorkspaceInstallation(workspaceId);
+    const latest = await config.getWorkspaceInstallation(workspaceId);
     if (!latest || latest.health === 'revoked') return;
-    await stores.config.updateWorkspaceInstallation(
+    await config.updateWorkspaceInstallation(
       workspaceId,
-      { health: 'revoked', healthDetail: eventType },
+      { health: 'revoked', healthDetail: reason },
       latest.revision,
     );
   }
@@ -1064,11 +1157,7 @@ export async function processGatewaySlackEnvelope(
   }
   if (envelope.event.type === 'app_context_changed') return 'accepted';
   if (envelope.event.type === 'app_uninstalled' || envelope.event.type === 'tokens_revoked') {
-    await recordSlackInstallationLifecycleEvent(
-      envelope.workspaceId,
-      envelope.event.type,
-      stores,
-    );
+    await markSlackInstallationEnded(stores.config, envelope.workspaceId, envelope.event.type);
     return 'accepted';
   }
   if (envelope.event.type === 'agent_session_stopped') {
@@ -1736,7 +1825,7 @@ async function directSlackUiContext(
       installation.health === 'revoked' ||
       (installation.appId && installation.appId !== appId)) return undefined;
   const credentials = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID,
+    slackInstallationCredentialId(platformEnv),
     platformEnv,
   );
   if (!credentials.botToken) return undefined;
@@ -1878,7 +1967,7 @@ async function processDirectPrivateChannelSetup(
       installation.health === 'revoked' || !installation.appId ||
       installation.appId !== apiAppId) return;
   const credentials = await resolveSlackInstallationCredentials(
-    WORKSPACE_SLACK_INSTALLATION_ID, platformEnv,
+    slackInstallationCredentialId(platformEnv), platformEnv,
   );
   const botUserId = await resolveInstallationBotUserId(
     installation.botUserId, credentials, platformEnv,
@@ -2047,7 +2136,7 @@ async function processSlackEvent(
   }
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
-    : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
+    : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
 
   if (payload.event.type === 'member_joined_channel') {
     await handleMemberJoinedChannel(
@@ -3214,7 +3303,7 @@ async function processSlackStopButton(
   }
   const credentials = execution
     ? undefined
-    : await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, platformEnv);
+    : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
   const transport = execution?.transport ?? (
     credentials?.botToken ? createDirectSlackTransport(credentials.botToken) : undefined
   );
