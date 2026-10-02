@@ -8,13 +8,13 @@ export const SOURCE_EXPORT_CHECKS = [
 ];
 export const REGRESSION_AREAS = Object.freeze({
   releases: ['release-manifest', 'build-identity', 'release-update-check', 'support-report', 'installation-routes', 'upgrade-source', 'upgrade-installation', 'upgrade-receipt', 'upgrade', 'upgrade-baseline'],
-  delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime', 'slack-presentation-eval', 'hosted-admission'],
+  delivery: ['slack-admission', 'slack-thread-context', 'gateway-inbox', 'gateway-session-runner', 'flue-v2-runtime-regressions', 'file-delivery-completion', 'file-delivery-completion-runtime', 'file-delivery-streaming-runtime', 'slack-presentation-eval', 'hosted-admission', 'hosted-object-inventory', 'hosted-object-export-erase', 'hosted-object-storage-workerd', 'hosted-pending-work'],
   agents: ['management-policy', 'management-security-regression', 'management-agent-creation-welcome', 'management-agent-parity', 'slack-proposal-approval-readback', 'agent-authoring-guide', 'hosted-admission'],
-  routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation'],
-  connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections', 'hosted-managed-connections', 'hosted-connection-reconcile', 'hosted-feature-guards'],
+  routines: ['routine-schedule', 'routine-scheduler', 'routine-delivery', 'routine-workflow', 'routine-channel-destination', 'schedule-contract-evaluation', 'hosted-object-inventory', 'hosted-pending-work'],
+  connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections', 'hosted-managed-connections', 'hosted-connection-reconcile', 'hosted-feature-guards', 'hosted-connection-revocation'],
   memory: ['agent-memory', 'memory-runtime', 'memory-validation'],
   skills: ['skill-import', 'management-skill-import', 'connector-skills'],
-  auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization', 'better-auth-backend-contract', 'better-auth-postgres', 'slack-credentials', 'slack-auth-recovery', 'deployment-recovery', 'auth-recovery', 'hosted-slack-recovery', 'hosted-credential-operations', 'hosted-identity-retention'],
+  auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization', 'better-auth-backend-contract', 'better-auth-postgres', 'slack-credentials', 'slack-auth-recovery', 'deployment-recovery', 'auth-recovery', 'hosted-slack-recovery', 'hosted-credential-operations', 'hosted-identity-retention', 'hosted-owner-assignment'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
   // These four areas name test groups for run records and --area. They have no
