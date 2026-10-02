@@ -1,5 +1,5 @@
 import { assertNodeVersion } from './scripts/lib/node-version.mjs';
-import { cloudflare } from '@cloudflare/vite-plugin';
+import { cloudflare, type WorkerConfig } from '@cloudflare/vite-plugin';
 import { flue, flueWorkerConfig } from '@flue/vite';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -12,9 +12,6 @@ import { localWorkerViteSettings } from './scripts/lib/local-worker-lane.mjs';
 import { PUBLIC_ASSET_PATHS } from './src/assets/public-assets.ts';
 
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
-
-type CloudflarePluginOptions = NonNullable<Parameters<typeof cloudflare>[0]>;
-type WorkerConfig = Parameters<Extract<CloudflarePluginOptions['config'], (...args: never[]) => unknown>>[0];
 
 /**
  * A host that builds this Worker from an unmodified checkout of this
@@ -153,6 +150,8 @@ export function chickpeaWorkerViteConfig(command: 'build' | 'serve', host?: Chic
     },
     build: {
       outDir: host?.outDir ?? 'dist-cf',
+      // Vite empties only an output directory inside the root; a host's is outside it.
+      ...(host ? { emptyOutDir: true } : {}),
       copyPublicDir: false,
       minify: 'oxc',
     },

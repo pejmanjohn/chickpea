@@ -95,6 +95,7 @@ test('a host builds the Cloudflare Worker from this checkout with its own entrie
   assert.equal(api?.resolved?.project.app, app);
   assert.equal(api?.resolved?.project.cloudflare, cloudflare);
   assert.equal(resolved.build.outDir, outDir);
+  assert.equal(resolved.build.emptyOutDir, true);
   // The host adjusts the Worker last, after Flue and this repository's own settings.
   assert.equal(seen.length, 1);
   assert.equal(seen[0]!.name, 'chickpea');
