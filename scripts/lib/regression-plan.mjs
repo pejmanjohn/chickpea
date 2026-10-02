@@ -14,7 +14,7 @@ export const REGRESSION_AREAS = Object.freeze({
   connections: ['connection-accounts', 'managed-authorization-flow', 'api-connection-runtime', 'managed-connections'],
   memory: ['agent-memory', 'memory-runtime', 'memory-validation'],
   skills: ['skill-import', 'management-skill-import', 'connector-skills'],
-  auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization'],
+  auth: ['slack-install-oauth', 'slack-oidc', 'auth-principal', 'admin-authorization', 'better-auth-backend-contract', 'better-auth-postgres'],
   admin: ['admin-page', 'agent-admin-routes', 'admin-authorization'],
   providers: ['provider-runtime-models', 'cloudflare-provider', 'runtime-model-route-evidence'],
   // These four areas name test groups for run records and --area. They have no
