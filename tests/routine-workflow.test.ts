@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import * as v from 'valibot';
 
@@ -13,6 +13,11 @@ import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
 import type { NonChatModelRole } from '../src/config/types.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import {
+  configureInstallationAdmission,
+  resetInstallationAdmissionForTests,
+} from '../src/config/installation-admission.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   executeRoutineOccurrence,
 } from '../src/routines/execution.ts';
@@ -40,7 +45,7 @@ import {
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
-import type { RunExecutionId, WorkStore } from '../src/work/types.ts';
+import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -1478,6 +1483,154 @@ test('routine Usage and Work settle with the same canonical execution correlatio
     routines.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+/**
+ * A hosted occurrence whose first attempt stopped short under an admitted
+ * installation, its read interrupted once dispatched or its dispatch failed,
+ * so its Work execution and Usage operation are open. `refuse` runs it again
+ * with the installation refused.
+ */
+async function interruptedHostedAttempt(t: TestContext, name: string, dispatched: boolean) {
+  const directory = mkdtempSync(join(tmpdir(), `chickpea-routine-${name}-`));
+  const path = join(directory, 'state.sqlite');
+  const configuration = new SqliteConfigStore(path, { agents: [createDemoStarterAgent()] });
+  const routines = new SqliteRoutineStore(path, () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  const work = new SqliteWorkStore(path, { now: () => NOW });
+  t.after(() => {
+    resetInstallationAdmissionForTests();
+    work.close();
+    usage.close();
+    configuration.close();
+    routines.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${name}` });
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  const fixture = await admittedFixture(
+    routines,
+    name,
+    (routine) => linkAgentSchedule(configuration, routine),
+    'public',
+  );
+  assert.ok(fixture.run.canonicalRunId);
+  const runId = fixture.run.canonicalRunId as RunId;
+  const input = { env, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+  const events: string[] = [];
+  assert.equal(await executeRoutineOccurrence(input, {
+    ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work,
+    persistenceTelemetrySink: telemetrySink().sink,
+    handle: fakeHandle(dispatched
+      ? { events, readError: new DOMException('restarted', 'AbortError') }
+      : { events, dispatchError: new Error('dispatch unavailable') }),
+  }), 'resumable');
+  assert.equal((await work.listRunExecutions(runId))[0]?.outcome, 'pending');
+  assert.equal((await usage.getOperation(fixture.run.id))?.operation.status, 'admitted');
+
+  const telemetry = telemetrySink();
+  const handle = fakeHandle({ events });
+  handle.abort = async () => { events.push('abort'); };
+  return {
+    routines, work, usage, fixture, runId, events, telemetry,
+    refuse(overrides: Parameters<typeof executeRoutineOccurrence>[1] = {}) {
+      configureInstallationAdmission(async () => 'refused');
+      return executeRoutineOccurrence(input, {
+        ...dependencies(), usageRecordingEnabled: true, usageStore: usage, workStore: work,
+        persistenceTelemetrySink: telemetry.sink, handle, ...overrides,
+      });
+    },
+  };
+}
+
+/** How an ended installation fails access: its Slack installation is revoked. */
+async function endedInstallationAccess(): Promise<never> {
+  throw new RoutineRuntimeError('credential_unavailable', 'The Slack connection is unavailable for this routine.');
+}
+
+/** A store whose `method` fails as an unavailable owner would; everything else passes through. */
+function failingMethod<T extends object>(store: T, method: keyof T): T {
+  return new Proxy(store, {
+    get(target, property) {
+      if (property === method) return async () => { throw new Error('state owner unavailable'); };
+      const value = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+for (const dispatched of [true, false]) {
+  for (const ended of [false, true]) {
+    test(`a refused attempt ${dispatched ? 'dispatched' : 'never dispatched'} settles by one rule ${ended ? 'though an ended installation resolves no access' : 'when it is prepared again'}`, async (t) => {
+      const h = await interruptedHostedAttempt(
+        t,
+        `refused_${dispatched ? 'sent' : 'unsent'}_${ended ? 'ended' : 'live'}`,
+        dispatched,
+      );
+      assert.equal(await h.refuse(ended ? {
+        resolveAccess: async () => {
+          h.events.push('access');
+          return endedInstallationAccess();
+        },
+      } : {}), 'completed');
+      if (dispatched) {
+        assert.equal(h.events.filter((event) => event === 'abort').length, 1);
+        if (ended) assert.deepEqual(h.events.slice(-2), ['abort', 'access'], 'stopped before access is tried');
+      } else {
+        assert.ok(!h.events.includes('abort'), 'nothing was dispatched to stop');
+      }
+      assert.equal(h.events.filter((event) => event === 'read').length, dispatched ? 1 : 0);
+
+      const skipped = await h.routines.getRun(h.fixture.run.id);
+      assert.equal(skipped?.status, 'skipped');
+      assert.equal(skipped?.skipReason, 'installation_not_admitted');
+      assert.equal((await h.routines.getRoutine(h.fixture.run.routineId))?.state, 'active', 'nothing is paused');
+      assert.equal(await h.routines.getRecoveryDelivery(h.fixture.run.id), undefined);
+
+      // A dispatched attempt may have reached the model, and what it did is
+      // never read; one never dispatched submitted nothing. Whether the
+      // occurrence could be prepared again changes neither.
+      const [execution] = await h.work.listRunExecutions(h.runId);
+      assert.deepEqual(
+        [execution?.outcome, execution?.modelInvocationStatus, execution?.safeFailureCode],
+        dispatched ? ['ambiguous', 'settled', 'policy_denied'] : ['not_submitted', 'not_invoked', 'policy_denied'],
+      );
+      assert.equal((await h.work.getRun(h.runId))?.terminalDisposition, 'skipped');
+      const operation = await h.usage.getOperation(h.fixture.run.id);
+      assert.equal(operation?.operation.status, 'failed', 'the Usage operation has its terminal');
+      assert.equal(operation?.measurements[0]?.inputTokens, null);
+      assert.equal(operation?.measurements[0]?.usageUnknownReason, 'provider_request_unknown');
+      assert.equal(operation?.measurements[0]?.runExecutionId, execution?.id);
+      assert.match(h.telemetry.info.join('\n'), /"usage":"recorded","work":"recorded"/);
+      assert.deepEqual(h.telemetry.errors, []);
+    });
+  }
+}
+
+test('an ended installation\'s settlement that cannot be written is reported, part by part', async (t) => {
+  // The Work execution stays open: its settlement is reported unrepaired.
+  const work = await interruptedHostedAttempt(t, 'ended_work_down', true);
+  assert.equal(await work.refuse({
+    resolveAccess: endedInstallationAccess,
+    workStore: failingMethod<WorkStore>(work.work, 'settleRunExecution'),
+  }), 'completed');
+  assert.equal((await work.routines.getRun(work.fixture.run.id))?.status, 'skipped');
+  assert.equal((await work.work.listRunExecutions(work.runId))[0]?.outcome, 'pending');
+  assert.equal(work.telemetry.errors.length, 1);
+  assert.match(work.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"recorded","work":"unrepaired"/);
+  assert.doesNotMatch(work.telemetry.errors[0]!, /state owner unavailable/);
+
+  // The Usage operation stays admitted: its terminal is reported unrepaired.
+  const usage = await interruptedHostedAttempt(t, 'ended_usage_down', true);
+  assert.equal(await usage.refuse({
+    resolveAccess: endedInstallationAccess,
+    usageStore: failingMethod<UsageStore>(usage.usage, 'recordTerminal'),
+  }), 'completed');
+  assert.equal((await usage.routines.getRun(usage.fixture.run.id))?.status, 'skipped');
+  assert.equal((await usage.usage.getOperation(usage.fixture.run.id))?.operation.status, 'admitted');
+  assert.equal(usage.telemetry.errors.length, 1);
+  assert.match(usage.telemetry.errors[0]!, /"outcome":"unrepaired","usage":"unrepaired","work":"recorded"/);
 });
 
 test('permanent Work initialization failure is one gap and never redispatches', async () => {

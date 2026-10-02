@@ -99,6 +99,7 @@ import {
 import {
   readActiveSlackCredentialMetadata,
   resolveSlackInstallationCredentials,
+  SlackCredentialRecoveryOnlyError,
   type ResolvedSlackInstallationCredentials,
 } from '../slack/installation-credentials.ts';
 import {
@@ -617,10 +618,8 @@ function handleDirectSlackEvents(
     }
     if (payload.type !== 'event_callback') return;
 
-    const credentials = await resolveSlackInstallationCredentials(
-      slackInstallationCredentialId(platformEnv),
-      platformEnv,
-    );
+    const credentials = await directSlackCredentials(c, platformEnv);
+    if (credentials instanceof Response) return credentials;
     const eventType = payload.event.type;
     if (eventType === 'app_home_opened') {
       const event = payload.event as { user?: unknown };
@@ -709,10 +708,8 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       installation.health === 'revoked' ||
       (installation.appId && payload.api_app_id !== installation.appId)
     ) return;
-    const credentials = await resolveSlackInstallationCredentials(
-      slackInstallationCredentialId(platformEnv),
-      platformEnv,
-    );
+    const credentials = await directSlackCredentials(c, platformEnv);
+    if (credentials instanceof Response) return credentials;
     const botUserId = await resolveInstallationBotUserId(
       installation.botUserId,
       credentials,
@@ -731,6 +728,27 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       }),
     );
   };
+}
+
+/**
+ * The installation's Slack credentials for a direct delivery. A hosted bundle
+ * that latches recovery on this read is answered as the app's recovery gate
+ * answers every later request, not found, rather than as a server error; a
+ * keyring that will not load stays a server error, transient for Slack to
+ * retry. Standalone throws as before.
+ */
+async function directSlackCredentials(
+  c: { notFound(): Response | Promise<Response> },
+  platformEnv: PlatformEnv | undefined,
+): Promise<ResolvedSlackInstallationCredentials | Response> {
+  try {
+    return await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
+  } catch (error) {
+    if (error instanceof SlackCredentialRecoveryOnlyError && deploymentTenancy(platformEnv) === 'installation') {
+      return await c.notFound();
+    }
+    throw error;
+  }
 }
 
 /**

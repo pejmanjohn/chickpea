@@ -1880,7 +1880,7 @@ async function runTurnAttempt(
           await statusTurn.prepareFinal();
           // A partial answer already streamed stays as shown, ended rather than left streaming.
           await agentViewPresentation?.sealStreamWithoutReply().catch(() => {
-            console.warn('[chickpea] Slack stream of a refused turn could not be ended; durable repair owns it');
+            console.warn('[chickpea] Slack stream of a refused turn could not be ended; Slack seals an idle stream itself');
           });
           if (options.runId) {
             await abandonTerminalSlackPresentationBestEffort({

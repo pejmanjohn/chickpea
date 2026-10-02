@@ -655,6 +655,56 @@ export class RoutineUsageRecorder {
   }
 }
 
+/**
+ * Record the terminal of a routine execution whose recorder is gone: its
+ * occurrence ended before it could be prepared again. The terminal repeats
+ * what the operation was admitted with and reports its spend as unknown. An
+ * operation never admitted, or an execution already measured, is left as it
+ * is. Returns whether the execution's terminal is recorded.
+ */
+export async function recordRoutineTerminalWithoutRecorder(input: {
+  store: UsageStore;
+  operationId: string;
+  executionId: string;
+  runExecutionId?: string;
+  status: UsageTerminalStatus;
+  unknownReason: UsageUnknownReason;
+  at: number;
+  platformEnv?: PlatformEnv;
+}): Promise<boolean> {
+  const detail = await input.store.getOperation(input.operationId);
+  if (!detail) return false;
+  if (detail.measurements.some((measurement) => measurement.executionId === input.executionId)) return true;
+  const { operation } = detail;
+  const terminal = {
+    operationId: operation.operationId,
+    executionId: input.executionId,
+    ...(input.runExecutionId ? { runExecutionId: input.runExecutionId } : {}),
+    status: input.status,
+    finishedAt: input.at,
+    observedAt: input.at,
+    providerRoute: operation.requestedProvider,
+    requestedProvider: operation.requestedProvider,
+    requestedModel: operation.requestedModel,
+    returnedProvider: null,
+    returnedModel: null,
+    credentialRefId: operation.credentialRefId,
+    credentialVersion: operation.credentialVersion,
+    usageCompleteness: 'not_reported' as const,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    totalTokens: null,
+    usageUnknownReason: input.unknownReason,
+  };
+  await input.store.recordTerminal({
+    ...terminal,
+    ...estimateForRuntime(terminal, input.platformEnv, undefined),
+  });
+  return true;
+}
+
 export function usageRuntimeRecordingEnabled(
   platformEnv?: PlatformEnv,
   processEnv: NodeJS.ProcessEnv = process.env,
