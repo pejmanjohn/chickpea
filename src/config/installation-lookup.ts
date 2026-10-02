@@ -59,6 +59,7 @@ export function scheduledForEachInstallation(
     scheduled(controller, env, context) {
       context.waitUntil(lookupFor(env).listActive().then((installations) => {
         for (const installation of installations) {
+          if (installation.status !== 'active') continue;
           context.waitUntil(Promise.resolve()
             .then(() => handler.scheduled(
               controller,

@@ -59,6 +59,12 @@ export class SlackGatewaySession extends DurableObject implements SlackGatewaySe
   }
 
   async wake(): Promise<void> {
+    // A deployment serving many installations has no shared-app session, so
+    // this object disarms instead of retrying a store it cannot reach.
+    if (deploymentTenancy(this.env as PlatformEnv) === 'installation') {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     // Arm recovery before any remote read or connection attempt. In-memory
     // retry timers disappear with the object and cannot recover an eviction.
     // Do not postpone a pending alarm when Admin or maintenance also wakes us.

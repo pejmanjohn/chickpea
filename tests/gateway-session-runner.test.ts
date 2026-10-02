@@ -22,6 +22,7 @@ import {
   type GatewaySocket,
 } from '../src/slack/gateway/session-runner.ts';
 import { GatewayInboundAdmission } from '../src/slack/gateway/inbound-admission.ts';
+import { deploymentTenancy } from '../src/config/installation-scope.ts';
 
 const NOW = Date.UTC(2026, 7, 20, 12);
 
@@ -56,6 +57,7 @@ test('durable alarm restores an evicted gateway owner without cron or Admin traf
     GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     Date: { now: () => clock },
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
     getSettingsStore: () => ({ getSetting: async () => {
       assert.ok(await storage.getAlarm(), 'recovery must be durable before external I/O');
       if (failRead) throw new Error('state temporarily unavailable');
@@ -135,6 +137,7 @@ test('concurrent Durable Object wakes share one supervisor and leave no orphan s
     parseHttpDeliveryState: () => undefined,
     GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
     getSettingsStore: () => ({ getSetting: () => runners.length
       ? Promise.resolve('configured')
       : new Promise<string | null>((resolve) => pending.push(resolve)) }),
@@ -265,6 +268,7 @@ test('Durable Object reconnect recreates a client whose state RPC stub has faile
     parseHttpDeliveryState: () => undefined,
     GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
     getSettingsStore: () => ({ getSetting: async () => 'configured' }),
     GATEWAY_BINDING_SETTING: 'binding',
     GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
@@ -1384,6 +1388,7 @@ test('failed HTTP preparation preserves sockets, but active HTTP never falls bac
       resolveSlackPublicUrl: async () => 'https://worker.account.workers.dev',
       parseHttpDeliveryState: () => ({mode}), GATEWAY_HTTP_SETTING:'http',
       DurableObject: class { constructor(_context:unknown, public env:unknown) {} },
+      deploymentTenancy,
       getSettingsStore: () => ({getSetting:async()=> 'configured'}),
       GATEWAY_BINDING_SETTING:'binding', GATEWAY_DURABLE_ADMISSION_CAPABILITY:'durable', GATEWAY_UI_INTERACTIONS_CAPABILITY:'ui',
       cloudflareWorkerVersionId:()=> 'version',
@@ -1485,6 +1490,7 @@ test('an unconfirmed gateway session fails readiness and is restarted', async ()
     GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
     GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS: 5_000,
     DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
     getSettingsStore: () => ({ getSetting: async () => 'configured' }),
     GATEWAY_BINDING_SETTING: 'binding',
     GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',

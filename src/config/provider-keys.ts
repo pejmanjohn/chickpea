@@ -289,6 +289,8 @@ function cacheStoredProviderKeys(
   entry: { expiresAt: number; values: StoredProviderKeys },
 ): void {
   const key = installationCacheKey(env);
+  // An unscoped env under installation tenancy names no installation to cache for.
+  if (!key && !isolateBindsModelCredentials(env)) return;
   if (!storedCache.has(key) && storedCache.size >= STORED_CACHE_MAX_INSTALLATIONS) storedCache.clear();
   storedCache.set(key, entry);
 }

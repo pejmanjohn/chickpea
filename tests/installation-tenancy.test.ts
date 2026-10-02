@@ -35,9 +35,15 @@ import {
 import {
   applyResolvedProviderKey,
   applyResolvedProviderKeys,
+  deleteProviderApiKey,
+  invalidateProviderKeyCache,
   isolateBindsModelCredentials,
+  resolveProviderApiKey,
+  saveProviderApiKey,
 } from '../src/config/provider-keys.ts';
-import { SettingsStoreLogic } from '../src/config/settings-store.ts';
+import { forgetRegisteredProvider, knownProviderIds } from '../src/config/providers.ts';
+import { SettingsStoreLogic, SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { tagStateStub, type TagStateRpc } from '../src/config/state-rpc.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import {
@@ -409,4 +415,31 @@ test('a deployment serving many installations never binds a model key to the sha
   await assert.rejects(applyResolvedProviderKey('anthropic', scoped, settings), /does not bind model credentials/);
   await applyResolvedProviderKeys(scoped, settings);
   assert.deepEqual(reads, [], 'neither reads a key it may not bind');
+});
+
+test('each installation saves and reads its own model keys without binding the isolate', async () => {
+  invalidateProviderKeyCache();
+  forgetRegisteredProvider('anthropic');
+  const envA = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: A.installationId });
+  const envB = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: B.installationId });
+  const [settingsA, settingsB] = [new SqliteSettingsStore(':memory:'), new SqliteSettingsStore(':memory:')];
+  const [usageA, usageB] = [new SqliteUsageStore(':memory:'), new SqliteUsageStore(':memory:')];
+  try {
+    await saveProviderApiKey('anthropic', 'sk-tenant-a', envA, settingsA, usageA);
+    await saveProviderApiKey('anthropic', 'sk-tenant-b', envB, settingsB, usageB);
+    // Saving primed each installation's own cache entry; neither read touches a store.
+    assert.equal((await resolveProviderApiKey('anthropic', envA)).apiKey, 'sk-tenant-a');
+    assert.equal((await resolveProviderApiKey('anthropic', envB)).apiKey, 'sk-tenant-b');
+    assert.equal(knownProviderIds({}).has('anthropic'), false, 'no save bound the shared provider');
+
+    const deleted = await deleteProviderApiKey('anthropic', envA, settingsA, usageA);
+    assert.equal(deleted.source, 'missing');
+    assert.equal((await resolveProviderApiKey('anthropic', envA)).apiKey, undefined);
+    assert.equal((await resolveProviderApiKey('anthropic', envB)).apiKey, 'sk-tenant-b');
+    assert.equal(knownProviderIds({}).has('anthropic'), false);
+  } finally {
+    invalidateProviderKeyCache();
+    for (const store of [settingsA, settingsB]) store.close();
+    for (const store of [usageA, usageB]) store.close();
+  }
 });

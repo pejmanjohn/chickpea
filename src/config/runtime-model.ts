@@ -7,6 +7,7 @@ import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import {
   applyResolvedProviderKey,
   isProviderKeyId,
+  requireIsolateModelCredentials,
   resolveProviderApiKey,
   type ProviderKeyId,
 } from './provider-keys.ts';
@@ -313,6 +314,8 @@ export async function resolveRuntimeModel(
     : undefined;
   if (openAiAuthorization === 'subscription' && isCloudflareTarget()) {
     const modelId = canonicalModel.slice('openai/'.length);
+    // The plan session binds per isolate, like a stored key.
+    requireIsolateModelCredentials(dependencies.env);
     await bindChatgptPlanProvider(planDependencies(dependencies.env, dependencies.settings), modelId);
     return { model: `${CHATGPT_PLAN_PROVIDER}/${modelId}`, providerAuthRoute: 'openai_subscription' };
   }
