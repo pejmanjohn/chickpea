@@ -150,11 +150,18 @@ test('erasing one installation\'s objects, the state store last, leaves its neig
   }
   assert.deepEqual(a.storage.tables(), []);
   assert.equal(a.storage.alarm, null);
-  // An erased object exports nothing but its header.
+  // While the instance that erased it lives on, an erased object exports
+  // nothing but its header. A Flue instance or a runner constructed again
+  // re-creates its schema, so this holds only until then.
   const after = await exportAll(a.env, objectsOfA[0]!, 'full');
   assert.deepEqual(after.text.trim().split('\n').map((line) => JSON.parse(line).t), ['object']);
   assert.deepEqual(await exportInstallation(b), neighbourBefore);
   assert.ok(b.stores.turnJobs.getFrozenRuntimePlan('tj_T_B_0'), 'the neighbour still serves its turns');
+
+  // Erasure must be the installation's last contact: any later one, even an
+  // inventory read, builds an empty, schema-initialized state store again.
+  assert.deepEqual((await listInstallationObjects(a.env)).objects, []);
+  assert.ok(a.storage.tables().includes('installation_object_inventory'), 'the contact re-created the schema');
 });
 
 test('an erasure needs its installation confirmed, and never reaches another installation\'s objects', async () => {

@@ -100,7 +100,9 @@ export interface HostObjectStorage {
  * The host functions of one object (a thread runner or a Flue instance), over
  * its env (scoped by its own name) and storage. `onErased` drops whatever the
  * object holds in memory of its storage; `cancel` stops its own pending work
- * before the alarm is cleared.
+ * before the alarm is cleared. Erasure must be the object's last contact:
+ * a later call to the object, any of these included, finds it constructed
+ * again with its schema re-created (state/installation-objects.ts).
  */
 export function objectHostFunctions(object: {
   readonly env: Record<string, unknown> | undefined;

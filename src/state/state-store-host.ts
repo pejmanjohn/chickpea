@@ -37,8 +37,10 @@ export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chic
 /**
  * The host functions of one installation's state store (`TagStateStore`
  * delegates here), over its env (scoped by its own name), storage and
- * stores. `stores` builds them on demand; `onErased` drops them once the
- * storage is gone, so a later call builds an empty store again.
+ * stores. `stores` builds them on demand; `onErased` drops them, and all
+ * else the store holds in memory, once the storage is gone. A later call
+ * builds an empty, seeded store again, which is why erasure must be the
+ * installation's last contact (state/installation-objects.ts).
  */
 export function stateStoreHostFunctions(store: {
   readonly env: Record<string, unknown> | undefined;

@@ -10,6 +10,15 @@
  * installation) and those its inventory records (state/object-inventory.ts).
  * Erasure order is the host's: every inventoried object first, the state
  * store last, after copying its inventory.
+ *
+ * Erasure must be an installation's last contact with its objects. Core
+ * cannot refuse to construct an object, and constructing one creates its
+ * schema: any later contact, these functions included (an inventory read, a
+ * backfill, an export), re-creates the object empty and schema-initialized,
+ * and the state store seeded. Nothing marks an erased object, by design:
+ * erasure leaves nothing behind. So the host must route nothing to an
+ * installation once erasure starts, gating every path on its registry's
+ * `deleted` state.
  */
 import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../agents/names.ts';
 import {
@@ -88,7 +97,9 @@ export async function exportInstallationObject(
  * unless `confirmInstallationId` repeats the installation, as an operator
  * confirms an erasure. The state store also refuses when it is bound to
  * another installation. Irreversible within Chickpea; Cloudflare may keep the
- * data recoverable through its point-in-time history for up to 30 days.
+ * data recoverable through its point-in-time history for up to 30 days. It
+ * must be the object's last contact: any later call re-creates it, empty
+ * (see above).
  */
 export async function eraseInstallationObject(
   env: Record<string, unknown>,

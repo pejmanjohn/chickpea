@@ -46,7 +46,11 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
       return agentHost(this).chickpeaHostExportPage(request);
     }
 
-    /** Host RPC: delete every table, key-value entry and the alarm of this instance. */
+    /**
+     * Host RPC: delete every table, key-value entry and the alarm of this
+     * instance. It must be the instance's last contact: any later call
+     * constructs it again, and Flue re-creates its storage, empty.
+     */
     async chickpeaHostErase(request: ObjectHostRequest) {
       return agentHost(this).chickpeaHostErase(request);
     }

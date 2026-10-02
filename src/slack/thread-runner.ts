@@ -100,13 +100,11 @@ export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandbo
 export class SlackThreadRunner extends DurableObject implements SlackThreadRunnerRpc, InstallationObjectHostRpc {
   private jobs: ThreadRunnerJobStore | undefined;
   private presentations: SlackRunPresentationStoreLogic | undefined;
-  /** Its turns' live status; run facts outlive an eviction in this object's storage. */
-  private readonly registry = new SlackStatusRegistry({
-    runFacts: {
-      load: (id) => this.store().runFacts(id),
-      save: (id, facts) => this.store().saveRunFacts(id, facts),
-    },
-  });
+  /**
+   * Its turns' live status; run facts outlive an eviction in this object's
+   * storage. Replaced when the runner is erased.
+   */
+  private registry = this.statusRegistry();
   /** Jobs an alarm returned without at its hard cap, still running here. */
   private readonly carried = new Map<string, Promise<void>>();
   /** Wakes a running alarm's drain when a job is admitted. */
@@ -147,6 +145,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
   private store(): ThreadRunnerJobStore {
     this.jobs ??= new ThreadRunnerJobStore(new DoSqlStateDb(this.ctx.storage));
     return this.jobs;
+  }
+
+  private statusRegistry(): SlackStatusRegistry {
+    return new SlackStatusRegistry({
+      runFacts: {
+        load: (id) => this.store().runFacts(id),
+        save: (id, facts) => this.store().saveRunFacts(id, facts),
+      },
+    });
   }
 
   /**
@@ -315,6 +322,11 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostExportPage(request);
   }
 
+  /**
+   * Delete every table, key-value entry and the alarm of this runner. It must
+   * be the runner's last contact: any later call, an admission or a host
+   * function, creates its job tables again, empty.
+   */
   async chickpeaHostErase(request: ObjectHostRequest) {
     return this.host().chickpeaHostErase(request);
   }
@@ -328,10 +340,15 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return objectHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,
+      // Nothing of the erased runner stays in memory: its stores, its turns'
+      // live status, their observation targets and the jobs it carried.
       onErased: () => {
         this.jobs = undefined;
         this.presentations = undefined;
         this.stopHandling = undefined;
+        this.registry = this.statusRegistry();
+        this.targets.clear();
+        this.carried.clear();
       },
       cancel: (now) => ({ runnerJobs: this.store().cancelOpen(now) }),
     });

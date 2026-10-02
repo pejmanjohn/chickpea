@@ -810,8 +810,9 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   /**
    * Stop aborts this store sends for its own alarm's turns, per thread: the
    * alarm starts no turn of a thread while one is out (see StopAbortFence).
+   * Replaced when the store is erased.
    */
-  private readonly stopAborts = new StopAbortFence();
+  private stopAborts = new StopAbortFence();
   private readonly presentationRunnerOf = (runId: string) => this.presentationRunner(runId);
   /** Set while runner-mode alarm work runs: admission hands new turns over at once. */
   private dispatchWake: (() => void) | undefined;
@@ -1076,6 +1077,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   // ── host functions (installation tenancy; see state/installation-objects.ts) ──
   // An operator job's: each refuses on standalone and for any installation
   // but the one this store's name scopes (state/state-store-host.ts).
+  // Erasure must be the installation's last contact with this store: any
+  // later call, these included, builds an empty, seeded store again.
 
   async chickpeaHostInventory(request: ObjectHostRequest & { cursor?: string | null; limit?: number }) {
     return this.host().chickpeaHostInventory(request);
@@ -1106,8 +1109,14 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
         if (!this.stores) throw new Error(`state store unavailable: init failed (${this.initError ?? 'unknown'})`);
         return this.stores;
       },
-      // Nothing of the erased store stays in memory; a later call builds an empty one.
-      onErased: () => { this.stores = undefined; },
+      // Nothing of the erased store stays in memory: its stores, the alarm
+      // turns it carried and the stop aborts it fenced. A later call builds
+      // an empty store again.
+      onErased: () => {
+        this.stores = undefined;
+        this.carriedAlarmTurns.clear();
+        this.stopAborts = new StopAbortFence();
+      },
     });
   }
 
