@@ -209,7 +209,7 @@ export function createLiveWorkspaceManagementService(
     listAvailableModels: async () => {
       const sources = await describeProviderKeySources(env, settings);
       const entries: Array<{ id: string; name?: string }> =
-        activeModelCatalogSnapshot().entries.flatMap((entry) => {
+        activeModelCatalogSnapshot(env).entries.flatMap((entry) => {
           if (entry.id.startsWith('anthropic/') &&
               entry.lanes.anthropic_api_key && sources.anthropic !== 'missing') {
             return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];

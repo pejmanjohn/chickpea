@@ -1,5 +1,6 @@
 import { DisabledAgentError, NoAssignmentError } from './errors.ts';
 import { resolveModelPolicyForAssignment } from './model-policy.ts';
+import type { PlatformEnv } from './state-backend.ts';
 import {
   type AgentChannelGrant,
   type ChannelConfig,
@@ -25,6 +26,8 @@ export type AssignmentSurface = 'channel' | 'direct';
 interface AssignmentLookupOptions {
   surface?: AssignmentSurface;
   env?: NodeJS.ProcessEnv;
+  /** The trusted env of the installation, whose active catalog checks the model. */
+  platformEnv?: PlatformEnv;
 }
 
 // Infer the surface from a channel id, for the paths that resolve from a thread
@@ -108,7 +111,7 @@ export async function resolveAssignment(
     getWorkspaceInstallation: (id) => stores.grants.getWorkspaceInstallation(id),
     getWorkspaceModelDefault: (id) =>
       stores.grants.getWorkspaceModelDefault?.(id) ?? Promise.resolve(undefined),
-  }, options.env, installation);
+  }, options.env, installation, options.platformEnv);
 }
 
 function channelReaderFromGrants(grants: GrantReader): ChannelReader | undefined {

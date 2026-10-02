@@ -93,13 +93,13 @@ export function isFavoriteProviderId(id: string): id is FavoriteProviderId {
 export async function validateProviderApiKey(
   id: ProviderKeyId,
   apiKey: string,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; env?: PlatformEnv } = {},
 ): Promise<ProviderModel[]> {
   switch (id) {
     case 'anthropic':
-      return fetchAnthropicModels(apiKey, true, options.timeoutMs);
+      return fetchAnthropicModels(apiKey, true, options.timeoutMs, options.env);
     case 'openai':
-      return fetchOpenAiModels(apiKey, true, options.timeoutMs);
+      return fetchOpenAiModels(apiKey, true, options.timeoutMs, options.env);
     case 'openrouter':
       await validateOpenRouterKey(apiKey, options.timeoutMs);
       return fetchOpenRouterModels(options.timeoutMs);
@@ -214,14 +214,15 @@ async function fetchProviderModels(
     throw new ProviderModelsUnavailableError(id, 'provider_key_missing', 409);
   }
   return id === 'anthropic'
-    ? fetchAnthropicModels(apiKey, false, timeoutMs)
-    : fetchOpenAiModels(apiKey, false, timeoutMs);
+    ? fetchAnthropicModels(apiKey, false, timeoutMs, env)
+    : fetchOpenAiModels(apiKey, false, timeoutMs, env);
 }
 
 async function fetchAnthropicModels(
   apiKey: string,
   validating: boolean,
   timeoutMs?: number,
+  env?: PlatformEnv,
 ): Promise<ProviderModel[]> {
   const { response, body } = await fetchProviderJson(
     'anthropic',
@@ -244,13 +245,14 @@ async function fetchAnthropicModels(
     const displayName = optionalStringField(model, 'display_name') ?? optionalStringField(model, 'displayName');
     return displayName ? { id, display_name: displayName } : { id };
   });
-  return includeCatalogModels('anthropic', models);
+  return includeCatalogModels('anthropic', models, env);
 }
 
 async function fetchOpenAiModels(
   apiKey: string,
   validating: boolean,
   timeoutMs?: number,
+  env?: PlatformEnv,
 ): Promise<ProviderModel[]> {
   const { response, body } = await fetchProviderJson(
     'openai',
@@ -266,16 +268,18 @@ async function fetchOpenAiModels(
   const models = readModelArray(body)
     .map((model) => ({ id: stringField(model, 'id') }))
     .filter((model) => OPENAI_CHAT_MODEL_PREFIXES.some((prefix) => model.id.startsWith(prefix)));
-  return includeCatalogModels('openai', models);
+  return includeCatalogModels('openai', models, env);
 }
 
+/** The discovered models plus those `env`'s installation's active catalog admits for the lane. */
 function includeCatalogModels(
   provider: Extract<ProviderKeyId, 'anthropic' | 'openai'>,
   discovered: ProviderModel[],
+  env: PlatformEnv | undefined,
 ): ProviderModel[] {
   const byId = new Map(discovered.map((model) => [model.id, model]));
   const lane = provider === 'openai' ? 'openai_api_key' : 'anthropic_api_key';
-  for (const model of listActiveCatalogModels(lane)) {
+  for (const model of listActiveCatalogModels(lane, env)) {
     if (!byId.has(model.id)) {
       byId.set(model.id, {
         id: model.id,

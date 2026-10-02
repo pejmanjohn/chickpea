@@ -2245,7 +2245,9 @@ async function processSlackEvent(
         };
       }
       routedBaseAssignment = routedAssignment;
-      const policyAssignment = await resolveModelPolicyForAssignment(routedAssignment, store);
+      const policyAssignment = await resolveModelPolicyForAssignment(
+        routedAssignment, store, process.env, undefined, platformEnv,
+      );
       candidateTurn = turn.source === 'reaction_added';
       if (surface === 'channel') {
         const channel = await runtimeTransport.lookupChannel(turn.channelId);
@@ -2650,12 +2652,12 @@ async function processSlackEvent(
           ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
               agents: stores.config,
               grants: stores.config,
-            }, process.env, assignment.agentId)
+            }, process.env, assignment.agentId, platformEnv)
           : await getOrCreateSnapshot(stores.snapshots, threadKey, () =>
               resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
                 agents: stores.config,
                 grants: stores.config,
-              }, process.env, assignment.agentId));
+              }, process.env, assignment.agentId, platformEnv));
       }
     } finally {
       releaseClassifier();

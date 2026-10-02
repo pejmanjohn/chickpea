@@ -1,6 +1,9 @@
 import type { Model } from '@earendil-works/pi-ai';
 import { getBuiltinModel } from './pi-builtin-models.ts';
 
+import { InstallationContextError, installationScopeOf } from '../config/installation-scope.ts';
+import { deploymentServesManyInstallations } from '../config/model-access.ts';
+
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
@@ -49,23 +52,70 @@ interface InternalSnapshot extends ActiveModelCatalogSnapshot {
   aliases: Partial<Record<'anthropic' | 'openai', string>>;
 }
 
+/** The env whose installation's catalog a call selects or reads. */
+type CatalogEnv = Record<string, unknown> | undefined;
+
 const MAX_HOSTED_ACTIVATIONS = 16;
+const MAX_INSTALLATION_SNAPSHOTS = 64;
 const BUNDLED_HASH = 'bundled-v1';
+// Hosted documents registered as revisioned aliases in this isolate. The
+// aliases are credential-free and named after their document, so every
+// installation that activates the same document shares them.
 const activatedHostedIdentities = new Set<string>();
 const bundledSnapshot = buildSnapshot('bundled', 0, BUNDLED_HASH, BUNDLED_MODEL_CATALOG);
-let activeSnapshot: InternalSnapshot = bundledSnapshot;
+// The active snapshot per installation. Standalone has one, under ''. Each
+// installation of a deployment serving many selects its own from its own
+// settings (bundled mode, or the hosted revision it accepted), so one
+// installation's activation never changes the catalog another one routes,
+// freezes or lists with.
+const activeSnapshots = new Map<string, InternalSnapshot>();
 
-export function activateBundledModelCatalog(): ActiveModelCatalogSnapshot {
-  activeSnapshot = bundledSnapshot;
-  return publicSnapshot(activeSnapshot);
+/**
+ * Standalone: ''. An installation of a deployment serving many: its id.
+ * Activating needs an installation there; a read without one gets the
+ * bundled catalog, never another installation's.
+ */
+function snapshotKey(env: CatalogEnv, activating: boolean): string | undefined {
+  if (!deploymentServesManyInstallations(env)) return '';
+  const scope = installationScopeOf(env);
+  if (scope) return scope.installationId;
+  if (activating) {
+    throw new InstallationContextError(
+      'installation_context_missing',
+      'This deployment serves many installations and the catalog activation has none.',
+    );
+  }
+  return undefined;
+}
+
+function activeSnapshotFor(env: CatalogEnv): InternalSnapshot {
+  const key = snapshotKey(env, false);
+  return (key === undefined ? undefined : activeSnapshots.get(key)) ?? bundledSnapshot;
+}
+
+function setActiveSnapshot(key: string, snapshot: InternalSnapshot): void {
+  activeSnapshots.delete(key);
+  if (activeSnapshots.size >= MAX_INSTALLATION_SNAPSHOTS) {
+    // The least recently activated installation reloads its own on its next request.
+    activeSnapshots.delete(activeSnapshots.keys().next().value as string);
+  }
+  activeSnapshots.set(key, snapshot);
+}
+
+export function activateBundledModelCatalog(env?: CatalogEnv): ActiveModelCatalogSnapshot {
+  setActiveSnapshot(snapshotKey(env, true)!, bundledSnapshot);
+  return publicSnapshot(bundledSnapshot);
 }
 
 export function activateModelCatalog(
   candidate: HostedModelCatalogCandidate,
+  env?: CatalogEnv,
 ): ModelCatalogActivationResult {
   if (!/^[a-f0-9]{64}$/.test(candidate.sha256)) {
     throw new Error('Hosted model catalog hash is invalid.');
   }
+  const key = snapshotKey(env, true)!;
+  const activeSnapshot = activeSnapshots.get(key) ?? bundledSnapshot;
   if (activeSnapshot.source === 'hosted') {
     if (candidate.document.revision < activeSnapshot.revision) {
       return { status: 'activated', snapshot: publicSnapshot(activeSnapshot) };
@@ -112,18 +162,18 @@ export function activateModelCatalog(
   }
   const activated: InternalSnapshot = Object.freeze({ ...snapshot, aliases: Object.freeze(aliases) });
   activatedHostedIdentities.add(identity);
-  activeSnapshot = activated;
+  setActiveSnapshot(key, activated);
   return { status: 'activated', snapshot: publicSnapshot(activated) };
 }
 
-export function activeModelCatalogSnapshot(): ActiveModelCatalogSnapshot {
-  return publicSnapshot(activeSnapshot);
+export function activeModelCatalogSnapshot(env?: CatalogEnv): ActiveModelCatalogSnapshot {
+  return publicSnapshot(activeSnapshotFor(env));
 }
 
 /** Materialized models admitted by the active snapshot for Settings/pickers.
  * This reports catalog compatibility, not vendor-account availability. */
-export function listActiveCatalogModels(lane: ModelAuthLane): Model<string>[] {
-  return [...activeSnapshot.models.values()].flatMap((lanes) => {
+export function listActiveCatalogModels(lane: ModelAuthLane, env?: CatalogEnv): Model<string>[] {
+  return [...activeSnapshotFor(env).models.values()].flatMap((lanes) => {
     const model = lanes.get(lane);
     return model ? [structuredClone(model)] : [];
   });
@@ -133,8 +183,10 @@ export function listActiveCatalogModels(lane: ModelAuthLane): Model<string>[] {
 export function resolveActiveCatalogRoute(
   canonicalModel: string,
   lane: ModelAuthLane,
+  env?: CatalogEnv,
 ): ActiveModelCatalogRoute | undefined {
   if (!laneMatchesCanonicalProvider(canonicalModel, lane)) return undefined;
+  const activeSnapshot = activeSnapshotFor(env);
   if (lane !== 'openai_subscription' && isPiNativeModel(canonicalModel)) {
     const model = readPiNativeModel(canonicalModel);
     if (!model) return undefined;
@@ -188,7 +240,7 @@ function compatibilityAlias(
 export function resetModelCatalogActivationForTests(): void {
   activatedHostedIdentities.clear();
   resetCapturedModelCompatibilityProvidersForTests();
-  activeSnapshot = bundledSnapshot;
+  activeSnapshots.clear();
 }
 
 function buildSnapshot(

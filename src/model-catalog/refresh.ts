@@ -1,4 +1,5 @@
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { PlatformEnv } from '../config/state-backend.ts';
 import { declaredContentLength, readBoundedBytes } from '../http/bounded-body.ts';
 import {
   activateBundledModelCatalog,
@@ -32,6 +33,8 @@ export type ModelCatalogRefreshResult =
 
 export interface RefreshModelCatalogOptions {
   settings: SettingsStore;
+  /** The trusted env of the installation those settings belong to. */
+  env?: PlatformEnv | undefined;
   force?: boolean;
   now?: () => number;
   random?: () => number;
@@ -52,20 +55,22 @@ export type ModelCatalogLoadResult =
   | { status: 'restart_required'; revision: number };
 
 /** Activate only persisted, already-validated state. Runtime admission uses
- * this path so an LLM operation can never trigger catalog network traffic. */
+ * this path so an LLM operation can never trigger catalog network traffic.
+ * The catalog activated is the one `env`'s installation reads. */
 export async function loadModelCatalog(
   settings: SettingsStore,
+  env?: PlatformEnv,
 ): Promise<ModelCatalogLoadResult> {
   if (await readModelCatalogMode(settings) === 'bundled') {
-    const snapshot = activateBundledModelCatalog();
+    const snapshot = activateBundledModelCatalog(env);
     return { status: 'bundled', revision: snapshot.revision };
   }
   const lkg = await safeReadLkg(settings);
   if (!lkg) {
-    const snapshot = activateBundledModelCatalog();
+    const snapshot = activateBundledModelCatalog(env);
     return { status: 'bundled', revision: snapshot.revision };
   }
-  const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 });
+  const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 }, env);
   return activation.status === 'restart_required'
     ? { status: 'restart_required', revision: lkg.document.revision }
     : { status: 'activated', revision: lkg.document.revision };
@@ -76,7 +81,7 @@ export async function refreshModelCatalog(
 ): Promise<ModelCatalogRefreshResult> {
   const now = options.now ?? Date.now;
   const checkedAt = now();
-  const loaded = await loadModelCatalog(options.settings);
+  const loaded = await loadModelCatalog(options.settings, options.env);
   if (loaded.status === 'bundled' && await readModelCatalogMode(options.settings) === 'bundled') {
     return loaded;
   }
@@ -92,7 +97,7 @@ export async function refreshModelCatalog(
   if (!lease.acquired) {
     lkg = await safeReadLkg(options.settings);
     if (lkg) {
-      const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 });
+      const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 }, options.env);
       if (activation.status === 'restart_required') {
         return { status: 'restart_required', revision: lkg.document.revision };
       }
@@ -104,7 +109,7 @@ export async function refreshModelCatalog(
     // Re-check under the lease so a waiter does not refetch a winner's fresh LKG.
     lkg = await safeReadLkg(options.settings);
     if (!options.force && lkg && lkg.nextRefreshAt > checkedAt) {
-      const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 });
+      const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 }, options.env);
       if (activation.status === 'restart_required') {
         return { status: 'restart_required', revision: lkg.document.revision };
       }
@@ -118,7 +123,7 @@ export async function refreshModelCatalog(
     );
     const nextRefreshAt = jitteredNextRefresh(checkedAt, options.random ?? Math.random);
     if (response.status === 304) {
-      if (!lkg) return failure(options.settings, 'not_modified_without_lkg');
+      if (!lkg) return failure(options.settings, 'not_modified_without_lkg', options.env);
       const touched = await touchModelCatalogLkg(options.settings, lkg, {
         checkedAt,
         nextRefreshAt,
@@ -127,13 +132,13 @@ export async function refreshModelCatalog(
           ? { lastModified: response.headers.get('last-modified') as string }
           : {}),
       });
-      const activation = activateModelCatalog({ document: touched.document, sha256: touched.sha256 });
+      const activation = activateModelCatalog({ document: touched.document, sha256: touched.sha256 }, options.env);
       return activation.status === 'restart_required'
         ? { status: 'restart_required', revision: activation.snapshot.revision }
         : { status: 'not_modified', revision: touched.document.revision };
     }
     if (response.status !== 200) {
-      return failure(options.settings, `http_${response.status}`);
+      return failure(options.settings, `http_${response.status}`, options.env);
     }
     if (!response.bytes) throw new Error('catalog_response_missing_body');
     const acceptance = await acceptModelCatalogCandidate(options.settings, {
@@ -146,22 +151,22 @@ export async function refreshModelCatalog(
       nextRefreshAt,
     });
     if (acceptance.status === 'equivocation') {
-      activateModelCatalog({ document: acceptance.lkg.document, sha256: acceptance.lkg.sha256 });
+      activateModelCatalog({ document: acceptance.lkg.document, sha256: acceptance.lkg.sha256 }, options.env);
       return { status: 'failed', revision: acceptance.lkg.document.revision, code: 'equivocation' };
     }
     if (acceptance.status === 'stale') {
-      activateModelCatalog({ document: acceptance.lkg.document, sha256: acceptance.lkg.sha256 });
+      activateModelCatalog({ document: acceptance.lkg.document, sha256: acceptance.lkg.sha256 }, options.env);
       return { status: 'stale', revision: acceptance.lkg.document.revision };
     }
     const activation = activateModelCatalog({
       document: acceptance.lkg.document,
       sha256: acceptance.lkg.sha256,
-    });
+    }, options.env);
     return activation.status === 'restart_required'
       ? { status: 'restart_required', revision: activation.snapshot.revision }
       : { status: 'activated', revision: acceptance.lkg.document.revision };
   } catch (error) {
-    return failure(options.settings, refreshFailureCode(error));
+    return failure(options.settings, refreshFailureCode(error), options.env);
   } finally {
     await releaseModelCatalogRefreshLease(options.settings, ownerId).catch(() => false);
   }
@@ -269,15 +274,16 @@ async function safeReadLkg(settings: SettingsStore): Promise<ModelCatalogLkg | u
 async function failure(
   settings: SettingsStore,
   code: string,
+  env: PlatformEnv | undefined,
 ): Promise<ModelCatalogRefreshResult> {
   const lkg = await safeReadLkg(settings);
   if (lkg) {
-    const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 });
+    const activation = activateModelCatalog({ document: lkg.document, sha256: lkg.sha256 }, env);
     if (activation.status === 'restart_required') {
       return { status: 'restart_required', revision: lkg.document.revision };
     }
   }
-  else activateBundledModelCatalog();
+  else activateBundledModelCatalog(env);
   return { status: 'failed', revision: lkg?.document.revision ?? 0, code };
 }
 

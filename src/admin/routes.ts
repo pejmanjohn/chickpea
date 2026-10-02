@@ -2970,6 +2970,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       return await (options.modelCatalogRefresh ?? refreshModelCatalog)({
         settings: settings(c),
+        env: c.env as PlatformEnv | undefined,
         force,
         ...(options.modelCatalogNow ? { now: options.modelCatalogNow } : {}),
         ...(options.modelCatalogRandom ? { random: options.modelCatalogRandom } : {}),
@@ -2982,7 +2983,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       return {
         status: 'failed',
-        revision: activeModelCatalogSnapshot().revision,
+        revision: activeModelCatalogSnapshot(c.env as PlatformEnv | undefined).revision,
         code: 'unavailable',
       };
     }
@@ -6427,15 +6428,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.get('/admin/api/model-catalog', async (c) => {
-    await loadModelCatalog(settings(c));
-    return c.json(await safeModelCatalogStatus(settings(c)));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
+    return c.json(await safeModelCatalogStatus(settings(c), c.env as PlatformEnv | undefined));
   });
 
   app.post('/admin/api/model-catalog/refresh', async (c) => {
     const refresh = await refreshCatalog(c, true);
     return c.json({
       refresh,
-      catalog: await safeModelCatalogStatus(settings(c)),
+      catalog: await safeModelCatalogStatus(settings(c), c.env as PlatformEnv | undefined),
     });
   });
 
@@ -6447,12 +6448,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const refresh = parsed.output.mode === 'bundled'
       ? ({
           status: 'bundled',
-          revision: activateBundledModelCatalog().revision,
+          revision: activateBundledModelCatalog(c.env as PlatformEnv | undefined).revision,
         } satisfies ModelCatalogRefreshResult)
       : await refreshCatalog(c, true);
     return c.json({
       refresh,
-      catalog: await safeModelCatalogStatus(settingsStore),
+      catalog: await safeModelCatalogStatus(settingsStore, c.env as PlatformEnv | undefined),
     });
   });
 
@@ -6471,13 +6472,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       resolveOpenAiAuthMethod(settingsStore),
       getWorkersAiEnabled(settingsStore),
     ]);
-    const openAiApiModels = activeCatalogModels('openai_api_key');
+    const openAiApiModels = activeCatalogModels('openai_api_key', c.env as PlatformEnv | undefined);
     const subscriptionModels = !subscriptionAvailable
       ? []
       : isCloudflareTarget()
       ? (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settingsStore))).models.map(model => ({ ...model, canonical: `openai/${model.id}` }))
-      : activeCatalogModels('openai_subscription');
-    const anthropicApiModels = activeCatalogModels('anthropic_api_key');
+      : activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined);
+    const anthropicApiModels = activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined);
     const providers = await Promise.all(
       (await modelProviders(c))
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
@@ -6558,7 +6559,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!installation) {
       return c.json({ error: 'workspace_installation_required' }, 409);
     }
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     return c.json({
       workspaceDefault: await workspaceModelDefaultProjection({
         installation,
@@ -6582,7 +6583,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
       return c.json({ error: 'forbidden' }, 403);
     }
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const compatibilityError = await activeCatalogCompatibilityError(
       parsed.output.modelId,
       await resolveOpenAiAuthMethod(settings(c)),
@@ -6732,7 +6733,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const configStore = store(c);
     const installation = await modelDefaultInstallation(configStore);
     if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const [cutover, workspaceDefault] = await Promise.all([
       configStore.preflightChickpeaCutover(installation.workspaceId),
       workspaceModelDefaultProjection({
@@ -6768,7 +6769,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       workspaceId: installation.workspaceId,
       ...(legacyEnvironmentModel ? { legacyEnvironmentModel } : {}),
     });
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const workspaceDefault = await workspaceModelDefaultProjection({
       installation,
       configStore,
@@ -6796,7 +6797,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const configStore = store(c);
     const installation = await modelDefaultInstallation(configStore);
     if (!installation) return c.json({ error: 'workspace_installation_required' }, 409);
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const [cutover, workspaceDefault] = await Promise.all([
       configStore.preflightChickpeaCutover(installation.workspaceId),
       workspaceModelDefaultProjection({
@@ -7196,10 +7197,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return c.json({ provider: id, models: bundle.models.map(model => ({ id: model.id, display_name: model.name })), cached: true });
         }
         await refreshCatalog(c, c.req.query('refresh') === '1');
-        const snapshot = activeModelCatalogSnapshot();
+        const snapshot = activeModelCatalogSnapshot(platformEnv);
         return c.json({
           provider: id,
-          models: activeCatalogModels('openai_subscription').map((model) => ({ id: model.id })),
+          models: activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined).map((model) => ({ id: model.id })),
           cached: true,
           source: snapshot.source,
         });
@@ -7216,6 +7217,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? result.models.filter((model) => resolveActiveCatalogRoute(
             `${id}/${model.id}`,
             id === 'openai' ? 'openai_api_key' : 'anthropic_api_key',
+            platformEnv,
           ) !== undefined)
         : result.models;
       return c.json({ provider: id, models, cached: result.cached });
@@ -7654,7 +7656,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       },
     };
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const modelCompatibilityError = await activeCatalogCompatibilityError(
       agent.model,
       await resolveOpenAiAuthMethod(settings(c)),
@@ -7664,7 +7666,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const modelError = await configuredModelResolutionError(store(c), {
       ...agent,
       kind: 'user',
-    });
+    }, c.env as PlatformEnv | undefined);
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
@@ -9190,7 +9192,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...patch,
         id: agentId,
       };
-      await loadModelCatalog(settings(c));
+      await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
       const modelCompatibilityError = await activeCatalogCompatibilityError(
         next.model,
         await resolveOpenAiAuthMethod(settings(c)),
@@ -9200,7 +9202,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const modelError = await configuredModelResolutionError(configStore, {
         ...next,
         kind: current.kind,
-      });
+      }, c.env as PlatformEnv | undefined);
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
@@ -9741,11 +9743,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c: Context,
     providerId: OnboardingProviderId,
   ): Promise<string[]> => {
-    await loadModelCatalog(settings(c));
+    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const runtime = (await modelProviders(c)).find((provider) => provider.id === providerId);
     if (providerId === 'anthropic') {
       return uniqueStrings([
-        ...activeCatalogModels('anthropic_api_key').map((model) => model.canonical),
+        ...activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
         ...(runtime?.suggestions ?? []),
       ]);
     }
@@ -9755,11 +9757,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) return [];
         if (isCloudflareTarget()) return (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settings(c)))).models.map(model => `openai/${model.id}`);
         return openAiSubscriptionAvailable()
-          ? activeCatalogModels('openai_subscription').map((model) => model.canonical)
+          ? activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined).map((model) => model.canonical)
           : [];
       }
       return uniqueStrings([
-        ...activeCatalogModels('openai_api_key').map((model) => model.canonical),
+        ...activeCatalogModels('openai_api_key', c.env as PlatformEnv | undefined).map((model) => model.canonical),
         ...(runtime?.suggestions ?? []),
       ]);
     }
@@ -10244,7 +10246,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           await resolveEffectiveSlackConfig(key.workspaceId, key.channelId, {
             agents: configStore,
             grants: configStore,
-          }, process.env, c.req.query('agentId')),
+          }, process.env, c.req.query('agentId'), c.env as PlatformEnv | undefined),
         ),
       });
     } catch (err) {
@@ -12012,6 +12014,7 @@ function modelResolutionError(agent: ModelResolvableAgent): ModelResolutionError
 async function configuredModelResolutionError(
   configStore: ConfigStore,
   agent: ModelResolvableAgent & Pick<CustomAgentConfig, 'kind'>,
+  platformEnv: PlatformEnv | undefined,
 ): Promise<ModelResolutionError | undefined> {
   const installations = await configStore.listWorkspaceInstallations();
   const installation = installations.length === 1 ? installations[0] : undefined;
@@ -12024,6 +12027,7 @@ async function configuredModelResolutionError(
       agent,
       runtimeContract: installation.runtimeContract,
       ...(workspaceDefault ? { workspaceDefault } : {}),
+      ...(platformEnv ? { platformEnv } : {}),
     });
     return undefined;
   } catch (error) {
@@ -12224,7 +12228,7 @@ async function codingModelChoiceError(input: {
 }): Promise<string | undefined> {
   const providerId = chatModelProviderId(input.modelId);
   if (!providerId) return 'Choose a provider/model value.';
-  await loadModelCatalog(input.settingsStore);
+  await loadModelCatalog(input.settingsStore, input.platformEnv);
   const [openAiAuthMethod, workersAiEnabled, openAiSubscription] = await Promise.all([
     resolveOpenAiAuthMethod(input.settingsStore),
     getWorkersAiEnabled(input.settingsStore),
@@ -12422,13 +12426,13 @@ async function activeCatalogCompatibilityError(
   }
   if (model.startsWith('openai/')) {
     const lane = method === 'subscription' ? 'openai_subscription' : 'openai_api_key';
-    if (resolveActiveCatalogRoute(model, lane)) return undefined;
+    if (resolveActiveCatalogRoute(model, lane, env)) return undefined;
     return method === 'subscription'
       ? 'The selected ChatGPT subscription does not support this OpenAI model.'
       : 'The active OpenAI API-key catalog does not support this model.';
   }
   if (model.startsWith('anthropic/') &&
-      !resolveActiveCatalogRoute(model, 'anthropic_api_key')) {
+      !resolveActiveCatalogRoute(model, 'anthropic_api_key', env)) {
     return 'The active Anthropic API-key catalog does not support this model.';
   }
   return undefined;
@@ -12436,12 +12440,13 @@ async function activeCatalogCompatibilityError(
 
 function activeCatalogModels(
   lane: 'anthropic_api_key' | 'openai_api_key' | 'openai_subscription',
+  env: PlatformEnv | undefined,
 ): Array<{
   canonical: string;
   id: string;
   name?: string;
 }> {
-  return activeModelCatalogSnapshot().entries.flatMap((entry) => {
+  return activeModelCatalogSnapshot(env).entries.flatMap((entry) => {
     const provider = lane === 'anthropic_api_key' ? 'anthropic' : 'openai';
     if (!entry.lanes[lane] || !entry.id.startsWith(`${provider}/`)) return [];
     return [{
@@ -12464,7 +12469,7 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
 
-async function safeModelCatalogStatus(settingsStore: SettingsStore): Promise<{
+async function safeModelCatalogStatus(settingsStore: SettingsStore, env: PlatformEnv | undefined): Promise<{
   mode: 'bundled' | 'hosted';
   source: 'bundled' | 'hosted';
   revision: number;
@@ -12474,7 +12479,7 @@ async function safeModelCatalogStatus(settingsStore: SettingsStore): Promise<{
   lkgAvailable: boolean;
 }> {
   const mode = await readModelCatalogMode(settingsStore);
-  const active = activeModelCatalogSnapshot();
+  const active = activeModelCatalogSnapshot(env);
   try {
     const lkg = await readModelCatalogLkg(settingsStore);
     return {

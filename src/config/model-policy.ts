@@ -62,6 +62,7 @@ export async function resolveModelPolicyForAssignment(
   reader: WorkspaceModelPolicyReader,
   env: NodeJS.ProcessEnv = process.env,
   knownInstallation?: WorkspaceInstallation,
+  platformEnv?: PlatformEnv,
 ): Promise<ResolvedAssignment & { model: string; modelAttribution: AgentModelAttribution }> {
   const installation = knownInstallation ??
     await reader.getWorkspaceInstallation(assignment.workspaceId);
@@ -76,6 +77,7 @@ export async function resolveModelPolicyForAssignment(
     runtimeContract: installation.runtimeContract,
     ...(workspaceDefault ? { workspaceDefault } : {}),
     env,
+    ...(platformEnv ? { platformEnv } : {}),
   });
   return { ...assignment, model: resolved.model, modelAttribution: resolved.attribution };
 }
@@ -86,6 +88,8 @@ export function resolveAgentModelPolicy(input: {
   runtimeContract: WorkspaceRuntimeContract;
   workspaceDefault?: WorkspaceModelDefault;
   env?: NodeJS.ProcessEnv;
+  /** The trusted env of the installation, whose active catalog checks the model. */
+  platformEnv?: PlatformEnv;
 }): ResolvedAgentModelPolicy {
   if (input.runtimeContract === 'legacy') {
     const model = resolveAgentModel(input.agent, input.env);
@@ -105,7 +109,7 @@ export function resolveAgentModelPolicy(input: {
     const model = noteResolvedModel(input.agent.model);
     return {
       model,
-      attribution: activatedAttribution(model, 'pinned'),
+      attribution: activatedAttribution(model, 'pinned', input.platformEnv),
     };
   }
 
@@ -127,7 +131,7 @@ export function resolveAgentModelPolicy(input: {
       source: 'workspace_default',
       workspaceDefaultRevision: workspaceDefault.revision,
       providerId: providerPrefix(model),
-      ...catalogRevisionForModel(model),
+      ...catalogRevisionForModel(model, input.platformEnv),
     },
   };
 }
@@ -152,15 +156,19 @@ function noteResolvedModel(model: string): string {
 function activatedAttribution(
   model: string,
   source: Extract<AgentModelAttribution['source'], 'pinned'>,
+  platformEnv: PlatformEnv | undefined,
 ): AgentModelAttribution {
   return {
     source,
     providerId: providerPrefix(model),
-    ...catalogRevisionForModel(model),
+    ...catalogRevisionForModel(model, platformEnv),
   };
 }
 
-function catalogRevisionForModel(model: string): Pick<AgentModelAttribution, 'catalogRevision'> | {} {
+function catalogRevisionForModel(
+  model: string,
+  platformEnv: PlatformEnv | undefined,
+): Pick<AgentModelAttribution, 'catalogRevision'> | {} {
   const providerId = providerPrefix(model);
   const lane = providerId === 'openai'
     ? 'openai_api_key'
@@ -168,7 +176,7 @@ function catalogRevisionForModel(model: string): Pick<AgentModelAttribution, 'ca
       ? 'anthropic_api_key'
       : undefined;
   if (!lane) return {};
-  const route = resolveActiveCatalogRoute(model, lane);
+  const route = resolveActiveCatalogRoute(model, lane, platformEnv);
   if (!route) {
     throw new ModelResolutionError(
       `Model ${model} is not supported by the active catalog. Choose another Workspace default.`,

@@ -108,17 +108,18 @@ export async function resolveProviderAuthRoute(
     : 'openai_subscription';
 }
 
-/** Build a secret-free immutable route projection from the active catalog. */
+/** Build a secret-free immutable route projection from `env`'s installation's active catalog. */
 export function safeRuntimeModelRouteEvidence(
   canonicalModel: string,
   providerAuthRoute: ProviderAuthRoute | undefined,
   credential?: ModelCredentialAttribution,
+  env?: PlatformEnv,
 ): SafeRuntimeModelRouteEvidence {
   const lane = providerAuthRoute ?? (
     providerPrefix(canonicalModel) === 'anthropic' ? 'anthropic_api_key' : undefined
   );
-  const route = lane ? resolveActiveCatalogRoute(canonicalModel, lane) : undefined;
-  const snapshot = activeModelCatalogSnapshot();
+  const route = lane ? resolveActiveCatalogRoute(canonicalModel, lane, env) : undefined;
+  const snapshot = activeModelCatalogSnapshot(env);
   const entry = lane
     ? snapshot.entries.find((candidate) => candidate.id === canonicalModel)
     : undefined;
@@ -144,10 +145,14 @@ export function safeRuntimeModelRouteEvidence(
   };
 }
 
-/** Freeze only code-reviewed catalog inputs needed to recreate a hosted alias in a cold isolate. */
+/**
+ * Freeze only code-reviewed catalog inputs needed to recreate a hosted alias
+ * in a cold isolate, from `env`'s installation's active catalog.
+ */
 export function freezeRuntimeModelRoute(
   canonicalModel: string,
   providerAuthRoute: ProviderAuthRoute | undefined,
+  env?: PlatformEnv,
 ): FrozenRuntimeModelRoute | undefined {
   if (providerPrefix(canonicalModel) === 'openrouter') {
     return freezeOpenRouterRuntimeModelRoute(canonicalModel);
@@ -155,7 +160,7 @@ export function freezeRuntimeModelRoute(
   if (isCloudflareTarget() && providerPrefix(canonicalModel) === 'openai' && providerAuthRoute === 'openai_subscription') return { source: 'chatgpt_plan' };
   const lane = authLaneForCanonicalModel(canonicalModel, providerAuthRoute);
   if (!lane) return undefined;
-  const route = resolveActiveCatalogRoute(canonicalModel, lane);
+  const route = resolveActiveCatalogRoute(canonicalModel, lane, env);
   if (!route || route.source !== 'catalog' || route.snapshot.source !== 'hosted') return undefined;
   const entry = route.snapshot.entries.find((candidate) => candidate.id === canonicalModel);
   const profile = entry?.lanes[lane];
@@ -282,7 +287,7 @@ interface RuntimeModelDependencies {
     settings: SettingsStore,
   ) => Promise<void>;
   bindSubscription?: typeof bindOpenAiSubscriptionProvider;
-  loadCatalog?: (settings: SettingsStore) => Promise<ModelCatalogLoadResult>;
+  loadCatalog?: (settings: SettingsStore, env?: PlatformEnv) => Promise<ModelCatalogLoadResult>;
   resolveProviderKey?: typeof resolveProviderApiKey;
 }
 
@@ -325,9 +330,9 @@ export async function resolveRuntimeModel(
     // stored Node selection cannot cause Cloudflare auth or model egress.
     requireOpenAiSubscriptionAvailable();
   }
-  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings);
+  await (dependencies.loadCatalog ?? loadModelCatalog)(dependencies.settings, dependencies.env);
   if (providerId === 'anthropic') {
-    const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic');
+    const model = resolveApiKeyModelSpecifier(canonicalModel, 'anthropic', dependencies.env);
     await requireProviderKey('anthropic', dependencies);
     return { model };
   }
@@ -369,7 +374,7 @@ export async function resolveRuntimeModel(
 
   const authorization = openAiAuthorization ?? 'api_key';
   if (authorization === 'api_key') {
-    const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai');
+    const model = resolveApiKeyModelSpecifier(canonicalModel, 'openai', dependencies.env);
     await requireProviderKey('openai', dependencies);
     return { model, providerAuthRoute: 'openai_api_key' };
   }
@@ -377,7 +382,7 @@ export async function resolveRuntimeModel(
   // Reject malformed model ids before touching credentials. The provider then
   // validates safe ids against the account-scoped cached or live catalog.
   const modelId = canonicalModel.slice('openai/'.length);
-  const route = resolveActiveCatalogRoute(canonicalModel, 'openai_subscription');
+  const route = resolveActiveCatalogRoute(canonicalModel, 'openai_subscription', dependencies.env);
   if (!route) throw new OpenAiSubscriptionError('unsupported_model');
   const internalModel = openAiSubscriptionModelSpecifier(modelId, route);
   await (dependencies.bindSubscription ?? bindOpenAiSubscriptionProvider)({

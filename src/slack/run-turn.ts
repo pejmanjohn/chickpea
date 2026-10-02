@@ -2392,6 +2392,7 @@ async function createSlackShadowLifecycle(input: {
         input.canonicalModel,
         providerAuthRoute,
         input.assignment.modelCredential,
+        input.platformEnv,
       ),
       ...(input.resumeSettled ? { resumeSettled: true } : {}),
     }, {
@@ -2605,6 +2606,7 @@ async function freezeRuntimePlanForTurn(input: {
   const runtimeModelRoute = freezeRuntimeModelRoute(
     canonicalModel,
     runtimeModel.providerAuthRoute,
+    input.platformEnv,
   );
   const codingWorkspace = workspaceDecision.capability === 'available';
   const codingModel = codingWorkspace
@@ -2685,6 +2687,7 @@ export async function freezeCodingModelForTurn(input: {
       const runtimeModelRoute = freezeRuntimeModelRoute(
         canonicalModel,
         resolved.providerAuthRoute,
+        input.env,
       );
       return {
         runtimeModel: resolved.model,
