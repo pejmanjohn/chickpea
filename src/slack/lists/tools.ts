@@ -4,6 +4,7 @@ import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
 import type { ConfigStore } from '../../config/store.ts';
 import type { IdentityStore } from '../../identity/types.ts';
 import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
+import { deploymentTenancy } from '../../config/installation-scope.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -61,8 +62,9 @@ const fields = {
 export function createSlackListTools(resolve: (signal: AbortSignal | undefined) => Promise<SlackListsService>) {
   const execute = async (signal: AbortSignal | undefined, action: (service: SlackListsService) => Promise<JsonObject>) => {
     let output: JsonObject;
-    try { output = await action(await resolve(signal)); }
-    catch (error) { output = listToolFailure(error); }
+    let service: SlackListsService | undefined;
+    try { service = await resolve(signal); output = await action(service); }
+    catch (error) { output = listToolFailure(error, service?.hosted); }
     const serialized = JSON.stringify(output);
     return new TextEncoder().encode(serialized).byteLength <= 32_768 ? serialized : JSON.stringify({ status: 'result_unavailable', message: 'The result exceeds the tool limit. Do not repeat any write. Read a smaller page or the known item.' });
   };
@@ -120,7 +122,7 @@ export function useSlackListsTools(plan: RuntimePlanV2, resolveEnv: () => Promis
       credentialDependencies: getSlackCredentialResolutionDependencies(env),
       rejectRateLimitedCalls: true,
     });
-    return new SlackListsService({ workspaceId: signal.workspaceId, call: createSlackListsCall(installation.client), ledger: new ListWriteLedger(settings, signal.workspaceId, signal.turnJobId), admittedListIds: signal.admittedListIds, timezone: signal.requesterTimezone, signal: abort });
+    return new SlackListsService({ workspaceId: signal.workspaceId, call: createSlackListsCall(installation.client), ledger: new ListWriteLedger(settings, signal.workspaceId, signal.turnJobId), admittedListIds: signal.admittedListIds, timezone: signal.requesterTimezone, signal: abort, hosted: deploymentTenancy(env) === 'installation' });
   })) useTool(tool);
 }
 

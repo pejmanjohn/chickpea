@@ -43,7 +43,13 @@ export class SlackListsService {
     admittedListIds?: readonly string[] | undefined;
     timezone?: string | undefined;
     signal?: AbortSignal | undefined;
+    /** A hosted installation, whose Owner updates permissions from Admin. */
+    hosted?: boolean | undefined;
   }) {}
+
+  get hosted(): boolean {
+    return this.options.hosted === true;
+  }
 
   async readList(listUrl: string, cursor?: string, limit = 20): Promise<JsonObject> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 50 || (cursor?.length ?? 0) > 2_048) throw new SlackListError('invalid_page', 'Use a page size from 1 to 50 and a cursor returned by this List.');
@@ -163,7 +169,7 @@ export class SlackListsService {
       const code = errorCode(error);
       const failed = !acknowledged && (DEFINITE_FAILURES.has(code) || (error instanceof SlackTransportError && error.effectOutcome === 'failed') || code === 'cancelled_before_call' || code === 'call_budget');
       try { await this.options.ledger.finish(reservation.receipt, failed ? 'failed' : 'unknown', ids); } catch { /* The durable pending reservation still blocks redispatch. */ }
-      return { status: failed ? 'not_written' : 'unverified', code, ...ids, message: failed ? explainError(code) : 'This List write may have taken effect, but could not be fully verified. Do not repeat it. Inspect the known List/item; if a new List has no returned ID, its creation cannot be reconciled through these tools.', ...(error instanceof SlackListError ? error.context : {}) };
+      return { status: failed ? 'not_written' : 'unverified', code, ...ids, message: failed ? explainError(code, this.hosted) : 'This List write may have taken effect, but could not be fully verified. Do not repeat it. Inspect the known List/item; if a new List has no returned ID, its creation cannot be reconciled through these tools.', ...(error instanceof SlackListError ? error.context : {}) };
     }
   }
 
@@ -172,7 +178,7 @@ export class SlackListsService {
     this.calls++;
     const result = await this.options.call(method, input);
     if (result.ok !== true) {
-      if (result.ok === false && typeof result.error === 'string' && /^[a-z0-9_]{1,100}$/.test(result.error)) throw new SlackListError(result.error, explainError(result.error));
+      if (result.ok === false && typeof result.error === 'string' && /^[a-z0-9_]{1,100}$/.test(result.error)) throw new SlackListError(result.error, explainError(result.error, this.hosted));
       throw new SlackListError('invalid_response', 'Slack returned an invalid Lists response.');
     }
     return result;
@@ -189,9 +195,9 @@ export class SlackListsService {
   }
 }
 
-export function listToolFailure(error: unknown): JsonObject {
+export function listToolFailure(error: unknown, hosted = false): JsonObject {
   const code = errorCode(error);
-  return { status: 'not_written', code, message: error instanceof SlackListError ? error.message : explainError(code), ...(error instanceof SlackListError ? error.context : {}) };
+  return { status: 'not_written', code, message: error instanceof SlackListError ? error.message : explainError(code, hosted), ...(error instanceof SlackListError ? error.context : {}) };
 }
 
 function previousWrite(receipt: ListWriteReceipt): JsonObject {
@@ -207,8 +213,9 @@ function errorCode(error: unknown): string {
   return 'unknown_response';
 }
 
-function explainError(code: string): string {
+function explainError(code: string, hosted: boolean): string {
   if (['list_not_found', 'item_not_found', 'record_not_found', 'access_denied', 'permission_denied'].includes(code)) return 'The agent cannot access or edit this List/item. Check its link and Slack sharing permissions; no access was changed.';
+  if (code === 'missing_scope' && hosted) return 'This workspace has not given Chickpea the Slack Lists permissions yet. A Chickpea Owner can update them in Chickpea Admin. Ordinary chat can continue.';
   if (code === 'missing_scope') return 'This Slack installation needs the Lists read/write permissions. Its owner must update the app scopes and reinstall through the existing Slack setup flow. Ordinary chat can continue.';
   if (['operation_not_allowed', 'unknown_operation', 'unsupported_operation', 'gateway_http_404'].includes(code)) return 'This shared gateway does not support Slack Lists yet. Its operator must upgrade the gateway before Lists tools can work.';
   if (code === 'ratelimited') return 'Slack rate-limited this operation. No automatic retry was made.';

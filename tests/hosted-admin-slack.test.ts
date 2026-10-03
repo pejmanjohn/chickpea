@@ -19,6 +19,7 @@ import {
   invalidateSlackInstallationCredentialCache,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
+import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 
 const TOKEN = 'hosted-admin-slack-token';
@@ -127,7 +128,7 @@ test('a hosted installation\'s Slack card reports its bot and record, without th
   const credentials = { state: identity, keyring };
   await writeHostedSlackBotCredentials(credentials, null, {
     botToken: 'xoxb-hosted-card', botUserId: 'UBOT', appId: 'AHOSTED1', teamId: 'T_TEST',
-    grantedScopes: ['chat:write'], validatedAt: Date.now(),
+    grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES], validatedAt: Date.now(),
   });
   const created = await config.ensureWorkspaceInstallation({
     workspaceId: 'T_TEST', transportMode: 'direct', teamId: 'T_TEST', appId: 'AHOSTED1', botUserId: 'UBOT',
@@ -160,6 +161,7 @@ test('a hosted installation\'s Slack card reports its bot and record, without th
     healthDetail: 'events_verification_pending',
     gateway: null,
     hosted: true,
+    slackPermissions: { status: 'current', canUpdate: false, updatePath: null },
   });
   assert.deepEqual(tokens, ['Bearer xoxb-hosted-card'], 'the workspace name came from the installation\'s bot');
 

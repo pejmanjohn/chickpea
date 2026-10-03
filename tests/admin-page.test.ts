@@ -14142,6 +14142,105 @@ test('a hosted installation\'s Slack settings keep its bot and drop the controls
   assert.doesNotMatch(channel.app.innerHTML, /Signing secret/);
 });
 
+function hostedSlackWithPermissions(slackPermissions: Record<string, unknown> | undefined, hosted = true): SlackConnectionFixture {
+  return {
+    connected: true, health: 'healthy', healthDetail: null, transportMode: 'direct', gateway: null,
+    credentials: { botToken: 'stored', botUserId: 'stored' }, teamId: 'T_DESIGN', teamName: 'Acme Inc',
+    ...(hosted ? { hosted: true } : {}),
+    ...(slackPermissions ? { slackPermissions } : {}),
+  } as unknown as SlackConnectionFixture;
+}
+
+const SLACK_UPDATE_NEEDED = { status: 'update_needed', canUpdate: true, updatePath: '/start/reinstall' };
+const OWNER_SLACK_BAR = '</header><div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Updating keeps your Agents and settings as they are.</span><form method="post" action="/start/reinstall"><button type="submit" class="btn btn-primary btn-sm">Update in Slack</button></form></div><div class="body">';
+const ADMIN_SLACK_BAR = '</header><div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Ask a Chickpea Owner to update them.</span></div><div class="body">';
+const HOSTED_ADMIN = { selfHosted: false, browserOffered: false } as const;
+
+function slackBarCount(html: string): number {
+  return html.split('slack-permissions-bar').length - 1;
+}
+
+test('hosted Admin shows an Owner the Slack permissions bar with its one button, under the top bar on every page', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, installationOwner: true, initialPath: '/admin/channels', slackConnection: hostedSlackWithPermissions(SLACK_UPDATE_NEEDED),
+  });
+  await flushAsync();
+  assert.ok(harness.app.innerHTML.includes(OWNER_SLACK_BAR));
+  assert.equal(slackBarCount(harness.app.innerHTML), 1);
+  assert.doesNotMatch(harness.app.innerHTML, /lists:read|lists:write|slack-permissions-dismiss/);
+
+  // The same status gives the same bar on every page, render after render.
+  const click = harness.listeners.click;
+  assert.ok(click);
+  for (const action of ['open-settings', 'open-team', 'open-destinations', 'open-settings']) {
+    click({ target: actionTarget({ 'data-action': action }) });
+    await flushAsync();
+    assert.ok(harness.app.innerHTML.includes(OWNER_SLACK_BAR), action);
+    assert.equal(slackBarCount(harness.app.innerHTML), 1, action);
+  }
+});
+
+test('hosted Admin shows an Admin the Slack permissions bar without a button, and a Member nothing', async () => {
+  const admin = runAdminPageHarness({
+    ...HOSTED_ADMIN, installationOwner: false, initialPath: '/admin/channels',
+    slackConnection: hostedSlackWithPermissions({ ...SLACK_UPDATE_NEEDED, canUpdate: false }),
+  });
+  await flushAsync();
+  assert.ok(admin.app.innerHTML.includes(ADMIN_SLACK_BAR));
+  assert.doesNotMatch(admin.app.innerHTML, /action="\/start\/reinstall"|Update in Slack/);
+
+  const member = runAdminPageHarness({
+    ...HOSTED_ADMIN, installationOwner: false, workspaceAdminUi: false, initialPath: '/admin/agents',
+    slackConnection: hostedSlackWithPermissions(SLACK_UPDATE_NEEDED),
+  });
+  await flushAsync();
+  assert.equal(slackBarCount(member.app.innerHTML), 0);
+  assert.doesNotMatch(member.app.innerHTML, /new Slack permissions/);
+});
+
+test('the Slack permissions bar shows only for a hosted gap with an update path, and never on standalone', async () => {
+  for (const [label, options] of [
+    ['current', { ...HOSTED_ADMIN, slackConnection: hostedSlackWithPermissions({ ...SLACK_UPDATE_NEEDED, status: 'current' }) }],
+    ['unknown', { ...HOSTED_ADMIN, slackConnection: hostedSlackWithPermissions({ ...SLACK_UPDATE_NEEDED, status: 'unknown' }) }],
+    ['no host path', { ...HOSTED_ADMIN, slackConnection: hostedSlackWithPermissions({ status: 'update_needed', canUpdate: false, updatePath: null }) }],
+    ['cross-origin path', { ...HOSTED_ADMIN, slackConnection: hostedSlackWithPermissions({ ...SLACK_UPDATE_NEEDED, updatePath: '//evil.example/x' }) }],
+    ['no field', { ...HOSTED_ADMIN, slackConnection: hostedSlackWithPermissions(undefined) }],
+    ['standalone', { slackConnection: hostedSlackWithPermissions(SLACK_UPDATE_NEEDED, false) }],
+    ['standalone with a hosted payload', { slackConnection: hostedSlackWithPermissions(SLACK_UPDATE_NEEDED) }],
+  ] as const) {
+    const harness = runAdminPageHarness({ installationOwner: true, initialPath: '/admin/channels', ...options });
+    await flushAsync();
+    assert.equal(slackBarCount(harness.app.innerHTML), 0, label);
+    assert.doesNotMatch(harness.app.innerHTML, /new Slack permissions|Update in Slack/, label);
+  }
+});
+
+test('returning from a hosted Slack update shows the notice once and clears the URL; standalone ignores it', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, installationOwner: true, initialPath: '/admin/channels', initialSearch: '?slack=updated',
+    slackConnection: hostedSlackWithPermissions({ ...SLACK_UPDATE_NEEDED, status: 'current' }),
+  });
+  await flushAsync();
+  assert.ok(harness.app.innerHTML.includes('</header><div class="callout slack-permissions-bar" role="status"><span>Slack permissions updated.</span></div><div class="body">'));
+  assert.equal(slackBarCount(harness.app.innerHTML), 1, 'the notice, and no bar');
+  assert.ok(harness.historyReplaces.includes('/admin/channels'));
+  assert.ok(harness.historyReplaces.every((path) => !path.includes('slack=updated')));
+
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
+  await flushAsync();
+  assert.equal(slackBarCount(harness.app.innerHTML), 0, 'moving on ends the notice');
+
+  const standalone = runAdminPageHarness({
+    installationOwner: true, initialPath: '/admin/channels', initialSearch: '?slack=updated',
+  });
+  const baseline = runAdminPageHarness({ installationOwner: true, initialPath: '/admin/channels' });
+  await flushAsync();
+  assert.doesNotMatch(standalone.app.innerHTML, /Slack permissions updated|slack-permissions-bar/);
+  assert.deepEqual(standalone.historyReplaces, baseline.historyReplaces, 'standalone leaves the URL as it always has');
+});
+
 test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack',

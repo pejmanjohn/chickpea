@@ -157,6 +157,9 @@
     // authorization code, token, verifier, client secret, or provider error is
     // ever placed in the URL or this browser state.
     oauthReturn: null,
+    // Hosted only: the one-time notice after an Owner updated Chickpea's
+    // Slack permissions, read from `?slack=updated` at boot.
+    slackPermissionsUpdated: false,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -1044,7 +1047,10 @@
         adminSurfaceClass = " admin-surface admin-surface-channel-detail";
       }
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
-      app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
+      // The notice shows on the page the update returned to; moving to
+      // another page ends it.
+      if (resetPagePosition) state.slackPermissionsUpdated = false;
+      app.innerHTML = topbarHtml() + slackPermissionsBarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
     }
     restoreOpenDetails(app, openDetails);
     if (state.chatgptPlan.dialog) {
@@ -1500,6 +1506,26 @@
       (status.sandbox === null
         ? '<section class="environment-sandbox"><strong>Standalone Slack workspaces</strong><span>Amber and Cobalt have independent installations. Fern is inactive.</span></section>'
         : '<section class="environment-sandbox"><strong>Slack sandbox</strong><span>Archive: ' + esc(archive) + '</span><span>Recorded unused workspace slots: ' + esc(environmentStatusValue(sandbox.unusedWorkspaceSlots, "unavailable")) + '</span><span>Recorded integration headroom: ' + esc(environmentStatusValue(sandbox.integrationHeadroom, "unavailable")) + '</span><span>Capacity is a registry snapshot. Check Slack before creating a workspace.</span></section>') + '</div></details>';
+  }
+
+  // Hosted only. When this installation's Slack grant lacks permissions the
+  // hosted app now requests, Owners and Admins (Members never load Slack
+  // status) see one line on every page until an Owner updates it in Slack.
+  // Only an Owner gets the button, a plain form so the browser follows the
+  // host's redirect to Slack. It cannot be dismissed: it clears when the
+  // update lands.
+  function slackPermissionsBarHtml() {
+    if (SELF_HOSTED) return "";
+    var notice = state.slackPermissionsUpdated
+      ? '<div class="callout slack-permissions-bar" role="status"><span>Slack permissions updated.</span></div>'
+      : "";
+    var permissions = state.slack && state.slack.slackPermissions;
+    if (!permissions || permissions.status !== "update_needed" || typeof permissions.updatePath !== "string" || permissions.updatePath.charAt(0) !== "/" || permissions.updatePath.charAt(1) === "/") return notice;
+    if (!permissions.canUpdate) {
+      return notice + '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Ask a Chickpea Owner to update them.</span></div>';
+    }
+    return notice + '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Updating keeps your Agents and settings as they are.</span>' +
+      '<form method="post" action="' + esc(permissions.updatePath) + '"><button type="submit" class="btn btn-primary btn-sm">Update in Slack</button></form></div>';
   }
 
   function topbarHtml() {
@@ -17003,6 +17029,16 @@
       } catch (_) { state.openAiSubscription.error = "This setup request is invalid. Ask your coding agent to restart ChatGPT setup."; }
       planParams.delete("chatgpt_connect");
       history.replaceState(null, "", location.pathname + (planParams.toString() ? "?" + planParams.toString() : ""));
+    }
+  }
+  if (canNavigate && !SELF_HOSTED) {
+    // The host returns here after an Owner approved Chickpea's new Slack
+    // permissions. Show the notice once; a reload must not replay it.
+    var slackReturnParams = new URLSearchParams(location.search || "");
+    if (slackReturnParams.get("slack") === "updated") {
+      state.slackPermissionsUpdated = WORKSPACE_ADMIN_UI;
+      slackReturnParams.delete("slack");
+      history.replaceState(null, "", location.pathname + (slackReturnParams.toString() ? "?" + slackReturnParams.toString() : ""));
     }
   }
   var initialRoute = canNavigate ? location.pathname : "/admin";

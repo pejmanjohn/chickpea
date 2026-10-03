@@ -1824,6 +1824,10 @@ details[open].advanced summary::before {
   padding: 12px 14px;
 }
 .callout .g { color: var(--ember-deep); flex-shrink: 0; }
+.slack-permissions-bar { align-items: center; flex-wrap: wrap; margin: 10px 16px 0; }
+.slack-permissions-bar > span { flex: 1; min-width: 200px; }
+.slack-permissions-bar > form { margin: 0; }
+.primary-admin-shell > .slack-permissions-bar { margin: 16px 24px 0; }
 .tiny-label { color: var(--text-3); font-size: 0.6875rem; }
 
 /* ---- paired instruction+field block ---- */

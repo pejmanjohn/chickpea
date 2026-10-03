@@ -374,6 +374,7 @@ import {
   deploymentServesManyInstallations,
   deploymentTenancy,
   installationCacheKey,
+  requireInstallationScope,
 } from '../config/installation-scope.ts';
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
@@ -515,7 +516,13 @@ import {
 import { missingRequiredSlackBotScopes } from '../slack/scopes.ts';
 import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
 import {
+  evaluateSlackPermissions,
+  hostedSlackPermissionsUpdatePath,
+  type SlackPermissionsView,
+} from '../slack/hosted-permissions.ts';
+import {
   clearSlackInstallationCredentials,
+  readActiveSlackCredentialMetadata,
   resolveSlackInstallationCredentials,
   SlackInstallationCredentialRevisionError,
   type SlackCredentialDependencies,
@@ -10343,16 +10350,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             teamInfo = { teamId: installation.workspaceId, teamName: descriptor.teamName };
           }
         }
+        const connected = installation?.transportMode === 'direct' && credentials.botToken !== 'missing';
+        const health = installation?.health ?? 'pending';
         return c.json({
           credentials: { botToken: credentials.botToken, botUserId: credentials.botUserId },
-          connected: installation?.transportMode === 'direct' && credentials.botToken !== 'missing',
+          connected,
           teamId: installation?.workspaceId ?? connectedTeamId ?? null,
           teamName: teamInfo.teamName ?? null,
           transportMode: 'direct',
-          health: installation?.health ?? 'pending',
+          health,
           healthDetail: installation?.healthDetail ?? null,
           gateway: null,
           hosted: true,
+          slackPermissions: await hostedSlackPermissions(c, connected && health !== 'revoked' && health !== 'pending'),
         });
       }
       const directConnected =
@@ -10407,6 +10417,35 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return internalError(c, err);
     }
   });
+
+  // Whether a hosted installation's grant lacks scopes this build requests.
+  // Only a connected installation that is not revoked or still being set up
+  // is judged; the others keep their own Slack card copy.
+  const hostedSlackPermissions = async (c: Context, judged: boolean): Promise<SlackPermissionsView> => {
+    const principal = principalByContext.get(c);
+    const path = hostedSlackPermissionsUpdatePath();
+    const canUpdate = Boolean(path && principal && !principal.machine &&
+      permissionForRole(principal.role).has('auth.manage'));
+    if (!judged) return { status: 'unknown', canUpdate, updatePath: path };
+    const env = c.env as PlatformEnv | undefined;
+    const scope = requireInstallationScope(env);
+    const dependencies = slackCredentialResolutionDependencies(c) ?? settings(c);
+    const active = await readActiveSlackCredentialMetadata(slackInstallationCredentialId(env), env, dependencies);
+    const status = await evaluateSlackPermissions(
+      scope && active ? {
+        installationId: scope.installationId,
+        revision: active.revision,
+        grantedScopes: active.grantedScopes,
+        validatedAt: active.validatedAt,
+      } : undefined,
+      {
+        botToken: async () => (await resolveSlackCredentials(
+          env, settings(c), slackCredentialResolutionDependencies(c),
+        )).botToken,
+      },
+    );
+    return { status, canUpdate, updatePath: path };
+  };
 
   // Re-check the CURRENT effective bot token without changing any stored
   // identity. This is deliberately separate from the paste-back wizard:
