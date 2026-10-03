@@ -20,9 +20,10 @@ export const SLACK_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write'])
 export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope)));
 /**
  * Scopes the manifest no longer requests but older grants still hold. Slack
- * keeps a bot token's scopes across re-grants, so a scope removed from the
- * manifest returns on every existing installation's next reinstall or
- * recovery. List it here when removing it so those grants are not refused.
+ * is expected to keep a bot token's scopes across re-grants (to confirm live
+ * in H13b), so a scope removed from the manifest would return on every
+ * existing installation's next reinstall or recovery. List it here when
+ * removing it so those grants are not refused.
  */
 export const RETIRED_SLACK_BOT_SCOPES: readonly string[] = Object.freeze([]);
 

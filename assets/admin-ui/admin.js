@@ -1050,7 +1050,7 @@
       // The notice shows on the page the update returned to; moving to
       // another page ends it.
       if (resetPagePosition) state.slackPermissionsUpdated = false;
-      app.innerHTML = topbarHtml() + slackPermissionsBarHtml() + '<div class="body">' + railHtml() + mainHtml() + "</div>" + overlays;
+      app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + withSlackPermissionsBar(mainHtml()) + "</div>" + overlays;
     }
     restoreOpenDetails(app, openDetails);
     if (state.chatgptPlan.dialog) {
@@ -1514,13 +1514,21 @@
   // Only an Owner gets the button, a plain form so the browser follows the
   // host's redirect to Slack. It cannot be dismissed: it clears when the
   // update lands.
+  //
+  // It opens the main column rather than the page, so the desktop shell's
+  // sticky sidebar keeps the full viewport height.
+  function withSlackPermissionsBar(main) {
+    var bar = slackPermissionsBarHtml();
+    return bar ? main.replace(/^<main class="main"><div class="main-inner[^"]*">/, function (open) { return open + bar; }) : main;
+  }
+
   function slackPermissionsBarHtml() {
     if (SELF_HOSTED) return "";
     var notice = state.slackPermissionsUpdated
       ? '<div class="callout slack-permissions-bar" role="status"><span>Slack permissions updated.</span></div>'
       : "";
     var permissions = state.slack && state.slack.slackPermissions;
-    if (!permissions || permissions.status !== "update_needed" || typeof permissions.updatePath !== "string" || permissions.updatePath.charAt(0) !== "/" || permissions.updatePath.charAt(1) === "/") return notice;
+    if (!permissions || permissions.status !== "update_needed" || typeof permissions.updatePath !== "string" || !/^\/(?![/\\])/.test(permissions.updatePath)) return notice;
     if (!permissions.canUpdate) {
       return notice + '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Ask a Chickpea Owner to update them.</span></div>';
     }
@@ -17036,7 +17044,7 @@
     // permissions. Show the notice once; a reload must not replay it.
     var slackReturnParams = new URLSearchParams(location.search || "");
     if (slackReturnParams.get("slack") === "updated") {
-      state.slackPermissionsUpdated = WORKSPACE_ADMIN_UI;
+      if (WORKSPACE_ADMIN_UI) state.slackPermissionsUpdated = true;
       slackReturnParams.delete("slack");
       history.replaceState(null, "", location.pathname + (slackReturnParams.toString() ? "?" + slackReturnParams.toString() : ""));
     }

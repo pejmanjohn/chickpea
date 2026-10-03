@@ -8,7 +8,7 @@ import { missingRequestedSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES } from './sc
  * bar until then.
  *
  * The decision reads only the active credential revision's validated scopes
- * and the requested set compiled into this build, confirmed by one live
+ * and the requested set compiled into this build, confirmed by a live
  * `auth.test` while a gap exists. Runtime `missing_scope` errors never feed
  * it: they are per method and may name a scope Chickpea never requests, which
  * no update could clear.
@@ -24,7 +24,11 @@ export interface SlackPermissionsView {
 }
 
 export interface HostedSlackPermissionsUpdate {
-  /** A same-origin path, such as `/start/reinstall`. */
+  /**
+   * A same-origin path, such as `/start/reinstall`. Admin's plain form posts
+   * there without any Core token, so the host route must enforce Origin and
+   * the session itself.
+   */
   path: string;
 }
 
@@ -66,21 +70,29 @@ export interface SlackPermissionsCheckDependencies {
   botToken: () => Promise<string | undefined>;
   authTest?: typeof slackAuthTest;
   warn?: (entry: Record<string, unknown>) => void;
+  now?: () => number;
 }
 
 type SettledDecision = 'current' | 'update_needed';
 
+/**
+ * How long a gap Slack confirmed stands before Slack is asked again. Slack can
+ * hold scopes the host did not record, such as an approval by another Slack
+ * account, and only a live check sees them.
+ */
+const UPDATE_NEEDED_TTL_MS = 10 * 60_000;
 const MEMO_LIMIT = 1_000;
-const memo = new Map<string, SettledDecision>();
+const memo = new Map<string, { decision: SettledDecision; until: number }>();
 
 function memoKey(evidence: SlackPermissionsEvidence, requested: readonly string[]): string {
   const requestedSet = [...new Set(requested)].sort().join(',');
   return `${evidence.installationId}\u0000${evidence.revision}\u0000${requestedSet}`;
 }
 
-function remember(key: string, decision: SettledDecision): SettledDecision {
+function remember(key: string, decision: SettledDecision, until: number): SettledDecision {
+  memo.delete(key);
   if (memo.size >= MEMO_LIMIT) memo.delete(memo.keys().next().value as string);
-  memo.set(key, decision);
+  memo.set(key, { decision, until });
   return decision;
 }
 
@@ -92,8 +104,9 @@ export function resetSlackPermissionsMemo(): void {
 /**
  * Decide one installation's status. Its inputs change only with a release
  * (the requested set) or a reinstall (a new revision), and both move it
- * toward `current`; the live check can only remove a false positive. So the
- * same inputs always give the same answer and the bar cannot flap.
+ * toward `current`. The live check can only remove a false positive: `current`
+ * stands for the revision, and a confirmed gap is asked again after ten
+ * minutes. So the bar cannot flap.
  */
 export async function evaluateSlackPermissions(
   evidence: SlackPermissionsEvidence | undefined,
@@ -105,8 +118,9 @@ export async function evaluateSlackPermissions(
   const missing = missingRequestedSlackBotScopes(evidence.grantedScopes, requested);
   if (missing.length === 0) return 'current';
   const key = memoKey(evidence, requested);
+  const now = (dependencies.now ?? Date.now)();
   const settled = memo.get(key);
-  if (settled) return settled;
+  if (settled && now < settled.until) return settled.decision;
   let live: string[] | undefined;
   try {
     const token = await dependencies.botToken();
@@ -122,7 +136,7 @@ export async function evaluateSlackPermissions(
   if (live === undefined) return 'update_needed';
   const granted = new Set(live);
   const stillMissing = missing.filter((scope) => !granted.has(scope));
-  if (stillMissing.length > 0) return remember(key, 'update_needed');
+  if (stillMissing.length > 0) return remember(key, 'update_needed', now + UPDATE_NEEDED_TTL_MS);
   // Slack already holds every scope, for example from a grant the host
   // refused to record. The stored evidence is behind; say so to operators.
   (dependencies.warn ?? ((entry) => console.warn(JSON.stringify(entry))))({
@@ -131,5 +145,5 @@ export async function evaluateSlackPermissions(
     revision: evidence.revision,
     storedMissing: missing,
   });
-  return remember(key, 'current');
+  return remember(key, 'current', Infinity);
 }

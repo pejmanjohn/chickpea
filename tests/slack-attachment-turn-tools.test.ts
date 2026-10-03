@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { fauxAssistantMessage, fauxProvider, type Context } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from '@earendil-works/pi-ai';
 import { init, useDelivery, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
 import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  closeNodeStateStores, getConfigStore, getIdentityStore, getSlackCredentialDependencies, type PlatformEnv,
+} from '../src/config/state-backend.ts';
+import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
+import {
+  invalidateSlackInstallationCredentialCache, writeHostedSlackBotCredentials, writeSlackInstallationCredentials,
+} from '../src/slack/installation-credentials.ts';
+import { REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { parseSlackManagementSignal, useWorkspaceManagementSlackTools } from '../src/management/slack-tools.ts';
 import { parseCurrentRequestEnvelope, serializeCurrentRequestEnvelope } from '../src/memory/tool-policy.ts';
 import { parseSlackAttachmentIntake, useSlackAttachmentContext } from '../src/slack/attachment-context.ts';
@@ -15,6 +27,8 @@ import { createSlackPresentTableTool } from '../src/slack/table-presentation.ts'
 import { runtimePlanThreadImageInventory, slackDeliveryThreadImages } from '../src/agents/slack-thread.ts';
 import { serializeThreadImageRecords } from '../src/slack/thread-images.ts';
 import { SLACK_LISTS_INSTRUCTION, SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../src/slack/lists/tools.ts';
+import { withEnv } from './helpers/env.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const MODEL = 'faux/attachment-turn-tools';
 const WORKSPACE = 'T_UPLOAD';
@@ -263,4 +277,88 @@ test('the attachment analysis call reaches the provider tool-free while the uplo
   } finally {
     readableFile = undefined;
   }
+});
+
+const LISTS = { workspaceId: 'TLISTSGAP', channelId: 'CLISTSGAP', slackUserId: 'ULISTSGAP', botUserId: 'UBOTLISTS', appId: 'ALISTSGAP' } as const;
+let listsTurn: { plan: RuntimePlanV2; env: PlatformEnv | undefined } | undefined;
+
+/** The Lists tools alone, resolved the way ChickpeaSlack resolves them. */
+function ListsTurnProbe() {
+  useModel(MODEL);
+  useSlackListsTools(listsTurn!.plan, async () => listsTurn!.env);
+  return 'Answer the request.';
+}
+
+/** One read_slack_list call Slack refuses with missing_scope; returns the conversation the model sees next. */
+async function listsMissingScopeTurn(hosted: boolean): Promise<string> {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-lists-gap-'));
+  try {
+    return await withEnv({
+      TAG_DB_PATH: join(directory, 'state.sqlite'),
+      SLACK_STATE_DB_PATH: join(directory, 'state.sqlite'),
+      CHICKPEA_CREDENTIAL_KEYRING_PATH: join(directory, 'credential-keyring.json'),
+      SLACK_API_URL: undefined,
+    }, async () => {
+      closeNodeStateStores();
+      const env = hosted
+        ? scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_lists_gap' })
+        : undefined;
+      const owner = await createSlackOwner(getIdentityStore(env), { teamId: LISTS.workspaceId, userId: LISTS.slackUserId });
+      const config = getConfigStore(env);
+      await config.createAgent({ id: PLAN.agentId, name: 'Upload', instructions: 'Help', enabled: true, kind: 'user', skills: [], mcpServers: [], apiConnections: [], repositories: [] });
+      await config.putAgentChannelGrant({ workspaceId: LISTS.workspaceId, channelId: LISTS.channelId, agentId: PLAN.agentId, status: 'active', createdByMembershipId: owner.membership.id, channelLabel: 'lists' }, 0);
+      await config.ensureWorkspaceInstallation({ workspaceId: LISTS.workspaceId, transportMode: 'direct', teamId: LISTS.workspaceId, appId: LISTS.appId, botUserId: LISTS.botUserId });
+      const bot = { botToken: 'xoxb-lists-gap', botUserId: LISTS.botUserId, appId: LISTS.appId, teamId: LISTS.workspaceId };
+      if (hosted) {
+        await writeHostedSlackBotCredentials(getSlackCredentialDependencies(env), null, { ...bot, grantedScopes: [...REQUIRED_SLACK_BOT_SCOPES], validatedAt: Date.now() });
+      } else {
+        await writeSlackInstallationCredentials(getSlackCredentialDependencies(), WORKSPACE_SLACK_INSTALLATION_ID, null, { ...bot, signingSecret: 'lists-gap-signing-secret' });
+      }
+      listsTurn = {
+        plan: { ...PLAN, actorMembershipId: owner.membership.id, conversation: { ...PLAN.conversation, workspaceId: LISTS.workspaceId, channelId: LISTS.channelId } },
+        env,
+      };
+      const faux = fauxProvider({ models: [{ id: 'attachment-turn-tools' }] });
+      const captures: Context[] = [];
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall('read_slack_list', { listUrl: `https://example.slack.com/lists/${LISTS.workspaceId}/FEXISTING` })], { stopReason: 'toolUse' }),
+        (context: Context) => { captures.push(context); return fauxAssistantMessage('Done.'); },
+      ]);
+      const flue = await start({ agents: [{ agent: ListsTurnProbe, name: 'lists-turn-probe' }], providers: [faux.provider] });
+      try {
+        const message = slackMessage(false, false);
+        Object.assign(message.attributes, { workspaceId: LISTS.workspaceId, channelId: LISTS.channelId, slackUserId: LISTS.slackUserId });
+        const handle = init(ListsTurnProbe, { id: `lists-turn-probe-${probeRun += 1}` });
+        await handle.read(await handle.dispatch({ message }));
+      } finally {
+        await flue.stop();
+      }
+      assert.equal(captures.length, 1, 'the model saw the tool result');
+      return JSON.stringify(captures[0]!.messages);
+    });
+  } finally {
+    listsTurn = undefined;
+    closeNodeStateStores();
+    invalidateSlackInstallationCredentialCache();
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('a Lists permission gap points a hosted workspace to an Owner in Admin; standalone keeps its setup text', async (t) => {
+  const listCalls: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith('/auth.test')) {
+      return Response.json({ ok: true, app_id: LISTS.appId, team_id: LISTS.workspaceId, user_id: LISTS.botUserId, user: 'Chickpea' });
+    }
+    listCalls.push(new URL(url).pathname);
+    return Response.json({ ok: false, error: 'missing_scope' });
+  });
+  const hostedText = 'This workspace has not given Chickpea the Slack Lists permissions yet. A Chickpea Owner can update them in Chickpea Admin. Ordinary chat can continue.';
+  const standaloneText = 'This Slack installation needs the Lists read/write permissions. Its owner must update the app scopes and reinstall through the existing Slack setup flow. Ordinary chat can continue.';
+  const hosted = await listsMissingScopeTurn(true);
+  const standalone = await listsMissingScopeTurn(false);
+  assert.ok(listCalls.length > 0 && listCalls.every((path) => path.endsWith('/slackLists.items.list')), 'Slack refused the List read itself');
+  assert.deepEqual([hosted.includes(hostedText), hosted.includes(standaloneText)], [true, false], 'hosted');
+  assert.deepEqual([standalone.includes(standaloneText), standalone.includes(hostedText)], [true, false], 'standalone');
 });

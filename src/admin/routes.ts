@@ -10428,16 +10428,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       permissionForRole(principal.role).has('auth.manage'));
     if (!judged) return { status: 'unknown', canUpdate, updatePath: path };
     const env = c.env as PlatformEnv | undefined;
-    const scope = requireInstallationScope(env);
+    const { installationId } = requireInstallationScope(env)!;
     const dependencies = slackCredentialResolutionDependencies(c) ?? settings(c);
     const active = await readActiveSlackCredentialMetadata(slackInstallationCredentialId(env), env, dependencies);
     const status = await evaluateSlackPermissions(
-      scope && active ? {
-        installationId: scope.installationId,
+      active && {
+        installationId,
         revision: active.revision,
         grantedScopes: active.grantedScopes,
         validatedAt: active.validatedAt,
-      } : undefined,
+      },
       {
         botToken: async () => (await resolveSlackCredentials(
           env, settings(c), slackCredentialResolutionDependencies(c),

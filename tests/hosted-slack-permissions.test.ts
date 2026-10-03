@@ -44,13 +44,14 @@ function evidence(overrides: Partial<SlackPermissionsEvidence> = {}): SlackPermi
 }
 
 /** A fake `auth.test` that counts calls and answers with the given header scopes. */
-function liveSlack(answer: () => Partial<SlackAuthTestResult> | Error) {
+function liveSlack(answer: () => Partial<SlackAuthTestResult> | Error, now = () => 1_800_000_000_000) {
   const calls: string[] = [];
   const warnings: Array<Record<string, unknown>> = [];
   return {
     calls,
     warnings,
     dependencies: {
+      now,
       botToken: async () => 'xoxb-live',
       authTest: async (token: string): Promise<SlackAuthTestResult> => {
         calls.push(token);
@@ -97,7 +98,7 @@ test('a revision without validated scope evidence is unknown and asks Slack noth
   assert.deepEqual(slack.calls, [], 'no gap, no live check');
 });
 
-test('a gap Slack confirms needs an update, once per revision, and the same inputs always answer the same', async (t) => {
+test('a gap Slack confirms needs an update, asked once per revision for ten minutes', async (t) => {
   resetSlackPermissionsMemo();
   t.after(resetSlackPermissionsMemo);
   let live: string[] = WITHOUT_LISTS;
@@ -107,7 +108,7 @@ test('a gap Slack confirms needs an update, once per revision, and the same inpu
   }
   assert.equal(slack.calls.length, 1, 'one auth.test per installation and revision');
 
-  // Slack changing underneath a settled revision does not move the bar.
+  // Slack changing underneath a settled gap does not move the bar within its ten minutes.
   live = [...REQUESTED_SLACK_BOT_SCOPES];
   assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
   assert.equal(slack.calls.length, 1);
@@ -124,6 +125,38 @@ test('a gap Slack confirms needs an update, once per revision, and the same inpu
     'a release that stops requesting the missing scope clears it without asking Slack');
   assert.equal(slack.calls.length, 4);
   assert.deepEqual(slack.warnings, []);
+});
+
+test('after ten minutes one live auth.test re-decides a gap, so a grant Cloud did not record clears the bar', async (t) => {
+  resetSlackPermissionsMemo();
+  t.after(resetSlackPermissionsMemo);
+  let clock = 1_800_000_000_000;
+  let live: string[] = WITHOUT_LISTS;
+  const slack = liveSlack(() => ({ grantedScopes: live }), () => clock);
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
+  clock += 10 * 60_000 - 1;
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
+  assert.equal(slack.calls.length, 1, 'the gap stands for ten minutes');
+
+  clock += 1;
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
+  assert.equal(slack.calls.length, 2, 'a gap Slack still confirms stands for another ten minutes');
+  clock += 10 * 60_000 - 1;
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
+  assert.equal(slack.calls.length, 2);
+
+  // An Owner approved in Slack as another account: Slack holds the scopes, the revision does not.
+  live = [...REQUESTED_SLACK_BOT_SCOPES];
+  clock += 1;
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'current');
+  assert.equal(slack.calls.length, 3, 'one live auth.test re-decides');
+  assert.equal(slack.warnings.length, 1);
+
+  // `current` stands for the revision.
+  live = WITHOUT_LISTS;
+  clock += 60 * 60_000;
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'current');
+  assert.equal(slack.calls.length, 3);
 });
 
 test('a gap Slack does not confirm is current and logged for operators, without scope names reaching the view', async (t) => {
