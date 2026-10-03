@@ -162,7 +162,9 @@ app.post(GATEWAY_HTTP_PATH, (c) => {
   if (!isCloudflareTarget() || deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') return c.notFound();
   return handleHttpDeliveryRequest(c.req.raw, input => tagStateStub(c.env as PlatformEnv).receiveGatewayHttp(input));
 });
-// Admin's own gate and authentication reuse this read of auth control.
+// Recovery-only closes everything but Slack credential recovery and the paths
+// with their own bearer capability. Admin mounts the same gate; it and
+// authentication reuse this read.
 app.use('*', recoveryOnlyGate((c) => getIdentityStore(c.env as PlatformEnv | undefined)));
 // Starts the shared startup/periodic wake for durable compatibility TurnJobs
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off

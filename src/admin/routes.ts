@@ -599,7 +599,7 @@ import {
   type Permission,
 } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
-import { requestAuthControl as sharedRequestAuthControl } from '../auth/request-auth-control.ts';
+import { recoveryOnlyGate, requestAuthControl as sharedRequestAuthControl } from '../auth/request-auth-control.ts';
 import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
 import {
@@ -1874,16 +1874,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       // Immutable headers (pass-through asset responses) keep their shape.
     }
   }));
-  app.use('*', async (c, next) => {
-    // Deployment activation has its own short-lived bearer capability and
-    // must remain callable while an older release left Admin in recovery.
-    if (c.req.path === '/internal/deployment/ready' || c.req.path === '/internal/deployment/recover-delivery' || c.req.path === ENVIRONMENT_AUTHORITY_PATH) return next();
-    const control = await requestAuthControl(c);
-    if (control?.healthGate === 'recovery_only' &&
-        c.req.path !== '/admin/recovery' &&
-        c.req.path !== '/auth/slack/recovery/callback') return c.notFound();
-    return next();
-  });
+  // The recovery gate the application mounts first (src/app.ts), with the
+  // same exceptions; behind it, this one reuses its read.
+  app.use('*', recoveryOnlyGate(identity));
   const runtimeDrain = options.runtimeDrain ?? readRuntimeDrainStatus;
   const usageAdminUi = (c: Context): boolean => {
     if (options.usageAdminUi !== undefined) return options.usageAdminUi;
