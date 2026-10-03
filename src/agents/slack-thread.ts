@@ -65,6 +65,7 @@ import {
 import {
   getCachedInstallationToken,
   getGithubConnection,
+  mintableInstallation,
   githubErrorStatus,
   isGithubAppManagedHost,
   type GithubConnection,
@@ -414,7 +415,7 @@ export async function resolveRepositoryAccess(
 
   let connection: GithubConnection;
   try {
-    connection = await getGithubConnection(getSettingsStore(env));
+    connection = await getGithubConnection(getSettingsStore(env), env);
   } catch {
     console.warn('[chickpea] GitHub repository access skipped for this turn');
     return none(true);
@@ -422,12 +423,15 @@ export async function resolveRepositoryAccess(
 
   if (connection.mode === 'none') return none(true);
 
+  // Grouped by the installation each grant mints through: serving many
+  // installations, its account's binding, never the ID the grant stores.
   const byInstallation = new Map<number, RepositoryGrant[]>();
   for (const grant of enabled) {
-    if (grant.installationId === null) continue;
-    const grouped = byInstallation.get(grant.installationId) ?? [];
+    const installationId = mintableInstallation(connection, grant);
+    if (installationId === undefined) continue;
+    const grouped = byInstallation.get(installationId) ?? [];
     grouped.push(grant);
-    byInstallation.set(grant.installationId, grouped);
+    byInstallation.set(installationId, grouped);
   }
 
   const resolved = await Promise.all(
@@ -1803,7 +1807,7 @@ async function runtimePlanWorkspaceFacts(
     resolveSandboxSettings(envelope ? new TurnSettingsView(live, envelope) : live, env),
     envelope
       ? envelope.githubAppConnected
-      : getGithubConnection(live).then(
+      : getGithubConnection(live, env).then(
           (connection) => connection.mode === 'app',
           () => false,
         ),

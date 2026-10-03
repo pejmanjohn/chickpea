@@ -77,6 +77,7 @@ import {
   normalizeMetaAdsAccountIds,
 } from '../config/meta-ads-policy.ts';
 import { BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthAuthorizationAuthority } from '../config/oauth-authorization.ts';
 import { discoverMcpConnectionIdentity } from '../config/mcp-identity.ts';
@@ -576,7 +577,7 @@ export function createManagementSetupRoutes(
         try {
           await requireCurrentLegacySetupAuthority(principal, setup, dependencies.config);
           if (setup.action === 'repository_access') {
-            const github = await getGithubConnection(dependencies.settings);
+            const github = await getGithubConnection(dependencies.settings, dependencies.platformEnv);
             if (github.mode !== 'app') requirePermission(principal, 'admin.configure');
           }
         } catch {
@@ -911,6 +912,8 @@ export function createManagementSetupRoutes(
     if (!setup || !principal || setup.action !== 'repository_access' || !code || !state) {
       return genericDenied(c);
     }
+    // The host owns the platform GitHub App; no installation stores its own.
+    if (deploymentServesManyInstallations(dependencies.platformEnv)) return genericDenied(c);
     try {
       await requireCurrentLegacySetupAuthority(principal, setup, dependencies.config);
       requirePermission(principal, 'admin.configure');
@@ -964,8 +967,9 @@ export function createManagementSetupRoutes(
       const repositoryIndex = agent.repositories.findIndex(({ id }) => id === setup.target.repositoryId);
       if (repositoryIndex < 0) throw new Error('target_changed');
       const repository = agent.repositories[repositoryIndex]!;
-      const github = await getGithubConnection(dependencies.settings);
+      const github = await getGithubConnection(dependencies.settings, dependencies.platformEnv);
       if (github.mode !== 'app') throw new Error('github_not_connected');
+      // Serving many installations, only the installation's own binding for the repository's owner resolves.
       const installation = await getRepositoryInstallation(github, repository.fullName);
       if (!installation) throw new Error('repository_unavailable');
       const repositories = agent.repositories.slice();
@@ -2642,13 +2646,15 @@ async function beginRepositorySetup(
   principal: AuthPrincipal,
   dependencies: SetupDependencies,
 ): Promise<Response> {
-  const github = await getGithubConnection(dependencies.settings);
+  const github = await getGithubConnection(dependencies.settings, dependencies.platformEnv);
   if (github.mode === 'app') {
     return c.redirect(
       `/setup/${encodeURIComponent(setup.setupOperationId)}/repository/finish`,
       303,
     );
   }
+  // The host owns the platform GitHub App; an installation connects GitHub in Admin, never with its own App.
+  if (deploymentServesManyInstallations(dependencies.platformEnv)) throw new Error('github_not_connected');
   requirePermission(principal, 'admin.configure');
   const org = fields.organization?.trim() ?? '';
   if (org && !GITHUB_OWNER_PATTERN.test(org)) throw new Error('invalid_organization');

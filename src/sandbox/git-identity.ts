@@ -57,14 +57,16 @@ function shellQuote(value: string): string {
 
 /**
  * The installation's workspace identity: the GitHub App bot when it resolves,
- * otherwise the neutral Chickpea identity. Never throws.
+ * otherwise the neutral Chickpea identity. Never throws. Serving many
+ * installations, the bot is the platform App's, from the host (`env`).
  */
 export async function resolveWorkspaceGitIdentity(
   settings: SettingsStore,
   fetchImpl: typeof fetch = fetch,
+  env?: Record<string, unknown>,
 ): Promise<GitIdentity> {
   try {
-    const botUser = await resolveGithubAppBotUser(settings, fetchImpl);
+    const botUser = await resolveGithubAppBotUser(settings, fetchImpl, env);
     if (botUser) return githubAppBotGitIdentity(botUser.slug, botUser.id);
   } catch {
     // Settings or a malformed slug: commit under the neutral identity.

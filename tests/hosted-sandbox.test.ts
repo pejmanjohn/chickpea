@@ -11,6 +11,7 @@ import {
 } from '../src/agents/coding-worker-staging.ts';
 import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { configureHostedGithub, resetHostedGithubForTests } from '../src/config/hosted-github.ts';
 import { configureInstallationAdmission, resetInstallationAdmissionForTests } from '../src/config/installation-admission.ts';
 import {
   installationScopeOf,
@@ -309,14 +310,26 @@ function onCloudflare(t: TestContext) {
   }
 }
 
-test('hosted GitHub egress reads only its own installation\'s GitHub connection', async (t) => {
+test('hosted GitHub egress mints through its own installation\'s binding, never a tenant-stored App', async (t) => {
   admitted(t);
   onCloudflare(t);
   const privateKey = String(generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
     type: 'pkcs8', format: 'pem',
   }));
-  const appIds: Record<string, string> = { [INSTALLATION_A]: 'h12a-app-a', [INSTALLATION_B]: 'h12a-app-b' };
-  // Both installations' state stores, each holding its own GitHub App connection.
+  // The platform App, and each installation's own binding for its Acme account.
+  const bound: Record<string, number> = { [INSTALLATION_A]: 50_001, [INSTALLATION_B]: 60_002 };
+  resetHostedGithubForTests();
+  configureHostedGithub({
+    app: () => ({ appId: '700100', appSlug: 'chickpea-test', privateKeyPem: privateKey, botUserId: 700_200 }),
+    bindings: {
+      list: async (installationId) => [{ githubInstallationId: bound[installationId], accountLogin: 'Acme',
+        accountType: 'Organization', repositorySelection: 'all', status: 'active' }],
+      disconnect: async () => false,
+      reportGone() {},
+    },
+  });
+  t.after(() => resetHostedGithubForTests());
+  // Both installations' state stores, each holding an App a tenant wrote itself.
   const read: string[] = [];
   const TAG_STATE = {
     getByName(name: string) {
@@ -327,7 +340,7 @@ test('hosted GitHub egress reads only its own installation\'s GitHub connection'
           return {
             ok: true,
             value: keys.map((key) => key === GITHUB_SETTING_KEYS.appId
-              ? appIds[installationId] ?? null
+              ? 'tenant-app'
               : key === GITHUB_SETTING_KEYS.privateKey ? privateKey : null),
           };
         },
@@ -348,7 +361,8 @@ test('hosted GitHub egress reads only its own installation\'s GitHub connection'
   }) as typeof fetch;
   t.after(() => { globalThis.fetch = original; });
 
-  const grant = { id: 'repo_1', installationId: 50_001, accountLogin: 'Acme', fullName: 'Acme/Alpha', enabled: true };
+  // The grant stores another installation's ID; the binding decides.
+  const grant = { id: 'repo_1', installationId: 60_002, accountLogin: 'Acme', fullName: 'Acme/Alpha', enabled: true };
   const { env, calls } = egressEnv({ ...HOSTED, TAG_STATE }, {
     installationId: INSTALLATION_A, turnId: 'turn_a', policy: { grants: [grant], mode: 'app' },
   });
@@ -356,7 +370,7 @@ test('hosted GitHub egress reads only its own installation\'s GitHub connection'
   const response = await githubSandboxOutbound(new Request(url), env, { containerId: 'do_a' });
   assert.equal(response.status, 200);
   assert.deepEqual(calls, ['get:do_a', 'egressContext', 'getTurnId']);
-  assert.deepEqual(read, [INSTALLATION_A], 'installation A\'s connection, and never B\'s');
+  assert.deepEqual(read, [], 'no tenant-stored App is read');
   assert.deepEqual(minted, ['https://api.github.com/app/installations/50001/access_tokens']);
   assert.equal(forwarded.length, 1);
   assert.equal(forwarded[0]!.url, url);

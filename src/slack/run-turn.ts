@@ -2517,7 +2517,7 @@ export async function resolveCodingWorkspaceDecision(
     const settingsStore = store ?? getSettingsStore(env);
     const [settings, connection] = await Promise.all([
       resolveSandboxSettings(settingsStore, env),
-      getGithubConnection(settingsStore),
+      getGithubConnection(settingsStore, env),
     ]);
     return resolveCodingWorkspaceCapability({
       target: 'cloudflare',

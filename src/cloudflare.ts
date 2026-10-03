@@ -529,7 +529,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
    * Identity only; credentials never enter Git configuration.
    */
   async applyGitIdentity(): Promise<void> {
-    const identity = await resolveWorkspaceGitIdentity(getSettingsStore(this.env));
+    const identity = await resolveWorkspaceGitIdentity(getSettingsStore(this.env), fetch, this.env);
     const result = await this.exec(gitIdentityConfigCommand(identity));
     if (result.exitCode !== 0) throw new Error('Workspace Git identity was not applied');
   }

@@ -807,7 +807,7 @@ const REQUIRED_PACKAGE_ENTRIES = [
   'docs/runbooks/live-contract-verification.md',
 ];
 
-const REQUIRED_PACKAGED_FILES = [
+export const REQUIRED_PACKAGED_FILES = [
   '.agents/skills/chickpea-live-verification/SKILL.md',
   '.dev.vars.example',
   '.env.example',
@@ -877,6 +877,7 @@ const REQUIRED_PACKAGED_FILES = [
   'scripts/chickpea-local-worker.mjs',
   'scripts/lib/local-worker-lane.mjs',
   'slack-app-manifest.json',
+  'hosted-capabilities.json',
   'src/app.ts',
   'src/cloudflare.ts',
   'vite.config.ts',

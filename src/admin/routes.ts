@@ -238,6 +238,7 @@ import {
   type EgressPolicy,
 } from '../config/egress.ts';
 import {
+  connectionHoldsInstallation,
   createInstallationToken,
   consumeGithubSetupState,
   exchangeGithubAppManifest,
@@ -252,9 +253,11 @@ import {
   isValidRepositoryGrantShape,
   listInstallationRepos,
   listInstallations,
+  mintableInstallation,
   normalizePrivateKeyPem,
   saveGithubSetupState,
 } from '../config/github-app.ts';
+import { disconnectHostedGithubBinding, hostedGithubBindings } from '../config/hosted-github.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   discoverMcpConnectionIdentity,
@@ -1612,7 +1615,7 @@ async function sandboxStatus(
   // probe result keeps the binding's answer instead of inventing a failure.
   const [resolved, github, agents, containerApplication] = await Promise.all([
     resolveSandboxSettings(settingsStore, env as Record<string, unknown> | undefined),
-    getGithubConnection(settingsStore),
+    getGithubConnection(settingsStore, env),
     configStore.listUserAgents(),
     bound ? probeSandboxContainer(env) : null,
   ]);
@@ -7528,7 +7531,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/github/status', async (c) => {
     try {
-      const connection = await getGithubConnection(settings(c));
+      // Serving many installations: the installation's own bound accounts, never the App's full installation list.
+      const connection = await getGithubConnection(settings(c), c.env as PlatformEnv | undefined);
       // Agents holding grants are reported up front so the UI can warn
       // before a disconnect, not after (DELETE also reports, but too late).
       const referencingAgents = (await store(c).listUserAgents())
@@ -7669,9 +7673,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return invalidRequest(c);
     }
     try {
-      const connection = await getGithubConnection(settings(c));
+      const connection = await getGithubConnection(settings(c), c.env as PlatformEnv | undefined);
       if (connection.mode !== 'app') {
         return c.json({ error: 'github_not_configured' }, 409);
+      }
+      // Serving many installations, only an installation's own bound GitHub accounts are listed.
+      if (!connectionHoldsInstallation(connection, parsedId.output)) {
+        return c.json({ error: 'not_found' }, 404);
       }
       const page = await listInstallationRepos(
         connection,
@@ -7686,6 +7694,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         totalCount: page.totalCount,
         truncated: page.truncated,
       });
+    } catch (err) {
+      return internalError(c, err);
+    }
+  });
+
+  // Serving many installations, disconnect ends one of the installation's
+  // own bound GitHub accounts through the host, which removes the platform
+  // App from it. Standalone disconnects its whole App (DELETE /admin/api/github).
+  app.delete('/admin/api/github/installations/:id', async (c) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    if (!deploymentServesManyInstallations(platformEnv)) return c.notFound();
+    const parsedId = v.safeParse(githubInstallationIdSchema, c.req.param('id'));
+    if (!parsedId.success) return invalidRequest(c);
+    try {
+      const scope = requireInstallationScope(platformEnv);
+      if (!scope) return c.notFound();
+      const binding = (await hostedGithubBindings(scope.installationId))
+        .find((candidate) => candidate.githubInstallationId === parsedId.output);
+      if (!binding || !(await disconnectHostedGithubBinding(scope.installationId, parsedId.output))) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      const account = binding.accountLogin.toLowerCase();
+      const referencingAgents = (await store(c).listUserAgents())
+        .filter((agent) => agent.repositories.some((grant) => grant.accountLogin.toLowerCase() === account))
+        .map(({ id, name }) => ({ id, name }));
+      return c.json({ ok: true, referencingAgents });
     } catch (err) {
       return internalError(c, err);
     }
@@ -7739,6 +7773,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         },
       },
     };
+    const repositories = await platformRepositoryGrants(
+      settings(c), c.env as PlatformEnv | undefined, agent.repositories,
+    );
+    if (repositories === 'github_account_not_connected') return c.json({ error: repositories }, 400);
+    agent = { ...agent, repositories };
     await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
     const modelCompatibilityError = await activeCatalogCompatibilityError(
       agent.model,
@@ -7872,7 +7911,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return repositoryUnavailable();
       }
 
-      const connection = await getGithubConnection(settings(c));
+      const connection = await getGithubConnection(settings(c), c.env as PlatformEnv | undefined);
       if (connection.mode !== 'app') {
         return repositoryUnavailable();
       }
@@ -9226,6 +9265,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         );
       }
       const patch = toAgentPatch(parsed.output);
+      if (patch.repositories) {
+        const repositories = await platformRepositoryGrants(
+          settings(c), c.env as PlatformEnv | undefined, patch.repositories, current.repositories,
+        );
+        if (repositories === 'github_account_not_connected') return c.json({ error: repositories }, 400);
+        patch.repositories = repositories;
+      }
       if (parsed.output.handle !== undefined) {
         const requestedHandle = parsed.output.handle;
         const presence = current.slackPresence;
@@ -11727,10 +11773,11 @@ function isAdminPageGet(c: Context): boolean {
 // Standalone-only surfaces: first-run and manual setup, recovery, the Slack
 // app's install and sign-in, the gateway, deployment activation, the QA lane
 // environment bridge, the legacy configuration cutover, the ChatGPT plan
-// handoff, the browser (its Browserbase key and website logins), and the
-// request to install or remove the coding sandbox, which only whoever deploys
-// can complete. The host's policy owns the sandbox's runtime settings and
-// outbound access, so only their status stays served.
+// handoff, the browser (its Browserbase key and website logins), the request
+// to install or remove the coding sandbox, which only whoever deploys can
+// complete, and creating, storing or removing the deployment's own GitHub App
+// (the host owns the platform App). The host's policy owns the sandbox's
+// runtime settings and outbound access, so only their status stays served.
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11742,6 +11789,10 @@ const STANDALONE_ONLY_PREFIXES = [
   '/auth/chatgpt-plan',
   '/admin/api/browser',
   '/admin/api/sandbox/install',
+  // Creating and storing an installation's own GitHub App: its manifest and both setup callbacks.
+  '/admin/api/github/manifest',
+  '/admin/api/github/setup',
+  '/oauth/github/setup',
 ] as const;
 
 // Standalone-only surfaces inside paths that are otherwise served: an
@@ -11759,6 +11810,8 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   if ((method === 'PUT' || method === 'PATCH') && canonical === '/admin/api/sandbox/status') return true;
   // The host manages outbound access; only its managed policy stays readable.
   if (method !== 'GET' && method !== 'HEAD' && canonical === '/admin/api/egress') return true;
+  // The host's platform GitHub App is the only one: no installation removes it whole (it disconnects one account).
+  if (method === 'DELETE' && canonical === '/admin/api/github') return true;
   return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
     STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }
@@ -12071,6 +12124,39 @@ function toRepositories(
     ...(repository.allRepos !== undefined ? { allRepos: repository.allRepos } : {}),
     enabled: repository.enabled,
   }));
+}
+
+/**
+ * The repository grants a save stores. Standalone: as given. Serving many
+ * installations: each grant names its account's active binding as its
+ * installation, whatever ID the request sent, and a grant this save adds or
+ * changes that names an account the installation has not connected is
+ * refused. A grant left as stored keeps its account even while that account
+ * is disconnected, so saving an Agent never drops its selections.
+ */
+async function platformRepositoryGrants(
+  settingsStore: SettingsStore,
+  env: PlatformEnv | undefined,
+  grants: CustomAgentConfig['repositories'],
+  stored: CustomAgentConfig['repositories'] = [],
+): Promise<CustomAgentConfig['repositories'] | 'github_account_not_connected'> {
+  if (!deploymentServesManyInstallations(env) || grants.length === 0) return grants;
+  const connection = await getGithubConnection(settingsStore, env);
+  const saved: CustomAgentConfig['repositories'] = [];
+  for (const grant of grants) {
+    const installationId = mintableInstallation(connection, grant);
+    if (installationId !== undefined) {
+      saved.push({ ...grant, installationId });
+      continue;
+    }
+    const prior = stored.find(({ id }) => id === grant.id);
+    if (!prior || prior.accountLogin !== grant.accountLogin || prior.fullName !== grant.fullName ||
+        (prior.allRepos === true) !== (grant.allRepos === true) || prior.installationId !== grant.installationId) {
+      return 'github_account_not_connected';
+    }
+    saved.push({ ...prior, enabled: grant.enabled });
+  }
+  return saved;
 }
 
 function toWebsiteLogins(

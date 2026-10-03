@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { codingWorkerAdmission } from '../src/agents/coding-worker.ts';
-import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { configureHostedGithub, resetHostedGithubForTests } from '../src/config/hosted-github.ts';
 import {
   configureHostedSandboxPolicy,
   HOSTED_SANDBOX_POLICY_LAST_KNOWN_MS,
@@ -760,17 +760,24 @@ test('hosted GitHub egress refuses an installation\'s write past its rate before
     if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
     else Reflect.deleteProperty(globalThis, 'navigator');
   });
-  for (const name of ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY']) {
-    const previous = process.env[name];
-    delete process.env[name];
-    t.after(() => { if (previous !== undefined) process.env[name] = previous; });
-  }
   const privateKey = String(generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  // The platform App, with each installation's own binding for its acme account.
+  const bound = { [INSTALLATION_A]: 50_001, [INSTALLATION_B]: 50_002 } as Record<string, number>;
+  resetHostedGithubForTests();
+  configureHostedGithub({
+    app: () => ({ appId: '700100', appSlug: 'chickpea-test', privateKeyPem: privateKey, botUserId: 700_200 }),
+    bindings: {
+      list: async (installationId) => [{ githubInstallationId: bound[installationId], accountLogin: 'acme', accountType: 'Organization',
+        repositorySelection: 'all', status: 'active' }],
+      disconnect: async () => false,
+      reportGone() {},
+    },
+  });
+  t.after(() => resetHostedGithubForTests());
   const spent = JSON.stringify({ writes: Array.from({ length: GITHUB_WRITES_PER_WINDOW }, () => Date.now()), pullRequests: [] });
-  const github = { [GITHUB_SETTING_KEYS.appId]: 'h12b-app', [GITHUB_SETTING_KEYS.privateKey]: privateKey };
   const state = await tagState(t, {
-    [INSTALLATION_A]: { ...github, [GITHUB_WRITES_KEY]: spent },
-    [INSTALLATION_B]: github,
+    [INSTALLATION_A]: { [GITHUB_WRITES_KEY]: spent },
+    [INSTALLATION_B]: {},
   });
   const minted: string[] = [];
   const forwarded: string[] = [];
@@ -802,6 +809,7 @@ test('hosted GitHub egress refuses an installation\'s write past its rate before
     { containerId: 'do_a' })).status, 200, 'reads go on');
   assert.equal((await githubSandboxOutbound(push(), env(INSTALLATION_B), { containerId: 'do_b' })).status, 200,
     'another installation\'s writes go on');
+  assert.deepEqual((minted as string[]).map((url) => url.split('/').at(-2)), ['50001', '50002'], 'each through its own binding');
   const countedB = JSON.parse(String(await state.store(INSTALLATION_B).getSetting(GITHUB_WRITES_KEY))) as { writes: number[] };
   assert.equal(countedB.writes.length, 1);
   assert.deepEqual(forwarded, [
