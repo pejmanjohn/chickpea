@@ -4,6 +4,9 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import type { WebClient } from '@slack/web-api';
+import ts from 'typescript';
+
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { createSlackTurnInput, stageSlackTurnInputOnAgentObject } from '../src/agents/turn-input.ts';
@@ -14,21 +17,26 @@ import {
   scopedObjectName,
   scopeInstallationEnv,
 } from '../src/config/installation-scope.ts';
+import type { AppStores } from '../src/config/state-backend.ts';
 import { tagStateStub } from '../src/config/state-rpc.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { RoutineStoreLogic } from '../src/routines/store.ts';
 import type { RoutineConfirmationDraft } from '../src/routines/types.ts';
 import { CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
+import { runTurn } from '../src/slack/run-turn.ts';
 import { slackAgentThreadKey } from '../src/slack/thread-key.ts';
 import { threadRunnerStub } from '../src/slack/thread-runner-rpc.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import { promisify } from '../src/state/async-facade.ts';
 import { InstallationObjectInventoryLogic } from '../src/state/object-inventory.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { attachStateDb } from '../src/state/schema-lifecycle.ts';
 import { opaqueId } from '../src/work/admission.ts';
+import type { RunId } from '../src/work/types.ts';
 import { hostedInstallation, type HostedInstallation } from './helpers/installation-objects.ts';
 
 /**
@@ -117,6 +125,17 @@ function inventoryNames(installation: HostedInstallation): Set<string> {
     cursor = page.nextCursor;
   } while (cursor);
   return names;
+}
+
+/** The installation's stores as a turn inside its state store reaches them. */
+function promisifiedAppStores(installation: HostedInstallation): AppStores {
+  const port = <L extends object>(logic: L) => promisify(logic, { close: () => undefined });
+  const { stores } = installation;
+  return {
+    identity: port(stores.identity), config: port(stores.config), snapshots: port(stores.snapshots),
+    slackState: port(stores.slack), settings: port(stores.settings), memory: port(stores.memory),
+    routines: port(stores.routines), usage: port(stores.usage), work: port(stores.work), management: port(stores.management),
+  } as unknown as AppStores;
 }
 
 /** Run one Slack turn the way an executor does, addressing objects through the real addressing functions. */
@@ -299,6 +318,109 @@ test('the backfill recovers the names that survive from before the inventory, an
   assert.deepEqual(installation.stores.objectInventory.backfill(), backfill, 'a repeat changes nothing');
 });
 
+test('an approval typed after the thread passed to a new Agent leaves no Flue instance the inventory cannot name', async () => {
+  // Hosted run 4: Chickpea created an Agent in its DM, the thread passed to
+  // that Agent (owner incarnation 2), and the person typed "approve". The
+  // host applied the proposal without a Flue instance, yet the Work ledger
+  // gave the execution a reference made up from Chickpea's thread key: a
+  // census counted it as residue that erasure could not reach.
+  const installation = hostedInstallation('inst_inventory_approval', recordingBindings().bindings);
+  const root = '1800000001.000100';
+  const chickpea = assignment(CHICKPEA_AGENT_ID, { channelId: DM });
+  const dmTurn = (messageTs: string, text: string): NormalizedSlackTurn => turn({
+    messageTs, threadTs: root, channelId: DM, source: 'dm_message', channelType: 'im', contextMode: 'dm_history', text,
+  });
+  await runSlackTurn(installation, {
+    id: 'tj_create', evtKey: 'evt:create', msgKey: 'msg:create',
+    turn: dmTurn(root, 'Create a tips Agent with a weekly schedule'), assignment: chickpea,
+  });
+  // The handoff: the thread's route names the new Agent, its second owner.
+  installation.db.exec('PRAGMA foreign_keys = OFF');
+  installation.db.run(
+    `INSERT INTO config_agent_thread_routes (workspace_id, channel_id, thread_ts, agent_id, agent_generation,
+       owner_incarnation, revision, updated_at) VALUES (?, ?, ?, 'agent_tips', 1, 2, 1, ?)`,
+    TEAM, DM, root, NOW,
+  );
+  installation.db.exec('PRAGMA foreign_keys = ON');
+
+  const approve: NormalizedSlackTurn = {
+    ...dmTurn('1800000001.000300', 'approve'),
+    actorMembershipId: 'membership_owner',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    managementApprovalProposalId: 'proposal_tips_schedule',
+  };
+  const work = promisify(installation.stores.work, { close: () => undefined });
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn: approve, assignment: chickpea, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const delivered: string[] = [];
+  const client = {
+    chat: {
+      postMessage: async (input: { text: string }) => {
+        delivered.push(input.text);
+        return { ok: true, channel: DM, ts: '1800000001.000400' };
+      },
+    },
+  } as unknown as WebClient;
+  await runTurn(approve, chickpea, installation.env, {
+    client,
+    turnId: 'tj_approve',
+    runId: admitted.run.id,
+    workStore: work,
+    settingsStore: promisify(installation.stores.settings, { close: () => undefined }),
+    publicUrl: null,
+    usageRecordingEnabled: false,
+    agentPrompt: async () => assert.fail('an approval never reaches the Agent'),
+    invokeManagementApproval: async () => ({ kind: 'message', text: 'Applied the approved changes.' }),
+  });
+  assert.deepEqual(delivered, ['Applied the approved changes.']);
+  const [execution, ...others] = await work.listRunExecutions(admitted.run.id as RunId);
+  assert.deepEqual(others, []);
+  assert.equal(execution?.rawSettlementStatus, 'host_management_approval_succeeded');
+  assert.equal(execution?.flueInstanceRef, null, 'the host ran no Flue instance');
+
+  // Every Flue instance the Work ledger references is one the inventory names.
+  const named = new Set([...inventoryNames(installation)]
+    .filter((name) => /^(slack_agent|routine_agent):/.test(name))
+    .map((name) => opaqueId('flueinstance', name.slice(name.indexOf(':') + 1))));
+  const referenced = installation.db.all('SELECT flue_instance_ref FROM run_executions WHERE flue_instance_ref IS NOT NULL')
+    .map((row) => String(row.flue_instance_ref));
+  assert.deepEqual(referenced.filter((ref) => !named.has(ref)), []);
+  assert.equal(installation.stores.objectInventory.backfill().unknownResidue, 0);
+
+  // An approval an earlier release ran kept that made-up reference: still no residue.
+  installation.db.exec('PRAGMA foreign_keys = OFF');
+  installation.db.run(
+    `INSERT INTO run_executions (id, run_id, attempt_number, fencing_token, executor_kind, agent_name,
+       flue_instance_ref, canonical_model, model_invocation_status, started_at, finished_at, raw_settlement_status, outcome)
+     VALUES ('rexec_legacy_approval', 'run_legacy_approval', 1, 1, 'agent', ?, ?, 'm', 'not_invoked', ?, ?,
+       'host_management_approval_succeeded', 'succeeded')`,
+    CHICKPEA_AGENT_ID, opaqueId('flueinstance', slackAgentThreadKey(approve, chickpea)), NOW, NOW,
+  );
+  installation.db.exec('PRAGMA foreign_keys = ON');
+  assert.equal(installation.stores.objectInventory.backfill().unknownResidue, 0);
+});
+
+test('a hosted turn never freezes a runtime plan its recording store did not', async () => {
+  const installation = hostedInstallation('inst_inventory_unrecorded', recordingBindings().bindings);
+  const job = slackWorkload()[1]!;
+  let prompted = false;
+  await assert.rejects(
+    runTurn(job.turn, job.assignment, installation.env, {
+      client: {} as WebClient,
+      turnId: job.id,
+      publicUrl: null,
+      usageRecordingEnabled: false,
+      settingsStore: promisify(installation.stores.settings, { close: () => undefined }),
+      appStores: promisifiedAppStores(installation),
+      agentPrompt: async () => { prompted = true; throw new Error('not reached'); },
+    }),
+    (error: unknown) => error instanceof InstallationContextError && /record its runtime plan/.test(error.message),
+  );
+  assert.equal(prompted, false);
+  assert.equal(installation.stores.objectInventory.counts().slack_agent, 0);
+});
+
 test('standalone keeps no inventory and records nothing', () => {
   const db = openStateDb(':memory:');
   try {
@@ -456,5 +578,97 @@ test('every Durable Object addressing site in Core is covered by the inventory o
     found,
     Object.fromEntries(Object.entries(ADDRESSING_SITES).map(([file, { sites }]) => [file, [...sites]])),
     'record a new addressing site\'s names in the object inventory, then list it here',
+  );
+});
+
+/**
+ * Every place Core names a Flue instance: derives one from a runtime plan,
+ * or references one in the Work ledger. A name is safe only when it comes
+ * from a plan its recording store froze (TurnJobStore.freezeRuntimePlan) or
+ * an envelope its store persisted, both recorded in the inventory first. A
+ * reference made up from anything else (a thread key, a fallback) names an
+ * object nothing recorded: a census counts it as residue erasure cannot
+ * reach. A new site, or a site whose code changes, fails here until it is
+ * listed again with what records its name.
+ */
+const FLUE_INSTANCE_NAMING_SITES: Record<string, { covered: string; sites: readonly string[] }> = {
+  'slack/turn-jobs.ts': {
+    covered: 'recorded in the transaction that freezes the plan',
+    sites: ['freezeRuntimePlan: deriveRuntimePlanInstanceId(plan)'],
+  },
+  'slack/run-turn.ts': {
+    covered: 'standalone only: a hosted turn without the recording store is refused before this',
+    sites: [
+      "createSlackShadowLifecycle input: opaqueId('flueinstance', runtimePlanDecision.instanceId)",
+      'freezeRuntimePlanForTurn: deriveRuntimePlanInstanceId(candidate)',
+    ],
+  },
+  'agents/turn-input.ts': {
+    covered: 'compares a staged plan with the instance it was staged for; names nothing',
+    sites: ['resolveSlackTurnRenderInput: deriveRuntimePlanInstanceId(input.initialData)'],
+  },
+  'routines/execution.ts': {
+    covered: "the attempt envelope's instance, recorded with the envelope",
+    sites: ["createWorkExecutionLifecycle input: opaqueId('flueinstance', envelope.instanceId)"],
+  },
+  'work/trace-correlation.ts': {
+    covered: "a log correlation of a running Flue instance's own observation",
+    sites: ["emitRuntimeCorrelation: opaqueId('flueinstance', observation.instanceId)"],
+  },
+};
+
+test('every Flue instance Core names comes from a recorded plan or envelope, never a fallback', () => {
+  const sourceRoot = join(ROOT, 'src');
+  const found: Record<string, string[]> = {};
+  const enclosing = (node: ts.Node, source: ts.SourceFile): string => {
+    for (let current = node.parent; current; current = current.parent) {
+      if ((ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) && current.name) {
+        return current.name.getText(source);
+      }
+      // An argument object of a named call (`createX({ ... })`).
+      if (ts.isObjectLiteralExpression(current) && ts.isCallExpression(current.parent) &&
+          ts.isIdentifier(current.parent.expression)) {
+        return `${current.parent.expression.text} input`;
+      }
+      if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name) &&
+          (ts.isArrowFunction(current.initializer!) || ts.isFunctionExpression(current.initializer!))) {
+        return current.name.text;
+      }
+    }
+    return '(module)';
+  };
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory)) {
+      const path = join(directory, entry);
+      if (statSync(path).isDirectory()) { walk(path); continue; }
+      if (!path.endsWith('.ts')) continue;
+      const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      const visit = (node: ts.Node) => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+          const [first, second] = node.arguments;
+          const site = node.expression.text === 'deriveRuntimePlanInstanceId'
+            ? `deriveRuntimePlanInstanceId(${node.arguments.map((arg) => arg.getText(source)).join(', ')})`
+            : node.expression.text === 'opaqueId' && first && ts.isStringLiteral(first) && first.text === 'flueinstance'
+              ? `opaqueId('flueinstance', ${second?.getText(source) ?? ''})`
+              : undefined;
+          if (site) {
+            (found[relative(sourceRoot, path)] ??= []).push(`${enclosing(node, source)}: ${site}`);
+            // A Work ledger reference names exactly one recorded instance: no fallback, no computed key.
+            if (site.startsWith('opaqueId')) {
+              assert.match(second?.getText(source) ?? '', /^[A-Za-z_]\w*(?:\.\w+)*\.instanceId$/,
+                `${relative(sourceRoot, path)} references a Flue instance it did not take from a recorded plan or envelope`);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+  };
+  walk(sourceRoot);
+  assert.deepEqual(
+    found,
+    Object.fromEntries(Object.entries(FLUE_INSTANCE_NAMING_SITES).map(([file, { sites }]) => [file, [...sites]])),
+    'take a new Flue instance name from a recorded plan or envelope, then list it here',
   );
 });

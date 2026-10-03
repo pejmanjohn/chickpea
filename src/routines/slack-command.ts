@@ -30,6 +30,12 @@ import {
   type RoutineStore,
 } from './types.ts';
 
+// The schedule tool refuses a create, or an edit of the current version
+// that changes the task, with this same sentence before the action is
+// recorded, so the Agent sees one wording either way.
+export const ROUTINE_CONNECTIONS_REQUIRED_MESSAGE =
+  'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.';
+
 export type SlackScheduleCommand =
   | {
       kind: 'save';
@@ -204,8 +210,7 @@ export async function executeSlackScheduleCommand(
     const created = !command.routineId && !priorCreate;
     if (command.requiredConnectionAccountIds === undefined && (!existing ||
         normalizeAuthorityText(command.taskText) !== normalizeAuthorityText(existing.taskText))) {
-      throw new RoutineStateError('routine_connections_required',
-        'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.');
+      throw new RoutineStateError('routine_connections_required', ROUTINE_CONNECTIONS_REQUIRED_MESSAGE);
     }
     if (command.requiredConnectionAccountIds === undefined && existing?.authorityBindingVersion !== undefined) {
       const reference = await dependencies.config.getAgentScheduleReference(existing.id);

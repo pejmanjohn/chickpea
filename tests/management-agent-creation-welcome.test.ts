@@ -125,6 +125,22 @@ test('one unique corpus match may follow explicit actions but ambiguous inferenc
   assert.deepEqual(negated.candidates, []);
 });
 
+test('a connector is inferred from its name or alias in the Agent\'s prose, never from a bare preset id that is an ordinary word', async () => {
+  // Hosted run 4: a cooking-tips Agent posting "every Monday" was offered "Connect Monday.com".
+  const weekday = await selectAgentCreationConnectors({
+    requestText: 'Create HR4 Tips with a weekly schedule.',
+    explicitMentions: [],
+    agentCorpus: 'HR4 Tips posts one cooking tip every Monday at 9:00 AM.',
+  });
+  assert.deepEqual(weekday.candidates, []);
+  const named = await selectAgentCreationConnectors({
+    requestText: 'Create a boards Agent.',
+    explicitMentions: [],
+    agentCorpus: 'Tracks boards in Monday.com every Monday.',
+  });
+  assert.deepEqual(named.candidates.map(({ presetId, source }) => [presetId, source]), [['monday', 'inferred']]);
+});
+
 test('ambiguous aliases produce a notice and no action', async () => {
   const catalog = [
     { id: 'alpha', name: 'Alpha', aliases: ['Shared'], description: '', category: 'docs', accent: '#000', managedToolkit: 'alpha', providerId: 'alpha' },

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { formatRoutineLocalDateTime, routineNextRunTime } from '../src/routines/message-format.ts';
 import test from 'node:test';
 
+import { ManagementError } from '../src/management/types.ts';
 import {
   scheduleActionToolResult,
   scheduleToolOperation,
@@ -30,6 +31,7 @@ test('natural five-minute follow-up arguments become fresh private thread work',
     minutes: 5,
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post_on_change',
+    requiredConnectionAccountIds: [],
   }), {
     itemId: 'schedule',
     kind: 'save_routine',
@@ -42,6 +44,7 @@ test('natural five-minute follow-up arguments become fresh private thread work',
     schedule: { kind: 'in', minutes: 5 },
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post_on_change',
+    requiredConnectionAccountIds: [],
   });
 });
 
@@ -60,6 +63,7 @@ test('recurring and run-now arguments use the same first-class schedule action',
     cronExpression: '0 9 * * *',
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post',
+    requiredConnectionAccountIds: [],
   }), {
     itemId: 'schedule',
     kind: 'save_routine',
@@ -72,6 +76,7 @@ test('recurring and run-now arguments use the same first-class schedule action',
     schedule: { kind: 'cron', expression: '0 9 * * *' },
     timezone: 'America/Los_Angeles',
     outputPolicy: 'post',
+    requiredConnectionAccountIds: [],
   });
   assert.deepEqual(scheduleToolOperation(signal, {
     action: 'run',
@@ -172,7 +177,7 @@ test('saved Channel acknowledgements identify the actual delivery destination', 
 
 test('create accepts omitted nonessential description and partial edit leaves fields unset', () => {
   const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', conversationKind: 'im' } as const;
-  const created = scheduleToolOperation(signal as never, { action: 'create', name: 'TOEFL update', taskText: 'Report TOEFL bookings using SQL Dash.', scheduleKind: 'in', minutes: 5 });
+  const created = scheduleToolOperation(signal as never, { action: 'create', name: 'TOEFL update', taskText: 'Report TOEFL bookings using SQL Dash.', scheduleKind: 'in', minutes: 5, requiredConnectionAccountIds: [] });
   assert.ok(created.kind === 'save_routine');
   assert.equal(created.description, '');
   const edited = scheduleToolOperation(signal as never, { action: 'edit', routineId: 'routine_test', expectedVersion: 2, minutes: 10, scheduleKind: 'in' });
@@ -193,4 +198,21 @@ test('schedule tools carry explicit account choices and preserve omission on met
   const renamed = scheduleToolOperation(signal, { action: 'edit', routineId: 'routine_test', expectedVersion: 1, name: 'Renamed' });
   assert.ok(renamed.kind === 'save_routine');
   assert.equal(renamed.requiredConnectionAccountIds, undefined);
+});
+
+test('new scheduled work without its connection choice is refused before anything is recorded, so the Agent can correct it', () => {
+  // Hosted run 4: Chickpea created an Agent with a weekly schedule, the save
+  // refused the omission after the action was recorded, and the requester got
+  // "I couldn't complete that scheduled-work action." instead of the schedule.
+  assert.throws(
+    () => scheduleToolOperation({ ...signal, agentId: 'agent_chickpea' }, {
+      action: 'create', ownerAgentId: 'agent_tips', name: 'Weekly tip', taskText: 'Post one cooking tip.',
+      scheduleKind: 'cron', cronExpression: '0 9 * * 1', timezone: 'America/Los_Angeles',
+    }),
+    (error: unknown) => error instanceof ManagementError && error.code === 'invalid_request' &&
+      /requiredConnectionAccountIds/.test(error.message) && /use \[\] when no connection is needed/.test(error.message),
+  );
+  // An edit that leaves the task alone keeps the saved choice.
+  assert.equal(scheduleToolOperation(signal, { action: 'edit', routineId: 'routine_tip', expectedVersion: 1, cronExpression: '0 10 * * 1',
+    scheduleKind: 'cron' }).kind, 'save_routine');
 });

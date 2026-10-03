@@ -244,7 +244,12 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     return { recovered, unknownResidue: this.unknownResidue() };
   }
 
-  /** Flue instances the Work ledger saw run that the inventory cannot name; runners are not counted. */
+  /**
+   * Flue instances the Work ledger saw run that the inventory cannot name;
+   * runners are not counted. An approval the host applied ran no Flue
+   * instance: releases before this one still gave its execution a
+   * reference, made up from its thread key, that names no object.
+   */
   private unknownResidue(): number {
     if (!this.hasTable('run_executions')) return 0;
     const known = new Set(this.db.all(
@@ -252,7 +257,9 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     ).map((row) => flueInstanceRef(String(row.name))));
     let residue = 0;
     for (const row of this.db.all(
-      'SELECT DISTINCT flue_instance_ref FROM run_executions WHERE flue_instance_ref IS NOT NULL',
+      `SELECT DISTINCT flue_instance_ref FROM run_executions
+       WHERE flue_instance_ref IS NOT NULL
+         AND raw_settlement_status IS NOT 'host_management_approval_succeeded'`,
     )) {
       if (!known.has(String(row.flue_instance_ref))) residue += 1;
     }

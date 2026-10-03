@@ -44,7 +44,11 @@ import {
 } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { installationRefusesWork } from '../config/installation-admission.ts';
-import { deploymentServesManyInstallations, installationOwnershipOf } from '../config/installation-scope.ts';
+import {
+  deploymentServesManyInstallations,
+  InstallationContextError,
+  installationOwnershipOf,
+} from '../config/installation-scope.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
@@ -1078,10 +1082,14 @@ async function runTurnAttempt(
             : { fencingToken: options.runFencingToken }),
           assignment,
           canonicalModel: resolvedModel,
-          flueInstanceRef: opaqueId(
-            'flueinstance',
-            runtimePlanDecision?.instanceId ?? agentConversationKey,
-          ),
+          // Only a frozen plan names a Flue instance, and only its recording
+          // store freezes one. A turn without one (an approval, a memory
+          // command) runs in the host and references none: a reference
+          // made up from its thread key would name an object that never
+          // existed, which a census counts as residue it cannot erase.
+          ...(runtimePlanDecision
+            ? { flueInstanceRef: opaqueId('flueinstance', runtimePlanDecision.instanceId) }
+            : {}),
           platformEnv,
           ...(options.workStore ? { workStore: options.workStore } : {}),
           ...(settingsStore ? { settingsStore } : {}),
@@ -2428,7 +2436,8 @@ async function createSlackShadowLifecycle(input: {
   fencingToken?: number;
   assignment: ResolvedAssignment;
   canonicalModel: string;
-  flueInstanceRef: string;
+  /** Absent for a turn the host answers without a Flue instance. */
+  flueInstanceRef?: string;
   platformEnv: PlatformEnv | undefined;
   workStore?: WorkStore;
   settingsStore?: SettingsStore;
@@ -2451,7 +2460,7 @@ async function createSlackShadowLifecycle(input: {
       executorKind: 'agent',
       agentName: input.assignment.agent.id,
       canonicalModel: input.canonicalModel,
-      flueInstanceRef: input.flueInstanceRef,
+      ...(input.flueInstanceRef ? { flueInstanceRef: input.flueInstanceRef } : {}),
       routeEvidence: safeRuntimeModelRouteEvidence(
         input.canonicalModel,
         providerAuthRoute,
@@ -2577,6 +2586,17 @@ async function freezeRuntimePlanForTurn(input: {
   decision: FrozenRuntimePlanDecision;
   unavailableFallback: boolean;
 }> {
+  const installation = installationOwnershipOf(input.platformEnv);
+  // A hosted plan names a Flue instance of its installation, which must be
+  // in the installation's object inventory before anything addresses it:
+  // only the store that records it (TurnJobStore.freezeRuntimePlan) may
+  // freeze one. Standalone keeps no inventory.
+  if (installation && !input.persist) {
+    throw new InstallationContextError(
+      'installation_context_invalid',
+      'A hosted turn must record its runtime plan before using it.',
+    );
+  }
   const configStore = input.configStore ?? getConfigStore(input.platformEnv);
   const actorConnectionContext = input.turn.actorMembershipId
     ? {
@@ -2688,7 +2708,6 @@ async function freezeRuntimePlanForTurn(input: {
         agentCredential: input.assignment.modelCredential ?? null,
       })
     : undefined;
-  const installation = installationOwnershipOf(input.platformEnv);
   const candidate = compileRuntimePlanV2({
     ...(installation ? { installation } : {}),
     turn: input.turn,

@@ -1,3 +1,4 @@
+import { ROUTINE_CONNECTIONS_REQUIRED_MESSAGE } from '../routines/slack-command.ts';
 import { ManagementError } from './types.ts';
 import type { SlackScheduleActionOutcome } from './slack-schedule-actions.ts';
 
@@ -14,6 +15,7 @@ const REQUEST_VALIDATION_MESSAGES = new Set([
   'The scheduled work changed. Inspect it again before editing.',
   'Name, description, task text, and schedule are required.',
   "A timezone is required and none is available from the requester's Slack profile.",
+  ROUTINE_CONNECTIONS_REQUIRED_MESSAGE,
 ]);
 
 export async function scheduleActionRpcResult(

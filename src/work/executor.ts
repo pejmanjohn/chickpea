@@ -17,7 +17,8 @@ export interface WorkExecutionDescriptor {
   executorKind: 'agent' | 'workflow';
   agentName: string;
   canonicalModel: string;
-  flueInstanceRef: string;
+  /** The Flue instance the execution runs on; absent when the host answers without one. */
+  flueInstanceRef?: string;
   routeEvidence: SafeRuntimeModelRouteEvidence;
   /** Defer only when a later runtime seam will persist the resolved route. */
   deferRoute?: boolean;
@@ -94,7 +95,7 @@ export async function createWorkExecutionBoundary(
         execution.executorKind === descriptor.executorKind &&
         execution.agentName === descriptor.agentName &&
         execution.canonicalModel === descriptor.canonicalModel &&
-        execution.flueInstanceRef === descriptor.flueInstanceRef)
+        execution.flueInstanceRef === (descriptor.flueInstanceRef ?? null))
     : undefined;
   if (descriptor.resumeSettled && !resumedExecution) {
     throw new WorkStateError('work_execution_conflict', 'The saved settlement has no matching current execution.');
@@ -109,7 +110,7 @@ export async function createWorkExecutionBoundary(
     executorKind: descriptor.executorKind,
     agentName: descriptor.agentName,
     canonicalModel: descriptor.canonicalModel,
-    flueInstanceRef: descriptor.flueInstanceRef,
+    ...(descriptor.flueInstanceRef === undefined ? {} : { flueInstanceRef: descriptor.flueInstanceRef }),
     sensitivity: binding.sourceVisibility,
     routeEvidence: descriptor.routeEvidence,
     ...(resumedExecution ? { resumedExecution } : {}),
@@ -181,7 +182,7 @@ function validateDescriptor(descriptor: WorkExecutionDescriptor): void {
       'The execution fencing token is invalid.',
     );
   }
-  if (!OPAQUE_REF.test(descriptor.flueInstanceRef)) {
+  if (descriptor.flueInstanceRef !== undefined && !OPAQUE_REF.test(descriptor.flueInstanceRef)) {
     throw new WorkStateError(
       'work_execution_descriptor_invalid',
       'The Flue execution correlation must be an opaque safe reference.',

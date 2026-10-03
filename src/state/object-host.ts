@@ -28,8 +28,12 @@ export interface ObjectHostRequest {
  * object carrying both a `ciphertext` and a `nonce`, at any depth of a stored
  * value, is nulled), every plaintext secret setting (MCP, API and connection
  * credentials and OAuth state, GitHub, Browserbase, plaintext model keys),
- * the telemetry HMAC key and OAuth continuation state. `full` keeps
- * everything, so it is only as safe as wherever it is stored.
+ * the telemetry HMAC key, OAuth continuation state, and Chickpea's own setup
+ * capabilities: the `#setup=` fragment of every setup link, in a link field
+ * (`setupUrl`, `handoffUrl`) or in text that carries the link (a posted
+ * Slack message, a transcript), is cut, leaving the link without the
+ * capability. `full` keeps everything, so it is only as safe as wherever it
+ * is stored.
  */
 export type ObjectExportMode = 'portable' | 'full';
 
@@ -243,7 +247,7 @@ export async function exportObjectPage(
     const entries = await storage.list({ ...(startAfter === undefined ? {} : { startAfter }), limit: KV_BATCH });
     for (const [key, value] of entries) {
       const encoded = encodeStoredValue(value);
-      if (!push({ t: 'kv', key, value: mode === 'portable' ? withoutEnvelopes(encoded) : encoded })) {
+      if (!push({ t: 'kv', key, value: mode === 'portable' ? portableValue(encoded) : encoded })) {
         return page({ v: 1, mode, phase: 'kv', ...(startAfter === undefined ? {} : { kvAfter: startAfter }) });
       }
       startAfter = key;
@@ -366,37 +370,64 @@ function exportedRow(
   for (const [column, value] of Object.entries(row)) {
     if (mode !== 'portable') exported[column] = encodeSqlValue(value);
     else if (ENVELOPE_COLUMN.test(column) && value !== null) exported[column] = null;
-    else exported[column] = encodeSqlValue(typeof value === 'string' ? withoutEnvelopes(value) : value);
+    else exported[column] = encodeSqlValue(typeof value === 'string' ? portableValue(value) : value);
   }
   return exported;
 }
 
 /**
- * A stored value with every envelope in it nulled: any object that carries
- * both a `ciphertext` and a `nonce`, at any depth, including inside a string
- * that parses as a JSON object or array (a setting's value, a record's JSON
- * column). Settings keep envelopes inside their JSON values, such as the
- * gateway deployment identity's private key and the HTTP delivery keys, so
- * redaction follows the structure, not a list of keys. A value with no
- * envelope is returned as it is, byte for byte.
+ * A stored value as a portable export carries it: every envelope in it
+ * nulled (any object that carries both a `ciphertext` and a `nonce`) and
+ * every setup capability cut, at any depth, including inside a string that
+ * parses as a JSON object or array (a setting's value, a record's JSON
+ * column, a transcript). Settings keep envelopes inside their JSON values,
+ * such as the gateway deployment identity's private key and the HTTP
+ * delivery keys, so redaction follows the structure, not a list of keys. A
+ * value with neither is returned as it is, byte for byte.
  */
-function withoutEnvelopes(value: unknown): unknown {
+function portableValue(value: unknown, field?: string): unknown {
   if (typeof value === 'string') {
     const parsed = jsonStructure(value);
-    if (parsed === undefined) return value;
-    const redacted = withoutEnvelopes(parsed);
+    if (parsed === undefined) return withoutSetupCapabilities(value, field);
+    const redacted = portableValue(parsed);
     return redacted === parsed ? value : JSON.stringify(redacted);
   }
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) {
-    const items = value.map(withoutEnvelopes);
+    const items = value.map((item) => portableValue(item));
     return items.some((item, index) => item !== value[index]) ? items : value;
   }
   if (Object.hasOwn(value, 'ciphertext') && Object.hasOwn(value, 'nonce')) return null;
-  const entries = Object.entries(value).map(([key, item]) => [key, withoutEnvelopes(item)] as const);
+  const entries = Object.entries(value).map(([key, item]) => [key, portableValue(item, key)] as const);
   return entries.some(([key, item]) => item !== (value as Record<string, unknown>)[key])
     ? Object.fromEntries(entries)
     : value;
+}
+
+/**
+ * Fields that hold a Chickpea setup link (`/setup/<operation>#setup=…`,
+ * `/admin/setup#setup=…`): a management receipt's connector actions and
+ * Agent link, and a setup tool's result.
+ */
+const SETUP_LINK_FIELDS: ReadonlySet<string> = new Set(['setupUrl', 'handoffUrl']);
+
+/**
+ * A setup capability rides only in a link's `#setup=` fragment (never sent
+ * to a server); it is 43 base64url characters (src/auth/setup-capability.mjs,
+ * management/service.ts). In a link field the whole fragment goes, whatever
+ * it holds; in text, the fragment of each of Chickpea's own setup links
+ * (`/setup/<operation>`, `/admin/setup`), such as a posted Slack link
+ * `<https://…/setup/…#setup=…|Connect …>`. Anyone else's link stays as it is.
+ */
+const SETUP_LINK_FIELD_FRAGMENT = /#setup=[^\s<>|"']*/g;
+const SETUP_CAPABILITY_IN_TEXT =
+  /(https?:\/\/[^\s<>|"'`#/]+\/(?:setup\/[A-Za-z0-9._~%-]+|admin\/setup))#setup=[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+
+function withoutSetupCapabilities(text: string, field: string | undefined): string {
+  if (!text.includes('#setup=')) return text;
+  return field !== undefined && SETUP_LINK_FIELDS.has(field)
+    ? text.replace(SETUP_LINK_FIELD_FRAGMENT, '')
+    : text.replace(SETUP_CAPABILITY_IN_TEXT, '$1');
 }
 
 /** A string's JSON object or array, or undefined when it holds neither. */
