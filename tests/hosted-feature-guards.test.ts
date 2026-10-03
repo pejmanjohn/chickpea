@@ -138,7 +138,7 @@ test('under tenancy no turn or occurrence is offered the browser, even with a de
   assert.deepEqual(await browserCapabilityForTurn(settings, key), { provider: 'browserbase' }, 'standalone is unchanged');
 });
 
-test('the hosted Admin page tells its client the browser is not offered; standalone\'s says it is', async (t) => {
+test('the hosted Admin page tells its client the browser is not offered and the deployment is not self-hosted; standalone\'s says both are', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   t.after(() => { settings.close(); store.close(); });
@@ -146,6 +146,10 @@ test('the hosted Admin page tells its client the browser is not offered; standal
   const page = async (env?: Record<string, unknown>) => (await routes.request('http://localhost/admin', {
     headers: testAdminHeaders('feature-guard-token'),
   }, env)).text();
-  assert.match(await page(ENV_A), /"browserOffered":false/);
-  assert.match(await page(), /"browserOffered":true/);
+  const hosted = await page(ENV_A);
+  const standalone = await page();
+  assert.match(hosted, /"browserOffered":false/);
+  assert.match(standalone, /"browserOffered":true/);
+  assert.match(hosted, /"selfHosted":false/);
+  assert.match(standalone, /"selfHosted":true/);
 });

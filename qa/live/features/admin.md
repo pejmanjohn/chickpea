@@ -41,3 +41,4 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - An already-open second Admin tab should show Schedules and Memory changes without a reload.
 - A deployment with `USAGE_ADMIN_UI` turned off has no Usage section; check that before calling it missing.
 - Personal tokens have no Admin screen, so there is nothing to find there.
+- On a lane that keeps every model provider key environment-managed and Composio configured with a stored key (Violet), the provider key removal confirm, its key hint and the Connectors "add a project key" summary never render. The GitHub Disconnect confirm is the reachable standalone self-hosting sentence there.

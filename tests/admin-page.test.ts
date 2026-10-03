@@ -228,8 +228,9 @@ function inlineScript(
   workspaceAdminUi = true,
   installationOwner = false,
   browserOffered = true,
+  selfHosted = true,
 ): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered })
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -505,6 +506,8 @@ function runAdminPageHarness(
     installationOwner?: boolean;
     /** False renders a deployment serving many installations, which offers no browser. */
     browserOffered?: boolean;
+    /** False renders a deployment serving many installations, whose host runs it. */
+    selfHosted?: boolean;
     installationUpdates?: () => unknown;
     agents?: unknown[];
     agentsGetError?: { status: number; error: string };
@@ -2993,6 +2996,7 @@ function runAdminPageHarness(
       options.workspaceAdminUi ?? true,
       options.installationOwner ?? false,
       options.browserOffered ?? true,
+      options.selfHosted ?? true,
     ),
     {
       document,
@@ -3263,15 +3267,16 @@ function inlineScriptFor(
   workspaceAdminUi = true,
   installationOwner = false,
   browserOffered = true,
+  selfHosted = true,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -17597,6 +17602,123 @@ test('without the browser (a deployment serving many installations) neither Brow
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /ptab-websites|ptab-panel-websites/);
   assert.equal(calls.gets, 0, 'website logins are never requested');
+});
+
+test('hosted Admin leaves out guidance only a self-hoster can follow; standalone keeps every sentence', async () => {
+  for (const selfHosted of [true, false]) {
+    const mode = selfHosted ? 'standalone' : 'hosted';
+    const hosting = { selfHosted, browserOffered: selfHosted };
+    // Standalone shows the sentence; hosted leaves it out.
+    const selfHostedOnly = (html: string, pattern: RegExp, what: string) => selfHosted
+      ? assert.match(html, pattern, `${mode}: ${what}`)
+      : assert.doesNotMatch(html, pattern, `${mode}: ${what}`);
+
+    // Settings > Connectors: a deployment-managed Composio key that is missing.
+    const catalog = managedSettingsCatalogFixture();
+    const connectors = runAdminPageHarness({
+      ...hosting,
+      initialPath: '/admin/settings/connectors',
+      composioSettings: {
+        provider: {
+          source: 'env', configured: false, readOnly: true,
+          desiredState: 'enabled', generation: 1, reconciliationPending: false,
+          connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'setup_required' as const })),
+        },
+        canConfigure: true,
+        catalog,
+      },
+    });
+    await flushAsync();
+    const connectorsHtml = connectors.app.innerHTML;
+    assert.match(connectorsHtml, /This hosted installation expects a deployment-managed project key\./, mode);
+    assert.match(connectorsHtml, /Deployment setup required/, mode);
+    selfHostedOnly(connectorsHtml, /Add the secret binding before managed connectors can be used\./, 'the secret binding');
+    selfHostedOnly(connectorsHtml, /Available after you add a project key/, 'the project key the owner cannot add');
+
+    // Settings > Model providers: the add-key hint and both remove-key confirmations.
+    const providers = runAdminPageHarness({
+      ...hosting,
+      initialPath: '/admin/settings/providers',
+      providers: [
+        { id: 'anthropic', status: 'missing', modelCount: null },
+        { id: 'openai', status: 'stored', modelCount: 2 },
+        { id: 'openrouter', status: 'missing', modelCount: null },
+        { id: 'workers-ai', status: 'missing', modelCount: null },
+      ],
+    });
+    await flushAsync();
+    const click = providers.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'prov-add-key', 'data-provider': 'anthropic' }) });
+    const addKey = providers.app.innerHTML;
+    assert.match(addKey, /once &mdash; it proves the key and loads the chat-model list in the same step\. Stored like your Slack credentials[.;]/, mode);
+    selfHostedOnly(addKey, /Stored like your Slack credentials; an <span[^>]*>ANTHROPIC_API_KEY<\/span> in the environment would override it\./,
+      'the environment key that overrides');
+    if (!selfHosted) assert.match(addKey, /Stored like your Slack credentials\.<\/p>/);
+    click({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
+    const removeKey = providers.app.innerHTML;
+    assert.match(removeKey, /Remove the stored OpenAI key\?[^]*Provider failures stay sanitized in Slack\./, mode);
+    selfHostedOnly(removeKey, /Provider failures stay sanitized in Slack\. An <span[^>]*>OPENAI_API_KEY<\/span> in the environment, if set, still applies\./,
+      'the environment key that still applies');
+    if (!selfHosted) assert.match(removeKey, /Provider failures stay sanitized in Slack\.<\/span><\/div>/);
+
+    const subscription = runAdminPageHarness({
+      ...hosting,
+      initialPath: '/admin/settings/providers',
+      providers: [
+        { id: 'anthropic', status: 'missing', modelCount: null },
+        { id: 'openai', status: 'stored', modelCount: 2, activeAuthMethod: 'subscription', subscriptionAvailable: true, subscription: { state: 'connected', updatedAt: 1 } },
+        { id: 'openrouter', status: 'missing', modelCount: null },
+        { id: 'workers-ai', status: 'missing', modelCount: null },
+      ],
+    });
+    await flushAsync();
+    subscription.listeners.click?.({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
+    const removeWithPlan = subscription.app.innerHTML;
+    assert.match(removeWithPlan, /ChatGPT Image continues using the connected subscription\./, mode);
+    selfHostedOnly(removeWithPlan, /continues using the connected subscription\. An <span[^>]*>OPENAI_API_KEY<\/span> in the environment, if set, still applies\./,
+      'the environment key that still applies beside the plan');
+
+    // Settings > GitHub: the disconnect panel and its confirmation.
+    const github = runAdminPageHarness({
+      ...hosting,
+      initialPath: '/admin/settings/github',
+      githubStatus: {
+        mode: 'app', appSlug: 'chickpea-test',
+        installations: [{ id: 9, accountLogin: 'acme', accountType: 'Organization', repoCount: 3 }],
+        referencingProfiles: [],
+      },
+    });
+    await flushAsync();
+    const panel = github.app.innerHTML;
+    assert.match(panel, selfHosted
+      ? /Removes stored GitHub App credentials from Chickpea\. Environment-configured App credentials stay active, and repository selections on Agents stay saved\./
+      : /Removes stored GitHub App credentials from Chickpea\. Repository selections on Agents stay saved\./, mode);
+    github.listeners.click?.({ target: actionTarget({ 'data-action': 'github-disconnect-open' }) });
+    const confirm = github.app.innerHTML;
+    assert.match(confirm, /Chickpea will remove the stored GitHub App credentials\. /, mode);
+    selfHostedOnly(confirm, /Environment-configured App credentials, if present, remain active\./, 'environment-configured GitHub credentials');
+  }
+});
+
+test('a signed-in person can sign out from the rail and the mobile menu, standalone and hosted', async () => {
+  for (const [label, options] of [
+    ['owner', {}],
+    ['member', { workspaceAdminUi: false }],
+    ['hosted owner', { browserOffered: false, selfHosted: false }],
+  ] as const) {
+    const harness = runAdminPageHarness(options);
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.equal((html.match(/<form id="admin-sign-out"/g) ?? []).length, 1, label);
+    assert.match(html, /<form id="admin-sign-out" method="post" action="\/admin\/logout" hidden><\/form><\/header>/, label);
+    assert.match(html,
+      /<nav class="section-switcher" aria-label="Admin navigation">(?:(?!<\/nav>)[^])*<button type="submit" form="admin-sign-out" class="section-nav-item">Sign out<\/button><\/nav>/,
+      `${label}: the rail ends with Sign out`);
+    assert.match(html,
+      /<div class="actions actions-list">(?:(?!<\/div>)[^])*<button type="submit" form="admin-sign-out" class="btn btn-soft">Sign out<\/button><\/div>/,
+      `${label}: the mobile menu ends with Sign out`);
+  }
 });
 
 test('the Websites tab lists signed-in websites and shows an empty state', async () => {

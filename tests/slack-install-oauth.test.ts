@@ -115,6 +115,12 @@ test('confidential callback validates the issued bot capabilities and waits for 
       redirect_uri: REDIRECT_URI,
     });
     assert.equal(exchangeForm.has('code_verifier'), false);
+    const awaitingEvents = await fixture.config.getWorkspaceInstallation('TACME');
+    assert.deepEqual(
+      { health: awaitingEvents?.health, detail: awaitingEvents?.healthDetail },
+      { health: 'needs_attention', detail: 'events_verification_pending' },
+      'standalone waits for its own app\'s Events URL verification',
+    );
 
     await fixture.recordChallenge();
     const installed = await fixture.service.finalizeWaitingInstallation(fixture.setup.id);

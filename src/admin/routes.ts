@@ -3150,9 +3150,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (error instanceof AuthUnavailableError) {
           return c.json({ error: 'authentication_unavailable' }, 503);
         }
-        if (isAdminPageGet(c)) {
+        // A page, or Sign out from a tab whose session already ended, goes
+        // to sign-in rather than to a JSON error.
+        if (isAdminPageGet(c) || isHumanAuthFormMutation(c)) {
           authResponseHeaders(c);
-          const query = new URLSearchParams({ destination: safeAdminReturnPath(c.req.path) });
+          const query = new URLSearchParams({
+            destination: isAdminPageGet(c) ? safeAdminReturnPath(c.req.path) : '/admin',
+          });
           return c.redirect(`/auth/slack/sign-in?${query.toString()}`, 303);
         }
         return c.json({ error: 'unauthorized' }, 401);
@@ -6079,10 +6083,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // browser keep an older deployment's shell after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
+    const standalone = deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation';
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
-      browserOffered: deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation',
+      browserOffered: standalone,
+      selfHosted: standalone,
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),

@@ -14,6 +14,11 @@
   // A deployment serving many installations offers no browser: no Browser
   // settings and no Websites tab, rather than sections that cannot load.
   var BROWSER_OFFERED = CONFIG.browserOffered !== false;
+  // Standalone: whoever runs Admin also runs this deployment, so Admin may
+  // mention its environment variables and secret bindings. A deployment
+  // serving many installations is run by its host, so that guidance is left
+  // out there, without replacement copy.
+  var SELF_HOSTED = CONFIG.selfHosted !== false;
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -1516,13 +1521,24 @@
       : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
     var actions = mobileRoster
       ? mobileAgentRosterHtml()
-      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions;
+      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions + signOutButtonHtml("btn btn-soft");
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
-      "</header>";
+      signOutFormHtml() + "</header>";
+  }
+
+  // Signing out is the server's own logout form: a same-origin POST that ends
+  // the session and lands on the sign-in page. The rail and the mobile menu
+  // each carry a button that submits this one form.
+  function signOutFormHtml() {
+    return '<form id="admin-sign-out" method="post" action="/admin/logout" hidden></form>';
+  }
+
+  function signOutButtonHtml(className) {
+    return '<button type="submit" form="admin-sign-out" class="' + className + '">Sign out</button>';
   }
 
   function peaMarkHtml() {
@@ -1614,7 +1630,7 @@
         var selected = active === section.id;
         return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
           (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
-      }).join("") + '</nav>';
+      }).join("") + signOutButtonHtml("section-nav-item") + '</nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly
@@ -2898,7 +2914,7 @@
       : '<button type="button" class="btn btn-danger" data-action="github-disconnect-confirm">Disconnect GitHub</button>';
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect GitHub" tabindex="-1" data-role="github-disconnect-dialog">' +
       '<h2 class="modal-title">Disconnect GitHub?</h2>' +
-      '<p class="modal-body">Chickpea will remove the stored GitHub App credentials. Environment-configured App credentials, if present, remain active. ' + profileWarning + appNote + '</p>' +
+      '<p class="modal-body">Chickpea will remove the stored GitHub App credentials. ' + (SELF_HOSTED ? 'Environment-configured App credentials, if present, remain active. ' : '') + profileWarning + appNote + '</p>' +
       (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
@@ -8639,7 +8655,9 @@
 
   function githubDisconnectPanelHtml() {
     return '<div class="danger-panel"><div class="danger-copy"><span class="danger-title">Disconnect GitHub</span>' +
-      '<span class="hint">Removes stored GitHub App credentials from Chickpea. Environment-configured App credentials stay active, and repository selections on Agents stay saved.</span></div>' +
+      '<span class="hint">Removes stored GitHub App credentials from Chickpea. ' + (SELF_HOSTED
+        ? 'Environment-configured App credentials stay active, and repository selections on Agents stay saved.'
+        : 'Repository selections on Agents stay saved.') + '</span></div>' +
       '<button type="button" class="btn btn-danger" data-action="github-disconnect-open"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div>';
   }
 
@@ -9445,7 +9463,7 @@
       ? 'Paused until the configuration is repaired'
       : configured
         ? readyCount + ' of ' + catalog.length + ' ready'
-        : options.canConfigure ? 'Available after you add a project key' : 'Available after setup';
+        : options.canConfigure ? (SELF_HOSTED ? 'Available after you add a project key' : '') : 'Available after setup';
     return '<div class="managed-list-head"><span>' + catalog.length + ' connector' + (catalog.length === 1 ? '' : 's') + '</span><span>' + esc(summary) + '</span></div>' +
       '<div class="managed-settings-list" aria-label="' + esc(options.label) + '">' + rows + '</div>';
   }
@@ -9485,7 +9503,8 @@
     var statusDetail = provider.readOnly
       ? (configured
           ? "This installation reads its project key from deployment configuration. It cannot be replaced or disabled in Admin."
-          : "This hosted installation expects a deployment-managed project key. Add the secret binding before managed connectors can be used.")
+          : "This hosted installation expects a deployment-managed project key." +
+            (SELF_HOSTED ? " Add the secret binding before managed connectors can be used." : ""))
       : configured
         ? "Project key stored encrypted. Replace it only when rotating projects or credentials."
         : settings.canConfigure
@@ -10114,11 +10133,13 @@
   }
 
   function validateIdleHint(id, meta) {
-    var envFrag = '<span class="mono" style="color:var(--text-2);">' + esc(meta.env) + '</span>';
+    var stored = SELF_HOSTED
+      ? 'Stored like your Slack credentials; an <span class="mono" style="color:var(--text-2);">' + esc(meta.env) + '</span> in the environment would override it.'
+      : 'Stored like your Slack credentials.';
     if (id === "openrouter") {
-      return 'Validating calls OpenRouter\'s <span class="mono" style="color:var(--text-2);">GET /auth/key</span> once to prove the key, then loads its model list in the same step. Stored like your Slack credentials; an ' + envFrag + ' in the environment would override it.';
+      return 'Validating calls OpenRouter\'s <span class="mono" style="color:var(--text-2);">GET /auth/key</span> once to prove the key, then loads its model list in the same step. ' + stored;
     }
-    return 'Validating calls ' + esc(meta.name) + '\'s <span class="mono" style="color:var(--text-2);">GET /v1/models</span> once &mdash; it proves the key and loads the chat-model list in the same step. Stored like your Slack credentials; an ' + envFrag + ' in the environment would override it.';
+    return 'Validating calls ' + esc(meta.name) + '\'s <span class="mono" style="color:var(--text-2);">GET /v1/models</span> once &mdash; it proves the key and loads the chat-model list in the same step. ' + stored;
   }
 
   function validateBusyHint(id, meta) {
@@ -10138,9 +10159,9 @@
   function removeConfirmHtml(id, summary) {
     var meta = providerMeta(id);
     if (id === "openai" && summary.activeAuthMethod === "subscription" && openAiSubscriptionConnected(summary)) {
-      var subscriptionEnvNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
+      var subscriptionEnvNote = SELF_HOSTED ? ' An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.' : '';
       var subscriptionRemoveError = provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
-      return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Remove the stored OpenAI key? Chat continues using the selected ChatGPT subscription. Flare and Sunburst become unavailable until an API key is available; ChatGPT Image continues using the connected subscription. ' + subscriptionEnvNote + '</span></div>' + subscriptionRemoveError +
+      return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>Remove the stored OpenAI key? Chat continues using the selected ChatGPT subscription. Flare and Sunburst become unavailable until an API key is available; ChatGPT Image continues using the connected subscription.' + subscriptionEnvNote + '</span></div>' + subscriptionRemoveError +
         '<div style="display:flex; gap:10px;"><button type="button" class="btn btn-soft btn-sm" data-action="prov-remove-cancel" data-provider="openai">Keep key</button>' +
         '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove-confirm" data-provider="openai">Remove key</button></div>';
     }
@@ -10154,7 +10175,7 @@
     var names = joinNames(pinned.map(function (agent) {
       return '<span class="mono" style="color:var(--text);">' + esc(agent.name) + '</span>';
     }));
-    var envNote = 'An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.';
+    var envNote = SELF_HOSTED ? ' An <span class="mono" style="color:var(--text);">' + esc(meta.env) + '</span> in the environment, if set, still applies.' : '';
     var lead = 'Remove the stored ' + esc(meta.name) + ' key? ';
     var impacts = [];
     if (workspaceDefaultAffected) {
@@ -10175,7 +10196,7 @@
     var consequence = lead + (impacts.length
       ? impacts.join(' ')
       : 'No Agent pin or Workspace default currently depends on ' + esc(meta.name) + '.') +
-      ' Provider failures stay sanitized in Slack. ' + envNote;
+      ' Provider failures stay sanitized in Slack.' + envNote;
     var errLine = summary && provUiFor(id).removeError ? '<p class="field-error">' + esc(provUiFor(id).removeError) + '</p>' : "";
     return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") + '<span>' + consequence + '</span></div>' + errLine +
       '<div style="display:flex; gap:10px;">' +
@@ -12809,6 +12830,9 @@
   }
 
   document.addEventListener("click", function (event) {
+    // Sign out submits its form after this listener returns. Closing a menu
+    // here would re-render and detach the button, and the post would be lost.
+    if (event.target && event.target.closest && event.target.closest('[form="admin-sign-out"]')) return;
     // Connection menus and capability popovers are mutually exclusive. Native
     // details elements do not close their siblings or dismiss on outside click.
     if (event.target && event.target.closest && document.querySelectorAll) {
