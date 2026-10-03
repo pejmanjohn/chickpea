@@ -54,14 +54,22 @@ export interface ObjectExportPage {
 }
 
 /**
+ * The note an export carries for coding workspaces, whose files and
+ * checkpoints it leaves out: a working copy of the tenant's GitHub
+ * repositories, kept at most three days, that may hold `.env` files.
+ */
+export const CODING_WORKSPACE_EXPORT_NOTE = 'Unpushed work in a coding workspace is not exported.';
+
+/**
  * One line of an export:
- * - `object`: the first line, naming the format and mode;
+ * - `object`: the first line, naming the format and mode, and for an object
+ *   whose storage is left out (a coding workspace's Sandbox) the note why;
  * - `table`: a SQL table's definition, before its rows;
  * - `row`: one row, every column (BLOBs as `{"$bytes": base64}`);
  * - `kv`: one key-value storage entry (structured values tagged, see `encodeStoredValue`).
  */
 export type ObjectExportRecord =
-  | { t: 'object'; format: typeof OBJECT_EXPORT_FORMAT; mode: ObjectExportMode }
+  | { t: 'object'; format: typeof OBJECT_EXPORT_FORMAT; mode: ObjectExportMode; note?: string }
   | { t: 'table'; table: string; sql: string | null }
   | { t: 'row'; table: string; row: Record<string, unknown> }
   | { t: 'kv'; key: string; value: unknown };
@@ -354,17 +362,28 @@ const PORTABLE_EXCLUDED_SETTINGS: readonly RegExp[] = [
   /^slack\.pendingEnvelope$/,
 ];
 
-/** A row as exported, or undefined when a portable export leaves it out. */
+/**
+ * Settings no export carries: the host's operational records of the
+ * installation's coding workspaces (running-container leases, metered
+ * container time, the GitHub write rate). A census counts them; erasure
+ * deletes them with the store.
+ */
+const OPERATIONAL_SETTINGS: readonly RegExp[] = [
+  /^sandbox\.containerLeases$/,
+  /^sandbox\.monthlyContainerSeconds\./,
+  /^sandbox\.githubWrites$/,
+];
+
+/** A row as exported, or undefined when the export leaves it out. */
 function exportedRow(
   table: string,
   row: Record<string, unknown>,
   mode: ObjectExportMode,
 ): Record<string, unknown> | undefined {
-  if (mode === 'portable') {
-    if (table === 'app_settings' && typeof row.key === 'string' &&
-        PORTABLE_EXCLUDED_SETTINGS.some((pattern) => pattern.test(row.key as string))) {
-      return undefined;
-    }
+  if (table === 'app_settings' && typeof row.key === 'string') {
+    const key = row.key;
+    if (OPERATIONAL_SETTINGS.some((pattern) => pattern.test(key))) return undefined;
+    if (mode === 'portable' && PORTABLE_EXCLUDED_SETTINGS.some((pattern) => pattern.test(key))) return undefined;
   }
   const exported: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {

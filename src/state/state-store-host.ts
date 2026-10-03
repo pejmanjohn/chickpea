@@ -1,6 +1,8 @@
 import { InstallationContextError } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutinePersistenceTelemetrySink } from '../routines/telemetry.ts';
+import { readSandboxContainerUsage } from '../sandbox/container-lease.ts';
+import { readMonthlySandboxSessions } from '../sandbox/session-cap.ts';
 import { promisify } from './async-facade.ts';
 import {
   assertObjectHostCall,
@@ -23,12 +25,31 @@ import {
 } from './pending-work.ts';
 import type { TagStateStores } from './tag-state-stores.ts';
 
+/**
+ * What one installation's state store knows of its coding workspaces: the
+ * Sandboxes and coding workers it inventoried, the containers holding a
+ * lease now, and this month's metered container time and counted sessions.
+ * The R2 checkpoints are counted beside it (state/installation-objects.ts).
+ */
+export interface StateSandboxCensus {
+  readonly objects: { readonly sandbox: number; readonly coding_worker: number };
+  /** Containers holding a running lease. */
+  readonly runningContainers: number;
+  /** The UTC month counted, `YYYY-MM`. */
+  readonly month: string;
+  /** Container time metered this month, in seconds (runs still going are not yet metered). */
+  readonly containerSeconds: number;
+  /** Workspace sessions (container starts) counted this month. */
+  readonly sessions: number;
+}
+
 /** The state store's host functions: every object's, its inventory, and its own pending work. */
 export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chickpeaHostCancelPendingWork'> {
   chickpeaHostInventory(
     request: ObjectHostRequest & { cursor?: string | null; limit?: number },
   ): Promise<InstallationObjectInventoryPage>;
   chickpeaHostInventoryBackfill(request: ObjectHostRequest): Promise<InstallationObjectBackfill>;
+  chickpeaHostSandboxCensus(request: ObjectHostRequest & { now?: number }): Promise<StateSandboxCensus>;
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
   chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<StatePendingWorkCancellation>;
@@ -61,6 +82,22 @@ export function stateStoreHostFunctions(store: {
     },
     async chickpeaHostInventoryBackfill(request) {
       return stores(request).objectInventory.backfill();
+    },
+    async chickpeaHostSandboxCensus(request) {
+      const local = stores(request);
+      const now = request.now ?? Date.now();
+      if (!Number.isSafeInteger(now) || now < 0) throw new Error('A census time must be a timestamp.');
+      const counts = local.objectInventory.counts();
+      const settings = promisify(local.settings, { close: () => undefined });
+      const usage = await readSandboxContainerUsage({ store: settings, now });
+      const sessions = await readMonthlySandboxSessions(settings, new Date(now));
+      return {
+        objects: { sandbox: counts.sandbox, coding_worker: counts.coding_worker },
+        runningContainers: usage.running,
+        month: usage.month,
+        containerSeconds: usage.meteredSeconds,
+        sessions: sessions.count,
+      };
     },
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(store.env, request);

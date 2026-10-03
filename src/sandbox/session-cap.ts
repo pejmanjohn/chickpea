@@ -1,4 +1,4 @@
-import { updateMonthlyCounter } from '../config/monthly-counter.ts';
+import { readMonthlyCounter, updateMonthlyCounter } from '../config/monthly-counter.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 
 export const RECOMMENDED_SANDBOX_MONTHLY_SESSION_CAP = 200;
@@ -51,6 +51,19 @@ export async function reserveMonthlySandboxSession(options: {
     },
     contendedMessage: 'Could not reserve a sandbox session after concurrent updates',
   });
+}
+
+/** The month's counted sessions, for an operator readback. */
+export async function readMonthlySandboxSessions(
+  store: Pick<SettingsStore, 'getSetting'>,
+  now: Date,
+): Promise<{ month: string; count: number }> {
+  const { month, counter } = await readMonthlyCounter(store, {
+    prefix: SANDBOX_MONTHLY_SESSION_USAGE_PREFIX,
+    now,
+    parse: parseMonthlySessionUsage,
+  });
+  return { month, count: counter.count };
 }
 
 function parseMonthlySessionUsage(

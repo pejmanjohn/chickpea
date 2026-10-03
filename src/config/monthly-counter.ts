@@ -60,7 +60,7 @@ export async function updateMonthlyCounter<T extends object, R>(
 
 /** Reads one month's row without changing it. */
 export async function readMonthlyCounter<T extends object>(
-  store: SettingsStore,
+  store: Pick<SettingsStore, 'getSetting'>,
   options: Pick<MonthlyCounterOptions<T, unknown>, 'prefix' | 'now' | 'parse'>,
 ): Promise<{ month: string; counter: T }> {
   const month = utcMonthKey(options.now ?? new Date());

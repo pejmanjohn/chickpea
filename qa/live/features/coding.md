@@ -13,10 +13,11 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 - Commits are authored as the App's `<slug>[bot]` account, or `Chickpea <chickpea@noreply.invalid>` while the bot lookup fails.
 - While a task runs, the thread's working indicator shows the stage and rotates fixed phrases: the step of 3, what is done, what comes next. There is no checklist card.
 - Stop (the button or a typed stop) stops the worker and posts one note listing branches pushed and pull requests opened. An unconfirmed worker stop adds "Coding work may still be winding down."
-- A follow-up in the same thread reuses the checkout. The container sleeps 30 minutes after the last turn, and its checkpoint (without dependency folders) restores for 3 days.
+- A follow-up in the same thread reuses the checkout. The container sleeps 30 minutes after the last turn, and its checkpoint (without dependency folders) restores for 3 days. Each turn's checkpoint deletes the one it replaced, so R2 holds one `backups/<id>/` pair per thread workspace.
 - A grant change or a different Agent in the thread retires the workspace. A scheduled run always starts a fresh one.
 - The monthly session cap (Advanced, counts workspace starts) refuses with "The coding workspace monthly session limit has been reached."
 - On a deployment serving many installations the host's policy decides instead (`configureHostedSandboxPolicy`): Settings → Coding sandbox cannot be changed (`PUT`/`PATCH` status are not found), and the host also caps running containers, monthly container-hours and GitHub writes. Hosted cap refusals keep only the first sentence.
+- Hosted checkpoints live under `i1/<installation>/backups/` in one shared bucket; each installation's sweep, erasure and census read only its prefix. Operator jobs stop, erase and count coding workspaces through Core's host functions (`state/installation-objects.ts`); exports leave out workspace files, checkpoints and Sandbox records and carry the note "Unpushed work in a coding workspace is not exported."
 
 ## How a person reaches it
 

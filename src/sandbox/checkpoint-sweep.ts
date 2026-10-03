@@ -1,3 +1,4 @@
+import { installationCheckpointBucket } from './checkpoint-bucket.ts';
 import { WORKSPACE_CHECKPOINT_TTL_SECONDS } from './workspace-lifecycle.ts';
 
 /**
@@ -29,6 +30,20 @@ const PAGE_SIZE = 1_000;
 
 export function isCheckpointSweepMinute(scheduledTime: number): boolean {
   return new Date(scheduledTime).getUTCMinutes() === SWEEP_MINUTE;
+}
+
+/**
+ * Work maintenance's hourly sweep of the env's checkpoints: the whole bucket
+ * standalone, and only the installation's own prefix under installation
+ * tenancy, so a shared bucket is never listed in full once per installation.
+ * Returns the objects deleted; none without the bucket binding.
+ */
+export async function sweepInstallationCheckpoints(
+  env: Record<string, unknown> | undefined,
+  now: number,
+): Promise<number> {
+  const bucket = checkpointBucket({ BACKUP_BUCKET: installationCheckpointBucket(env) });
+  return bucket ? sweepExpiredWorkspaceCheckpoints(bucket, now) : 0;
 }
 
 /**

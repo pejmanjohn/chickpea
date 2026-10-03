@@ -2,7 +2,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 import type { DurableObjectStorage } from 'cloudflare:workers';
 
-import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../../src/agents/names.ts';
+import { CHICKPEA_CODING_WORKER_AGENT_NAME, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../../src/agents/names.ts';
 import {
   objectInstallationEnv,
   scopeInstallationEnv,
@@ -10,6 +10,10 @@ import {
 } from '../../src/config/installation-scope.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import type { RoutinePersistenceTelemetrySink } from '../../src/routines/telemetry.ts';
+import type { SandboxPolicyStorage } from '../../src/sandbox/cloudflare-policy.ts';
+import { sandboxHostFunctions } from '../../src/sandbox/sandbox-host.ts';
+import { sandboxObjectEnv } from '../../src/sandbox/sandbox-object.ts';
+import { SandboxWorkspaceState } from '../../src/sandbox/workspace-lifecycle.ts';
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
 import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
@@ -161,6 +165,16 @@ interface DeploymentObject {
   readonly storage: FakeObjectStorage;
   readonly env: PlatformEnv;
   readonly host: Record<string, (request: never) => Promise<unknown>>;
+  /** A Sandbox's container: whether it runs, and how often it was destroyed. */
+  readonly container?: { running: boolean; destroyed: number };
+}
+
+/** The coding worker's Flue binding, as the host functions address it. */
+export const CODING_WORKER_BINDING = agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME);
+
+/** A Sandbox's workspace record over its fake storage, as the Sandbox class reads it. */
+export function sandboxWorkspaceState(storage: FakeObjectStorage): SandboxWorkspaceState {
+  return new SandboxWorkspaceState(storage as unknown as SandboxPolicyStorage);
 }
 
 /**
@@ -173,10 +187,15 @@ interface DeploymentObject {
 export function hostedDeployment(installationIds: readonly string[], options: {
   stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
   persistenceTelemetrySink?: RoutinePersistenceTelemetrySink;
+  /** The deployment's `BACKUP_BUCKET`, shared by every installation. */
+  bucket?: object;
 } = {}) {
   const objects = new Map<string, DeploymentObject>();
   const installations = new Map<string, HostedInstallation>();
-  const platform: Record<string, unknown> = { CHICKPEA_TENANCY: 'installation' };
+  const platform: Record<string, unknown> = {
+    CHICKPEA_TENANCY: 'installation',
+    ...(options.bucket ? { BACKUP_BUCKET: options.bucket } : {}),
+  };
   const objectFor = (binding: string, name: string): DeploymentObject => {
     const key = `${binding}\n${name}`;
     let object = objects.get(key);
@@ -197,6 +216,24 @@ export function hostedDeployment(installationIds: readonly string[], options: {
           onErased: () => { stores = undefined; },
           ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
           ...(options.persistenceTelemetrySink ? { persistenceTelemetrySink: options.persistenceTelemetrySink } : {}),
+        }) as unknown as DeploymentObject['host'],
+      };
+    } else if (binding === 'SANDBOX') {
+      // As the Sandbox class: its env from its own name, its checkpoint bucket the installation's view.
+      const storage = new FakeObjectStorage();
+      const sandboxEnv = sandboxObjectEnv({
+        id: { name },
+        storage: { kv: { get: (key: string) => storage.kv.get(key), put: (key: string, value: unknown) => { storage.kv.set(key, value); } } },
+      }, platform as PlatformEnv);
+      const container = { running: false, destroyed: 0 };
+      object = {
+        binding, name, storage, env: sandboxEnv, container,
+        host: sandboxHostFunctions({
+          env: sandboxEnv,
+          storage,
+          running: () => container.running,
+          destroy: async () => { container.running = false; container.destroyed += 1; },
+          currentCheckpoint: () => sandboxWorkspaceState(storage).currentCheckpoint(),
         }) as unknown as DeploymentObject['host'],
       };
     } else {
@@ -230,6 +267,8 @@ export function hostedDeployment(installationIds: readonly string[], options: {
     [CHICKPEA_SLACK_AGENT_BINDING]: byId(CHICKPEA_SLACK_AGENT_BINDING),
     [agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)]:
       byId(agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)),
+    [CODING_WORKER_BINDING]: byId(CODING_WORKER_BINDING),
+    SANDBOX: byId('SANDBOX'),
   });
   for (const installationId of installationIds) {
     installations.set(installationId, hostedInstallation(installationId, platform));

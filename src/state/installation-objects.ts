@@ -8,8 +8,15 @@
  *
  * The installation's objects are its state store (implicit, named after the
  * installation) and those its inventory records (state/object-inventory.ts).
- * Erasure order is the host's: every inventoried object first, the state
- * store last, after copying its inventory.
+ * Erasure order is the host's: every inventoried object first, then the
+ * installation's coding workspace checkpoints (`eraseInstallationCheckpoints`),
+ * the state store last, after copying its inventory.
+ *
+ * A coding workspace's Sandbox answers like any object, from its own host
+ * functions (sandbox/sandbox-host.ts): its export is a header and a note,
+ * its erasure destroys its container and deletes its latest checkpoint
+ * first, and its cancellation stops its container, as
+ * `stopInstallationSandboxContainer` does for a suspension.
  *
  * Erasure must be an installation's last contact with its objects. Core
  * cannot refuse to construct an object, and constructing one creates its
@@ -29,6 +36,12 @@ import {
   type InstallationScope,
 } from '../config/installation-scope.ts';
 import { tagStateInstanceName, tagStateStub } from '../config/state-rpc.ts';
+import { installationCheckpointBucket } from '../sandbox/checkpoint-bucket.ts';
+import type {
+  SandboxContainerStop,
+  SandboxHostRpc,
+  SandboxPendingWorkCancellation,
+} from '../sandbox/sandbox-host.ts';
 import {
   agentObjectBindingName,
   CHICKPEA_SLACK_AGENT_BINDING,
@@ -46,7 +59,7 @@ import type {
   InstallationObjectKind,
 } from './object-inventory.ts';
 import type { StatePendingWorkCancellation } from './pending-work.ts';
-import type { StateStoreHostRpc } from './state-store-host.ts';
+import type { StateSandboxCensus, StateStoreHostRpc } from './state-store-host.ts';
 
 /** One object of an installation: its state store, or an inventoried object. */
 export interface InstallationObject {
@@ -123,15 +136,143 @@ export async function eraseInstallationObject(
  * and for the state store every pending turn, unfinished routine occurrence
  * and undelivered notice or receipt (state/pending-work.ts); for a thread
  * runner its open jobs that are not running (it reports those still
- * running, which settle as their runs end). Run while the installation is
+ * running, which settle as their runs end); for a coding workspace's
+ * Sandbox its running container, keeping its alarm (see
+ * `SandboxPendingWorkCancellation`). Run while the installation is
  * suspended, after a restore. Safe to repeat.
  */
 export async function cancelInstallationObjectPendingWork(
   env: Record<string, unknown>,
   object: InstallationObject,
-): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation> {
+): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation | SandboxPendingWorkCancellation> {
   const scope = hostScope(env);
   return objectStub(env, scope, object).chickpeaHostCancelPendingWork({ installationId: scope.installationId });
+}
+
+/**
+ * Suspension: stop one coding workspace's container if it runs. Its records
+ * and latest checkpoint stay, so the thread restores on its next turn once
+ * the installation resumes; work since its last turn ended is lost. The stop
+ * settles the container's lease and meters its run. Safe to repeat.
+ */
+export async function stopInstallationSandboxContainer(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+): Promise<SandboxContainerStop> {
+  const scope = hostScope(env);
+  if (object.kind !== 'sandbox') throw new Error('Only a coding workspace Sandbox has a container to stop.');
+  const sandbox = objectStub(env, scope, object) as unknown as SandboxHostRpc;
+  return sandbox.chickpeaHostStopContainer({ installationId: scope.installationId });
+}
+
+/** One page of a checkpoint erasure. */
+export interface CheckpointErasePage {
+  /** Objects deleted by this call. */
+  readonly deleted: number;
+  /** Pass back for the next page; null once the listing reached the prefix's end. */
+  readonly nextCursor: string | null;
+}
+
+/** R2 deletes at most 1,000 keys a call and lists at most 1,000 a page. */
+const CHECKPOINT_PAGE = 1_000;
+
+/**
+ * Erasure: delete one page of the installation's coding workspace
+ * checkpoints, everything under its prefix of the shared bucket, orphans
+ * included. Refused unless `installationId` repeats the installation, as an
+ * operator confirms an erasure. Idempotent: a cursor replayed after a crash
+ * deletes what is still there from its place on, and a pass from no cursor
+ * to a null cursor deletes every object present when it began (run one more
+ * from no cursor to confirm: it deletes none). A deployment without the
+ * bucket binding has nothing to delete.
+ */
+export async function eraseInstallationCheckpoints(
+  env: Record<string, unknown>,
+  installationId: string,
+  cursor?: string | null,
+): Promise<CheckpointErasePage> {
+  const scope = hostScope(env);
+  if (installationId !== scope.installationId) {
+    throw new InstallationContextError(
+      'installation_context_mismatch',
+      'Erasure must be confirmed with the installation it erases.',
+    );
+  }
+  const bucket = installationCheckpointBucket<CheckpointListing>(env);
+  if (!bucket) return { deleted: 0, nextCursor: null };
+  const startAfter = cursor ? decodeCheckpointCursor(cursor) : undefined;
+  const listing = await bucket.list({ limit: CHECKPOINT_PAGE, ...(startAfter === undefined ? {} : { startAfter }) });
+  const keys = listing.objects.map((object) => object.key);
+  if (keys.length > 0) await bucket.delete(keys);
+  const last = keys.at(-1);
+  return { deleted: keys.length, nextCursor: listing.truncated && last !== undefined ? encodeCheckpointCursor(last) : null };
+}
+
+/** An installation's coding workspaces, for a census. */
+export interface InstallationSandboxCensus extends StateSandboxCensus {
+  /**
+   * Its checkpoint prefix: objects and bytes, and whether every object was
+   * counted (a census lists at most 50 pages). Null on a deployment without
+   * the bucket binding.
+   */
+  readonly checkpoints: { readonly objects: number; readonly bytes: number; readonly complete: boolean } | null;
+}
+
+const CENSUS_CHECKPOINT_PAGES = 50;
+
+/**
+ * A census of the installation's coding workspaces: its Sandbox and coding
+ * worker objects, running container leases, this month's metered container
+ * time and sessions (from its state store), and its checkpoint prefix's
+ * objects and bytes. Reads only; the leases and meters it counts are never
+ * exported and go with the state store's erasure.
+ */
+export async function censusInstallationSandbox(
+  env: Record<string, unknown>,
+  options: { now?: number } = {},
+): Promise<InstallationSandboxCensus> {
+  const scope = hostScope(env);
+  const state = await stateStore(env).chickpeaHostSandboxCensus({
+    installationId: scope.installationId,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const bucket = installationCheckpointBucket<CheckpointListing>(env);
+  if (!bucket) return { ...state, checkpoints: null };
+  let objects = 0;
+  let bytes = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < CENSUS_CHECKPOINT_PAGES; page += 1) {
+    const listing = await bucket.list({ limit: CHECKPOINT_PAGE, ...(cursor === undefined ? {} : { cursor }) });
+    objects += listing.objects.length;
+    bytes += listing.objects.reduce((total, object) => total + (Number.isFinite(object.size) ? object.size : 0), 0);
+    if (!listing.truncated || !listing.cursor) return { ...state, checkpoints: { objects, bytes, complete: true } };
+    cursor = listing.cursor;
+  }
+  return { ...state, checkpoints: { objects, bytes, complete: false } };
+}
+
+/** The slice of the installation's checkpoint bucket a host function reads. */
+interface CheckpointListing {
+  list(options: { limit: number; cursor?: string; startAfter?: string }): Promise<{
+    objects: Array<{ key: string; size: number }>;
+    truncated: boolean;
+    cursor?: string;
+  }>;
+  delete(keys: string[]): Promise<void>;
+}
+
+function encodeCheckpointCursor(after: string): string {
+  return Buffer.from(JSON.stringify({ v: 1, after }), 'utf8').toString('base64url');
+}
+
+function decodeCheckpointCursor(cursor: string): string {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { v?: unknown; after?: unknown };
+    if (value?.v === 1 && typeof value.after === 'string' && value.after.length > 0) return value.after;
+  } catch {
+    // Reported below.
+  }
+  throw new Error('The checkpoint cursor is malformed.');
 }
 
 function hostScope(env: Record<string, unknown>): InstallationScope {
@@ -157,11 +298,11 @@ interface IdNamespace {
   get(id: unknown): unknown;
 }
 
-/** Any object's host functions; the state store's cancellation reports more. */
+/** Any object's host functions; the state store's and a Sandbox's cancellations report more. */
 type AnyObjectHostRpc = Omit<InstallationObjectHostRpc, 'chickpeaHostCancelPendingWork'> & {
   chickpeaHostCancelPendingWork(
     request: { installationId: string },
-  ): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation>;
+  ): Promise<ObjectPendingWorkCancellation | StatePendingWorkCancellation | SandboxPendingWorkCancellation>;
 };
 
 /** The stub of one object this installation owns, by kind and exact name. */
@@ -182,18 +323,16 @@ function objectStub(
     if (typeof namespace?.getByName !== 'function') throw missingBinding('SLACK_THREAD_RUNNER');
     return namespace.getByName(object.name) as AnyObjectHostRpc;
   }
-  if (object.kind === 'sandbox') {
-    // A Sandbox's container and checkpoints must go before its storage, so
-    // it answers no host function until it can do that itself.
-    throw new Error('A coding workspace Sandbox has no host functions yet.');
-  }
+  // A Sandbox is addressed as the Sandbox SDK addresses it, by its exact name.
   const bindingName = object.kind === 'slack_agent'
     ? CHICKPEA_SLACK_AGENT_BINDING
     : object.kind === 'routine_agent'
       ? agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)
       : object.kind === 'coding_worker'
         ? agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME)
-        : undefined;
+        : object.kind === 'sandbox'
+          ? (env.SANDBOX === undefined && env.Sandbox !== undefined ? 'Sandbox' : 'SANDBOX')
+          : undefined;
   if (!bindingName) throw new Error('Unknown installation object kind.');
   const namespace = env[bindingName] as IdNamespace | undefined;
   if (typeof namespace?.idFromName !== 'function' || typeof namespace.get !== 'function') {

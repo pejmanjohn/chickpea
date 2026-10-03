@@ -279,7 +279,8 @@ reuses the checkout instead of cloning again.
 - **Checkpoints:** after each turn, the workspace files (without dependency
   folders such as `node_modules` or `.venv`) are saved to the `BACKUP_BUCKET`
   R2 bucket. If the thread resumes within three days, a new container restores
-  them. A checkpoint of a few hundred megabytes costs a fraction of a cent to
+  them. Each checkpoint replaces the thread's previous one, which is deleted
+  then. A checkpoint of a few hundred megabytes costs a fraction of a cent to
   keep for three days, and R2's free tier usually covers it. The Worker's
   maintenance cron deletes checkpoints older than three days every hour.
   Wrangler creates the bucket on the first Sandbox-profile deploy; without it,

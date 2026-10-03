@@ -15,6 +15,7 @@ import {
 import { getSlackStateStore } from '../config/state-backend.ts';
 import type { SandboxTurnReader, TurnExecutionPorts } from '../slack/turn-executor.ts';
 import type { InstallationWorkspaceObject } from '../state/object-inventory.ts';
+import { sandboxCheckpointEnv } from './checkpoint-bucket.ts';
 import { CLOUDFLARE_SANDBOX_OPTIONS, cloudflareSandboxOptionVariants } from './lifecycle.ts';
 import { reconnectingSandboxStub } from './reconnect.ts';
 
@@ -189,7 +190,8 @@ export interface SandboxObjectContext extends ObjectContext {
  * object by ID, which carries no name, so the first named construction also
  * stores the installation and an unnamed wake recovers it from there. An
  * object with neither keeps an unscoped env, so everything tenant-owned it
- * touches fails closed.
+ * touches fails closed. Under installation tenancy the env's checkpoint
+ * bucket is the installation's prefixed view (checkpoint-bucket.ts).
  */
 export function sandboxObjectEnv<E>(ctx: SandboxObjectContext, env: E): E {
   const platformEnv = env as Env | undefined;
@@ -213,7 +215,9 @@ export function sandboxObjectEnv<E>(ctx: SandboxObjectContext, env: E): E {
   } else {
     installationId = storedId;
   }
-  return installationId ? scopeInstallationEnv(platformEnv, { installationId }) as E : env;
+  // The SDK reads `BACKUP_BUCKET` from this env: the installation's own
+  // checkpoint prefix, or no bucket for an object that serves none.
+  return sandboxCheckpointEnv(installationId ? scopeInstallationEnv(platformEnv, { installationId }) as E : env);
 }
 
 /** RFC 4648 base32, lowercase, without padding. */
