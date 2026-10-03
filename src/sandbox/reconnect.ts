@@ -33,6 +33,11 @@ export const RETRY_SAFE_SANDBOX_METHODS: ReadonlySet<string> = new Set([
   'endTurn',
   'destroy',
   'discardWorkspace',
+  // A replayed admission finds the lease its first call took, for a container
+  // that has not started yet, and takes it again.
+  'admitContainer',
+  // Renewing or releasing a lease again leaves it as the first call did.
+  'settleContainerLease',
   // A coding task record is written whole under its key, and dropped by it.
   'putCodingTask',
   'settleCodingTask',

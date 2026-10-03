@@ -59,15 +59,23 @@ export class SandboxConnectionDroppedError extends FlueError {
   }
 }
 
-/** Public-safe refusal when the operator-configured monthly cap is exhausted. */
+/**
+ * Public-safe refusal when a monthly cap is exhausted: the operator's session
+ * cap, or on a deployment serving many installations the host's session or
+ * container-hours cap. Hosted has no Settings page for the limit, so its
+ * refusal says only the first sentence.
+ */
 export class SandboxSessionCapError extends FlueError {
-  constructor() {
+  readonly hosted: boolean;
+  constructor(options: { hosted?: boolean } = {}) {
+    const hosted = options.hosted === true;
     super({
       type: 'sandbox_session_cap_reached',
       message: 'The coding workspace monthly session limit has been reached.',
-      details: 'An administrator can review the coding sandbox limit in Settings.',
+      details: hosted ? '' : 'An administrator can review the coding sandbox limit in Settings.',
       dev: '',
     });
     this.name = 'SandboxSessionCapError';
+    this.hosted = hosted;
   }
 }

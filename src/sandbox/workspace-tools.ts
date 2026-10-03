@@ -123,6 +123,14 @@ export const WORKSPACE_UNAVAILABLE_MESSAGE =
   'The coding workspace is temporarily unavailable. Say so, and use the Repositories API path if it covers the request; do not retry this call in the same reply.';
 export const WORKSPACE_SESSION_CAP_MESSAGE =
   'The coding workspace monthly session limit has been reached. Say so; an administrator can review the coding sandbox limit in Settings. Do not retry.';
+/** Hosted has no Settings page for the limit, so the model is not told to point at one. */
+export const HOSTED_WORKSPACE_SESSION_CAP_MESSAGE =
+  'The coding workspace monthly session limit has been reached. Say so. Do not retry.';
+
+/** What the model is told when a monthly cap refuses the workspace. */
+export function workspaceSessionCapMessage(error: SandboxSessionCapError): string {
+  return error.hosted ? HOSTED_WORKSPACE_SESSION_CAP_MESSAGE : WORKSPACE_SESSION_CAP_MESSAGE;
+}
 
 /**
  * Coordinator-side tools on a coding workspace. Each holds its own Flue
@@ -449,7 +457,7 @@ async function guard<T>(
 }
 
 function workspaceFailure(error: unknown, signal?: AbortSignal): WorkspaceFailure | undefined {
-  if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
+  if (error instanceof SandboxSessionCapError) return failure('session_cap', workspaceSessionCapMessage(error));
   // The Durable Object connection dropped under a call that is not replayed:
   // the workspace is intact and the next call reconnects.
   if (error instanceof SandboxConnectionDroppedError) {

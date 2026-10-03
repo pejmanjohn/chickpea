@@ -407,6 +407,10 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     covered: "sandbox: the container's own, already recorded when its workspace was opened",
     sites: ['const stub = platformEnv.SANDBOX.get(platformEnv.SANDBOX.idFromString(ctx.containerId));'],
   },
+  'sandbox/hosted-limits.ts': {
+    covered: "sandbox: a lease's key is the Sandbox's own ID, which it wrote into its installation's store",
+    sites: ['const stub = namespace.get(namespace.idFromString(key));'],
+  },
   'sandbox/select.ts': {
     covered: 'Container probe: one deployment object that holds no installation data',
     sites: ['const stub = namespace.get(namespace.idFromName(SANDBOX_CONTAINER_PROBE_NAME));'],

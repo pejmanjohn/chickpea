@@ -20,10 +20,23 @@ const PACKAGE_REGISTRY_METHODS = new Set(['GET', 'HEAD', 'POST']);
 const REPOSITORY_METHOD_SET = new Set<string>(REPOSITORY_METHODS);
 const PACKAGE_REGISTRY_HOST_SET = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
 
+/**
+ * What an allowed GitHub request does, for the hosted write rate
+ * (github-write-rate.ts): `read` only when it surely reads, `pull_request`
+ * when it may open one, and `write` for everything else.
+ */
+export type GithubRequestEffect = 'read' | 'write' | 'pull_request';
+
 export type SandboxEgressDecision =
   | {
       allowed: true;
-      kind: 'github' | 'package-registry';
+      kind: 'github';
+      repositories: string[];
+      effect: GithubRequestEffect;
+    }
+  | {
+      allowed: true;
+      kind: 'package-registry';
       repositories: string[];
     }
   | {
@@ -44,9 +57,17 @@ export type SandboxEgressDecision =
 interface SandboxEgressInput {
   url: string;
   method: string;
+  /** The request's headers, which can override its method; absent means none. */
+  headers?: Headers;
   grants: readonly RepositoryGrant[];
   allowedHosts: readonly string[];
 }
+
+/** Headers some servers honour in place of the request method. */
+const METHOD_OVERRIDE_HEADERS = ['x-http-method-override', 'x-http-method', 'x-method-override'];
+/** Git's fetch protocol, exactly as Git sends it: the only GitHub POST that surely reads. */
+const GIT_UPLOAD_PACK_PATH = /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/git-upload-pack$/;
+const PULL_REQUEST_CREATE_PATH = /^\/repos\/[^/]+\/[^/]+\/pulls$/;
 
 const DENIED_REPOSITORY_ENDPOINTS = [
   /^\/repos\/[^/]+\/[^/]+\/dispatches$/, // repository_dispatch
@@ -152,12 +173,18 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
 
   if (!REPOSITORY_METHOD_SET.has(method)) return denied('method-denied');
   const grants = validEnabledRepositoryGrants(input.grants);
+  const github = (repositories: string[]): SandboxEgressDecision => ({
+    allowed: true,
+    kind: 'github',
+    repositories,
+    effect: githubRequestEffect(url, method, input.headers),
+  });
   if (host === 'github.com') {
     const repository = githubRepositoryFromPath(url.pathname);
     if (!repository) return denied('repository-required');
     const canonical = canonicalGrantedRepository(repository, grants);
     return canonical
-      ? { allowed: true, kind: 'github', repositories: [canonical] }
+      ? github([canonical])
       : denied('repository-denied', [repository]);
   }
 
@@ -165,13 +192,9 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
   if (pathname === '/search/code') {
     const repositories = grantedCodeSearchRepositories(url.toString(), grants);
     if (repositories === undefined) return denied('code-search-denied');
-    return {
-      allowed: true,
-      kind: 'github',
-      repositories: repositories.map(
-        (repository) => canonicalGrantedRepository(repository, grants) ?? repository,
-      ),
-    };
+    return github(repositories.map(
+      (repository) => canonicalGrantedRepository(repository, grants) ?? repository,
+    ));
   }
 
   const repository = apiRepositoryFromPath(url.pathname);
@@ -184,7 +207,33 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
   if (isDeniedCrossRepositoryCompare(url, canonical, grants)) {
     return denied('endpoint-denied', [canonical]);
   }
-  return { allowed: true, kind: 'github', repositories: [canonical] };
+  return github([canonical]);
+}
+
+/**
+ * Judged on the same URL and method the decision allowed and egress
+ * forwards. A method-override header or `_method` parameter makes any
+ * request a write; a pull request path is matched as GitHub routes it,
+ * decoded, with repeated slashes collapsed and in any letter case.
+ */
+function githubRequestEffect(url: URL, method: string, headers: Headers | undefined): GithubRequestEffect {
+  const overridden = METHOD_OVERRIDE_HEADERS.some((name) => headers?.has(name) === true) ||
+    [...url.searchParams.keys()].some((key) => key.toLowerCase() === '_method');
+  if (!overridden) {
+    if (method === 'GET') return 'read';
+    if (
+      method === 'POST' && url.hostname === 'github.com' && url.search === '' &&
+      GIT_UPLOAD_PACK_PATH.test(url.pathname)
+    ) return 'read';
+  }
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    return 'pull_request';
+  }
+  pathname = pathname.replace(/\/{2,}/g, '/').replace(/\/+$/, '').toLowerCase();
+  return PULL_REQUEST_CREATE_PATH.test(pathname) ? 'pull_request' : 'write';
 }
 
 function denied(

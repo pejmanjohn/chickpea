@@ -143,6 +143,16 @@ import {
   type SandboxOutboundHandler,
 } from './sandbox/egress-outbound.ts';
 import { sandboxObjectEnv, sandboxTurnReaders, type SandboxObjectContext } from './sandbox/sandbox-object.ts';
+import type { SandboxContainerAdmission } from './sandbox/container-lease.ts';
+import {
+  admitWorkspaceContainer,
+  holdStartedWorkspaceContainer,
+  isContainerLeaseSweepMinute,
+  maintainWorkspaceContainerLeases,
+  meterWorkspaceContainer,
+  requireWorkspaceTurnAdmitted,
+} from './sandbox/hosted-limits.ts';
+import type { SandboxContainerLimits } from './config/sandbox-settings.ts';
 import {
   checkpointBucket,
   isCheckpointSweepMinute,
@@ -412,6 +422,8 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     fingerprint: string;
     turnId: string;
   }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }> {
+    // A suspended or ended installation opens no workspace turn.
+    await requireWorkspaceTurnAdmitted(this.env);
     const decision = await this.workspaceState().beginTurn({
       ...input,
       containerRunning: this.containerRunning(),
@@ -423,6 +435,60 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
       reservationId: decision.reservationId,
       restorable: decision.restorable && workspaceCheckpointsAvailable(this.env),
     };
+  }
+
+  /**
+   * Admit this activation's container under the host's running limit and
+   * container-hours cap, holding its lease; standalone always admits.
+   * Called before the activation starts the container.
+   */
+  async admitContainer(limits: SandboxContainerLimits): Promise<SandboxContainerAdmission> {
+    return admitWorkspaceContainer(this.env, {
+      key: this.ctx.id.toString(),
+      running: this.containerRunning(),
+      limits,
+      now: Date.now(),
+    });
+  }
+
+  /**
+   * Renew a running container's lease for its warm window, or release a
+   * stopped one's, metering its run: at a turn's end, and when the session
+   * cap refused a container admission had let start.
+   */
+  async settleContainerLease(): Promise<void> {
+    await meterWorkspaceContainer(
+      this.env,
+      this.containerRunning() ? 'hold' : 'release',
+      { key: this.ctx.id.toString(), now: Date.now() },
+    );
+  }
+
+  /** For work maintenance: whether a lease's container still runs. Starts nothing. */
+  async isContainerRunning(): Promise<boolean> {
+    return this.containerRunning();
+  }
+
+  /** The last start's lease hold, which a stop's release waits for. */
+  private startHold: Promise<void> | undefined;
+
+  override async onStart(): Promise<void> {
+    await super.onStart();
+    // The Containers SDK runs this inside blockConcurrencyWhile, so the hold
+    // runs beside the start, bounded, and every start is still metered.
+    const hold = holdStartedWorkspaceContainer(this.env, { key: this.ctx.id.toString(), now: Date.now() });
+    if (hold) {
+      this.startHold = hold;
+      // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+      (this.ctx as DurableObjectState & { waitUntil(promise: Promise<unknown>): void }).waitUntil(hold);
+    }
+  }
+
+  override async onStop(params?: Parameters<CloudflareSandbox['onStop']>[0]): Promise<void> {
+    await super.onStop(params);
+    // A start's hold still in flight lands first, so this release closes it.
+    await this.startHold;
+    await meterWorkspaceContainer(this.env, 'release', { key: this.ctx.id.toString(), now: Date.now() });
   }
 
   /**
@@ -473,6 +539,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
         localBucket: true,
       }),
     });
+    await this.settleContainerLease();
   }
 
   /**
@@ -3279,6 +3346,10 @@ async function runWorkMaintenance(
     const platformEnv = rawEnv as PlatformEnv;
     try { await purgeExpiredImageOutputs(getSettingsStore(platformEnv), scheduledTime); }
     catch { console.warn('[chickpea] Image cache maintenance did not complete'); }
+    if (isContainerLeaseSweepMinute(scheduledTime)) {
+      try { await maintainWorkspaceContainerLeases(platformEnv, scheduledTime); }
+      catch { console.warn('[chickpea] Coding workspace container lease cleanup did not complete'); }
+    }
     const checkpoints = checkpointBucket(platformEnv);
     if (checkpoints && isCheckpointSweepMinute(scheduledTime)) {
       try { await sweepExpiredWorkspaceCheckpoints(checkpoints, scheduledTime); }

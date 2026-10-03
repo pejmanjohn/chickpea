@@ -11,6 +11,7 @@ import {
 } from '../src/agents/coding-worker-staging.ts';
 import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { configureInstallationAdmission, resetInstallationAdmissionForTests } from '../src/config/installation-admission.ts';
 import {
   installationScopeOf,
   InstallationContextError,
@@ -220,6 +221,13 @@ test('a standalone Sandbox keeps the platform env and refuses an installation\'s
     InstallationContextError);
 });
 
+/** The host admits every installation (H12b refuses a suspended one's egress). */
+function admitted(t: TestContext) {
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  t.after(() => resetInstallationAdmissionForTests());
+}
+
 /** A Sandbox namespace whose objects answer egress with `context`, counting their calls. */
 function egressEnv(base: Record<string, unknown>, context: SandboxEgressContext) {
   const calls: string[] = [];
@@ -256,6 +264,7 @@ const policy = (packageRegistryHosts?: string[]) => ({
 });
 
 test('hosted registry egress reads its installation and allowlist from the Sandbox in one call, and nothing else', async (t) => {
+  admitted(t);
   const fetched = withFetch(t);
   const { env, calls } = egressEnv(HOSTED, {
     installationId: INSTALLATION_A, turnId: 'turn_a', policy: policy(['registry.npmjs.org']),
@@ -301,6 +310,7 @@ function onCloudflare(t: TestContext) {
 }
 
 test('hosted GitHub egress reads only its own installation\'s GitHub connection', async (t) => {
+  admitted(t);
   onCloudflare(t);
   const privateKey = String(generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
     type: 'pkcs8', format: 'pem',

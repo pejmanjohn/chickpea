@@ -16,6 +16,7 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 - A follow-up in the same thread reuses the checkout. The container sleeps 30 minutes after the last turn, and its checkpoint (without dependency folders) restores for 3 days.
 - A grant change or a different Agent in the thread retires the workspace. A scheduled run always starts a fresh one.
 - The monthly session cap (Advanced, counts workspace starts) refuses with "The coding workspace monthly session limit has been reached."
+- On a deployment serving many installations the host's policy decides instead (`configureHostedSandboxPolicy`): Settings → Coding sandbox cannot be changed (`PUT`/`PATCH` status are not found), and the host also caps running containers, monthly container-hours and GitHub writes. Hosted cap refusals keep only the first sentence.
 
 ## How a person reaches it
 
@@ -42,6 +43,7 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 - Never redeploy during an idle window: any Durable Object reset restarts the 30-minute idle clock. The docs coding sandbox page still lists a 5-minute idle sleep; the runbook and product use 30.
 - Read the working indicator from a fresh load of the Slack web client in the lane browser.
 - `wrangler containers instances <application id> --json` lists each container by its Sandbox name. On a standalone lane that is the bare thread key (`T…:C…:<thread ts>`); an inactive lowercase twin is the normalized-ID bridge probing, not a second container. A hosted name reads `i1~<installation>~w<21 characters>`.
+- A Sandbox that was instantiated but never started (a cold start the session cap refused, or the normalized-ID twin a reader woke) lists as `stopped` with a location for a few minutes, then `inactive`. Neither means a container ran.
 - `npm run lane:slack -- <alias> thread … --out FILE` refuses to overwrite an existing file, so a polling readback writes a fresh path each time and moves it into place.
 - Models refuse fault injection such as killing every process, even framed as QA. Exercise failure paths through limits (the session cap, the open-workspace limit) instead.
 - A clone or install failing with DNS or connection errors while replies work points at mediated egress; see the [runbook](../../../docs/runbooks/coding-sandbox-deployment.md). GitHub rate limits on clone are upstream.

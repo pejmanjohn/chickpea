@@ -41,7 +41,7 @@ import {
 import type { WorkspaceSession } from './workspace-session.ts';
 import {
   WORKSPACE_NAME,
-  WORKSPACE_SESSION_CAP_MESSAGE,
+  workspaceSessionCapMessage,
   WORKSPACE_TASK_TOOL_NAME,
   WORKSPACE_UNAVAILABLE_MESSAGE,
   type WorkspaceResolver,
@@ -622,7 +622,7 @@ function workerToolStatus(toolName: string, input: unknown): ActivityStatus {
 function workspaceFailure(error: unknown): WorkspaceTaskFailure | undefined {
   if (error instanceof WorkspaceLimitError) return failure('workspace_limit', error.message);
   if (error instanceof WorkspaceNameError) return failure('invalid_input', error.message);
-  if (error instanceof SandboxSessionCapError) return failure('session_cap', WORKSPACE_SESSION_CAP_MESSAGE);
+  if (error instanceof SandboxSessionCapError) return failure('session_cap', workspaceSessionCapMessage(error));
   if (
     error instanceof SandboxUnavailableError ||
     error instanceof SandboxConnectionDroppedError ||

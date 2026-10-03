@@ -1,3 +1,9 @@
+import { hostedSandboxPolicy } from './hosted-sandbox-policy.ts';
+import {
+  deploymentServesManyInstallations,
+  InstallationContextError,
+  installationScopeOf,
+} from './installation-scope.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { parseMonthlySessionCap } from '../sandbox/session-cap.ts';
 
@@ -17,6 +23,12 @@ export const SANDBOX_PACKAGE_REGISTRY_HOSTS = [
 const SANDBOX_INSTANCE_TYPE = 'standard-1' as const;
 type SandboxInstanceType = typeof SANDBOX_INSTANCE_TYPE;
 
+/** The host's per-installation limits on running containers; standalone has none. */
+export interface SandboxContainerLimits {
+  monthlyContainerHours: number;
+  maxRunningContainers: number;
+}
+
 interface SandboxSettings {
   installRequested: boolean;
   enabled: boolean;
@@ -24,11 +36,45 @@ interface SandboxSettings {
   allowedHosts: string[];
   monthlySessionCap: number;
   monthlySessionCapConfigured: boolean;
+  /** Present only on a deployment serving many installations, from the host's policy. */
+  containerLimits?: SandboxContainerLimits;
 }
 
 const SUPPORTED_PACKAGE_REGISTRY_HOSTS = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
 
-export async function resolveSandboxSettings(store: SettingsStore): Promise<SandboxSettings> {
+/**
+ * The coding sandbox settings a turn or Admin acts on. Standalone: the
+ * operator's settings, as always. A deployment serving many installations:
+ * the host's policy for the env's installation (hosted-sandbox-policy.ts);
+ * the tenant's `sandbox.*` settings are not read, and an env naming no
+ * installation is refused.
+ */
+export async function resolveSandboxSettings(
+  store: SettingsStore,
+  env: Record<string, unknown> | undefined,
+): Promise<SandboxSettings> {
+  if (deploymentServesManyInstallations(env)) {
+    const scope = installationScopeOf(env);
+    if (!scope) {
+      throw new InstallationContextError(
+        'installation_context_missing',
+        'This deployment serves many installations and the request has none.',
+      );
+    }
+    const policy = await hostedSandboxPolicy(scope.installationId);
+    return {
+      installRequested: false,
+      enabled: policy.enabled,
+      instanceType: SANDBOX_INSTANCE_TYPE,
+      allowedHosts: curatedSandboxHosts(policy.allowedHosts),
+      monthlySessionCap: policy.monthlySessionCap,
+      monthlySessionCapConfigured: true,
+      containerLimits: {
+        monthlyContainerHours: policy.monthlyContainerHours,
+        maxRunningContainers: policy.maxRunningContainers,
+      },
+    };
+  }
   const [installRequested, enabled, allowedHosts, monthlySessionCap] = await store.getSettings([
     SANDBOX_SETTING_KEYS.installRequested,
     SANDBOX_SETTING_KEYS.enabled,
@@ -61,9 +107,13 @@ export function parseSandboxAllowedHosts(raw: string | undefined): string[] {
   if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === 'string')) {
     return [...SANDBOX_PACKAGE_REGISTRY_HOSTS];
   }
+  return curatedSandboxHosts(parsed);
+}
+
+function curatedSandboxHosts(hosts: readonly string[]): string[] {
   return [
     ...new Set(
-      parsed
+      hosts
         .map((host) => host.trim().toLowerCase())
         .filter((host) => SUPPORTED_PACKAGE_REGISTRY_HOSTS.has(host)),
     ),

@@ -1605,12 +1605,13 @@ async function sandboxStatus(
   env: PlatformEnv | undefined,
 ) {
   const cloudflare = isCloudflareTarget();
+  const hosted = deploymentServesManyInstallations(env);
   const bound = cloudflare && sandboxBindingInstalled(env);
   // The binding alone survives a deploy that failed before its Container
   // application existed; installation needs the Container too. An unknown
   // probe result keeps the binding's answer instead of inventing a failure.
   const [resolved, github, agents, containerApplication] = await Promise.all([
-    resolveSandboxSettings(settingsStore),
+    resolveSandboxSettings(settingsStore, env as Record<string, unknown> | undefined),
     getGithubConnection(settingsStore),
     configStore.listUserAgents(),
     bound ? probeSandboxContainer(env) : null,
@@ -1641,13 +1642,15 @@ async function sandboxStatus(
     githubConnected,
     repositoryGrantReady,
     unmetPrerequisites,
-    workersPaidNote: cloudflare
+    // A deployment serving many installations runs the sandbox for them: no
+    // account of theirs pays for it or needs R2.
+    workersPaidNote: cloudflare && !hosted
       ? 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent. ' +
         'Workspace checkpoints also need R2 enabled on the account; the free tier is enough.'
       : null,
     // A command deploy on an account without R2 leaves out the checkpoint
     // bucket binding rather than failing; say so, with the fix.
-    checkpointsNote: installed && !workspaceCheckpointsAvailable(env as Record<string, unknown> | undefined)
+    checkpointsNote: installed && !hosted && !workspaceCheckpointsAvailable(env as Record<string, unknown> | undefined)
       ? 'Workspace checkpoints are off until R2 is enabled, so a coding thread clones its repository again after ' +
         'the sandbox sleeps. Enable R2 in the Cloudflare dashboard, then redeploy the same way you installed the sandbox.'
       : null,
@@ -11725,7 +11728,8 @@ function isAdminPageGet(c: Context): boolean {
 // environment bridge, the legacy configuration cutover, the ChatGPT plan
 // handoff, the browser (its Browserbase key and website logins), and the
 // request to install or remove the coding sandbox, which only whoever deploys
-// can complete. The sandbox's status and runtime settings stay served.
+// can complete. The host's policy owns the sandbox's runtime settings, so
+// only its status stays served.
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11750,6 +11754,8 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   const canonical = path.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1');
   // Removing the stored Slack credentials is the host's installation lifecycle.
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
+  // The host's policy owns a hosted coding sandbox; its status stays readable.
+  if ((method === 'PUT' || method === 'PATCH') && canonical === '/admin/api/sandbox/status') return true;
   return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
     STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }

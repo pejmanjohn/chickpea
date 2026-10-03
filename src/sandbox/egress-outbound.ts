@@ -2,6 +2,7 @@ import {
   getCachedInstallationToken,
   getGithubConnection,
 } from '../config/github-app.ts';
+import { requireInstallationAdmitted } from '../config/installation-admission.ts';
 import { deploymentTenancy, scopeInstallationEnv } from '../config/installation-scope.ts';
 import { parseSandboxAllowedHosts, SANDBOX_SETTING_KEYS } from '../config/sandbox-settings.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
@@ -13,6 +14,7 @@ import {
   resolveRepositoryInstallationScope,
 } from './egress-handler.ts';
 import { githubAuthorizationHeader } from './github-auth.ts';
+import { admitGithubWrite, githubWriteRateLimited } from './github-write-rate.ts';
 import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
@@ -25,10 +27,12 @@ import {
  * sets and the container cannot forge. Each handler first asks that Sandbox,
  * in one call, which installation it serves and what its turn may reach,
  * and reads every tenant-owned store through that installation's env. A
- * Sandbox that cannot name its installation on a deployment serving many
- * gets nothing. Profile grants are persisted as policy only; the GitHub
- * credential is minted after each request passes the pure policy decision
- * and is attached only to the Worker-side forwarded Request.
+ * Sandbox that cannot name its installation on a deployment serving many,
+ * or whose installation the host no longer admits, gets nothing, and that
+ * installation's GitHub writes are rate-limited. Profile grants are
+ * persisted as policy only; the GitHub credential is minted after each
+ * request passes the pure policy decision and is attached only to the
+ * Worker-side forwarded Request.
  */
 
 export type SandboxOutboundContext = {
@@ -92,6 +96,7 @@ export async function githubSandboxOutbound(
     const decision = decideSandboxEgress({
       url: request.url,
       method: request.method,
+      headers: request.headers,
       grants,
       allowedHosts: [],
     });
@@ -101,6 +106,13 @@ export async function githubSandboxOutbound(
 
     const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
     if (!installation) return denySandboxOutbound();
+
+    // An installation of many shares the platform's GitHub App: its writes
+    // are rate-limited before a token is minted for them.
+    if (context.installationId && decision.effect !== 'read' &&
+      !(await admitGithubWrite({ store: settings, kind: decision.effect, now: Date.now() }))) {
+      return githubWriteRateLimited();
+    }
     const { token: credential } = await getCachedInstallationToken(
       connection,
       installation.id,
@@ -182,6 +194,9 @@ async function egressScope(
     return { env: platformEnv, stub, context };
   }
   if (!context.installationId) throw new Error('The Sandbox names no installation.');
+  // A suspended or ended installation reaches nothing, within the admission
+  // check's 30 seconds.
+  await requireInstallationAdmitted(context.installationId);
   return {
     env: scopeInstallationEnv(platformEnv, { installationId: context.installationId }),
     stub,

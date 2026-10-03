@@ -2507,7 +2507,7 @@ export async function resolveCodingWorkspaceDecision(
   try {
     const settingsStore = store ?? getSettingsStore(env);
     const [settings, connection] = await Promise.all([
-      resolveSandboxSettings(settingsStore),
+      resolveSandboxSettings(settingsStore, env),
       getGithubConnection(settingsStore),
     ]);
     return resolveCodingWorkspaceCapability({

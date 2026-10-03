@@ -129,7 +129,7 @@ test('under tenancy Admin\'s browser key and website-login routes are not found,
   }
 });
 
-test('under tenancy the coding sandbox install and uninstall routes are not found, before any store is read; its status and settings stay served', async (t) => {
+test('under tenancy the coding sandbox install, uninstall and settings routes are not found, before any store is read; its status stays served', async (t) => {
   t.mock.method(console, 'error', () => {});
   const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
   const install = '/admin/api/sandbox/install';
@@ -140,12 +140,18 @@ test('under tenancy the coding sandbox install and uninstall routes are not foun
     }
     assert.equal((await routes.request(`http://localhost${install}`, { method })).status, 500, `standalone ${method}`);
   }
-  // A managed hosted sandbox reads its status and saves its runtime settings
-  // here, so these get past the guard (to the store, which fails here).
-  for (const method of ['GET', 'PUT', 'PATCH']) {
-    const response = await routes.request('https://hosted.example/admin/api/sandbox/status', { method }, ENV_A);
-    assert.notEqual(response.status, 404, `hosted ${method} status`);
+  // The host's policy owns a hosted sandbox's settings; its status stays
+  // readable for an operator, so only GET gets past the guard (to the store,
+  // which fails here).
+  const status = '/admin/api/sandbox/status';
+  for (const method of ['PUT', 'PATCH']) {
+    for (const variant of [status, '/admin//api/sandbox/status', `${status}/`, '/admin/api/sandbox/%73tatus']) {
+      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
+      assert.equal(response.status, 404, `hosted ${method} ${variant}`);
+    }
+    assert.equal((await routes.request(`http://localhost${status}`, { method })).status, 500, `standalone ${method} status`);
   }
+  assert.equal((await routes.request(`https://hosted.example${status}`, {}, ENV_A)).status, 500, 'hosted GET status');
 });
 
 test('under tenancy no turn or occurrence is offered the browser, even with a deployment Browserbase key', async (t) => {

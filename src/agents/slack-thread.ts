@@ -81,7 +81,7 @@ import {
   registerFrozenRuntimeModelRoute,
   resolveRuntimeModel,
 } from '../config/runtime-model.ts';
-import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
+import { resolveSandboxSettings, type SandboxContainerLimits } from '../config/sandbox-settings.ts';
 import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import {
@@ -1590,6 +1590,7 @@ async function createRuntimePlanWorkspace(
     const { sandboxSettings, githubAppConnected } = await runtimePlanWorkspaceFacts(
       settingsStore,
       input.turn,
+      env,
     );
     // Settings as of this turn's dispatch win over the capability frozen at
     // admission: a workspace disabled or disconnected since is unavailable.
@@ -1618,6 +1619,7 @@ async function createRuntimePlanWorkspace(
       settingsStore,
       monthlySessionCap: sandboxSettings.monthlySessionCap,
       packageRegistryHosts: sandboxSettings.allowedHosts,
+      ...(sandboxSettings.containerLimits ? { hostedLimits: sandboxSettings.containerLimits } : {}),
     });
     return {
       session: session.session,
@@ -1683,6 +1685,7 @@ export async function resolveRuntimePlanBashRepositoryAccess(
     const { sandboxSettings, githubAppConnected } = await runtimePlanWorkspaceFacts(
       getSettingsStore(env),
       turn,
+      env,
     );
     unavailableFallback = resolveCodingWorkspaceCapability({
       target: 'cloudflare',
@@ -1790,13 +1793,14 @@ function withTurnSettings<T>(
 async function runtimePlanWorkspaceFacts(
   live: SettingsStore,
   turn: TurnEnvelopeContext | undefined,
+  env: PlatformEnv | undefined,
 ): Promise<{
   sandboxSettings: Awaited<ReturnType<typeof resolveSandboxSettings>>;
   githubAppConnected: boolean;
 }> {
   const envelope = await turn?.envelope();
   const [sandboxSettings, githubAppConnected] = await Promise.all([
-    resolveSandboxSettings(envelope ? new TurnSettingsView(live, envelope) : live),
+    resolveSandboxSettings(envelope ? new TurnSettingsView(live, envelope) : live, env),
     envelope
       ? envelope.githubAppConnected
       : getGithubConnection(live).then(
@@ -2312,6 +2316,7 @@ async function createCloudflareWorkspaceSession(options: {
   settingsStore: ReturnType<typeof getSettingsStore>;
   monthlySessionCap: number;
   packageRegistryHosts: readonly string[];
+  hostedLimits?: SandboxContainerLimits;
 }) {
   const { cloudflareSandbox } = await import('@flue/runtime/cloudflare');
   const name = options.name ?? DEFAULT_WORKSPACE_NAME;
@@ -2341,6 +2346,7 @@ async function createCloudflareWorkspaceSession(options: {
         cap: options.monthlySessionCap,
         reservationId: workspaceReservationId(options.conversationKey, workspaceId, reservationId),
       })).allowed,
+    ...(options.hostedLimits ? { hostedLimits: options.hostedLimits } : {}),
     toSandbox: (stub) => provider(stub).createSandbox({ id: workspaceId }),
   });
   return { session, provider, mintStub };
