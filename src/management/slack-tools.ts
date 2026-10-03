@@ -56,6 +56,7 @@ import {
 } from './types.ts';
 import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
+import { ROUTINE_CONNECTIONS_REQUIRED_MESSAGE } from '../routines/slack-command.ts';
 import {
   slackActionLink,
   type SlackActionLink,
@@ -587,6 +588,7 @@ export function useWorkspaceManagementSlackTools(
       const operation = scheduleToolOperation(signal, data);
       const result = await step.do('apply-schedule-action', () =>
         invokeLiveSlackScheduleAction(signal, resolvePlatformEnv, operation));
+      throwCorrectableScheduleRefusal(result);
       creationCoordinator.recordScheduleFollowOn(result);
       return JSON.stringify(scheduleActionToolResult(result));
     },
@@ -1232,10 +1234,7 @@ export function scheduleToolOperation(
   // recorded, so the requester would get a failure receipt for a call the
   // Agent can still correct. Refuse it here, as the save would word it.
   if (data.action === 'create' && data.requiredConnectionAccountIds === undefined) {
-    throw new ManagementError(
-      'invalid_request',
-      'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.',
-    );
+    throw new ManagementError('invalid_request', ROUTINE_CONNECTIONS_REQUIRED_MESSAGE);
   }
   const ownerAgentId = signal.agentId === CHICKPEA_AGENT_ID
     ? data.ownerAgentId
@@ -1297,6 +1296,18 @@ function scheduleFromToolArguments(data: SlackScheduleToolArguments):
       return Number.isSafeInteger(data.minutes) && data.minutes! > 0
         ? { kind: 'in', minutes: data.minutes! }
         : undefined;
+  }
+}
+
+/**
+ * An edit that changes the task without its connection choice is refused
+ * before it is recorded. Raise it as the create pre-check does, so the Agent
+ * corrects the call in this turn instead of reporting a failure.
+ */
+export function throwCorrectableScheduleRefusal(result: SlackScheduleActionOutcome): void {
+  if (result.outcome === 'failed' && result.code === 'invalid_request' &&
+      result.message === ROUTINE_CONNECTIONS_REQUIRED_MESSAGE) {
+    throw new ManagementError('invalid_request', result.message);
   }
 }
 

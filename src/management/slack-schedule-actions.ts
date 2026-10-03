@@ -1,7 +1,11 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { routineNextRunTime } from '../routines/message-format.ts';
 import { scheduleActionId } from '../routines/ids.ts';
-import { SlackScheduleCommandError } from '../routines/slack-command.ts';
+import { normalizeAuthorityText } from '../routines/provenance.ts';
+import {
+  ROUTINE_CONNECTIONS_REQUIRED_MESSAGE,
+  SlackScheduleCommandError,
+} from '../routines/slack-command.ts';
 import {
   type RoutineDefinition,
   type RoutineScheduleAction,
@@ -157,6 +161,14 @@ async function bindScheduleOperationToRequester(
     }
   }
   if (operation.kind !== 'save_routine') return operation;
+  // The save refuses a changed task without a connection choice, but only
+  // after the action is recorded. An edit of the current version is checked
+  // against this same routine, so refuse it before recording.
+  if (previous && previous.version === operation.expectedVersion &&
+      operation.requiredConnectionAccountIds === undefined && operation.taskText !== undefined &&
+      normalizeAuthorityText(operation.taskText) !== normalizeAuthorityText(previous.taskText)) {
+    throw new ManagementError('invalid_request', ROUTINE_CONNECTIONS_REQUIRED_MESSAGE);
+  }
   if (previous && previous.version !== operation.expectedVersion &&
       ['name', 'description', 'taskText', 'schedule', 'timezone', 'outputPolicy'].some(
         (field) => operation[field as ScheduleFields] === undefined,
