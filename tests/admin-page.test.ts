@@ -17739,7 +17739,7 @@ test('hosted Admin offers no About & updates page; a standalone Owner keeps it',
   }
 });
 
-test('hosted Coding sandbox shows its status with no install, redeploy or clear-request steps; standalone keeps them', async () => {
+test('hosted Admin has no Coding sandbox page, rail entry or status request, and a sandbox link lands on the default section; standalone keeps them', async () => {
   const notInstalled: SandboxStatusFixture = {
     installRequested: false, installed: false, storedEnabled: false, enabled: false,
     instanceType: 'standard-1', allowedHosts: [], monthlySessionCap: 0, monthlySessionCapConfigured: false,
@@ -17748,45 +17748,58 @@ test('hosted Coding sandbox shows its status with no install, redeploy or clear-
     workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
     deploySource: 'command',
   };
+  const installed: SandboxStatusFixture = {
+    ...notInstalled, installed: true, githubConnected: true, repositoryGrantReady: true, unmetPrerequisites: [],
+    checkpointsNote: 'Workspace checkpoints are off until R2 is enabled.',
+  };
   for (const { mode, ...hosting } of HOSTING_MODES) {
-    for (const variant of ['not installed', 'install requested', 'saved On state'] as const) {
-      const harness = runAdminPageHarness({
-        ...hosting, cloudflare: true, initialPath: '/admin/settings/sandbox',
-        sandboxStatus: {
-          ...notInstalled,
-          installRequested: variant === 'install requested',
-          storedEnabled: variant === 'saved On state',
-        },
-      });
-      await flushAsync();
-      const html = harness.app.innerHTML;
-      const label = `${mode}, ${variant}`;
-      // Both modes keep the section and its status.
-      assert.match(html, /data-section="sandbox"/, label);
-      assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/, label);
-      if (hosting.selfHosted) {
-        assert.match(html, variant === 'install requested'
-          ? /Before you start: Workers Paid plan and R2/
-          : /Requires Workers Paid\. Real containers run on your Cloudflare account/, label);
-        if (variant === 'not installed') {
-          assert.match(html, /data-action="sandbox-install-open"[^>]*>Install coding sandbox<\/button>/, label);
-          assert.match(html, /The slim deployment does not build Ubuntu/, label);
-        } else if (variant === 'install requested') {
-          assert.match(html, /Redeploy Chickpea to finish installing/, label);
-          assert.match(html, /value="npm run deploy:sandbox"/, label);
-          assert.match(html, /data-action="sandbox-cancel-install"/, label);
+    for (const [variant, sandboxStatus] of [['not installed', notInstalled], ['installed', installed]] as const) {
+      for (const initialPath of ['/admin/settings/sandbox', '/admin/settings/sandbox-settings']) {
+        const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath, sandboxStatus });
+        await flushAsync();
+        const html = harness.app.innerHTML;
+        const label = `${mode}, ${variant}, ${initialPath}`;
+        const statusRequests = harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/sandbox'));
+        if (hosting.selfHosted) {
+          assert.match(html, /data-action="settings-section" data-section="sandbox"/, label);
+          assert.match(html, /data-settings-panel="sandbox">/, `${label}: the open section`);
+          assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/, label);
+          assert.match(html, variant === 'installed'
+            ? /dash\.cloudflare\.com\/\?to=\/:account\/r2\/overview[\s\S]*CHICKPEA_DEPLOY_PROFILE/
+            : /data-action="sandbox-install-open"[^>]*>Install coding sandbox<\/button>/, label);
+          assert.ok(statusRequests.length > 0, label);
         } else {
-          assert.match(html, /Saved On state from an earlier deployment/, label);
-          assert.match(html, /data-action="sandbox-cancel-install"/, label);
+          assert.doesNotMatch(html, /data-section="sandbox"|data-settings-panel="sandbox"|sandbox-settings|Coding sandbox/, label);
+          assert.doesNotMatch(html, /data-action="sandbox-|CHICKPEA_DEPLOY_PROFILE|deploy:sandbox|r2\/overview|Workers Paid/, label);
+          assert.match(html, /data-section="providers"[^>]*aria-current="page"/, `${label}: the default section instead`);
+          assert.deepEqual(statusRequests, [], `${label}: no sandbox status is requested`);
         }
-      } else {
-        assert.match(html, /<span class="badge badge-off">Not installed in this deployment<\/span>/, label);
-        assert.doesNotMatch(html, /data-action="sandbox-(install-open|cancel-install|check-again|deploy-path|copy)"/, label);
-        assert.doesNotMatch(html,
-          /Redeploy required|Redeploy Chickpea|Saved On state|slim deployment|Workers Paid|Cloudflare account|deploy:sandbox|CHICKPEA_DEPLOY_PROFILE|dash\.cloudflare\.com/,
-          label);
       }
     }
+  }
+});
+
+test('hosted Agent Advanced settings have no Coding sandbox row or link; standalone keeps it', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const harness = runAdminPageHarness({ ...hosting, cloudflare: true, agents: [connectionsAgent()] });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.match(html, /class="advanced agent-advanced-card"[\s\S]*?Who can edit/, mode);
+    if (hosting.selfHosted) {
+      assert.match(html, /class="agent-advanced-row agent-advanced-sandbox-row"[\s\S]*?<strong>Coding sandbox<\/strong>[\s\S]*?data-action="open-settings" data-section="sandbox">Settings<\/button>/, mode);
+    } else {
+      assert.doesNotMatch(html, /agent-advanced-sandbox-row|Coding sandbox|data-section="sandbox"/, mode);
+    }
+    // A sandbox link from an earlier page lands where the hidden sections land.
+    click({ target: actionTarget({ 'data-action': 'open-settings', 'data-section': 'sandbox' }) });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, hosting.selfHosted
+      ? /data-section="sandbox"[^>]*aria-current="page"/
+      : /data-section="providers"[^>]*aria-current="page"/, `${mode}: open-settings sandbox`);
   }
 });
 

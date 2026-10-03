@@ -41,5 +41,6 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - An already-open second Admin tab should show Schedules and Memory changes without a reload.
 - A deployment with `USAGE_ADMIN_UI` turned off has no Usage section; check that before calling it missing.
 - Personal tokens have no Admin screen, so there is nothing to find there.
-- A hosted deployment (installation tenancy) has no About & updates or Browser section, its Coding sandbox shows only its status, and Connectors offers no preparation or setup refresh. That is by design, not missing; standalone lanes show them all. Violet runs the sandbox profile with a stored Composio key, so its sandbox install section and Prepare connector defaults never render; the both-mode render tests cover them.
+- A hosted deployment (installation tenancy) has no About & updates, Browser or Coding sandbox section, no Coding sandbox row in an Agent's Advanced settings, and no preparation or setup refresh in Connectors. That is by design, not missing; standalone lanes show them all.
+- Violet runs the sandbox profile with a stored Composio key, so its sandbox install section and Prepare connector defaults never render there; the both-mode render tests cover them.
 - On a lane that keeps every model provider key environment-managed and Composio configured with a stored key (Violet), the provider key removal confirm, its key hint and the Connectors "add a project key" summary never render. The GitHub Disconnect confirm is the reachable standalone self-hosting sentence there.

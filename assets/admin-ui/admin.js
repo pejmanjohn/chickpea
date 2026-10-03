@@ -1791,7 +1791,10 @@
       { id: "browser", name: "Browser", meta: "Real browser for Agents" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
-    ].filter(function (section) { return BROWSER_OFFERED || section.id !== "browser"; }) : [codingAgents];
+    ].filter(function (section) {
+      // The host runs a hosted installation's coding sandbox for it.
+      return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || section.id !== "sandbox");
+    }) : [codingAgents];
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
@@ -7570,7 +7573,7 @@
       '<div class="agent-advanced-row agent-advanced-policy-row"><span class="agent-advanced-copy"><strong id="p-edit-policy-label">Who can edit</strong><small class="hint">Choose who can change this Agent&rsquo;s behavior, access, and appearance.</small></span><span class="select-wrap agent-advanced-select"><select class="input" id="p-edit-policy" aria-labelledby="p-edit-policy-label" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
       '<option value="creator_and_admins"' + (draft.editPolicy !== "all_workspace_members" ? " selected" : "") + '>Creator and workspace admins</option>' +
       '<option value="all_workspace_members"' + (draft.editPolicy === "all_workspace_members" ? " selected" : "") + '>Any workspace member</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' +
-      '<div class="agent-advanced-row agent-advanced-sandbox-row"><span class="agent-advanced-copy"><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="agent-advanced-actions"><span class="badge agent-advanced-status ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></span></div>' +
+      (SELF_HOSTED ? '<div class="agent-advanced-row agent-advanced-sandbox-row"><span class="agent-advanced-copy"><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="agent-advanced-actions"><span class="badge agent-advanced-status ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></span></div>' : '') +
       '</div></details>';
   }
 
@@ -8893,7 +8896,6 @@
     var badge = '<span class="badge badge-off">Unavailable</span>';
     if (status) {
       if (status.target === "node") badge = '<span class="badge badge-off">Unsupported on Node</span>';
-      else if (!status.installed && !SELF_HOSTED) badge = '<span class="badge badge-off">Not installed in this deployment</span>';
       else if (!status.installed && status.installRequested) badge = '<span class="badge badge-off">Redeploy required</span>';
       else if (!status.installed && status.storedEnabled) badge = '<span class="badge badge-off">Not installed; saved On state</span>';
       else if (!status.installed) badge = '<span class="badge badge-off">Not installed in this deployment</span>';
@@ -8932,12 +8934,6 @@
     if (status.target === "node") {
       return '<section class="section" id="sandbox-settings">' + head +
         '<div class="callout"><p class="field-label">Cloudflare-only capability</p><p class="hint">Node and other non-Cloudflare installations use the standard in-memory bash sandbox. Chickpea never gives that sandbox the host filesystem or host git/SSH credentials.</p></div>' + live + '</section>';
-    }
-    // A host serving many installations installs their infrastructure, so
-    // hosted Admin offers no install, redeploy or clear-request steps: only the
-    // status.
-    if (!SELF_HOSTED && !status.installed) {
-      return '<section class="section" id="sandbox-settings">' + head + live + '</section>';
     }
 
     var body = '';
@@ -9353,7 +9349,7 @@
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
       settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
-      settingsPanelHtml("sandbox", sandboxSectionHtml()) +
+      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "") +
       settingsPanelHtml("outbound", egressSectionHtml());
   }
 
@@ -10352,6 +10348,7 @@
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_OFFERED) return "providers";
+    if (section === "sandbox" && !SELF_HOSTED) return "providers";
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
@@ -10431,7 +10428,7 @@
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
-    loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
+    if (SELF_HOSTED) loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
   }
 
   function loadConnectionInventory(generation) {
