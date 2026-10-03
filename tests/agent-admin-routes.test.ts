@@ -4325,22 +4325,31 @@ test('workspace Members cannot enumerate global destination metadata', async () 
     const adminShell = await fixture.app.request('http://localhost/admin', { headers: auth() });
     assert.match(await adminShell.text(), /"workspaceAdminUi":false/);
 
-    const protectedPaths = [
+    // Pages a Member may not open send them back to Admin, carrying nothing.
+    const protectedPages = [
       '/admin/channels',
       '/admin/destinations/slack',
       '/admin/settings/providers',
       '/admin/team',
       '/admin/usage',
       '/admin/audit-logs/scheduled-work',
+    ];
+    const pageResponses = Object.fromEntries(await Promise.all(protectedPages.map(async (path) => {
+      const response = await fixture.app.request(`http://localhost${path}`, { headers: auth() });
+      return [path, [response.status, await response.text()]];
+    })));
+    assert.deepEqual(pageResponses, Object.fromEntries(protectedPages.map((path) => [path, [303, '']])));
+
+    const protectedApis = [
       '/admin/api/channels',
       '/admin/api/slack-channels',
       '/admin/api/slack-connection',
     ];
-    const statuses = Object.fromEntries(await Promise.all(protectedPaths.map(async (path) => [
+    const statuses = Object.fromEntries(await Promise.all(protectedApis.map(async (path) => [
       path,
       (await fixture.app.request(`http://localhost${path}`, { headers: auth() })).status,
     ])));
-    assert.deepEqual(statuses, Object.fromEntries(protectedPaths.map((path) => [path, 403])));
+    assert.deepEqual(statuses, Object.fromEntries(protectedApis.map((path) => [path, 403])));
   } finally {
     fixture.store.close();
     fixture.settings.close();

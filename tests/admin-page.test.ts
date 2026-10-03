@@ -632,6 +632,7 @@ function runAdminPageHarness(
     modelFocusScrollTop?: number;
     initialSessionStorage?: Record<string, string>;
     providerActionMenuCount?: number;
+    popupsBlocked?: boolean;
   } = {},
 ): {
   app: FakeElement;
@@ -719,6 +720,7 @@ function runAdminPageHarness(
   apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   assignedUrls: string[];
   openedUrls: string[];
+  openedWindows: Array<{ opener: unknown }>;
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -1006,6 +1008,7 @@ function runAdminPageHarness(
   }> = [];
   const assignedUrls: string[] = [];
   const openedUrls: string[] = [];
+  const openedWindows: Array<{ opener: unknown }> = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -1210,12 +1213,16 @@ function runAdminPageHarness(
     },
     clearTimeout(timerId: number) { scheduledTimers.delete(timerId); },
     confirm() { return true; },
-    open(url?: string) {
+    // As a browser does: a blocked popup returns null, and so does a tab that
+    // opened with `noopener` or `noreferrer` in its features.
+    open(url?: string, _target?: string, features?: string) {
+      if (options.popupsBlocked) return null;
       if (url && url !== 'about:blank') {
         openedUrls.push(String(url));
       }
-      return {
-        opener: null,
+      if (/\bnoopener\b|\bnoreferrer\b/.test(String(features ?? ''))) return null;
+      const opened = {
+        opener: window as unknown,
         closed: false,
         location: {
           assign(url: string) {
@@ -1225,6 +1232,8 @@ function runAdminPageHarness(
         },
         close() {},
       };
+      openedWindows.push(opened);
+      return opened;
     },
   };
   const sessionValues = new Map<string, string>(
@@ -3129,6 +3138,7 @@ function runAdminPageHarness(
     apiOAuthClientPuts,
     assignedUrls,
     openedUrls,
+    openedWindows,
     mcpSecretPuts,
     mcpSecretDeletes,
     apiConnectionSecretPuts,
@@ -7963,6 +7973,135 @@ test('managed Google accounts that need attention reconnect in place', async () 
   await flushAsync();
   assert.equal(harness.managedCancelCalls(), 1);
   assert.doesNotMatch(harness.app.innerHTML, /Finish sign-in in the new tab/);
+});
+
+function managedReconnectFixture() {
+  const account = {
+    id: 'connection_managed_gmail_tab', workspaceId: 'T_DESIGN', ownerKind: 'team',
+    providerId: 'google', label: 'Managed Gmail', lifecycle: 'needs_attention',
+    credentialConfigured: false,
+    policy: {
+      kind: 'managed', adapterId: 'composio', toolkit: 'gmail',
+      principalRef: 'chickpea:organization:T_DESIGN', accountRef: 'ca_tab',
+      allowedCapabilities: ['gmail.profile.read'],
+    },
+  };
+  return {
+    account,
+    connectionAccounts: {
+      attached: [{
+        account,
+        binding: {
+          agentId: 'agent_conn', connectionAccountId: account.id, providerId: 'google',
+          allowedCapabilities: ['gmail.profile.read'], enabled: true,
+        },
+      }],
+    },
+  };
+}
+
+for (const popupsBlocked of [false, true]) {
+  test(`the managed sign-in dialog says the tab did not open only when it did not (${popupsBlocked ? 'blocked' : 'opened'})`, async () => {
+    const { account, connectionAccounts } = managedReconnectFixture();
+    const harness = runAdminPageHarness({ agents: [connectionsAgent()], connectionAccounts, popupsBlocked });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({
+      target: actionTarget({ 'data-action': 'connection-account-managed-reconnect', 'data-connection-id': account.id }),
+    });
+    await flushAsync();
+
+    assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
+    const blockedNotice = /Your browser did not open the hosted sign-in tab/;
+    if (popupsBlocked) {
+      assert.deepEqual(harness.openedUrls, []);
+      assert.match(harness.app.innerHTML, blockedNotice);
+    } else {
+      assert.deepEqual(harness.openedUrls, ['https://connect.composio.dev/link/lk_test']);
+      assert.doesNotMatch(harness.app.innerHTML, blockedNotice);
+      // The provider's page never gets a handle back to Admin.
+      assert.equal(harness.openedWindows.length, 1);
+      assert.equal(harness.openedWindows[0]!.opener, null);
+    }
+  });
+}
+
+test('disconnecting an account drops its connected notice', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_conn';
+  const { account, connectionAccounts } = managedReconnectFixture();
+  const readyAccount = { ...account, lifecycle: 'ready', credentialConfigured: true };
+  connectionAccounts.attached[0]!.account = readyAccount;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn',
+    initialSessionStorage: {
+      [storageKey]: JSON.stringify({
+        agentId: 'agent_conn', toolkit: 'gmail', label: 'Gmail · Team',
+        authorizationUrl: 'https://connect.composio.dev/link/lk_complete',
+        pollUrl: '/admin/api/agents/agent_conn/connections/managed/poll',
+        expiresAt: Date.now() + 20 * 60_000, startedAt: Date.now(),
+        returnToSettings: false, popupBlocked: false,
+      }),
+    },
+    managedPollResult: { status: 'connected', account: { id: account.id } },
+    agents: [connectionsAgent()],
+    connectionAccounts,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Gmail · Team is connected and ready for this Agent\./);
+
+  click({
+    target: actionTarget({ 'data-action': 'connection-account-disconnect', 'data-connection-id': account.id }),
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /is connected and ready for this Agent/);
+});
+
+test('a connected notice also clears when its account is removed elsewhere', async () => {
+  const storageKey = 'chickpea.managed-authorization.v1:agent_conn';
+  const { account, connectionAccounts } = managedReconnectFixture();
+  const readyAccount = { ...account, lifecycle: 'ready', credentialConfigured: true };
+  connectionAccounts.attached[0]!.account = readyAccount;
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_conn',
+    initialSessionStorage: {
+      [storageKey]: JSON.stringify({
+        agentId: 'agent_conn', toolkit: 'gmail', label: 'Gmail · Team',
+        authorizationUrl: 'https://connect.composio.dev/link/lk_complete',
+        pollUrl: '/admin/api/agents/agent_conn/connections/managed/poll',
+        expiresAt: Date.now() + 20 * 60_000, startedAt: Date.now(),
+        returnToSettings: false, popupBlocked: false,
+      }),
+    },
+    managedPollResult: { status: 'connected', account: { id: account.id } },
+    agents: [connectionsAgent()],
+    connectionAccounts,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Gmail · Team is connected and ready for this Agent\./);
+
+  // Another tab keeps the account and its notice through a refresh.
+  harness.focusWindow();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Gmail · Team is connected and ready for this Agent\./);
+
+  connectionAccounts.attached = [];
+  harness.focusWindow();
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /No connections in this Agent yet/);
+  assert.doesNotMatch(harness.app.innerHTML, /is connected and ready for this Agent/);
 });
 
 test('managed sign-in polling retries a transient outage without rendering a raw error code', async () => {

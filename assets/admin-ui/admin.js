@@ -3132,6 +3132,7 @@
       state.agentConnections.refreshing = false;
       state.agentConnections.loaded = true;
       state.agentConnections.error = "";
+      dropDetachedAccountNotice(state.agentConnections);
       state.connectionAccountsSupported = true;
       if (state.customMcpToolEditor) {
         var editedAccount = state.agentConnections.attached.find(function (entry) {
@@ -3160,6 +3161,24 @@
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  // A success notice about one account lasts only while that account is
+  // attached to this Agent: a refresh after a disconnect drops it.
+  function setAgentConnectionNotice(text, accountId) {
+    state.agentConnections.notice = text;
+    state.agentConnections.noticeAccountId = accountId || "";
+  }
+
+  function dropDetachedAccountNotice(connections) {
+    var accountId = connections.noticeAccountId;
+    if (!accountId) return;
+    var stillAttached = (connections.attached || []).some(function (entry) {
+      return entry.account && entry.account.id === accountId && entry.account.lifecycle !== "revoked";
+    });
+    if (stillAttached) return;
+    connections.notice = "";
+    connections.noticeAccountId = "";
   }
 
   function invalidateAgentConnections(agentId, workspaceId) {
@@ -3662,6 +3681,7 @@
     render();
     var prepare = Promise.resolve();
     var accountCreated = false;
+    var createdAccountId = "";
     var googleClientSaved = false;
     if (form.kind === "mcp" && !form.preset && !mcpOauth) {
       var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
@@ -3705,6 +3725,7 @@
       return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections", "POST", body);
     }).then(function (created) {
       accountCreated = true;
+      createdAccountId = created && created.account && created.account.id || "";
       if (googleOauth) {
         var accountId = created && created.account && created.account.id;
         if (!accountId) throw new Error("Connection response was missing its account.");
@@ -3727,7 +3748,7 @@
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      state.agentConnections.notice = label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent.");
+      setAgentConnectionNotice(label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent."), createdAccountId);
       render();
     }).catch(function (error) {
       if (accountCreated) {
@@ -3847,10 +3868,15 @@
     }
   }
 
+  // Whether the sign-in tab opened. A `noopener` feature makes window.open
+  // return null even for a tab that opened, so open without it and cut the
+  // new tab's opener before its page can load.
   function openManagedAuthorizationTab(url) {
     var opened = null;
-    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch (_) { opened = null; }
-    return !!opened;
+    try { opened = window.open(url, "_blank"); } catch (_) { opened = null; }
+    if (!opened) return false;
+    try { opened.opener = null; } catch (_) { /* The tab is open either way. */ }
+    return true;
   }
 
   function startManagedAuthorization(body, label, context) {
@@ -3956,7 +3982,7 @@
             startManagedResourceSelection(connectedEntry.account.id);
             return;
           }
-          state.agentConnections.notice = label + " is connected and ready for this Agent.";
+          setAgentConnectionNotice(label + " is connected and ready for this Agent.", connectedAccountId);
           render();
         });
       }
@@ -4113,7 +4139,7 @@
       if (primarySection() === "settings" && state.settingsSection === "connectors") {
         state.connectionInventory.notice = notice;
       } else {
-        state.agentConnections.notice = notice;
+        setAgentConnectionNotice(notice, "");
       }
       render();
     }).catch(function (error) {
@@ -5938,7 +5964,7 @@
       }
     ).then(function () {
       state.managedResourceEditor = null;
-      state.agentConnections.notice = "Resource access saved. The selected connector is ready for this Agent.";
+      setAgentConnectionNotice("Resource access saved. The selected connector is ready for this Agent.", editor.accountId);
       invalidateAgentConnections(state.agentConnections.agentId);
       return loadAgentConnections(state.agentConnections.agentId);
     }).catch(function (error) {
