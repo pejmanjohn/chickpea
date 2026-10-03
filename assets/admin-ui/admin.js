@@ -22,7 +22,7 @@
   var SELF_HOSTED = CONFIG.selfHosted !== false;
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
-  var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox", "outbound"];
+  var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox"];
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -310,10 +310,6 @@
     // dialog holds a typed password just until its save request starts.
     websiteLogins: { agentId: "", logins: [], loading: false, loaded: false, error: "", removeConfirm: "", removing: "", removeError: "", levelSaving: "", levelError: null },
     websiteLoginDialog: null,
-    egress: null,
-    egressLoaded: false,
-    egressError: "",
-    egressSaving: false,
     provUi: {},
     favUi: {},
     // The device authorization capability is intentionally browser-memory only.
@@ -483,7 +479,6 @@
     resource.promise = null;
   }
   var lastRenderedPath = "";
-  var egressDraft = { mode: "allowlist", domains: [""] };
   var sandboxDraft = {
     allowedHosts: ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
     monthlySessionCap: 200
@@ -1826,10 +1821,9 @@
       { id: "github", name: "GitHub", meta: "Accounts and access" },
       { id: "sandbox", name: "Coding sandbox", meta: "Workspace runtime" },
       { id: "browser", name: "Browser", meta: "Real browser for Agents" },
-      { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
     ].filter(function (section) {
-      // The host runs a hosted installation's coding sandbox and manages its outbound access.
+      // The host runs a hosted installation's coding sandbox.
       return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
     }) : [codingAgents];
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
@@ -9366,7 +9360,7 @@
     }
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">' + (SELF_HOSTED ? 'Configure GitHub, model providers, and outbound internet access for the sandbox.' : 'Configure GitHub and model providers.') + '</p></div>';
+      '<p class="hint">Configure GitHub and model providers.</p></div>';
     var onboardingReturn = typeof location !== "undefined" &&
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
@@ -9389,7 +9383,7 @@
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
       settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
-      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) + settingsPanelHtml("outbound", egressSectionHtml()) : "");
+      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "");
   }
 
   function settingsPanelHtml(id, body) {
@@ -9892,35 +9886,6 @@
       (state.modelCatalogError ? '<span class="inline-status error" role="alert">' + esc(state.modelCatalogError) + '</span>' : "") + '</div>';
   }
 
-  function egressSectionHtml() {
-    var head = '<div class="section-head"><div><h2 class="section-title">Outbound access</h2>' +
-      '<p class="hint">Controls the internet access available to sandbox <span class="mono">curl</span>. MCP connectors are separate and always work. Private and internal addresses are always blocked. <b>Allowlist</b> permits only the listed hosts; <b>Open</b> permits the whole internet; <b>Off</b> disables outbound access.</p></div></div>';
-    if (!state.egressLoaded) {
-      return '<section class="section">' + head + '<p class="hint">Loading outbound policy&hellip;</p></section>';
-    }
-    var mode = egressDraft.mode;
-    var disabled = state.egressSaving ? " disabled" : "";
-    var segment = '<div class="seg" role="group" aria-label="Outbound access mode">' +
-      '<button type="button" class="' + (mode === "allowlist" ? "on" : "") + '" data-action="egress-mode" data-mode="allowlist"' + disabled + '>Allowlist</button>' +
-      '<button type="button" class="' + (mode === "open" ? "on" : "") + '" data-action="egress-mode" data-mode="open"' + disabled + '>Open</button>' +
-      '<button type="button" class="' + (mode === "off" ? "on" : "") + '" data-action="egress-mode" data-mode="off"' + disabled + '>Off</button></div>';
-    var domains = "";
-    if (mode === "allowlist") {
-      var rows = egressDraft.domains.map(function (domain, index) {
-        return '<div class="conn-header-row">' +
-          '<input class="input" type="text" value="' + esc(domain) + '" placeholder="api.example.com" aria-label="Allowed host ' + (index + 1) + '" data-action="egress-domain-input" data-index="' + index + '"' + disabled + '>' +
-          '<button type="button" class="btn btn-ghost btn-sm" data-action="egress-domain-remove" data-index="' + index + '" aria-label="Remove allowed host"' + disabled + '>&times;</button></div>';
-      }).join("");
-      domains = '<div class="field"><label class="field-label">Allowed hosts</label>' + rows +
-        '<button type="button" class="btn btn-ghost btn-sm" data-action="egress-domain-add"' + disabled + '>' + icon("plus") + 'Add domain</button></div>';
-    }
-    return '<section class="section">' + head +
-      '<div class="field"><label class="field-label">Mode</label>' + segment + '</div>' +
-      domains +
-      (state.egressError ? '<p class="field-error">' + esc(state.egressError) + '</p>' : "") +
-      '<div><button type="button" class="btn btn-primary" data-action="egress-save"' + (state.egressSaving ? " disabled" : "") + '>' + (state.egressSaving ? "Saving&hellip;" : "Save") + '</button></div></section>';
-  }
-
   function providerLogoHtml(id) {
     var logoId = id === "workers-ai" ? "cloudflare" : id;
     return '<span class="provider-logo-tile" aria-hidden="true"><img class="provider-card-logo" src="' + esc(MODEL_PROVIDER_LOGOS[logoId] || "") + '" alt=""></span>';
@@ -10379,7 +10344,6 @@
       "github-settings": "github",
       "sandbox-settings": "sandbox",
       "browser-settings": "browser",
-      "egress-settings": "outbound",
       "coding-agents": "agents-clients"
     };
     var section = aliases[String(value || "")] || String(value || "");
@@ -10388,7 +10352,7 @@
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_OFFERED) return "providers";
     if (!SELF_HOSTED && HOST_MANAGED_SETTINGS_SECTIONS.includes(section)) return "providers";
-    return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
+    return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients"].includes(section) ? section : "providers";
   }
 
   function settingsLoadIsCurrent(generation) {
@@ -10408,7 +10372,6 @@
     state.githubStatus = null;
     state.githubStatusLoaded = false;
     state.githubError = "";
-    state.egressLoaded = false;
     state.sandboxLoaded = false;
     state.sandboxConfirm = "";
     state.sandboxReadyAttested = false;
@@ -10466,10 +10429,7 @@
     }
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
-    if (SELF_HOSTED) {
-      loadEgress(generation).then(function () { renderSettingsLoad(generation); });
-      loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
-    }
+    if (SELF_HOSTED) loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
   }
 
   function loadConnectionInventory(generation) {
@@ -11218,26 +11178,6 @@
     favUiFor("openai").error = "";
   }
 
-  function seedEgressDraft(policy) {
-    var domains = (policy.domains || []).slice();
-    if (policy.mode === "allowlist" && domains.length === 0) domains.push("");
-    egressDraft = { mode: policy.mode, domains: domains };
-  }
-
-  function loadEgress(generation) {
-    state.egressError = "";
-    return api("/admin/api/egress").then(function (body) {
-      if (!settingsLoadIsCurrent(generation)) return;
-      state.egress = body.policy;
-      seedEgressDraft(body.policy);
-      state.egressLoaded = true;
-    }).catch(function (error) {
-      if (!settingsLoadIsCurrent(generation)) return;
-      state.egressError = (error && (error.serverMessage || error.message)) || "Could not load outbound access.";
-      state.egressLoaded = true;
-    });
-  }
-
   function seedSandboxDraft(status) {
     sandboxDraft = {
       allowedHosts: (status.allowedHosts || []).slice(),
@@ -11386,25 +11326,6 @@
     }).catch(function (error) {
       state.sandboxSaving = false;
       state.sandboxError = mutationErrorText(error, "Could not save Sandbox settings.");
-      render();
-    });
-  }
-
-  function saveEgress() {
-    if (state.egressSaving) return;
-    var domains = egressDraft.domains.map(function (domain) { return domain.trim(); }).filter(Boolean);
-    state.egressSaving = true;
-    state.egressError = "";
-    render();
-    postJson("/admin/api/egress", "PUT", { mode: egressDraft.mode, domains: domains }).then(function (body) {
-      state.egress = body.policy;
-      seedEgressDraft(body.policy);
-      state.egressSaving = false;
-      state.egressError = "";
-      render();
-    }).catch(function (error) {
-      state.egressSaving = false;
-      state.egressError = (error && (error.serverMessage || error.message)) || "Could not save outbound access.";
       render();
     });
   }
@@ -13595,23 +13516,6 @@
         }
       }
     }
-    if (state.egressSaving && action.indexOf("egress-") === 0) return;
-    if (action === "egress-mode") {
-      egressDraft.mode = target.getAttribute("data-mode") || "allowlist";
-      if (egressDraft.mode === "allowlist" && egressDraft.domains.length === 0) egressDraft.domains.push("");
-      state.egressError = "";
-      render();
-    }
-    if (action === "egress-domain-add") {
-      if (egressDraft.domains.length < 100) egressDraft.domains.push("");
-      render();
-    }
-    if (action === "egress-domain-remove") {
-      var egressRemoveIndex = Number(target.getAttribute("data-index"));
-      if (egressRemoveIndex >= 0 && egressRemoveIndex < egressDraft.domains.length) egressDraft.domains.splice(egressRemoveIndex, 1);
-      render();
-    }
-    if (action === "egress-save") { saveEgress(); }
     if (action === "model-catalog-refresh") { refreshModelCatalogFromSettings(); }
     if (action === "workspace-default-save") { saveWorkspaceDefault(); }
     if (action === "workspace-image-model-save") { saveWorkspaceImageRole(); }
@@ -14083,10 +13987,6 @@
     if (action === "github-org-input") { state.githubOrg = target.value; }
     if (action === "repo-search") { repoPickerSearch.search(target.value); }
     if (action === "import-browse-search") { skillImportRepoSearch.search(target.value); }
-    if (action === "egress-domain-input") {
-      var egressInputIndex = Number(target.getAttribute("data-index"));
-      if (!state.egressSaving && egressInputIndex >= 0 && egressInputIndex < egressDraft.domains.length) egressDraft.domains[egressInputIndex] = target.value;
-    }
     if (action === "fav-search") { updateFavSearch(target.getAttribute("data-provider"), target.value); }
     if (state.connectionAccountForm) {
       if (action === "connection-account-provider") { state.connectionAccountForm.providerId = target.value; state.connectionAccountForm.error = ""; }

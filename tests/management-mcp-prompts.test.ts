@@ -185,12 +185,13 @@ test('hosted status names no Settings section its Admin hides; standalone names 
   const hosted = { CHICKPEA_TENANCY: 'installation' };
   const standalone = render('status', {});
   const hostedStatus = workspaceManagementPromptText('status', {}, BASE_URL, hosted);
-  assert.ok(standalone.includes('anything only Admin can change today, such as GitHub, the coding sandbox, and outbound access, with the Settings link;'));
+  assert.ok(standalone.includes('anything only Admin can change today, such as GitHub and the coding sandbox, with the Settings link;'));
+  assert.doesNotMatch(standalone, /outbound access/i, 'Outbound access is retired in both modes');
   assert.ok(hostedStatus.includes('anything only Admin can change today, such as GitHub, with the Settings link;'));
   assert.doesNotMatch(hostedStatus, /coding sandbox|outbound access/i);
   assert.equal(
     hostedStatus,
-    standalone.replace('such as GitHub, the coding sandbox, and outbound access, with', 'such as GitHub, with'),
+    standalone.replace('such as GitHub and the coding sandbox, with', 'such as GitHub, with'),
     'only those words are removed',
   );
   for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {

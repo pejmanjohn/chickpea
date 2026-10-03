@@ -425,10 +425,6 @@ function workspaceImageRoleFixture(modelId: string | null, revision: number): Re
     },
   };
 }
-type EgressPolicyFixture = {
-  mode: 'allowlist' | 'open' | 'off';
-  domains: string[];
-};
 type SandboxStatusFixture = {
   installRequested: boolean;
   installed: boolean;
@@ -528,7 +524,6 @@ function runAdminPageHarness(
     openAiSubscriptionStartResult?: Record<string, unknown>;
     deferOpenAiSubscriptionStart?: boolean;
     openAiSubscriptionPollResult?: Record<string, unknown>;
-    egressPolicy?: EgressPolicyFixture;
     sandboxStatus?: SandboxStatusFixture;
     sandboxMutationError?: { status: number; error: string; message?: string };
     browserStatus?: Record<string, unknown>;
@@ -678,7 +673,6 @@ function runAdminPageHarness(
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   workersAiEnabledPuts: boolean[];
   workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }>;
-  egressPuts: EgressPolicyFixture[];
   sandboxPuts: Array<{
     enabled: boolean;
     readinessConfirmed?: boolean;
@@ -958,7 +952,6 @@ function runAdminPageHarness(
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const workersAiEnabledPuts: boolean[] = [];
   const workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }> = [];
-  const egressPuts: EgressPolicyFixture[] = [];
   const sandboxPuts: Array<{
     enabled: boolean;
     readinessConfirmed?: boolean;
@@ -1257,10 +1250,6 @@ function runAdminPageHarness(
         enabled: true,
       },
     ];
-  let egressPolicy: EgressPolicyFixture = options.egressPolicy ?? {
-    mode: 'allowlist',
-    domains: [],
-  };
   let sandboxStatus: SandboxStatusFixture = options.sandboxStatus ?? {
     installRequested: false,
     installed: false,
@@ -1545,7 +1534,7 @@ function runAdminPageHarness(
     }
     if (
       method === 'GET' &&
-      ['/admin/api/github/status', '/admin/api/egress', '/admin/api/sandbox/status'].includes(path)
+      ['/admin/api/github/status', '/admin/api/sandbox/status'].includes(path)
     ) {
       settingsGetCalls.push(path);
     }
@@ -2716,16 +2705,6 @@ function runAdminPageHarness(
       if (workersAi) workersAi.enabled = enabled;
       return Promise.resolve(jsonResponse({ provider: 'workers-ai', enabled }));
     }
-    if (path === '/admin/api/egress') {
-      if (method === 'PUT') {
-        const body = JSON.parse(options?.body ?? '{}') as EgressPolicyFixture;
-        egressPuts.push({ mode: body.mode, domains: [...body.domains] });
-        egressPolicy = { mode: body.mode, domains: [...body.domains] };
-      }
-      return Promise.resolve(
-        jsonResponse({ policy: { mode: egressPolicy.mode, domains: [...egressPolicy.domains] } }),
-      );
-    }
     if (path === '/admin/api/sandbox/status') {
       if (method === 'PUT') {
         if (sandboxMutationError) {
@@ -3115,7 +3094,6 @@ function runAdminPageHarness(
     favoritesPuts,
     workersAiEnabledPuts,
     workspaceDefaultPuts,
-    egressPuts,
     sandboxPuts,
     sandboxAdvancedPatches,
     sandboxInstallCalls,
@@ -14275,7 +14253,7 @@ test('the host\'s /admin?slack=updated landing shows the notice once and clears 
   assert.equal(slackBarCount(reload.app.innerHTML), 0);
 });
 
-test('leaving Slack settings starts the GitHub, sandbox, and outbound settings loads', async () => {
+test('leaving Slack settings starts the GitHub and sandbox settings loads', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack',
     githubStatus: { mode: 'none', referencingProfiles: [] },
@@ -14293,10 +14271,6 @@ test('leaving Slack settings starts the GitHub, sandbox, and outbound settings l
   click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'sandbox' }) });
   assert.doesNotMatch(harness.app.innerHTML, /Loading sandbox settings/);
   assert.match(harness.app.innerHTML, /Not installed|Unsupported on Node/);
-
-  click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'outbound' }) });
-  assert.doesNotMatch(harness.app.innerHTML, /Loading outbound policy/);
-  assert.match(harness.app.innerHTML, /data-action="egress-save"/);
   assert.deepEqual(harness.settingsGetCalls, initializedSettingsGets);
 });
 
@@ -14305,7 +14279,6 @@ test('leaving Settings while its shared loads are pending ignores their stale co
   const deferredPaths = new Set([
     '/admin/api/providers',
     '/admin/api/github/status',
-    '/admin/api/egress',
     '/admin/api/sandbox/status',
   ]);
   const harness = runAdminPageHarness({
@@ -14327,7 +14300,6 @@ test('leaving Settings while its shared loads are pending ignores their stale co
 
   pending.get('/admin/api/providers')?.(jsonResponse({ providers: [] }));
   pending.get('/admin/api/github/status')?.(jsonResponse({ mode: 'none', referencingProfiles: [] }));
-  pending.get('/admin/api/egress')?.(jsonResponse({ policy: { mode: 'allowlist', domains: [] } }));
   pending.get('/admin/api/sandbox/status')?.(jsonResponse({
     installRequested: false,
     installed: false,
@@ -16072,67 +16044,6 @@ test('Settings provider action menus dismiss on sibling, outside click, and Esca
   assert.equal(prevented, true);
   assert.equal(firstMenu.open, false);
   assert.equal(harness.focusedAction(), 'provider-action-menu-0-summary');
-});
-
-test('Settings renders the outbound-access mode control and allowlist domain input', async () => {
-  const harness = runAdminPageHarness();
-  await flushAsync();
-  const click = harness.listeners.click;
-  assert.ok(click);
-
-  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
-  await flushAsync();
-
-  const html = harness.app.innerHTML;
-  assert.match(html, /<h2 class="section-title">Outbound access<\/h2>/);
-  assert.match(html, /class="seg"/);
-  assert.match(html, /data-action="egress-mode" data-mode="allowlist"/);
-  assert.match(html, /data-action="egress-mode" data-mode="open"/);
-  assert.match(html, /data-action="egress-mode" data-mode="off"/);
-  assert.match(html, /placeholder="api\.example\.com"[^>]*data-action="egress-domain-input"/);
-});
-
-test('Settings keeps outbound access available when model providers fail to load', async () => {
-  const harness = runAdminPageHarness({
-    providerSettingsError: { status: 500, error: 'provider_settings_failed' },
-  });
-  await flushAsync();
-  const click = harness.listeners.click;
-  assert.ok(click);
-
-  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
-  await flushAsync();
-
-  assert.match(harness.app.innerHTML, /provider_settings_failed/);
-  assert.match(harness.app.innerHTML, /<h2 class="section-title">Outbound access<\/h2>/);
-  assert.match(harness.app.innerHTML, /data-action="egress-save"/);
-});
-
-test('Settings adds an outbound domain and saves the expected egress policy', async () => {
-  const harness = runAdminPageHarness();
-  await flushAsync();
-  const click = harness.listeners.click;
-  const input = harness.listeners.input;
-  assert.ok(click && input);
-
-  click({ target: actionTarget({ 'data-action': 'open-settings' }) });
-  await flushAsync();
-  click({ target: actionTarget({ 'data-action': 'egress-domain-add' }) });
-  input({
-    target: inputTarget(
-      { 'data-action': 'egress-domain-input', 'data-index': '1' },
-      ' api.github.com ',
-    ),
-  });
-  click({ target: actionTarget({ 'data-action': 'egress-save' }) });
-  assert.match(harness.app.innerHTML, /data-action="egress-save" disabled>Saving&hellip;<\/button>/);
-  assert.match(harness.app.innerHTML, /data-action="egress-mode" data-mode="allowlist" disabled/);
-  assert.match(harness.app.innerHTML, /data-action="egress-domain-input" data-index="0" disabled/);
-  await flushAsync();
-
-  assert.deepEqual(harness.egressPuts, [
-    { mode: 'allowlist', domains: ['api.github.com'] },
-  ]);
 });
 
 test('Settings validates a pasted key and collapses the row to a stored status', async () => {
@@ -17912,33 +17823,27 @@ test('hosted Admin has no Coding sandbox page, rail entry or status request, and
   }
 });
 
-test('hosted Admin has no Outbound access page, rail entry, mention or policy request, and an outbound link lands on the default section; standalone keeps them', async () => {
+test('Admin has no Outbound access page, rail entry, mention or policy request in either mode; its old links and history land on Model providers', async () => {
+  const retired = /data-section="outbound"|data-settings-panel="outbound"|Outbound access|Network policy|data-action="egress-|outbound internet access/;
+  const onProviders = /data-section="providers"[^>]*aria-current="page"/;
   for (const { mode, ...hosting } of HOSTING_MODES) {
     for (const initialPath of ['/admin/settings/outbound', '/admin/settings/egress-settings', '/admin/settings/github']) {
       const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath });
       await flushAsync();
       const html = harness.app.innerHTML;
       const label = `${mode}, ${initialPath}`;
-      const policyRequests = harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/egress'));
-      if (hosting.selfHosted) {
-        assert.match(html, /data-action="settings-section" data-section="outbound"/, label);
-        assert.match(html, /data-settings-panel="outbound"/, label);
-        assert.match(html, /<h2 class="section-title">Outbound access<\/h2>/, label);
-        assert.match(html, /<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox\.<\/p>/, label);
-        assert.match(html, initialPath === '/admin/settings/github'
-          ? /data-section="github"[^>]*aria-current="page"/
-          : /data-section="outbound"[^>]*aria-current="page"/, label);
-        assert.ok(policyRequests.length > 0, label);
+      assert.doesNotMatch(html, retired, label);
+      assert.match(html, /<p class="hint">Configure GitHub and model providers\.<\/p>/, label);
+      assert.ok(!harness.fetchCalls.some(({ path }) => path.startsWith('/admin/api/egress')), `${label}: no policy is requested`);
+      if (initialPath === '/admin/settings/github') {
+        assert.match(html, /data-section="github"[^>]*aria-current="page"/, label);
       } else {
-        assert.doesNotMatch(html, /data-section="outbound"|data-settings-panel="outbound"|Outbound access|data-action="egress-|outbound internet access/, label);
-        assert.match(html, /<p class="hint">Configure GitHub and model providers\.<\/p>/, label);
-        assert.match(html, initialPath === '/admin/settings/github'
-          ? /data-section="github"[^>]*aria-current="page"/
-          : /data-section="providers"[^>]*aria-current="page"/, `${label}: the default section instead`);
-        assert.deepEqual(policyRequests, [], `${label}: no policy is requested`);
+        assert.match(html, onProviders, `${label}: Model providers instead`);
+        assert.equal(harness.locationPath(), '/admin/settings/providers', `${label}: the canonical path`);
       }
     }
-    // A rail or settings link from an earlier page lands where the hidden sections land.
+    // A rail or settings link from an earlier page, and a history entry from
+    // before the removal, land on Model providers too.
     const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath: '/admin/settings/github' });
     await flushAsync();
     const click = harness.listeners.click;
@@ -17946,16 +17851,20 @@ test('hosted Admin has no Outbound access page, rail entry, mention or policy re
     for (const action of ['settings-section', 'open-settings']) {
       click({ target: actionTarget({ 'data-action': action, 'data-section': 'outbound' }) });
       await flushAsync();
-      assert.match(harness.app.innerHTML, hosting.selfHosted
-        ? /data-section="outbound"[^>]*aria-current="page"/
-        : /data-section="providers"[^>]*aria-current="page"/, `${mode}: ${action} outbound`);
+      assert.match(harness.app.innerHTML, onProviders, `${mode}: ${action} outbound`);
       click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
       await flushAsync();
     }
-    assert.equal(
-      harness.fetchCalls.some(({ path }) => path.startsWith('/admin/api/egress')),
-      hosting.selfHosted,
-      `${mode}: policy requests`,
+    for (const restored of ['/admin/settings/outbound', '/admin/settings/egress-settings']) {
+      harness.popstate(restored);
+      await flushAsync();
+      assert.match(harness.app.innerHTML, onProviders, `${mode}: history ${restored}`);
+      assert.doesNotMatch(harness.app.innerHTML, retired, `${mode}: history ${restored}`);
+    }
+    assert.deepEqual(
+      harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/egress')),
+      [],
+      `${mode}: no policy is requested`,
     );
   }
 });

@@ -39,7 +39,7 @@ Rollback by setting `CHICKPEA_LIVE_CHANNEL_CONFIG=false` and redeploying the sam
 
 Set `SLACK_TAG_LEDGER_CANARY_CHANNELS` to at most 20 exact comma-separated `workspace/channel` pairs. Start with one Channel. The selection is fail-closed: an eligible selected admission must not fall back across authority lanes if canonical admission fails. Existing Runs keep their owner.
 
-Agents with enabled MCP/API connections or repositories, explicit Memory/Routine commands, and installations with open/non-empty allowlisted egress stay on the established lane. Treat this as expected eligibility behavior, not a failed canary.
+Agents with enabled MCP/API connections or repositories, and explicit Memory/Routine commands stay on the established lane. Treat this as expected eligibility behavior, not a failed canary.
 
 Acceptance evidence:
 

@@ -4,6 +4,7 @@ import {
   requireInstallationScope,
   type InstallationScope,
 } from '../config/installation-scope.ts';
+import { RETIRED_SETTING_KEYS } from '../config/retired-settings.ts';
 
 /**
  * What a host serving many installations may ask of each Durable Object an
@@ -383,6 +384,8 @@ function exportedRow(
   if (table === 'app_settings' && typeof row.key === 'string') {
     const key = row.key;
     if (OPERATIONAL_SETTINGS.some((pattern) => pattern.test(key))) return undefined;
+    // A retired setting is not the installation's configuration any more.
+    if (RETIRED_SETTING_KEYS.has(key)) return undefined;
     if (mode === 'portable' && PORTABLE_EXCLUDED_SETTINGS.some((pattern) => pattern.test(key))) return undefined;
   }
   const exported: Record<string, unknown> = {};

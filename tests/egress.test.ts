@@ -15,13 +15,10 @@ import {
   buildEgressNetworkConfig,
   createScopedFetch,
   DEFAULT_EGRESS_POLICY,
-  parseEgressPolicy,
-  resolveEgressPolicy,
-  saveEgressPolicy,
   type ResolvedApiConnection,
 } from '../src/config/egress.ts';
-import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { RETIRED_SETTING_KEYS } from '../src/config/retired-settings.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { RepositoryGrant } from '../src/config/types.ts';
 import { withEnv } from './helpers/env.ts';
@@ -84,87 +81,30 @@ function connectorUrl(url: string) {
   };
 }
 
-test('DEFAULT_EGRESS_POLICY denies egress until domains are allowlisted', () => {
+test('DEFAULT_EGRESS_POLICY is an allowlist with no domains', () => {
   assert.deepEqual(DEFAULT_EGRESS_POLICY, { mode: 'allowlist', domains: [] });
 });
 
-test('parseEgressPolicy returns the default for missing or invalid settings', () => {
-  assert.deepEqual(parseEgressPolicy(undefined), DEFAULT_EGRESS_POLICY);
-  assert.deepEqual(parseEgressPolicy('{not json'), DEFAULT_EGRESS_POLICY);
-  assert.deepEqual(
-    parseEgressPolicy(JSON.stringify({ mode: 'invalid', domains: [] })),
-    DEFAULT_EGRESS_POLICY,
-  );
-  assert.deepEqual(
-    parseEgressPolicy(JSON.stringify({ mode: 'open', domains: 'api.github.com' })),
-    DEFAULT_EGRESS_POLICY,
-  );
-});
-
-test('parseEgressPolicy accepts valid settings and normalizes domains', () => {
-  assert.deepEqual(parseEgressPolicy('{"mode":"open","domains":[]}'), {
-    mode: 'open',
-    domains: [],
-  });
-  assert.deepEqual(
-    parseEgressPolicy(
-      JSON.stringify({
-        mode: 'allowlist',
-        domains: [' api.github.com ', 'api.github.com', ''],
-      }),
-    ),
-    { mode: 'allowlist', domains: ['api.github.com'] },
-  );
-});
-
-test('resolveEgressPolicy reads the stored policy on standalone and the managed default on hosted without reading it', async (t) => {
-  const settings = new SqliteSettingsStore(':memory:');
-  t.after(() => settings.close());
-  const stored = { mode: 'open' as const, domains: ['api.example.com'] };
-  await saveEgressPolicy(settings, stored);
-  assert.deepEqual(await resolveEgressPolicy(settings, undefined), stored, 'standalone');
-  assert.deepEqual(await resolveEgressPolicy(settings, {}), stored, 'standalone, explicit env');
-
-  const reads = t.mock.method(settings, 'getSetting');
-  const hosted = { CHICKPEA_TENANCY: 'installation' };
-  for (const env of [hosted, scopeInstallationEnv(hosted, { installationId: 'inst_egress' })]) {
-    assert.deepEqual(await resolveEgressPolicy(settings, env), DEFAULT_EGRESS_POLICY, 'hosted');
-  }
-  // A deployment variable alone makes it hosted, whatever env a caller passes.
-  await withEnv({ CHICKPEA_TENANCY: 'installation' }, async () => {
-    assert.deepEqual(await resolveEgressPolicy(settings, undefined), DEFAULT_EGRESS_POLICY, 'hosted by deployment variable');
-  });
-  assert.equal(reads.mock.callCount(), 0, 'hosted never reads the stored policy');
-});
-
-test('only the egress module reads or writes the stored policy, and the Slack canary reads it with its platform env', () => {
-  const root = join(import.meta.dirname, '..', 'src');
-  const owner = join('config', 'egress.ts');
+test('nothing reads, writes or serves the retired Outbound access setting', () => {
+  const root = join(import.meta.dirname, '..');
+  const owner = join('src', 'config', 'retired-settings.ts');
   const sources = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) return sources(path);
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : sources(path);
     return /\.(?:ts|mts|js|mjs)$/.test(entry.name) ? [path] : [];
   });
-  const bypasses = sources(root)
+  const named = ['src', 'assets', join('packages', 'cli', 'src')]
+    .flatMap((directory) => sources(join(root, directory)))
     .filter((path) => relative(root, path) !== owner)
-    .filter((path) => /egress\.policy|EGRESS_SETTING_KEY|parseEgressPolicy/.test(readFileSync(path, 'utf8')))
+    .filter((path) => /egress\.policy|\/admin\/api\/egress|EGRESS_SETTING_KEY|(?:parse|resolve|save)EgressPolicy/
+      .test(readFileSync(path, 'utf8')))
     .map((path) => relative(root, path));
-  assert.deepEqual(bypasses, [], 'read the policy through resolveEgressPolicy so hosted gets the managed one');
-
-  const readers = sources(root)
-    .filter((path) => relative(root, path) !== owner && readFileSync(path, 'utf8').includes('resolveEgressPolicy('))
-    .map((path) => relative(root, path))
-    .sort();
-  assert.deepEqual(readers, [join('admin', 'routes.ts'), join('channels', 'slack.ts')]);
+  assert.deepEqual(named, [], 'the installation egress policy is DEFAULT_EGRESS_POLICY; no setting or route changes it');
+  assert.ok(RETIRED_SETTING_KEYS.has('egress.policy'), 'a stored policy row is retired, not read');
   assert.match(
-    readFileSync(join(root, 'channels', 'slack.ts'), 'utf8'),
-    /resolveEgressPolicy\(stores\.settings, platformEnv\)/,
-    'the execution authority canary reads the policy with the turn\'s platform env',
-  );
-  assert.match(
-    readFileSync(join(root, 'admin', 'routes.ts'), 'utf8'),
-    /resolveEgressPolicy\(settings\(c\), c\.env as PlatformEnv \| undefined\)/,
-    'Admin reads the policy with the request env',
+    readFileSync(join(root, 'src', 'channels', 'slack.ts'), 'utf8'),
+    /egressPolicy: DEFAULT_EGRESS_POLICY,/,
+    'the execution authority canary is given the default policy',
   );
 });
 

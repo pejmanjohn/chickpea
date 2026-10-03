@@ -149,7 +149,7 @@ test('the hosted guide names only the Admin settings its Admin shows; standalone
   const standalone = await (await connectMd(`${ORIGIN}/connect.md`)).text();
   assert.equal(
     sentence(standalone),
-    `- Model provider keys, GitHub setup, the coding sandbox, and outbound access are managed in Admin at ${ORIGIN}${ADMIN_SETTINGS_PATH}. Send the person there with the link rather than asking for the values.`,
+    `- Model provider keys, GitHub setup, and the coding sandbox are managed in Admin at ${ORIGIN}${ADMIN_SETTINGS_PATH}. Send the person there with the link rather than asking for the values.`,
   );
   const hosted = await (await createConnectRoutes().request(`${ORIGIN}/connect.md`, {}, { CHICKPEA_TENANCY: 'installation' })).text();
   assert.equal(
@@ -157,6 +157,7 @@ test('the hosted guide names only the Admin settings its Admin shows; standalone
     `- Model provider keys and GitHub setup are managed in Admin at ${ORIGIN}${ADMIN_SETTINGS_PATH}. Send the person there with the link rather than asking for the values.`,
   );
   assert.doesNotMatch(hosted, /coding sandbox|outbound access/i);
+  assert.doesNotMatch(standalone, /outbound access/i, 'Outbound access is retired in both modes');
   assert.equal(hosted.replace(sentence(hosted)!, ''), standalone.replace(sentence(standalone)!, ''), 'only that sentence differs');
 });
 

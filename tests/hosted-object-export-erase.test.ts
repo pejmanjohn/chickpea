@@ -6,6 +6,7 @@ import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { mintSetupCapability, setupCapabilityUrl } from '../src/auth/setup-capability.mjs';
 import { createWebsiteLogin } from '../src/browser/logins.ts';
 import { saveStoredComposioProjectKey } from '../src/config/composio-settings.ts';
+import { RETIRED_SETTING_KEYS } from '../src/config/retired-settings.ts';
 import {
   InstallationContextError,
   installationOwnershipOf,
@@ -256,6 +257,22 @@ test('export pages are stable and resumable, and a portable export leaves every 
     t: 'kv', key: 'flue:wake',
     value: { $object: { at: { $date: '2027-01-15T08:00:00.000Z' }, seen: { $set: ['a'] }, $tag: 'T_A' } },
   });
+});
+
+test('no export carries a retired setting, such as the Outbound access policy', async () => {
+  const deployment = hostedDeployment(['inst_export_retired']);
+  const a = deployment.installation('inst_export_retired');
+  populate(deployment, a, 'T_A');
+  assert.ok(RETIRED_SETTING_KEYS.has('egress.policy'));
+  a.stores.settings.setSetting('egress.policy', JSON.stringify({ mode: 'open', domains: ['api.example.com'] }));
+  for (const mode of ['portable', 'full'] as const) {
+    const text = (await exportAll(a.env, installationStateStoreObject(a.env), mode)).text;
+    const keys = text.trim().split('\n').map((line) => JSON.parse(line))
+      .filter((record) => record.t === 'row' && record.table === 'app_settings').map((record) => record.row.key);
+    assert.ok(keys.includes('slack.teamName'), `${mode}: the installation's settings are kept`);
+    assert.equal(keys.includes('egress.policy'), false, `${mode}: the retired policy is left out`);
+    assert.equal(text.includes('api.example.com'), false, mode);
+  }
 });
 
 test('a portable export nulls every envelope a setting keeps inside its JSON value, and keeps the rest', async () => {

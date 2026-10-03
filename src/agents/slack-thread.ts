@@ -59,6 +59,7 @@ import type { ConfigStore } from '../config/store.ts';
 import { connectorSkillsForConnections } from '../config/connector-skills.ts';
 import {
   createConnectorScopedBash,
+  DEFAULT_EGRESS_POLICY,
   matchesEgressPrefix,
   type ResolvedApiConnection,
 } from '../config/egress.ts';
@@ -1651,9 +1652,8 @@ function createRuntimePlanSandbox(
     async createSandbox(options) {
       const env = await resolveAgentPlatformEnv();
       await prepareRuntimePlanModel(plan, env, turn);
-      // Native plans grant only their frozen connector scopes; operator-wide
-      // egress settings never become an incidental grant. Empty plans need no
-      // account or egress setting reads.
+      // Native plans grant only their frozen connector scopes. Empty plans
+      // need no account reads.
       if (!plan.repositories.length) {
         return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
       }
@@ -1661,7 +1661,7 @@ function createRuntimePlanSandbox(
       // shell; the sandbox mounts only repository scopes.
       const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
       const sandbox = createConnectorScopedBash(
-        { mode: 'allowlist', domains: [] }, isCloudflareTarget(),
+        DEFAULT_EGRESS_POLICY, isCloudflareTarget(),
         repositoryAccess.connectors,
       );
       return sandbox.createSandbox(options);

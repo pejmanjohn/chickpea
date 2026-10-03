@@ -216,9 +216,9 @@ function importSkillPrompt(args: { url: string; handle?: string | undefined }, b
 }
 
 function statusPrompt(baseUrl?: string, env?: Record<string, unknown>): string {
-  // Hosted Admin has no Coding sandbox or Outbound access page to point at.
-  const adminOnly = adminSettingsSectionShown('sandbox', env) && adminSettingsSectionShown('outbound', env)
-    ? 'GitHub, the coding sandbox, and outbound access'
+  // Hosted Admin has no Coding sandbox page to point at.
+  const adminOnly = adminSettingsSectionShown('sandbox', env)
+    ? 'GitHub and the coding sandbox'
     : 'GitHub';
   return [
     'Give this person a short status of their Chickpea workspace.',
