@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 
+import { ENVIRONMENT_AUTHORITY_PATH } from '../admin/environment-authority.ts';
 import { runWithRequestTiming, timed } from '../http/request-timing.ts';
 import type { AuthControl, IdentityStore } from '../identity/types.ts';
 
@@ -29,14 +30,40 @@ export function requestAuthControl(
 }
 
 /**
- * Answers not found for every request while the installation's auth control
- * is recovery-only. It opens the request's timing window, so Admin's
- * Server-Timing covers this read too.
+ * Paths that answer to their own short-lived bearer capability and are never
+ * gated, so they read no auth control: deployment activation and its gateway
+ * delivery recovery, which must stay callable while an older release left the
+ * installation recovery-only, and a QA lane's environment attestation.
+ */
+const CAPABILITY_PATHS: ReadonlySet<string> = new Set([
+  '/internal/deployment/ready',
+  '/internal/deployment/recover-delivery',
+  ENVIRONMENT_AUTHORITY_PATH,
+]);
+
+/**
+ * Slack credential recovery, the way out of recovery-only
+ * (docs/runbooks/slack-auth-recovery.md): its page and form, and Slack's bot
+ * authorization callback.
+ */
+const RECOVERY_PATHS: ReadonlySet<string> = new Set([
+  '/admin/recovery',
+  '/auth/slack/recovery/callback',
+]);
+
+/**
+ * Answers not found while the installation's auth control is recovery-only,
+ * for every request but Slack credential recovery and the capability paths.
+ * The application and Admin both mount this gate, so they keep one list of
+ * exceptions. It opens the request's timing window, so Admin's Server-Timing
+ * covers this read too.
  */
 export function recoveryOnlyGate(identity: (c: Context) => IdentityStore): MiddlewareHandler {
   return (c, next) => runWithRequestTiming(async () => {
+    const path = c.req.path;
+    if (CAPABILITY_PATHS.has(path)) return next();
     const control = await requestAuthControl(c, () => timed('authctl', () => identity(c).getAuthControl()));
-    if (control?.healthGate === 'recovery_only') return c.notFound();
+    if (control?.healthGate === 'recovery_only' && !RECOVERY_PATHS.has(path)) return c.notFound();
     return next();
   });
 }
