@@ -525,16 +525,10 @@ async function runTurnAttempt(
     agentModel: resolvedModel,
     codingWorkerRan: false,
   });
-  const visibleAgentName = visibleOwner?.kind === 'selected_agent'
-    ? visibleOwner.persona.name
-    : visibleOwner?.kind === 'chickpea'
-      ? CHICKPEA_AGENT_NAME
-      : assignment.agent.name;
-  const visibleAgentAvatarUrl = visibleOwner?.kind === 'selected_agent'
-    ? visibleOwner.persona.avatarUrl
-    : visibleOwner?.kind === 'chickpea'
-      ? undefined
-      : agentAvatarUrl;
+  const {
+    agentName: visibleAgentName,
+    agentAvatarUrl: visibleAgentAvatarUrl,
+  } = turnReplySender(assignment, visibleOwner, agentAvatarUrl);
   // Once the Chickpea contract is active, the frozen Workspace default is the
   // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
   // another implicit provider default) after admission failed to freeze one.
@@ -2776,11 +2770,31 @@ function resolveMemoryDeliveryText(
 }
 
 /**
+ * Who a turn's replies come from (docs/runbooks/slack-message-identity.md):
+ * the owner its run froze at admission, or the Agent itself for a turn with
+ * no frozen presentation. A `chickpea` owner posts as the installation's
+ * bot: no custom name or avatar reaches Slack, and its footer names Chickpea.
+ */
+function turnReplySender(
+  assignment: ResolvedAssignment,
+  visibleOwner: SlackPresentationOwner | undefined,
+  agentAvatarUrl: string | undefined,
+): { agentName: string; agentAvatarUrl?: string } {
+  if (visibleOwner?.kind === 'selected_agent') {
+    return { agentName: visibleOwner.persona.name, agentAvatarUrl: visibleOwner.persona.avatarUrl };
+  }
+  if (visibleOwner?.kind === 'chickpea') return { agentName: CHICKPEA_AGENT_NAME };
+  return { agentName: assignment.agent.name, ...(agentAvatarUrl ? { agentAvatarUrl } : {}) };
+}
+
+/**
  * Deliver ONLY the sanitized generic failure final — the relay alarm's
  * last-ditch on the terminal attempt, when `runTurn` itself kept throwing (a
  * genuine delivery failure, not an agent execution failure, which runTurn
  * already surfaces as a categorized final and returns). Best-effort: the caller swallows
  * its errors (if Slack is the thing that is failing, this post fails too).
+ * It posts under the same sender as the turn's replies: `presentation` names
+ * the run whose frozen owner decides it.
  */
 export async function deliverAgentFailureFinal(
   turn: NormalizedSlackTurn,
@@ -2788,19 +2802,33 @@ export async function deliverAgentFailureFinal(
   client: WebClient,
   platformEnv?: PlatformEnv,
   onPublicMessageDelivered?: RunTurnOptions['onPublicMessageDelivered'],
+  presentation?: {
+    state?: Pick<SlackPresentationStatePort, 'getRunPresentation'>;
+    runId?: string;
+  },
 ): Promise<void> {
   const resolvedModel = resolvedAssignmentModel(assignment);
-  const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  const agentAvatarUrl = agentAvatarUrlForPresentation(
-    assignment.agent, publicUrl, agentAvatarInstallation(platformEnv),
+  const [publicUrl, frozenPresentation] = await Promise.all([
+    resolveSlackPublicUrl(platformEnv),
+    presentation?.state && presentation.runId
+      ? Promise.resolve(presentation.state.getRunPresentation(presentation.runId)).catch(() => {
+          // The notice still posts, under the sender a turn without one uses.
+          console.warn('[chickpea] failure final could not read its run presentation');
+          return undefined;
+        })
+      : undefined,
+  ]);
+  const visibleOwner = frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
+  const sender = turnReplySender(
+    assignment,
+    visibleOwner,
+    agentAvatarUrlForPresentation(assignment.agent, publicUrl, agentAvatarInstallation(platformEnv)),
   );
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
-    agentName: assignment.agent.name,
-    ...(agentAvatarUrl
-      ? { agentAvatarUrl }
-      : {}),
+    ...sender,
+    ...(visibleOwner ? { visibleOwner } : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,

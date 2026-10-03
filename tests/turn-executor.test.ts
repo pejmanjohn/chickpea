@@ -14,7 +14,8 @@ import {
 import { MAX_POST_DISPATCH_ATTEMPTS, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
-import { DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
+import { AGENT_FAILURE_TEXT, DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
+import type { SlackPresentationOwner } from '../src/slack/run-presentations.ts';
 
 type RunTurnScript = (options: RunTurnOptions) => Promise<void>;
 
@@ -217,6 +218,63 @@ test('exhausted reattachment posts the recovery notice fresh when the presentati
   assert.equal(posted[0]!.thread_ts, '1785900000.000100');
   assert.equal(posted[0]!.client_msg_id, slackClientMessageId('recovery_notice:run_stuck'));
   assert.ok(h.calls.some((call) => call.startsWith('markRecoveryRequired("turn_1","post_dispatch_attempts_exhausted")')));
+});
+
+test('the last attempt\'s failure final posts under the sender of the turn\'s replies', async (t) => {
+  t.mock.method(console, 'error', () => undefined);
+  const persona = {
+    name: 'Analyst',
+    avatarUrl: 'https://chickpea.example/assets/agents/analyst/avatar/1',
+    avatarRevision: 1,
+  };
+  const cases: Array<[string, SlackPresentationOwner | undefined, Record<string, unknown>]> = [
+    // Replies of a run owned by Chickpea come from the installation's bot.
+    ['chickpea', { kind: 'chickpea' }, {}],
+    ['selected Agent', { kind: 'selected_agent', persona }, { username: 'Analyst', icon_url: persona.avatarUrl }],
+    // A run with no frozen presentation keeps the Agent's own name, as its replies do.
+    ['no presentation', undefined, { username: 'Analyst' }],
+  ];
+  for (const [label, owner, expected] of cases) {
+    const posted: Array<Record<string, unknown>> = [];
+    const client = {
+      chat: {
+        async postMessage(input: Record<string, unknown>) {
+          posted.push(input);
+          return { ok: true, channel: 'D1', ts: '1785900000.000900' };
+        },
+      },
+    } as unknown as WebClient;
+    const h = fakePorts(async () => { throw new Error('Provider openai needs setup before this model can run.'); },
+      async () => ({ workspaceId: 'T1', client }));
+    const reads: string[] = [];
+    (h.ports as { presentationState: unknown }).presentationState = {
+      getRunPresentation: async (runId: string) => {
+        reads.push(runId);
+        return owner ? { schemaVersion: 3, runId, owner } : undefined;
+      },
+    };
+    const job = pendingJob({
+      runId: 'run_failed',
+      attempts: 1,
+      assignment: {
+        workspaceId: 'T1',
+        channelId: 'D1',
+        agentId: 'agent_analyst',
+        agent: { id: 'agent_analyst', kind: 'user', revision: 1, name: 'Analyst', instructions: '', enabled: true },
+      } as never,
+    });
+    assert.equal(await executeTurnJob(job, h.ports, h.options), true, label);
+    assert.deepEqual(reads, ['run_failed'], `${label}: the run's frozen owner is read`);
+    assert.equal(posted.length, 1, `${label}: one failure final`);
+    const final = posted[0]!;
+    assert.equal(final.text, AGENT_FAILURE_TEXT, label);
+    assert.deepEqual(
+      { username: final.username, icon_url: final.icon_url },
+      { username: expected.username, icon_url: expected.icon_url },
+      `${label}: the sender`,
+    );
+    assert.ok(h.calls.includes('markError("turn_1")'), label);
+  }
 });
 
 test('a yielded observation restores its attempt count and stays pending without a retry', async () => {

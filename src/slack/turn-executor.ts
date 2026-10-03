@@ -695,6 +695,7 @@ export async function executeTurnJob(
             job.assignment,
             delivery,
           ),
+        { state: presentationState, ...(job.runId ? { runId: job.runId } : {}) },
       ).catch((finalErr) => {
         console.error('[chickpea] relay terminal final failed:', sanitizeError(finalErr));
       });
