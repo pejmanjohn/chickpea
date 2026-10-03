@@ -39,7 +39,7 @@ test('sandbox install-level settings keys round-trip without a profile key', asy
       '["registry.npmjs.org","files.pythonhosted.org"]',
       '350',
     ]);
-    assert.deepEqual(await resolveSandboxSettings(store), {
+    assert.deepEqual(await resolveSandboxSettings(store, undefined), {
       installRequested: true,
       enabled: true,
       instanceType: 'standard-1',

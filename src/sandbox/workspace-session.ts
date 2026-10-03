@@ -1,8 +1,10 @@
 import { FlueError, type Sandbox } from '@flue/runtime';
 
+import type { SandboxContainerLimits } from '../config/sandbox-settings.ts';
 import type { TurnProgress } from '../config/state-rpc.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import type { SandboxCredentialMode, SandboxEgressPolicyInput } from './cloudflare-policy.ts';
+import type { SandboxContainerAdmission } from './container-lease.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 import {
   SandboxConnectionDroppedError,
@@ -77,6 +79,8 @@ export interface WorkspaceSandboxStub extends DestroyableSandbox, SandboxTurnCon
     turnId: string;
   }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }>;
   restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'>;
+  /** Admit the container under the host's limits; called before it starts, and only with them. */
+  admitContainer?(limits: SandboxContainerLimits): Promise<SandboxContainerAdmission>;
   describeWorkspace(fingerprint: string): Promise<WorkspaceDescription>;
   discardWorkspace(): Promise<void>;
   /** Revoke this turn's egress and checkpoint the workspace; the container stays warm. */
@@ -108,6 +112,12 @@ export interface WorkspaceSessionOptions<TStub extends WorkspaceSandboxStub> {
   mintStub: () => Promise<TStub>;
   /** Reserve one counted container start; false when the monthly cap refuses it. */
   reserveSession: (reservationId: string) => Promise<boolean>;
+  /**
+   * The host's running limit and container-hours cap: present only on a
+   * deployment serving many installations, whose cap refusals then carry
+   * no pointer to a Settings page it does not have.
+   */
+  hostedLimits?: SandboxContainerLimits;
   /** Wrap the activatable stub into a Flue Sandbox (Workers-only import stays with the caller). */
   toSandbox: (stub: TStub) => Promise<Sandbox>;
   /** Called once, when this request first binds the workspace to its turn. */
@@ -245,10 +255,18 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     if (!turn) throw new Error('Sandbox turn context is unavailable at activation');
     const { reservationId, restorable } = turn;
     const activatable = serializeSandboxActivation(stub, WORKSPACE_DIR, async () => {
+      const hosted = options.hostedLimits !== undefined;
       // Counted per container start: a warm follow-up carries the starting
       // turn's reservation and does not consume the cap again.
       if (!(await options.reserveSession(reservationId))) {
-        throw new SandboxSessionCapError();
+        throw new SandboxSessionCapError({ hosted });
+      }
+      // The host also bounds running containers and their monthly time,
+      // warm reuse included; the session above stays reserved for a retry.
+      if (options.hostedLimits) {
+        const admission = await stub.admitContainer?.(options.hostedLimits);
+        if (admission === 'hours_cap') throw new SandboxSessionCapError({ hosted });
+        if (admission !== 'admitted') throw new SandboxUnavailableError();
       }
       // A cold follow-up resumes from the thread's checkpoint. The restore
       // starts the container, so it happens only once the turn needs it.
