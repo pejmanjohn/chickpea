@@ -1,4 +1,4 @@
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import * as v from 'valibot';
 
 import {
@@ -56,7 +56,13 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   // through the same teamError mapper the handlers use, so a missing principal
   // is a sanitized 403 and genuine faults stay 500.
   app.onError((error, c) => teamError(c, error));
-  app.use('*', async (c, next) => {
+  // The limiter guards the Team routes below and nothing else: this app is
+  // mounted at /admin/api beside every other Admin API, where a `use('*')`
+  // would run for their requests too. Each route names it, so it runs only
+  // when that route matched. A success clears the per-key counts; a failure
+  // is any 4xx or 5xx the route answers, including its own 404 for a
+  // membership it cannot find.
+  const rateLimited: MiddlewareHandler = async (c, next) => {
     const limiter = await options.rateLimiter?.(c);
     if (!limiter) return next();
     const source = requestAuthSourceKey(c.req.raw);
@@ -82,9 +88,9 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       ]);
       throw error;
     }
-  });
+  };
 
-  app.get('/account', async (c) => {
+  app.get('/account', rateLimited, async (c) => {
     const principal = requiredPrincipal(c, 'account.view');
     const [organization, resolution] = await Promise.all([
       options.store(c).getOrganization(),
@@ -107,7 +113,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     });
   });
 
-  app.get('/team', async (c) => {
+  app.get('/team', rateLimited, async (c) => {
     const principal = requiredPrincipal(c, 'team.view');
     c.header('Cache-Control', 'no-store');
     return c.json(await teamSnapshot(
@@ -117,7 +123,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
     ));
   });
 
-  app.patch('/team/memberships/:membershipId', async (c) => {
+  app.patch('/team/memberships/:membershipId', rateLimited, async (c) => {
     const principal = requiredPrincipal(c, 'team.manage_members');
     const membershipId = parseId(c.req.param('membershipId'));
     const parsed = v.safeParse(membershipPatchSchema, await readJson(c, MAX_TEAM_BODY_BYTES));
