@@ -15,6 +15,7 @@ import {
 import { getSlackStateStore } from '../config/state-backend.ts';
 import type { SandboxTurnReader, TurnExecutionPorts } from '../slack/turn-executor.ts';
 import type { InstallationWorkspaceObject } from '../state/object-inventory.ts';
+import { sandboxCheckpointEnv } from './checkpoint-bucket.ts';
 import { CLOUDFLARE_SANDBOX_OPTIONS, cloudflareSandboxOptionVariants } from './lifecycle.ts';
 import { reconnectingSandboxStub } from './reconnect.ts';
 
@@ -73,6 +74,11 @@ export function sandboxObjectName(env: Env | undefined, workspaceId: string): st
 
 type SandboxOptions = typeof CLOUDFLARE_SANDBOX_OPTIONS | Record<string, unknown>;
 
+/** The deployment's Sandbox Durable Object namespace, under either binding name. */
+export function sandboxNamespace(env: Env | undefined): unknown {
+  return env?.SANDBOX ?? env?.Sandbox;
+}
+
 /** Opens a Sandbox stub by its exact name; `getSandbox` in production. */
 export type SandboxOpener = (binding: unknown, name: string, options: SandboxOptions) => unknown;
 
@@ -93,7 +99,7 @@ export async function sandboxStub<T = unknown>(
   options: SandboxOptions = CLOUDFLARE_SANDBOX_OPTIONS,
   dependencies: SandboxStubDependencies = {},
 ): Promise<T> {
-  const binding = env?.SANDBOX ?? env?.Sandbox;
+  const binding = sandboxNamespace(env);
   if (!binding) throw new Error('No Sandbox binding');
   const name = sandboxObjectName(env, workspaceId);
   await recordWorkspaceObject(env, { kind: 'sandbox', name }, dependencies.record);
@@ -103,7 +109,7 @@ export async function sandboxStub<T = unknown>(
 /** The coding Sandbox readers of one thread (identical for both executors). */
 export function sandboxTurnReaders(env: Env): TurnExecutionPorts['sandboxes'] {
   return (sandboxKey) => {
-    if (!(env.SANDBOX ?? env.Sandbox)) return [];
+    if (!sandboxNamespace(env)) return [];
     // An unscoped env, or a malformed tenancy, throws here: never "no Sandbox".
     const scope = requireInstallationScope(env);
     if (scope) {
@@ -189,7 +195,8 @@ export interface SandboxObjectContext extends ObjectContext {
  * object by ID, which carries no name, so the first named construction also
  * stores the installation and an unnamed wake recovers it from there. An
  * object with neither keeps an unscoped env, so everything tenant-owned it
- * touches fails closed.
+ * touches fails closed. Under installation tenancy the env's checkpoint
+ * bucket is the installation's prefixed view (checkpoint-bucket.ts).
  */
 export function sandboxObjectEnv<E>(ctx: SandboxObjectContext, env: E): E {
   const platformEnv = env as Env | undefined;
@@ -213,7 +220,9 @@ export function sandboxObjectEnv<E>(ctx: SandboxObjectContext, env: E): E {
   } else {
     installationId = storedId;
   }
-  return installationId ? scopeInstallationEnv(platformEnv, { installationId }) as E : env;
+  // The SDK reads `BACKUP_BUCKET` from this env: the installation's own
+  // checkpoint prefix, or no bucket for an object that serves none.
+  return sandboxCheckpointEnv(installationId ? scopeInstallationEnv(platformEnv, { installationId }) as E : env);
 }
 
 /** RFC 4648 base32, lowercase, without padding. */

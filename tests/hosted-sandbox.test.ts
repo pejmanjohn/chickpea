@@ -475,19 +475,25 @@ test('an inventory from before coding workspace objects is widened in place, its
   }
 });
 
-test('host functions reach a coding worker through its own binding; a Sandbox has none yet', async () => {
+test('host functions reach a coding worker through its own binding and a Sandbox by its exact name', async () => {
   const addressed: string[] = [];
-  const workerBinding = {
+  const binding = (label: string) => ({
     idFromName: (name: string) => name,
-    get: (name: string) => ({ chickpeaHostErase: async () => { addressed.push(name); return { erased: true }; } }),
-  };
-  const env = hostedEnv(INSTALLATION_A, { FLUE_CHICKPEA_CODING_WORKER_V1_AGENT: workerBinding });
+    get: (name: string) => ({ chickpeaHostErase: async () => { addressed.push(`${label}:${name}`); return { erased: true }; } }),
+  });
+  const env = hostedEnv(INSTALLATION_A, { FLUE_CHICKPEA_CODING_WORKER_V1_AGENT: binding('worker'), SANDBOX: binding('sandbox') });
   const worker = `i1~${INSTALLATION_A}~${opaqueId('codingworker', 'binding')}`;
+  const sandbox = sandboxObjectName(env, THREAD_KEY);
   await eraseInstallationObject(env, { kind: 'coding_worker', name: worker }, { confirmInstallationId: INSTALLATION_A });
-  assert.deepEqual(addressed, [worker]);
+  await eraseInstallationObject(env, { kind: 'sandbox', name: sandbox }, { confirmInstallationId: INSTALLATION_A });
+  assert.deepEqual(addressed, [`worker:${worker}`, `sandbox:${sandbox}`]);
+  // A deployment whose binding carries the class's own name is reached the same way.
+  const named = hostedEnv(INSTALLATION_A, { Sandbox: binding('class') });
+  await eraseInstallationObject(named, { kind: 'sandbox', name: sandbox }, { confirmInstallationId: INSTALLATION_A });
+  assert.equal(addressed.at(-1), `class:${sandbox}`);
   await assert.rejects(
-    eraseInstallationObject(env, { kind: 'sandbox', name: sandboxObjectName(env, THREAD_KEY) }, { confirmInstallationId: INSTALLATION_A }),
-    /no host functions yet/,
+    eraseInstallationObject(hostedEnv(INSTALLATION_A), { kind: 'sandbox', name: sandbox }, { confirmInstallationId: INSTALLATION_A }),
+    /binding SANDBOX is unavailable/,
   );
 });
 

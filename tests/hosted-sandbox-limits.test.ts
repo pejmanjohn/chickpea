@@ -59,6 +59,7 @@ import {
   holdStartedWorkspaceContainer,
   maintainWorkspaceContainerLeases,
   meterWorkspaceContainer,
+  refuseUnadmittedContainerStart,
   requireWorkspaceTurnAdmitted,
 } from '../src/sandbox/hosted-limits.ts';
 import { reserveMonthlySandboxSession } from '../src/sandbox/session-cap.ts';
@@ -551,6 +552,39 @@ test('a suspended installation opens no workspace turn; standalone never asks', 
   await requireWorkspaceTurnAdmitted(undefined);
 });
 
+test('a container that starts for an installation the host does not admit destroys itself; standalone never asks', async (t) => {
+  const asked: string[] = [];
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async (installationId) => {
+    asked.push(installationId);
+    return installationId === INSTALLATION_A ? 'admitted' : 'refused';
+  });
+  t.after(() => resetInstallationAdmissionForTests());
+  const destroyed: string[] = [];
+  const destroy = (name: string) => async () => { destroyed.push(name); };
+
+  assert.equal(refuseUnadmittedContainerStart(undefined, destroy('standalone')), undefined);
+  assert.equal(refuseUnadmittedContainerStart({ CHICKPEA_TENANCY: 'standalone' }, destroy('standalone')), undefined);
+  assert.deepEqual(asked, []);
+
+  const warned = t.mock.method(console, 'warn', () => {});
+  await refuseUnadmittedContainerStart(hostedEnv(INSTALLATION_A), destroy('a'));
+  assert.deepEqual(destroyed, [], 'an admitted installation keeps its container');
+  // A session admitted before the suspension restarts the container the host stopped.
+  await refuseUnadmittedContainerStart(hostedEnv(INSTALLATION_B), destroy('b'));
+  assert.deepEqual(destroyed, ['b']);
+  assert.deepEqual(asked, [INSTALLATION_A, INSTALLATION_B]);
+  // A Sandbox that serves no installation, or a malformed tenancy, is refused too.
+  await refuseUnadmittedContainerStart(HOSTED as Record<string, unknown>, destroy('unscoped'));
+  await refuseUnadmittedContainerStart({ CHICKPEA_TENANCY: 'many' }, destroy('malformed'));
+  assert.deepEqual(destroyed, ['b', 'unscoped', 'malformed']);
+  // A destroy that fails is logged; the start's promise never rejects.
+  await refuseUnadmittedContainerStart(hostedEnv(INSTALLATION_B), async () => { throw new Error('control plane'); });
+  const events = warned.mock.calls.map((call) => String(call.arguments[0]));
+  const event = (name: string) => JSON.stringify({ component: 'sandbox_container_admission', event: name });
+  assert.deepEqual(events, [...Array(4).fill(event('start_refused')), event('start_refusal_failed')]);
+});
+
 test('the Sandbox asks admission before a turn, admits its container, and meters its runs', () => {
   const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
   const sandbox = source.slice(source.indexOf('export class Sandbox extends CloudflareSandbox'), source.indexOf('Sandbox.outboundByHost ='));
@@ -562,12 +596,15 @@ test('the Sandbox asks admission before a turn, admits its container, and meters
   assert.match(method('beginWorkspaceTurn'), /^[^]*?\{\s*\/\/[^\n]*\n\s*await requireWorkspaceTurnAdmitted\(this\.env\);/,
     'admission comes first');
   assert.match(method('admitContainer'), /admitWorkspaceContainer\(this\.env, \{\s*key: this\.ctx\.id\.toString\(\),\s*running: this\.containerRunning\(\),/);
-  // onStart runs inside the SDK's blockConcurrencyWhile: it starts the hold and awaits nothing of it.
+  // onStart runs inside the SDK's blockConcurrencyWhile: it starts the hold
+  // and the admission check, and awaits nothing of either.
   const onStart = method('onStart');
   assert.match(onStart, /await super\.onStart\(\);[^]*?const hold = holdStartedWorkspaceContainer\(this\.env, \{ key: this\.ctx\.id\.toString\(\)/);
   assert.match(onStart, /this\.startHold = hold;[^]*?\.waitUntil\(hold\);/);
+  assert.match(onStart, /const refusal = refuseUnadmittedContainerStart\(this\.env, \(\) => this\.destroy\(\)\);\s*if \(refusal\) this\.waitUntil\(refusal\);/);
   assert.equal([...onStart.matchAll(/\bawait\b/g)].length, 1, 'only the SDK\'s own onStart is awaited');
-  assert.match(method('onStop'), /await super\.onStop\(params\);[^]*?await this\.startHold;\s*await meterWorkspaceContainer\(this\.env, 'release'/);
+  assert.match(method('onStop'), /await super\.onStop\(params\);\s*await this\.releaseContainerLease\(\);/);
+  assert.match(method('releaseContainerLease'), /await this\.startHold;\s*await meterWorkspaceContainer\(this\.env, 'release'/);
   assert.match(method('settleContainerLease'), /meterWorkspaceContainer\(\s*this\.env,\s*this\.containerRunning\(\) \? 'hold' : 'release'/);
   assert.match(method('endTurn'), /await this\.settleContainerLease\(\);\s*$/);
   assert.match(source, /if \(isContainerLeaseSweepMinute\(scheduledTime\)\) \{\s*try \{ await maintainWorkspaceContainerLeases\(platformEnv, scheduledTime\); \}/);

@@ -129,14 +129,24 @@ export class SandboxWorkspaceState {
     };
   }
 
-  /** Attach a new checkpoint to the current owner's record. */
-  async recordCheckpoint(backup: unknown, now: number): Promise<void> {
+  /**
+   * Attach a new checkpoint to the current owner's record. Returns the
+   * checkpoint it replaced, whose objects the caller deletes: only the
+   * latest is ever restored.
+   */
+  async recordCheckpoint(backup: unknown, now: number): Promise<unknown> {
     const record = await this.record();
-    if (!record) return;
+    if (!record) return undefined;
     await this.storage.put<WorkspaceRecord>(SANDBOX_WORKSPACE_STORAGE_KEY, {
       ...record,
       checkpoint: { backup, createdAt: now },
     });
+    return record.checkpoint?.backup;
+  }
+
+  /** The recorded checkpoint's handle, expired or not: what erasure deletes. */
+  async currentCheckpoint(): Promise<unknown> {
+    return (await this.record())?.checkpoint?.backup;
   }
 
   /**

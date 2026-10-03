@@ -8,6 +8,8 @@
  *   monthly container-hours cap (container-lease.ts).
  * - The Sandbox holds its lease while its container runs and meters the run
  *   when it stops; maintenance closes leases whose renewal lapsed.
+ * - A container that starts for an installation the host does not admit
+ *   destroys itself, so a suspension's stop sticks.
  */
 import { InstallationNotAdmittedError, installationRefusesWork } from '../config/installation-admission.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
@@ -82,7 +84,7 @@ export function holdStartedWorkspaceContainer(
   input: { key: string; now: number },
   options: { store?: LeaseStore; deadlineMs?: number } = {},
 ): Promise<void> | undefined {
-  if (!metersContainers(env)) return undefined;
+  if (!hostLimitsApply(env)) return undefined;
   const hold = meterWorkspaceContainer(env, 'hold', input, options.store);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<void>((resolve) => {
@@ -93,6 +95,29 @@ export function holdStartedWorkspaceContainer(
     }, options.deadlineMs ?? CONTAINER_START_HOLD_DEADLINE_MS);
   });
   return Promise.race([hold, deadline]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Destroy a container that started for an installation the host does not
+ * admit, beside the start as its lease hold is. A suspension stops the
+ * installation's containers, but a session admitted before it keeps its
+ * activation, and its next operation starts the container again through the
+ * SDK, past every admission; that start destroys itself here, so the host's
+ * stop sticks. A container of a Sandbox that serves no installation is
+ * destroyed too. The returned promise never rejects; standalone never asks
+ * and gets none.
+ */
+export function refuseUnadmittedContainerStart(env: Env, destroy: () => Promise<void>): Promise<void> | undefined {
+  if (!hostLimitsApply(env)) return undefined;
+  return (async () => {
+    // An env that names no installation throws: no installation admits it.
+    if (!await installationRefusesWork(env).catch(() => true)) return;
+    // Content-free: names no installation or Sandbox.
+    console.warn(JSON.stringify({ component: 'sandbox_container_admission', event: 'start_refused' }));
+    await destroy();
+  })().catch(() => {
+    console.warn(JSON.stringify({ component: 'sandbox_container_admission', event: 'start_refusal_failed' }));
+  });
 }
 
 /** Lapsed leases are swept every five minutes. */
@@ -126,8 +151,11 @@ export async function maintainWorkspaceContainerLeases(env: Env, now: number, st
   });
 }
 
-/** Whether the env's containers are metered; an env whose tenancy is malformed is, so its hold reports it. */
-function metersContainers(env: Env): boolean {
+/**
+ * Whether the host's limits apply to the env's containers. They do to an env
+ * whose tenancy is malformed, so its hold reports it and its start is refused.
+ */
+function hostLimitsApply(env: Env): boolean {
   try {
     return deploymentTenancy(env) === 'installation';
   } catch {
