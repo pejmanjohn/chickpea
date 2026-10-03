@@ -346,6 +346,10 @@ test('mintableInstallation maps a grant to its account\'s binding under tenancy,
   assert.equal(mintableInstallation(a, { accountLogin: 'ACME-A', installationId: GITHUB_B }), GITHUB_A, 'never the stored ID');
   assert.equal(mintableInstallation(a, { accountLogin: 'acme-a', installationId: null }), GITHUB_A);
   assert.equal(mintableInstallation(a, { accountLogin: 'acme-b', installationId: GITHUB_B }), undefined);
+  // A repository outside the grant's own account never maps to the account's binding.
+  assert.equal(mintableInstallation(a, { accountLogin: 'acme-a', installationId: null, fullName: 'acme-b/secret' }), undefined);
+  assert.equal(mintableInstallation(a, { accountLogin: 'acme-a', installationId: null, fullName: 'ACME-A/app' }), GITHUB_A);
+  assert.equal(mintableInstallation(a, { accountLogin: 'acme-a', installationId: null, fullName: '', allRepos: true }), GITHUB_A);
   const standalone: GithubConnection = { mode: 'app', appId: '1', privateKeyPem: PRIVATE_KEY };
   assert.equal(mintableInstallation(standalone, { accountLogin: 'acme-b', installationId: GITHUB_B }), GITHUB_B);
   assert.equal(mintableInstallation(standalone, { accountLogin: 'acme-b', installationId: null }), undefined);
@@ -409,6 +413,10 @@ test('X1: a grant save names the installation\'s binding for its account, and re
   }) });
   assert.equal(created.status, 400);
   assert.deepEqual(await created.json(), { error: 'github_account_not_connected' });
+  // A's own account naming a repository of B's account: refused, though GitHub would refuse A's token there too.
+  const elsewhere = await patch([{ ...kept, enabled: false }, { id: 'repo_x', installationId: null, accountLogin: 'acme-a', fullName: 'acme-b/secret', enabled: true }], 3);
+  assert.equal(elsewhere.status, 400);
+  assert.deepEqual(await elsewhere.json(), { error: 'github_account_not_connected' });
   assert.deepEqual(fetched, []);
 });
 

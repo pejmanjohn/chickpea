@@ -355,7 +355,7 @@ const sameGithubLogin = (left: string, right: string) => left.toLowerCase() === 
  */
 export function mintableInstallation(
   conn: GithubConnection,
-  grant: { accountLogin: string; installationId: number | null },
+  grant: { accountLogin: string; installationId: number | null; fullName?: string; allRepos?: boolean | undefined },
 ): number | undefined {
   if (conn.mode !== 'app') return undefined;
   let platform: GithubPlatformScope | undefined;
@@ -365,6 +365,12 @@ export function mintableInstallation(
     return undefined;
   }
   if (!platform) return grant.installationId ?? undefined;
+  // A repository outside the grant's own account is never this binding's, even
+  // though GitHub would refuse the token there anyway.
+  if (grant.allRepos !== true && grant.fullName !== undefined &&
+      !sameGithubLogin(grant.fullName.split('/')[0] ?? '', grant.accountLogin)) {
+    return undefined;
+  }
   return platform.bindings.find((binding) => sameGithubLogin(binding.accountLogin, grant.accountLogin))
     ?.githubInstallationId;
 }
