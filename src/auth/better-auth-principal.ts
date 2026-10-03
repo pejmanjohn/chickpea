@@ -8,7 +8,7 @@ import type {
 } from '../identity/types.ts';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import { createBetterAuth } from './better-auth.ts';
-import { hostedLoginAgrees, type HostedLoginFence } from './hosted-login.ts';
+import { hostedLoginAgrees, type HostedLoginFence, type HostedSessionRead } from './hosted-login.ts';
 import type {
   AuthPrincipal,
   PrincipalAuthenticationResult,
@@ -24,7 +24,8 @@ interface BetterAuthDirectoryInput {
    * Under installation tenancy (`hostedLoginFence(env)`): a Better Auth user
    * resolves only if they are the login the host routed the request by, and
    * only while this installation's stored binding and organization agree
-   * with that login's Slack account. Without a login nobody resolves.
+   * with that login's Slack account. Without a login nobody resolves. What
+   * routing already read for the login is used instead of reading it again.
    */
   hostedLogin?: HostedLoginFence | undefined;
 }
@@ -61,8 +62,9 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
     // Chickpea's migrations make that pair unique, so the row found is
     // normally the one the binding names. A database without that index can
     // hold another row for the pair; then the bound row is read by its ID.
+    // Hosted routing has read the former already, for this login.
     const [stored, memberInOrganization] = await Promise.all([
-      this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
+      fence?.routed?.principal ?? this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
       this.input.backend.getMembershipForUser(betterAuthUserId, this.input.organizationId),
     ]);
     if (!stored || !memberInOrganization) return undefined;
@@ -92,21 +94,63 @@ interface BetterAuthSessionAuthenticatorInput {
   organizationId: string;
   baseURL: string;
   secret: string;
+  /**
+   * Under installation tenancy, the session hosted routing read for this
+   * request (`hostedLoginFence(env)?.routed?.session`). A request presenting
+   * the same Cookie header authenticates with it, without asking Better
+   * Auth again; any other is read as usual.
+   */
+  routedSession?: HostedSessionRead | undefined;
+}
+
+interface SessionRead {
+  betterAuthUserId: string;
+  sessionId: string;
+  headers?: Headers | undefined;
 }
 
 export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
   readonly kind = 'better_auth';
-  private readonly auth: ReturnType<typeof createBetterAuth>;
+  private auth: ReturnType<typeof createBetterAuth> | undefined;
 
   constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {
-    this.auth = createBetterAuth({
-      backend: input.backend,
-      baseURL: input.baseURL,
-      secret: input.secret,
-    });
+    // With a routed session Better Auth is built only if a request needs it.
+    if (!input.routedSession) this.auth = this.createAuth();
   }
 
   async authenticate(request: Request): Promise<PrincipalAuthenticationResult | undefined> {
+    const session = this.routedSession(request) ?? await this.readSession(request);
+    if (!session) return undefined;
+    const resolution = await this.input.directory.resolveBetterAuthUser(session.betterAuthUserId);
+    if (!resolution || resolution.membership.status !== 'active') return undefined;
+    const { user, membership } = resolution;
+    const principal: AuthPrincipal = {
+      userId: user.id,
+      membershipId: membership.id,
+      organizationId: membership.organizationId,
+      role: membership.role,
+      authenticatorKind: this.kind,
+      credentialId: session.sessionId,
+      correlationId: '',
+      machine: false,
+    };
+    return { principal, ...(session.headers ? { responseHeaders: session.headers } : {}) };
+  }
+
+  private routedSession(request: Request): SessionRead | undefined {
+    const routed = this.input.routedSession;
+    if (!routed || routed.cookie !== request.headers.get('cookie')) return undefined;
+    return {
+      betterAuthUserId: routed.betterAuthUserId,
+      sessionId: routed.id,
+      ...(routed.setCookies.length
+        ? { headers: new Headers(routed.setCookies.map((value): [string, string] => ['set-cookie', value])) }
+        : {}),
+    };
+  }
+
+  private async readSession(request: Request): Promise<SessionRead | undefined> {
+    this.auth ??= this.createAuth();
     const result = await this.auth.api.getSession({
       headers: request.headers,
       returnHeaders: true,
@@ -117,19 +161,14 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
     const betterAuthUserId = result.response?.user?.id;
     const sessionId = result.response?.session?.id;
     if (typeof betterAuthUserId !== 'string' || typeof sessionId !== 'string') return undefined;
-    const resolution = await this.input.directory.resolveBetterAuthUser(betterAuthUserId);
-    if (!resolution || resolution.membership.status !== 'active') return undefined;
-    const { user, membership } = resolution;
-    const principal: AuthPrincipal = {
-      userId: user.id,
-      membershipId: membership.id,
-      organizationId: membership.organizationId,
-      role: membership.role,
-      authenticatorKind: this.kind,
-      credentialId: sessionId,
-      correlationId: '',
-      machine: false,
-    };
-    return { principal, ...(result.headers ? { responseHeaders: result.headers } : {}) };
+    return { betterAuthUserId, sessionId, headers: result.headers };
+  }
+
+  private createAuth(): ReturnType<typeof createBetterAuth> {
+    return createBetterAuth({
+      backend: this.input.backend,
+      baseURL: this.input.baseURL,
+      secret: this.input.secret,
+    });
   }
 }
