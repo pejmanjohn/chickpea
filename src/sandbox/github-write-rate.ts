@@ -4,12 +4,14 @@
  * installation shares the platform's GitHub App, so one runaway loop must
  * not spend its reputation or its rate limit. Standalone has no such limit.
  *
- * A write is any request but a read: GitHub egress allows GET, POST, PATCH
- * and PUT, and Git's fetch protocol (`git-upload-pack`) posts too, so those
- * posts count as reads. Opening a pull request (the REST create call; the
- * GraphQL API is not reachable through egress) is also counted per day.
+ * The egress decision says what a request does (egress-handler.ts), from
+ * the same URL and method it allows and forwards: anything that does not
+ * surely read is a write, and one that may open a pull request (the REST
+ * create call; GraphQL and the uploads host are not reachable through
+ * egress) also counts per day.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { GithubRequestEffect } from './egress-handler.ts';
 
 export const GITHUB_WRITES_KEY = 'sandbox.githubWrites';
 export const GITHUB_WRITE_WINDOW_MS = 10 * 60_000;
@@ -18,34 +20,13 @@ export const GITHUB_PULL_REQUEST_WINDOW_MS = 24 * 60 * 60_000;
 export const GITHUB_PULL_REQUESTS_PER_WINDOW = 30;
 const MAX_CAS_ATTEMPTS = 12;
 
-export type GithubRequestKind = 'read' | 'write' | 'pull_request';
-
-/** How a GitHub request egress already allowed counts against the rate. */
-export function githubRequestKind(url: string, method: string): GithubRequestKind {
-  const verb = method.toUpperCase();
-  if (verb === 'GET' || verb === 'HEAD') return 'read';
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return 'write';
-  }
-  const host = parsed.hostname.toLowerCase();
-  const path = parsed.pathname.replace(/\/+$/, '');
-  if (host === 'github.com' && verb === 'POST' && /\/git-upload-pack$/.test(path)) return 'read';
-  if (host === 'api.github.com' && verb === 'POST' && /^\/repos\/[^/]+\/[^/]+\/pulls$/.test(path)) {
-    return 'pull_request';
-  }
-  return 'write';
-}
-
 /**
  * Count one write, or refuse it when the installation's ten-minute writes or
  * daily pull requests are spent. A refused write is not counted.
  */
 export async function admitGithubWrite(input: {
   store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
-  kind: Exclude<GithubRequestKind, 'read'>;
+  kind: Exclude<GithubRequestEffect, 'read'>;
   now: number;
 }): Promise<boolean> {
   const { store, kind, now } = input;

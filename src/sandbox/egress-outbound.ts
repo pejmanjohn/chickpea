@@ -14,7 +14,7 @@ import {
   resolveRepositoryInstallationScope,
 } from './egress-handler.ts';
 import { githubAuthorizationHeader } from './github-auth.ts';
-import { admitGithubWrite, githubRequestKind, githubWriteRateLimited } from './github-write-rate.ts';
+import { admitGithubWrite, githubWriteRateLimited } from './github-write-rate.ts';
 import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
@@ -96,6 +96,7 @@ export async function githubSandboxOutbound(
     const decision = decideSandboxEgress({
       url: request.url,
       method: request.method,
+      headers: request.headers,
       grants,
       allowedHosts: [],
     });
@@ -108,9 +109,8 @@ export async function githubSandboxOutbound(
 
     // An installation of many shares the platform's GitHub App: its writes
     // are rate-limited before a token is minted for them.
-    const kind = githubRequestKind(request.url, request.method);
-    if (context.installationId && kind !== 'read' &&
-      !(await admitGithubWrite({ store: settings, kind, now: Date.now() }))) {
+    if (context.installationId && decision.effect !== 'read' &&
+      !(await admitGithubWrite({ store: settings, kind: decision.effect, now: Date.now() }))) {
       return githubWriteRateLimited();
     }
     const { token: credential } = await getCachedInstallationToken(

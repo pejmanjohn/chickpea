@@ -51,8 +51,8 @@ import {
   GITHUB_WRITE_WINDOW_MS,
   GITHUB_WRITES_KEY,
   GITHUB_WRITES_PER_WINDOW,
-  githubRequestKind,
 } from '../src/sandbox/github-write-rate.ts';
+import { decideSandboxEgress } from '../src/sandbox/egress-handler.ts';
 import {
   admitWorkspaceContainer,
   maintainWorkspaceContainerLeases,
@@ -463,14 +463,66 @@ test('a suspended installation\'s container reaches nothing', async (t) => {
 
 // --- GitHub write rate -----------------------------------------------------
 
-test('only GitHub writes count: reads, and Git\'s fetch protocol, do not; opening a pull request also counts per day', () => {
-  assert.equal(githubRequestKind('https://github.com/acme/app.git/info/refs?service=git-receive-pack', 'GET'), 'read');
-  assert.equal(githubRequestKind('https://github.com/acme/app.git/git-upload-pack', 'POST'), 'read');
-  assert.equal(githubRequestKind('https://github.com/acme/app.git/git-receive-pack', 'POST'), 'write');
-  assert.equal(githubRequestKind('https://api.github.com/repos/acme/app/issues/1/comments', 'POST'), 'write');
-  assert.equal(githubRequestKind('https://api.github.com/repos/acme/app/pulls/4', 'PATCH'), 'write');
-  assert.equal(githubRequestKind('https://api.github.com/repos/acme/app/contents/a.md', 'PUT'), 'write');
-  assert.equal(githubRequestKind('https://api.github.com/repos/acme/app/pulls/', 'post'), 'pull_request');
+const GRANTS = [{ id: 'repo_1', installationId: 7, accountLogin: 'Acme', fullName: 'Acme/Alpha', enabled: true }];
+
+/** What egress decides a request does: the effect the write rate counts, or `denied`. */
+function effect(url: string, method = 'POST', headers?: Record<string, string>) {
+  const decision = decideSandboxEgress({
+    url, method, grants: GRANTS, allowedHosts: [], ...(headers ? { headers: new Headers(headers) } : {}),
+  });
+  if (!decision.allowed) return 'denied';
+  assert.equal(decision.kind, 'github');
+  return decision.kind === 'github' ? decision.effect : 'not github';
+}
+
+test('only a request that surely reads escapes the GitHub write count', () => {
+  // Reads.
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls', 'GET'), 'read');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls', 'get'), 'read');
+  assert.equal(effect('https://github.com/Acme/Alpha.git/info/refs?service=git-receive-pack', 'GET'), 'read');
+  assert.equal(effect('https://github.com/Acme/Alpha.git/git-upload-pack'), 'read', 'Git fetch posts');
+  assert.equal(effect('https://github.com/Acme/Alpha/git-upload-pack'), 'read');
+  // Pushes and REST writes, in any method case.
+  assert.equal(effect('https://github.com/Acme/Alpha.git/git-receive-pack'), 'write');
+  assert.equal(effect('https://github.com/Acme/Alpha.git/info/lfs/objects/batch'), 'write');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/issues/1/comments', 'post'), 'write');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls/4', 'patch'), 'write');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/contents/a.md', 'PUT'), 'write');
+});
+
+test('crafted requests cannot pass a write off as a read', () => {
+  // A method override, by header or parameter, makes even a GET a write.
+  for (const name of ['X-HTTP-Method-Override', 'x-http-method', 'X-Method-Override']) {
+    assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls/4', 'GET', { [name]: 'PATCH' }), 'write', name);
+  }
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls/4?_method=PATCH', 'GET'), 'write');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls/4?_METHOD=patch', 'GET'), 'write');
+  assert.equal(effect('https://github.com/Acme/Alpha.git/git-upload-pack', 'POST', { 'X-HTTP-Method-Override': 'PUT' }), 'write');
+  // Only Git's exact fetch endpoint is a read: no encoding, case, suffix or query tricks.
+  for (const path of [
+    'Acme/Alpha.git/git%2Dupload-pack',
+    'Acme/Alpha.git/GIT-UPLOAD-PACK',
+    'Acme/Alpha.git/git-upload-pack/',
+    'Acme/Alpha.git/git-upload-pack?service=git-receive-pack',
+    'Acme/Alpha.git/git-upload-pack;x',
+    'Acme/Alpha.git/git-receive-pack/git-upload-pack',
+    'Acme/Alpha.git/x/../git-receive-pack',
+  ]) {
+    assert.equal(effect(`https://github.com/${path}`), 'write', path);
+  }
+  // A pull request path counts per day however it is spelled.
+  for (const path of [
+    'repos/Acme/Alpha/pulls', 'repos/Acme/Alpha/pulls/', 'repos/Acme/Alpha/PULLS', 'repos/acme/ALPHA/Pulls',
+    'repos/Acme/Alpha/%70ulls', 'repos/Acme/Alpha//pulls', 'repos/Acme/Alpha/./pulls', 'repos/Acme/Alpha/pulls?state=open',
+  ]) {
+    assert.equal(effect(`https://api.github.com/${path}`), 'pull_request', path);
+  }
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls', 'GET', { 'X-HTTP-Method-Override': 'POST' }), 'pull_request');
+  // What egress does not forward to GitHub is never forwarded at all.
+  assert.equal(effect('https://api.github.com/graphql'), 'denied', 'GraphQL mutations');
+  assert.equal(effect('https://uploads.github.com/repos/Acme/Alpha/releases/1/assets'), 'denied', 'the uploads host');
+  assert.equal(effect('https://api.github.com/repos/Acme/Alpha/pulls', 'DELETE'), 'denied');
+  assert.equal(effect('https://github.com/Acme/Alpha.git/git-receive-pack', 'HEAD'), 'denied');
 });
 
 test('an installation writes to GitHub at most 60 times in 10 minutes and opens at most 30 pull requests a day', async (t) => {
@@ -561,6 +613,9 @@ test('hosted GitHub egress refuses an installation\'s write past its rate before
   const limited = await githubSandboxOutbound(push(), env(INSTALLATION_A), { containerId: 'do_a' });
   assert.equal(limited.status, 429);
   assert.equal(limited.headers.get('Retry-After'), '600');
+  // The handler judges the request it forwards, headers included.
+  const overridden = new Request('https://api.github.com/repos/acme/app/pulls/4', { headers: { 'X-HTTP-Method-Override': 'PATCH' } });
+  assert.equal((await githubSandboxOutbound(overridden, env(INSTALLATION_A), { containerId: 'do_a' })).status, 429);
   assert.deepEqual(minted, [], 'no token for a refused write');
   assert.equal((await githubSandboxOutbound(new Request('https://api.github.com/repos/acme/app/pulls'), env(INSTALLATION_A),
     { containerId: 'do_a' })).status, 200, 'reads go on');
