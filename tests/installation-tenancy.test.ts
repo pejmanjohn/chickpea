@@ -383,9 +383,10 @@ test('only an active installation resolves to an env, and cron runs once per act
   assert.deepEqual(ranStale, []);
 });
 
-test('coding sandboxes are not offered to a deployment serving many installations', () => {
+test('a Sandbox binding counts on a deployment serving many installations, which names each Sandbox under one', () => {
   assert.equal(sandboxBindingInstalled({ SANDBOX: {} }), true);
-  assert.equal(sandboxBindingInstalled({ ...HOSTED, SANDBOX: {} } as never), false);
+  assert.equal(sandboxBindingInstalled({ ...HOSTED, SANDBOX: {} } as never), true);
+  assert.equal(sandboxBindingInstalled(HOSTED as never), false);
 });
 
 test('the state store, thread runners and Flue agents serve the installation their name carries', () => {
@@ -393,10 +394,16 @@ test('the state store, thread runners and Flue agents serve the installation the
   assert.match(source('cloudflare.ts'), /class TagStateStore[\s\S]*?super\(ctx, objectInstallationEnv\(ctx, env\)\)/);
   assert.match(source('slack/thread-runner.ts'), /super\(ctx, objectInstallationEnv\(ctx, env\)\)/);
   assert.match(source('agents/turn-input.ts'), /extends \(\s*installationAgentObject\(Base\)/);
-  for (const agent of ['coding-worker.ts', 'routine-execution.ts', 'routine-intent.ts']) {
+  assert.match(source('agents/coding-worker-staging.ts'), /extends \(\s*installationAgentObject\(Base\)/);
+  for (const agent of ['routine-execution.ts', 'routine-intent.ts']) {
     assert.match(source(`agents/${agent}`), /export const cloudflare = installationAgentExtension;/);
   }
   assert.match(source('agents/slack-thread.ts'), /export const cloudflare = slackThreadCloudflareExtension;/);
+  assert.match(source('agents/coding-worker.ts'), /export const cloudflare = codingWorkerCloudflareExtension;/);
+  assert.match(
+    source('cloudflare.ts'),
+    /class Sandbox extends CloudflareSandbox[\s\S]*?super\(ctx, sandboxObjectEnv\(ctx as unknown as SandboxObjectContext, env\)\)/,
+  );
 });
 
 test('a Flue agent object hands its base the env of the installation its instance ID names', () => {

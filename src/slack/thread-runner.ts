@@ -1,4 +1,3 @@
-import { getSandbox } from '@cloudflare/sandbox';
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
@@ -20,8 +19,7 @@ import {
   stopCodingTasks,
   threadCodingTaskStopPorts,
 } from '../sandbox/coding-task-stop.ts';
-import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
-import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { sandboxTurnReaders } from '../sandbox/sandbox-object.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
 import {
@@ -66,25 +64,10 @@ import type {
   SlackThreadRunnerRpc,
   ThreadRunnerJobPayload,
 } from './thread-runner-rpc.ts';
-import { executeTurnJob, type SandboxTurnReader, type TurnExecutionPorts } from './turn-executor.ts';
+import { executeTurnJob, type TurnExecutionPorts } from './turn-executor.ts';
 import { processSlackAgentAsks } from '../channels/slack.ts';
 import type { FlueObservationTarget, TurnStopNotice } from './turn-job-types.ts';
 import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
-
-/** The coding Sandbox readers of one thread (identical for both executors). */
-export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandboxes'] {
-  return (sandboxKey) => {
-    const binding = env.SANDBOX ?? env.Sandbox;
-    if (!binding) return [];
-    // A replaced Sandbox instance leaves a dead stub; reconnect instead.
-    return cloudflareSandboxOptionVariants(sandboxKey).map((options) => () =>
-      reconnectingSandboxStub(() => getSandbox(
-        binding as Parameters<typeof getSandbox>[0],
-        sandboxKey,
-        options,
-      )) as ReturnType<typeof getSandbox> & SandboxTurnReader);
-  };
-}
 
 /**
  * Per-thread Slack turn runner (binding `SLACK_THREAD_RUNNER`, migration v11),

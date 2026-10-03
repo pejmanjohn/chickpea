@@ -1,4 +1,3 @@
-import { deploymentTenancy } from '../config/installation-scope.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
@@ -20,15 +19,19 @@ interface SandboxSelectionInput {
 export function sandboxBindingInstalled(
   env: { SANDBOX?: unknown; Sandbox?: unknown } | undefined,
 ): boolean {
-  // Sandbox objects are named by hashed workspace keys that carry no
-  // installation, so a deployment serving many installations offers none.
-  if (deploymentTenancy(env) === 'installation') return false;
+  // A deployment serving many installations names every Sandbox under one
+  // (sandbox-object.ts), so the binding counts there as on standalone.
   return env?.SANDBOX !== undefined || env?.Sandbox !== undefined;
 }
 
 export type SandboxContainerProbe = 'attached' | 'missing' | 'unknown';
 
-/** Durable Object id used only to ask whether a Container is attached. */
+/**
+ * Durable Object id used only to ask whether a Container is attached. One
+ * object for the whole deployment, installations included: every
+ * installation shares the Container application it asks about, and the
+ * probe holds no data and starts no container.
+ */
 export const SANDBOX_CONTAINER_PROBE_NAME = 'chickpea-container-probe';
 const CONTAINER_NOT_ENABLED = /Containers have not been enabled for this Durable Object class/i;
 

@@ -100,6 +100,8 @@ export interface WorkspaceSessionOptions<TStub extends WorkspaceSandboxStub> {
   agentId: string;
   grants: readonly RepositoryGrant[];
   credentialMode?: SandboxCredentialMode;
+  /** The package registries this turn's sandbox settings allow, snapshotted into its egress policy. */
+  packageRegistryHosts?: readonly string[];
   /** The turn this request binds the workspace to; opening it prepares that turn. */
   turnId: string;
   /** Mint a fresh DO stub. Never cached across acquisitions: stubs are bound to one I/O context. */
@@ -232,7 +234,11 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
       // checkout.
       turn = await candidate.beginWorkspaceTurn({ fingerprint: this.fingerprint, turnId });
       await candidate.configureEgress(
-        { grants: validEnabledRepositoryGrants(options.grants), mode: options.credentialMode },
+        {
+          grants: validEnabledRepositoryGrants(options.grants),
+          mode: options.credentialMode,
+          ...(options.packageRegistryHosts ? { packageRegistryHosts: options.packageRegistryHosts } : {}),
+        },
         turnId,
       );
     });

@@ -1,14 +1,15 @@
 import { init, type AgentInstanceHandle } from '@flue/runtime';
 
-import { createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
+import { agentObjectBindingName, createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import type { SandboxCodingTaskStub } from '../sandbox/coding-task-record.ts';
 import {
   codingWorkerBindingForPlan,
   codingWorkerInstanceId,
+  type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
-import { CLOUDFLARE_SANDBOX_OPTIONS } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { recordWorkspaceObject, sandboxStub } from '../sandbox/sandbox-object.ts';
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
 import { defaultWorkspaceId } from '../sandbox/workspace-session.ts';
 import { WORKSPACE_DELEGATION_GUIDANCE } from '../sandbox/workspace-skill.ts';
@@ -20,6 +21,7 @@ import {
   type WorkspaceTaskResponseState,
   type WorkspaceTaskToolOptions,
 } from '../sandbox/workspace-task.ts';
+import { stageCodingWorkerBinding } from './coding-worker-staging.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
 import type {
   CodingWorkerRunRecord,
@@ -50,6 +52,7 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
     resolve: input.resolve,
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
     instanceId: codingWorkerInstanceId,
+    prepareWorker: (instanceId, binding) => prepareInstallationCodingWorker(instanceId, binding),
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
     onWorkerStarted: (model) => input.onWorkerStarted({ schemaVersion: 1, model }),
@@ -73,20 +76,42 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
 function threadCodingTaskRecords(conversationKey: () => string): CodingTaskRecordStore {
   const stub = reconnectingSandboxStub(async (): Promise<SandboxCodingTaskStub> => {
     const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
-    const env = getCloudflareContext().env as { SANDBOX?: unknown; Sandbox?: unknown };
-    const binding = env.SANDBOX ?? env.Sandbox;
-    if (!binding) throw new Error('No Sandbox binding');
-    const { getSandbox } = await import('@cloudflare/sandbox');
-    return getSandbox(
-      binding as Parameters<typeof getSandbox>[0],
-      defaultWorkspaceId(conversationKey()),
-      CLOUDFLARE_SANDBOX_OPTIONS,
-    ) as unknown as SandboxCodingTaskStub;
+    return sandboxStub(getCloudflareContext().env, defaultWorkspaceId(conversationKey()));
   });
   return {
     put: (hostTurnId, record) => stub.putCodingTask(hostTurnId, record),
     settle: (hostTurnId, taskKey) => stub.settleCodingTask(hostTurnId, taskKey),
   };
+}
+
+/**
+ * An installation's coding worker (a version 2 binding, named under it) is
+ * recorded in its object inventory, and its binding staged beside it for its
+ * model access, before anything names it. A standalone worker needs neither.
+ */
+export async function prepareInstallationCodingWorker(
+  instanceId: string,
+  binding: CodingWorkerBinding,
+  dependencies: {
+    env?: () => Promise<Record<string, unknown>>;
+    record?: typeof recordWorkspaceObject;
+    stage?: typeof stageCodingWorkerBinding;
+  } = {},
+): Promise<void> {
+  if (binding.schemaVersion !== 2) return;
+  const env = await (dependencies.env ?? coordinatorEnv)();
+  await (dependencies.record ?? recordWorkspaceObject)(env, { kind: 'coding_worker', name: instanceId });
+  await (dependencies.stage ?? stageCodingWorkerBinding)(
+    env,
+    agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME),
+    instanceId,
+    binding,
+  );
+}
+
+async function coordinatorEnv(): Promise<Record<string, unknown>> {
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return getCloudflareContext().env;
 }
 
 const responseStates = new WeakMap<WorkspaceTurnRegistry, WorkspaceTaskResponseState>();

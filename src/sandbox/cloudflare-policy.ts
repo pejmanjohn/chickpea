@@ -2,6 +2,7 @@ import type {
   TurnProgress,
   TurnPullRequestProgress,
 } from '../config/state-rpc.ts';
+import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from '../config/sandbox-settings.ts';
 import type { RepositoryGrant } from '../config/types.ts';
 import { validEnabledRepositoryGrants } from './egress-handler.ts';
 
@@ -14,11 +15,26 @@ export type SandboxCredentialMode = 'app';
 export interface SandboxEgressPolicy {
   grants: RepositoryGrant[];
   mode: SandboxCredentialMode | null;
+  /**
+   * The package registries the turn may reach, from the sandbox settings it
+   * resolved, so a registry request reads no settings store. Absent outside
+   * a configured turn and on a policy an earlier release stored.
+   */
+  packageRegistryHosts?: string[];
 }
 
 export interface SandboxEgressPolicyInput {
   grants: readonly RepositoryGrant[];
   mode: SandboxCredentialMode;
+  packageRegistryHosts?: readonly string[];
+}
+
+/** What a Sandbox answers its egress handlers in one call. */
+export interface SandboxEgressContext {
+  /** The installation the Sandbox serves: absent on standalone, and when it cannot tell. */
+  installationId?: string;
+  turnId?: string;
+  policy: SandboxEgressPolicy;
 }
 
 export interface SandboxPolicyStorage {
@@ -61,6 +77,9 @@ export class SandboxPolicyState {
     const policy: SandboxEgressPolicy = {
       grants: validEnabledRepositoryGrants(input.grants).map(copyRepositoryGrant),
       mode: input.mode,
+      ...(input.packageRegistryHosts
+        ? { packageRegistryHosts: supportedRegistryHosts(input.packageRegistryHosts) }
+        : {}),
     };
     await this.prepareTurn(turnId);
     await this.storage.put(SANDBOX_EGRESS_POLICY_STORAGE_KEY, policy);
@@ -83,11 +102,20 @@ export class SandboxPolicyState {
     return {
       grants: validEnabledRepositoryGrants(stored.grants).map(copyRepositoryGrant),
       mode: stored.mode,
+      ...(stored.packageRegistryHosts
+        ? { packageRegistryHosts: supportedRegistryHosts(stored.packageRegistryHosts) }
+        : {}),
     };
   }
 
   async getTurnId(): Promise<string | undefined> {
     return this.storage.get<string>(SANDBOX_TURN_ID_STORAGE_KEY);
+  }
+
+  /** The turn and its policy, for an egress handler; the caller adds the installation. */
+  async egressContext(): Promise<Omit<SandboxEgressContext, 'installationId'>> {
+    const [turnId, policy] = await Promise.all([this.getTurnId(), this.getEgressPolicy()]);
+    return { ...(turnId ? { turnId } : {}), policy };
   }
 
   async getTurnProgress(): Promise<TurnProgress> {
@@ -131,8 +159,17 @@ function isSandboxEgressPolicy(value: unknown): value is SandboxEgressPolicy {
   }
   return (
     Array.isArray(candidate.grants) &&
-    candidate.grants.every(isRepositoryGrant)
+    candidate.grants.every(isRepositoryGrant) &&
+    (candidate.packageRegistryHosts === undefined ||
+      (Array.isArray(candidate.packageRegistryHosts) &&
+        candidate.packageRegistryHosts.every((host) => typeof host === 'string')))
   );
+}
+
+/** Only the curated registries ever reach a policy, whatever a caller passed. */
+function supportedRegistryHosts(hosts: readonly string[]): string[] {
+  const supported = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS);
+  return [...new Set(hosts)].filter((host) => supported.has(host));
 }
 
 function isRepositoryGrant(value: unknown): value is RepositoryGrant {

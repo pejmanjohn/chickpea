@@ -22,7 +22,7 @@ import {
   codingWorkerInstanceId,
   codingWorkerRepositoryGrants,
   parseCodingWorkerBinding,
-  type CodingWorkerBindingV1,
+  type CodingWorkerBinding,
 } from '../src/sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../src/sandbox/coding-worker-instructions.ts';
 import type { SandboxPolicyStorage } from '../src/sandbox/cloudflare-policy.ts';
@@ -186,7 +186,7 @@ test('workspace_task joins the workspace tool family', () => {
 
 interface Harness {
   calls: string[];
-  dispatched: Array<{ instanceId: string; message: string; initialData: CodingWorkerBindingV1; idempotencyKey: string }>;
+  dispatched: Array<{ instanceId: string; message: string; initialData: CodingWorkerBinding; idempotencyKey: string }>;
   aborted: string[];
   started: string[];
   progress: ActivityStatus[];
@@ -317,6 +317,7 @@ function taskTool(
     onWorkerUsage?: (record: CodingWorkerUsageRecord) => void;
     now?: () => number;
     taskRecords?: CodingTaskRecordStore;
+    prepareWorker?: NonNullable<WorkspaceTaskToolOptions['prepareWorker']>;
   } = {},
 ) {
   return createWorkspaceTaskTool({
@@ -575,6 +576,36 @@ test('a task whose record cannot be written is refused before any dispatch', asy
     'pull_request:not_run:prior_failed',
   ]);
   assert.equal(h.state.running.size, 0);
+});
+
+test('a worker is prepared (inventoried, its binding staged) before its task record and dispatch name it', async () => {
+  const h = harness();
+  const records = recordingStore(h);
+  const prepared: string[] = [];
+  const tool = taskTool(h, workspace([]), async () => reply('done'), {
+    taskRecords: records.store,
+    prepareWorker: async (instanceId, binding) => {
+      assert.equal(instanceId, codingWorkerInstanceId(binding));
+      prepared.push(instanceId);
+      h.calls.push('prepare');
+    },
+  });
+  assert.equal((await run(tool, h, { task: 'x' })).ok, true);
+  assert.deepEqual(h.calls.filter((call) => /^(prepare|record:put|dispatch)/.test(call)), [
+    'prepare', 'record:put:turn-1:dispatch_pending', 'dispatch', 'record:put:turn-1:accepted',
+  ]);
+  assert.deepEqual(prepared, [h.dispatched[0]!.instanceId]);
+
+  // A worker that could not be prepared is never named, recorded or started.
+  const refused = harness();
+  const refusedRecords = recordingStore(refused);
+  const output = await run(taskTool(refused, workspace([]), async () => reply('x'), {
+    taskRecords: refusedRecords.store,
+    prepareWorker: async () => { throw new Error('state store unavailable'); },
+  }), refused, { task: 'x' });
+  assert.equal(output.reason, 'workspace_unavailable');
+  assert.deepEqual(refusedRecords.puts, []);
+  assert.equal(refused.dispatched.length, 0);
 });
 
 test('a failed acceptance write never fails a task the worker already took', async () => {

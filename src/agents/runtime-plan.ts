@@ -311,6 +311,14 @@ export interface RuntimePlanCodingModelV1 {
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   attribution: RuntimePlanCodingModelAttributionV1;
+  /**
+   * The coding model's credential epoch, frozen like the plan's own
+   * `modelCredential`, for the coding worker's model access. Only a plan an
+   * installation of a deployment serving many admitted carries it (its
+   * `installation` already keeps an earlier reader from running it);
+   * standalone workers read the installation's current keys.
+   */
+  modelCredential?: RuntimePlanModelCredentialV3;
 }
 
 export interface RuntimePlanCodingModelAttributionV1 {
@@ -976,7 +984,7 @@ export function parseRuntimePlanV2(
     : parseModelAttribution(record.modelAttribution);
   const modelCredential = record.modelCredential === undefined
     ? undefined
-    : parseModelCredential(record.modelCredential);
+    : parseRuntimePlanModelCredential(record.modelCredential);
   if (schemaVersion === RUNTIME_PLAN_SCHEMA_VERSION && (!ownerIncarnation || !modelAttribution)) {
     throw new Error('Runtime plan V3 requires ownerIncarnation and modelAttribution.');
   }
@@ -1464,8 +1472,8 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
   const record = exactRecord(
     value,
     'codingWorkspace.codingModel',
-    ['model', 'runtimeModel', 'runtimeModelRoute', 'attribution'],
-    ['runtimeModelRoute'],
+    ['model', 'runtimeModel', 'runtimeModelRoute', 'attribution', 'modelCredential'],
+    ['runtimeModelRoute', 'modelCredential'],
   );
   const { model, runtimeModel, runtimeModelRoute } = parseCodingModelRoute(record);
   const attributionRecord = exactRecord(
@@ -1493,6 +1501,9 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
       providerId: boundedString(attributionRecord.providerId, 'codingModel.attribution.providerId', 1, 128),
       fallback,
     },
+    ...(record.modelCredential === undefined
+      ? {}
+      : { modelCredential: parseRuntimePlanModelCredential(record.modelCredential) }),
   };
 }
 
@@ -1689,7 +1700,8 @@ function parseModelAttribution(value: unknown): AgentModelAttribution {
   };
 }
 
-function parseModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
+/** A frozen credential epoch: reference, version and provider, never a value. */
+export function parseRuntimePlanModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
   const record = exactRecord(value, 'modelCredential', [
     'credentialRefId',
     'version',

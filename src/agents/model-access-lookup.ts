@@ -14,9 +14,12 @@
  * A Slack or routine attempt whose run is not found fails closed: every turn
  * is staged before its dispatch, and every occurrence persists its dispatch
  * before it starts, so a miss means the lookup broke or the run settled. The
- * coding worker has no persisted run of its own here. Standalone binds the
- * installation's current keys for it (today's live read); a deployment
- * serving many installations does not run coding workers.
+ * coding worker has no persisted run of its own. Standalone binds the
+ * installation's current keys for it (today's live read). On a deployment
+ * serving many installations the coordinator stages the worker's version 2
+ * binding beside it before dispatching (coding-worker-staging.ts), carrying
+ * the credential its plan froze for the coding model, and the attempt binds
+ * that, as a Slack turn binds its plan's.
  *
  * Routine intent has no dispatch site and no persisted run. Standalone keeps
  * today's live keys for it; a deployment serving many installations refuses
@@ -28,13 +31,24 @@
 import type { FlueExecutionContext } from '@flue/runtime';
 
 import {
+  CHICKPEA_CODING_WORKER_AGENT_NAME,
   CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME,
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
 } from './names.ts';
+import { readStagedCodingWorkerBinding } from './coding-worker-staging.ts';
 import { parseRoutineExecutionInitialData } from './routine-execution-data.ts';
-import { assertRuntimePlanInstallation, type RuntimePlanV2 } from './runtime-plan.ts';
+import {
+  assertRuntimePlanInstallation,
+  type RuntimePlanModelCredentialV3,
+  type RuntimePlanV2,
+} from './runtime-plan.ts';
 import { readStagedSlackTurnInput } from './turn-input.ts';
+import {
+  codingWorkerInstallationId,
+  codingWorkerInstanceId,
+  type CodingWorkerBinding,
+} from '../sandbox/coding-worker-binding.ts';
 import {
   frozenModelAccessGrant,
   installationModelAccessGrant,
@@ -42,7 +56,11 @@ import {
   modelAccessInstallationId,
   providerSetupRequired,
 } from '../config/installation-model-access.ts';
-import { assertInstallationOwnership, deploymentServesManyInstallations } from '../config/installation-scope.ts';
+import {
+  assertInstallationOwnership,
+  deploymentServesManyInstallations,
+  type InstallationOwnership,
+} from '../config/installation-scope.ts';
 import {
   ModelAccessError,
   createModelAccessInterceptor,
@@ -63,10 +81,16 @@ export const modelAccessInterceptor = createModelAccessInterceptor({
   installationGrants: installationModelAccessGrants,
 });
 
-/** `agentEnv`: the attempt's own env (the agent object's scoped env on Cloudflare). */
+/**
+ * `agentEnv`: the attempt's own env (the agent object's scoped env on
+ * Cloudflare). `stagedCodingWorkerBinding`: the binding staged in the
+ * attempt's own object.
+ */
 export async function lookupAttemptModelAccess(
   context: FlueExecutionContext,
   agentEnv: () => Promise<PlatformEnv | undefined> = currentPlatformEnv,
+  stagedCodingWorkerBinding: (instanceId: string) => Promise<CodingWorkerBinding | undefined> =
+    readStagedCodingWorkerBinding,
 ): Promise<AttemptModelAccess> {
   const env = await agentEnv();
   const { instanceId, submissionId } = context;
@@ -78,6 +102,16 @@ export async function lookupAttemptModelAccess(
     case CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME:
       if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
       break;
+    case CHICKPEA_CODING_WORKER_AGENT_NAME:
+      // Standalone: the installation's current keys, read live.
+      if (!deploymentServesManyInstallations(env)) return { env };
+      if (!instanceId) break;
+      return codingWorkerModelAccess(
+        await stagedCodingWorkerBinding(instanceId),
+        instanceId,
+        submissionId ?? instanceId,
+        env,
+      );
     case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:
       if (deploymentServesManyInstallations(env)) {
         throw new ModelAccessError(
@@ -104,10 +138,58 @@ async function planModelAccess(
 ): Promise<AttemptModelAccess> {
   // The plan, its instance and this env name the same installation (standalone: none).
   assertRuntimePlanInstallation(plan, instanceId);
-  assertInstallationOwnership(plan.installation, env);
-  const providerId = modelAccessProviderId(providerPrefix(plan.runtimeModel ?? plan.model));
+  return runModelAccess(
+    { installation: plan.installation, runtimeModel: plan.runtimeModel ?? plan.model, credential: plan.modelCredential },
+    runId,
+    env,
+  );
+}
+
+/**
+ * An installation's coding worker runs on the credential its coordinator's
+ * plan froze for the coding model. Its binding, its instance's name and this
+ * env name the same installation; a version 1 binding names none, so it
+ * never runs for an installation of many.
+ */
+async function codingWorkerModelAccess(
+  binding: CodingWorkerBinding | undefined,
+  instanceId: string,
+  runId: string,
+  env: PlatformEnv | undefined,
+): Promise<AttemptModelAccess> {
+  if (!binding) {
+    throw new ModelAccessError('scope_missing', 'No staged binding binds model access for this coding worker.');
+  }
+  if (binding.schemaVersion !== 2 || codingWorkerInstanceId(binding) !== instanceId) {
+    throw new ModelAccessError('scope_missing', 'The coding worker binding does not bind this instance.');
+  }
+  if (codingWorkerInstallationId(instanceId) !== binding.installation.installationId) {
+    throw new ModelAccessError('installation_mismatch', 'The coding worker binding belongs to another installation.');
+  }
+  return runModelAccess(
+    {
+      installation: binding.installation,
+      runtimeModel: binding.codingModel.runtimeModel,
+      credential: binding.modelCredential,
+    },
+    runId,
+    env,
+  );
+}
+
+async function runModelAccess(
+  run: {
+    installation: InstallationOwnership | undefined;
+    runtimeModel: string;
+    credential: RuntimePlanModelCredentialV3 | undefined;
+  },
+  runId: string,
+  env: PlatformEnv | undefined,
+): Promise<AttemptModelAccess> {
+  assertInstallationOwnership(run.installation, env);
+  const providerId = modelAccessProviderId(providerPrefix(run.runtimeModel));
   if (!providerId) return { env, deploymentLane: true };
-  const credential = plan.modelCredential;
+  const credential = run.credential;
   if (credential && credential.providerId !== providerId) {
     throw new ModelAccessError(
       'provider_mismatch',

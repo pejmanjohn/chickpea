@@ -102,6 +102,7 @@ import type { SlackRunFactsView } from '../slack/status-registry.ts';
 import type { ReceiptReaction, SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { ThreadImageRecord } from '../slack/thread-images.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
+import type { InstallationWorkspaceObject } from '../state/object-inventory.ts';
 import type { GatewayInboxDrainCounts } from '../slack/gateway/inbox.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery } from '../slack/gateway/protocol.ts';
 import type {
@@ -531,6 +532,12 @@ export interface TagStateRpc {
   ): Promise<StateRpcResult<FlueDispatchEnvelopeV1>>;
   /** The settings envelope frozen with a turn's dispatch; the Agent reads it once per turn. */
   slackTurnEnvelopeGet(id: string): Promise<StateRpcResult<TurnEnvelopeV1 | null>>;
+  /**
+   * Record a coding workspace's Sandbox or coding worker in the object
+   * inventory before its opener addresses it. Idempotent; a store serving
+   * no installation of many records nothing.
+   */
+  slackWorkspaceObjectRecord(object: InstallationWorkspaceObject): Promise<StateRpcResult<null>>;
   slackFlueExistingInstanceReconcile(
     id: string,
     uid: string,

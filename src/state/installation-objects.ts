@@ -20,7 +20,7 @@
  * installation once erasure starts, gating every path on its registry's
  * `deleted` state.
  */
-import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../agents/names.ts';
+import { CHICKPEA_CODING_WORKER_AGENT_NAME, CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../agents/names.ts';
 import {
   deploymentTenancy,
   InstallationContextError,
@@ -182,11 +182,18 @@ function objectStub(
     if (typeof namespace?.getByName !== 'function') throw missingBinding('SLACK_THREAD_RUNNER');
     return namespace.getByName(object.name) as AnyObjectHostRpc;
   }
+  if (object.kind === 'sandbox') {
+    // A Sandbox's container and checkpoints must go before its storage, so
+    // it answers no host function until it can do that itself.
+    throw new Error('A coding workspace Sandbox has no host functions yet.');
+  }
   const bindingName = object.kind === 'slack_agent'
     ? CHICKPEA_SLACK_AGENT_BINDING
     : object.kind === 'routine_agent'
       ? agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)
-      : undefined;
+      : object.kind === 'coding_worker'
+        ? agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME)
+        : undefined;
   if (!bindingName) throw new Error('Unknown installation object kind.');
   const namespace = env[bindingName] as IdNamespace | undefined;
   if (typeof namespace?.idFromName !== 'function' || typeof namespace.get !== 'function') {

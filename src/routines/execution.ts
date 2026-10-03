@@ -570,6 +570,7 @@ async function prepareExecution(
           settings: settingsStore,
           ...(input.env ? { env: input.env } : {}),
           resolveModel,
+          agentCredential: modelCredential,
         })
       : undefined;
     const installation = installationOwnershipOf(input.env);

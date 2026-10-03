@@ -227,6 +227,7 @@ import {
   type UsageStore,
   type UsageSummary,
 } from '../usage/index.ts';
+import type { InstallationWorkspaceObject } from '../state/object-inventory.ts';
 import {
   RoutineStateError,
   type ActivateDirectRoutineInput,
@@ -336,6 +337,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'snapshotListLiveRootsByAgent', 'threadActiveWorkGet', 'threadHas',
   // Idempotent writes: a keyed set or delete, first-write-wins, or version-gated.
   'threadActiveWorkSet', // the flag for one generation, set to a value
+  'slackWorkspaceObjectRecord', // an insert that ignores a name already recorded
   'settingSet', 'settingDelete', // keyed upsert / delete
   'snapshotPutIfAbsent', // first write wins
   'slackFlueReceiptRecord', 'slackFlueSettlementRecord', // an equal checkpoint returns the saved one
@@ -1994,6 +1996,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async getTurnEnvelope(id: string) {
     return orUndefined(await rpcVia(this.stub,'slackTurnEnvelopeGet', (stub) => stub.slackTurnEnvelopeGet(id)));
+  }
+
+  async recordWorkspaceObject(object: InstallationWorkspaceObject) {
+    await rpcVia(this.stub, 'slackWorkspaceObjectRecord', (stub) => stub.slackWorkspaceObjectRecord(object));
   }
 
   async reconcileFlueExistingInstance(id: string, uid: string) {
