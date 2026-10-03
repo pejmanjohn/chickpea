@@ -53,3 +53,7 @@ npm run verify:live:record -- case-add --spec "$run_dir/spec.json" --output "$ru
 - An Agent with live thread snapshots cannot be deleted. Archive it, and verify `lifecycle: archived`, zero channels and no DM access.
 - Avatar parity compares the Slack sender, the Admin profile and the Admin roster. Slack may re-host the image, so differing URLs are not a failure, and a screenshot alone does not prove the canonical asset.
 - An archived Agent must not answer or fall back to another Agent; after restore the same handle and persona answer again.
+- Asked in Chickpea's DM for a new Agent with a schedule, Chickpea creates the Agent at once and the schedule rides in the welcome's proposal. The typed `approve` is applied by Chickpea although the thread now belongs to the new Agent. No "I couldn't complete that scheduled-work action." receipt and no **Connect** link the request did not name (a weekday is not Monday.com).
+- The creation turn's run stays `executing` in Sessions because the deferred welcome never finalizes it, and some delivered replies do too. A run's status is not delivery proof; read Slack.
+- Admin session diagnostics (`/admin/api/sessions/<run>?diagnostics=1`) show each execution's `flueInstanceRef`. A host-applied approval shows `not_invoked` with null references. DM interactive runs are listed there; only DM schedules are private.
+- `lane:slack thread` can return only the root of a Chickpea DM thread. Read DM replies from the lane browser's thread pane.
