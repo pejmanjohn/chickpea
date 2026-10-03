@@ -54,6 +54,7 @@ import {
   freezeRuntimeModelRoute,
   resolveProviderAuthRoute,
   resolveRuntimeModel,
+  RuntimeModelReadinessError,
   safeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -389,6 +390,20 @@ export interface SlackStopEnding {
 
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
   'The Workspace default model needs attention. An owner or admin can repair it in Settings → Model providers.';
+
+/**
+ * The reply for a turn whose model cannot run until someone repairs Model
+ * providers: its provider has no key, or the deployment does not offer the
+ * model. Only a model inherited from the Workspace default has such a reply,
+ * the one Admin's own "Repair required" matches; a pinned model's turn, and
+ * a provider that could not be checked just now, keep the generic failure.
+ */
+function modelRepairReplyText(error: unknown, assignment: ResolvedAssignment): string | undefined {
+  if (!(error instanceof RuntimeModelReadinessError) || error.transient) return undefined;
+  return assignment.modelAttribution?.source === 'workspace_default'
+    ? WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT
+    : undefined;
+}
 
 function resolveManagementApprovalDependencies(
   configured: SlackManagementApprovalDependencies |
@@ -1031,13 +1046,30 @@ async function runTurnAttempt(
             ...(options.getBoundRuntimePlan
               ? { getBoundRuntimePlan: options.getBoundRuntimePlan }
               : {}),
+          }).catch((error: unknown) => {
+            // A model that needs repair ends the turn with its reply, below;
+            // a retry could not change that.
+            const modelRepairText = modelRepairReplyText(error, assignment);
+            if (modelRepairText === undefined) throw error;
+            return { modelRepairText };
           })
         : undefined,
     ]);
     const conversationKey = preparedMemory?.conversationKey ?? slackAgentThreadKey(turn, assignment);
+    const agentConversationKey = options.continuityKey ?? conversationKey;
+    if (frozen && 'modelRepairText' in frozen) {
+      return {
+        preparedMemory,
+        conversationKey,
+        agentConversationKey,
+        runtimePlanDecision: undefined,
+        sandboxUnavailableFallback: false,
+        workLifecycle: undefined,
+        modelRepairText: frozen.modelRepairText,
+      };
+    }
     const runtimePlanDecision = frozen?.decision ?? options.runtimePlanDecision;
     const sandboxUnavailableFallback = frozen?.unavailableFallback ?? false;
-    const agentConversationKey = options.continuityKey ?? conversationKey;
     const workLifecycle = options.runId && options.replayText === undefined && resolvedModel &&
         !stoppedBeforeDispatch
       ? await createSlackShadowLifecycle({
@@ -1066,6 +1098,7 @@ async function runTurnAttempt(
       runtimePlanDecision,
       sandboxUnavailableFallback,
       workLifecycle,
+      modelRepairText: undefined,
     };
   };
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
@@ -1086,6 +1119,7 @@ async function runTurnAttempt(
     runtimePlanDecision,
     sandboxUnavailableFallback,
     workLifecycle,
+    modelRepairText,
   } = prepared;
   deliveryLifecycle = workLifecycle;
   if (preparedMemory) presenter.setMemoryFooterItems(preparedMemory.footerItems);
@@ -1349,6 +1383,15 @@ async function runTurnAttempt(
       // status cleared, and a terminal delivery outcome.
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await finishStatus('failure');
+      await finishDelivery('failed');
+      return;
+    }
+    // The turn's model cannot run until Model providers is repaired: say so
+    // once, as the thread's Agent, with nothing dispatched.
+    if (modelRepairText !== undefined) {
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(modelRepairText, 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;

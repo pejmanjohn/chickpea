@@ -357,6 +357,7 @@ export async function resolveRuntimeModel(
               'provider_setup_required',
               'openrouter',
               'OpenRouter model availability could not be refreshed. Try again.',
+              true,
             );
           }
           throw error;
