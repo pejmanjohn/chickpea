@@ -574,7 +574,7 @@ import {
   type SlackInstallOAuthResult,
 } from '../slack/install-oauth.ts';
 import { setCookieValues } from '../auth/cookies.ts';
-import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
+import { AuthDeniedError, AuthService, AuthUnavailableError, setRequestPrincipal } from '../auth/service.ts';
 import { runWithRequestTiming, serverTimingHeader, timed } from '../http/request-timing.ts';
 import {
   BetterAuthDirectory,
@@ -599,6 +599,7 @@ import {
   type Permission,
 } from '../auth/permissions.ts';
 import { validateMutationProvenance } from '../auth/request-provenance.ts';
+import { requestAuthControl as sharedRequestAuthControl } from '../auth/request-auth-control.ts';
 import { AuthRateLimitError, AuthRateLimiter } from '../auth/rate-limit.ts';
 import { requestAuthSourceKey } from '../auth/source-key.ts';
 import {
@@ -1828,21 +1829,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.slackState ?? getSlackStateStore(c.env as PlatformEnv | undefined);
   // Every Admin request reads auth control at the recovery gate, again while
   // building the Better Auth context, and again inside authentication. Each
-  // read is a store round trip; one per request is enough. The memo is
-  // request-scoped so a mutation later in the same request is never masked
-  // for the middleware chain that runs before it.
-  const authControlByRequest = new WeakMap<Request, Promise<AuthControl | undefined>>();
-  const requestAuthControl = (c: Context): Promise<AuthControl | undefined> => {
-    const request = c.req.raw;
-    let pending = authControlByRequest.get(request);
-    if (!pending) {
-      pending = timed('authctl', () => identity(c).getAuthControl());
-      authControlByRequest.set(request, pending);
-      // A failed read must not pin the failure for the request's later readers.
-      pending.catch(() => { authControlByRequest.delete(request); });
-    }
-    return pending;
-  };
+  // read is a store round trip; these share one per request, with the
+  // application's own recovery gate when it runs first (src/app.ts).
+  const requestAuthControl = (c: Context): Promise<AuthControl | undefined> =>
+    sharedRequestAuthControl(c, () => timed('authctl', () => identity(c).getAuthControl()));
   // Success audit writes leave the request path on Cloudflare: waitUntil keeps
   // the Worker alive until the store round trip completes, after the response
   // is sent. Hosts without an execution context (Node, unit tests) await it.
@@ -3163,6 +3153,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (error instanceof AuthorizationError) {
           return c.json({ error: 'forbidden' }, 403);
+        }
+        if (error instanceof AuthUnavailableError) {
+          return c.json({ error: 'authentication_unavailable' }, 503);
         }
         if (isAdminPageGet(c)) {
           authResponseHeaders(c);

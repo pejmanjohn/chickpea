@@ -674,6 +674,20 @@ export interface IdentityResolution {
   membership: Membership;
 }
 
+/**
+ * What authenticating a Better Auth user reads, in one store call: their
+ * Slack binding, and as stored (null when absent) the organization, the user
+ * and membership the binding names, and that membership's access overlay.
+ * The caller decides whether they agree.
+ */
+export interface BetterAuthPrincipalRecord {
+  binding: SlackIdentityBinding;
+  organization: Organization | null;
+  user: User | null;
+  membership: Membership | null;
+  overlay: MembershipAccessOverlay | null;
+}
+
 export interface ProvisionSlackMemberInput {
   slackTeamId: string;
   slackUserId: string;
@@ -986,6 +1000,7 @@ export interface IdentityStore extends HumanIdentityDirectory {
     betterAuthUserId: string,
     organizationId?: string,
   ): Promise<IdentityResolution | undefined>;
+  resolveBetterAuthPrincipal(betterAuthUserId: string): Promise<BetterAuthPrincipalRecord | undefined>;
   listExternalIdentities(): Promise<SlackIdentityBinding[]>;
   listMemberships(): Promise<Membership[]>;
   getUser(userId: string): Promise<User | undefined>;
@@ -1090,6 +1105,7 @@ export type IdentityRpcRequest =
   | { kind: 'bind_slack_login_browser_identity'; input: BindSlackLoginBrowserIdentityInput }
   | { kind: 'resolve_slack_identity'; slackTeamId: string; slackUserId: string; organizationId?: string }
   | { kind: 'resolve_better_auth_identity'; betterAuthUserId: string; organizationId?: string }
+  | { kind: 'resolve_better_auth_principal'; betterAuthUserId: string }
   | { kind: 'list_external_identities' }
   | { kind: 'list_memberships' }
   | { kind: 'get_user'; userId: string }
@@ -1139,6 +1155,7 @@ export type IdentityRpcResponse =
   | { kind: 'organization'; organization: Organization | null }
   | { kind: 'owner_claim'; ownerClaim: OwnerClaim | null }
   | { kind: 'identity_resolution'; resolution: IdentityResolution | null }
+  | { kind: 'better_auth_principal'; principal: BetterAuthPrincipalRecord | null }
   | { kind: 'slack_member_provisioning'; result: SlackMemberProvisioningResult }
   | { kind: 'external_identities'; externalIdentities: SlackIdentityBinding[] }
   | { kind: 'memberships'; memberships: Membership[] }

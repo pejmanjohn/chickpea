@@ -111,6 +111,20 @@ test('Cloudflare identity proxy uses the indexed Better Auth binding lookup', as
   }]);
 });
 
+test('Cloudflare identity proxy reads a Better Auth principal in one call', async () => {
+  const calls: IdentityRpcRequest[] = [];
+  const principal = {
+    binding: resolution.binding, organization: null, user: resolution.user,
+    membership: resolution.membership, overlay: null,
+  };
+  const store = new CfIdentityStore(rpcStub(calls, { kind: 'better_auth_principal', principal }));
+
+  assert.deepEqual(await store.resolveBetterAuthPrincipal('ba_user_owner'), principal);
+  assert.deepEqual(calls, [{ kind: 'resolve_better_auth_principal', betterAuthUserId: 'ba_user_owner' }]);
+  const unbound = new CfIdentityStore(rpcStub([], { kind: 'better_auth_principal', principal: null }));
+  assert.equal(await unbound.resolveBetterAuthPrincipal('ba_user_unbound'), undefined);
+});
+
 test('Cloudflare proxy forwards the atomic membership authority mutation', async () => {
   const calls: IdentityRpcRequest[] = [];
   const input = {

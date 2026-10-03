@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createTeamAdminApi } from '../src/admin/team-api.ts';
+import { AuthRateLimiter } from '../src/auth/rate-limit.ts';
 import { setRequestPrincipal } from '../src/auth/service.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
@@ -302,6 +303,149 @@ test('last active Owner protection remains enforced', async () => {
     );
     assert.equal(response.status, 409);
     assert.deepEqual(await response.json(), { error: 'last_owner_required' });
+  } finally {
+    team.identity.close();
+  }
+});
+
+const PEPPER = 'team-rate-limit-pepper-at-least-thirty-two';
+
+/**
+ * The Team API mounted at /admin/api the way Admin mounts it: one route
+ * registered before it and others after it, all under the same prefix.
+ */
+async function limitedHarness(limiter: (identity: IdentityStore) => AuthRateLimiter) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW });
+  const rateLimitCalls: string[] = [];
+  const counted = new Proxy(identity, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property);
+      if (typeof value !== 'function') return value;
+      if (typeof property === 'string' && /AuthRate/.test(property)) {
+        return (...args: unknown[]) => {
+          rateLimitCalls.push(property);
+          return (value as (...input: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      return value.bind(target);
+    },
+  }) as IdentityStore;
+  const app = new Hono();
+  app.use('/admin/api/*', async (c, next) => {
+    setRequestPrincipal(c.req.raw, principal(owner));
+    await next();
+  });
+  app.get('/admin/api/before', (c) => c.json({ ok: true }));
+  const rateLimiter = limiter(counted);
+  app.route('/admin/api', createTeamAdminApi({ store: () => identity, rateLimiter: async () => rateLimiter }));
+  app.get('/admin/api/providers', (c) => c.json({ providers: [] }));
+  const request = (path: string, init?: RequestInit) => app.request(`https://app.example${path}`, init);
+  const patch = (membershipId: string) => request(`/admin/api/team/memberships/${membershipId}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ role: 'admin' }),
+  });
+  return { identity, owner, request, patch, rateLimitCalls };
+}
+
+test('the Team API limiter runs for the Team routes only, not for Admin API routes mounted beside them', async () => {
+  const calls: string[] = [];
+  const team = await limitedHarness(() => ({
+    async assertAllowed(bucket: string) { calls.push(`assert:${bucket}`); },
+    async recordFailure(bucket: string) { calls.push(`failure:${bucket}`); },
+    async recordSuccess(bucket: string) { calls.push(`success:${bucket}`); },
+  }) as unknown as AuthRateLimiter);
+  try {
+    for (const [path, status] of [
+      ['/admin/api/before', 200],
+      ['/admin/api/providers', 200],
+      ['/admin/api/environment/status', 404],
+      ['/admin/api/onboarding', 404],
+      ['/admin/api/team/directory', 404],
+    ] as const) {
+      assert.equal((await team.request(path)).status, status, path);
+    }
+    assert.deepEqual(calls, [], 'no request outside the Team routes reaches the limiter');
+
+    assert.equal((await team.request('/admin/api/team')).status, 200);
+    assert.deepEqual(calls.sort(), [
+      'assert:team_api_deployment', 'assert:team_api_operation', 'assert:team_api_source',
+      'success:team_api_deployment', 'success:team_api_operation', 'success:team_api_source',
+    ]);
+  } finally {
+    team.identity.close();
+  }
+});
+
+test('every Team API route runs the Team API limiter', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const asserted: string[] = [];
+  try {
+    const api = createTeamAdminApi({
+      store: () => identity,
+      rateLimiter: async () => ({
+        async assertAllowed(bucket: string) { asserted.push(bucket); },
+        async recordFailure() {},
+        async recordSuccess() {},
+      }) as unknown as AuthRateLimiter,
+    });
+    const routes = [...new Set(api.routes.filter((route) => route.method !== 'ALL')
+      .map((route) => `${route.method} ${route.path}`))];
+    assert.deepEqual(
+      ['GET /account', 'GET /team', 'PATCH /team/memberships/:membershipId'].filter((route) => !routes.includes(route)),
+      [],
+    );
+    for (const route of routes) {
+      const [method, path] = route.split(' ') as [string, string];
+      asserted.length = 0;
+      await api.request(`https://app.example${path.replaceAll(/:[A-Za-z]+/g, 'id_1')}`, {
+        method,
+        ...(method === 'GET' ? {} : { headers: { 'content-type': 'application/json' }, body: '{}' }),
+      });
+      assert.ok(asserted.includes('team_api_source'), `${route} runs the limiter`);
+    }
+  } finally {
+    identity.close();
+  }
+});
+
+test('a stream of unrelated Admin API 404s cannot lock out the Team API', async () => {
+  const team = await limitedHarness((identity) => new AuthRateLimiter(identity, {
+    pepper: PEPPER, now: () => NOW, perKeyLimit: 2, globalLimit: 3,
+  }));
+  try {
+    // Consecutive misses would trip a per-key count, and misses between
+    // successes a global count that no success clears.
+    for (let round = 0; round < 10; round += 1) {
+      assert.equal((await team.request('/admin/api/environment/status')).status, 404);
+      assert.equal((await team.request('/admin/api/onboarding')).status, 404);
+      assert.equal((await team.request('/admin/api/providers')).status, 200);
+    }
+    assert.deepEqual(team.rateLimitCalls, [], 'unrelated requests neither read nor write a Team API count');
+    assert.equal((await team.request('/admin/api/team')).status, 200);
+    assert.equal((await team.request('/admin/api/account')).status, 200);
+  } finally {
+    team.identity.close();
+  }
+});
+
+test('Team route failures, their own 404s included, count; a Team success clears the per-key counts', async () => {
+  const team = await limitedHarness((identity) => new AuthRateLimiter(identity, {
+    pepper: PEPPER, now: () => NOW, perKeyLimit: 2, globalLimit: 100,
+  }));
+  try {
+    assert.equal((await team.patch('membership_missing_a')).status, 404);
+    assert.equal((await team.request('/admin/api/team')).status, 200);
+    assert.equal((await team.patch('membership_missing_b')).status, 404);
+    // Without the clear above, this source would now have two failures.
+    assert.equal((await team.request('/admin/api/team')).status, 200);
+
+    assert.equal((await team.patch('membership_missing_c')).status, 404);
+    assert.equal((await team.patch('membership_missing_c')).status, 404);
+    const limited = await team.request('/admin/api/team');
+    assert.equal(limited.status, 429);
+    assert.deepEqual(await limited.json(), { error: 'rate_limited' });
+    assert.ok(Number(limited.headers.get('retry-after')) > 0);
   } finally {
     team.identity.close();
   }

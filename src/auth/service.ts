@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { IdentityStateError } from '../identity/errors.ts';
 import type { AuthControl, IdentityStore } from '../identity/types.ts';
 import type { PersonalTokenService } from './personal-token.ts';
 import type {
@@ -10,6 +11,12 @@ import type {
 
 export class AuthDeniedError extends Error {
   readonly name = 'AuthDeniedError';
+  constructor() { super('Authentication unavailable.'); }
+}
+
+/** The identity store cannot serve this request's operations: unavailable, not denied. */
+export class AuthUnavailableError extends Error {
+  readonly name = 'AuthUnavailableError';
   constructor() { super('Authentication unavailable.'); }
 }
 
@@ -62,6 +69,9 @@ export class AuthService implements AdminAuthenticationService {
         throw new AuthDeniedError();
       }
     } catch (error) {
+      if (error instanceof IdentityStateError && error.code === 'identity_operation_unsupported') {
+        throw new AuthUnavailableError();
+      }
       await this.options.identity.recordAuthAudit({
         event: 'authentication',
         outcome: 'denied',

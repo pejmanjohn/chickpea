@@ -22,6 +22,7 @@ import type {
   AuthRateLimitState,
   BeginSlackAppCreationInput,
   BeginSlackCredentialRotationInput,
+  BetterAuthPrincipalRecord,
   BindSlackLoginBrowserIdentityInput,
   BindSlackMemberBrowserIdentityInput,
   BrowserSessionRecord,
@@ -200,6 +201,7 @@ export class IdentityStoreLogic {
       };
       case 'resolve_slack_identity': return { kind: 'identity_resolution', resolution: this.resolveSlackIdentity(request.slackTeamId, request.slackUserId, request.organizationId) ?? null };
       case 'resolve_better_auth_identity': return { kind: 'identity_resolution', resolution: this.resolveBetterAuthIdentity(request.betterAuthUserId, request.organizationId) ?? null };
+      case 'resolve_better_auth_principal': return { kind: 'better_auth_principal', principal: this.resolveBetterAuthPrincipal(request.betterAuthUserId) ?? null };
       case 'list_external_identities': return { kind: 'external_identities', externalIdentities: this.listExternalIdentities() };
       case 'list_memberships': return { kind: 'memberships', memberships: this.listMemberships() };
       case 'get_user': return { kind: 'user', user: this.getUser(request.userId) ?? null };
@@ -241,6 +243,12 @@ export class IdentityStoreLogic {
       case 'record_identity_auth_audit': this.recordAuthAudit(request.input); return { kind: 'ok' };
       case 'export_summary': return { kind: 'identity_export', summary: this.exportSummary() };
       case 'list_identity_audit_events': return { kind: 'audit_events', events: this.listAuditEvents(request.limit) };
+      default:
+        // A Worker newer than this store can name an operation it lacks.
+        throw identityError(
+          'identity_operation_unsupported',
+          `Unsupported identity operation: ${String((request as { kind?: unknown }).kind)}.`,
+        );
     }
   }
 
@@ -2411,6 +2419,19 @@ export class IdentityStoreLogic {
       betterAuthUserId, ...(organizationId ? [organizationId] : []),
     );
     return row ? resolutionFromRow(row) : undefined;
+  }
+
+  resolveBetterAuthPrincipal(betterAuthUserId: string): BetterAuthPrincipalRecord | undefined {
+    const direct = this.resolveBetterAuthIdentity(betterAuthUserId);
+    if (!direct) return undefined;
+    const { binding } = direct;
+    return {
+      binding,
+      organization: this.getOrganization() ?? null,
+      user: this.getUser(binding.userId) ?? null,
+      membership: this.getMembership(binding.membershipId) ?? null,
+      overlay: this.getMembershipAccessOverlay(binding.membershipId) ?? null,
+    };
   }
 
   listExternalIdentities(): SlackIdentityBinding[] {

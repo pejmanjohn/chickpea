@@ -32,6 +32,40 @@ test('first-owner claim activates exactly one canonical Slack tuple', async () =
   );
 });
 
+test('one Better Auth principal read returns the binding and the records it names', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await claimFirstOwner(store);
+  const expected = {
+    binding: owner.binding,
+    organization: (await store.getOrganization())!,
+    user: (await store.getUser(owner.binding.userId))!,
+    membership: (await store.getMembership(owner.binding.membershipId))!,
+    overlay: null,
+  };
+  assert.deepEqual(await store.resolveBetterAuthPrincipal('ba_user_owner'), expected);
+
+  const overlay = await store.setMembershipAccessOverlay({
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    accessStatus: 'suspended',
+  });
+  assert.deepEqual(await store.resolveBetterAuthPrincipal('ba_user_owner'), { ...expected, overlay });
+  assert.equal(await store.resolveBetterAuthPrincipal('ba_user_unbound'), undefined);
+  store.close();
+});
+
+test('an identity operation the store does not know is refused by name', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const execute = (store as unknown as { execute(request: unknown): Promise<unknown> }).execute;
+  await assert.rejects(
+    () => execute({ kind: 'operation_from_a_newer_worker' }),
+    (error: unknown) => error instanceof IdentityStateError &&
+      error.code === 'identity_operation_unsupported' &&
+      error.message === 'Unsupported identity operation: operation_from_a_newer_worker.',
+  );
+  store.close();
+});
+
 test('first-owner activation requires the exact completed Better Auth reconciliation', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const operation = await store.createAuthOperation({
