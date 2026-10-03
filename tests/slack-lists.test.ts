@@ -7,11 +7,11 @@ import { SettingsStoreLogic, SqliteSettingsStore } from '../src/config/settings-
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { TurnJobStoreLogic, TURN_JOB_TTL_MS } from '../src/slack/turn-jobs.ts';
 import { missingRequiredSlackBotScopes, unexpectedSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, REQUIRED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
-import { SlackListsService, createSlackListsCall } from '../src/slack/lists/service.ts';
+import { SlackListsService, createSlackListsCall, listToolFailure } from '../src/slack/lists/service.ts';
 import { ListWriteLedger } from '../src/slack/lists/writes.ts';
 import { richTextContent, textCell } from '../src/slack/lists/schema.ts';
 import { parseSlackListUrl } from '../src/slack/lists/urls.ts';
-import { SLACK_LIST_OPERATIONS, type JsonObject } from '../src/slack/lists/types.ts';
+import { SLACK_LIST_OPERATIONS, type JsonObject, type SlackListsCall } from '../src/slack/lists/types.ts';
 import {
   assertSlackListsAccess,
   createSlackListTools,
@@ -583,6 +583,27 @@ test('production SDK rejections map definite failures and uncertain gateway writ
     assert.equal(calls, 1);
     assert.doesNotMatch(JSON.stringify(result), /private SDK diagnostic/);
   }
+});
+
+test('a missing Lists permission tells hosted users an Owner can update it in Admin; standalone keeps its setup text', async t => {
+  const f = fixture(t);
+  const hostedText = 'This workspace has not given Chickpea the Slack Lists permissions yet. A Chickpea Owner can update them in Chickpea Admin. Ordinary chat can continue.';
+  const standaloneText = 'This Slack installation needs the Lists read/write permissions. Its owner must update the app scopes and reinstall through the existing Slack setup flow. Ordinary chat can continue.';
+  const sdkRejection = { apiCall: async () => { throw Object.assign(new Error('private SDK diagnostic'), { code: 'slack_webapi_platform_error', data: { ok: false, error: 'missing_scope' } }); } } as Pick<WebClient, 'apiCall'>;
+  for (const hosted of [false, true]) {
+    const expected = hosted ? hostedText : standaloneText;
+    const service = (call: SlackListsCall, turn: string) => new SlackListsService({ workspaceId: 'TWORK', call, ledger: new ListWriteLedger(f.store, 'TWORK', turn), admittedListIds: ['FEXISTING'], ...(hosted ? { hosted } : {}) });
+    // A write Slack refuses.
+    assert.equal((await service(createSlackListsCall(sdkRejection), `write-${hosted}`).createList('call', 'Tasks')).message, expected);
+    // A read Slack answers with ok:false, and one the SDK rejects, through the tool.
+    for (const call of [async () => ({ ok: false, error: 'missing_scope' }), createSlackListsCall(sdkRejection)] as SlackListsCall[]) {
+      const read = createSlackListTools(async () => service(call, `read-${hosted}`)).find(tool => tool.name === 'read_slack_list')!;
+      const run = read.run as (context: { toolCallId: string; data: { listUrl: string }; log: { info(): void; warn(): void; error(): void } }) => Promise<string>;
+      const result = JSON.parse(await run({ toolCallId: 'read', data: { listUrl: LIST_URL }, log: { info() {}, warn() {}, error() {} } })) as Record<string, unknown>;
+      assert.deepEqual({ code: result.code, message: result.message }, { code: 'missing_scope', message: expected });
+    }
+  }
+  assert.equal(listToolFailure(Object.assign(new Error('x'), { code: 'slack_webapi_platform_error', data: { ok: false, error: 'missing_scope' } })).message, standaloneText);
 });
 
 test('clearing a selected context column preserves exact deadline notes unless the deadline is also cleared', async t => {

@@ -8,10 +8,24 @@ import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json'
 export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
   ...slackAppManifest.oauth_config.scopes.bot,
 ]);
-export const SLACK_LIST_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write']);
-/** Lists are additive: a core-only installation must keep serving ordinary chat. */
-export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_LIST_FEATURE_SCOPES.includes(scope)));
-const ALLOWED_SLACK_BOT_SCOPE_SET = new Set(REQUESTED_SLACK_BOT_SCOPES);
+/**
+ * Requested scopes an installation may lack while ordinary chat keeps working.
+ * A scope added after an installation exists belongs here, never in the
+ * required set, and its feature explains its absence: existing grants stay
+ * valid for reinstall and recovery until an Owner updates them. Lists are the
+ * only one today.
+ */
+export const SLACK_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write']);
+/** Feature scopes are additive: a core-only installation must keep serving ordinary chat. */
+export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope)));
+/**
+ * Scopes the manifest no longer requests but older grants still hold. Slack
+ * is expected to keep a bot token's scopes across re-grants (to confirm live
+ * in H13b), so a scope removed from the manifest would return on every
+ * existing installation's next reinstall or recovery. List it here when
+ * removing it so those grants are not refused.
+ */
+export const RETIRED_SLACK_BOT_SCOPES: readonly string[] = Object.freeze([]);
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */
 export function parseSlackGrantedScopes(value: string | null): string[] | undefined {
@@ -32,10 +46,24 @@ export function missingRequiredSlackBotScopes(
   return REQUIRED_SLACK_BOT_SCOPES.filter((scope) => !granted.has(scope));
 }
 
-/** Return scopes Slack granted that are not in the committed manifest. */
+/**
+ * Return the requested scopes a grant lacks, feature scopes included: what an
+ * Owner's update would add. Order and duplicates in the grant do not matter.
+ */
+export function missingRequestedSlackBotScopes(
+  grantedScopes: readonly string[],
+  requested: readonly string[] = REQUESTED_SLACK_BOT_SCOPES,
+): string[] {
+  const granted = new Set(grantedScopes);
+  return [...new Set(requested)].filter((scope) => !granted.has(scope));
+}
+
+/** Return scopes Slack granted that are neither requested by the manifest nor retired from it. */
 export function unexpectedSlackBotScopes(
   grantedScopes: readonly string[] | undefined,
+  retired: readonly string[] = RETIRED_SLACK_BOT_SCOPES,
 ): string[] | undefined {
   if (grantedScopes === undefined) return undefined;
-  return grantedScopes.filter((scope) => !ALLOWED_SLACK_BOT_SCOPE_SET.has(scope));
+  const allowed = new Set([...REQUESTED_SLACK_BOT_SCOPES, ...retired]);
+  return grantedScopes.filter((scope) => !allowed.has(scope));
 }

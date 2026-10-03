@@ -28,7 +28,7 @@ import {
   validateSlackAppManifestUrlRepair,
   type SlackAppManifest,
 } from '../slack/app-manifest.ts';
-import { missingRequiredSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, SLACK_LIST_FEATURE_SCOPES } from '../slack/scopes.ts';
+import { missingRequiredSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, SLACK_FEATURE_SCOPES } from '../slack/scopes.ts';
 import {
   decryptSlackSecretEnvelope,
   encryptSlackSecretEnvelope,
@@ -273,7 +273,7 @@ export class SlackCredentialRecoveryService {
     const authorization = new URL(SLACK_BOT_AUTHORIZE_URL);
     authorization.searchParams.set('client_id', session.appCredentialClientId);
     authorization.searchParams.set('scope', REQUESTED_SLACK_BOT_SCOPES.filter(scope =>
-      !SLACK_LIST_FEATURE_SCOPES.includes(scope) || active.grantedScopes.includes(scope)).join(','));
+      !SLACK_FEATURE_SCOPES.includes(scope) || active.grantedScopes.includes(scope)).join(','));
     authorization.searchParams.set('redirect_uri', redirectUri);
     authorization.searchParams.set('state', state);
     return { state, expiresAt: session.expiresAt, authorizationUrl: authorization.toString() };
@@ -520,7 +520,7 @@ function recoveryEnvelopeContext(
 function recoveryManifestScopes(manifest: SlackAppManifest, granted: readonly string[]): SlackAppManifest {
   const result = structuredClone(manifest);
   result.oauth_config.scopes.bot = result.oauth_config.scopes.bot.filter(scope =>
-    !SLACK_LIST_FEATURE_SCOPES.includes(scope) || granted.includes(scope));
+    !SLACK_FEATURE_SCOPES.includes(scope) || granted.includes(scope));
   return result;
 }
 
