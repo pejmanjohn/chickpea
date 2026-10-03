@@ -14,6 +14,7 @@
  */
 
 import { escapeHtml } from '../security/html-escape.ts';
+import { adminSettingsSectionShown } from './admin-links.ts';
 
 export const CONNECT_MARKDOWN_PATH = '/connect.md';
 export const CONNECT_PAGE_PATH = '/connect';
@@ -152,10 +153,14 @@ function fence(language: string, body: string): string {
  * the client needs it, prove the connection with one read-only call, then ask
  * about the first teammate.
  */
-export function connectMarkdown(origin: string): string {
+export function connectMarkdown(origin: string, env?: Record<string, unknown>): string {
   const url = connectMcpUrl(origin);
   const admin = `${origin}${ADMIN_PATH}`;
   const settings = `${origin}${ADMIN_SETTINGS_PATH}`;
+  // Hosted Admin has no Coding sandbox or Outbound access page to send anyone to.
+  const adminManaged = adminSettingsSectionShown('sandbox', env) && adminSettingsSectionShown('outbound', env)
+    ? 'Model provider keys, GitHub setup, the coding sandbox, and outbound access are'
+    : 'Model provider keys and GitHub setup are';
 
   const table = [
     '| Client | Where | What to write or run |',
@@ -235,7 +240,7 @@ export function connectMarkdown(origin: string): string {
     '',
     '## Good to know',
     '',
-    `- Model provider keys, GitHub setup, the coding sandbox, and outbound access are managed in Admin at ${settings}. Send the person there with the link rather than asking for the values.`,
+    `- ${adminManaged} managed in Admin at ${settings}. Send the person there with the link rather than asking for the values.`,
     '- After creating or changing an Agent, tell the person to mention it in Slack by its handle to try it.',
     '- The person can disconnect at any time from their client; a removed Chickpea member loses MCP access immediately.',
     '',

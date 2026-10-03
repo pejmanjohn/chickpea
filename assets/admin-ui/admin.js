@@ -20,6 +20,9 @@
   // installations is run by its host, so that guidance and those steps are
   // left out there, without replacement copy.
   var SELF_HOSTED = CONFIG.selfHosted !== false;
+  // Settings sections the host manages for a hosted installation; their pages,
+  // links and requests do not exist there.
+  var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox", "outbound"];
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -1826,8 +1829,8 @@
       { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
     ].filter(function (section) {
-      // The host runs a hosted installation's coding sandbox for it.
-      return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || section.id !== "sandbox");
+      // The host runs a hosted installation's coding sandbox and manages its outbound access.
+      return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
     }) : [codingAgents];
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
@@ -9363,7 +9366,7 @@
     }
     var head = '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<h1 class="page-title">Settings</h1>' +
-      '<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox.</p></div>';
+      '<p class="hint">' + (SELF_HOSTED ? 'Configure GitHub, model providers, and outbound internet access for the sandbox.' : 'Configure GitHub and model providers.') + '</p></div>';
     var onboardingReturn = typeof location !== "undefined" &&
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
@@ -9386,8 +9389,7 @@
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
       settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
-      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "") +
-      settingsPanelHtml("outbound", egressSectionHtml());
+      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) + settingsPanelHtml("outbound", egressSectionHtml()) : "");
   }
 
   function settingsPanelHtml(id, body) {
@@ -10385,7 +10387,7 @@
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_OFFERED) return "providers";
-    if (section === "sandbox" && !SELF_HOSTED) return "providers";
+    if (!SELF_HOSTED && HOST_MANAGED_SETTINGS_SECTIONS.includes(section)) return "providers";
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
@@ -10464,8 +10466,10 @@
     }
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
-    loadEgress(generation).then(function () { renderSettingsLoad(generation); });
-    if (SELF_HOSTED) loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
+    if (SELF_HOSTED) {
+      loadEgress(generation).then(function () { renderSettingsLoad(generation); });
+      loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
+    }
   }
 
   function loadConnectionInventory(generation) {

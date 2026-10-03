@@ -56,6 +56,8 @@ interface WorkspaceManagementMcpServerInput {
   service: WorkspaceManagementService;
   /** Public base URL of this deployment, used to make the Admin links in `instructions` real. */
   baseUrl?: string;
+  /** This deployment's env: instructions and prompts name only the Settings sections its Admin shows. */
+  env?: PlatformEnv;
 }
 
 export function createWorkspaceManagementMcpHandler(
@@ -75,6 +77,7 @@ export function createWorkspaceManagementMcpHandler(
       principal,
       service,
       ...(setupBaseUrl ? { baseUrl: setupBaseUrl } : {}),
+      ...(env ? { env } : {}),
     }),
     { legacy: 'stateless' },
   );
@@ -85,7 +88,7 @@ export function createWorkspaceManagementMcpServer(
   input: WorkspaceManagementMcpServerInput,
 ): McpServer {
   const server = new McpServer(WORKSPACE_MANAGEMENT_SERVER_INFO, {
-    instructions: workspaceManagementInstructions(input.baseUrl),
+    instructions: workspaceManagementInstructions(input.baseUrl, input.env),
   });
   const adapter = {
     service: input.service,
@@ -345,7 +348,7 @@ export function createWorkspaceManagementMcpServer(
     }),
   );
 
-  registerWorkspaceManagementPrompts(server, input.baseUrl);
+  registerWorkspaceManagementPrompts(server, input.baseUrl, input.env);
 
   return server;
 }

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { Bash, InMemoryFs, type SecureFetch } from 'just-bash';
 
@@ -16,8 +16,11 @@ import {
   createScopedFetch,
   DEFAULT_EGRESS_POLICY,
   parseEgressPolicy,
+  resolveEgressPolicy,
+  saveEgressPolicy,
   type ResolvedApiConnection,
 } from '../src/config/egress.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { RepositoryGrant } from '../src/config/types.ts';
@@ -111,6 +114,57 @@ test('parseEgressPolicy accepts valid settings and normalizes domains', () => {
       }),
     ),
     { mode: 'allowlist', domains: ['api.github.com'] },
+  );
+});
+
+test('resolveEgressPolicy reads the stored policy on standalone and the managed default on hosted without reading it', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  const stored = { mode: 'open' as const, domains: ['api.example.com'] };
+  await saveEgressPolicy(settings, stored);
+  assert.deepEqual(await resolveEgressPolicy(settings, undefined), stored, 'standalone');
+  assert.deepEqual(await resolveEgressPolicy(settings, {}), stored, 'standalone, explicit env');
+
+  const reads = t.mock.method(settings, 'getSetting');
+  const hosted = { CHICKPEA_TENANCY: 'installation' };
+  for (const env of [hosted, scopeInstallationEnv(hosted, { installationId: 'inst_egress' })]) {
+    assert.deepEqual(await resolveEgressPolicy(settings, env), DEFAULT_EGRESS_POLICY, 'hosted');
+  }
+  // A deployment variable alone makes it hosted, whatever env a caller passes.
+  await withEnv({ CHICKPEA_TENANCY: 'installation' }, async () => {
+    assert.deepEqual(await resolveEgressPolicy(settings, undefined), DEFAULT_EGRESS_POLICY, 'hosted by deployment variable');
+  });
+  assert.equal(reads.mock.callCount(), 0, 'hosted never reads the stored policy');
+});
+
+test('only the egress module reads or writes the stored policy, and the Slack canary reads it with its platform env', () => {
+  const root = join(import.meta.dirname, '..', 'src');
+  const owner = join('config', 'egress.ts');
+  const sources = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sources(path);
+    return /\.(?:ts|mts|js|mjs)$/.test(entry.name) ? [path] : [];
+  });
+  const bypasses = sources(root)
+    .filter((path) => relative(root, path) !== owner)
+    .filter((path) => /egress\.policy|EGRESS_SETTING_KEY|parseEgressPolicy/.test(readFileSync(path, 'utf8')))
+    .map((path) => relative(root, path));
+  assert.deepEqual(bypasses, [], 'read the policy through resolveEgressPolicy so hosted gets the managed one');
+
+  const readers = sources(root)
+    .filter((path) => relative(root, path) !== owner && readFileSync(path, 'utf8').includes('resolveEgressPolicy('))
+    .map((path) => relative(root, path))
+    .sort();
+  assert.deepEqual(readers, [join('admin', 'routes.ts'), join('channels', 'slack.ts')]);
+  assert.match(
+    readFileSync(join(root, 'channels', 'slack.ts'), 'utf8'),
+    /resolveEgressPolicy\(stores\.settings, platformEnv\)/,
+    'the execution authority canary reads the policy with the turn\'s platform env',
+  );
+  assert.match(
+    readFileSync(join(root, 'admin', 'routes.ts'), 'utf8'),
+    /resolveEgressPolicy\(settings\(c\), c\.env as PlatformEnv \| undefined\)/,
+    'Admin reads the policy with the request env',
   );
 });
 

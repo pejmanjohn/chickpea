@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 
 import { AGENT_AUTHORING_GUIDE_URI } from './agent-authoring/index.ts';
+import { adminSettingsSectionShown } from './admin-links.ts';
 import { FIRST_TEAMMATE_STARTERS } from './first-teammate.ts';
 import { workspaceManagementAdminOrigin } from './instructions.ts';
 
@@ -214,12 +215,16 @@ function importSkillPrompt(args: { url: string; handle?: string | undefined }, b
   ].join('\n');
 }
 
-function statusPrompt(baseUrl?: string): string {
+function statusPrompt(baseUrl?: string, env?: Record<string, unknown>): string {
+  // Hosted Admin has no Coding sandbox or Outbound access page to point at.
+  const adminOnly = adminSettingsSectionShown('sandbox', env) && adminSettingsSectionShown('outbound', env)
+    ? 'GitHub, the coding sandbox, and outbound access'
+    : 'GitHub';
   return [
     'Give this person a short status of their Chickpea workspace.',
     '',
     '1. Call inspect_workspace, then inspect_routines for the workspace.',
-    '2. Report, in this order and in plain prose or short lists: the workspace and who you are signed in as; each Agent by @handle with its one-line description and whether it is enabled and which Channels it is in; connections that are ready versus setup still needed (the connectors field is the catalog, not current access); scheduled work with each next run from nextRunTime.display; anything only Admin can change today, such as GitHub, the coding sandbox, and outbound access, with the Settings link; a missing model provider key can be added by an Owner or Admin through prepare_provider_setup\'s handoff link.',
+    `2. Report, in this order and in plain prose or short lists: the workspace and who you are signed in as; each Agent by @handle with its one-line description and whether it is enabled and which Channels it is in; connections that are ready versus setup still needed (the connectors field is the catalog, not current access); scheduled work with each next run from nextRunTime.display; anything only Admin can change today, such as ${adminOnly}, with the Settings link; a missing model provider key can be added by an Owner or Admin through prepare_provider_setup's handoff link.`,
     '3. Do not change anything. Do not show raw ids, revisions, or JSON.',
     `4. End with the Admin link and one offer: to create a new Agent, edit one, connect a service, or schedule work. Admin: ${adminLink(baseUrl)}`,
   ].join('\n');
@@ -236,12 +241,14 @@ export type WorkspaceManagementPromptArguments = {
 
 /**
  * Pure renderer: the one user message a prompt returns. `baseUrl` is the
- * deployment's public base URL so the Admin link is real for this deployment.
+ * deployment's public base URL so the Admin link is real for this deployment;
+ * `env` leaves out the Settings sections its Admin does not show.
  */
 export function workspaceManagementPromptText<TName extends WorkspaceManagementPromptName>(
   name: TName,
   args: WorkspaceManagementPromptArguments[TName],
   baseUrl?: string,
+  env?: Record<string, unknown>,
 ): string {
   switch (name) {
     case 'new-agent':
@@ -255,7 +262,7 @@ export function workspaceManagementPromptText<TName extends WorkspaceManagementP
     case 'import-skill':
       return importSkillPrompt(args as WorkspaceManagementPromptArguments['import-skill'], baseUrl);
     case 'status':
-      return statusPrompt(baseUrl);
+      return statusPrompt(baseUrl, env);
   }
   throw new Error(`Unknown workspace management prompt: ${String(name)}`);
 }
@@ -281,7 +288,11 @@ function promptResult(text: string) {
 }
 
 /** Register every prompt on a per-principal server. */
-export function registerWorkspaceManagementPrompts(server: McpServer, baseUrl?: string): void {
+export function registerWorkspaceManagementPrompts(
+  server: McpServer,
+  baseUrl?: string,
+  env?: Record<string, unknown>,
+): void {
   for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
     const definition = WORKSPACE_MANAGEMENT_PROMPTS[name];
     server.registerPrompt(name, {
@@ -292,6 +303,7 @@ export function registerWorkspaceManagementPrompts(server: McpServer, baseUrl?: 
       name,
       args as WorkspaceManagementPromptArguments[typeof name],
       baseUrl,
+      env,
     )));
   }
 }
