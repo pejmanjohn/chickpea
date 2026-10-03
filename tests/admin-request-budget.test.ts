@@ -10,6 +10,7 @@ import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { recoveryOnlyGate, requestAuthControl } from '../src/auth/request-auth-control.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { identityError } from '../src/identity/errors.ts';
 import type { AuthControl, IdentityStore } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 
@@ -33,9 +34,10 @@ function counted<T extends object>(target: T, calls: string[], prefix: string): 
 /**
  * A signed-in Owner on the application's request path: its recovery gate,
  * then Admin. Every state-store call is counted; on Cloudflare each is a
- * Durable Object round trip.
+ * Durable Object round trip. `lacking` names identity operations this store
+ * refuses, as an older Durable Object would.
  */
-async function signedInAdmin() {
+async function signedInAdmin(lacking: readonly string[] = []) {
   const identity = new SqliteIdentityStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const config = new SqliteConfigStore(':memory:');
@@ -51,7 +53,17 @@ async function signedInAdmin() {
   const cookie = signedIn.headers.getSetCookie().map((value) => value.split(';', 1)[0]).join('; ');
   assert.match(cookie, /session_token/);
   const calls: string[] = [];
-  const countedIdentity = counted<IdentityStore>(identity, calls, 'identity');
+  const older = new Proxy(identity, {
+    get(store, property, receiver) {
+      if (typeof property === 'string' && lacking.includes(property)) {
+        return async () => {
+          throw identityError('identity_operation_unsupported', `Unsupported identity operation: ${property}.`);
+        };
+      }
+      return Reflect.get(store, property, receiver);
+    },
+  });
+  const countedIdentity = counted<IdentityStore>(older, calls, 'identity');
   const app = new Hono();
   app.use('*', recoveryOnlyGate(() => countedIdentity));
   app.route('/', createAdminRoutes({
@@ -110,6 +122,8 @@ test('an Admin GET reads auth control once and the principal in one identity cal
       const { response, calls } = await admin.get(path);
       assert.equal(response.status, status, path);
       assert.deepEqual(tally(calls, (call) => call.startsWith('identity.')), AUTHENTICATION, path);
+      // The application gate's read is inside the timing window Admin reports.
+      assert.match(response.headers.get('server-timing') ?? '', /\bauthctl;dur=[\d.]+;desc="n=1"/, path);
       assert.ok(calls.length <= budget, `${path} made ${calls.length} store calls: ${calls.join(', ')}`);
     }
   } finally {
@@ -135,8 +149,20 @@ test('the Team page adds only its own rate limiting and roster reads to an Admin
 
 test("the application's recovery gate is the one Admin shares its auth control read with", () => {
   const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8');
-  assert.match(source, /app\.use\('\*', recoveryOnlyGate\(/);
-  assert.doesNotMatch(source, /getAuthControl\(\)/, 'no other auth control read on the request path');
+  assert.match(source, /from '\.\/auth\/request-auth-control\.ts'/);
+  assert.doesNotMatch(source, /\.getAuthControl\s*\(/, 'the application reads auth control only through the shared gate');
+});
+
+test('an identity store without the principal operation leaves Admin unavailable, not denied', async () => {
+  const admin = await signedInAdmin(['resolveBetterAuthPrincipal']);
+  try {
+    const { response, calls } = await admin.get('/admin/api/providers');
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: 'authentication_unavailable' });
+    assert.deepEqual(calls, ['identity.getAuthControl', 'identity.resolveBetterAuthPrincipal']);
+  } finally {
+    admin.close();
+  }
 });
 
 test('recovery-only answers not found for an Admin request after one auth control read', async () => {

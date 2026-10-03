@@ -54,6 +54,18 @@ test('one Better Auth principal read returns the binding and the records it name
   store.close();
 });
 
+test('an identity operation the store does not know is refused by name', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const execute = (store as unknown as { execute(request: unknown): Promise<unknown> }).execute;
+  await assert.rejects(
+    () => execute({ kind: 'operation_from_a_newer_worker' }),
+    (error: unknown) => error instanceof IdentityStateError &&
+      error.code === 'identity_operation_unsupported' &&
+      error.message === 'Unsupported identity operation: operation_from_a_newer_worker.',
+  );
+  store.close();
+});
+
 test('first-owner activation requires the exact completed Better Auth reconciliation', async () => {
   const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const operation = await store.createAuthOperation({

@@ -25,7 +25,12 @@ interface RequestTiming {
 
 const storage = new AsyncLocalStorage<RequestTiming>();
 
+/**
+ * Runs `fn` in this request's timing window, opening one unless an earlier
+ * middleware of the same request (the application's gate) already did.
+ */
 export function runWithRequestTiming<T>(fn: () => Promise<T>): Promise<T> {
+  if (storage.getStore()) return fn();
   firstRequestAt ??= Date.now();
   return storage.run({ startedAt: performance.now(), buckets: new Map() }, fn);
 }

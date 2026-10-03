@@ -58,10 +58,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
   app.onError((error, c) => teamError(c, error));
   // The limiter guards the Team routes below and nothing else: this app is
   // mounted at /admin/api beside every other Admin API, where a `use('*')`
-  // would run for their requests too. Each route names it, so it runs only
-  // when that route matched. A success clears the per-key counts; a failure
-  // is any 4xx or 5xx the route answers, including its own 404 for a
-  // membership it cannot find.
+  // would run for their requests too.
   const rateLimited: MiddlewareHandler = async (c, next) => {
     const limiter = await options.rateLimiter?.(c);
     if (!limiter) return next();

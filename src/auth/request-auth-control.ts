@@ -1,8 +1,9 @@
 import type { Context, MiddlewareHandler } from 'hono';
 
+import { runWithRequestTiming, timed } from '../http/request-timing.ts';
 import type { AuthControl, IdentityStore } from '../identity/types.ts';
 
-const controlByRequest = new WeakMap<Context, Promise<AuthControl | undefined>>();
+const controlByContext = new WeakMap<Context, Promise<AuthControl | undefined>>();
 
 /**
  * This request's auth control, read once. Each read is a state-store round
@@ -17,21 +18,25 @@ export function requestAuthControl(
   c: Context,
   read: () => Promise<AuthControl | undefined>,
 ): Promise<AuthControl | undefined> {
-  const shared = controlByRequest.get(c);
+  const shared = controlByContext.get(c);
   if (shared) return shared;
   const pending = read();
-  controlByRequest.set(c, pending);
+  controlByContext.set(c, pending);
   pending.catch(() => {
-    if (controlByRequest.get(c) === pending) controlByRequest.delete(c);
+    if (controlByContext.get(c) === pending) controlByContext.delete(c);
   });
   return pending;
 }
 
-/** Answers not found for every request while the installation's auth control is recovery-only. */
+/**
+ * Answers not found for every request while the installation's auth control
+ * is recovery-only. It opens the request's timing window, so Admin's
+ * Server-Timing covers this read too.
+ */
 export function recoveryOnlyGate(identity: (c: Context) => IdentityStore): MiddlewareHandler {
-  return async (c, next) => {
-    const control = await requestAuthControl(c, () => identity(c).getAuthControl());
+  return (c, next) => runWithRequestTiming(async () => {
+    const control = await requestAuthControl(c, () => timed('authctl', () => identity(c).getAuthControl()));
     if (control?.healthGate === 'recovery_only') return c.notFound();
     return next();
-  };
+  });
 }

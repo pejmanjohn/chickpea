@@ -574,7 +574,7 @@ import {
   type SlackInstallOAuthResult,
 } from '../slack/install-oauth.ts';
 import { setCookieValues } from '../auth/cookies.ts';
-import { AuthDeniedError, AuthService, setRequestPrincipal } from '../auth/service.ts';
+import { AuthDeniedError, AuthService, AuthUnavailableError, setRequestPrincipal } from '../auth/service.ts';
 import { runWithRequestTiming, serverTimingHeader, timed } from '../http/request-timing.ts';
 import {
   BetterAuthDirectory,
@@ -3153,6 +3153,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         if (error instanceof AuthorizationError) {
           return c.json({ error: 'forbidden' }, 403);
+        }
+        if (error instanceof AuthUnavailableError) {
+          return c.json({ error: 'authentication_unavailable' }, 503);
         }
         if (isAdminPageGet(c)) {
           authResponseHeaders(c);

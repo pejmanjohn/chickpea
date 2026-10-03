@@ -377,6 +377,38 @@ test('the Team API limiter runs for the Team routes only, not for Admin API rout
   }
 });
 
+test('every Team API route runs the Team API limiter', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const asserted: string[] = [];
+  try {
+    const api = createTeamAdminApi({
+      store: () => identity,
+      rateLimiter: async () => ({
+        async assertAllowed(bucket: string) { asserted.push(bucket); },
+        async recordFailure() {},
+        async recordSuccess() {},
+      }) as unknown as AuthRateLimiter,
+    });
+    const routes = [...new Set(api.routes.filter((route) => route.method !== 'ALL')
+      .map((route) => `${route.method} ${route.path}`))];
+    assert.deepEqual(
+      ['GET /account', 'GET /team', 'PATCH /team/memberships/:membershipId'].filter((route) => !routes.includes(route)),
+      [],
+    );
+    for (const route of routes) {
+      const [method, path] = route.split(' ') as [string, string];
+      asserted.length = 0;
+      await api.request(`https://app.example${path.replaceAll(/:[A-Za-z]+/g, 'id_1')}`, {
+        method,
+        ...(method === 'GET' ? {} : { headers: { 'content-type': 'application/json' }, body: '{}' }),
+      });
+      assert.ok(asserted.includes('team_api_source'), `${route} runs the limiter`);
+    }
+  } finally {
+    identity.close();
+  }
+});
+
 test('a stream of unrelated Admin API 404s cannot lock out the Team API', async () => {
   const team = await limitedHarness((identity) => new AuthRateLimiter(identity, {
     pepper: PEPPER, now: () => NOW, perKeyLimit: 2, globalLimit: 3,

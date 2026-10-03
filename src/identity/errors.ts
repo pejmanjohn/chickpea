@@ -27,6 +27,7 @@ type IdentityErrorCode =
   | 'credential_rotation_conflict'
   | 'credential_revision_missing'
   | 'credential_revision_conflict'
+  | 'identity_operation_unsupported'
   | 'identity_invalid';
 
 export class IdentityStateError extends Error {

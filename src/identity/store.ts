@@ -243,6 +243,12 @@ export class IdentityStoreLogic {
       case 'record_identity_auth_audit': this.recordAuthAudit(request.input); return { kind: 'ok' };
       case 'export_summary': return { kind: 'identity_export', summary: this.exportSummary() };
       case 'list_identity_audit_events': return { kind: 'audit_events', events: this.listAuditEvents(request.limit) };
+      default:
+        // A Worker newer than this store can name an operation it lacks.
+        throw identityError(
+          'identity_operation_unsupported',
+          `Unsupported identity operation: ${String((request as { kind?: unknown }).kind)}.`,
+        );
     }
   }
 
