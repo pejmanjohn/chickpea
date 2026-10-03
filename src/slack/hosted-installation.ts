@@ -17,7 +17,10 @@ import {
   type SlackCredentialResolutionDependencies,
 } from './installation-credentials.ts';
 
-/** The marker standalone uses while it waits for Slack's events proof. */
+/**
+ * The marker standalone uses while it waits for Slack's events proof. Hosted
+ * records written before installations started healthy may still carry it.
+ */
 const AWAITING_EVENTS = 'events_verification_pending';
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
@@ -39,15 +42,17 @@ export interface HostedWorkspaceInstallationInput {
  *
  * Standalone writes it during its own install, and promotes a credential only
  * after Slack verifies the customer's Events URL for that app and team. A
- * hosted app's Request URL is verified once, at the app, so no per-install
- * challenge arrives: the host validates the bot live at install time, and
- * this record waits for events until the first signed delivery routed to it
- * (recordFirstHostedSlackDelivery). Health only reports; it never blocks.
+ * hosted app's Request URL is verified once, for the platform, so no
+ * per-install challenge arrives and none is awaited: the host validates the
+ * bot live at install time, and the record starts healthy. Health only
+ * reports; it never blocks.
  *
  * The first write materializes the Chickpea Agent and a workspace model
  * default row with no model: there is no keyless model to run before the
- * installation saves a key. A repeat is a no-op; a new bot user (a reinstall
- * Slack gave another) is recorded without resetting health.
+ * installation saves a key. A repeat is a no-op, except that a record still
+ * waiting for events (written before installations started healthy, or left
+ * pending by an interrupted first write) turns healthy; a new bot user (a
+ * reinstall Slack gave another) is recorded without resetting health.
  * Another team, another app, a gateway record or an ended one is refused: a
  * workspace that ends is installed again as a new installation.
  */
@@ -83,16 +88,16 @@ export async function syncHostedWorkspaceInstallation(
   if (installation.health === 'revoked') {
     throw new Error('This installation has ended; install the workspace again.');
   }
-  const firstWrite = installation.health === 'pending';
+  const waiting = awaitingEvents(installation);
   if (installation.teamId === input.teamId && installation.appId === input.appId &&
-      installation.botUserId === input.botUserId && !firstWrite) {
+      installation.botUserId === input.botUserId && !waiting) {
     return installation;
   }
   return config.updateWorkspaceInstallation(input.teamId, {
     teamId: input.teamId,
     appId: input.appId,
     botUserId: input.botUserId,
-    ...(firstWrite ? { health: 'needs_attention', healthDetail: AWAITING_EVENTS } : {}),
+    ...(waiting ? { health: 'healthy', healthDetail: null } : {}),
   }, installation.revision);
 }
 
@@ -131,18 +136,17 @@ export async function backfillHostedWorkspaceInstallation(
 }
 
 /**
- * The first signed delivery routed to a hosted installation that still waits
- * for events marks it healthy, once; later deliveries read it healthy and
- * write nothing. Losing the race to another writer is fine: health only
- * reports, so this never fails a delivery.
+ * A hosted record that still waits for events (written before installations
+ * started healthy, or left pending by an interrupted first write) is marked
+ * healthy by the first signed delivery routed to it, once; later deliveries
+ * read it healthy and write nothing. Losing the race to another writer is
+ * fine: health only reports, so this never fails a delivery.
  */
 export async function recordFirstHostedSlackDelivery(
   config: Pick<ConfigStore, 'updateWorkspaceInstallation'>,
   installation: WorkspaceInstallation,
 ): Promise<void> {
-  const waiting = installation.health === 'pending' ||
-    (installation.health === 'needs_attention' && installation.healthDetail === AWAITING_EVENTS);
-  if (!waiting) return;
+  if (!awaitingEvents(installation)) return;
   try {
     await config.updateWorkspaceInstallation(
       installation.workspaceId,
@@ -153,6 +157,11 @@ export async function recordFirstHostedSlackDelivery(
     // Another delivery or a concurrent write changed the record first; the
     // next delivery reads it again.
   }
+}
+
+function awaitingEvents(installation: WorkspaceInstallation): boolean {
+  return installation.health === 'pending' ||
+    (installation.health === 'needs_attention' && installation.healthDetail === AWAITING_EVENTS);
 }
 
 function requireHostedScope(env: PlatformEnv): void {

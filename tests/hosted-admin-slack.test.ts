@@ -14,6 +14,7 @@ import {
   uploadAgentAvatar,
 } from '../src/slack/agent-presence/avatar-assets.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import {
   invalidateSlackInstallationCredentialCache,
   writeHostedSlackBotCredentials,
@@ -170,4 +171,27 @@ test('a hosted installation\'s Slack card reports its bot and record, without th
   const ended = await (await app.request(`${ORIGIN}/admin/api/slack-connection`,
     { headers: testAdminHeaders(TOKEN) }, ENV_A)).json() as { health: string; connected: boolean };
   assert.equal(ended.health, 'revoked');
+});
+
+test('a new hosted installation\'s Slack card is healthy before any event arrives', async (t) => {
+  const { config, settings, identity } = stores(t);
+  const credentials = { state: identity, keyring: generateCredentialKeyring() };
+  await writeHostedSlackBotCredentials(credentials, null, {
+    botToken: 'xoxb-hosted-new', botUserId: 'UBOT', appId: 'AHOSTED1', teamId: 'TTEST',
+    grantedScopes: ['chat:write'], validatedAt: Date.now(),
+  });
+  await syncHostedWorkspaceInstallation(ENV_A, { teamId: 'TTEST', appId: 'AHOSTED1', botUserId: 'UBOT' }, config);
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async () => Response.json({
+    ok: true, team_id: 'TTEST', team: 'Tenant Workspace', user_id: 'UBOT', app_id: 'AHOSTED1',
+  })) as typeof fetch;
+  t.after(() => { globalThis.fetch = previousFetch; });
+  const app = createAdminRoutes({
+    store: config, settings, slackCredentials: credentials, ...testAdminAuthority(TOKEN, ORIGIN, identity),
+  });
+
+  const card = await (await app.request(`${ORIGIN}/admin/api/slack-connection`,
+    { headers: testAdminHeaders(TOKEN) }, ENV_A)).json() as { connected: boolean; health: string; healthDetail: string | null };
+  assert.deepEqual({ connected: card.connected, health: card.health, healthDetail: card.healthDetail },
+    { connected: true, health: 'healthy', healthDetail: null });
 });

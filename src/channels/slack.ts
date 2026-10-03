@@ -753,8 +753,8 @@ async function directSlackCredentials(
 
 /**
  * A host's interaction is for its app and for a direct installation of the
- * signed team in this store; the first one marks the installation's events
- * as arriving. Every handler below checks its own installation again.
+ * signed team in this store; the first one marks a record still waiting for
+ * events healthy. Every handler below checks its own installation again.
  */
 async function admitHostedSlackInteraction(
   payload: { api_app_id?: string },

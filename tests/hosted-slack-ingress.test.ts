@@ -288,6 +288,10 @@ test('a hosted app\'s url_verification is answered without recording a challenge
 
 test('Core drops a hosted event routed to the wrong workspace, an org-wide install or a shared channel without authorization', async (t) => {
   await withHostedInstallation(t, async (h) => {
+    // A record written to wait for events before installations started healthy.
+    await h.stores.config.updateWorkspaceInstallation(TEAM, {
+      health: 'needs_attention', healthDetail: 'events_verification_pending',
+    });
     const home = { type: 'app_home_opened', user: 'U1', tab: 'home' };
     for (const patch of [
       { context_team_id: 'TOTHER' },
@@ -444,13 +448,22 @@ test('a hosted deactivation suspends the member through the installation\'s bot 
   });
 });
 
-test('a hosted installation turns healthy at its first signed delivery, once', async (t) => {
+test('a hosted installation is healthy from its install, and a record still waiting turns healthy at its first signed delivery, once', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const record = async () => h.stores.config.getWorkspaceInstallation(TEAM);
     assert.deepEqual(
-      { health: (await record())?.health, detail: (await record())?.healthDetail },
-      { health: 'needs_attention', detail: 'events_verification_pending' },
+      { health: (await record())?.health, detail: (await record())?.healthDetail ?? null },
+      { health: 'healthy', detail: null },
+      'no per-install Events URL verification is awaited',
     );
+    const installed = await record();
+    await h.deliver('events', h.event({ type: 'app_context_changed' }));
+    assert.equal((await record())?.revision, installed?.revision, 'a delivery to a healthy record writes nothing');
+
+    // A record written to wait for events before installations started healthy.
+    await h.stores.config.updateWorkspaceInstallation(TEAM, {
+      health: 'needs_attention', healthDetail: 'events_verification_pending',
+    });
     await h.deliver('events', h.event({ type: 'app_context_changed' }));
     const healthy = await record();
     assert.equal(healthy?.health, 'healthy');
@@ -539,7 +552,7 @@ test('an installation provisioned before hosts wrote the record is backfilled fr
     );
     const { installation, botUserId } = await backfillHostedWorkspaceInstallation(h.env, { teamId: TEAM, appId: APP.appId });
     assert.equal(botUserId, 'UBOT');
-    assert.equal(installation.healthDetail, 'events_verification_pending');
+    assert.equal(installation.health, 'healthy');
     assert.equal((await h.deliver('events', h.event({ type: 'app_home_opened', user: 'U1', tab: 'home' }))).status, 200);
     await h.settle(() => h.calls.some(({ method }) => method === 'views.publish'));
   }, { record: false });

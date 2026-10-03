@@ -234,17 +234,18 @@ test('the workspace record a host writes is idempotent, materializes the Chickpe
   assert.equal(first.appId, APP.appId);
   assert.equal(first.botUserId, 'UBOT');
   assert.equal(first.runtimeContract, 'chickpea-v1');
-  assert.deepEqual({ health: first.health, detail: first.healthDetail },
-    { health: 'needs_attention', detail: 'events_verification_pending' }, 'it waits for events');
+  assert.deepEqual({ health: first.health, detail: first.healthDetail ?? null },
+    { health: 'healthy', detail: null }, 'the platform app\'s Events URL is already verified');
   assert.ok((await config.listAgents()).some(({ id }) => id === first.defaultAgentId));
   assert.ok(await config.getWorkspaceModelDefault(TEAM));
 
   const again = await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
   assert.equal(again.revision, first.revision, 'a repeat writes nothing');
-  await config.updateWorkspaceInstallation(TEAM, { health: 'healthy', healthDetail: null });
+  await config.updateWorkspaceInstallation(TEAM, { health: 'needs_attention', healthDetail: 'credentials_missing' });
   const rebot = await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT2' }, config);
   assert.equal(rebot.botUserId, 'UBOT2');
-  assert.equal(rebot.health, 'healthy', 'a new bot user keeps the health its events proved');
+  assert.deepEqual({ health: rebot.health, detail: rebot.healthDetail },
+    { health: 'needs_attention', detail: 'credentials_missing' }, 'a new bot user keeps any other health');
 
   const refusals: Array<[Parameters<typeof syncHostedWorkspaceInstallation>[1], RegExp]> = [
     [{ teamId: 'TOTHER', appId: APP.appId, botUserId: 'UBOT' }, /already connected/],
@@ -284,16 +285,28 @@ test('a hosted installation starts with no Workspace default, even on Cloudflare
 
 test('a record left waiting by an interrupted first write is finished by the next one', async (t) => {
   const { config } = installation(t);
-  await config.ensureWorkspaceInstallation({
+  const pending = await config.ensureWorkspaceInstallation({
     workspaceId: TEAM, transportMode: 'direct', teamId: TEAM, appId: APP.appId, botUserId: 'UBOT',
   });
+  assert.equal(pending.health, 'pending');
   const finished = await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
-  assert.equal(finished.healthDetail, 'events_verification_pending');
+  assert.equal(finished.health, 'healthy');
+});
+
+test('a record written to wait for events before installations started healthy turns healthy at its next write', async (t) => {
+  const { config } = installation(t);
+  await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  await config.updateWorkspaceInstallation(TEAM, { health: 'needs_attention', healthDetail: 'events_verification_pending' });
+  const repaired = await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  assert.deepEqual({ health: repaired.health, detail: repaired.healthDetail ?? null }, { health: 'healthy', detail: null });
 });
 
 test('the first delivery marks a waiting record healthy once, and never revives an ended one', async (t) => {
   const { config } = installation(t);
-  const waiting = await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  const waiting = await config.updateWorkspaceInstallation(TEAM, {
+    health: 'needs_attention', healthDetail: 'events_verification_pending',
+  });
   await recordFirstHostedSlackDelivery(config, waiting);
   const healthy = await config.getWorkspaceInstallation(TEAM);
   assert.equal(healthy?.health, 'healthy');
@@ -325,7 +338,7 @@ test('an installation provisioned before hosts wrote its record is backfilled fr
   );
   assert.equal(botUserId, 'UBOT');
   assert.equal(record.botUserId, 'UBOT');
-  assert.equal(record.healthDetail, 'events_verification_pending');
+  assert.equal(record.health, 'healthy');
   await assert.rejects(
     backfillHostedWorkspaceInstallation({}, { teamId: TEAM, appId: APP.appId }, { config, credentials: resolution }),
     InstallationContextError,
