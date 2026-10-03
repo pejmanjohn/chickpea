@@ -17856,7 +17856,6 @@ test('hosted connector settings offer no preparation or setup refresh; standalon
       : entry)));
     assert.match(blocked, /Google Ads is blocked by deployment policy\. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access\./, mode);
     selfHostedOnly(blocked, /Preparing connector defaults will not change this setting\./, 'the preparation note');
-
   }
 });
 
@@ -17962,14 +17961,29 @@ test('hosted Slack missing scopes keep the error with no app reinstall or recove
     await openReleaseAttachPicker(picker);
     for (const [where, html] of [['add channel', add.app.innerHTML], ['attach picker', picker.app.innerHTML]] as const) {
       const label = `${mode}, ${where}`;
-      assert.match(html, /Slack permissions are out of date\. Use scoped recovery to refresh the installation\./, label);
+      assert.match(html, hosting.selfHosted
+        ? /Slack permissions are out of date\. Use scoped recovery to refresh the installation\./
+        : /Slack could not list channels \(missing_scope\)\./, label);
       if (hosting.selfHosted) {
         assert.match(html, /href="https:\/\/api\.slack\.com\/apps"[^>]*>Reinstall in Slack/, label);
         assert.match(html, /After reinstalling, use the scoped recovery flow/, label);
       } else {
-        assert.doesNotMatch(html, /api\.slack\.com\/apps|Reinstall in Slack|After reinstalling/, label);
+        assert.doesNotMatch(html, /api\.slack\.com\/apps|Reinstall in Slack|After reinstalling|scoped recovery/, label);
         assert.match(html, /data-action="refresh-channels"/, `${label}: the generic retry`);
       }
+    }
+    const tested = runAdminPageHarness({
+      ...hosting, initialPath: '/admin/settings/slack/identities',
+      slackTestError: { status: 422, error: 'slack_missing_scopes' },
+    });
+    await flushAsync();
+    tested.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+    await flushAsync();
+    if (hosting.selfHosted) {
+      assert.match(tested.app.innerHTML, /missing required permissions\. Use the scoped recovery flow to repair it\./, `${mode}, connection test`);
+    } else {
+      assert.doesNotMatch(tested.app.innerHTML, /missing required permissions|scoped recovery/, `${mode}, connection test`);
+      assert.match(tested.app.innerHTML, />slack_missing_scopes</, `${mode}, connection test: the generic text`);
     }
   }
 });

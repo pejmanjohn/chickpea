@@ -4242,7 +4242,8 @@
     if (message === "slack_gateway_unreachable" && detail === "gateway_session_offline") return "Slack’s outbound API is reachable, but Chickpea’s inbound event session is offline. Retry now; the deployment health check will reconnect it automatically.";
     if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
-    if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
+    // Scoped recovery is the deployment's; hosted gets the generic text below.
+    if (message === "slack_missing_scopes" && SELF_HOSTED) return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
     return serverMessage || (detail ? message + ": " + detail : message);
   }
 
@@ -15151,7 +15152,8 @@
 
   function slackChannelsErrorText(error) {
     if (error && error.message === "slack_not_configured") return "Connect @Chickpea first to list channels.";
-    if (error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
+    // Scoped recovery is the deployment's; hosted gets the generic line below.
+    if (SELF_HOSTED && error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
       return "Slack permissions are out of date. Use scoped recovery to refresh the installation.";
     }
     if (error && error.message === "slack_list_failed" && error.detail) {
