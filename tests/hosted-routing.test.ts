@@ -436,6 +436,28 @@ test('removed membership blocks a live session, an MCP grant and its refresh on 
   assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/team', acme.ownerCookie))).response?.status, 200);
 });
 
+test('Sign out ends a hosted session through Core\'s logout and lands on the host\'s sign-in', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const beta = await hosted.install('TBETA', 'org_beta', 'UOWNERB');
+  assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/team', acme.ownerCookie))).response?.status, 200);
+
+  const signedOut = await hosted.serve(hosted.adminRequest('/admin/logout', acme.ownerCookie, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded' },
+    body: '',
+  }));
+  assert.equal(signedOut.routed.kind === 'installation' && installationScopeOf(signedOut.routed.env)?.installationId,
+    acme.installationId);
+  assert.equal(signedOut.response?.status, 303, await signedOut.response?.clone().text() ?? 'no response');
+  assert.equal(signedOut.response?.headers.get('location'), '/auth/slack/sign-in?destination=%2Fadmin');
+  assert.deepEqual(await routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing),
+    { kind: 'unauthenticated' }, 'the ended session routes nowhere');
+  assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/team', beta.ownerCookie))).response?.status, 200,
+    'another installation\'s session is untouched');
+});
+
 test('a membership suspended without revoking grants still cannot refresh, and its refresh token stays unrotated', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
   if (!hosted) return;

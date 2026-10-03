@@ -1516,13 +1516,24 @@
       : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
     var actions = mobileRoster
       ? mobileAgentRosterHtml()
-      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions;
+      : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions + signOutButtonHtml("btn btn-soft");
     // The brand doubles as a home affordance to the canonical Agent.
     return '<header class="topbar' + (scoped ? ' admin-mobile-topbar' : '') + '">' +
       '<div class="brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('topbar') + '</div>' +
       '<details class="topbar-menu"' + (mobileRoster ? ' open' : '') + '><summary aria-label="Menu" data-role="mobile-menu-trigger">' + icon("bars-3") + '</summary></details>' +
       '<div class="actions actions-list">' + actions + '</div>' +
-      "</header>";
+      signOutFormHtml() + "</header>";
+  }
+
+  // Signing out is the server's own logout form: a same-origin POST that ends
+  // the session and lands on the sign-in page. The rail and the mobile menu
+  // each carry a button that submits this one form.
+  function signOutFormHtml() {
+    return '<form id="admin-sign-out" method="post" action="/admin/logout" hidden></form>';
+  }
+
+  function signOutButtonHtml(className) {
+    return '<button type="submit" form="admin-sign-out" class="' + className + '">Sign out</button>';
   }
 
   function peaMarkHtml() {
@@ -1614,7 +1625,7 @@
         var selected = active === section.id;
         return '<button type="button" class="section-nav-item' + (selected ? " active" : "") + '" data-action="' + section.action + '" data-section-switcher="true"' +
           (selected ? ' aria-current="page"' : '') + '>' + section.label + '</button>';
-      }).join("") + '</nav>';
+      }).join("") + signOutButtonHtml("section-nav-item") + '</nav>';
   }
 
   // The connected workspace's display name for a rail group header: the friendly

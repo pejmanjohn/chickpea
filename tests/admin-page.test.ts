@@ -17599,6 +17599,26 @@ test('without the browser (a deployment serving many installations) neither Brow
   assert.equal(calls.gets, 0, 'website logins are never requested');
 });
 
+test('a signed-in person can sign out from the rail and the mobile menu, standalone and hosted', async () => {
+  for (const [label, options] of [
+    ['owner', {}],
+    ['member', { workspaceAdminUi: false }],
+    ['hosted owner', { browserOffered: false }],
+  ] as const) {
+    const harness = runAdminPageHarness(options);
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.equal((html.match(/<form id="admin-sign-out"/g) ?? []).length, 1, label);
+    assert.match(html, /<form id="admin-sign-out" method="post" action="\/admin\/logout" hidden><\/form><\/header>/, label);
+    assert.match(html,
+      /<nav class="section-switcher" aria-label="Admin navigation">(?:(?!<\/nav>)[^])*<button type="submit" form="admin-sign-out" class="section-nav-item">Sign out<\/button><\/nav>/,
+      `${label}: the rail ends with Sign out`);
+    assert.match(html,
+      /<div class="actions actions-list">(?:(?!<\/div>)[^])*<button type="submit" form="admin-sign-out" class="btn btn-soft">Sign out<\/button><\/div>/,
+      `${label}: the mobile menu ends with Sign out`);
+  }
+});
+
 test('the Websites tab lists signed-in websites and shows an empty state', async () => {
   const { harness, calls } = websiteLoginsHarness(websiteLoginFixtures());
   await flushAsync();
