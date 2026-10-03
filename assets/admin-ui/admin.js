@@ -12830,6 +12830,9 @@
   }
 
   document.addEventListener("click", function (event) {
+    // Sign out submits its form after this listener returns. Closing a menu
+    // here would re-render and detach the button, and the post would be lost.
+    if (event.target && event.target.closest && event.target.closest('[form="admin-sign-out"]')) return;
     // Connection menus and capability popovers are mutually exclusive. Native
     // details elements do not close their siblings or dismiss on outside click.
     if (event.target && event.target.closest && document.querySelectorAll) {

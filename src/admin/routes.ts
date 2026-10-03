@@ -3157,9 +3157,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (error instanceof AuthUnavailableError) {
           return c.json({ error: 'authentication_unavailable' }, 503);
         }
-        if (isAdminPageGet(c)) {
+        // A page, or Sign out from a tab whose session already ended, goes
+        // to sign-in rather than to a JSON error.
+        if (isAdminPageGet(c) || isHumanAuthFormMutation(c)) {
           authResponseHeaders(c);
-          const query = new URLSearchParams({ destination: safeAdminReturnPath(c.req.path) });
+          const query = new URLSearchParams({
+            destination: isAdminPageGet(c) ? safeAdminReturnPath(c.req.path) : '/admin',
+          });
           return c.redirect(`/auth/slack/sign-in?${query.toString()}`, 303);
         }
         return c.json({ error: 'unauthorized' }, 401);

@@ -17705,7 +17705,7 @@ test('a signed-in person can sign out from the rail and the mobile menu, standal
   for (const [label, options] of [
     ['owner', {}],
     ['member', { workspaceAdminUi: false }],
-    ['hosted owner', { browserOffered: false }],
+    ['hosted owner', { browserOffered: false, selfHosted: false }],
   ] as const) {
     const harness = runAdminPageHarness(options);
     await flushAsync();

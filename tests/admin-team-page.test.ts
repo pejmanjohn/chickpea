@@ -275,6 +275,23 @@ test('restore is direct while removed, suspended, and non-Owner role fields stay
   assert.doesNotMatch(adminHarness.app.innerHTML, /data-action="team-role-select"/);
 });
 
+test('a Sign out click leaves an open row menu alone, so the button is still there to submit its form', async () => {
+  const harness = await createHarness();
+  const click = harness.listeners.click!;
+  click({ target: actionTarget({
+    'data-action': 'team-actions-toggle', 'data-membership': 'membership_member',
+  }) });
+  const withMenu = harness.app.innerHTML;
+  assert.match(withMenu, /role="menu"/);
+  assert.match(withMenu, /<button type="submit" form="admin-sign-out" class="section-nav-item">Sign out<\/button>/);
+  const signOut = {
+    ...actionTarget(),
+    closest(selector: string) { return selector === '[form="admin-sign-out"]' ? this : null; },
+  };
+  click({ target: signOut });
+  assert.equal(harness.app.innerHTML, withMenu, 'nothing re-rendered under the Sign out button');
+});
+
 test('row menu closes on outside click and Escape', async () => {
   const harness = await createHarness();
   const click = harness.listeners.click!;

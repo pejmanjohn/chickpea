@@ -105,6 +105,10 @@ test('Sign out ends the Better Auth session and lands on Slack sign-in; a cross-
     const page = await app.request(`${origin}/admin`, { headers: { cookie } });
     assert.equal(page.status, 303);
     assert.equal(page.headers.get('location'), '/auth/slack/sign-in?destination=%2Fadmin');
+    // Sign out again from a tab whose session already ended: sign-in, not a JSON error.
+    const again = await signOut({ origin, 'sec-fetch-site': 'same-origin' });
+    assert.equal(again.status, 303);
+    assert.equal(again.headers.get('location'), '/auth/slack/sign-in?destination=%2Fadmin');
   } finally {
     settings.close();
     store.close();
