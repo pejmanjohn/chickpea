@@ -7,6 +7,7 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { AuthDeniedError, AuthService } from '../src/auth/service.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_786_100_000_000;
 const ORIGIN = 'https://app.example';
@@ -176,6 +177,93 @@ test('active Better Auth session resolves only through canonical Slack authority
     backend.close();
     identity.close();
   }
+});
+
+const ORGANIZATION = '11111111-1111-4111-8111-111111111111';
+
+/**
+ * A Better Auth user with a membership in ORGANIZATION, and a Chickpea Owner
+ * whose binding names whichever Better Auth membership a case chooses.
+ */
+async function boundMembership() {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const reconciled = await createBetterAuth({ backend, baseURL: ORIGIN, secret: SECRET }).chickpea
+    .reconcileSlackIdentity({
+      slackTeamId: TEAM, slackUserId: USER, displayName: 'Owner',
+      organization: { id: ORGANIZATION, name: 'Chickpea', slug: 'chickpea' },
+    });
+  const sql = (statement: string, ...values: string[]) => backend.database.prepare(statement).run(...values);
+  return {
+    reconciled,
+    sql,
+    /** Another Better Auth membership row, shaped like the reconciled one. */
+    addMember: (id: string, organizationId: string, userId = reconciled.userId) => sql(
+      `INSERT INTO member (id, organizationId, userId, role, createdAt)
+       SELECT ?, ?, ?, 'member', createdAt FROM member WHERE id = ?`,
+      id, organizationId, userId, reconciled.membershipId,
+    ),
+    membershipFor: () => backend.getMembershipForUser(reconciled.userId, ORGANIZATION),
+    bind: (betterAuthMembershipId: string) => createSlackOwner(identity, {
+      now: NOW, teamId: TEAM, userId: USER, betterAuthUserId: reconciled.userId,
+      betterAuthOrganizationId: ORGANIZATION, betterAuthMembershipId,
+    }),
+    resolve: () => new BetterAuthDirectory({
+      backend, access: identity, organizationId: ORGANIZATION, canonicalAdminOrigin: ORIGIN,
+    }).resolveBetterAuthUser(reconciled.userId),
+    close: () => { backend.close(); identity.close(); },
+  };
+}
+
+test('a principal resolves only through the Better Auth membership its binding names', async (t) => {
+  await t.test('the bound membership in this organization', async () => {
+    const fixture = await boundMembership();
+    try {
+      await fixture.bind(fixture.reconciled.membershipId);
+      assert.equal((await fixture.resolve())?.membership.role, 'owner');
+    } finally { fixture.close(); }
+  });
+
+  await t.test('not a membership of the same person in another organization', async () => {
+    const fixture = await boundMembership();
+    try {
+      fixture.sql(
+        `INSERT INTO organization (id, name, slug, createdAt)
+         SELECT ?, 'Elsewhere', 'elsewhere', createdAt FROM organization WHERE id = ?`,
+        '22222222-2222-4222-8222-222222222222', ORGANIZATION,
+      );
+      fixture.addMember('member_elsewhere', '22222222-2222-4222-8222-222222222222');
+      await fixture.bind('member_elsewhere');
+      assert.equal(await fixture.resolve(), undefined);
+    } finally { fixture.close(); }
+  });
+
+  await t.test("not another person's membership in this organization", async () => {
+    const fixture = await boundMembership();
+    try {
+      fixture.sql(
+        `INSERT INTO "user" (id, name, email, emailVerified, createdAt, updatedAt)
+         SELECT 'user_someone', 'Someone', 'someone@identity.invalid', 0, createdAt, updatedAt
+         FROM "user" WHERE id = ?`,
+        fixture.reconciled.userId,
+      );
+      fixture.addMember('member_someone', ORGANIZATION, 'user_someone');
+      await fixture.bind('member_someone');
+      assert.equal(await fixture.resolve(), undefined);
+    } finally { fixture.close(); }
+  });
+
+  await t.test('the bound row when a database without the unique index holds two for the pair', async () => {
+    const fixture = await boundMembership();
+    try {
+      fixture.sql('DROP INDEX "member_organizationId_userId_uidx"');
+      fixture.addMember('member_duplicate', ORGANIZATION);
+      const found = (await fixture.membershipFor())!.id;
+      const bound = found === 'member_duplicate' ? fixture.reconciled.membershipId : 'member_duplicate';
+      await fixture.bind(bound);
+      assert.equal((await fixture.resolve())?.membership.role, 'owner');
+    } finally { fixture.close(); }
+  });
 });
 
 test('unconfigured and recovery-only controls admit no principal', async () => {

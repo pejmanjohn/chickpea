@@ -58,17 +58,20 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
     if (fence && fence.login?.betterAuthUserId !== betterAuthUserId) return undefined;
     // One state-store call reads everything Chickpea holds for this user,
     // beside Better Auth's read of their membership in this organization.
-    // Better Auth keeps one membership per user and organization, so when
-    // the binding agrees it names that row.
-    const [stored, betterAuthMembership] = await Promise.all([
+    // Chickpea's migrations make that pair unique, so the row found is
+    // normally the one the binding names. A database without that index can
+    // hold another row for the pair; then the bound row is read by its ID.
+    const [stored, memberInOrganization] = await Promise.all([
       this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
       this.input.backend.getMembershipForUser(betterAuthUserId, this.input.organizationId),
     ]);
-    if (!stored) return undefined;
+    if (!stored || !memberInOrganization) return undefined;
     const { binding, organization, user, membership, overlay } = stored;
-    if (!binding.betterAuthUserId || !binding.betterAuthMembershipId ||
-        !betterAuthMembership || betterAuthMembership.id !== binding.betterAuthMembershipId ||
-        betterAuthMembership.role !== 'member' ||
+    if (!binding.betterAuthUserId || !binding.betterAuthMembershipId) return undefined;
+    const betterAuthMembership = memberInOrganization.id === binding.betterAuthMembershipId
+      ? memberInOrganization
+      : await this.input.backend.getMembership(binding.betterAuthMembershipId);
+    if (!betterAuthMembership || betterAuthMembership.role !== 'member' ||
         betterAuthMembership.userId !== betterAuthUserId ||
         betterAuthMembership.organizationId !== this.input.organizationId ||
         !organization || !user || !membership ||
