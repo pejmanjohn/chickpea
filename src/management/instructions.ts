@@ -9,9 +9,9 @@
  */
 
 import {
-  ADMIN_ONLY_SETTINGS_SECTIONS,
   ADMIN_PATH,
   ADMIN_SETTINGS_SECTIONS,
+  adminOnlySettingsSections,
   adminOrigin,
   adminSettingsPath,
 } from './admin-links.ts';
@@ -30,13 +30,14 @@ export function workspaceManagementAdminOrigin(baseUrl?: string): string | undef
 /**
  * Build the per-principal instructions. `baseUrl` is the deployment's public
  * base URL (the same value the service uses for setup links) so the Admin
- * links are real for this deployment.
+ * links are real for this deployment; `env` leaves out the Settings sections
+ * its Admin does not show.
  */
-export function workspaceManagementInstructions(baseUrl?: string): string {
+export function workspaceManagementInstructions(baseUrl?: string, env?: Record<string, unknown>): string {
   const origin = workspaceManagementAdminOrigin(baseUrl);
   const adminUrl = origin ? `${origin}${ADMIN_PATH}` : ADMIN_PATH;
   const admin = origin ? adminUrl : `your Chickpea deployment's ${ADMIN_PATH} page`;
-  const settings = ADMIN_ONLY_SETTINGS_SECTIONS
+  const settings = adminOnlySettingsSections(env)
     .map((id) => `${ADMIN_SETTINGS_SECTIONS[id]} (${adminSettingsPath(id)})`)
     .join(', ');
 

@@ -207,7 +207,7 @@ import {
 } from '../slack/private-channel-setup.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
-import { EGRESS_SETTING_KEY, parseEgressPolicy } from '../config/egress.ts';
+import { resolveEgressPolicy } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   parseSlackAgentSessionStopped,
@@ -2822,9 +2822,7 @@ async function processSlackEvent(
     });
     let egressPolicy;
     try {
-      egressPolicy = parseEgressPolicy(
-        await stores.settings.getSetting(EGRESS_SETTING_KEY),
-      );
+      egressPolicy = await resolveEgressPolicy(stores.settings, platformEnv);
     } catch {
       // Canary eligibility is fail-closed. A settings read failure still uses
       // the established legacy lane and must not change Slack availability.

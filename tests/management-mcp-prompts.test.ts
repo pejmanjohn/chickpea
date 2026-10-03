@@ -181,6 +181,25 @@ test('status reads the workspace and changes nothing', () => {
   ]) assert.ok(text.includes(required), `status must mention ${required}`);
 });
 
+test('hosted status names no Settings section its Admin hides; standalone names them, and no other prompt changes', () => {
+  const hosted = { CHICKPEA_TENANCY: 'installation' };
+  const standalone = render('status', {});
+  const hostedStatus = workspaceManagementPromptText('status', {}, BASE_URL, hosted);
+  assert.ok(standalone.includes('anything only Admin can change today, such as GitHub, the coding sandbox, and outbound access, with the Settings link;'));
+  assert.ok(hostedStatus.includes('anything only Admin can change today, such as GitHub, with the Settings link;'));
+  assert.doesNotMatch(hostedStatus, /coding sandbox|outbound access/i);
+  assert.equal(
+    hostedStatus,
+    standalone.replace('such as GitHub, the coding sandbox, and outbound access, with', 'such as GitHub, with'),
+    'only those words are removed',
+  );
+  for (const name of WORKSPACE_MANAGEMENT_PROMPT_NAMES) {
+    const text = workspaceManagementPromptText(name, FILLED_INVOCATIONS[name], BASE_URL, hosted);
+    assert.doesNotMatch(text, /coding sandbox|outbound access|settings\/(?:sandbox|outbound|browser)/i, name);
+    if (name !== 'status') assert.equal(text, render(name, FILLED_INVOCATIONS[name]), `${name} is the same on hosted`);
+  }
+});
+
 test('argument values are quoted as data on one line and labelled as the person\'s words', () => {
   const messy = '  post   the\nstandup\t digest\n\nevery morning  ';
   const text = render('schedule', { handle: '  @notes\n', what: messy });

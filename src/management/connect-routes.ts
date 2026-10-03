@@ -33,7 +33,7 @@ export function createConnectRoutes(): Hono {
     if (!origin) return c.notFound();
     publicHeaders(c);
     c.header('Content-Type', 'text/markdown; charset=utf-8');
-    return c.body(connectMarkdown(origin));
+    return c.body(connectMarkdown(origin, c.env as Record<string, unknown> | undefined));
   });
 
   app.get(CONNECT_PAGE_PATH, (c) => {
@@ -55,11 +55,12 @@ function resolveOrigin(c: Context): string | undefined {
 }
 
 function publicHeaders(c: Context): void {
-  // Content depends only on the public origin, so short shared caching is
-  // safe; a changed SLACK_TAG_PUBLIC_URL or host shows up within minutes. On
-  // Node the origin can also come from the forwarded headers, so a shared
-  // cache must key on them too, or one caller's forwarded host would be
-  // served to everyone behind the same Host for five minutes.
+  // Content depends only on the public origin and the deployment's fixed
+  // tenancy, so short shared caching is safe; a changed SLACK_TAG_PUBLIC_URL
+  // or host shows up within minutes. On Node the origin can also come from
+  // the forwarded headers, so a shared cache must key on them too, or one
+  // caller's forwarded host would be served to everyone behind the same Host
+  // for five minutes.
   c.header('Cache-Control', 'public, max-age=300');
   c.header('Vary', 'Host, X-Forwarded-Host, X-Forwarded-Proto');
   c.header('X-Content-Type-Options', 'nosniff');

@@ -17912,6 +17912,54 @@ test('hosted Admin has no Coding sandbox page, rail entry or status request, and
   }
 });
 
+test('hosted Admin has no Outbound access page, rail entry, mention or policy request, and an outbound link lands on the default section; standalone keeps them', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    for (const initialPath of ['/admin/settings/outbound', '/admin/settings/egress-settings', '/admin/settings/github']) {
+      const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath });
+      await flushAsync();
+      const html = harness.app.innerHTML;
+      const label = `${mode}, ${initialPath}`;
+      const policyRequests = harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/egress'));
+      if (hosting.selfHosted) {
+        assert.match(html, /data-action="settings-section" data-section="outbound"/, label);
+        assert.match(html, /data-settings-panel="outbound"/, label);
+        assert.match(html, /<h2 class="section-title">Outbound access<\/h2>/, label);
+        assert.match(html, /<p class="hint">Configure GitHub, model providers, and outbound internet access for the sandbox\.<\/p>/, label);
+        assert.match(html, initialPath === '/admin/settings/github'
+          ? /data-section="github"[^>]*aria-current="page"/
+          : /data-section="outbound"[^>]*aria-current="page"/, label);
+        assert.ok(policyRequests.length > 0, label);
+      } else {
+        assert.doesNotMatch(html, /data-section="outbound"|data-settings-panel="outbound"|Outbound access|data-action="egress-|outbound internet access/, label);
+        assert.match(html, /<p class="hint">Configure GitHub and model providers\.<\/p>/, label);
+        assert.match(html, initialPath === '/admin/settings/github'
+          ? /data-section="github"[^>]*aria-current="page"/
+          : /data-section="providers"[^>]*aria-current="page"/, `${label}: the default section instead`);
+        assert.deepEqual(policyRequests, [], `${label}: no policy is requested`);
+      }
+    }
+    // A rail or settings link from an earlier page lands where the hidden sections land.
+    const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath: '/admin/settings/github' });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    for (const action of ['settings-section', 'open-settings']) {
+      click({ target: actionTarget({ 'data-action': action, 'data-section': 'outbound' }) });
+      await flushAsync();
+      assert.match(harness.app.innerHTML, hosting.selfHosted
+        ? /data-section="outbound"[^>]*aria-current="page"/
+        : /data-section="providers"[^>]*aria-current="page"/, `${mode}: ${action} outbound`);
+      click({ target: actionTarget({ 'data-action': 'settings-section', 'data-section': 'github' }) });
+      await flushAsync();
+    }
+    assert.equal(
+      harness.fetchCalls.some(({ path }) => path.startsWith('/admin/api/egress')),
+      hosting.selfHosted,
+      `${mode}: policy requests`,
+    );
+  }
+});
+
 test('hosted Agent Advanced settings have no Coding sandbox row or link; standalone keeps it', async () => {
   for (const { mode, ...hosting } of HOSTING_MODES) {
     const harness = runAdminPageHarness({ ...hosting, cloudflare: true, agents: [connectionsAgent()] });

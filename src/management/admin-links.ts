@@ -1,3 +1,4 @@
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import type { ManagementResultLinks } from './types.ts';
 
 /**
@@ -25,9 +26,31 @@ export const ADMIN_SETTINGS_SECTIONS = {
 export type AdminSettingsSection = keyof typeof ADMIN_SETTINGS_SECTIONS;
 
 /** Settings sections with no MCP operation today (a provider key or connector still hands off through a tool). */
-export const ADMIN_ONLY_SETTINGS_SECTIONS: readonly AdminSettingsSection[] = [
+const ADMIN_ONLY_SETTINGS_SECTIONS: readonly AdminSettingsSection[] = [
   'providers', 'github', 'sandbox', 'browser', 'outbound', 'connectors',
 ];
+
+/**
+ * Sections a deployment serving many installations leaves out of Admin: the
+ * host runs the coding sandbox and manages outbound access, and the browser is
+ * not offered. Nothing names or links them there.
+ */
+const HOSTED_HIDDEN_SETTINGS_SECTIONS: ReadonlySet<AdminSettingsSection> = new Set([
+  'sandbox', 'browser', 'outbound',
+]);
+
+/** Whether this deployment's Admin shows a Settings section. */
+export function adminSettingsSectionShown(
+  section: AdminSettingsSection,
+  env?: Record<string, unknown>,
+): boolean {
+  return !(HOSTED_HIDDEN_SETTINGS_SECTIONS.has(section) && deploymentServesManyInstallations(env));
+}
+
+/** The Admin-only Settings sections this deployment's Admin shows, in order. */
+export function adminOnlySettingsSections(env?: Record<string, unknown>): AdminSettingsSection[] {
+  return ADMIN_ONLY_SETTINGS_SECTIONS.filter((section) => adminSettingsSectionShown(section, env));
+}
 
 export function adminSettingsPath(section: AdminSettingsSection): string {
   return `${ADMIN_PATH}/settings/${section}`;
@@ -50,7 +73,7 @@ export function adminOrigin(baseUrl?: string): string | undefined {
 }
 
 /** Absolute Settings link for one section, or the relative path without an origin. */
-export function adminSettingsUrl(baseUrl: string | undefined, section: AdminSettingsSection): string {
+function adminSettingsUrl(baseUrl: string | undefined, section: AdminSettingsSection): string {
   const origin = adminOrigin(baseUrl);
   return origin ? `${origin}${adminSettingsPath(section)}` : adminSettingsPath(section);
 }
@@ -63,12 +86,15 @@ export function adminTeamUrl(baseUrl: string | undefined): string {
 /**
  * `links.admin` for a receipt or error that names one Admin-only Settings
  * section. Without a usable deployment origin there is no link: a bare path
- * in a field clients treat as a URL would read as clickable and not be.
+ * in a field clients treat as a URL would read as clickable and not be. A
+ * section this deployment's Admin does not show has no link either.
  */
 export function adminSettingsLinks(
   baseUrl: string | undefined,
   section: AdminSettingsSection,
+  env?: Record<string, unknown>,
 ): ManagementResultLinks | undefined {
+  if (!adminSettingsSectionShown(section, env)) return undefined;
   return adminOrigin(baseUrl) ? { admin: adminSettingsUrl(baseUrl, section) } : undefined;
 }
 

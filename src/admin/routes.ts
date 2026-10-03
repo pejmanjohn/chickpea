@@ -233,8 +233,8 @@ import {
   WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import {
-  EGRESS_SETTING_KEY,
-  parseEgressPolicy,
+  resolveEgressPolicy,
+  saveEgressPolicy,
   type EgressPolicy,
 } from '../config/egress.ts';
 import {
@@ -7335,9 +7335,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   });
 
+  // Hosted manages outbound access: GET answers its managed policy, and the
+  // middleware refuses a write before this handler runs.
   app.get('/admin/api/egress', async (c) => {
-    const raw = await settings(c).getSetting(EGRESS_SETTING_KEY);
-    return c.json({ policy: parseEgressPolicy(raw) });
+    return c.json({ policy: await resolveEgressPolicy(settings(c), c.env as PlatformEnv | undefined) });
   });
 
   app.put('/admin/api/egress', async (c) => {
@@ -7349,7 +7350,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       mode: parsed.output.mode,
       domains: [...new Set(parsed.output.domains.map(normalizeEgressDomain))],
     };
-    await settings(c).setSetting(EGRESS_SETTING_KEY, JSON.stringify(policy));
+    await saveEgressPolicy(settings(c), policy);
     return c.json({ policy });
   });
 
@@ -11728,8 +11729,8 @@ function isAdminPageGet(c: Context): boolean {
 // environment bridge, the legacy configuration cutover, the ChatGPT plan
 // handoff, the browser (its Browserbase key and website logins), and the
 // request to install or remove the coding sandbox, which only whoever deploys
-// can complete. The host's policy owns the sandbox's runtime settings, so
-// only its status stays served.
+// can complete. The host's policy owns the sandbox's runtime settings and
+// outbound access, so only their status stays served.
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11756,6 +11757,8 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
   // The host's policy owns a hosted coding sandbox; its status stays readable.
   if ((method === 'PUT' || method === 'PATCH') && canonical === '/admin/api/sandbox/status') return true;
+  // The host manages outbound access; only its managed policy stays readable.
+  if (method !== 'GET' && method !== 'HEAD' && canonical === '/admin/api/egress') return true;
   return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
     STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }

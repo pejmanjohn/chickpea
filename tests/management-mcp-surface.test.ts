@@ -15,6 +15,7 @@ import {
   AGENT_SKILL_CREATION_GUIDE_MCP_SUBSTITUTIONS,
   codingAgentAuthoringGuideResource,
 } from '../src/management/agent-authoring/mcp-guide.ts';
+import { adminSettingsLinks } from '../src/management/admin-links.ts';
 import { workspaceManagementInstructions } from '../src/management/instructions.ts';
 import {
   WORKSPACE_MANAGEMENT_TOOL_NAMES,
@@ -119,4 +120,27 @@ test('server instructions point coding agents at Markdown presentation, links, a
   assert.match(text, /links\.admin and links\.slack/);
   assert.ok(text.includes('https://chickpea.example.test/admin: Model providers (/admin/settings/providers)'));
   assert.ok(!text.includes('#/settings'), 'Admin routes are path-based, not hash-based');
+});
+
+test('hosted instructions and links leave out the Settings sections its Admin hides; standalone keeps them', () => {
+  const hosted = { CHICKPEA_TENANCY: 'installation' };
+  const base = 'https://chickpea.example.test';
+  const standalone = workspaceManagementInstructions(base);
+  const hostedText = workspaceManagementInstructions(base, hosted);
+  assert.ok(standalone.includes(`${base}/admin: Model providers (/admin/settings/providers), GitHub (/admin/settings/github), Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser), Outbound access (/admin/settings/outbound), Connectors (/admin/settings/connectors).`));
+  assert.ok(hostedText.includes(`${base}/admin: Model providers (/admin/settings/providers), GitHub (/admin/settings/github), Connectors (/admin/settings/connectors).`));
+  assert.doesNotMatch(hostedText, /sandbox|Browser|Outbound|outbound/);
+  assert.equal(
+    hostedText,
+    standalone.replace(', Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser), Outbound access (/admin/settings/outbound)', ''),
+    'only those sections are removed',
+  );
+
+  for (const section of ['sandbox', 'browser', 'outbound'] as const) {
+    assert.deepEqual(adminSettingsLinks(base, section), { admin: `${base}/admin/settings/${section}` }, `standalone ${section}`);
+    assert.equal(adminSettingsLinks(base, section, hosted), undefined, `hosted ${section}`);
+  }
+  for (const section of ['providers', 'github', 'connectors'] as const) {
+    assert.deepEqual(adminSettingsLinks(base, section, hosted), { admin: `${base}/admin/settings/${section}` }, `hosted ${section}`);
+  }
 });

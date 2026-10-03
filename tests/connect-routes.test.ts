@@ -144,6 +144,22 @@ test('the guide names every supported client and proves the connection before cl
   assert.ok(body.includes(`${ORIGIN}/admin`), 'points at Admin to finish setup');
 });
 
+test('the hosted guide names only the Admin settings its Admin shows; standalone names them all', async () => {
+  const sentence = (body: string) => body.split('\n').find((line) => line.includes('are managed in Admin at'));
+  const standalone = await (await connectMd(`${ORIGIN}/connect.md`)).text();
+  assert.equal(
+    sentence(standalone),
+    `- Model provider keys, GitHub setup, the coding sandbox, and outbound access are managed in Admin at ${ORIGIN}${ADMIN_SETTINGS_PATH}. Send the person there with the link rather than asking for the values.`,
+  );
+  const hosted = await (await createConnectRoutes().request(`${ORIGIN}/connect.md`, {}, { CHICKPEA_TENANCY: 'installation' })).text();
+  assert.equal(
+    sentence(hosted),
+    `- Model provider keys and GitHub setup are managed in Admin at ${ORIGIN}${ADMIN_SETTINGS_PATH}. Send the person there with the link rather than asking for the values.`,
+  );
+  assert.doesNotMatch(hosted, /coding sandbox|outbound access/i);
+  assert.equal(hosted.replace(sentence(hosted)!, ''), standalone.replace(sentence(standalone)!, ''), 'only that sentence differs');
+});
+
 test('neither public document leaks a credential or an internal identifier', async () => {
   const markdown = await (await connectMd(`${ORIGIN}/connect.md`)).text();
   const page = await connectMd(`${ORIGIN}/connect`);
