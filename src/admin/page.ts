@@ -43,6 +43,12 @@ export function adminUiConfig(input: {
   installationOwner?: boolean;
   /** False on a deployment serving many installations, which offers no browser. */
   browserOffered?: boolean;
+  /**
+   * False on a deployment serving many installations: its host runs the
+   * deployment, so Admin leaves out guidance about environment variables and
+   * secret bindings.
+   */
+  selfHosted?: boolean;
   targetChip: string;
 }): Record<string, unknown> {
   return {
@@ -51,6 +57,7 @@ export function adminUiConfig(input: {
     workspaceAdminUi: input.workspaceAdminUi,
     installationOwner: input.installationOwner === true,
     browserOffered: input.browserOffered !== false,
+    selfHosted: input.selfHosted !== false,
     targetChip: input.targetChip,
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -77,6 +84,7 @@ export function renderAdminPage(
     workspaceAdminUi?: boolean;
     installationOwner?: boolean;
     browserOffered?: boolean;
+    selfHosted?: boolean;
     assetVersion?: string;
   } = {},
 ): string {
@@ -122,7 +130,7 @@ ${CHICKPEA_FAVICON_HTML}
 </div>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
-    browserOffered: options.browserOffered !== false, targetChip,
+    browserOffered: options.browserOffered !== false, selfHosted: options.selfHosted !== false, targetChip,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>

@@ -6086,10 +6086,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // browser keep an older deployment's shell after the Worker has been updated.
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
+    const standalone = deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation';
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
-      browserOffered: deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation',
+      browserOffered: standalone,
+      selfHosted: standalone,
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
