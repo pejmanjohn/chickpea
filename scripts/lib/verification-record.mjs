@@ -1,10 +1,9 @@
 // Recordkeeping for the attended skill. This module performs no live actions.
 import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { outsideGit } from './private-evidence.mjs';
-import { caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
-import { REGRESSION_AREAS } from './regression-plan.mjs';
+import { areaNames, caseInputs, changedInputs, CORE_AREA_NAMES, digest, recordedInputs } from './verification-inputs.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
 import { recordRepair, repairBlocks, repairInputs, repairProgress } from './verification-repairs.mjs';
 import { offlineProgress } from './verification-offline.mjs';
@@ -13,6 +12,9 @@ import { recordTransition, transitionInputs } from './verification-transition.mj
 import { suitableCapability, validateGroups, groupStatus, optionalCases } from './verification-scope.mjs';
 
 const SCHEMA = 'chickpea-attended-run/v1';
+// A record kept for another profile: v1 plus a required profile block.
+export const SCHEMA_V2 = 'chickpea-attended-run/v2';
+export { areaNames };
 const GRADES = ['local', 'deployed', 'model'];
 const RESULTS = ['pass', 'fail', 'blocked', 'ambiguous'];
 const CATEGORIES = ['product', 'model', 'tool', 'infrastructure', 'unknown'];
@@ -46,17 +48,41 @@ export function assertNoSecrets(value) {
   }
 }
 
+/** A profile names the areas, area catalog and source provider of records
+ * kept for another project. The standalone profile writes v1 records and has
+ * no block; Core never learns another profile's area names. */
+export function validateRecordProfile(profile) {
+  keys(profile, ['id', 'areaCatalog', 'areas', 'source', 'projectRoot', 'releaseGate']);
+  need(isExactId(profile.id) && profile.id !== 'standalone', 'A record profile needs an exact ID other than standalone.');
+  need(text(profile.areaCatalog) && text(profile.source), 'A record profile names its area catalog and source provider.');
+  need(list(profile.areas) && profile.areas.length > 0 && profile.areas.every(isExactId) && new Set(profile.areas).size === profile.areas.length, 'Profile areas must be unique exact IDs.');
+  need(text(profile.projectRoot) && isAbsolute(profile.projectRoot), 'A record profile needs its absolute project root.');
+  need(profile.releaseGate === 'composite', 'A record profile needs releaseGate: composite.');
+  assertNoSecrets(profile);
+  return profile;
+}
+const sameProfile = (left, right) => digest({ ...left, areas: [...left.areas].sort() }) === digest({ ...right, areas: [...right.areas].sort() });
+const wrongProfile = (message) => Object.assign(new Error(message), { code: 'RECORD_PROFILE_MISMATCH' });
+// A source missing a profile area would leave cases on it never stale.
+function coversProfile(profile, source) {
+  const missing = profile.areas.filter((area) => typeof source?.areas?.[area] !== 'string');
+  need(missing.length === 0, `Source provider does not fingerprint profile areas: ${missing.join(', ')}.`);
+}
+const specRules = (run) => [areaNames(run), { releaseGate: run.profile?.releaseGate }];
+
 export function readPrivateJson(file) {
   const path = outsideGit(file);
   need(lstatSync(path).size <= 8 * 1024 * 1024, 'Record input exceeds 8 MiB.');
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-export function validateSpec(spec) {
+export function validateSpec(spec, areas = CORE_AREA_NAMES, { releaseGate } = {}) {
   keys(spec, ['mode', 'purpose', 'contexts', 'capabilities', 'cases', 'groups']);
   need(spec.groups === undefined || Array.isArray(spec.groups), 'Variant groups must be a list.');
   assertNoSecrets(spec);
   need(['changed', 'regression', 'release'].includes(spec.mode), 'Choose changed, regression, or release.');
+  // Only a runner checkpoint completes a release record; this profile's gate is elsewhere.
+  need(releaseGate !== 'composite' || spec.mode !== 'release', 'This profile records release cases in regression mode; its release gate is the composite report.');
   need(['verification', 'reliability'].includes(spec.purpose), 'Choose verification or intentional reliability testing.');
   need(spec.contexts && typeof spec.contexts === 'object', 'Contexts are required.');
   for (const [id, context] of Object.entries(spec.contexts)) {
@@ -93,7 +119,7 @@ export function validateSpec(spec) {
     keys(selected, ['id', 'title', 'context', 'areas', 'requires', 'proof', 'maxAttempts', 'maxWaitMs', 'minObservationMs', ...CASE_CONTRACT]);
     need(isExactId(selected.id) && !ids.has(selected.id), 'Case IDs must be unique exact IDs.'); ids.add(selected.id);
     need(text(selected.title) && spec.contexts[selected.context], 'Case needs a title and a known context.');
-    need(list(selected.areas) && selected.areas.length > 0 && selected.areas.every((area) => Object.hasOwn(REGRESSION_AREAS, area)), 'Case needs known dependency areas.');
+    need(list(selected.areas) && selected.areas.length > 0 && selected.areas.every((area) => areas.includes(area)), 'Case needs known dependency areas.');
     need(list(selected.requires) && selected.requires.length > 0, 'Declare case capabilities, including required actors and fixtures.');
     need(list(selected.proof) && selected.proof.length > 0 && selected.proof.every((p) => PROOF_SURFACES.includes(p)), `Declare proof surfaces from: ${PROOF_SURFACES.join(', ')}.`);
     if (spec.contexts[selected.context].grade !== 'model') need(selected.proof.some((p) => USER_DOORS.includes(p)), `Live case ${selected.id} needs proof from a user door: slack, admin or mcp.`);
@@ -129,14 +155,18 @@ function atomicWrite(file, value) {
   renameSync(temporary, file);
 }
 
-export function createRun(file, spec, source, now = Date.now(), lineage) {
+/** Without a profile this writes a standalone v1 record exactly as before. */
+export function createRun(file, spec, source, now = Date.now(), lineage, profile) {
   const path = outsideGit(file);
-  validateSpec(spec);
+  if (profile !== undefined) { validateRecordProfile(profile); coversProfile(profile, source); }
+  validateSpec(spec, profile?.areas, { releaseGate: profile?.releaseGate });
   if (lineage !== undefined) validateLineage(lineage, spec);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const run = { schema: SCHEMA, id: randomUUID(), createdAt: new Date(now).toISOString(), spec, source, events: [], ...(lineage ? { lineage } : {}) };
+  const run = { schema: profile ? SCHEMA_V2 : SCHEMA, id: randomUUID(), createdAt: new Date(now).toISOString(),
+    ...(profile ? { profile: structuredClone(profile) } : {}), spec, source, events: [], ...(lineage ? { lineage } : {}) };
   // Capture the initial capability receipts, so later changes to evidence are visible.
   run.capabilityEvidence = captureCapabilities(spec);
+  if (profile) assertNoSecrets(run);
   writeFileSync(path, `${JSON.stringify(run, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   return run;
 }
@@ -152,10 +182,20 @@ function validateLineage(lineage, spec) {
     need(original.runId === lineage.parent.runId && isExactId(original.caseId), 'Original case must reference the direct parent run and an exact case ID.');
   }
 }
-export function readRun(file) {
+/** Read a record for the caller's profile: none (standalone) reads only v1
+ * records, and a profile reads only v2 records written for that profile. */
+export function readRun(file, { profile } = {}) {
   const run = readPrivateJson(file);
-  need(run.schema === SCHEMA && text(run.id) && Array.isArray(run.events), 'Not an attended run record. Do not migrate an active legacy journal.');
-  validateSpec(run.spec);
+  need([SCHEMA, SCHEMA_V2].includes(run.schema) && text(run.id) && Array.isArray(run.events), 'Not an attended run record. Do not migrate an active legacy journal.');
+  if (profile !== undefined) validateRecordProfile(profile);
+  if (run.schema === SCHEMA) {
+    if (Object.hasOwn(run, 'profile')) throw wrongProfile('A standalone v1 record cannot carry a profile block.');
+    if (profile !== undefined) throw wrongProfile('Standalone record; resume it with the standalone profile.');
+  } else {
+    validateRecordProfile(run.profile);
+    if (!profile || !sameProfile(profile, run.profile)) throw wrongProfile(`Record belongs to profile ${run.profile.id} at ${run.profile.projectRoot}; resume it with that profile's coordinator.`);
+  }
+  validateSpec(run.spec, ...specRules(run));
   if (run.lineage !== undefined) validateLineage(run.lineage, run.spec);
   assertNoSecrets(run);
   need(run.events.every((event, index) => event.sequence === index + 1 && event.runId === run.id), 'Run event sequence is invalid.');
@@ -163,7 +203,7 @@ export function readRun(file) {
 }
 
 /** Atomic whole-record replacement; refuse concurrent writers, never steal a lock. */
-export function updateRun(file, callback) {
+export function updateRun(file, callback, { profile } = {}) {
   const path = outsideGit(file);
   const lock = `${path}.lock`;
   let fd;
@@ -171,7 +211,7 @@ export function updateRun(file, callback) {
   catch { throw new Error('Run record is locked. Reconcile the owning process before removing its exact lock file.'); }
   try {
     writeFileSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
-    const run = readRun(path);
+    const run = readRun(path, { profile });
     const result = callback(run);
     assertNoSecrets(run);
     atomicWrite(path, run);
@@ -244,6 +284,7 @@ export function ownedResources(run, now = Date.now()) {
 
 export function appendEvent(run, input, source, now = Date.now()) {
   assertNoSecrets(input);
+  if (run.profile) coversProfile(run.profile, source);
   const spec = currentSpec(run);
   const event = { ...structuredClone(input), id: randomUUID(), runId: run.id, sequence: run.events.length + 1, at: new Date(now).toISOString() };
   const selected = spec.cases.find((c) => c.id === input.caseId);
@@ -260,7 +301,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
       break;
     case 'refresh': {
       keys(input, ['type', 'spec', 'reason']);
-      validateSpec(input.spec); need(text(input.reason), 'Refresh needs a reason.');
+      validateSpec(input.spec, ...specRules(run)); need(text(input.reason), 'Refresh needs a reason.');
       // A resume cannot silently shrink selected acceptance or change its mode.
       need(input.spec.mode === spec.mode && input.spec.purpose === spec.purpose && spec.cases.every((c) => input.spec.cases.some((next) => next.id === c.id
         && ['areas', 'requires', 'proof'].every((field) => c[field].every((item) => next[field].includes(item)))
@@ -315,7 +356,7 @@ export function appendEvent(run, input, source, now = Date.now()) {
       // A gotcha learned mid-run, kept for the feature map. It grades nothing.
       keys(input, ['type', 'text', 'areas', 'caseId']);
       need(text(input.text) && input.text.length <= 2000, 'A lesson needs text of at most 2000 characters.');
-      need(input.areas === undefined || (list(input.areas) && input.areas.every((area) => Object.hasOwn(REGRESSION_AREAS, area))), 'Lesson areas must be known areas.');
+      need(input.areas === undefined || (list(input.areas) && input.areas.every((area) => areaNames(run).includes(area))), 'Lesson areas must be known areas.');
       need(input.caseId === undefined || selected, 'Lesson case is not selected.');
       break;
     }

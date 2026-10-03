@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { outsideGit } from './lib/private-evidence.mjs';
 import { sourceInputs } from './lib/verification-inputs.mjs';
 import { templateSpec } from './lib/verification-spec.mjs';
-import { appendEvent, createRun, currentSpec, preflight, readPrivateJson, readRun, renderReport, status, updateRun, validateSpec } from './lib/verification-record.mjs';
+import { appendEvent, createRun, currentSpec, preflight, readPrivateJson, readRun, renderReport, status, updateRun, validateRecordProfile, validateSpec } from './lib/verification-record.mjs';
 import { buildCase, buildCleanup, buildOutcome, buildResource } from './lib/verification-record-builders.mjs';
 import { familyStatus, readRunFamily, renderFamilyReport } from './lib/verification-record-family.mjs';
 
@@ -42,10 +42,19 @@ qa/live/operator/records.md for a spec and event examples. Use existing
 verify:regression --record FILE for measured offline check receipts.
 `;
 
-export function runRecordCli(argv, root = ROOT, io = {}) {
+/** The defaults are the standalone profile: v1 records and this checkout's
+ * source. Another profile's coordinator passes { record, source }, where
+ * record is its validated profile block and source() its current source. */
+export function runRecordCli(argv, root = ROOT, io = {}, profile) {
   const output = io.stdout ?? ((value) => process.stdout.write(value));
   const error = io.stderr ?? ((value) => process.stderr.write(value));
   try {
+    if (profile !== undefined) {
+      if (typeof profile?.source !== 'function') throw new Error('A record profile needs a source provider.');
+      validateRecordProfile(profile.record);
+    }
+    const descriptor = profile?.record, scope = { profile: descriptor };
+    const currentSource = () => profile ? profile.source() : sourceInputs(root);
     const { values: flags, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
       ...Object.fromEntries(['run', 'spec', 'reason', 'case', 'event', 'output', 'mode', 'purpose', 'title', 'text', 'context', 'max-attempts', 'max-wait-ms', 'min-observation-ms', 'original-request', 'expected-outcome', 'variant', 'cleanup-contract', 'provider', 'kind', 'resource-id', 'ownership', 'cleanup-preset', 'expected-file', 'attempt', 'result', 'summary', 'category', 'completed-at', 'observed-at', 'timing-observation-ms', 'cost-usd', 'resource', 'outcome', 'observed-file', 'phase', 'phase-id', 'parent-run', 'blocks-pr'].map((key) => [key, { type: 'string' }])),
       area: { type: 'string', multiple: true }, require: { type: 'string', multiple: true }, proof: { type: 'string', multiple: true }, evidence: { type: 'string', multiple: true }, 'original-case': { type: 'string', multiple: true },
@@ -69,6 +78,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
     }[command];
     if (!allowed || Object.keys(flags).some((key) => !allowed.includes(key))) throw new Error('Unknown command or inapplicable option.');
     if (command === 'template') {
+      if (profile) throw new Error('This profile\'s spec templates come from its planner.');
       if (!flags.output) throw new Error('template needs --output.');
       const path = outsideGit(flags.output);
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -84,7 +94,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       const named = { case: flags.case, title: flags.title, context: flags.context, area: flags.area, require: flags.require, proof: flags.proof,
         maxAttempts: flags['max-attempts'], maxWaitMs: flags['max-wait-ms'], minObservationMs: flags['min-observation-ms'],
         originalRequest: flags['original-request'], expectedOutcome: flags['expected-outcome'], variant: flags.variant, cleanup: flags['cleanup-contract'] };
-      spec.cases.push(buildCase(spec, named)); validateSpec(spec);
+      spec.cases.push(buildCase(spec, named)); validateSpec(spec, descriptor?.areas, { releaseGate: descriptor?.releaseGate });
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); writeFileSync(path, `${JSON.stringify(spec, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
       output(`${JSON.stringify({ output: path, caseId: flags.case })}\n`); return 0;
     }
@@ -94,8 +104,8 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
       if (!flags.spec) throw new Error('init needs --spec.');
       let lineage;
       if (flags['parent-run']) {
-        const parentPath = outsideGit(flags['parent-run']), parent = readRun(parentPath);
-        const family = readRunFamily(parentPath, sourceInputs(root));
+        const parentPath = outsideGit(flags['parent-run']), parent = readRun(parentPath, scope);
+        const family = readRunFamily(parentPath, currentSource(), 32, scope);
         if (family.missingAncestor) throw new Error('Parent run family has a missing ancestor.');
         const originalCases = {};
         for (const mapping of flags['original-case'] ?? []) {
@@ -108,7 +118,7 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         if (Object.keys(originalCases).some((child) => !spec.cases.some((entry) => entry.id === child))) throw new Error('Original-case child was not found in the new spec.');
         lineage = { parent: { path: parentPath, runId: parent.id }, originalCases };
       } else if (flags['original-case']?.length) throw new Error('--original-case needs --parent-run.');
-      result = createRun(flags.run, readPrivateJson(flags.spec), sourceInputs(root), Date.now(), lineage);
+      result = createRun(flags.run, readPrivateJson(flags.spec), currentSource(), Date.now(), lineage, descriptor);
       result = { runId: result.id, preflight: preflight(result) };
     } else if (['refresh', 'begin', 'blocked', 'lesson', 'verdict', 'record', 'resource', 'finish', 'resolve', 'cleanup', 'phase-start', 'phase-stop'].includes(command)) {
       let event;
@@ -137,21 +147,21 @@ export function runRecordCli(argv, root = ROOT, io = {}) {
         else if (command === 'phase-start') event = { type: 'phase_start', phase: flags.phase, ...(flags.case ? { caseId: flags.case } : {}), ...(flags.attempt ? { attemptId: flags.attempt } : {}) };
         else event = { type: 'phase_finish', phaseId: flags['phase-id'] };
       }
-      const source = sourceInputs(root);
+      const source = currentSource();
       result = updateRun(flags.run, (run) => {
         const input = command === 'resource' ? buildResource(run, { ...flags, resourceId: flags['resource-id'], cleanupPreset: flags['cleanup-preset'], expectedFile: flags['expected-file'], stopAt: flags['stop-at'], maxOccurrences: flags['max-occurrences'] }, readPrivateJson) : event;
         return appendEvent(run, input, source);
-      });
+      }, scope);
       // The full attempt carries every input digest; the operator needs its ID and deadline.
       if (command === 'begin') result = { attemptId: result.id, caseId: result.caseId, deadline: result.deadline, id: result.id };
     } else {
-      const run = readRun(flags.run);
+      const run = readRun(flags.run, scope);
       if (command === 'preflight') { result = preflight(run); code = result.ready ? 0 : 1; }
       else {
-        const view = status(run, sourceInputs(root));
+        const view = status(run, currentSource());
         if (command === 'status') result = view;
         else {
-          const report = flags.family ? renderFamilyReport(familyStatus(readRunFamily(flags.run, sourceInputs(root))), renderReport) : renderReport(view);
+          const report = flags.family ? renderFamilyReport(familyStatus(readRunFamily(flags.run, currentSource(), 32, scope)), renderReport) : renderReport(view);
           if (!flags.output) { output(`${report}\n`); return 0; }
           const path = outsideGit(flags.output);
           mkdirSync(dirname(path), { recursive: true, mode: 0o700 });

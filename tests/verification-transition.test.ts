@@ -254,3 +254,40 @@ test('pending target resources require exact verified cleanup before candidate c
   f.append({ type: 'cleanup', resourceId: resource.id, outcome: 'verified', observed: { present: false }, evidence: [f.evidence] }, f.nextSource);
   assert.equal(f.transition(f.nextSpec, f.nextSource).carried.length, 2);
 });
+
+test('a profile record carries transitions over its own areas and needs every one fingerprinted', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-profile-transition-'));
+  t.after(() => rmSync(directory, { force: true, recursive: true }));
+  const evidence = join(directory, 'readback.json'), proof = join(directory, 'transition.json');
+  writeFileSync(evidence, '{"fixture":"synthetic"}'); writeFileSync(proof, '{"candidateMapping":"synthetic"}');
+  const areas = [...Object.keys(REGRESSION_AREAS), 'core-candidate', 'hosted-ingress', 'hosted-tenancy'];
+  const profile = { id: 'hosted', areaCatalog: 'synthetic-hosted-areas/1', areas, source: 'synthetic-composite-source/1', projectRoot: directory, releaseGate: 'composite' };
+  const composite = () => ({ ...source(), areas: Object.fromEntries(areas.map((area) => [area, 'one'])) });
+  const spec: any = {
+    mode: 'regression', purpose: 'verification',
+    contexts: { candidate: { grade: 'deployed', target: 'synthetic-staging', servingVersion: 'worker-version-one', model: 'synthetic-model', actor: 'owner-one', fixtures: 'fixture-one', state: 'state-one', config: 'config-one' } },
+    capabilities: { owner: { kind: 'actor', available: true, identity: 'owner-one', role: 'owner', observedAt: new Date(NOW - 1000).toISOString(), expiresAt: new Date(NOW + 120000).toISOString(), evidence: [evidence] } },
+    cases: [['ingress', 'hosted-ingress'], ['tenancy', 'hosted-tenancy']].map(([id, area]) => ({ id, title: `Synthetic ${id}`, context: 'candidate', areas: [area, 'core-candidate'], requires: ['owner'], proof: ['slack'], maxAttempts: 3, maxWaitMs: 120000 })),
+  };
+  spec.capabilities.owner.scope = contextScope('candidate', spec.contexts.candidate);
+  const run = createRun(join(directory, 'run.json'), spec, composite(), NOW, undefined, profile);
+  let tick = 0;
+  const append = (event: any, inputs: any = composite()) => appendEvent(run, event, inputs, NOW + ++tick);
+  const attempts = Object.fromEntries(spec.cases.map(({ id }: any) => {
+    const attempt = append({ type: 'begin', caseId: id });
+    append({ type: 'finish', attemptId: attempt.id, result: 'pass', summary: 'Read back the expected synthetic result.', evidence: [evidence], proof: { slack: [evidence] } });
+    return [id, attempt];
+  }));
+  const nextSource = composite(); nextSource.head = 'b'.repeat(40); nextSource.tree = 'tree-two'; nextSource.areas['hosted-ingress'] = 'two';
+  const nextSpec = structuredClone(spec); nextSpec.contexts.candidate.servingVersion = 'worker-version-two';
+  append({ type: 'refresh', spec: nextSpec, reason: 'Read back the redeployed candidate.' }, nextSource);
+  const transition = (impactAreas: string[]) => ({ type: 'candidate_transition', fromId: attempts.tenancy.id, context: 'candidate', impactAreas,
+    summary: 'Candidate readbacks map both serving versions to exact source; reviewed changed areas.', evidence: [proof] });
+  assert.throws(() => recordTransition(run, nextSpec, transition(['hosted-ingress', 'hosted-unknown']), nextSource, evidenceRefs, intact, NOW + 100), /Declared impact must include every changed source area/);
+  const partial = structuredClone(nextSource); delete partial.areas['hosted-tenancy'];
+  assert.throws(() => recordTransition(run, nextSpec, transition(['hosted-ingress']), partial, evidenceRefs, intact, NOW + 100), /Carry-forward requires clean complete recorded source fingerprints/);
+  const receipt = append(transition(['hosted-ingress']), nextSource);
+  assert.deepEqual(receipt.changedAreas, ['hosted-ingress']);
+  assert.deepEqual(receipt.carried.map((entry: any) => entry.caseId), ['tenancy']);
+  assert.deepEqual(status(run, nextSource, NOW + 200).cases.map((c: any) => `${c.id}:${c.result}`), ['ingress:stale', 'tenancy:pass']);
+});

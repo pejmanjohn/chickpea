@@ -1,5 +1,5 @@
 // Optional repair notes in the attended record, not a scheduler or deploy driver.
-import { REGRESSION_AREAS } from './regression-plan.mjs';
+import { areaNames } from './verification-inputs.mjs';
 import { isExactId } from '../live-test-resource-ledger.mjs';
 import { suitableCapability } from './verification-scope.mjs';
 
@@ -73,7 +73,7 @@ export function recordRepair(run, spec, event, source, evidenceRefs, now, intact
     need(['urgent', 'isolated'].includes(event.priority) && ['queued', 'diagnosing', 'repairing', 'ready'].includes(event.state), 'Invalid repair priority or readiness.');
     event.kind ??= 'code';
     need(['code', 'recovery'].includes(event.kind), 'Repair kind must be code or recovery.');
-    need(list(event.areas) && event.areas.length > 0 && event.areas.every((a) => Object.hasOwn(REGRESSION_AREAS, a)), 'Repair needs known affected areas.');
+    need(list(event.areas) && event.areas.length > 0 && event.areas.every((a) => areaNames(run).includes(a)), 'Repair needs known affected areas.');
     need(list(event.blocks) && event.blocks.every((id) => spec.cases.some((c) => c.id === id)), 'Repair blocks must name selected cases.');
     need(event.group === undefined || isExactId(event.group), 'Invalid common-cause group.');
     need(event.paths === undefined || list(event.paths) && event.paths.every((p) => !p.startsWith('/') && !p.split('/').includes('..')), 'Overlap paths must be repository-relative.');

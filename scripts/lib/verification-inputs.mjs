@@ -14,6 +14,9 @@ function canonical(value) {
 }
 
 export const CORE_AREA_NAMES = Object.freeze(Object.keys(REGRESSION_AREAS));
+// A profile (v2) record fingerprints its profile's areas; a standalone (v1)
+// record, which readRun guarantees has no profile block, fingerprints Core's.
+export const areaNames = (run) => run.profile?.areas ?? CORE_AREA_NAMES;
 const CORE_TEST_FILES = Object.values(REGRESSION_AREAS).flat().map((name) => `tests/${name}.test.ts`);
 
 /** List one Git working tree's contents, including untracked inputs, without touching the index.
