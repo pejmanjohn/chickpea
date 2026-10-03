@@ -72,8 +72,12 @@ export function withHostedLogin<E extends PlatformEnv>(env: E, login: HostedLogi
     if (reads) throw new Error('Routing attaches its reads together with the login.');
     return env;
   }
-  const installationId = installationScopeOf(env)?.installationId;
-  if (reads && !installationId) throw new Error('Routing reads ride only on an installation\'s env.');
+  let carried: CarriedReads | undefined;
+  if (reads) {
+    const installationId = installationScopeOf(env)?.installationId;
+    if (!installationId) throw new Error('Routing reads ride only on an installation\'s env.');
+    carried = Object.freeze({ installationId, reads: Object.freeze({ ...reads }) });
+  }
   return Object.freeze({
     ...env,
     [HOSTED_LOGIN]: Object.freeze({
@@ -81,9 +85,7 @@ export function withHostedLogin<E extends PlatformEnv>(env: E, login: HostedLogi
       slackTeamId: login.slackTeamId,
       slackUserId: login.slackUserId,
     }),
-    ...(reads && installationId
-      ? { [HOSTED_ROUTE_READS]: Object.freeze({ installationId, reads: Object.freeze({ ...reads }) }) satisfies CarriedReads }
-      : {}),
+    ...(carried ? { [HOSTED_ROUTE_READS]: carried } : {}),
   });
 }
 

@@ -115,7 +115,8 @@ export function createBetterAuth(input: CreateBetterAuthInput) {
  * other plugin. Hosted routing builds one per request, and initializing the
  * MCP plugin costs a database read (its resource seed) each time. Its
  * get-session signs no JWT into a response header: Chickpea reads none, and
- * signing one costs another read.
+ * signing one costs another read. It also omits the oauth-provider's
+ * databaseHooks.session.delete (back-channel logout), which Chickpea does not offer.
  */
 export function createBetterAuthSessionReader(input: Pick<CreateBetterAuthInput, 'backend' | 'baseURL' | 'secret'>) {
   const baseURL = requireSupportedOrigin(input.baseURL);

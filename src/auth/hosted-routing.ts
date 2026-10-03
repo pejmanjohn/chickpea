@@ -133,8 +133,10 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
  * response that authenticates with it) and the installation's stored
  * principal, so Core's authenticator reads neither again. A response that
  * authenticates nobody (an Admin image, an OAuth callback) leaves a refresh's
- * cookies out; the browser's cookie then lapses at its earlier expiry unless
- * a later refresh, due a day on, reaches it.
+ * cookies out, and no host may add them: such a response can be publicly
+ * cached, so it carries no one's session. The browser's cookie then lapses at
+ * its earlier expiry, never after the session itself, unless a later
+ * refresh, due a day on, reaches it.
  */
 export async function routeHostedRequest<E extends PlatformEnv>(
   request: Request,
@@ -206,7 +208,7 @@ function hostedLogins(environment: BetterAuthEnvironment, readLogin?: HostedRout
   let auth: ReturnType<typeof createBetterAuthSessionReader> | undefined;
   const betterAuth = () => auth ??= createBetterAuthSessionReader(environment);
   const forUser = async (betterAuthUserId: string): Promise<PresentedLogin | undefined> => {
-    const read: Pick<HostedLoginRead, 'slackAccountIds'> & Partial<HostedLoginRead> = readLogin
+    const read: { slackAccountIds: readonly string[]; memberships?: readonly BetterAuthMembershipRecord[] } = readLogin
       ? await readLogin(betterAuthUserId)
       : {
           slackAccountIds: (await (await betterAuth().$context).internalAdapter.findAccounts(betterAuthUserId))

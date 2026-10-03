@@ -119,10 +119,7 @@ export class BetterAuthSessionAuthenticator implements PrincipalAuthenticator {
   readonly kind = 'better_auth';
   private auth: ReturnType<typeof createBetterAuth> | undefined;
 
-  constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {
-    // With a routed session Better Auth is built only if a request needs it.
-    if (!input.routedSession) this.auth = this.createAuth();
-  }
+  constructor(private readonly input: BetterAuthSessionAuthenticatorInput) {}
 
   async authenticate(request: Request): Promise<PrincipalAuthenticationResult | undefined> {
     const session = this.routedSession(request) ?? await this.readSession(request);
