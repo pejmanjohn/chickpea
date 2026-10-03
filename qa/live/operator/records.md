@@ -575,7 +575,11 @@ records with this helper under its own profile. Such a record has schema
 "composite"`. The profile's `areas` replace Core's for cases, lessons, repairs
 and candidate transitions; Core never interprets them. The profile's source
 provider must fingerprint every profile area. A write whose source misses one
-is refused, and so is grading a case on an area the source lacks.
+is refused, and so is grading a case on an area the source lacks. Case, context,
+capability, area and child-case IDs become record keys, and the record refuses
+any key containing `password`, `credential`, `authorization`, `cookie`,
+`secret`, `accessToken` or `refreshToken`. Keep those words out of profile IDs,
+such as `tenant-secret-rotation` or `hosted-secrets`.
 
 Only that profile's coordinator resumes the record, by passing the same profile
 block. Any other reader is refused with the profile ID and project root to use.

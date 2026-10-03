@@ -425,6 +425,11 @@ test('private writes refuse Git/symlink destinations, preserve restrictive permi
   assert.throws(() => updateRun(f.file, () => {}), /locked/);
   assert.equal(readFileSync(f.file, 'utf8'), before);
   assert.throws(() => createRun(join(f.directory, 'secret.json'), { ...f.spec, credential: 'hidden' }, source()), /Unexpected|Secret/);
+  // A key readRun would refuse is refused before the record is written.
+  const secretChild = join(f.directory, 'secret-child.json'), childSpec = structuredClone(f.spec) as any;
+  childSpec.cases.push({ ...childSpec.cases[0], id: 'secret-rotation' });
+  assert.throws(() => createRun(secretChild, childSpec, source(), NOW, { parent: { path: f.file, runId: f.run.id }, originalCases: { 'secret-rotation': { runId: f.run.id, caseId: 'schedule' } } }), /Secret-bearing record field refused/);
+  assert.throws(() => statSync(secretChild), /ENOENT/);
   // The same check is exported for source providers outside this module.
   assert.doesNotThrow(() => assertNoSecrets({ composite: { cloud: { commit: 'a'.repeat(40) } }, areas: { 'core-candidate': 'digest' } }));
   assert.throws(() => assertNoSecrets({ composite: { slots: { WEBHOOK_SECRET: 'digest' } } }), /Secret-bearing record field refused/);
@@ -492,7 +497,7 @@ test('source fingerprints keep their recorded digests across the provider split'
   write('.dev.vars', 'IGNORED=1'); write('ignored/hidden.ts', 'ignored');
   execFileSync('git', ['init', '-q', join(repo, 'nested')]); write('nested/inner.ts', 'nested');
   // Digests recorded by the single-function sourceInputs before the split.
-  // In-flight records compare against these; they must never move.
+  // In-flight records compare against these, so the provider split must not move them.
   const inputs = sourceInputs(repo), { head, ...fingerprint } = inputs;
   assert.deepEqual(Object.keys(inputs), ['head', 'dirty', 'tree', 'areas']);
   assert.equal(head, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());

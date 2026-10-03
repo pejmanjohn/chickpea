@@ -14,7 +14,6 @@ import { suitableCapability, validateGroups, groupStatus, optionalCases } from '
 const SCHEMA = 'chickpea-attended-run/v1';
 // A record kept for another profile: v1 plus a required profile block.
 export const SCHEMA_V2 = 'chickpea-attended-run/v2';
-export { areaNames };
 const GRADES = ['local', 'deployed', 'model'];
 const RESULTS = ['pass', 'fail', 'blocked', 'ambiguous'];
 const CATEGORIES = ['product', 'model', 'tool', 'infrastructure', 'unknown'];
@@ -155,7 +154,7 @@ function atomicWrite(file, value) {
   renameSync(temporary, file);
 }
 
-/** Without a profile this writes a standalone v1 record exactly as before. */
+/** Without a profile this writes a standalone v1 record. */
 export function createRun(file, spec, source, now = Date.now(), lineage, profile) {
   const path = outsideGit(file);
   if (profile !== undefined) { validateRecordProfile(profile); coversProfile(profile, source); }
@@ -166,7 +165,8 @@ export function createRun(file, spec, source, now = Date.now(), lineage, profile
     ...(profile ? { profile: structuredClone(profile) } : {}), spec, source, events: [], ...(lineage ? { lineage } : {}) };
   // Capture the initial capability receipts, so later changes to evidence are visible.
   run.capabilityEvidence = captureCapabilities(spec);
-  if (profile) assertNoSecrets(run);
+  // Refuse here what readRun would refuse, such as a secret-named child case key.
+  assertNoSecrets(run);
   writeFileSync(path, `${JSON.stringify(run, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   return run;
 }

@@ -41,8 +41,8 @@ export function treeEntries(root) {
 }
 
 /** Fingerprint the whole tree and each named area over the entries `areasOf(file)` assigns to it. */
-export function areaFingerprints(entries, areaNames, areasOf) {
-  const byArea = Object.fromEntries(areaNames.map((area) => [area, []]));
+export function areaFingerprints(entries, names, areasOf) {
+  const byArea = Object.fromEntries(names.map((area) => [area, []]));
   for (const entry of entries) {
     for (const area of areasOf(entry[0])) {
       if (!Object.hasOwn(byArea, area)) throw new Error(`Area classifier returned unknown area ${area}.`);
