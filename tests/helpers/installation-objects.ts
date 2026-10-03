@@ -11,7 +11,8 @@ import {
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import type { RoutinePersistenceTelemetrySink } from '../../src/routines/telemetry.ts';
 import type { SandboxPolicyStorage } from '../../src/sandbox/cloudflare-policy.ts';
-import { sandboxHostFunctions } from '../../src/sandbox/sandbox-host.ts';
+import { meterWorkspaceContainer } from '../../src/sandbox/hosted-limits.ts';
+import { containerStopRecorded, sandboxHostFunctions } from '../../src/sandbox/sandbox-host.ts';
 import { sandboxObjectEnv } from '../../src/sandbox/sandbox-object.ts';
 import { SandboxWorkspaceState } from '../../src/sandbox/workspace-lifecycle.ts';
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
@@ -167,7 +168,14 @@ interface DeploymentObject {
   readonly host: Record<string, (request: never) => Promise<unknown>>;
   /** A Sandbox's container: whether it runs, and how often it was destroyed. */
   readonly container?: { running: boolean; destroyed: number };
+  /** A Sandbox's container lifecycle, in order: destroys, recorded stops, lease releases. */
+  readonly lifecycle?: string[];
 }
+
+/** Where the Containers SDK keeps a container's status; its monitor writes it once the container exits. */
+export const CONTAINER_STATE_KEY = '__CF_CONTAINER_STATE';
+/** How long after a destroy the fake container runtime records the stop. */
+const STOP_RECORD_DELAY_MS = 5;
 
 /** The coding worker's Flue binding, as the host functions address it. */
 export const CODING_WORKER_BINDING = agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME);
@@ -226,13 +234,36 @@ export function hostedDeployment(installationIds: readonly string[], options: {
         storage: { kv: { get: (key: string) => storage.kv.get(key), put: (key: string, value: unknown) => { storage.kv.set(key, value); } } },
       }, platform as PlatformEnv);
       const container = { running: false, destroyed: 0 };
+      const lifecycle: string[] = [];
+      const installation = installations.get(splitInstallationObjectName(name).scope?.installationId ?? '');
       object = {
-        binding, name, storage, env: sandboxEnv, container,
+        binding, name, storage, env: sandboxEnv, container, lifecycle,
         host: sandboxHostFunctions({
           env: sandboxEnv,
           storage,
           running: () => container.running,
-          destroy: async () => { container.running = false; container.destroyed += 1; },
+          destroy: async () => {
+            container.running = false;
+            container.destroyed += 1;
+            lifecycle.push('destroy');
+            // As the Containers SDK's monitor, which records the stop a moment later.
+            setTimeout(() => { storage.kv.set(CONTAINER_STATE_KEY, { status: 'stopped_with_code', exitCode: 137 }); },
+              STOP_RECORD_DELAY_MS);
+          },
+          stopRecorded: async () => {
+            const state = async () => (storage.kv.get(CONTAINER_STATE_KEY) ?? { status: 'stopped' }) as { status: string };
+            if (await containerStopRecorded(state, { pollMs: 1 })) lifecycle.push('stop recorded');
+          },
+          // As the Sandbox's lease release, keyed here by the object's name.
+          releaseLease: async () => {
+            lifecycle.push('lease released');
+            const settings = installation?.stores.settings;
+            if (!settings) return;
+            await meterWorkspaceContainer(sandboxEnv, 'release', { key: name, now: Date.now() }, {
+              getSettings: async (keys) => settings.getSettings(keys),
+              applySettingsPatch: async (patch) => settings.applySettingsPatch(patch),
+            });
+          },
           currentCheckpoint: () => sandboxWorkspaceState(storage).currentCheckpoint(),
         }) as unknown as DeploymentObject['host'],
       };

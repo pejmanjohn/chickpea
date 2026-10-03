@@ -21,8 +21,9 @@ import {
   SANDBOX_CONTAINER_SECONDS_PREFIX,
 } from '../src/sandbox/container-lease.ts';
 import { GITHUB_WRITES_KEY } from '../src/sandbox/github-write-rate.ts';
+import { containerStopRecorded } from '../src/sandbox/sandbox-host.ts';
 import { sandboxObjectEnv, sandboxObjectName } from '../src/sandbox/sandbox-object.ts';
-import { checkpointWorkspace } from '../src/sandbox/workspace-checkpoints.ts';
+import { checkpointWorkspace, discardWorkspaceCheckpoint } from '../src/sandbox/workspace-checkpoints.ts';
 import { SandboxWorkspaceState, WORKSPACE_CHECKPOINT_TTL_SECONDS } from '../src/sandbox/workspace-lifecycle.ts';
 import type { SandboxPolicyStorage } from '../src/sandbox/cloudflare-policy.ts';
 import {
@@ -40,6 +41,7 @@ import { CODING_WORKSPACE_EXPORT_NOTE, OBJECT_EXPORT_FORMAT } from '../src/state
 import { opaqueId } from '../src/work/admission.ts';
 import {
   CODING_WORKER_BINDING,
+  CONTAINER_STATE_KEY,
   hostedDeployment,
   sandboxWorkspaceState,
   type HostedInstallation,
@@ -160,12 +162,52 @@ test('the view offers exactly the SDK call set; any other member throws', () => 
   }
   // The SDK's own guard (`isR2Bucket`) accepts it.
   assert.ok(['put', 'get', 'head', 'delete', 'list'].every((method) => method in view && typeof view[method] === 'function'));
-  for (const member of ['copy', 'then', 'toJSON', 'constructor', 'createPresignedUrl']) {
+  for (const member of ['copy', 'createPresignedUrl', 'getObject', 'deleteAll']) {
     assert.throws(() => view[member], /offers no/, member);
     assert.equal(member in view, false, member);
   }
   assert.throws(() => { view.put = () => undefined; }, /cannot be changed/);
   assert.equal(view[Symbol.toStringTag], undefined, 'inspection reads symbols');
+});
+
+test('the members generic code probes on any value read as absent, so the view can be awaited and serialized', async () => {
+  const view = viewOf(INSTALLATION_A, new MemoryR2Bucket()) as unknown as Record<string | symbol, unknown>;
+  for (const member of ['then', 'toJSON', 'constructor']) {
+    assert.equal(view[member], undefined, member);
+    assert.equal(member in view, false, member);
+  }
+  assert.equal(await Promise.resolve(view), view, 'not a thenable');
+  assert.equal(await (async () => view)(), view);
+  assert.equal(JSON.stringify(view), '{}', 'methods do not serialize');
+});
+
+/** A bucket that answers with whatever keys it is told to, as a misbehaving binding could. */
+function answering(keys: { listed?: string[]; delimited?: string[]; headed?: unknown }) {
+  const bucket = new MemoryR2Bucket();
+  return Object.assign(Object.create(bucket) as MemoryR2Bucket, {
+    list: async () => ({
+      objects: (keys.listed ?? []).map((key) => new MemoryR2Object(key, 'x', new Date(NOW))),
+      truncated: false,
+      delimitedPrefixes: keys.delimited ?? [],
+    }),
+    head: async () => (keys.headed === undefined ? null : { key: keys.headed, size: 1 }),
+  });
+}
+
+test('a key the bucket returns outside the installation\'s prefix is refused, never stripped', async () => {
+  const neighbour = `${PREFIX_B}backups/b/data.sqsh`;
+  for (const listed of [[neighbour], ['backups/bare/data.sqsh'], [`${PREFIX_A}backups/a/data.sqsh`, neighbour]]) {
+    await assert.rejects(viewOf(INSTALLATION_A, answering({ listed })).list(), /outside the installation/, listed.join());
+  }
+  await assert.rejects(viewOf(INSTALLATION_A, answering({ delimited: [`${PREFIX_B}backups/`] })).list({ delimiter: '/' }),
+    /outside the installation/);
+  for (const headed of [neighbour, 'backups/bare/meta.json', 42, null]) {
+    await assert.rejects(viewOf(INSTALLATION_A, answering({ headed })).head('backups/a/meta.json'),
+      /outside the installation/, String(headed));
+  }
+  // The installation's own keys come back stripped.
+  const own = await viewOf(INSTALLATION_A, answering({ listed: [`${PREFIX_A}backups/a/data.sqsh`] })).list();
+  assert.deepEqual(own.objects.map((object) => object.key), ['backups/a/data.sqsh']);
 });
 
 test('standalone keeps the bare bucket; tenancy needs an installation and never wraps a view twice', () => {
@@ -325,6 +367,28 @@ test('work maintenance sweeps only its own installation\'s prefix; standalone sw
   assert.equal(standalone.calls.find((call) => call.method === 'list')?.options?.prefix, undefined);
 });
 
+test('a checkpoint erasure cursor resumes after its own place, whatever lies before it', async () => {
+  const bucket = new MemoryR2Bucket();
+  const key = (index: number) => `${PREFIX_A}backups/${String(index).padStart(5, '0')}/data.sqsh`;
+  for (let index = 0; index < 2_500; index += 1) bucket.seed(key(index), 'a');
+  const env = hostedEnv(INSTALLATION_A, { BACKUP_BUCKET: bucket });
+  const first = await eraseInstallationCheckpoints(env, INSTALLATION_A);
+  assert.equal(first.deleted, 1_000);
+  // Objects written behind the cursor after its page (a checkpoint a late turn saved).
+  for (const index of [3, 500, 999]) bucket.seed(key(index), 'late');
+
+  const second = await eraseInstallationCheckpoints(env, INSTALLATION_A, first.nextCursor);
+  assert.equal(second.deleted, 1_000);
+  assert.deepEqual(bucket.keys().slice(0, 4), [key(3), key(500), key(999), key(2_000)],
+    'the second page deleted 1000 to 1999, not what lay before its cursor');
+  const third = await eraseInstallationCheckpoints(env, INSTALLATION_A, second.nextCursor);
+  assert.deepEqual(third, { deleted: 500, nextCursor: null });
+  assert.deepEqual(bucket.keys(), [key(3), key(500), key(999)]);
+  // A pass from no cursor takes them.
+  assert.deepEqual(await eraseInstallationCheckpoints(env, INSTALLATION_A), { deleted: 3, nextCursor: null });
+  assert.deepEqual(bucket.keys(), []);
+});
+
 test('checkpoint erasure deletes the installation\'s prefix page by page, idempotently, and nothing else', async () => {
   const bucket = new MemoryR2Bucket();
   for (let index = 0; index < 2_345; index += 1) bucket.seed(`${PREFIX_A}backups/${String(index).padStart(5, '0')}/data.sqsh`, 'a');
@@ -350,6 +414,13 @@ test('checkpoint erasure deletes the installation\'s prefix page by page, idempo
   assert.deepEqual(await bucket.snapshot(), before, 'the neighbour and standalone keys are byte-identical');
   assert.ok(bucket.calls.filter((call) => call.method === 'delete').every((call) => call.keys.every((key) => key.startsWith(PREFIX_A))));
 
+  // Each page after the first lists from where the one before stopped.
+  const listed = bucket.calls.filter((call) => call.method === 'list').map((call) => call.options);
+  assert.deepEqual(listed.map((options) => options?.startAfter), [
+    undefined, `${PREFIX_A}backups/00999/data.sqsh`, `${PREFIX_A}backups/01999/data.sqsh`,
+  ]);
+  assert.ok(listed.every((options) => options?.prefix === PREFIX_A && options?.limit === 1_000));
+
   // A replayed cursor and a confirming pass find nothing left.
   assert.deepEqual(await eraseInstallationCheckpoints(env, INSTALLATION_A, pages[0]!.nextCursor), { deleted: 0, nextCursor: null });
   assert.deepEqual(await eraseInstallationCheckpoints(env, INSTALLATION_A), { deleted: 0, nextCursor: null });
@@ -360,7 +431,8 @@ test('checkpoint erasure deletes the installation\'s prefix page by page, idempo
 async function codingWorkspace(
   deployment: ReturnType<typeof hostedDeployment>,
   installation: HostedInstallation,
-  options: { running?: boolean } = {},
+  /** `leased`: the Sandbox's own lease is open, as for a running container or a stop its alarm has not settled. */
+  options: { running?: boolean; leased?: boolean } = {},
 ) {
   const sandboxName = sandboxObjectName(installation.env, THREAD_KEY);
   const workerName = `i1~${installation.installationId}~${opaqueId('codingworker', `binding-${installation.installationId}`)}`;
@@ -372,6 +444,7 @@ async function codingWorkspace(
   sandbox.container!.running = true;
   assert.equal(await endTurn(sandbox.env, state, BACKUP_1), 'saved');
   sandbox.container!.running = options.running ?? false;
+  if (options.running) sandbox.storage.kv.set(CONTAINER_STATE_KEY, { status: 'healthy', lastChange: NOW });
   sandbox.storage.sql.exec('CREATE TABLE container_schedules (id TEXT PRIMARY KEY, callback TEXT)');
   await sandbox.storage.put('chickpea.sandbox.coding-tasks.v1', { tasks: ['task'] });
   await sandbox.storage.setAlarm(NOW + HOUR);
@@ -382,6 +455,7 @@ async function codingWorkspace(
   installation.stores.settings.setSetting(SANDBOX_CONTAINER_LEASES_KEY, JSON.stringify({
     do_1: { startedAt: NOW - HOUR, leaseUntil: NOW + HOUR },
     do_2: { startedAt: NOW - 2 * HOUR, leaseUntil: NOW + HOUR },
+    ...(options.leased ? { [sandboxName]: { startedAt: NOW - HOUR, leaseUntil: NOW + HOUR } } : {}),
   }));
   installation.stores.settings.setSetting(`${SANDBOX_CONTAINER_SECONDS_PREFIX}${utcMonthKey(new Date(NOW))}`, JSON.stringify({ seconds: 5_400 }));
   installation.stores.settings.setSetting(`${SANDBOX_CONTAINER_SECONDS_PREFIX}2026-09`, JSON.stringify({ seconds: 99 }));
@@ -474,8 +548,8 @@ test('erasing an installation\'s coding workspace leaves nothing of it and its n
   const deployment = hostedDeployment([INSTALLATION_A, INSTALLATION_B], { bucket });
   const a = deployment.installation(INSTALLATION_A);
   const b = deployment.installation(INSTALLATION_B);
-  const ofA = await codingWorkspace(deployment, a, { running: true });
-  const ofB = await codingWorkspace(deployment, b, { running: true });
+  const ofA = await codingWorkspace(deployment, a, { running: true, leased: true });
+  const ofB = await codingWorkspace(deployment, b, { running: true, leased: true });
   bucket.seed(`${PREFIX_A}backups/orphan/data.sqsh`, 'left by a failed delete');
   const neighbour = async () => ({
     bucket: Object.fromEntries(Object.entries(await bucket.snapshot()).filter(([key]) => key.startsWith(PREFIX_B))),
@@ -492,11 +566,16 @@ test('erasing an installation\'s coding workspace leaves nothing of it and its n
     assert.deepEqual(await eraseInstallationObject(a.env, object, { confirmInstallationId: INSTALLATION_A }), { erased: true });
   }
   assert.deepEqual(ofA.sandbox.container, { running: false, destroyed: 1 }, 'its running container went first');
+  assert.deepEqual(ofA.sandbox.lifecycle, ['destroy', 'stop recorded', 'lease released'],
+    'the erasure settled the stop its deleted alarm would have');
+  const leases = JSON.parse(a.stores.settings.getSettings([SANDBOX_CONTAINER_LEASES_KEY])[0]!) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(leases).sort(), ['do_1', 'do_2'], 'its own lease was released in the state store');
   assert.deepEqual(bucket.keys().filter((key) => key.startsWith(PREFIX_A)), [`${PREFIX_A}backups/orphan/data.sqsh`],
     'the Sandbox deleted its latest checkpoint; the prefix erasure takes the rest');
+  await new Promise((resolve) => setTimeout(resolve, 20));
   for (const erased of [ofA.sandbox, ofA.worker]) {
     assert.deepEqual(erased.storage.tables(), []);
-    assert.equal(erased.storage.kv.size, 0);
+    assert.equal(erased.storage.kv.size, 0, 'no record of the stop landed after the erasure');
     assert.equal(erased.storage.alarm, null);
   }
   assert.deepEqual(await eraseInstallationCheckpoints(a.env, INSTALLATION_A), { deleted: 1, nextCursor: null });
@@ -504,6 +583,36 @@ test('erasing an installation\'s coding workspace leaves nothing of it and its n
   assert.deepEqual(a.storage.tables(), [], 'the leases and meters went with the state store');
   assert.equal(bucket.keys().some((key) => key.startsWith(PREFIX_A)), false);
   assert.deepEqual(await neighbour(), before);
+});
+
+test('erasing a Sandbox whose container already stopped releases the lease its alarm had not, and waits for nothing', async () => {
+  const deployment = hostedDeployment([INSTALLATION_A], { bucket: new MemoryR2Bucket() });
+  const a = deployment.installation(INSTALLATION_A);
+  const { sandbox, sandboxObject } = await codingWorkspace(deployment, a, { leased: true });
+  assert.deepEqual(await eraseInstallationObject(a.env, sandboxObject, { confirmInstallationId: INSTALLATION_A }), { erased: true });
+  assert.deepEqual(sandbox.lifecycle, ['lease released']);
+  assert.equal(sandbox.container!.destroyed, 0);
+  const leases = JSON.parse(a.stores.settings.getSettings([SANDBOX_CONTAINER_LEASES_KEY])[0]!) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(leases).sort(), ['do_1', 'do_2']);
+  assert.equal(sandbox.storage.kv.size, 0);
+});
+
+test('an erasure waits for the runtime\'s record of a stop only so long, then goes on and says so', async (t) => {
+  let reads = 0;
+  const recorded = await containerStopRecorded(async () => {
+    reads += 1;
+    return { status: reads < 3 ? 'healthy' : 'stopped_with_code' };
+  }, { pollMs: 1 });
+  assert.equal(recorded, true);
+  assert.equal(reads, 3);
+  assert.equal(await containerStopRecorded(async () => ({ status: 'stopped' })), true);
+
+  const warned = t.mock.method(console, 'warn', () => {});
+  const started = Date.now();
+  assert.equal(await containerStopRecorded(async () => ({ status: 'running' }), { deadlineMs: 30, pollMs: 5 }), false);
+  assert.ok(Date.now() - started < 1_000);
+  assert.equal(warned.mock.callCount(), 1);
+  assert.equal(String(warned.mock.calls[0]!.arguments[0]), JSON.stringify({ component: 'sandbox_host', event: 'stop_record_deadline' }));
 });
 
 test('Sandbox host functions refuse standalone and another installation', async () => {
@@ -556,13 +665,83 @@ test('a census counts the coding workspace objects, leases, this month\'s time a
   await assert.rejects(censusInstallationSandbox(a.env, { now: Number.NaN }), /timestamp/);
 });
 
+test('a census lists at most 50 pages of the prefix and says when it stopped short', async () => {
+  for (const [pages, complete] of [[50, true], [51, false]] as const) {
+    let listed = 0;
+    // A prefix of `pages` pages of one object each.
+    const bucket = Object.assign(Object.create(new MemoryR2Bucket()) as MemoryR2Bucket, {
+      list: async (options: { prefix: string; cursor?: string }) => {
+        listed += 1;
+        const page = options.cursor === undefined ? 0 : Number(options.cursor);
+        const truncated = page + 1 < pages;
+        return {
+          objects: [new MemoryR2Object(`${options.prefix}backups/${page}/data.sqsh`, 'xy', new Date(NOW))],
+          truncated,
+          ...(truncated ? { cursor: String(page + 1) } : {}),
+        };
+      },
+    });
+    const deployment = hostedDeployment([INSTALLATION_A], { bucket });
+    const census = await censusInstallationSandbox(deployment.installation(INSTALLATION_A).env, { now: NOW });
+    assert.deepEqual(census.checkpoints, { objects: 50, bytes: 100, complete }, `${pages} pages`);
+    assert.equal(listed, 50);
+  }
+});
+
+for (const mode of ['standalone', 'installation'] as const) {
+  test(`discarding a workspace forgets its checkpoint and deletes its objects (${mode})`, async () => {
+    const bucket = new MemoryR2Bucket();
+    const env = mode === 'standalone'
+      ? { BACKUP_BUCKET: bucket }
+      : sandboxCheckpointEnv(hostedEnv(INSTALLATION_A, { BACKUP_BUCKET: bucket }));
+    const prefix = mode === 'standalone' ? '' : PREFIX_A;
+    bucket.seed(`${prefix}backups/other/data.sqsh`, 'another thread');
+    const state = new SandboxWorkspaceState(new MemoryStorage());
+    await state.beginTurn({ fingerprint: 'owner', turnId: 'turn-1', containerRunning: false, now: NOW });
+    assert.equal(await endTurn(env, state, BACKUP_1), 'saved');
+
+    await discardWorkspaceCheckpoint({ env, state });
+    assert.equal(await state.currentCheckpoint(), undefined);
+    assert.equal(await state.hasCheckpoint('owner', NOW + HOUR), false);
+    assert.deepEqual(bucket.keys(), [`${prefix}backups/other/data.sqsh`]);
+    // Nothing to discard: nothing deleted.
+    const deletes = bucket.calls.filter((call) => call.method === 'delete').length;
+    await discardWorkspaceCheckpoint({ env, state });
+    assert.equal(bucket.calls.filter((call) => call.method === 'delete').length, deletes);
+  });
+}
+
+test('a discarded checkpoint whose objects cannot be deleted is still forgotten; without the bucket it is only forgotten', async (t) => {
+  const bucket = new MemoryR2Bucket();
+  const failing = Object.assign(Object.create(bucket) as MemoryR2Bucket, {
+    put: (key: string, value: string) => bucket.put(key, value),
+    delete: async () => { throw new Error('R2 unavailable'); },
+  });
+  const state = new SandboxWorkspaceState(new MemoryStorage());
+  await state.beginTurn({ fingerprint: 'owner', turnId: 'turn-1', containerRunning: false, now: NOW });
+  assert.equal(await endTurn({ BACKUP_BUCKET: failing }, state, BACKUP_1), 'saved');
+  const warned = t.mock.method(console, 'warn', () => {});
+  await discardWorkspaceCheckpoint({ env: { BACKUP_BUCKET: failing }, state });
+  assert.equal(await state.currentCheckpoint(), undefined);
+  assert.equal(warned.mock.callCount(), 1);
+  assert.equal(bucket.keys().length, 2, 'the sweep deletes the leftover after the restore window');
+
+  await state.recordCheckpoint(BACKUP_2, NOW);
+  await discardWorkspaceCheckpoint({ env: {}, state });
+  assert.equal(await state.currentCheckpoint(), undefined);
+});
+
 test('the Sandbox and the state store answer through these host functions, and maintenance sweeps by prefix', () => {
   const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
   const sandbox = source.slice(source.indexOf('export class Sandbox extends CloudflareSandbox'), source.indexOf('Sandbox.outboundByHost ='));
   for (const method of ['chickpeaHostExportPage', 'chickpeaHostErase', 'chickpeaHostCancelPendingWork', 'chickpeaHostStopContainer']) {
     assert.match(sandbox, new RegExp(`async ${method}\\(request: Object\\w+\\) \\{\\s*return this\\.host\\(\\)\\.${method}\\(request\\);`), method);
   }
-  assert.match(sandbox, /sandboxHostFunctions\(\{\s*env: this\.env,\s*storage: this\.ctx\.storage as unknown as HostObjectStorage,\s*running: \(\) => this\.containerRunning\(\),\s*destroy: \(\) => this\.destroy\(\),\s*currentCheckpoint: \(\) => this\.workspaceState\(\)\.currentCheckpoint\(\),/);
+  assert.match(sandbox, /sandboxHostFunctions\(\{\s*env: this\.env,\s*storage: this\.ctx\.storage as unknown as HostObjectStorage,\s*running: \(\) => this\.containerRunning\(\),\s*destroy: \(\) => this\.destroy\(\),\s*stopRecorded: \(\) => containerStopRecorded\(\(\) => this\.getState\(\)\),\s*releaseLease: \(\) => this\.releaseContainerLease\(\),\s*currentCheckpoint: \(\) => this\.workspaceState\(\)\.currentCheckpoint\(\),/);
+  // The erasure's release is the stop's own.
+  assert.match(sandbox, /override async onStop\([^)]*\): Promise<void> \{\s*await super\.onStop\(params\);\s*await this\.releaseContainerLease\(\);\s*\}/);
+  // A discard deletes its checkpoint's objects before it destroys the container.
+  assert.match(sandbox, /async discardWorkspace\(\): Promise<void> \{\s*await discardWorkspaceCheckpoint\(\{ env: this\.env, state: this\.workspaceState\(\) \}\);\s*await this\.destroy\(\);\s*\}/);
   const store = source.slice(source.indexOf('export class TagStateStore'));
   assert.match(store, /async chickpeaHostSandboxCensus\(request: ObjectHostRequest & \{ now\?: number \}\) \{\s*return this\.host\(\)\.chickpeaHostSandboxCensus\(request\);/);
   assert.match(source, /if \(isCheckpointSweepMinute\(scheduledTime\)\) \{\s*try \{ await sweepInstallationCheckpoints\(platformEnv, scheduledTime\); \}/);

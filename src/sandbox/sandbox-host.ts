@@ -48,11 +48,16 @@ export interface SandboxHostRpc {
   /** The export's one line for a Sandbox: its header and the note why nothing follows. */
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   /**
-   * Destroys the container, deletes the latest checkpoint's objects, then
-   * every record and the alarm. The host quiesces the installation first
-   * (`chickpeaHostCancelPendingWork`), so no container lifecycle event of a
-   * stop lands after the erasure; a container still running is destroyed
-   * here all the same. Erasure must be the Sandbox's last contact.
+   * Destroys the container, settles its stop, deletes the latest
+   * checkpoint's objects, then every record and the alarm. The alarm is how
+   * the container runtime would run a stop's `onStop`, so the erasure
+   * settles the stop itself: it waits, at most
+   * `CONTAINER_STOP_RECORD_DEADLINE_MS`, for the runtime to record the
+   * container's stop, so the record lands before the deletion, then releases
+   * the container's lease and meters its run. A record later than that
+   * deadline would leave the runtime's own state key (its status, no tenant
+   * data) behind; the erasure logs it. Erasure must be the Sandbox's last
+   * contact.
    */
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
   /** Stops the container, as `chickpeaHostStopContainer`. */
@@ -66,6 +71,32 @@ export interface SandboxHostRpc {
   chickpeaHostStopContainer(request: ObjectHostRequest): Promise<SandboxContainerStop>;
 }
 
+/** How long an erasure waits for the container runtime to record a destroyed container's stop. */
+export const CONTAINER_STOP_RECORD_DEADLINE_MS = 5_000;
+const CONTAINER_STOP_RECORD_POLL_MS = 50;
+
+/**
+ * Wait until the Containers SDK's state (`getState`) reads stopped: its
+ * monitor records that once it sees a destroyed container exit. True once
+ * recorded; false, logged, past the deadline.
+ */
+export async function containerStopRecorded(
+  state: () => Promise<{ status: string }>,
+  options: { deadlineMs?: number; pollMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + (options.deadlineMs ?? CONTAINER_STOP_RECORD_DEADLINE_MS);
+  for (;;) {
+    const { status } = await state();
+    if (status === 'stopped' || status === 'stopped_with_code') return true;
+    if (Date.now() >= deadline) {
+      // Content-free: names no installation or Sandbox.
+      console.warn(JSON.stringify({ component: 'sandbox_host', event: 'stop_record_deadline' }));
+      return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? CONTAINER_STOP_RECORD_POLL_MS));
+  }
+}
+
 /** The host functions of one Sandbox, over its env (scoped by its own name) and storage. */
 export function sandboxHostFunctions(sandbox: {
   readonly env: Record<string, unknown> | undefined;
@@ -74,6 +105,10 @@ export function sandboxHostFunctions(sandbox: {
   readonly running: () => boolean;
   /** Destroys the container (the SDK's `destroy`). */
   readonly destroy: () => Promise<void>;
+  /** Waits, bounded, until the container runtime has recorded the stop of the container just destroyed. */
+  readonly stopRecorded: () => Promise<unknown>;
+  /** Releases a stopped container's lease and meters its run, as the Sandbox's `onStop` does. */
+  readonly releaseLease: () => Promise<void>;
   /** The handle of the checkpoint the Sandbox records, if any. */
   readonly currentCheckpoint: () => Promise<unknown>;
 }): SandboxHostRpc {
@@ -97,7 +132,10 @@ export function sandboxHostFunctions(sandbox: {
     },
     async chickpeaHostErase(request) {
       assertObjectHostCall(sandbox.env, request);
-      await stop();
+      // The erasure deletes the alarm that would run the stop's `onStop`:
+      // settle it here, also for a container that stopped before.
+      if (await stop()) await sandbox.stopRecorded();
+      await sandbox.releaseLease();
       // Deleted through the Sandbox's own bucket: the installation's prefix.
       // A failure keeps every record, so a retry finds the handle again.
       const bucket = checkpointBucket(sandbox.env);

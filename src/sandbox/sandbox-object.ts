@@ -74,6 +74,11 @@ export function sandboxObjectName(env: Env | undefined, workspaceId: string): st
 
 type SandboxOptions = typeof CLOUDFLARE_SANDBOX_OPTIONS | Record<string, unknown>;
 
+/** The deployment's Sandbox Durable Object namespace, under either binding name. */
+export function sandboxNamespace(env: Env | undefined): unknown {
+  return env?.SANDBOX ?? env?.Sandbox;
+}
+
 /** Opens a Sandbox stub by its exact name; `getSandbox` in production. */
 export type SandboxOpener = (binding: unknown, name: string, options: SandboxOptions) => unknown;
 
@@ -94,7 +99,7 @@ export async function sandboxStub<T = unknown>(
   options: SandboxOptions = CLOUDFLARE_SANDBOX_OPTIONS,
   dependencies: SandboxStubDependencies = {},
 ): Promise<T> {
-  const binding = env?.SANDBOX ?? env?.Sandbox;
+  const binding = sandboxNamespace(env);
   if (!binding) throw new Error('No Sandbox binding');
   const name = sandboxObjectName(env, workspaceId);
   await recordWorkspaceObject(env, { kind: 'sandbox', name }, dependencies.record);
@@ -104,7 +109,7 @@ export async function sandboxStub<T = unknown>(
 /** The coding Sandbox readers of one thread (identical for both executors). */
 export function sandboxTurnReaders(env: Env): TurnExecutionPorts['sandboxes'] {
   return (sandboxKey) => {
-    if (!(env.SANDBOX ?? env.Sandbox)) return [];
+    if (!sandboxNamespace(env)) return [];
     // An unscoped env, or a malformed tenancy, throws here: never "no Sandbox".
     const scope = requireInstallationScope(env);
     if (scope) {

@@ -143,7 +143,7 @@ import {
   type SandboxOutboundHandler,
 } from './sandbox/egress-outbound.ts';
 import { sandboxObjectEnv, sandboxTurnReaders, type SandboxObjectContext } from './sandbox/sandbox-object.ts';
-import { sandboxHostFunctions, type SandboxHostRpc } from './sandbox/sandbox-host.ts';
+import { containerStopRecorded, sandboxHostFunctions, type SandboxHostRpc } from './sandbox/sandbox-host.ts';
 import type { SandboxContainerAdmission } from './sandbox/container-lease.ts';
 import {
   admitWorkspaceContainer,
@@ -151,6 +151,7 @@ import {
   isContainerLeaseSweepMinute,
   maintainWorkspaceContainerLeases,
   meterWorkspaceContainer,
+  refuseUnadmittedContainerStart,
   requireWorkspaceTurnAdmitted,
 } from './sandbox/hosted-limits.ts';
 import type { SandboxContainerLimits } from './config/sandbox-settings.ts';
@@ -175,6 +176,7 @@ import {
 } from './sandbox/coding-task-record.ts';
 import {
   checkpointWorkspace,
+  discardWorkspaceCheckpoint,
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
 } from './sandbox/workspace-checkpoints.ts';
@@ -472,20 +474,35 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
   override async onStart(): Promise<void> {
     await super.onStart();
     // The Containers SDK runs this inside blockConcurrencyWhile, so the hold
-    // runs beside the start, bounded, and every start is still metered.
+    // and the admission check run beside the start, bounded, and every start
+    // is still metered.
     const hold = holdStartedWorkspaceContainer(this.env, { key: this.ctx.id.toString(), now: Date.now() });
     if (hold) {
       this.startHold = hold;
-      // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
-      (this.ctx as DurableObjectState & { waitUntil(promise: Promise<unknown>): void }).waitUntil(hold);
+      this.waitUntil(hold);
     }
+    // A session's next operation restarts a container the host stopped,
+    // through the SDK and past the activation's admission: a refused
+    // installation's start destroys itself.
+    const refusal = refuseUnadmittedContainerStart(this.env, () => this.destroy());
+    if (refusal) this.waitUntil(refusal);
   }
 
   override async onStop(params?: Parameters<CloudflareSandbox['onStop']>[0]): Promise<void> {
     await super.onStop(params);
+    await this.releaseContainerLease();
+  }
+
+  /** Close a stopped container's lease, metering its run: its stop's, or an erasure's. */
+  private async releaseContainerLease(): Promise<void> {
     // A start's hold still in flight lands first, so this release closes it.
     await this.startHold;
     await meterWorkspaceContainer(this.env, 'release', { key: this.ctx.id.toString(), now: Date.now() });
+  }
+
+  private waitUntil(promise: Promise<unknown>): void {
+    // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+    (this.ctx as DurableObjectState & { waitUntil(promise: Promise<unknown>): void }).waitUntil(promise);
   }
 
   /**
@@ -553,11 +570,12 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
   }
 
   /**
-   * Destroy the container and forget its checkpoint, so the next turn starts
-   * from an empty workspace. The owner record and prepared turn survive.
+   * Destroy the container and forget its checkpoint, deleting its objects,
+   * so the next turn starts from an empty workspace. The owner record and
+   * prepared turn survive.
    */
   async discardWorkspace(): Promise<void> {
-    await this.workspaceState().dropCheckpoint();
+    await discardWorkspaceCheckpoint({ env: this.env, state: this.workspaceState() });
     await this.destroy();
   }
 
@@ -611,6 +629,8 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
       storage: this.ctx.storage as unknown as HostObjectStorage,
       running: () => this.containerRunning(),
       destroy: () => this.destroy(),
+      stopRecorded: () => containerStopRecorded(() => this.getState()),
+      releaseLease: () => this.releaseContainerLease(),
       currentCheckpoint: () => this.workspaceState().currentCheckpoint(),
     });
   }

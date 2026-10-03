@@ -14,9 +14,12 @@
  *
  * A coding workspace's Sandbox answers like any object, from its own host
  * functions (sandbox/sandbox-host.ts): its export is a header and a note,
- * its erasure destroys its container and deletes its latest checkpoint
- * first, and its cancellation stops its container, as
- * `stopInstallationSandboxContainer` does for a suspension.
+ * its erasure first destroys its container, settles the stop (waiting for
+ * the container runtime's record of it, and releasing the lease the deleted
+ * alarm would have) and deletes its latest checkpoint, and its cancellation
+ * stops its container, as `stopInstallationSandboxContainer` does for a
+ * suspension. So a running container needs no stop before its erasure, and
+ * its lease is released in the state store before that is erased.
  *
  * Erasure must be an installation's last contact with its objects. Core
  * cannot refuse to construct an object, and constructing one creates its
@@ -37,6 +40,7 @@ import {
 } from '../config/installation-scope.ts';
 import { tagStateInstanceName, tagStateStub } from '../config/state-rpc.ts';
 import { installationCheckpointBucket } from '../sandbox/checkpoint-bucket.ts';
+import { sandboxNamespace } from '../sandbox/sandbox-object.ts';
 import type {
   SandboxContainerStop,
   SandboxHostRpc,
@@ -323,18 +327,16 @@ function objectStub(
     if (typeof namespace?.getByName !== 'function') throw missingBinding('SLACK_THREAD_RUNNER');
     return namespace.getByName(object.name) as AnyObjectHostRpc;
   }
-  // A Sandbox is addressed as the Sandbox SDK addresses it, by its exact name.
   const bindingName = object.kind === 'slack_agent'
     ? CHICKPEA_SLACK_AGENT_BINDING
     : object.kind === 'routine_agent'
       ? agentObjectBindingName(CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME)
       : object.kind === 'coding_worker'
         ? agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME)
-        : object.kind === 'sandbox'
-          ? (env.SANDBOX === undefined && env.Sandbox !== undefined ? 'Sandbox' : 'SANDBOX')
-          : undefined;
+        : object.kind === 'sandbox' ? 'SANDBOX' : undefined;
   if (!bindingName) throw new Error('Unknown installation object kind.');
-  const namespace = env[bindingName] as IdNamespace | undefined;
+  // A Sandbox is addressed as the Sandbox SDK addresses it, by its exact name.
+  const namespace = (object.kind === 'sandbox' ? sandboxNamespace(env) : env[bindingName]) as IdNamespace | undefined;
   if (typeof namespace?.idFromName !== 'function' || typeof namespace.get !== 'function') {
     throw missingBinding(bindingName);
   }

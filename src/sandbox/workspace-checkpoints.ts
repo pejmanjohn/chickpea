@@ -58,23 +58,40 @@ export async function checkpointWorkspace(input: {
     console.warn('[chickpea] coding workspace checkpoint did not complete');
     return 'failed';
   }
-  await deleteSupersededCheckpoint(input.env, replaced, backup);
+  await deleteUnusedCheckpoint(input.env, replaced, backup);
   return 'saved';
 }
 
-/** Best effort: what is left behind, the hourly sweep deletes after the restore window. */
-async function deleteSupersededCheckpoint(
+/**
+ * Forget a discarded workspace's checkpoint, then delete its objects: it is
+ * never restored. Leaves the container to the caller.
+ */
+export async function discardWorkspaceCheckpoint(input: {
+  env: Record<string, unknown> | undefined;
+  state: Pick<SandboxWorkspaceState, 'currentCheckpoint' | 'dropCheckpoint'>;
+}): Promise<void> {
+  const dropped = await input.state.currentCheckpoint();
+  await input.state.dropCheckpoint();
+  await deleteUnusedCheckpoint(input.env, dropped);
+}
+
+/**
+ * Delete a checkpoint nothing restores any more (unless it is `current`).
+ * Best effort: what is left behind, the hourly sweep deletes after the
+ * restore window.
+ */
+async function deleteUnusedCheckpoint(
   env: Record<string, unknown> | undefined,
-  replaced: unknown,
-  current: unknown,
+  unused: unknown,
+  current?: unknown,
 ): Promise<void> {
-  const keys = checkpointObjectKeys(replaced);
+  const keys = checkpointObjectKeys(unused);
   if (!keys || keys[0] === checkpointObjectKeys(current)?.[0]) return;
   const bucket = checkpointBucket(env);
   if (!bucket) return;
   try {
-    await deleteCheckpointObjects(bucket, replaced);
+    await deleteCheckpointObjects(bucket, unused);
   } catch {
-    console.warn('[chickpea] superseded coding workspace checkpoint was not deleted');
+    console.warn('[chickpea] an unused coding workspace checkpoint was not deleted');
   }
 }

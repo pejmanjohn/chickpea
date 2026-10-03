@@ -20,7 +20,8 @@ import {
  * The view offers exactly the R2 methods the Sandbox SDK 0.12.x calls on the
  * bucket (pinned by tests/hosted-sandbox-checkpoints.test.ts against the
  * installed SDK). Any other member throws, so an SDK that starts calling a
- * new method fails loudly instead of reaching the bare bucket.
+ * new method fails loudly instead of reaching the bare bucket; only the
+ * members generic code probes on any object read as absent.
  */
 
 /** The R2 bucket methods the view offers: the Sandbox SDK 0.12.x call set. */
@@ -35,6 +36,8 @@ export const CHECKPOINT_BUCKET_METHODS = [
 ] as const;
 type CheckpointBucketMethod = typeof CHECKPOINT_BUCKET_METHODS[number];
 const OFFERED = new Set<PropertyKey>(CHECKPOINT_BUCKET_METHODS);
+/** Read by `await`, `JSON.stringify` and type checks on any value; no R2 method is one. */
+const PROBED = new Set<PropertyKey>(['constructor', 'then', 'toJSON']);
 
 /** The SDK's checkpoint layout: `backups/<backup id>/{data.sqsh,meta.json}`. */
 const CHECKPOINT_KEY_PREFIX = 'backups';
@@ -174,7 +177,7 @@ function prefixedCheckpointBucket(bucket: Bucket, installationId: string): objec
     get(target, property) {
       if (OFFERED.has(property)) return target[property as CheckpointBucketMethod];
       // Inspection reads symbols (util.inspect, Symbol.toStringTag); no R2 method is one.
-      if (typeof property === 'symbol') return undefined;
+      if (typeof property === 'symbol' || PROBED.has(property)) return undefined;
       throw new Error(`The coding workspace checkpoint bucket offers no ${property}.`);
     },
     has(_target, property) {
