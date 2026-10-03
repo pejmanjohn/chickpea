@@ -613,6 +613,8 @@ function runAdminPageHarness(
     composioRetryError?: { status: number; error: string; message?: string };
     managedPollResult?: Record<string, unknown>;
     managedPollError?: { status: number; error: string; message?: string };
+    /** The managed sign-in start answers with this error instead of a link. */
+    managedStartError?: { status: number; error: string; message?: string };
     managedResourcePages?: Record<string, {
       resources: Array<{ handle: string; label: string }>;
       nextCursor?: string;
@@ -1799,6 +1801,12 @@ function runAdminPageHarness(
       const agentId = decodeURIComponent(managedAuthorizationMatch[1] as string);
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       managedAuthorizationPosts.push({ agentId, body });
+      if (harnessOptions.managedStartError) {
+        return Promise.resolve(jsonResponse(
+          harnessOptions.managedStartError,
+          harnessOptions.managedStartError.status,
+        ));
+      }
       return Promise.resolve(jsonResponse({
         authorizationUrl: 'https://connect.composio.dev/link/lk_test',
         pollUrl: `/admin/api/agents/${encodeURIComponent(agentId)}/connections/managed/poll`,
@@ -17698,6 +17706,296 @@ test('hosted Admin leaves out guidance only a self-hoster can follow; standalone
     const confirm = github.app.innerHTML;
     assert.match(confirm, /Chickpea will remove the stored GitHub App credentials\. /, mode);
     selfHostedOnly(confirm, /Environment-configured App credentials, if present, remain active\./, 'environment-configured GitHub credentials');
+  }
+});
+
+// Hosted manages infrastructure for the customer: these tests render each
+// self-managed setup surface in both modes. Standalone keeps every control
+// and sentence; hosted leaves them out without replacement copy.
+const HOSTING_MODES = [
+  { mode: 'standalone', selfHosted: true, browserOffered: true },
+  { mode: 'hosted', selfHosted: false, browserOffered: false },
+] as const;
+
+test('hosted Admin offers no About & updates page; a standalone Owner keeps it', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const harness = runAdminPageHarness({
+      ...hosting, cloudflare: true, installationOwner: true, initialPath: '/admin/settings/updates',
+      installationUpdates: () => ({ status: 'current', checkedAt: '2026-09-07T12:00:00Z' }),
+    });
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    const installationRequests = harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/installation'));
+    if (hosting.selfHosted) {
+      assert.match(html, /data-section="updates"/, mode);
+      assert.match(html, /<h1 class="page-title">About &amp; updates<\/h1>/, mode);
+      assert.match(html, /data-action="installation-refresh"/, mode);
+      assert.ok(installationRequests.length > 0, mode);
+    } else {
+      assert.doesNotMatch(html, /data-section="updates"|About &amp; updates|data-action="installation-/, mode);
+      assert.match(html, /data-section="providers"[^>]*aria-current="page"/, 'the default section instead');
+      assert.deepEqual(installationRequests, [], 'no installation status is requested');
+    }
+  }
+});
+
+test('hosted Admin has no Coding sandbox page, rail entry or status request, and a sandbox link lands on the default section; standalone keeps them', async () => {
+  const notInstalled: SandboxStatusFixture = {
+    installRequested: false, installed: false, storedEnabled: false, enabled: false,
+    instanceType: 'standard-1', allowedHosts: [], monthlySessionCap: 0, monthlySessionCapConfigured: false,
+    target: 'cloudflare', githubConnected: false, repositoryGrantReady: false,
+    unmetPrerequisites: ['sandbox_binding', 'github_app', 'repository_grant'],
+    workersPaidNote: 'Requires Workers Paid. Real containers run on your Cloudflare account; a typical session costs about 1 cent.',
+    deploySource: 'command',
+  };
+  const installed: SandboxStatusFixture = {
+    ...notInstalled, installed: true, githubConnected: true, repositoryGrantReady: true, unmetPrerequisites: [],
+    checkpointsNote: 'Workspace checkpoints are off until R2 is enabled.',
+  };
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    for (const [variant, sandboxStatus] of [['not installed', notInstalled], ['installed', installed]] as const) {
+      for (const initialPath of ['/admin/settings/sandbox', '/admin/settings/sandbox-settings']) {
+        const harness = runAdminPageHarness({ ...hosting, cloudflare: true, initialPath, sandboxStatus });
+        await flushAsync();
+        const html = harness.app.innerHTML;
+        const label = `${mode}, ${variant}, ${initialPath}`;
+        const statusRequests = harness.fetchCalls.filter(({ path }) => path.startsWith('/admin/api/sandbox'));
+        if (hosting.selfHosted) {
+          assert.match(html, /data-action="settings-section" data-section="sandbox"/, label);
+          assert.match(html, /data-settings-panel="sandbox">/, `${label}: the open section`);
+          assert.match(html, /<h2 class="section-title">Coding sandbox<\/h2>/, label);
+          assert.match(html, variant === 'installed'
+            ? /dash\.cloudflare\.com\/\?to=\/:account\/r2\/overview[\s\S]*CHICKPEA_DEPLOY_PROFILE/
+            : /data-action="sandbox-install-open"[^>]*>Install coding sandbox<\/button>/, label);
+          assert.ok(statusRequests.length > 0, label);
+        } else {
+          assert.doesNotMatch(html, /data-section="sandbox"|data-settings-panel="sandbox"|sandbox-settings|Coding sandbox/, label);
+          assert.doesNotMatch(html, /data-action="sandbox-|CHICKPEA_DEPLOY_PROFILE|deploy:sandbox|r2\/overview|Workers Paid/, label);
+          assert.match(html, /data-section="providers"[^>]*aria-current="page"/, `${label}: the default section instead`);
+          assert.deepEqual(statusRequests, [], `${label}: no sandbox status is requested`);
+        }
+      }
+    }
+  }
+});
+
+test('hosted Agent Advanced settings have no Coding sandbox row or link; standalone keeps it', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const harness = runAdminPageHarness({ ...hosting, cloudflare: true, agents: [connectionsAgent()] });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.match(html, /class="advanced agent-advanced-card"[\s\S]*?Who can edit/, mode);
+    if (hosting.selfHosted) {
+      assert.match(html, /class="agent-advanced-row agent-advanced-sandbox-row"[\s\S]*?<strong>Coding sandbox<\/strong>[\s\S]*?data-action="open-settings" data-section="sandbox">Settings<\/button>/, mode);
+    } else {
+      assert.doesNotMatch(html, /agent-advanced-sandbox-row|Coding sandbox|data-section="sandbox"/, mode);
+    }
+    // A sandbox link from an earlier page lands where the hidden sections land.
+    click({ target: actionTarget({ 'data-action': 'open-settings', 'data-section': 'sandbox' }) });
+    await flushAsync();
+    assert.match(harness.app.innerHTML, hosting.selfHosted
+      ? /data-section="sandbox"[^>]*aria-current="page"/
+      : /data-section="providers"[^>]*aria-current="page"/, `${mode}: open-settings sandbox`);
+  }
+});
+
+test('hosted connector settings offer no preparation or setup refresh; standalone keeps them', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const settingsFor = (
+      catalog: Array<Record<string, unknown>>,
+      provider: Record<string, unknown> = {},
+    ) => ({
+      provider: {
+        source: 'deployment', configured: true, readOnly: true,
+        desiredState: 'enabled', generation: 1, reconciliationPending: false,
+        connectors: catalog.map((entry) => ({ toolkit: entry.toolkit, status: 'ready' as const })),
+        ...provider,
+      },
+      canConfigure: true,
+      catalog,
+    });
+    const render = async (composioSettings: Record<string, unknown>) => {
+      const harness = runAdminPageHarness({ ...hosting, initialPath: '/admin/settings/connectors', composioSettings });
+      await flushAsync();
+      return harness.app.innerHTML;
+    };
+    const selfHostedOnly = (html: string, pattern: RegExp, what: string) => hosting.selfHosted
+      ? assert.match(html, pattern, `${mode}: ${what}`)
+      : assert.doesNotMatch(html, pattern, `${mode}: ${what}`);
+    const missing = (entry: Record<string, unknown>, codes: string[]) => ({
+      ...entry,
+      access: {
+        read: { status: 'missing_configuration', missingConfiguration: codes },
+        write: { status: 'missing_configuration', missingConfiguration: codes },
+      },
+    });
+
+    // A connector without its auth config: the deployment prepares defaults.
+    const unprepared = managedSettingsCatalogFixture().map((entry, index) => index === 0 ? missing(entry, ['auth_config_missing']) : entry);
+    const preparation = await render(settingsFor(unprepared));
+    assert.match(preparation, /Configured by deployment/, mode);
+    selfHostedOnly(preparation, /data-action="connector-settings-retry"[^>]*>Prepare connector defaults<\/button>/, 'Prepare connector defaults');
+
+    // Every connector ready: refreshing the setup is the deployment's step.
+    const ready = await render(settingsFor(managedSettingsCatalogFixture()));
+    assert.match(ready, /13 of 13 ready/, mode);
+    selfHostedOnly(ready, /data-action="connector-settings-retry"[^>]*>Refresh connector setup<\/button>/, 'Refresh connector setup');
+
+    // Reconciliation in progress: the status stays; its retry is the deployment's.
+    const reconciling = await render(settingsFor(managedSettingsCatalogFixture(), { reconciliationPending: true }));
+    assert.match(reconciling, /Chickpea is finishing connector reconciliation\. Managed execution remains paused\./, mode);
+    selfHostedOnly(reconciling, /data-action="connector-settings-retry"/, 'the reconciliation retry');
+
+    // A provider policy block: the operator's fix stays; the hidden preparation is not mentioned.
+    const blocked = await render(settingsFor(managedSettingsCatalogFixture().map((entry) => entry.toolkit === 'googleads'
+      ? missing(entry, ['auth_config_missing', 'provider_prerequisite_missing'])
+      : entry)));
+    assert.match(blocked, /Google Ads is blocked by deployment policy\. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access\./, mode);
+    selfHostedOnly(blocked, /Preparing connector defaults will not change this setting\./, 'the preparation note');
+  }
+});
+
+test('a hosted managed connector that is not ready goes to sign-in, which reports it unavailable; standalone keeps setup guidance', async () => {
+  const unavailable = {
+    ...managedCatalogFixture('youtube-managed', 'youtube', 'YouTube'),
+    access: {
+      read: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+      write: { status: 'missing_configuration', missingConfiguration: ['auth_config_missing'] },
+    },
+  };
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    for (const canConfigure of [true, false]) {
+      const label = `${mode}, ${canConfigure ? 'owner' : 'member'}`;
+      const harness = runAdminPageHarness({
+        ...hosting,
+        agents: [connectionsAgent()],
+        connectionAccounts: {
+          attached: [],
+          managedConnectors: { composio: false, canConfigure, configurationReadOnly: true, catalog: [unavailable] },
+        },
+        managedStartError: {
+          status: 503, error: 'managed_provider_unavailable',
+          message: 'YouTube managed access is not configured for this deployment.',
+        },
+      });
+      await flushAsync();
+      const click = harness.listeners.click;
+      assert.ok(click);
+      click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+      await flushAsync();
+      click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+      await flushAsync();
+      assert.match(harness.app.innerHTML, hosting.selfHosted
+        ? (canConfigure ? /YouTube[\s\S]*?Preparation required/ : /YouTube[\s\S]*?Owner setup required/)
+        : /YouTube[\s\S]*?Setup required/, label);
+      if (!hosting.selfHosted) assert.doesNotMatch(harness.app.innerHTML, /Preparation required|Owner setup required/, label);
+      click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'youtube-managed' }) });
+      await flushAsync();
+      const opened = harness.app.innerHTML;
+      if (hosting.selfHosted) {
+        assert.match(opened, /data-role="composio-setup-dialog"/, label);
+        assert.match(opened, canConfigure
+          ? /already supplies its project key through deployment configuration[\s\S]*prepare the standard connector defaults/
+          : /managed connectors must first be enabled by a Chickpea owner or admin/, label);
+        continue;
+      }
+      assert.doesNotMatch(opened, /data-role="composio-setup-dialog"|project key|connector defaults|enable managed connectors/, label);
+      assert.match(opened, /Continue to YouTube/, label);
+      chooseConnectionOwner(harness, 'member');
+      click({ target: actionTarget({ 'data-action': 'connection-account-create' }) });
+      await flushAsync();
+      assert.equal(harness.managedAuthorizationPosts.length, 1, label);
+      assert.deepEqual(harness.openedUrls, [], label);
+      assert.match(harness.app.innerHTML, /role="alert">YouTube managed access is not configured for this deployment\.</, label);
+    }
+  }
+});
+
+test('a hosted provider policy block explains the operator fix without the preparation it cannot use', async () => {
+  const blocked = {
+    ...managedCatalogFixture('google-ads', 'googleads', 'Google Ads'),
+    access: {
+      read: { status: 'missing_configuration', missingConfiguration: ['provider_prerequisite_missing'] },
+      write: { status: 'missing_configuration', missingConfiguration: ['provider_prerequisite_missing'] },
+    },
+  };
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const harness = runAdminPageHarness({
+      ...hosting,
+      agents: [connectionsAgent()],
+      connectionAccounts: {
+        attached: [],
+        managedConnectors: { composio: true, canConfigure: true, configurationReadOnly: true, catalog: [blocked] },
+      },
+    });
+    await flushAsync();
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'connection-account-preset', 'data-preset': 'google-ads' }) });
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.match(html, /data-role="composio-setup-dialog"/, mode);
+    assert.match(html, /A deployment operator must allow Composio managed OAuth or configure an eligible Google Ads API access tier \(Explorer, Basic, or Standard\)\./, mode);
+    if (hosting.selfHosted) assert.match(html, /\(Explorer, Basic, or Standard\)\. Preparing connector defaults will not change this setting\.<\/p>/, mode);
+    else assert.doesNotMatch(html, /Preparing connector defaults/, mode);
+  }
+});
+
+test('hosted Slack missing scopes keep the error with no app reinstall or recovery steps; standalone keeps them', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const add = runAdminPageHarness({ ...hosting, slackConnection: connectedSlackFixture(), slackChannelFailures: 2 });
+    await flushAsync();
+    add.listeners.click?.({ target: actionTarget({ 'data-action': 'toggle-add-channel' }) });
+    await flushAsync();
+    const picker = runAdminPageHarness({
+      ...hosting, slackConnection: connectedSlackFixture(), slackChannels: channelsFixture(), slackChannelFailures: 2,
+    });
+    await openReleaseAttachPicker(picker);
+    for (const [where, html] of [['add channel', add.app.innerHTML], ['attach picker', picker.app.innerHTML]] as const) {
+      const label = `${mode}, ${where}`;
+      assert.match(html, hosting.selfHosted
+        ? /Slack permissions are out of date\. Use scoped recovery to refresh the installation\./
+        : /Slack could not list channels \(missing_scope\)\./, label);
+      if (hosting.selfHosted) {
+        assert.match(html, /href="https:\/\/api\.slack\.com\/apps"[^>]*>Reinstall in Slack/, label);
+        assert.match(html, /After reinstalling, use the scoped recovery flow/, label);
+      } else {
+        assert.doesNotMatch(html, /api\.slack\.com\/apps|Reinstall in Slack|After reinstalling|scoped recovery/, label);
+        assert.match(html, /data-action="refresh-channels"/, `${label}: the generic retry`);
+      }
+    }
+    const tested = runAdminPageHarness({
+      ...hosting, initialPath: '/admin/settings/slack/identities',
+      slackTestError: { status: 422, error: 'slack_missing_scopes' },
+    });
+    await flushAsync();
+    tested.listeners.click?.({ target: actionTarget({ 'data-action': 'slack-test' }) });
+    await flushAsync();
+    if (hosting.selfHosted) {
+      assert.match(tested.app.innerHTML, /missing required permissions\. Use the scoped recovery flow to repair it\./, `${mode}, connection test`);
+    } else {
+      assert.doesNotMatch(tested.app.innerHTML, /scoped recovery|>slack_missing_scopes</, `${mode}, connection test`);
+      assert.match(tested.app.innerHTML, /The Slack installation is missing required permissions\.</, `${mode}, connection test: the first sentence only`);
+    }
+  }
+});
+
+test('hosted Admin neither requests nor shows the live environment badge; standalone lanes keep it', async () => {
+  for (const { mode, ...hosting } of HOSTING_MODES) {
+    const harness = runAdminPageHarness({ ...hosting, environmentStatus: liveEnvironmentFixture('ready') });
+    await flushAsync();
+    const requested = harness.fetchCalls.some(({ path }) => path === '/admin/api/environment/status');
+    assert.equal(requested, hosting.selfHosted, mode);
+    if (hosting.selfHosted) assert.match(harness.app.innerHTML, /Live environment status/, mode);
+    else assert.doesNotMatch(harness.app.innerHTML, /environment-status|Live environment|Two-lane fleet/, mode);
   }
 });
 

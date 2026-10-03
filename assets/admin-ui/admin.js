@@ -15,9 +15,10 @@
   // settings and no Websites tab, rather than sections that cannot load.
   var BROWSER_OFFERED = CONFIG.browserOffered !== false;
   // Standalone: whoever runs Admin also runs this deployment, so Admin may
-  // mention its environment variables and secret bindings. A deployment
-  // serving many installations is run by its host, so that guidance is left
-  // out there, without replacement copy.
+  // mention its environment variables and secret bindings, and offers its
+  // update, install and preparation steps. A deployment serving many
+  // installations is run by its host, so that guidance and those steps are
+  // left out there, without replacement copy.
   var SELF_HOSTED = CONFIG.selfHosted !== false;
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
@@ -1363,9 +1364,10 @@
       '<p class="hint">In Settings &rarr; General, leave OAuth user verification set to <strong>Not configured</strong>. Chickpea sends each sign-in back to this installation.</p>';
     var body;
     if (setup.providerPrerequisiteMissing) {
+      var preparationNote = SELF_HOSTED ? ' Preparing connector defaults will not change this setting.' : '';
       var prerequisiteCopy = setup.toolkit === "googleads"
-        ? '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s Google Ads policy.</p><p class="hint">A deployment operator must allow Composio managed OAuth or configure an eligible Google Ads API access tier (Explorer, Basic, or Standard). Preparing connector defaults will not change this setting.</p>'
-        : '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s provider policy.</p><p class="hint">A deployment operator must update this connector&rsquo;s provider requirements. Preparing connector defaults will not change this setting.</p>';
+        ? '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s Google Ads policy.</p><p class="hint">A deployment operator must allow Composio managed OAuth or configure an eligible Google Ads API access tier (Explorer, Basic, or Standard).' + preparationNote + '</p>'
+        : '<p>' + esc(setup.label) + ' sign-in is blocked by this installation&rsquo;s provider policy.</p><p class="hint">A deployment operator must update this connector&rsquo;s provider requirements.' + preparationNote + '</p>';
       body = '<div class="managed-setup-intro">' + prerequisiteCopy + '</div>' +
         '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="composio-setup-close">Close</button><span class="spacer"></span><button type="button" class="btn btn-soft" data-action="composio-setup-settings">View connector status</button></div>';
     } else if (!setup.canConfigure) {
@@ -1789,8 +1791,11 @@
       { id: "browser", name: "Browser", meta: "Real browser for Agents" },
       { id: "outbound", name: "Outbound access", meta: "Network policy" },
       codingAgents
-    ].filter(function (section) { return BROWSER_OFFERED || section.id !== "browser"; }) : [codingAgents];
-    if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
+    ].filter(function (section) {
+      // The host runs a hosted installation's coding sandbox for it.
+      return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || section.id !== "sandbox");
+    }) : [codingAgents];
+    if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
       (primaryShell ? primaryShellBrandHtml() : '') + '<div class="rail-context">' +
@@ -3325,11 +3330,15 @@
     var managedPreset = managedPresetById(presetId);
     var managedCandidate = managedPreset || googleService;
     var managedDescriptor = managedCandidate && managedConnectorDescriptorById(managedCandidate.id);
-    if (managedCandidate && managedDescriptor && !managedConnectorLaneReady(managedDescriptor, "read")) {
+    // Setup guidance is for whoever runs the deployment. A hosted connector
+    // that is not ready goes on to sign-in, which reports it unavailable;
+    // only a provider policy block still explains itself first.
+    if (managedCandidate && managedDescriptor && !managedConnectorLaneReady(managedDescriptor, "read") &&
+        (SELF_HOSTED || managedConnectorMissingCode(managedDescriptor, "read", "provider_prerequisite_missing"))) {
       openComposioSetup(managedCandidate, managedDescriptor, preferredOwnerKind);
       return;
     }
-    if (managedCandidate && managedDescriptor && managedConnectorLaneReady(managedDescriptor, "read")) {
+    if (managedCandidate && managedDescriptor) {
       state.connectionAccountForm = {
         ownerKind: preferredConnectionOwnerKind(preferredOwnerKind),
         kind: "managed",
@@ -4167,7 +4176,9 @@
     if (state.slackChannelsLoading) {
       selector = '<div class="field"><label class="field-label">Channel</label><p class="hint">Loading channels&hellip;</p></div>';
     } else if (state.slackChannelsError) {
-      var staleAuthorization = state.slackChannelsError.code === "missing_scope";
+      // Reinstalling the Slack app and the scoped recovery that follows are
+      // for whoever owns the app; hosted gets the generic error handling.
+      var staleAuthorization = SELF_HOSTED && state.slackChannelsError.code === "missing_scope";
       selector = '<div class="field"><label class="field-label">Channel</label>' +
         '<p class="field-error">' + esc(state.slackChannelsError.text) + '</p>' +
         (staleAuthorization
@@ -4231,7 +4242,10 @@
     if (message === "slack_gateway_unreachable" && detail === "gateway_session_offline") return "Slack’s outbound API is reachable, but Chickpea’s inbound event session is offline. Retry now; the deployment health check will reconnect it automatically.";
     if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
-    if (message === "slack_missing_scopes") return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
+    // Scoped recovery is the deployment's, so hosted keeps only the first sentence.
+    if (message === "slack_missing_scopes") return SELF_HOSTED
+      ? "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it."
+      : "The Slack installation is missing required permissions.";
     return serverMessage || (detail ? message + ": " + detail : message);
   }
 
@@ -5055,10 +5069,14 @@
     if (managedConnectorMissingCode(descriptor, lane, "provider_prerequisite_missing")) {
       return { label: "Blocked by deployment policy", kind: "prerequisite" };
     }
+    // A hosted installation's host prepares its connectors, so no one there
+    // is asked to prepare or set them up.
     return {
-      label: state.agentConnections.managedCanConfigure
-        ? (state.agentConnections.managedConfigurationReadOnly ? "Preparation required" : "Setup required")
-        : "Owner setup required",
+      label: !SELF_HOSTED
+        ? "Setup required"
+        : state.agentConnections.managedCanConfigure
+          ? (state.agentConnections.managedConfigurationReadOnly ? "Preparation required" : "Setup required")
+          : "Owner setup required",
       kind: "setup"
     };
   }
@@ -7558,7 +7576,7 @@
       '<div class="agent-advanced-row agent-advanced-policy-row"><span class="agent-advanced-copy"><strong id="p-edit-policy-label">Who can edit</strong><small class="hint">Choose who can change this Agent&rsquo;s behavior, access, and appearance.</small></span><span class="select-wrap agent-advanced-select"><select class="input" id="p-edit-policy" aria-labelledby="p-edit-policy-label" data-action="profile-edit-policy"' + (readOnly ? " disabled" : "") + '>' +
       '<option value="creator_and_admins"' + (draft.editPolicy !== "all_workspace_members" ? " selected" : "") + '>Creator and workspace admins</option>' +
       '<option value="all_workspace_members"' + (draft.editPolicy === "all_workspace_members" ? " selected" : "") + '>Any workspace member</option></select>' + icon("chevron-down", "select-caret") + '</span></div>' +
-      '<div class="agent-advanced-row agent-advanced-sandbox-row"><span class="agent-advanced-copy"><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="agent-advanced-actions"><span class="badge agent-advanced-status ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></span></div>' +
+      (SELF_HOSTED ? '<div class="agent-advanced-row agent-advanced-sandbox-row"><span class="agent-advanced-copy"><strong>Coding sandbox</strong><small class="hint">Run code and work with granted repositories in an isolated environment.</small></span><span class="agent-advanced-actions"><span class="badge agent-advanced-status ' + (sandboxReady ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (sandboxReady ? "Available" : "Needs repository") + '</span><button type="button" class="btn btn-soft btn-sm" data-action="open-settings" data-section="sandbox">Settings</button></span></div>' : '') +
       '</div></details>';
   }
 
@@ -7654,7 +7672,7 @@
     if (state.slackChannelsError) {
       return '<div class="bundle-row"><span class="field-error">' + esc(state.slackChannelsError.text) + '</span>' +
         '<span class="spacer"></span>' +
-        (state.slackChannelsError.code === "missing_scope"
+        (SELF_HOSTED && state.slackChannelsError.code === "missing_scope"
           ? slackScopeReinstallLinkHtml() +
             slackScopeCredentialRepairHtml()
           : '<button type="button" class="btn btn-soft btn-sm" data-action="refresh-channels">Retry</button>') +
@@ -9334,7 +9352,7 @@
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
       settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
-      settingsPanelHtml("sandbox", sandboxSectionHtml()) +
+      (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "") +
       settingsPanelHtml("outbound", egressSectionHtml());
   }
 
@@ -9524,8 +9542,11 @@
     if (!settings.canConfigure) {
       // The head meta already explains that an owner or admin must act.
     } else if (deploymentPreparationRequired) {
-      body += '<div class="managed-provider-actions"><button type="button" class="btn btn-primary" data-action="connector-settings-retry">' +
-        (settings.busy === "retry" ? 'Preparing&hellip;' : 'Prepare connector defaults') + '</button></div>';
+      // The host prepares a hosted installation's connectors; the route refuses.
+      if (SELF_HOSTED) {
+        body += '<div class="managed-provider-actions"><button type="button" class="btn btn-primary" data-action="connector-settings-retry">' +
+          (settings.busy === "retry" ? 'Preparing&hellip;' : 'Prepare connector defaults') + '</button></div>';
+      }
     } else if (!provider.readOnly) {
       if (configured && !settings.editing) {
         foot += '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-edit-key">Replace project key</button>';
@@ -9535,10 +9556,10 @@
     }
     if (provider.reconciliationPending) {
       body += '<div class="callout" role="status"><span>Chickpea is finishing connector reconciliation. Managed execution remains paused.</span>' +
-        (settings.canConfigure ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
+        (settings.canConfigure && SELF_HOSTED ? '<button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry</button>' : '') + '</div>';
     } else if (provider.lastSetupResult && provider.lastSetupResult.status !== "ready" && configured) {
       body += '<div class="callout" role="alert"><span>Some connectors still need setup. Ready connectors remain available.</span><button type="button" class="btn btn-soft btn-sm" data-action="connector-settings-retry">Retry setup</button></div>';
-    } else if (settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
+    } else if (SELF_HOSTED && settings.canConfigure && configured && !settings.editing && !deploymentPreparationRequired && !googleAdsPolicyBlocked) {
       foot += '<button type="button" class="btn btn-ghost btn-sm" data-action="connector-settings-retry" title="Apply current deployment settings without replacing the project key."' + (settings.busy ? ' disabled' : '') + '>' +
         (settings.busy === "retry" ? 'Preparing&hellip;' : 'Refresh connector setup') + '</button>';
     }
@@ -9546,7 +9567,8 @@
       foot += '<span class="spacer"></span><button type="button" class="btn btn-ghost btn-sm danger-text" data-action="connector-settings-disable-open">Disable in Chickpea</button>';
     }
     if (googleAdsPolicyBlocked) {
-      body += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access. Preparing connector defaults will not change this setting.</span></div>';
+      body += '<div class="callout" role="status"><span>Google Ads is blocked by deployment policy. A deployment operator must allow Composio managed OAuth or configure Explorer, Basic, or Standard API access.' +
+        (SELF_HOSTED ? ' Preparing connector defaults will not change this setting.' : '') + '</span></div>';
     }
     if (settings.error) body += retryLoadCallout();
     if (settings.notice) body += '<p class="oauth-return ok" role="status">' + esc(settings.notice) + '</p>';
@@ -10327,8 +10349,9 @@
     var section = aliases[String(value || "")] || String(value || "");
     // A member's only Settings page is Coding agents.
     if (!WORKSPACE_ADMIN_UI) return "agents-clients";
-    if (section === "updates" && INSTALLATION_OWNER) return section;
+    if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_OFFERED) return "providers";
+    if (section === "sandbox" && !SELF_HOSTED) return "providers";
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "outbound", "agents-clients"].includes(section) ? section : "providers";
   }
 
@@ -10408,7 +10431,7 @@
     loadModelCatalogStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadGithubStatus(generation).then(function () { renderSettingsLoad(generation); });
     loadEgress(generation).then(function () { renderSettingsLoad(generation); });
-    loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
+    if (SELF_HOSTED) loadSandboxStatus(generation).then(function () { renderSettingsLoad(generation); });
   }
 
   function loadConnectionInventory(generation) {
@@ -12781,7 +12804,8 @@
       ? api("/admin/api/workspace-model-default", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
     var imageModelsRequest = api("/admin/api/image-models").catch(function () { return null; });
-    var environmentStatusRequest = WORKSPACE_ADMIN_UI
+    // The live environment badge describes a self-run deployment's lane.
+    var environmentStatusRequest = WORKSPACE_ADMIN_UI && SELF_HOSTED
       ? api("/admin/api/environment/status", { cache: "no-store" }).catch(function () { return null; })
       : Promise.resolve(null);
     return {
@@ -15130,7 +15154,8 @@
 
   function slackChannelsErrorText(error) {
     if (error && error.message === "slack_not_configured") return "Connect @Chickpea first to list channels.";
-    if (error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
+    // Scoped recovery is the deployment's; hosted gets the generic line below.
+    if (SELF_HOSTED && error && error.message === "slack_list_failed" && error.detail === "missing_scope") {
       return "Slack permissions are out of date. Use scoped recovery to refresh the installation.";
     }
     if (error && error.message === "slack_list_failed" && error.detail) {

@@ -129,6 +129,25 @@ test('under tenancy Admin\'s browser key and website-login routes are not found,
   }
 });
 
+test('under tenancy the coding sandbox install and uninstall routes are not found, before any store is read; its status and settings stay served', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
+  const install = '/admin/api/sandbox/install';
+  for (const method of ['POST', 'DELETE']) {
+    for (const variant of [install, '/admin//api/sandbox/install', `${install}/`, '/admin/api/sandbox/%69nstall']) {
+      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
+      assert.equal(response.status, 404, `${method} ${variant}`);
+    }
+    assert.equal((await routes.request(`http://localhost${install}`, { method })).status, 500, `standalone ${method}`);
+  }
+  // A managed hosted sandbox reads its status and saves its runtime settings
+  // here, so these get past the guard (to the store, which fails here).
+  for (const method of ['GET', 'PUT', 'PATCH']) {
+    const response = await routes.request('https://hosted.example/admin/api/sandbox/status', { method }, ENV_A);
+    assert.notEqual(response.status, 404, `hosted ${method} status`);
+  }
+});
+
 test('under tenancy no turn or occurrence is offered the browser, even with a deployment Browserbase key', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());

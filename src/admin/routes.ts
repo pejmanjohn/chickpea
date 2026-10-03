@@ -1852,9 +1852,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return task();
   };
   // A host serving many installations owns first-run setup, recovery, Slack
-  // install and sign-in, the gateway and deployment activation, and does not
-  // offer the browser; under installation tenancy those surfaces are not
-  // found, before any store read.
+  // install and sign-in, the gateway, deployment activation and installing the
+  // coding sandbox, and does not offer the browser; under installation tenancy
+  // those surfaces are not found, before any store read.
   app.use('*', async (c, next) => {
     if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
         standaloneOnlyRoute(c.req.method, c.req.path)) return c.notFound();
@@ -11680,7 +11680,9 @@ function isAdminPageGet(c: Context): boolean {
 // Standalone-only surfaces: first-run and manual setup, recovery, the Slack
 // app's install and sign-in, the gateway, deployment activation, the QA lane
 // environment bridge, the legacy configuration cutover, the ChatGPT plan
-// handoff, and the browser (its Browserbase key and website logins).
+// handoff, the browser (its Browserbase key and website logins), and the
+// request to install or remove the coding sandbox, which only whoever deploys
+// can complete. The sandbox's status and runtime settings stay served.
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11691,6 +11693,7 @@ const STANDALONE_ONLY_PREFIXES = [
   '/admin/api/chickpea-cutover',
   '/auth/chatgpt-plan',
   '/admin/api/browser',
+  '/admin/api/sandbox/install',
 ] as const;
 
 // Standalone-only surfaces inside paths that are otherwise served: an
