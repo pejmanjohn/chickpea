@@ -268,6 +268,20 @@ test('the workspace record a host writes is idempotent, materializes the Chickpe
     syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT2' }, config), /ended/);
 });
 
+test('a hosted installation starts with no Workspace default, even on Cloudflare: it has no Workers AI', async (t) => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  });
+  const { config } = installation(t);
+  await syncHostedWorkspaceInstallation(ENV, { teamId: TEAM, appId: APP.appId, botUserId: 'UBOT' }, config);
+  const workspaceDefault = await config.getWorkspaceModelDefault(TEAM);
+  assert.equal(workspaceDefault?.modelId, undefined, 'nothing it cannot run');
+  assert.equal(workspaceDefault?.provenance, 'migration_pending', 'Admin asks the Owner to choose a model');
+});
+
 test('a record left waiting by an interrupted first write is finished by the next one', async (t) => {
   const { config } = installation(t);
   await config.ensureWorkspaceInstallation({

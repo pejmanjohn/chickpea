@@ -54,6 +54,7 @@ import {
   freezeRuntimeModelRoute,
   resolveProviderAuthRoute,
   resolveRuntimeModel,
+  RuntimeModelReadinessError,
   safeRuntimeModelRouteEvidence,
 } from '../config/runtime-model.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -390,6 +391,20 @@ export interface SlackStopEnding {
 export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
   'The Workspace default model needs attention. An owner or admin can repair it in Settings → Model providers.';
 
+/**
+ * The reply for a turn whose model cannot run until someone repairs Model
+ * providers: its provider has no key, or the deployment does not offer the
+ * model. Only a model inherited from the Workspace default has a reply, and
+ * it matches Admin's "Repair required"; a pinned model's turn, and a provider
+ * that could not be checked just now, keep the generic failure.
+ */
+function modelRepairReplyText(error: unknown, assignment: ResolvedAssignment): string | undefined {
+  if (!(error instanceof RuntimeModelReadinessError) || error.transient) return undefined;
+  return assignment.modelAttribution?.source === 'workspace_default'
+    ? WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT
+    : undefined;
+}
+
 function resolveManagementApprovalDependencies(
   configured: SlackManagementApprovalDependencies |
     (() => SlackManagementApprovalDependencies) |
@@ -510,16 +525,10 @@ async function runTurnAttempt(
     agentModel: resolvedModel,
     codingWorkerRan: false,
   });
-  const visibleAgentName = visibleOwner?.kind === 'selected_agent'
-    ? visibleOwner.persona.name
-    : visibleOwner?.kind === 'chickpea'
-      ? CHICKPEA_AGENT_NAME
-      : assignment.agent.name;
-  const visibleAgentAvatarUrl = visibleOwner?.kind === 'selected_agent'
-    ? visibleOwner.persona.avatarUrl
-    : visibleOwner?.kind === 'chickpea'
-      ? undefined
-      : agentAvatarUrl;
+  const {
+    agentName: visibleAgentName,
+    agentAvatarUrl: visibleAgentAvatarUrl,
+  } = turnReplySender(assignment, visibleOwner, agentAvatarUrl);
   // Once the Chickpea contract is active, the frozen Workspace default is the
   // only fallback for an unpinned Agent. Never reintroduce SLACK_TAG_MODEL (or
   // another implicit provider default) after admission failed to freeze one.
@@ -1031,13 +1040,30 @@ async function runTurnAttempt(
             ...(options.getBoundRuntimePlan
               ? { getBoundRuntimePlan: options.getBoundRuntimePlan }
               : {}),
+          }).catch((error: unknown) => {
+            // A model that needs repair ends the turn with its reply, below;
+            // a retry could not change that.
+            const modelRepairText = modelRepairReplyText(error, assignment);
+            if (modelRepairText === undefined) throw error;
+            return { modelRepairText };
           })
         : undefined,
     ]);
     const conversationKey = preparedMemory?.conversationKey ?? slackAgentThreadKey(turn, assignment);
+    const agentConversationKey = options.continuityKey ?? conversationKey;
+    if (frozen && 'modelRepairText' in frozen) {
+      return {
+        preparedMemory,
+        conversationKey,
+        agentConversationKey,
+        runtimePlanDecision: undefined,
+        sandboxUnavailableFallback: false,
+        workLifecycle: undefined,
+        modelRepairText: frozen.modelRepairText,
+      };
+    }
     const runtimePlanDecision = frozen?.decision ?? options.runtimePlanDecision;
     const sandboxUnavailableFallback = frozen?.unavailableFallback ?? false;
-    const agentConversationKey = options.continuityKey ?? conversationKey;
     const workLifecycle = options.runId && options.replayText === undefined && resolvedModel &&
         !stoppedBeforeDispatch
       ? await createSlackShadowLifecycle({
@@ -1066,6 +1092,7 @@ async function runTurnAttempt(
       runtimePlanDecision,
       sandboxUnavailableFallback,
       workLifecycle,
+      modelRepairText: undefined,
     };
   };
   let prepared: Awaited<ReturnType<typeof prepareTurn>>;
@@ -1086,6 +1113,7 @@ async function runTurnAttempt(
     runtimePlanDecision,
     sandboxUnavailableFallback,
     workLifecycle,
+    modelRepairText,
   } = prepared;
   deliveryLifecycle = workLifecycle;
   if (preparedMemory) presenter.setMemoryFooterItems(preparedMemory.footerItems);
@@ -1349,6 +1377,15 @@ async function runTurnAttempt(
       // status cleared, and a terminal delivery outcome.
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
+      await finishStatus('failure');
+      await finishDelivery('failed');
+      return;
+    }
+    // The turn's model cannot run until Model providers is repaired: say so
+    // once, as the thread's Agent, with nothing dispatched.
+    if (modelRepairText !== undefined) {
+      await statusTurn.prepareFinal();
+      await presenter.deliverFinal(modelRepairText, 'plain_text', 'error');
       await finishStatus('failure');
       await finishDelivery('failed');
       return;
@@ -2733,11 +2770,32 @@ function resolveMemoryDeliveryText(
 }
 
 /**
+ * Who a turn's replies come from (docs/runbooks/slack-message-identity.md):
+ * the owner its run froze at admission, or the Agent itself for a turn with
+ * no frozen presentation. A `chickpea` owner posts as the installation's
+ * bot: no custom name or avatar reaches Slack, and its footer names Chickpea.
+ */
+function turnReplySender(
+  assignment: ResolvedAssignment,
+  visibleOwner: SlackPresentationOwner | undefined,
+  agentAvatarUrl: string | undefined,
+): { agentName: string; agentAvatarUrl?: string } {
+  if (visibleOwner?.kind === 'selected_agent') {
+    return { agentName: visibleOwner.persona.name, agentAvatarUrl: visibleOwner.persona.avatarUrl };
+  }
+  if (visibleOwner?.kind === 'chickpea') return { agentName: CHICKPEA_AGENT_NAME };
+  return { agentName: assignment.agent.name, ...(agentAvatarUrl ? { agentAvatarUrl } : {}) };
+}
+
+/**
  * Deliver ONLY the sanitized generic failure final — the relay alarm's
  * last-ditch on the terminal attempt, when `runTurn` itself kept throwing (a
  * genuine delivery failure, not an agent execution failure, which runTurn
  * already surfaces as a categorized final and returns). Best-effort: the caller swallows
  * its errors (if Slack is the thing that is failing, this post fails too).
+ * It posts under the same sender as the turn's replies: `presentation` names
+ * the run whose frozen owner decides it, and the settings store whose pinned
+ * public URL the replies' footer and avatar use.
  */
 export async function deliverAgentFailureFinal(
   turn: NormalizedSlackTurn,
@@ -2745,19 +2803,36 @@ export async function deliverAgentFailureFinal(
   client: WebClient,
   platformEnv?: PlatformEnv,
   onPublicMessageDelivered?: RunTurnOptions['onPublicMessageDelivered'],
+  presentation?: {
+    state?: Pick<SlackPresentationStatePort, 'getRunPresentation'>;
+    runId?: string;
+    settingsStore?: SettingsStore;
+  },
 ): Promise<void> {
   const resolvedModel = resolvedAssignmentModel(assignment);
-  const publicUrl = await resolveSlackPublicUrl(platformEnv);
-  const agentAvatarUrl = agentAvatarUrlForPresentation(
-    assignment.agent, publicUrl, agentAvatarInstallation(platformEnv),
+  const state = presentation?.state;
+  const runId = presentation?.runId;
+  const [publicUrl, frozenPresentation] = await Promise.all([
+    resolveSlackPublicUrl(platformEnv, presentation?.settingsStore),
+    state && runId
+      ? (async () => state.getRunPresentation(runId))().catch(() => {
+          // The notice still posts, under the sender a turn without one uses.
+          console.warn('[chickpea] failure final could not read its run presentation');
+          return undefined;
+        })
+      : undefined,
+  ]);
+  const visibleOwner = frozenPresentation?.schemaVersion === 3 ? frozenPresentation.owner : undefined;
+  const sender = turnReplySender(
+    assignment,
+    visibleOwner,
+    agentAvatarUrlForPresentation(assignment.agent, publicUrl, agentAvatarInstallation(platformEnv)),
   );
   const presenter = new WebClientPresenter(client, {
     channelId: turn.channelId,
     threadTs: turn.threadTs,
-    agentName: assignment.agent.name,
-    ...(agentAvatarUrl
-      ? { agentAvatarUrl }
-      : {}),
+    ...sender,
+    ...(visibleOwner ? { visibleOwner } : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedModel,
     publicUrl,

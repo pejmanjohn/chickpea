@@ -655,7 +655,9 @@ export class ConfigStoreLogic {
         ? this.requireActiveAgent(defaultAgentId)
         : this.requireActiveUserAgent(defaultAgentId);
       const bootstrapModel = defaultAgent.model ??
-        (runtimeContract === 'chickpea-v1' ? seededWorkspaceModelDefault() : undefined);
+        (runtimeContract === 'chickpea-v1' && input.keylessModelDefault !== false
+          ? seededWorkspaceModelDefault()
+          : undefined);
       this.db.run(
         `INSERT INTO config_workspace_installations (
           workspace_id, revision, transport_mode, runtime_contract, default_agent_id, team_id,

@@ -55,6 +55,8 @@ export class RuntimeModelReadinessError extends Error {
     readonly status: 'provider_setup_required' | 'unsupported',
     readonly providerId: string,
     message: string,
+    /** The provider could not be checked just now: a retry can succeed with nothing repaired. */
+    readonly transient = false,
   ) {
     super(message);
     this.name = 'RuntimeModelReadinessError';

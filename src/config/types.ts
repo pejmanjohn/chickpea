@@ -418,6 +418,12 @@ export interface EnsureWorkspaceInstallationInput {
   gatewayBindingId?: string;
   /** Defaults to chickpea-v1. 'legacy' exists only for compatibility installs. */
   runtimeContract?: WorkspaceRuntimeContract;
+  /**
+   * False when the deployment cannot run the keyless first-run model (it has
+   * no Workers AI binding): the Workspace default then starts unset, as on
+   * Node, until someone chooses a model. Unset keeps the target's rule.
+   */
+  keylessModelDefault?: boolean;
 }
 
 export interface WorkspaceInstallationPatch {
