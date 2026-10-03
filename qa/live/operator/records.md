@@ -8,6 +8,8 @@ infrastructure resource ledger keep their existing schemas and safety rules.
 Do not import, rewrite, or migrate an active run to this format.
 Run this notebook from the operator's Git checkout; input fingerprinting requires
 Git. An exported installation artifact is a test fixture, not the record's checkout.
+Fingerprinting refuses a checkout with a submodule, whose commit could otherwise
+move without making any evidence stale.
 
 ## Preflight and selected scope
 

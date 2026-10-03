@@ -36,12 +36,13 @@ const keys = (v, allowed) => {
 };
 const date = (v) => text(v) && Number.isFinite(Date.parse(v));
 
-function noSecrets(value) {
+/** Refuse secret-shaped values, and keys anywhere that name a secret, before they reach a record. */
+export function assertNoSecrets(value) {
   if (typeof value === 'string') need(!/(?:xox[baprs]-|\bsk-[A-Za-z0-9]{12}|Bearer\s+|-----BEGIN .*PRIVATE KEY-----)/i.test(value), 'Secret-like record value refused.');
   if (!value || typeof value !== 'object') return;
   for (const [key, child] of Object.entries(value)) {
     need(!/(?:password|credential|authorization|cookie|secret|accessToken|refreshToken)/i.test(key), 'Secret-bearing record field refused.');
-    noSecrets(child);
+    assertNoSecrets(child);
   }
 }
 
@@ -54,7 +55,7 @@ export function readPrivateJson(file) {
 export function validateSpec(spec) {
   keys(spec, ['mode', 'purpose', 'contexts', 'capabilities', 'cases', 'groups']);
   need(spec.groups === undefined || Array.isArray(spec.groups), 'Variant groups must be a list.');
-  noSecrets(spec);
+  assertNoSecrets(spec);
   need(['changed', 'regression', 'release'].includes(spec.mode), 'Choose changed, regression, or release.');
   need(['verification', 'reliability'].includes(spec.purpose), 'Choose verification or intentional reliability testing.');
   need(spec.contexts && typeof spec.contexts === 'object', 'Contexts are required.');
@@ -156,7 +157,7 @@ export function readRun(file) {
   need(run.schema === SCHEMA && text(run.id) && Array.isArray(run.events), 'Not an attended run record. Do not migrate an active legacy journal.');
   validateSpec(run.spec);
   if (run.lineage !== undefined) validateLineage(run.lineage, run.spec);
-  noSecrets(run);
+  assertNoSecrets(run);
   need(run.events.every((event, index) => event.sequence === index + 1 && event.runId === run.id), 'Run event sequence is invalid.');
   return run;
 }
@@ -172,7 +173,7 @@ export function updateRun(file, callback) {
     writeFileSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }));
     const run = readRun(path);
     const result = callback(run);
-    noSecrets(run);
+    assertNoSecrets(run);
     atomicWrite(path, run);
     return result;
   } finally { closeSync(fd); unlinkSync(lock); }
@@ -242,7 +243,7 @@ export function ownedResources(run, now = Date.now()) {
 }
 
 export function appendEvent(run, input, source, now = Date.now()) {
-  noSecrets(input);
+  assertNoSecrets(input);
   const spec = currentSpec(run);
   const event = { ...structuredClone(input), id: randomUUID(), runId: run.id, sequence: run.events.length + 1, at: new Date(now).toISOString() };
   const selected = spec.cases.find((c) => c.id === input.caseId);

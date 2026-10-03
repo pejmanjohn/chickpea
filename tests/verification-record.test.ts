@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helpers.
-import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, status, updateRun } from '../scripts/lib/verification-record.mjs';
+import { appendEvent, assertNoSecrets, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, status, updateRun } from '../scripts/lib/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
-import { digest, sourceInputs } from '../scripts/lib/verification-inputs.mjs';
+import { areaFingerprints, CORE_AREA_NAMES, coreAreasOf, digest, sourceInputs, treeEntries } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { templateSpec } from '../scripts/lib/verification-spec.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
@@ -423,6 +423,10 @@ test('private writes refuse Git/symlink destinations, preserve restrictive permi
   assert.throws(() => updateRun(f.file, () => {}), /locked/);
   assert.equal(readFileSync(f.file, 'utf8'), before);
   assert.throws(() => createRun(join(f.directory, 'secret.json'), { ...f.spec, credential: 'hidden' }, source()), /Unexpected|Secret/);
+  // The same check is exported for source providers outside this module.
+  assert.doesNotThrow(() => assertNoSecrets({ composite: { cloud: { commit: 'a'.repeat(40) } }, areas: { 'core-candidate': 'digest' } }));
+  assert.throws(() => assertNoSecrets({ composite: { slots: { WEBHOOK_SECRET: 'digest' } } }), /Secret-bearing record field refused/);
+  assert.throws(() => assertNoSecrets(['Bearer synthetic']), /Secret-like record value refused/);
 });
 
 test('working-content fingerprints include dirty/untracked source, ignore workflow for product areas and broaden unknown runtime', (t) => {
@@ -446,6 +450,72 @@ test('working-content fingerprints include dirty/untracked source, ignore workfl
   const unknown = sourceInputs(repo);
   assert.notEqual(unknown.areas.connections, routines.areas.connections);
   assert.equal(unknown.dirty, true);
+});
+
+test('a case area the source does not fingerprint is refused instead of never going stale', (t) => {
+  const f = fixture(t), partial = source();
+  delete (partial.areas as Record<string, string>).routines;
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule' }, NOW + 1000, partial), /Source provider does not fingerprint area routines\./);
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  f.append(f.finish(attempt.id), NOW + 2000);
+  assert.equal(status(f.run, source(), NOW + 3000).cases[0].result, 'pass');
+  assert.throws(() => status(f.run, partial, NOW + 3000), /does not fingerprint area routines/);
+});
+
+function syntheticCheckout(directory: string, name: string) {
+  const repo = join(directory, name); mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+  const write = (file: string, content: string) => { mkdirSync(dirname(join(repo, file)), { recursive: true }); writeFileSync(join(repo, file), content); };
+  // Golden digests must not depend on this host's global ignore rules.
+  git('init', '-q'); git('config', 'core.excludesFile', '/dev/null');
+  const commit = (message: string, cwd = repo) => execFileSync('git', ['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', message], { cwd, stdio: 'pipe' });
+  return { repo, git, write, commit };
+}
+
+test('source fingerprints keep their recorded digests across the provider split', (t) => {
+  const f = fixture(t), { repo, git, write, commit } = syntheticCheckout(f.directory, 'golden');
+  write('.gitignore', '.dev.vars\nignored/\n');
+  write('README.md', 'Synthetic documentation.');
+  write('src/routines/schedule.ts', 'export const schedule = 1;');
+  write('src/slack/install-oauth.ts', 'export const install = 1;');
+  write('src/memory/removed.ts', 'export const removed = 1;');
+  write('scripts/verify-regression.mjs', 'export const workflow = 1;');
+  write('scripts/tool.sh', '#!/bin/sh\n'); chmodSync(join(repo, 'scripts/tool.sh'), 0o755);
+  write('tests/routine-schedule.test.ts', 'export {};');
+  write('tests/unlisted.test.ts', 'export {};');
+  symlinkSync('src/routines/schedule.ts', join(repo, 'linked.ts'));
+  git('add', '.'); commit('fixture');
+  rmSync(join(repo, 'src/memory/removed.ts'));
+  write('src/connections/untracked.ts', 'export const untracked = 1;');
+  write('.dev.vars', 'IGNORED=1'); write('ignored/hidden.ts', 'ignored');
+  execFileSync('git', ['init', '-q', join(repo, 'nested')]); write('nested/inner.ts', 'nested');
+  // Digests recorded by the single-function sourceInputs before the split.
+  // In-flight records compare against these; they must never move.
+  const inputs = sourceInputs(repo), { head, ...fingerprint } = inputs;
+  assert.deepEqual(Object.keys(inputs), ['head', 'dirty', 'tree', 'areas']);
+  assert.equal(head, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  assert.deepEqual(Object.keys(fingerprint.areas), Object.keys(REGRESSION_AREAS));
+  assert.equal(fingerprint.tree, 'eca1af17f780d22546ae9076105317fa45de4f48e771d9328f5514117fd03bee');
+  assert.equal(digest(JSON.stringify(fingerprint)), 'a847f0c631c5b5b09383f18a29bee343f67e91e9bfdcdb8b13060bde42e77d0b');
+  const listed = treeEntries(repo);
+  assert.deepEqual(areaFingerprints(listed.entries, CORE_AREA_NAMES, coreAreasOf), { tree: fingerprint.tree, areas: fingerprint.areas });
+  assert.deepEqual(listed.entries.find(([file]: [string, string]) => file === 'nested/'), ['nested/', 'non-file']);
+  assert.ok(!listed.entries.some(([file]: [string, string]) => file.startsWith('ignored/') || file === '.dev.vars'), 'ignored inputs stay invisible');
+  assert.throws(() => areaFingerprints(listed.entries, ['routines'], coreAreasOf), /unknown area/);
+});
+
+test('a submodule is refused rather than fingerprinted as a constant', (t) => {
+  const f = fixture(t), { repo, git, write, commit } = syntheticCheckout(f.directory, 'superproject');
+  write('src/routines/schedule.ts', 'export const schedule = 1;'); git('add', '.'); commit('base');
+  execFileSync('git', ['init', '-q', join(repo, 'vendor')]); write('vendor/inner.ts', 'one');
+  execFileSync('git', ['add', '.'], { cwd: join(repo, 'vendor') }); commit('inner', join(repo, 'vendor'));
+  assert.ok(treeEntries(repo).entries.some(([file, content]: [string, string]) => file === 'vendor/' && content === 'non-file'), 'an untracked nested repository is listed, not refused');
+  git('add', '.'); commit('superproject');
+  assert.throws(() => sourceInputs(repo), /Submodules are not supported by the verification fingerprint: vendor\./);
+  rmSync(join(repo, 'vendor'), { recursive: true, force: true });
+  assert.throws(() => treeEntries(repo), /Submodules are not supported/, 'a removed checkout of a recorded submodule is still refused');
+  git('rm', '-q', '--cached', 'vendor'); commit('drop submodule');
+  assert.equal(sourceInputs(repo).dirty, false, 'without the submodule, fingerprinting resumes');
 });
 
 test('actual CLI init, resume, refresh, finish and generated report use the same private record', (t) => {

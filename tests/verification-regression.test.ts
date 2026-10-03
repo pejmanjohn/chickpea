@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +10,7 @@ import { lockfileDrift } from '../scripts/lib/installed-dependencies.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
-import { isHygieneStep, parseRegressionArgs, regressionEnvironment, runRegressionSteps } from '../scripts/verify-regression.mjs';
+import { changedFiles, isHygieneStep, main, parseRegressionArgs, regressionEnvironment, runRegressionSteps } from '../scripts/verify-regression.mjs';
 
 const testFiles = readdirSync(new URL('.', import.meta.url), { recursive: true })
   .map(String).filter((file) => file.endsWith('.test.ts')).map((file) => `tests/${file.replaceAll('\\', '/')}`);
@@ -196,6 +197,32 @@ test('argument parsing rejects missing values and supports explicit repeated are
   assert.throws(() => parseRegressionArgs(['--allow-production']), /Unknown argument/);
   assert.throws(() => parseRegressionArgs(['--reuse']), /Unknown argument/);
   assert.throws(() => parseRegressionArgs(['--timeout-ms', '0']), /1000/);
+});
+
+test('a changed plan names the commit it diffed against and every file it classified', async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'chickpea-changed-files-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const commit = (message: string) => git('-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', message);
+  git('init', '-q'); git('config', 'core.excludesFile', '/dev/null');
+  for (const file of ['.gitignore', 'kept.ts', 'edited.ts', 'removed.ts']) writeFileSync(join(repo, file), file === '.gitignore' ? '.dev.vars\n' : 'one');
+  git('add', '.'); commit('base');
+  const base = git('rev-parse', 'HEAD');
+  writeFileSync(join(repo, 'committed.ts'), 'two'); git('add', '.'); commit('branch');
+  writeFileSync(join(repo, 'edited.ts'), 'two'); rmSync(join(repo, 'removed.ts'));
+  writeFileSync(join(repo, 'untracked.ts'), 'new'); writeFileSync(join(repo, '.dev.vars'), 'IGNORED=1');
+  const changed = changedFiles(base, repo);
+  assert.equal(changed.revision, base);
+  assert.deepEqual([...changed.files].sort(), ['committed.ts', 'edited.ts', 'removed.ts', 'untracked.ts']);
+  assert.equal(changedFiles('HEAD~1', repo).revision, base, 'a symbolic base resolves to its commit');
+  assert.throws(() => changedFiles('absent-base', repo), /git rev-parse failed/);
+  assert.throws(() => changedFiles(undefined, repo), /No origin\/main comparison available/);
+
+  const printed: string[] = [], log = console.log;
+  console.log = (value: string) => { printed.push(value); };
+  try { assert.equal(await main(['--plan', '--area', 'verification']), 0); } finally { console.log = log; }
+  const plan = JSON.parse(printed.join('\n'));
+  assert.deepEqual([plan.base, plan.files, plan.areas], [null, [], ['verification']], 'explicit areas diff nothing');
 });
 
 test('stale node_modules are reported against package-lock.json before any check runs', () => {
