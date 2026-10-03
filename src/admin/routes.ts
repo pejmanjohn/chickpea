@@ -257,7 +257,7 @@ import {
   normalizePrivateKeyPem,
   saveGithubSetupState,
 } from '../config/github-app.ts';
-import { disconnectHostedGithubBinding, hostedGithubBindings } from '../config/hosted-github.ts';
+import { disconnectHostedGithubBinding } from '../config/hosted-github.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   discoverMcpConnectionIdentity,
@@ -7703,19 +7703,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // own bound GitHub accounts through the host, which removes the platform
   // App from it. Standalone disconnects its whole App (DELETE /admin/api/github).
   app.delete('/admin/api/github/installations/:id', async (c) => {
-    const platformEnv = c.env as PlatformEnv | undefined;
-    if (!deploymentServesManyInstallations(platformEnv)) return c.notFound();
-    const parsedId = v.safeParse(githubInstallationIdSchema, c.req.param('id'));
-    if (!parsedId.success) return invalidRequest(c);
     try {
-      const scope = requireInstallationScope(platformEnv);
+      const scope = requireInstallationScope(c.env as PlatformEnv | undefined);
       if (!scope) return c.notFound();
-      const binding = (await hostedGithubBindings(scope.installationId))
-        .find((candidate) => candidate.githubInstallationId === parsedId.output);
-      if (!binding || !(await disconnectHostedGithubBinding(scope.installationId, parsedId.output))) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      const account = binding.accountLogin.toLowerCase();
+      const parsedId = v.safeParse(githubInstallationIdSchema, c.req.param('id'));
+      if (!parsedId.success) return invalidRequest(c);
+      const ended = await disconnectHostedGithubBinding(scope.installationId, parsedId.output);
+      if (!ended) return c.json({ error: 'not_found' }, 404);
+      const account = ended.accountLogin.toLowerCase();
       const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.some((grant) => grant.accountLogin.toLowerCase() === account))
         .map(({ id, name }) => ({ id, name }));

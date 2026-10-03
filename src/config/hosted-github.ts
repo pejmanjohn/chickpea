@@ -123,19 +123,21 @@ export async function hostedGithubBindings(installationId: string): Promise<read
 }
 
 /**
- * Ends one of the installation's own live bindings through the host. False,
- * without asking the host, when the installation holds no such binding.
+ * Ends one of the installation's own live bindings through the host, and
+ * returns it. Undefined, without asking the host, when the installation
+ * holds no such binding.
  */
 export async function disconnectHostedGithubBinding(
   installationId: string,
   githubInstallationId: number,
-): Promise<boolean> {
+): Promise<HostedGithubBinding | undefined> {
   const current = port;
-  if (!current) return false;
-  const live = await hostedGithubBindings(installationId);
-  if (!live.some((binding) => binding.githubInstallationId === githubInstallationId)) return false;
+  if (!current) return undefined;
+  const binding = (await hostedGithubBindings(installationId))
+    .find((candidate) => candidate.githubInstallationId === githubInstallationId);
+  if (!binding) return undefined;
   try {
-    return await current.bindings.disconnect(installationId, githubInstallationId) === true;
+    return await current.bindings.disconnect(installationId, githubInstallationId) === true ? binding : undefined;
   } finally {
     forgetHostedGithubBindings(installationId);
   }

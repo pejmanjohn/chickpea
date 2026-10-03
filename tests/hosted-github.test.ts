@@ -47,7 +47,9 @@ import { resolveRepositoryInstallationScope } from '../src/sandbox/egress-handle
 import { githubSandboxOutbound, SANDBOX_BLOCKED_STATUS, type SandboxEgressStub } from '../src/sandbox/egress-outbound.ts';
 import type { SandboxEgressContext } from '../src/sandbox/cloudflare-policy.ts';
 import { NEUTRAL_GIT_IDENTITY, resolveWorkspaceGitIdentity } from '../src/sandbox/git-identity.ts';
+import { resolveCodingWorkspaceDecision } from '../src/slack/run-turn.ts';
 import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
+import { configureHostedSandboxPolicy, resetHostedSandboxPolicyForTests } from '../src/config/hosted-sandbox-policy.ts';
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
 import { REQUIRED_PACKAGED_FILES } from '../scripts/lib/source-export-policy.mjs';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
@@ -584,7 +586,7 @@ test('X5 management: a repository setup finishes only through the installation\'
     identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
     randomId: () => `h14a_${++sequence}`, randomCapability: () => { issued = String(++sequence).padStart(43, 'r'); return issued; },
   });
-  const principal: AuthPrincipal = {
+  let principal: AuthPrincipal = {
     userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId,
     role: 'owner', authenticatorKind: 'better_auth', credentialId: 'session_h14a', correlationId: 'h14a', machine: false,
   };
@@ -624,8 +626,10 @@ test('X5 management: a repository setup finishes only through the installation\'
   assert.match(refused.headers.get('location') ?? '', /status=failed/);
   assert.deepEqual(await grant('repo_b'), unconnected('repo_b', 'acme-b/secret'));
   assert.deepEqual(fetched, []);
-  // A's own repository resolves to A's binding.
+  // A's own repository resolves to A's binding, for an Agent editor too: A's GitHub is connected, so no App is created.
+  principal = { ...principal, role: 'member' };
   const own = await setup('repo_a', ENV_A);
+  assert.equal(own.authorize.status, 303);
   const finished = await finish(own);
   assert.doesNotMatch(finished.headers.get('location') ?? '', /status=failed/);
   assert.deepEqual(await grant('repo_a'), { ...unconnected('repo_a', 'acme-a/app'), installationId: GITHUB_A, accountLogin: 'acme-a' });
@@ -633,6 +637,7 @@ test('X5 management: a repository setup finishes only through the installation\'
   const callback = await own.app.request(`http://localhost/setup/${own.setupId}/github/callback?code=c&state=s`, { headers: { cookie: own.cookie } });
   assert.equal(callback.status, 403);
   // With no binding at all, the setup fails instead of offering to create an App.
+  principal = { ...principal, role: 'owner' };
   const port = platform(t);
   port.bindings.set(INSTALLATION_A, []);
   const unbound = await setup('repo_c', ENV_A);
@@ -699,9 +704,9 @@ test('disconnect ends one of the installation\'s own bindings through the host; 
 
 test('the host is asked to end only a binding the installation holds', async (t) => {
   const port = platform(t);
-  assert.equal(await disconnectHostedGithubBinding(INSTALLATION_A, GITHUB_B), false);
+  assert.equal(await disconnectHostedGithubBinding(INSTALLATION_A, GITHUB_B), undefined);
   assert.deepEqual(port.disconnected, []);
-  assert.equal(await disconnectHostedGithubBinding(INSTALLATION_A, GITHUB_A), true);
+  assert.equal((await disconnectHostedGithubBinding(INSTALLATION_A, GITHUB_A))?.accountLogin, 'acme-a');
   assert.deepEqual(port.disconnected, [[INSTALLATION_A, GITHUB_A]]);
 });
 
@@ -730,6 +735,26 @@ test('capability reads follow the installation\'s bindings, never a tenant-store
     ((await (await request(env, '/admin/api/sandbox/status')).json()) as { unmetPrerequisites: string[] }).unmetPrerequisites;
   assert.ok(!(await unmet(ENV_A)).includes('github_app'));
   assert.ok((await unmet(ENV_B)).includes('github_app'));
+});
+
+test('the coding workspace is offered only with the installation\'s own binding, never for a tenant-stored App', async (t) => {
+  const port = platform(t);
+  port.bindings.set(INSTALLATION_B, []);
+  github(t);
+  onCloudflare(t);
+  resetHostedSandboxPolicyForTests();
+  configureHostedSandboxPolicy(async () => ({
+    enabled: true, allowedHosts: [], monthlySessionCap: 5, monthlyContainerHours: 1, maxRunningContainers: 1,
+  }));
+  t.after(() => resetHostedSandboxPolicyForTests());
+  const { settings } = await tenantSettings(t);
+  const assignment = { agent: { repositories: [
+    { id: 'repo_a', installationId: GITHUB_A, accountLogin: 'acme-a', fullName: 'acme-a/app', enabled: true },
+  ] } } as never;
+  const decide = async (installationId: string) =>
+    (await resolveCodingWorkspaceDecision(assignment, hostedEnv(installationId, { SANDBOX: {} }) as never, settings)).capability;
+  assert.equal(await decide(INSTALLATION_A), 'available');
+  assert.notEqual(await decide(INSTALLATION_B), 'available');
 });
 
 test('the Sandbox presets its Git identity with its own installation\'s env', () => {
