@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 // @ts-expect-error Shared executable JavaScript helpers.
-import { appendEvent, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, status, updateRun } from '../scripts/lib/verification-record.mjs';
+import { appendEvent, assertNoSecrets, createRun, evidenceRefs, offlineEvent, preflight, readPrivateJson, readRun, renderReport, SCHEMA_V2, status, updateRun } from '../scripts/lib/verification-record.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
-import { digest, sourceInputs } from '../scripts/lib/verification-inputs.mjs';
+import { areaFingerprints, CORE_AREA_NAMES, coreAreasOf, digest, sourceInputs, treeEntries } from '../scripts/lib/verification-inputs.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { templateSpec } from '../scripts/lib/verification-spec.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
@@ -21,6 +21,8 @@ import { buildCleanup, buildOutcome, buildResource, proofMap } from '../scripts/
 import { familyStatus, readRunFamily } from '../scripts/lib/verification-record-family.mjs';
 // @ts-expect-error Shared executable JavaScript helpers.
 import { REGRESSION_AREAS } from '../scripts/lib/regression-plan.mjs';
+// @ts-expect-error Shared executable JavaScript helpers.
+import { main as regressionMain } from '../scripts/verify-regression.mjs';
 
 const NOW = Date.parse('2026-09-05T12:00:00Z');
 const source = () => ({ head: 'a'.repeat(40), dirty: false, tree: 'tree-one', areas: Object.fromEntries(Object.keys(REGRESSION_AREAS).map((a) => [a, 'one'])) });
@@ -423,6 +425,15 @@ test('private writes refuse Git/symlink destinations, preserve restrictive permi
   assert.throws(() => updateRun(f.file, () => {}), /locked/);
   assert.equal(readFileSync(f.file, 'utf8'), before);
   assert.throws(() => createRun(join(f.directory, 'secret.json'), { ...f.spec, credential: 'hidden' }, source()), /Unexpected|Secret/);
+  // A key readRun would refuse is refused before the record is written.
+  const secretChild = join(f.directory, 'secret-child.json'), childSpec = structuredClone(f.spec) as any;
+  childSpec.cases.push({ ...childSpec.cases[0], id: 'secret-rotation' });
+  assert.throws(() => createRun(secretChild, childSpec, source(), NOW, { parent: { path: f.file, runId: f.run.id }, originalCases: { 'secret-rotation': { runId: f.run.id, caseId: 'schedule' } } }), /Secret-bearing record field refused/);
+  assert.throws(() => statSync(secretChild), /ENOENT/);
+  // The same check is exported for source providers outside this module.
+  assert.doesNotThrow(() => assertNoSecrets({ composite: { cloud: { commit: 'a'.repeat(40) } }, areas: { 'core-candidate': 'digest' } }));
+  assert.throws(() => assertNoSecrets({ composite: { slots: { WEBHOOK_SECRET: 'digest' } } }), /Secret-bearing record field refused/);
+  assert.throws(() => assertNoSecrets(['Bearer synthetic']), /Secret-like record value refused/);
 });
 
 test('working-content fingerprints include dirty/untracked source, ignore workflow for product areas and broaden unknown runtime', (t) => {
@@ -446,6 +457,72 @@ test('working-content fingerprints include dirty/untracked source, ignore workfl
   const unknown = sourceInputs(repo);
   assert.notEqual(unknown.areas.connections, routines.areas.connections);
   assert.equal(unknown.dirty, true);
+});
+
+test('a case area the source does not fingerprint is refused instead of never going stale', (t) => {
+  const f = fixture(t), partial = source();
+  delete (partial.areas as Record<string, string>).routines;
+  assert.throws(() => f.append({ type: 'begin', caseId: 'schedule' }, NOW + 1000, partial), /Source provider does not fingerprint area routines\./);
+  const attempt = f.append({ type: 'begin', caseId: 'schedule' });
+  f.append(f.finish(attempt.id), NOW + 2000);
+  assert.equal(status(f.run, source(), NOW + 3000).cases[0].result, 'pass');
+  assert.throws(() => status(f.run, partial, NOW + 3000), /does not fingerprint area routines/);
+});
+
+function syntheticCheckout(directory: string, name: string) {
+  const repo = join(directory, name); mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+  const write = (file: string, content: string) => { mkdirSync(dirname(join(repo, file)), { recursive: true }); writeFileSync(join(repo, file), content); };
+  // Golden digests must not depend on this host's global ignore rules.
+  git('init', '-q'); git('config', 'core.excludesFile', '/dev/null');
+  const commit = (message: string, cwd = repo) => execFileSync('git', ['-c', 'user.name=Synthetic', '-c', 'user.email=synthetic@example.invalid', 'commit', '-qm', message], { cwd, stdio: 'pipe' });
+  return { repo, git, write, commit };
+}
+
+test('source fingerprints keep their recorded digests across the provider split', (t) => {
+  const f = fixture(t), { repo, git, write, commit } = syntheticCheckout(f.directory, 'golden');
+  write('.gitignore', '.dev.vars\nignored/\n');
+  write('README.md', 'Synthetic documentation.');
+  write('src/routines/schedule.ts', 'export const schedule = 1;');
+  write('src/slack/install-oauth.ts', 'export const install = 1;');
+  write('src/memory/removed.ts', 'export const removed = 1;');
+  write('scripts/verify-regression.mjs', 'export const workflow = 1;');
+  write('scripts/tool.sh', '#!/bin/sh\n'); chmodSync(join(repo, 'scripts/tool.sh'), 0o755);
+  write('tests/routine-schedule.test.ts', 'export {};');
+  write('tests/unlisted.test.ts', 'export {};');
+  symlinkSync('src/routines/schedule.ts', join(repo, 'linked.ts'));
+  git('add', '.'); commit('fixture');
+  rmSync(join(repo, 'src/memory/removed.ts'));
+  write('src/connections/untracked.ts', 'export const untracked = 1;');
+  write('.dev.vars', 'IGNORED=1'); write('ignored/hidden.ts', 'ignored');
+  execFileSync('git', ['init', '-q', join(repo, 'nested')]); write('nested/inner.ts', 'nested');
+  // Digests recorded by the single-function sourceInputs before the split.
+  // In-flight records compare against these, so the provider split must not move them.
+  const inputs = sourceInputs(repo), { head, ...fingerprint } = inputs;
+  assert.deepEqual(Object.keys(inputs), ['head', 'dirty', 'tree', 'areas']);
+  assert.equal(head, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+  assert.deepEqual(Object.keys(fingerprint.areas), Object.keys(REGRESSION_AREAS));
+  assert.equal(fingerprint.tree, 'eca1af17f780d22546ae9076105317fa45de4f48e771d9328f5514117fd03bee');
+  assert.equal(digest(JSON.stringify(fingerprint)), 'a847f0c631c5b5b09383f18a29bee343f67e91e9bfdcdb8b13060bde42e77d0b');
+  const listed = treeEntries(repo);
+  assert.deepEqual(areaFingerprints(listed.entries, CORE_AREA_NAMES, coreAreasOf), { tree: fingerprint.tree, areas: fingerprint.areas });
+  assert.deepEqual(listed.entries.find(([file]: [string, string]) => file === 'nested/'), ['nested/', 'non-file']);
+  assert.ok(!listed.entries.some(([file]: [string, string]) => file.startsWith('ignored/') || file === '.dev.vars'), 'ignored inputs stay invisible');
+  assert.throws(() => areaFingerprints(listed.entries, ['routines'], coreAreasOf), /unknown area/);
+});
+
+test('a submodule is refused rather than fingerprinted as a constant', (t) => {
+  const f = fixture(t), { repo, git, write, commit } = syntheticCheckout(f.directory, 'superproject');
+  write('src/routines/schedule.ts', 'export const schedule = 1;'); git('add', '.'); commit('base');
+  execFileSync('git', ['init', '-q', join(repo, 'vendor')]); write('vendor/inner.ts', 'one');
+  execFileSync('git', ['add', '.'], { cwd: join(repo, 'vendor') }); commit('inner', join(repo, 'vendor'));
+  assert.ok(treeEntries(repo).entries.some(([file, content]: [string, string]) => file === 'vendor/' && content === 'non-file'), 'an untracked nested repository is listed, not refused');
+  git('add', '.'); commit('superproject');
+  assert.throws(() => sourceInputs(repo), /Submodules are not supported by the verification fingerprint: vendor\./);
+  rmSync(join(repo, 'vendor'), { recursive: true, force: true });
+  assert.throws(() => treeEntries(repo), /Submodules are not supported/, 'a removed checkout of a recorded submodule is still refused');
+  git('rm', '-q', '--cached', 'vendor'); commit('drop submodule');
+  assert.equal(sourceInputs(repo).dirty, false, 'without the submodule, fingerprinting resumes');
 });
 
 test('actual CLI init, resume, refresh, finish and generated report use the same private record', (t) => {
@@ -915,4 +992,147 @@ test('family grades a completed parent against its recorded source while the chi
   assert.equal(staleChild.current.complete, false);
   assert.equal(staleChild.ancestors[0].complete, true);
   assert.equal(staleChild.complete, false);
+});
+
+// Another profile's records (schema v2). Core knows only the profile block,
+// never what the extra area names mean.
+const compositeSource = (changes: Record<string, string> = {}) => ({ ...source(), areas: { ...source().areas, 'core-candidate': 'one', 'hosted-ingress': 'one', 'hosted-tenancy': 'one', ...changes } });
+function profileFixture(t: TestContext) {
+  const standalone = fixture(t), directory = standalone.directory;
+  const profile = { id: 'hosted', areaCatalog: 'synthetic-hosted-areas/1', areas: [...Object.keys(REGRESSION_AREAS), 'core-candidate', 'hosted-ingress', 'hosted-tenancy'],
+    source: 'synthetic-composite-source/1', projectRoot: directory, releaseGate: 'composite' };
+  const spec: any = structuredClone(standalone.spec);
+  spec.cases = [
+    { ...standalone.spec.cases[0], id: 'routing-a', areas: ['hosted-ingress', 'delivery', 'core-candidate'] },
+    { ...standalone.spec.cases[0], id: 'tenancy-b', areas: ['hosted-tenancy', 'core-candidate'] },
+  ];
+  const file = join(directory, 'hosted-run.json');
+  const run = createRun(file, spec, compositeSource(), NOW, undefined, profile);
+  const append = (event: object, at = NOW + 1000, inputs = compositeSource()) => appendEvent(run, event, inputs, at);
+  return { standalone, directory, profile, spec, file, run, append, finish: standalone.finish, evidence: standalone.evidence };
+}
+
+test('standalone records stay v1, and a profile record is read only by its own profile', (t) => {
+  const h = profileFixture(t), { standalone } = h;
+  const raw = JSON.parse(readFileSync(standalone.file, 'utf8'));
+  assert.deepEqual(Object.keys(raw), ['schema', 'id', 'createdAt', 'spec', 'source', 'events', 'capabilityEvidence']);
+  assert.equal(raw.schema, 'chickpea-attended-run/v1');
+  assert.equal(readRun(standalone.file).id, standalone.run.id);
+  assert.throws(() => readRun(standalone.file, { profile: h.profile }), { message: 'Standalone record; resume it with the standalone profile.' });
+  const stray = join(h.directory, 'stray.json'); writeFileSync(stray, JSON.stringify({ ...raw, profile: h.profile }));
+  assert.throws(() => readRun(stray), /standalone v1 record cannot carry a profile block/);
+
+  const hosted = JSON.parse(readFileSync(h.file, 'utf8'));
+  assert.equal(hosted.schema, SCHEMA_V2);
+  assert.deepEqual(hosted.profile, h.profile);
+  const elsewhere = { message: `Record belongs to profile hosted at ${h.directory}; resume it with that profile's coordinator.` };
+  assert.throws(() => readRun(h.file), elsewhere);
+  assert.throws(() => updateRun(h.file, () => {}), elsewhere);
+  for (const changed of [{ projectRoot: join(h.directory, 'other-worktree') }, { areaCatalog: 'synthetic-hosted-areas/2' }, { areas: h.profile.areas.slice(1) }, { id: 'hosted-two' }]) {
+    assert.throws(() => readRun(h.file, { profile: { ...h.profile, ...changed } }), elsewhere);
+  }
+  assert.equal(readRun(h.file, { profile: { ...h.profile, areas: [...h.profile.areas].reverse() } }).id, h.run.id, 'profile areas compare as a set');
+  updateRun(h.file, (run: object) => appendEvent(run, { type: 'lesson', text: 'Synthetic resume.' }, compositeSource(), NOW + 1000), { profile: h.profile });
+  assert.equal(readRun(h.file, { profile: h.profile }).events.length, 1);
+});
+
+test('profile records validate against profile areas and record release cases in regression mode', (t) => {
+  const h = profileFixture(t);
+  const make = (spec: object, profile: object = h.profile, inputs: object = compositeSource()) => createRun(join(h.directory, `run-${Math.random()}.json`), spec, inputs, NOW, undefined, profile);
+  assert.throws(() => createRun(join(h.directory, 'standalone-hosted.json'), h.spec, compositeSource(), NOW), /Case needs known dependency areas/, 'standalone records never accept profile areas');
+  const unknown = structuredClone(h.spec); unknown.cases[0].areas.push('hosted-unknown');
+  assert.throws(() => make(unknown), /Case needs known dependency areas/);
+  assert.throws(() => make({ ...h.spec, mode: 'release' }), { message: 'This profile records release cases in regression mode; its release gate is the composite report.' });
+  const partial = compositeSource(); delete (partial.areas as Record<string, string>)['hosted-tenancy'];
+  assert.throws(() => make(h.spec, h.profile, partial), /Source provider does not fingerprint profile areas: hosted-tenancy\./);
+  for (const [patch, refusal] of [[{ id: 'standalone' }, /other than standalone/], [{ areas: ['delivery', 'delivery'] }, /unique exact IDs/],
+    [{ projectRoot: 'relative/root' }, /absolute project root/], [{ releaseGate: 'checkpoint' }, /releaseGate: composite/], [{ extra: true }, /Unexpected record fields: extra/]] as const) {
+    assert.throws(() => make(h.spec, { ...h.profile, ...patch }), refusal);
+  }
+
+  h.append({ type: 'lesson', text: 'Synthetic hosted lesson.', areas: ['hosted-ingress'] });
+  assert.throws(() => h.standalone.append({ type: 'lesson', text: 'x', areas: ['hosted-ingress'] }), /Lesson areas must be known areas/);
+  const attempt = h.append({ type: 'begin', caseId: 'routing-a' });
+  const failure = h.append(h.finish(attempt.id, { result: 'fail', category: 'product' }), NOW + 2000);
+  const repair = { type: 'repair', repairId: 'ingress', failureIds: [failure.id], priority: 'isolated', owner: 'agent-ingress', state: 'diagnosing', areas: ['hosted-ingress'], blocks: [], summary: 'Diagnose the synthetic ingress.' };
+  h.append(repair, NOW + 3000);
+  assert.throws(() => h.append({ ...repair, repairId: 'unknown', areas: ['hosted-unknown'] }, NOW + 3000), /Repair needs known affected areas/);
+  // A source provider regression is refused when it is written, not later.
+  assert.throws(() => h.append({ type: 'refresh', spec: h.spec, reason: 'Synthetic provider regression.' }, NOW + 4000, partial), /does not fingerprint profile areas: hosted-tenancy/);
+  assert.throws(() => h.append({ type: 'refresh', spec: { ...h.spec, mode: 'release' }, reason: 'Synthetic promotion.' }, NOW + 4000), /regression mode/);
+  assert.equal(h.append({ type: 'refresh', spec: h.spec, reason: 'Synthetic readback.' }, NOW + 4000).source.areas['hosted-tenancy'], 'one');
+});
+
+test('changing one profile area stales exactly the cases that declare it', (t) => {
+  const h = profileFixture(t);
+  for (const caseId of ['routing-a', 'tenancy-b']) h.append(h.finish(h.append({ type: 'begin', caseId }).id), NOW + 2000);
+  const results = (inputs: object) => status(h.run, inputs, NOW + 3000).cases.map((c: any) => `${c.id}:${c.result}`);
+  assert.deepEqual(results(compositeSource()), ['routing-a:pass', 'tenancy-b:pass']);
+  assert.deepEqual(results(compositeSource({ 'hosted-ingress': 'two' })), ['routing-a:stale', 'tenancy-b:pass']);
+  assert.deepEqual(results(compositeSource({ 'hosted-tenancy': 'two' })), ['routing-a:pass', 'tenancy-b:stale']);
+  assert.deepEqual(results(compositeSource({ 'core-candidate': 'two' })), ['routing-a:stale', 'tenancy-b:stale']);
+  assert.deepEqual(results({ ...compositeSource(), tree: 'unmapped-change' }), ['routing-a:pass', 'tenancy-b:pass'], 'content-addressed by area');
+  const partial = compositeSource(); delete (partial.areas as Record<string, string>)['hosted-ingress'];
+  assert.throws(() => status(h.run, partial, NOW + 3000), /Source provider does not fingerprint area hosted-ingress\./);
+});
+
+test('the standalone CLI and offline runner refuse profile records; a profile records through the same CLI', async (t) => {
+  const h = profileFixture(t), { repo, git, commit } = syntheticCheckout(h.directory, 'standalone-source');
+  writeFileSync(join(repo, 'README.md'), 'Synthetic CLI source.'); git('add', '.'); commit('fixture');
+  const spec = structuredClone(h.spec);
+  spec.capabilities.owner.observedAt = new Date(Date.now() - 1000).toISOString();
+  spec.capabilities.owner.expiresAt = new Date(Date.now() + 60_000).toISOString();
+  const specFile = join(h.directory, 'hosted-spec.json'), runFile = join(h.directory, 'hosted-cli-run.json');
+  writeFileSync(specFile, JSON.stringify(spec));
+  const coordinator = { record: h.profile, source: () => compositeSource() };
+  let output = '', error = '';
+  const cli = (profile: object | undefined, ...args: string[]) => {
+    output = ''; error = '';
+    return runRecordCli(args, repo, { stdout: (v: string) => { output += v; }, stderr: (v: string) => { error += v; } }, profile);
+  };
+  assert.equal(cli(coordinator, 'template', '--mode', 'changed', '--area', 'delivery', '--output', join(h.directory, 'template.json')), 2);
+  assert.match(error, /spec templates come from its planner/);
+  assert.equal(cli(coordinator, 'init', '--spec', specFile, '--run', runFile), 0, error);
+  assert.equal(JSON.parse(readFileSync(runFile, 'utf8')).schema, SCHEMA_V2);
+  for (const args of [['status'], ['report'], ['begin', '--case', 'routing-a'], ['lesson', '--text', 'Synthetic.']]) {
+    assert.equal(cli(undefined, ...args, '--run', runFile), 2);
+    assert.match(error, /Record belongs to profile hosted at .*; resume it with that profile's coordinator\./);
+  }
+  assert.equal(JSON.parse(readFileSync(runFile, 'utf8')).events.length, 0, 'the standalone CLI wrote nothing');
+  assert.equal(cli(coordinator, 'begin', '--case', 'routing-a', '--run', runFile), 0, error);
+  const event = join(h.directory, 'hosted-finish.json'); writeFileSync(event, JSON.stringify(h.finish(JSON.parse(output).attemptId)));
+  assert.equal(cli(coordinator, 'record', '--event', event, '--run', runFile), 0, error);
+  assert.equal(cli(coordinator, 'status', '--run', runFile), 0, error);
+  assert.equal(JSON.parse(output).cases[0].result, 'pass');
+  assert.equal(cli(coordinator, 'report', '--run', runFile), 0, error);
+  assert.match(output, /routing-a .*pass/);
+  assert.equal(cli(coordinator, 'status', '--run', h.standalone.file), 2);
+  assert.match(error, /Standalone record; resume it with the standalone profile/);
+  assert.equal(cli({ record: h.profile }, 'status', '--run', runFile), 2);
+  assert.match(error, /needs a source provider/);
+  const addCase = (profile: object | undefined, output: string) => cli(profile, 'case-add', '--spec', specFile, '--output', join(h.directory, output),
+    '--case', 'ingress-c', '--title', 'Synthetic ingress', '--context', 'local', '--area', 'hosted-ingress', '--require', 'owner', '--proof', 'slack');
+  assert.equal(addCase(coordinator, 'with-profile-case.json'), 0, error);
+  assert.equal(addCase(undefined, 'standalone-case.json'), 2);
+  assert.match(error, /Case needs known dependency areas/);
+
+  // The offline runner writes receipts only into standalone records.
+  const logged: string[] = [], log = console.log, warn = console.error;
+  console.log = () => {}; console.error = (value: string) => { logged.push(String(value)); };
+  try { assert.equal(await regressionMain(['--area', 'verification', '--record', runFile]), 2); } finally { console.log = log; console.error = warn; }
+  assert.match(logged.join('\n'), /Record belongs to profile hosted/);
+});
+
+test('a run family cannot mix standalone and profile records', (t) => {
+  const h = profileFixture(t), { standalone } = h;
+  const lineage = (parent: { file: string, run: { id: string } }) => ({ parent: { path: parent.file, runId: parent.run.id }, originalCases: {} });
+  const hostedChild = join(h.directory, 'hosted-child.json');
+  createRun(hostedChild, h.spec, compositeSource(), NOW, lineage(standalone), h.profile);
+  assert.throws(() => readRunFamily(hostedChild, compositeSource(), 32, { profile: h.profile }), /Run family mixes record schemas or profiles: Standalone record/);
+  const standaloneChild = join(h.directory, 'standalone-child.json');
+  createRun(standaloneChild, standalone.spec, source(), NOW, lineage(h));
+  assert.throws(() => readRunFamily(standaloneChild, source()), /Run family mixes record schemas or profiles: Record belongs to profile hosted/);
+  const sibling = join(h.directory, 'hosted-sibling.json');
+  createRun(sibling, h.spec, compositeSource(), NOW, lineage(h), h.profile);
+  assert.equal(readRunFamily(sibling, compositeSource(), 32, { profile: h.profile }).records.length, 2);
 });

@@ -1,7 +1,6 @@
 // Explicit carry-forward receipts for an attended candidate upgrade. No live actions.
-import { caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
+import { areaNames, caseInputs, changedInputs, digest, recordedInputs } from './verification-inputs.mjs';
 import { repairInputs } from './verification-repairs.mjs';
-import { REGRESSION_AREAS } from './regression-plan.mjs';
 import { suitableCapability } from './verification-scope.mjs';
 
 const need = (value, message) => { if (!value) throw new Error(message); };
@@ -18,7 +17,7 @@ const stableInputs = (inputs) => ({ ...inputs, context: withoutVersion(inputs.co
 const cleanSource = (source) => source && text(source.tree) && /^[a-f0-9]{40}$/.test(source.head)
   && source.dirty === false && source.areas && Object.keys(source.areas).length > 0
   && Object.values(source.areas).every(text);
-const fullSource = (source) => cleanSource(source) && Object.keys(REGRESSION_AREAS).every((area) => text(source.areas[area]));
+const fullSource = (source, areas) => cleanSource(source) && areas.every((area) => text(source.areas[area]));
 const attendedInputs = (run, spec, selected, source) => ({ ...caseInputs(spec, selected, source), ...repairInputs(run, selected.id) });
 
 function usablePrerequisites(spec, selected, receipts, now, intact) {
@@ -88,7 +87,8 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact,
   const beforeSource = anchor.type === 'begin' ? anchor.source : anchor.afterSource;
   const beforeContext = anchor.type === 'begin' ? anchor.inputs.context : anchor.afterContext;
   const afterContext = spec.contexts[input.context];
-  need(cleanSource(beforeSource) && fullSource(source), 'Carry-forward requires clean complete recorded source fingerprints; unknown source impact requires fresh evidence.');
+  const areas = areaNames(run);
+  need(cleanSource(beforeSource) && fullSource(source, areas), 'Carry-forward requires clean complete recorded source fingerprints; unknown source impact requires fresh evidence.');
   need(beforeContext.servingVersion !== afterContext.servingVersion, 'Truthfully refresh to a different serving version before recording its transition.');
   need(same(withoutVersion(beforeContext), withoutVersion(afterContext)), 'Changed runtime, target, grade, model, actor, fixtures, state or configuration requires fresh evidence.');
   const refresh = run.events.findLast((event) => event.type === 'refresh');
@@ -114,10 +114,10 @@ export function recordTransition(run, spec, input, source, evidenceRefs, intact,
   // An area one side never recorded cannot be compared. It counts as changed
   // only when a case in this context depends on it.
   const contextAreas = new Set(spec.cases.filter((selected) => selected.context === input.context).flatMap((selected) => selected.areas));
-  const changedAreas = Object.keys(REGRESSION_AREAS).filter((area) => (Object.hasOwn(beforeSource.areas, area) && Object.hasOwn(source.areas, area)
+  const changedAreas = areas.filter((area) => (Object.hasOwn(beforeSource.areas, area) && Object.hasOwn(source.areas, area)
     ? beforeSource.areas[area] !== source.areas[area] : contextAreas.has(area)));
   need(Array.isArray(input.impactAreas) && new Set(input.impactAreas).size === input.impactAreas.length
-    && input.impactAreas.every((area) => Object.hasOwn(REGRESSION_AREAS, area))
+    && input.impactAreas.every((area) => areas.includes(area))
     && changedAreas.every((area) => input.impactAreas.includes(area)), 'Declared impact must include every changed source area.');
   need(beforeSource.tree === source.tree || changedAreas.length > 0, 'Unmapped source change requires fresh evidence.');
   const evidence = evidenceRefs(input.evidence);

@@ -57,26 +57,26 @@ export function assertReleaseEnvironment(root) {
   if (privateFiles.length) throw new Error(`Release checks require a checkout without private environment files: ${privateFiles.join(', ')}. Use an isolated clean checkout; do not delete operator configuration.`);
 }
 
-function git(args) {
-  const result = spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+function git(args, root = ROOT) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`git ${args[0]} failed; supply a valid --base or explicit --area`);
   return result.stdout.trimEnd();
 }
 
-function changedFiles(base) {
-  // Branch changes plus staged, unstaged, and untracked source. A passed base
-  // is resolved to a commit first, never interpreted as a shell command.
+/** Branch changes plus staged, unstaged, and untracked source, and the commit they were diffed against. */
+export function changedFiles(base, root = ROOT) {
+  // A passed base is resolved to a commit first, never interpreted as a shell command.
   let revision;
-  if (base) revision = git(['rev-parse', '--verify', `${base}^{commit}`]);
+  if (base) revision = git(['rev-parse', '--verify', `${base}^{commit}`], root);
   else {
-    const reference = spawnSync('git', ['merge-base', 'HEAD', 'origin/main'], { cwd: ROOT, encoding: 'utf8' });
+    const reference = spawnSync('git', ['merge-base', 'HEAD', 'origin/main'], { cwd: root, encoding: 'utf8' });
     if (reference.status !== 0) throw new Error('No origin/main comparison available; supply --base or --area');
     revision = reference.stdout.trim();
   }
-  return [...new Set([
-    ...git(['diff', '--name-only', '-z', '--no-renames', revision, '--']).split('\0'),
-    ...git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
-  ].filter(Boolean))];
+  return { revision, files: [...new Set([
+    ...git(['diff', '--name-only', '-z', '--no-renames', revision, '--'], root).split('\0'),
+    ...git(['ls-files', '--others', '--exclude-standard', '-z'], root).split('\0'),
+  ].filter(Boolean))] };
 }
 
 export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
@@ -125,14 +125,19 @@ export async function main(argv) {
       return 0;
     }
     const options = parseRegressionArgs(argv);
-    const files = options.mode === 'changed' && (options.areas.length === 0 || options.base)
-      ? changedFiles(options.base) : [];
+    const { revision, files } = options.mode === 'changed' && (options.areas.length === 0 || options.base)
+      ? changedFiles(options.base) : { files: [] };
     const testFiles = readdirSync(path.join(ROOT, 'tests'), { recursive: true })
       .map(String).filter((file) => file.endsWith('.test.ts'))
       .map((file) => `tests/${file.replaceAll('\\', '/')}`);
     const plan = createRegressionPlan({ ...options, files, testFiles });
+    // A plan names the commit it diffed against and every file it classified,
+    // so a caller can confirm it planned the intended range.
+    if (options.planOnly) {
+      console.log(JSON.stringify({ ...plan, base: revision ?? null, files: [...files].sort() }, null, 2));
+      return 0;
+    }
     console.log(JSON.stringify(plan, null, 2));
-    if (options.planOnly) return 0;
     assertNodeVersion(process.version, { baseline: options.mode === 'release' });
     if (options.mode === 'release' && git(['status', '--porcelain']).length > 0) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');

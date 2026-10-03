@@ -8,6 +8,8 @@ infrastructure resource ledger keep their existing schemas and safety rules.
 Do not import, rewrite, or migrate an active run to this format.
 Run this notebook from the operator's Git checkout; input fingerprinting requires
 Git. An exported installation artifact is a test fixture, not the record's checkout.
+Fingerprinting refuses a checkout with a submodule, whose commit could otherwise
+move without making any evidence stale.
 
 ## Preflight and selected scope
 
@@ -563,3 +565,32 @@ into a new release checkpoint.
 Cleanup belongs to the record that registered the resource. Update that parent
 record with the exact cleanup readback even when a child retest supplied it;
 linking a child neither transfers ownership nor satisfies the original obligation.
+
+## Records for another profile
+
+A project that pins Chickpea, such as the hosted service, keeps its attended
+records with this helper under its own profile. Such a record has schema
+`chickpea-attended-run/v2`: a v1 record plus a required `profile` block with
+`id`, `areaCatalog`, `areas`, `source`, `projectRoot` and `releaseGate:
+"composite"`. The profile's `areas` replace Core's for cases, lessons, repairs
+and candidate transitions; Core never interprets them. The profile's source
+provider must fingerprint every profile area. A write whose source misses one
+is refused, and so is grading a case on an area the source lacks. Case, context,
+capability, area and child-case IDs become record keys, and the record refuses
+any key containing `password`, `credential`, `authorization`, `cookie`,
+`secret`, `accessToken` or `refreshToken`. Keep those words out of profile IDs,
+such as `tenant-secret-rotation` or `hosted-secrets`.
+
+Only that profile's coordinator resumes the record, by passing the same profile
+block. Any other reader is refused with the profile ID and project root to use.
+`verify:live:record` and `verify:regression --record` are the standalone
+profile: they refuse a v2 record, and a coordinator refuses a v1 record. A v1
+record carrying a `profile` block is refused. A follow-up family cannot mix
+schemas or profiles; a mixed family is refused, not reported as a missing
+ancestor. Under a profile, `template` is refused because the profile's planner
+writes the spec.
+
+A profile's release gate is its composite report. Only the offline runner's
+checkpoint completes a `release` record, so a profile record refuses `release`
+mode: record release cases in `regression` mode and let the composite report
+decide the release. Existing v1 records are read as before and never rewritten.

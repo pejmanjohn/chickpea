@@ -1,7 +1,9 @@
 import { outsideGit } from './private-evidence.mjs';
 import { currentSpec, readRun, status } from './verification-record.mjs';
 
-export function readRunFamily(file, source, maxDepth = 32) {
+/** Every record in a family is read for the same profile; a family that mixes
+ * schemas or profiles is refused, never reported as a missing ancestor. */
+export function readRunFamily(file, source, maxDepth = 32, { profile } = {}) {
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1 || maxDepth > 128) throw new Error('Run family depth must be an integer from 1 to 128.');
   const records = [], seenIds = new Set(), seenPaths = new Set();
   let path = outsideGit(file), expectedId, child;
@@ -10,8 +12,9 @@ export function readRunFamily(file, source, maxDepth = 32) {
     if (seenPaths.has(path)) throw new Error('Run family contains a path cycle.');
     seenPaths.add(path);
     let run;
-    try { run = readRun(path); }
+    try { run = readRun(path, { profile }); }
     catch (cause) {
+      if (records.length && cause.code === 'RECORD_PROFILE_MISMATCH') throw new Error(`Run family mixes record schemas or profiles: ${cause.message}`);
       if (records.length) return { records, missingAncestor: { path, runId: expectedId, error: cause.message } };
       throw cause;
     }
