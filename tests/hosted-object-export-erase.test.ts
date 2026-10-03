@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { mintSetupCapability, setupCapabilityUrl } from '../src/auth/setup-capability.mjs';
 import { createWebsiteLogin } from '../src/browser/logins.ts';
 import { saveStoredComposioProjectKey } from '../src/config/composio-settings.ts';
 import {
@@ -18,6 +19,7 @@ import {
   GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
   loadOrCreateGatewayDeploymentIdentity,
 } from '../src/slack/gateway/identity.ts';
+import { renderSlackActionLink } from '../src/slack/message-format.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { promisify } from '../src/state/async-facade.ts';
 import {
@@ -321,6 +323,68 @@ test('a portable export nulls every envelope a setting keeps inside its JSON val
   // A value with no envelope is exported byte for byte.
   assert.equal(settingText('slack.teamName'), 'Team T_A');
   assert.equal(settingText('managed.composio.configuration'), await settings.getSetting('managed.composio.configuration'));
+});
+
+test('a portable export cuts Chickpea\'s setup capabilities from links and the text that carries them; full keeps them', async () => {
+  // Hosted run 4: a new Agent's welcome posted a connector setup link whose
+  // `#setup=` capability stays live for 24 hours, kept in the receipt outbox
+  // and in two stored copies of the posted Slack text.
+  const deployment = hostedDeployment(['inst_export_setup']);
+  const a = deployment.installation('inst_export_setup');
+  populate(deployment, a, 'T_A');
+  const base = 'https://chickpea.example.com';
+  const [connector, admin] = [await mintSetupCapability(), await mintSetupCapability()];
+  const setupUrl = `${base}/setup/setup_welcome_${'a'.repeat(32)}#setup=${connector.capability}`;
+  const adminUrl = setupCapabilityUrl(base, admin.capability);
+  const posted = `Hi! I'm Tips.\n${renderSlackActionLink(setupUrl, 'Connect Monday.com')}`;
+  // Someone else's link that happens to use the same fragment is the customer's content.
+  const theirs = `https://docs.example.org/guide#setup=${'b'.repeat(43)}`;
+  a.db.run(
+    `INSERT INTO management_receipt_outbox (outbox_id, operation_id, destination_json, receipt_json, status,
+       next_attempt_at, created_at, updated_at) VALUES ('outbox_1', 'op_1', '{}', ?, 'delivered', 0, 1, 1)`,
+    JSON.stringify({
+      kind: 'agent_welcome', text: 'Welcome',
+      // A link field loses its whole fragment, whatever its capability's shape.
+      connectorActions: [{ label: 'Monday.com', setupUrl }, { label: 'Notion', setupUrl: `${base}/setup/op_2#setup=v2.legacy` }],
+    }),
+  );
+  a.db.run(
+    `INSERT INTO config_slack_public_context (workspace_id, channel_id, root_ts, message_ts, role, text, updated_at)
+     VALUES ('T_A', 'D_A', '1.1', '1.2', 'agent', ?, 1)`,
+    `${posted}\nSee <${theirs}|their guide>.`,
+  );
+  a.stores.settings.setSetting('slack.lastSetupLink', `Open ${adminUrl} to finish.`);
+  const agent = inventory(a).find((object) => object.kind === 'slack_agent')!;
+  const transcript = deployment.object(SLACK_AGENT, agent.name).storage;
+  transcript.sql.exec('INSERT INTO flue_transcript (body) VALUES (?)', JSON.stringify({
+    role: 'tool', content: [{ type: 'text', text: JSON.stringify({ handoffUrl: setupUrl, expiresAt: 1 }) }],
+  }));
+  await transcript.put('chickpea:last-reply', posted);
+
+  const store = installationStateStoreObject(a.env);
+  const full = (await exportAll(a.env, store, 'full')).text + (await exportAll(a.env, agent, 'full')).text;
+  const portable = (await exportAll(a.env, store, 'portable')).text + (await exportAll(a.env, agent, 'portable')).text;
+  for (const { capability } of [connector, admin]) {
+    assert.ok(full.includes(capability), 'a full export keeps every setup capability');
+    assert.equal(portable.includes(capability), false, 'a portable export keeps no setup capability');
+  }
+  assert.equal(portable.includes('v2.legacy'), false);
+  // The links stay, without their capability.
+  const records = portable.trim().split('\n').map((line) => JSON.parse(line));
+  const row = (table: string) => records.find((record) => record.t === 'row' && record.table === table).row;
+  const bare = `${base}/setup/setup_welcome_${'a'.repeat(32)}`;
+  assert.deepEqual(JSON.parse(row('management_receipt_outbox').receipt_json).connectorActions, [
+    { label: 'Monday.com', setupUrl: bare }, { label: 'Notion', setupUrl: `${base}/setup/op_2` },
+  ]);
+  assert.equal(row('config_slack_public_context').text, `Hi! I'm Tips.\n<${bare}|Connect Monday.com>\nSee <${theirs}|their guide>.`);
+  assert.equal(records.find((record) => record.t === 'row' && record.table === 'app_settings' &&
+    record.row.key === 'slack.lastSetupLink').row.value, `Open ${base}/admin/setup to finish.`);
+  const message = records.find((record) => record.t === 'row' && record.table === 'flue_transcript' &&
+    record.row.body.startsWith('{')).row.body;
+  const tool = JSON.parse(JSON.parse(message).content[0].text);
+  assert.deepEqual(tool, { handoffUrl: bare, expiresAt: 1 });
+  assert.equal(records.find((record) => record.t === 'kv' && record.key === 'chickpea:last-reply').value,
+    `Hi! I'm Tips.\n<${bare}|Connect Monday.com>`);
 });
 
 test('host functions refuse on a standalone deployment', async () => {
