@@ -142,7 +142,7 @@ import {
   packageRegistrySandboxOutbound,
   type SandboxOutboundHandler,
 } from './sandbox/egress-outbound.ts';
-import { sandboxObjectEnv, type SandboxObjectContext } from './sandbox/sandbox-object.ts';
+import { sandboxObjectEnv, sandboxTurnReaders, type SandboxObjectContext } from './sandbox/sandbox-object.ts';
 import {
   checkpointBucket,
   isCheckpointSweepMinute,
@@ -204,7 +204,6 @@ import {
   type TurnExecutionPorts,
 } from './slack/turn-executor.ts';
 import { slackTurnExecutor } from './slack/turn-executor-flag.ts';
-import { sandboxTurnReaders } from './slack/thread-runner.ts';
 import {
   boundedStopCall,
   receiveAlarmExecutorStop,

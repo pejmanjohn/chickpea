@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { getSandbox } from '@cloudflare/sandbox';
+
 import {
   deploymentTenancy,
   InstallationContextError,
@@ -10,9 +12,11 @@ import {
   scopedObjectName,
   type ObjectContext,
 } from '../config/installation-scope.ts';
-import { getSlackStateStore, type PlatformEnv } from '../config/state-backend.ts';
+import { getSlackStateStore } from '../config/state-backend.ts';
+import type { SandboxTurnReader, TurnExecutionPorts } from '../slack/turn-executor.ts';
 import type { InstallationWorkspaceObject } from '../state/object-inventory.ts';
-import { CLOUDFLARE_SANDBOX_OPTIONS } from './lifecycle.ts';
+import { CLOUDFLARE_SANDBOX_OPTIONS, cloudflareSandboxOptionVariants } from './lifecycle.ts';
+import { reconnectingSandboxStub } from './reconnect.ts';
 
 /**
  * Where a coding workspace's Sandbox Durable Object lives.
@@ -40,13 +44,22 @@ type Env = Record<string, unknown>;
 /**
  * The Sandbox Durable Object name of a workspace. Standalone: the workspace
  * ID, unchanged. Installation tenancy: `i1~<installationId>~w<21 base32>`,
- * lowercase, at most 63 characters; an installation ID too long for that is
- * refused, as is an env that serves no installation.
+ * lowercase, at most 63 characters; an installation ID too long for that, or
+ * with an uppercase letter, is refused, as is an env that serves no
+ * installation.
  */
 export function sandboxObjectName(env: Env | undefined, workspaceId: string): string {
   if (!workspaceId) throw new Error('A coding workspace ID is required.');
   const scope = requireInstallationScope(env);
   if (!scope) return workspaceId;
+  // The SDK's normalized IDs lowercase a name, so an uppercase installation
+  // ID could reach the Sandbox of the installation it lowercases to.
+  if (/[A-Z]/.test(scope.installationId)) {
+    throw new InstallationContextError(
+      'installation_context_invalid',
+      'A coding workspace Sandbox needs a lowercase installation ID.',
+    );
+  }
   const digest = createHash('sha256').update(`${HOSTED_SANDBOX_DIGEST_DOMAIN}${workspaceId}`).digest();
   const name = scopedObjectName(scope, `w${base32(digest).slice(0, HOSTED_SANDBOX_DIGEST_CHARS)}`);
   if (name.length > SANDBOX_ID_MAX_CHARS) {
@@ -75,17 +88,41 @@ export interface SandboxStubDependencies {
  * Cheap and lazy otherwise: it starts no container.
  */
 export async function sandboxStub<T = unknown>(
-  env: PlatformEnv | Env | undefined,
+  env: Env | undefined,
   workspaceId: string,
   options: SandboxOptions = CLOUDFLARE_SANDBOX_OPTIONS,
   dependencies: SandboxStubDependencies = {},
 ): Promise<T> {
-  const platformEnv = env as { SANDBOX?: unknown; Sandbox?: unknown } | undefined;
-  const binding = platformEnv?.SANDBOX ?? platformEnv?.Sandbox;
+  const binding = env?.SANDBOX ?? env?.Sandbox;
   if (!binding) throw new Error('No Sandbox binding');
-  const name = sandboxObjectName(env as Env | undefined, workspaceId);
-  await recordWorkspaceObject(env as Env | undefined, { kind: 'sandbox', name }, dependencies.record);
+  const name = sandboxObjectName(env, workspaceId);
+  await recordWorkspaceObject(env, { kind: 'sandbox', name }, dependencies.record);
   return (await (dependencies.open ?? openCloudflareSandbox)(binding, name, options)) as T;
+}
+
+/** The coding Sandbox readers of one thread (identical for both executors). */
+export function sandboxTurnReaders(env: Env): TurnExecutionPorts['sandboxes'] {
+  return (sandboxKey) => {
+    if (!(env.SANDBOX ?? env.Sandbox)) return [];
+    // An unscoped env, or a malformed tenancy, throws here: never "no Sandbox".
+    const scope = requireInstallationScope(env);
+    if (scope) {
+      try {
+        sandboxObjectName(env, sandboxKey);
+      } catch (error) {
+        // An installation that cannot name a Sandbox never opened one.
+        if (error instanceof InstallationContextError) return [];
+        throw error;
+      }
+    }
+    // The uppercase bridge reopens a standalone thread key under its
+    // normalized name. It would lowercase an installation ID too, so an
+    // installation's Sandbox is opened under its own name only.
+    const variants = scope ? [CLOUDFLARE_SANDBOX_OPTIONS] : cloudflareSandboxOptionVariants(sandboxKey);
+    // A replaced Sandbox instance leaves a dead stub; reconnect instead.
+    return variants.map((options) => () =>
+      reconnectingSandboxStub(() => sandboxStub(env, sandboxKey, options)) as ReturnType<typeof getSandbox> & SandboxTurnReader);
+  };
 }
 
 async function openCloudflareSandbox(binding: unknown, name: string, options: SandboxOptions): Promise<unknown> {
@@ -97,6 +134,7 @@ async function openCloudflareSandbox(binding: unknown, name: string, options: Sa
 export type WorkspaceObjectRecorder = (env: Env, object: InstallationWorkspaceObject) => Promise<void>;
 
 /** Names this isolate already recorded; the inventory never forgets one, so neither does this. */
+// A tenant-store restore that drops inventory rows needs a fresh isolate to record them again.
 const recordedObjects = new Set<string>();
 const MAX_REMEMBERED_OBJECTS = 10_000;
 
@@ -120,7 +158,7 @@ export async function recordWorkspaceObject(
 }
 
 async function recordInStateStore(env: Env, object: InstallationWorkspaceObject): Promise<void> {
-  const store = getSlackStateStore(env as PlatformEnv);
+  const store = getSlackStateStore(env);
   if (!store.recordWorkspaceObject) throw new Error('This state store keeps no object inventory.');
   await store.recordWorkspaceObject(object);
 }

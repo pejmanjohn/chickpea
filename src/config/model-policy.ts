@@ -315,6 +315,21 @@ export interface CodingModelAgentRoute {
   runtimeModelRoute?: FrozenRuntimeModelRoute;
 }
 
+/** The coding role run on the Agent's own route; `fallback` when it stands in for a model that cannot be used. */
+export function codingOnAgentModel(agentRoute: CodingModelAgentRoute, fallback: boolean): RuntimePlanCodingModelV1 {
+  return {
+    model: agentRoute.model,
+    runtimeModel: agentRoute.runtimeModel,
+    ...(agentRoute.runtimeModelRoute ? { runtimeModelRoute: agentRoute.runtimeModelRoute } : {}),
+    attribution: {
+      role: 'coding',
+      source: 'agent_model',
+      providerId: providerPrefix(agentRoute.model),
+      fallback,
+    },
+  };
+}
+
 /**
  * Freeze the coding model for one turn. The coding role resolves like the
  * image role (Agent pin, then Workspace default), but an unset role, or a model
@@ -333,19 +348,7 @@ export async function resolveCodingModelForPlan(input: {
     runtimeModelRoute?: FrozenRuntimeModelRoute;
   }>;
 }): Promise<RuntimePlanCodingModelV1> {
-  const agentModel = (fallback: boolean): RuntimePlanCodingModelV1 => ({
-    model: input.agentRoute.model,
-    runtimeModel: input.agentRoute.runtimeModel,
-    ...(input.agentRoute.runtimeModelRoute
-      ? { runtimeModelRoute: input.agentRoute.runtimeModelRoute }
-      : {}),
-    attribution: {
-      role: 'coding',
-      source: 'agent_model',
-      providerId: providerPrefix(input.agentRoute.model),
-      fallback,
-    },
-  });
+  const agentModel = (fallback: boolean) => codingOnAgentModel(input.agentRoute, fallback);
   let resolution: ModelRoleResolution;
   try {
     resolution = await resolveAgentModelRoleFromStore({

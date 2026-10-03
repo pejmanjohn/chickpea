@@ -117,12 +117,9 @@ export async function stageCodingWorkerBinding(
   await stub.chickpeaStageCodingWorkerBinding(JSON.stringify(binding));
 }
 
-type CloudflareContextReader = () => { storage: { sql: TurnInputSql } };
-let cloudflareContext: CloudflareContextReader | undefined;
-
 /** The binding staged in this worker's own object (Cloudflare only). */
 export async function readStagedCodingWorkerBinding(instanceId: string): Promise<CodingWorkerBinding | undefined> {
   if (!isCloudflareTarget()) return undefined;
-  cloudflareContext ??= (await import('@flue/runtime/cloudflare')).getCloudflareContext as unknown as CloudflareContextReader;
-  return readStagedCodingWorkerBindingFrom(cloudflareContext().storage.sql, instanceId);
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return readStagedCodingWorkerBindingFrom(getCloudflareContext().storage.sql, instanceId);
 }

@@ -140,7 +140,7 @@ export async function packageRegistrySandboxOutbound(
     // policy an earlier release stored) standalone reads its setting as it
     // always did; an installation of many reaches no registry.
     const snapshot = context.policy.packageRegistryHosts;
-    const allowedHosts = snapshot ?? (installationServed(env)
+    const allowedHosts = snapshot ?? (deploymentTenancy(env) === 'installation'
       ? []
       : parseSandboxAllowedHosts(await getSettingsStore(env).getSetting(SANDBOX_SETTING_KEYS.allowedHosts)));
     const decision = decideSandboxEgress({
@@ -187,10 +187,6 @@ async function egressScope(
     stub,
     context,
   };
-}
-
-function installationServed(env: PlatformEnv): boolean {
-  return deploymentTenancy(env) === 'installation';
 }
 
 function sandboxPlatformEnv(value: unknown): PlatformEnv & { SANDBOX: SandboxEgressNamespace } {

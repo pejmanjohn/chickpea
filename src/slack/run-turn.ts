@@ -12,6 +12,7 @@ import {
 import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
+  codingOnAgentModel,
   imageCapabilityForResolution,
   resolveAgentModel,
   resolveAgentModelRoleFromStore,
@@ -45,7 +46,6 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { installationRefusesWork } from '../config/installation-admission.ts';
 import { deploymentServesManyInstallations, installationOwnershipOf } from '../config/installation-scope.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
-import { providerPrefix } from '../config/model-access.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
@@ -2755,24 +2755,18 @@ async function withHostedCodingCredential(
   if (coding.model === input.agentRoute.model) {
     return agentCredential ? { ...coding, modelCredential: agentCredential } : coding;
   }
+  // No key falls back; a store that cannot be read fails the turn, as the
+  // Agent's own credential read does.
   const credential = await (input.resolveCredential ?? resolveModelCredentialAttribution)(
     coding.model,
     input.env,
     input.settings,
     undefined,
     { registerUsage: false },
-  ).catch(() => null);
+  );
   if (credential) return { ...coding, modelCredential: frozenCredential(credential) };
   return {
-    model: input.agentRoute.model,
-    runtimeModel: input.agentRoute.runtimeModel,
-    ...(input.agentRoute.runtimeModelRoute ? { runtimeModelRoute: input.agentRoute.runtimeModelRoute } : {}),
-    attribution: {
-      role: 'coding',
-      source: 'agent_model',
-      providerId: providerPrefix(input.agentRoute.model),
-      fallback: true,
-    },
+    ...codingOnAgentModel(input.agentRoute, true),
     ...(agentCredential ? { modelCredential: agentCredential } : {}),
   };
 }

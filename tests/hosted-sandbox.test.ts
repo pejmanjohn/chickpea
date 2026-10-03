@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 
 import { prepareInstallationCodingWorker } from '../src/agents/coding-worker-task.ts';
@@ -9,6 +10,7 @@ import {
   writeStagedCodingWorkerBinding,
 } from '../src/agents/coding-worker-staging.ts';
 import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import {
   installationScopeOf,
   InstallationContextError,
@@ -40,6 +42,7 @@ import {
   sandboxObjectEnv,
   sandboxObjectName,
   sandboxStub,
+  sandboxTurnReaders,
 } from '../src/sandbox/sandbox-object.ts';
 import { guestSandboxKey } from '../src/sandbox/thread-key.ts';
 import { WorkspaceSession, workspaceIdFor, type WorkspaceSandboxStub } from '../src/sandbox/workspace-session.ts';
@@ -61,6 +64,8 @@ import { FakeObjectStorage, hostedInstallation } from './helpers/installation-ob
 /** An installation ID as Cloud mints it: `inst_` and 32 hex, 37 characters. */
 const INSTALLATION_A = `inst_${'0123456789abcdef'.repeat(2)}`;
 const INSTALLATION_B = `inst_${'fedcba9876543210'.repeat(2)}`;
+/** A well-formed installation ID that lowercases to installation A's. */
+const INSTALLATION_A_UPPERCASE = `inst_${'0123456789ABCDEF'.repeat(2)}`;
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as const;
 const hostedEnv = (installationId: string, bindings: Record<string, unknown> = {}) =>
   scopeInstallationEnv({ ...HOSTED, ...bindings } as Record<string, unknown>, { installationId });
@@ -101,6 +106,29 @@ test('a hosted Sandbox name is refused without an installation or past the SDK l
   const tooLong = hostedEnv(`${INSTALLATION_A}x`);
   assert.throws(() => sandboxObjectName(tooLong, THREAD_KEY),
     (error: unknown) => error instanceof InstallationContextError && /too long/.test(error.message));
+  // The SDK's normalized IDs lowercase a name: an uppercase installation ID could reach installation A's Sandbox.
+  assert.equal(INSTALLATION_A_UPPERCASE.toLowerCase(), INSTALLATION_A);
+  assert.throws(() => sandboxObjectName(hostedEnv(INSTALLATION_A_UPPERCASE), THREAD_KEY),
+    (error: unknown) => error instanceof InstallationContextError && error.code === 'installation_context_invalid'
+      && /lowercase/.test(error.message));
+});
+
+test('only a standalone thread\'s Sandbox is also read under its normalized name; a broken env is never "no Sandbox"', () => {
+  const sandbox = { SANDBOX: {} };
+  // Standalone keeps the bridge for an uppercase thread key.
+  assert.equal(sandboxTurnReaders(sandbox)(THREAD_KEY).length, 2);
+  assert.equal(sandboxTurnReaders(sandbox)(THREAD_KEY.toLowerCase()).length, 1);
+  assert.deepEqual(sandboxTurnReaders({})(THREAD_KEY), [], 'no Sandbox binding');
+  // An installation's Sandbox is read under its own name only, whatever the thread key's case.
+  assert.equal(sandboxTurnReaders(hostedEnv(INSTALLATION_A, sandbox))(THREAD_KEY).length, 1);
+  // An installation that cannot name a Sandbox never opened one.
+  assert.deepEqual(sandboxTurnReaders(hostedEnv(INSTALLATION_A_UPPERCASE, sandbox))(THREAD_KEY), []);
+  assert.deepEqual(sandboxTurnReaders(hostedEnv(`${INSTALLATION_A}x`, sandbox))(THREAD_KEY), []);
+  // An unscoped env or a malformed tenancy is a fault, not an absent Sandbox.
+  assert.throws(() => sandboxTurnReaders({ ...HOSTED, ...sandbox })(THREAD_KEY),
+    (error: unknown) => error instanceof InstallationContextError && error.code === 'installation_context_missing');
+  assert.throws(() => sandboxTurnReaders({ CHICKPEA_TENANCY: 'many', ...sandbox })(THREAD_KEY),
+    (error: unknown) => error instanceof InstallationContextError && error.code === 'installation_context_invalid');
 });
 
 function recordingOpener() {
@@ -255,6 +283,74 @@ test('hosted egress fails closed when the Sandbox names no installation or has n
   assert.equal((await packageRegistrySandboxOutbound(new Request(NPM), idle.env, { containerId: 'do_a' })).status,
     SANDBOX_BLOCKED_STATUS);
   assert.deepEqual(fetched, []);
+});
+
+/** Run on the Cloudflare target, where every store is its installation's state store. */
+function onCloudflare(t: TestContext) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  for (const name of ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY']) {
+    const previous = process.env[name];
+    delete process.env[name];
+    t.after(() => { if (previous !== undefined) process.env[name] = previous; });
+  }
+}
+
+test('hosted GitHub egress reads only its own installation\'s GitHub connection', async (t) => {
+  onCloudflare(t);
+  const privateKey = String(generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({
+    type: 'pkcs8', format: 'pem',
+  }));
+  const appIds: Record<string, string> = { [INSTALLATION_A]: 'h12a-app-a', [INSTALLATION_B]: 'h12a-app-b' };
+  // Both installations' state stores, each holding its own GitHub App connection.
+  const read: string[] = [];
+  const TAG_STATE = {
+    getByName(name: string) {
+      const installationId = splitInstallationObjectName(name).scope?.installationId ?? name;
+      return {
+        async settingGetMany(keys: readonly string[]) {
+          read.push(installationId);
+          return {
+            ok: true,
+            value: keys.map((key) => key === GITHUB_SETTING_KEYS.appId
+              ? appIds[installationId] ?? null
+              : key === GITHUB_SETTING_KEYS.privateKey ? privateKey : null),
+          };
+        },
+      };
+    },
+  };
+  const forwarded: Array<{ url: string; authorization: string | null }> = [];
+  const minted: string[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: Request | string, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(input, init);
+    if (/\/app\/installations\/\d+\/access_tokens$/.test(request.url)) {
+      minted.push(request.url);
+      return Response.json({ token: 'token-a', expires_at: new Date(Date.now() + 3_600_000).toISOString() });
+    }
+    forwarded.push({ url: request.url, authorization: request.headers.get('Authorization') });
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+
+  const grant = { id: 'repo_1', installationId: 50_001, accountLogin: 'Acme', fullName: 'Acme/Alpha', enabled: true };
+  const { env, calls } = egressEnv({ ...HOSTED, TAG_STATE }, {
+    installationId: INSTALLATION_A, turnId: 'turn_a', policy: { grants: [grant], mode: 'app' },
+  });
+  const url = 'https://api.github.com/repos/Acme/Alpha/contents/README.md';
+  const response = await githubSandboxOutbound(new Request(url), env, { containerId: 'do_a' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, ['get:do_a', 'egressContext', 'getTurnId']);
+  assert.deepEqual(read, [INSTALLATION_A], 'installation A\'s connection, and never B\'s');
+  assert.deepEqual(minted, ['https://api.github.com/app/installations/50001/access_tokens']);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0]!.url, url);
+  assert.match(forwarded[0]!.authorization ?? '', /token-a/);
 });
 
 test('standalone registry egress keeps its setting outside a configured turn and refuses a Sandbox naming an installation', async (t) => {
@@ -595,4 +691,12 @@ test('an installation freezes the coding model\'s credential, or falls back to t
   const standalone = await freeze(undefined, { codingModel: 'openai/gpt-5.6-sol', resolveCredential: () => CODING_CREDENTIAL });
   assert.equal(standalone.model, 'openai/gpt-5.6-sol');
   assert.equal('modelCredential' in standalone, false);
+});
+
+test('an installation whose credential store cannot be read fails the turn instead of switching the coding model', async () => {
+  const env = hostedEnv(INSTALLATION_A) as PlatformEnv;
+  await assert.rejects(freeze(env, {
+    codingModel: 'openai/gpt-5.6-sol',
+    resolveCredential: () => { throw new Error('credential store unavailable'); },
+  }), /credential store unavailable/);
 });
