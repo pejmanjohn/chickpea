@@ -1692,10 +1692,11 @@ export class RoutineStoreLogic {
           dispatched.push({ instanceId: run.flueAgentEnvelope.instanceId, ...(receipt.uid ? { uid: receipt.uid } : {}) });
         }
       }
-      // A running occurrence's latest attempt prepared it, opening its Work
-      // execution and usage. One admitting is only skipped, as routine
-      // execution skips a refused one.
-      const admission = admissions.at(-1);
+      // A running occurrence's preparing attempt, the one its envelope names
+      // (else its latest), opened its Work execution and usage. One admitting
+      // is only skipped, as routine execution skips a refused one.
+      const envelopeAttempt = run.flueAgentEnvelope?.attemptId;
+      const admission = admissions.find((candidate) => candidate.attemptId === envelopeAttempt) ?? admissions.at(-1);
       if (run.status === 'running' && admission) prepared.push({ run, admission });
       // Each occurrence is its own transaction: a retry finishes what one interrupted.
       this.transitionRun({ occurrenceId: run.id, from: [run.status], to: 'skipped', at, ...reason });

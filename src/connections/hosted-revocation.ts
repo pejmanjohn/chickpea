@@ -47,25 +47,37 @@ export interface ConnectionRevocationOutcome {
 
 /**
  * Why one account's revocation failed, read from the error's class or one of
- * the fixed messages Core's provider fails with, never from its detail:
- * - `provider_unavailable`: no provider serves the managed account's adapter;
+ * the fixed messages Core's provider fails with, never from its detail.
+ * `provider_*` codes are about this deployment's provider adapter, `remote_*`
+ * codes about the provider's own service:
+ * - `provider_not_registered`: no provider serves the managed account's adapter;
  * - `provider_not_configured`: its provider has no key;
  * - `remote_revoke_failed`: the provider did not delete the remote account;
- * - `provider_<code>`: the provider refused the request (throttled, ...);
+ * - `remote_request_invalid`, `remote_throttled`, `remote_unavailable`,
+ *   `remote_outcome_unknown`: the provider's service refused the request, was
+ *   rate limited, was down, or left the outcome unknown;
  * - `dependent_schedules_changed`: dependent schedules changed mid-revoke;
  * - `account_changed`: the account changed mid-revoke;
  * - `oauth_settings_cleanup_failed`: revoked, but its OAuth settings remain;
  * - `unclassified`: anything else.
  */
 export type RevocationFailureCode =
-  | 'provider_unavailable'
+  | 'provider_not_registered'
   | 'provider_not_configured'
   | 'remote_revoke_failed'
-  | `provider_${ManagedProviderRequestError['code']}`
+  | (typeof REMOTE_REQUEST_FAILURES)[ManagedProviderRequestError['code']]
   | 'dependent_schedules_changed'
   | 'account_changed'
   | 'oauth_settings_cleanup_failed'
   | 'unclassified';
+
+/** A provider request's own failure, by its code. */
+const REMOTE_REQUEST_FAILURES = {
+  validation_failed: 'remote_request_invalid',
+  throttled: 'remote_throttled',
+  provider_unavailable: 'remote_unavailable',
+  ambiguous: 'remote_outcome_unknown',
+} as const satisfies Record<ManagedProviderRequestError['code'], string>;
 
 export interface InstallationConnectionRevocation {
   readonly accounts: readonly ConnectionRevocationOutcome[];
@@ -156,8 +168,8 @@ export async function revokeInstallationConnections(
 }
 
 function revocationFailureCode(error: unknown): RevocationFailureCode {
-  if (error instanceof ManagedConnectionProviderUnavailableError) return 'provider_unavailable';
-  if (error instanceof ManagedProviderRequestError) return `provider_${error.code}`;
+  if (error instanceof ManagedConnectionProviderUnavailableError) return 'provider_not_registered';
+  if (error instanceof ManagedProviderRequestError) return REMOTE_REQUEST_FAILURES[error.code];
   if (error instanceof ConnectionScheduleConflictError) return 'dependent_schedules_changed';
   if (error instanceof ConnectionAccountRevisionConflictError) return 'account_changed';
   if (error instanceof Error && error.message === COMPOSIO_KEY_MISSING) return 'provider_not_configured';

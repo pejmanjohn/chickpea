@@ -10,6 +10,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ConnectionAccountInput } from '../src/config/types.ts';
 import { revokeInstallationConnections } from '../src/connections/hosted-revocation.ts';
 import { createManagedConnectionProviderRegistry, type ManagedConnectionProvider } from '../src/connections/managed.ts';
+import { ManagedProviderRequestError } from '../src/connections/managed-errors.ts';
 import { ComposioManagedConnectionProvider } from '../src/connections/providers/composio.ts';
 
 /**
@@ -153,15 +154,26 @@ test('a managed account whose provider fails stays fail-closed, is reported by a
   assert.equal((await a.state()).schedule, 'needs_attention');
   assert.deepEqual(await failed(new ComposioManagedConnectionProvider({})),
     [['connection_managed', 'Error', 'provider_not_configured']]);
+  // The provider's own service, down or rate limited: told apart from a missing adapter below.
+  for (const [failure, code] of [['provider_unavailable', 'remote_unavailable'], ['throttled', 'remote_throttled']] as const) {
+    assert.deepEqual(await failed({
+      ...provider(deleted),
+      revoke: async () => {
+        throw new ManagedProviderRequestError(failure, 'Composio refused the request', {
+          remoteCallCount: 1, providerToolCallCount: 0,
+        });
+      },
+    }), [['connection_managed', 'ManagedProviderRequestError', code]]);
+  }
   const unavailable = await revokeInstallationConnections(a.env, {
     config: a.config, settings: a.settings, providers: createManagedConnectionProviderRegistry([]),
   });
   assert.deepEqual(unavailable.accounts.filter(({ outcome }) => outcome === 'failed').map(({ error, code }) => [error, code]),
-    [['ManagedConnectionProviderUnavailableError', 'provider_unavailable']]);
+    [['ManagedConnectionProviderUnavailableError', 'provider_not_registered']]);
   assert.equal(unavailable.done, false);
   // One log line per failure: the kind, the provider and the code, nothing else.
   assert.deepEqual(warnings.mock.calls.map(({ arguments: [line] }) => JSON.parse(String(line))), [
-    'remote_revoke_failed', 'provider_not_configured', 'provider_unavailable',
+    'remote_revoke_failed', 'provider_not_configured', 'remote_unavailable', 'remote_throttled', 'provider_not_registered',
   ].map((code) => ({
     component: 'connections', event: 'installation_connection_revoke_failed', kind: 'managed', adapterId: 'composio', code,
   })));

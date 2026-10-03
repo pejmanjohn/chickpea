@@ -296,7 +296,8 @@ const PENDING_ROW = "delivered = 0 AND status != 'recovery_required'";
  * (`cancelPendingWork`). Neither run nor delivered again, they are left out
  * of everything an installation's Owner reads (the recovery list and the
  * runtime drain counts): the reason is the operator's, and the operator's
- * record is the host function's result. Only that host function writes the
+ * record is the host function's result. Once settled, one is purged like a
+ * delivered turn (`purgeExpired`). Only that host function writes the
  * reason, and it refuses on standalone.
  */
 const OPERATOR_CANCELLED = 'operator_cancelled';
@@ -2233,8 +2234,17 @@ export class TurnJobStoreLogic {
     // Keep each actor/Agent's latest dispatched context per live binding. Other completed
     // turns retain the ordinary redelivery TTL; expired bindings retain none.
     // Build the retained-ID list once, independently of the terminal-row scan.
-    const expiredTerminalPredicate = `WHERE delivered = 1 AND enqueued_at < ?
-         AND progress_json NOT LIKE '%"cleanup":"pending"%'
+    // An operator-cancelled turn (cancelPendingWork) is never delivered: it is
+    // terminal once settled, when nothing was dispatched or its submission
+    // settled. One dispatched and unsettled is kept, for a repeat cancellation
+    // to abort again. No cleanup sweep reads an undelivered row, so a cleanup
+    // it still owes holds it no longer than any other.
+    const expiredTerminalPredicate = `WHERE enqueued_at < ?
+         AND (
+           (delivered = 1 AND progress_json NOT LIKE '%"cleanup":"pending"%')
+           OR (delivered = 0 AND status = 'recovery_required' AND recovery_reason = '${OPERATOR_CANCELLED}'
+             AND (flue_settlement_json IS NOT NULL OR dispatch_receipt_json IS NULL))
+         )
          AND id NOT IN (
            SELECT retained_id FROM (
              SELECT prior.id AS retained_id, ROW_NUMBER() OVER (
