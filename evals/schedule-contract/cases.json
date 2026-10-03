@@ -7,6 +7,7 @@
       "request": "Schedule a check on June 10, 2030 at 12:30 UTC: reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "Synthetic check",
         "description": "Synthetic fixture",
         "taskText": "reply exactly SYNTHETIC CHECK. Do not run it now. Keep the reply private in this thread.",
@@ -82,6 +83,7 @@
       "request": "Schedule a check tomorrow at 09:15 America/Los_Angeles: check the synthetic status and report it.",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "Local check",
         "description": "Synthetic fixture",
         "taskText": "check the synthetic status and report it.",
@@ -121,6 +123,7 @@
       "request": "Schedule a check in 5 minutes: check the synthetic status. Tell me anything new; otherwise stay silent.",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "Silent check",
         "description": "Synthetic fixture",
         "taskText": "check the synthetic status. Tell me anything new; otherwise stay silent.",
@@ -162,6 +165,7 @@
       "request": "give me an update on TOEFL bookings in 5 minutes",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "TOEFL update",
         "description": "Bookings update",
         "taskText": "Report current TOEFL bookings using SQL Dash.",
@@ -198,6 +202,7 @@
       "request": "can you give me an update on TOEFL bookings in 5 minutes?",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "TOEFL update",
         "description": "Bookings update",
         "taskText": "Report current TOEFL bookings using SQL Dash.",
@@ -234,6 +239,7 @@
       "request": "Check TOEFL bookings again in 5 minutes and tell me anything new.",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "TOEFL update",
         "description": "Bookings update",
         "taskText": "Report current TOEFL bookings using SQL Dash.",
@@ -271,6 +277,7 @@
       "request": "do that again in five minutes",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "TOEFL update",
         "description": "Bookings update",
         "taskText": "Report current TOEFL bookings using SQL Dash.",
@@ -308,6 +315,7 @@
       "request": "ping me about TOEFL bookings every weekday at 9am PT",
       "arguments": {
         "action": "create",
+        "requiredConnectionAccountIds": [],
         "name": "TOEFL update",
         "description": "Bookings update",
         "taskText": "Report current TOEFL bookings using SQL Dash.",

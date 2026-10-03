@@ -1228,6 +1228,15 @@ export function scheduleToolOperation(
   if (data.action === 'create' && (!data.name || !data.taskText || !data.scheduleKind)) {
     throw new ManagementError('invalid_request', 'Name, task text, and schedule kind are required.');
   }
+  // The save refuses new work without them, but only after the action is
+  // recorded, so the requester would get a failure receipt for a call the
+  // Agent can still correct. Refuse it here, as the save would word it.
+  if (data.action === 'create' && data.requiredConnectionAccountIds === undefined) {
+    throw new ManagementError(
+      'invalid_request',
+      'Declare requiredConnectionAccountIds for new work or a changed task; use [] when no connection is needed.',
+    );
+  }
   const ownerAgentId = signal.agentId === CHICKPEA_AGENT_ID
     ? data.ownerAgentId
     : signal.agentId;

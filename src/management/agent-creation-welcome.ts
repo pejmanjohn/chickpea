@@ -135,7 +135,9 @@ async function uniqueInferredConnector(input: {
   const matches = input.catalog.filter((preset) =>
     !input.selected.has(preset.id) &&
     !input.attached.has(preset.id) &&
-    connectorCatalogLookupNames(preset).some((name) =>
+    // Free prose names a service by its name or an alias. A bare preset id
+    // is a slug that can be an ordinary word (`monday`: "every Monday").
+    [preset.name, ...(preset.aliases ?? [])].some((name) =>
       affirmativeMentionIndex(input.corpus, name) !== undefined
     )
   );
