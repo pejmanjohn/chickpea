@@ -65,8 +65,8 @@ function fakePorts(script: RunTurnScript, installation?: () => Promise<unknown>)
       release: record('release'),
     },
     config: {},
-    presentationState: {},
-    settingsStore: {},
+    presentationState: { getRunPresentation: async () => undefined },
+    settingsStore: { getSetting: async () => undefined },
     usageStore: {},
     workStore: {},
     appStores: {},
@@ -273,6 +273,55 @@ test('the last attempt\'s failure final posts under the sender of the turn\'s re
       { username: expected.username, icon_url: expected.icon_url },
       `${label}: the sender`,
     );
+    assert.ok(h.calls.includes('markError("turn_1")'), label);
+  }
+});
+
+test('the failure final still posts as the Agent when its run presentation cannot be read', async (t) => {
+  t.mock.method(console, 'error', () => undefined);
+  t.mock.method(console, 'warn', () => undefined);
+  const unreadable: Array<[string, () => Promise<never>]> = [
+    ['rejects', async () => { throw new Error('presentation store unavailable'); }],
+    // A port that throws before it returns a promise.
+    ['throws', () => { throw new Error('presentation store unavailable'); }],
+  ];
+  for (const [label, getRunPresentation] of unreadable) {
+    const posted: Array<Record<string, unknown>> = [];
+    const client = {
+      chat: {
+        async postMessage(input: Record<string, unknown>) {
+          posted.push(input);
+          return { ok: true, channel: 'D1', ts: '1785900000.000900' };
+        },
+      },
+    } as unknown as WebClient;
+    const h = fakePorts(async () => { throw new Error('Provider openai needs setup before this model can run.'); },
+      async () => ({ workspaceId: 'T1', client }));
+    const settingReads: string[] = [];
+    const ports = h.ports as { presentationState: unknown; settingsStore: unknown };
+    ports.presentationState = { getRunPresentation };
+    // The pinned public URL the replies' footer links to.
+    ports.settingsStore = {
+      getSetting: async (key: string) => {
+        settingReads.push(key);
+        return 'https://chickpea.example/';
+      },
+    };
+    const job = pendingJob({
+      runId: 'run_failed',
+      attempts: 1,
+      assignment: {
+        workspaceId: 'T1',
+        channelId: 'D1',
+        agentId: 'agent_analyst',
+        agent: { id: 'agent_analyst', kind: 'user', revision: 1, name: 'Analyst', instructions: '', enabled: true },
+      } as never,
+    });
+    assert.equal(await executeTurnJob(job, h.ports, h.options), true, label);
+    assert.equal(posted.length, 1, `${label}: one failure final`);
+    assert.equal(posted[0]!.text, AGENT_FAILURE_TEXT, label);
+    assert.equal(posted[0]!.username, 'Analyst', label);
+    assert.equal(settingReads.length, 1, `${label}: the injected settings store resolves the public URL`);
     assert.ok(h.calls.includes('markError("turn_1")'), label);
   }
 });

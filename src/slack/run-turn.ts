@@ -394,9 +394,9 @@ export const WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT =
 /**
  * The reply for a turn whose model cannot run until someone repairs Model
  * providers: its provider has no key, or the deployment does not offer the
- * model. Only a model inherited from the Workspace default has such a reply,
- * the one Admin's own "Repair required" matches; a pinned model's turn, and
- * a provider that could not be checked just now, keep the generic failure.
+ * model. Only a model inherited from the Workspace default has a reply, and
+ * it matches Admin's "Repair required"; a pinned model's turn, and a provider
+ * that could not be checked just now, keep the generic failure.
  */
 function modelRepairReplyText(error: unknown, assignment: ResolvedAssignment): string | undefined {
   if (!(error instanceof RuntimeModelReadinessError) || error.transient) return undefined;
@@ -2794,7 +2794,8 @@ function turnReplySender(
  * already surfaces as a categorized final and returns). Best-effort: the caller swallows
  * its errors (if Slack is the thing that is failing, this post fails too).
  * It posts under the same sender as the turn's replies: `presentation` names
- * the run whose frozen owner decides it.
+ * the run whose frozen owner decides it, and the settings store whose pinned
+ * public URL the replies' footer and avatar use.
  */
 export async function deliverAgentFailureFinal(
   turn: NormalizedSlackTurn,
@@ -2805,13 +2806,16 @@ export async function deliverAgentFailureFinal(
   presentation?: {
     state?: Pick<SlackPresentationStatePort, 'getRunPresentation'>;
     runId?: string;
+    settingsStore?: SettingsStore;
   },
 ): Promise<void> {
   const resolvedModel = resolvedAssignmentModel(assignment);
+  const state = presentation?.state;
+  const runId = presentation?.runId;
   const [publicUrl, frozenPresentation] = await Promise.all([
-    resolveSlackPublicUrl(platformEnv),
-    presentation?.state && presentation.runId
-      ? Promise.resolve(presentation.state.getRunPresentation(presentation.runId)).catch(() => {
+    resolveSlackPublicUrl(platformEnv, presentation?.settingsStore),
+    state && runId
+      ? (async () => state.getRunPresentation(runId))().catch(() => {
           // The notice still posts, under the sender a turn without one uses.
           console.warn('[chickpea] failure final could not read its run presentation');
           return undefined;

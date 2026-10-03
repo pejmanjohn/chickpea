@@ -6,13 +6,15 @@ import { after, before, test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { activityStatus } from '../src/activity/status.ts';
 import { RuntimeModelReadinessError } from '../src/config/runtime-model.ts';
-import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
+import { PROVIDER_KEY_ENV_VARS, PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackPresentationStatePort } from '../src/slack/agent-view-presentation.ts';
+import { presentAdmittedSlackActivity } from '../src/slack/admission-activity.ts';
 import type { AgentDispatchResult } from '../src/slack/flue-dispatch.ts';
 import { SlackRunPresentationStoreLogic, type SlackPresentationOwner } from '../src/slack/run-presentations.ts';
 import { runTurn, WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT } from '../src/slack/run-turn.ts';
@@ -88,7 +90,13 @@ let turns = 0;
 
 async function message(
   assignment: ResolvedAssignment,
-  options: { owner?: SlackPresentationOwner; openRouterKey?: string } = {},
+  options: {
+    owner?: SlackPresentationOwner;
+    openRouterKey?: string;
+    env?: Record<string, string | undefined>;
+    /** Admission already showed the thread a "Thinking" status, as the relay does. */
+    admitted?: boolean;
+  } = {},
 ) {
   turns += 1;
   const messageTs = `1788100000.${String(turns).padStart(6, '0')}`;
@@ -109,6 +117,7 @@ async function message(
   const db = openStateDb(':memory:');
   const presentations = new SlackRunPresentationStoreLogic(db);
   const sessionGeneration = Number(messageTs.replace('.', ''));
+  const thinking = activityStatus('preparing', 'Thinking', '');
   presentations.create({
     schemaVersion: 3,
     runId,
@@ -124,6 +133,18 @@ async function message(
       threadTs: turn.threadTs,
       requesterUserId: turn.userId,
     },
+    ...(options.admitted
+      ? {
+          currentActivity: {
+            kind: thinking.kind,
+            action: thinking.action,
+            object: thinking.object,
+            generation: sessionGeneration,
+            sequence: 1,
+            operation: { operationId: `activity_${runId}_1`, certainty: 'pending' as const },
+          },
+        }
+      : {}),
   });
   const presentationState = {
     getRunPresentation: (id: string) => presentations.get(id),
@@ -137,10 +158,18 @@ async function message(
     matchFlueObservation: () => undefined,
   } as unknown as SlackPresentationStatePort;
   const posts: Array<Record<string, unknown>> = [];
+  const statuses: string[] = [];
   const ok = async () => ({ ok: true, ts: '1788100099.000100', channel: turn.channelId, messages: [] });
   const client = {
     apiCall: ok,
-    assistant: { threads: { setStatus: ok } },
+    assistant: {
+      threads: {
+        setStatus: async (input: { status: string }) => {
+          statuses.push(input.status);
+          return ok();
+        },
+      },
+    },
     reactions: { add: ok, remove: ok },
     conversations: { replies: ok, history: ok },
     chat: {
@@ -164,8 +193,24 @@ async function message(
   }
   const outcomes: Array<string | undefined> = [];
   let dispatched = 0;
+  let presentation: ReturnType<SlackRunPresentationStoreLogic['get']>;
   try {
-    await withEnv({ OPENAI_API_KEY: undefined, OPENROUTER_API_KEY: undefined }, () => runTurn(turn, assignment, undefined, {
+    if (options.admitted) {
+      assert.equal(await presentAdmittedSlackActivity({
+        client,
+        state: presentationState,
+        runId,
+        runFencingToken: 0,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        requesterUserId: turn.userId,
+        owner: options.owner ?? { kind: 'chickpea' },
+        agentId: agent.id,
+        activity: thinking,
+      }), true, 'the admitted status shows');
+    }
+    await withEnv({ OPENAI_API_KEY: undefined, OPENROUTER_API_KEY: undefined, ...options.env }, () => runTurn(turn, assignment, undefined, {
       client,
       runId,
       turnId: `turn_${runId}`,
@@ -181,10 +226,11 @@ async function message(
       },
     }));
   } finally {
+    presentation = presentations.get(runId);
     settings.close();
     db.close();
   }
-  return { posts, outcomes, dispatched };
+  return { posts, outcomes, dispatched, statuses, presentation };
 }
 
 /** The text of a post, or of a stream's first chunks. */
@@ -254,5 +300,42 @@ test('a pinned model whose key was removed is not called a Workspace default pro
   await assert.rejects(
     message(pinned),
     (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
+  );
+});
+
+test('a hosted installation whose Workspace default is still a Workers AI model gets the repair reply', async () => {
+  // Hosted run 1: an installation seeded with Workers AI on a deployment
+  // serving many installations, which offers only customer-keyed providers.
+  const hostedEnv = {
+    ...Object.fromEntries(Object.values(PROVIDER_KEY_ENV_VARS).map((name) => [name, undefined])),
+    CHICKPEA_TENANCY: 'installation',
+  };
+  const workersAi = inheriting('cloudflare/@cf/zai-org/glm-4.7-flash');
+  // The cause: the deployment does not offer the provider.
+  await assert.rejects(
+    message({ ...workersAi, modelAttribution: { source: 'pinned', providerId: 'cloudflare' } }, { env: hostedEnv }),
+    (error: unknown) => error instanceof RuntimeModelReadinessError &&
+      error.status === 'unsupported' && error.providerId === 'cloudflare',
+  );
+  const { posts, outcomes, dispatched, statuses, presentation } = await message(
+    workersAi,
+    { env: hostedEnv, admitted: true },
+  );
+  assert.equal(dispatched, 0, 'nothing dispatched');
+  assert.equal(posts.filter((post) => replyText(post).includes(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT)).length, 1);
+  assert.doesNotMatch(posts.map(replyText).join('\n'), /failed before completion|not offered/);
+  assert.deepEqual(outcomes, ['failed']);
+  assert.ok(statuses.length >= 2, 'the admitted status was shown');
+  assert.equal(statuses.at(-1), '', 'the thread status is cleared');
+  assert.ok(presentation?.schemaVersion === 3, 'the run presentation');
+  assert.ok(
+    presentation.lifecyclePhase === 'terminal_intended' || presentation.lifecyclePhase === 'settled',
+    `the presentation is terminal (${presentation.lifecyclePhase})`,
+  );
+  assert.equal(presentation.terminalDelivery.state, 'intended');
+  assert.equal(presentation.activityProjection.state, 'cleared', 'no status is left showing');
+  assert.ok(
+    presentation.cleanup.state === 'not_required' || presentation.cleanup.operation.certainty === 'acknowledged',
+    'the status cleanup is acknowledged',
   );
 });

@@ -44,11 +44,10 @@ export interface HostedWorkspaceInstallationInput {
  * this record waits for events until the first signed delivery routed to it
  * (recordFirstHostedSlackDelivery). Health only reports; it never blocks.
  *
- * The first write materializes the Chickpea Agent and the workspace model
- * default as standalone's does, except that the default starts unset: there
- * is no keyless model to run before the installation saves a key. A repeat
- * is a no-op; a new bot user (a reinstall Slack gave another) is recorded
- * without resetting health.
+ * The first write materializes the Chickpea Agent and a workspace model
+ * default row with no model: there is no keyless model to run before the
+ * installation saves a key. A repeat is a no-op; a new bot user (a reinstall
+ * Slack gave another) is recorded without resetting health.
  * Another team, another app, a gateway record or an ended one is refused: a
  * workspace that ends is installed again as a new installation.
  */
