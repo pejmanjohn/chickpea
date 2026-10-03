@@ -1794,7 +1794,7 @@ function withTurnSettings<T>(
 }
 
 /** Sandbox settings and GitHub App presence for opening a coding workspace. */
-async function runtimePlanWorkspaceFacts(
+export async function runtimePlanWorkspaceFacts(
   live: SettingsStore,
   turn: TurnEnvelopeContext | undefined,
   env: PlatformEnv | undefined,

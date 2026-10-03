@@ -6,7 +6,7 @@ import { test, type TestContext } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { resolveRepositoryAccess } from '../src/agents/slack-thread.ts';
+import { resolveRepositoryAccess, runtimePlanWorkspaceFacts } from '../src/agents/slack-thread.ts';
 import {
   createInstallationToken,
   exchangeGithubAppManifest,
@@ -181,8 +181,9 @@ async function tenantSettings(t: TestContext) {
 
 const githubKeysTouched = (touched: string[]) => touched.filter((entry) => entry.includes('github.'));
 
+/** The installation's connection; any settings read fails it. */
 async function hostedConnection(env: Record<string, unknown>) {
-  return getGithubConnection(new SqliteSettingsStore(':memory:'), env);
+  return getGithubConnection(untouchable<SqliteSettingsStore>(), env);
 }
 
 // --- §5 acceptance: tenancy from the deployment, the port, and the lowest-layer gate ---
@@ -578,7 +579,8 @@ test('X5 management: a repository setup finishes only through the installation\'
   await config.createAgent({
     id: 'agent_repo', name: 'Repository Agent', creatorMembershipId: owner.membership.id, editPolicy: 'all_workspace_members',
     instructions: 'Work in the configured repositories.', enabled: true, skills: [], mcpServers: [], apiConnections: [],
-    repositories: [unconnected('repo_b', 'acme-b/secret'), unconnected('repo_a', 'acme-a/app'), unconnected('repo_c', 'acme-a/other')],
+    repositories: [unconnected('repo_b', 'acme-b/secret'), unconnected('repo_a', 'acme-a/app'), unconnected('repo_c', 'acme-a/other'),
+    unconnected('repo_d', 'acme-a/callback')],
   });
   let sequence = 0;
   let issued = '';
@@ -633,11 +635,15 @@ test('X5 management: a repository setup finishes only through the installation\'
   const finished = await finish(own);
   assert.doesNotMatch(finished.headers.get('location') ?? '', /status=failed/);
   assert.deepEqual(await grant('repo_a'), { ...unconnected('repo_a', 'acme-a/app'), installationId: GITHUB_A, accountLogin: 'acme-a' });
-  // The callback that would store an App is refused under tenancy, before any exchange.
-  const callback = await own.app.request(`http://localhost/setup/${own.setupId}/github/callback?code=c&state=s`, { headers: { cookie: own.cookie } });
-  assert.equal(callback.status, 403);
-  // With no binding at all, the setup fails instead of offering to create an App.
+  // The callback that would store an App is refused under tenancy, even for an Owner, before any exchange.
   principal = { ...principal, role: 'owner' };
+  const pending = await setup('repo_d', ENV_A);
+  await settings.setSetting(`management.${pending.setupId}.github-state`, 'unused');
+  const callback = await pending.app.request(`http://localhost/setup/${pending.setupId}/github/callback?code=c&state=s`,
+    { headers: { cookie: pending.cookie } });
+  assert.equal(callback.status, 403);
+  assert.equal(await settings.getSetting(`management.${pending.setupId}.github-state`), 'unused', 'the state is not consumed');
+  // With no binding at all, the setup fails instead of offering to create an App.
   const port = platform(t);
   port.bindings.set(INSTALLATION_A, []);
   const unbound = await setup('repo_c', ENV_A);
@@ -755,6 +761,11 @@ test('the coding workspace is offered only with the installation\'s own binding,
     (await resolveCodingWorkspaceDecision(assignment, hostedEnv(installationId, { SANDBOX: {} }) as never, settings)).capability;
   assert.equal(await decide(INSTALLATION_A), 'available');
   assert.notEqual(await decide(INSTALLATION_B), 'available');
+  // A turn without a frozen envelope reads the same live.
+  const live = async (installationId: string) =>
+    (await runtimePlanWorkspaceFacts(settings, undefined, hostedEnv(installationId) as never)).githubAppConnected;
+  assert.equal(await live(INSTALLATION_A), true);
+  assert.equal(await live(INSTALLATION_B), false);
 });
 
 test('the Sandbox presets its Git identity with its own installation\'s env', () => {
