@@ -374,8 +374,11 @@ test('an installation whose stored association disagrees with the login fails cl
     backend: hosted.backend,
     access: new Proxy(acme.identity, {
       get(target, property, receiver) {
-        if (property !== 'getOrganization') return Reflect.get(target, property, receiver);
-        return async () => ({ ...(await target.getOrganization())!, slackTeamId: organizationTeam });
+        if (property !== 'resolveBetterAuthPrincipal') return Reflect.get(target, property, receiver);
+        return async (betterAuthUserId: string) => {
+          const stored = await target.resolveBetterAuthPrincipal(betterAuthUserId);
+          return stored && { ...stored, organization: { ...stored.organization!, slackTeamId: organizationTeam } };
+        };
       },
     }),
     organizationId: control.betterAuthOrganizationId!,

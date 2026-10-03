@@ -922,6 +922,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'identity_resolution') throw unexpectedIdentityResponse();
     return orUndefined(response.resolution);
   }
+  async resolveBetterAuthPrincipal(betterAuthUserId: string) {
+    const response = await this.execute({ kind: 'resolve_better_auth_principal', betterAuthUserId });
+    if (response.kind !== 'better_auth_principal') throw unexpectedIdentityResponse();
+    return orUndefined(response.principal);
+  }
   async listExternalIdentities() {
     const response = await this.execute({ kind: 'list_external_identities' });
     if (response.kind !== 'external_identities') throw unexpectedIdentityResponse();

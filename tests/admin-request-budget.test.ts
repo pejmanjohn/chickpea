@@ -81,14 +81,53 @@ async function signedInAdmin() {
   return { identity, get, close };
 }
 
-test('an Admin GET reads auth control once, for the application gate and Admin alike', async () => {
+function tally(calls: string[], include: (call: string) => boolean = () => true): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const call of calls.filter(include)) counts[call] = (counts[call] ?? 0) + 1;
+  return counts;
+}
+
+const AUTHENTICATION = {
+  // One read for the application's recovery gate, Admin's, Better Auth and authentication.
+  'identity.getAuthControl': 1,
+  // Binding, organization, user, membership and access overlay together.
+  'identity.resolveBetterAuthPrincipal': 1,
+  // The authentication and authorization success audits, deferred past the response.
+  'identity.recordAuthAudit': 2,
+};
+const AUTHENTICATION_CALLS = new Set(Object.keys(AUTHENTICATION));
+
+test('an Admin GET reads auth control once and the principal in one identity call', async () => {
   const admin = await signedInAdmin();
   try {
-    for (const path of ['/admin/api/providers', '/admin/api/team', '/admin/api/slack-connection']) {
+    // The most store calls each route may make, its handler's included.
+    // Environment status answers 404 here, as it does on every hosted page load.
+    for (const [path, status, budget] of [
+      ['/admin/api/providers', 200, 10],
+      ['/admin/api/slack-connection', 200, 6],
+      ['/admin/api/environment/status', 404, 4],
+    ] as const) {
       const { response, calls } = await admin.get(path);
-      assert.equal(response.status, 200, path);
-      assert.equal(calls.filter((call) => call === 'identity.getAuthControl').length, 1, path);
+      assert.equal(response.status, status, path);
+      assert.deepEqual(tally(calls, (call) => call.startsWith('identity.')), AUTHENTICATION, path);
+      assert.ok(calls.length <= budget, `${path} made ${calls.length} store calls: ${calls.join(', ')}`);
     }
+  } finally {
+    admin.close();
+  }
+});
+
+test('the Team page adds only its own rate limiting and roster reads to an Admin GET', async () => {
+  const admin = await signedInAdmin();
+  try {
+    const { response, calls } = await admin.get('/admin/api/team');
+    assert.equal(response.status, 200);
+    assert.deepEqual(tally(calls, (call) => AUTHENTICATION_CALLS.has(call)), AUTHENTICATION);
+    assert.deepEqual(tally(calls, (call) => /AuthRate/.test(call)), {
+      'identity.getAuthRateLimit': 6,
+      'identity.clearAuthRateLimit': 3,
+    });
+    assert.ok(calls.length <= 18, `/admin/api/team made ${calls.length} store calls: ${calls.join(', ')}`);
   } finally {
     admin.close();
   }

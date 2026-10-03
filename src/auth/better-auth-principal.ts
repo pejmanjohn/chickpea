@@ -56,20 +56,19 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
   async resolveBetterAuthUser(betterAuthUserId: string): Promise<IdentityResolution | undefined> {
     const fence = this.input.hostedLogin;
     if (fence && fence.login?.betterAuthUserId !== betterAuthUserId) return undefined;
-    const direct = await this.input.access.resolveBetterAuthIdentity(betterAuthUserId);
-    if (!direct) return undefined;
-    const { binding } = direct;
-    const [betterAuthMembership, organization, user, membership, overlay] = await Promise.all([
-      binding.betterAuthMembershipId
-        ? this.input.backend.getMembership(binding.betterAuthMembershipId)
-        : Promise.resolve(null),
-      this.input.access.getOrganization(),
-      this.input.access.getUser(binding.userId),
-      this.input.access.getMembership(binding.membershipId),
-      this.input.access.getMembershipAccessOverlay(binding.membershipId),
+    // One state-store call reads everything Chickpea holds for this user,
+    // beside Better Auth's read of their membership in this organization.
+    // Better Auth keeps one membership per user and organization, so when
+    // the binding agrees it names that row.
+    const [stored, betterAuthMembership] = await Promise.all([
+      this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
+      this.input.backend.getMembershipForUser(betterAuthUserId, this.input.organizationId),
     ]);
+    if (!stored) return undefined;
+    const { binding, organization, user, membership, overlay } = stored;
     if (!binding.betterAuthUserId || !binding.betterAuthMembershipId ||
-        !betterAuthMembership || betterAuthMembership.role !== 'member' ||
+        !betterAuthMembership || betterAuthMembership.id !== binding.betterAuthMembershipId ||
+        betterAuthMembership.role !== 'member' ||
         betterAuthMembership.userId !== betterAuthUserId ||
         betterAuthMembership.organizationId !== this.input.organizationId ||
         !organization || !user || !membership ||
