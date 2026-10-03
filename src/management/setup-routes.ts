@@ -2089,12 +2089,13 @@ async function authenticateSetupPrincipal(
       !control.betterAuthOrganizationId || !control.canonicalAdminOrigin) return undefined;
   const environment = await resolveBetterAuthEnvironment({ control, platformEnv });
   if (!environment || environment.baseURL !== control.canonicalAdminOrigin) return undefined;
+  const hostedLogin = hostedLoginFence(platformEnv);
   const directory = new BetterAuthDirectory({
     backend: environment.backend,
     access: identity,
     organizationId: control.betterAuthOrganizationId,
     canonicalAdminOrigin: control.canonicalAdminOrigin,
-    hostedLogin: hostedLoginFence(platformEnv),
+    hostedLogin,
   });
   const auth = new AuthService({
     identity,
@@ -2102,6 +2103,7 @@ async function authenticateSetupPrincipal(
       ...environment,
       directory,
       organizationId: control.betterAuthOrganizationId,
+      routedSession: hostedLogin?.routed?.session,
     }),
   });
   try {

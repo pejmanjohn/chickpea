@@ -580,7 +580,7 @@ import {
   BetterAuthDirectory,
   BetterAuthSessionAuthenticator,
 } from '../auth/better-auth-principal.ts';
-import { hostedLoginFence } from '../auth/hosted-login.ts';
+import { hostedLoginFence, type HostedSessionRead } from '../auth/hosted-login.ts';
 import {
   resolveBetterAuthEnvironment,
   resolveBetterAuthBootstrapEnvironment,
@@ -628,6 +628,8 @@ interface BetterAuthContext {
   organizationId: string;
   /** Served for an installation its host routed by a login (installation tenancy). */
   hosted: boolean;
+  /** The browser session hosted routing already read for this request. */
+  routedSession: HostedSessionRead | undefined;
 }
 
 const ADMIN_ENVIRONMENT_HEALTH = [
@@ -2822,6 +2824,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }),
         organizationId: control.betterAuthOrganizationId,
         hosted: hostedLogin !== undefined,
+        routedSession: hostedLogin?.routed?.session,
       };
     })();
     betterAuthByContext.set(c, pending);
@@ -2834,7 +2837,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const identityStore = identity(c);
     const context = await betterAuthContext(c);
     if (context) {
-      const { environment, directory, organizationId, hosted } = context;
+      const { environment, directory, organizationId, hosted, routedSession } = context;
       // A host serving many installations routes Admin by the browser session alone.
       const refusedBearer = hosted && c.req.header('authorization') !== undefined;
       return new AuthService({
@@ -2844,6 +2847,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             ...environment,
             directory,
             organizationId,
+            routedSession,
           }),
         }),
         ...(hosted ? {} : { personalTokens: new PersonalTokenService(identityStore, { directory }) }),

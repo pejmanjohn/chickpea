@@ -15,7 +15,7 @@ import { openPostgresBetterAuthBackend } from '../src/auth/better-auth-postgres.
 import { applyPostgresBetterAuthMigrations } from '../src/auth/better-auth-postgres-migrations.ts';
 import { BetterAuthDirectory } from '../src/auth/better-auth-principal.ts';
 import { createBetterAuthRuntimeRoutes } from '../src/auth/better-auth-runtime.ts';
-import { hostedLoginFence, hostedLoginOf, withHostedLogin } from '../src/auth/hosted-login.ts';
+import { hostedLoginFence, hostedLoginOf, withHostedLogin, type HostedRouteReads } from '../src/auth/hosted-login.ts';
 import {
   isHostedSharedAuthPath,
   resolveHostedLogin,
@@ -675,6 +675,90 @@ test('the hosted login rides only in a frozen env copy and cannot be swapped', a
   assert.throws(() => withHostedLogin(carried, { ...login, slackUserId: 'UOTHER' }), /another login/);
   // A request payload is not an env: a string key never reads as a login.
   assert.equal(hostedLoginOf({ ...HOSTED, 'chickpea.hosted-login': login }), undefined);
+
+  // What routing read rides with the login, once, and only on an installation's env.
+  const reads = { principal: { binding: {} } } as unknown as HostedRouteReads;
+  const routed = withHostedLogin(env, login, reads);
+  assert.ok(Object.isFrozen(routed));
+  assert.equal(hostedLoginFence(routed)?.routed?.principal, reads.principal);
+  assert.equal(hostedLoginFence(carried)?.routed, undefined);
+  assert.throws(() => withHostedLogin(routed, login, reads), /together with the login/);
+  assert.throws(() => withHostedLogin(HOSTED as PlatformEnv, login, reads), /installation's env/);
+  // Copied onto another installation's env, they serve nothing there.
+  const elsewhere = scopeInstallationEnv(HOSTED as PlatformEnv, { installationId: 'inst_other' });
+  const copied = Object.freeze({
+    ...elsewhere,
+    ...Object.fromEntries(Object.getOwnPropertySymbols(routed)
+      .filter((symbol) => symbol.description?.startsWith('chickpea.hosted-'))
+      .map((symbol) => [symbol, (routed as Record<symbol, unknown>)[symbol]])),
+  }) as PlatformEnv;
+  assert.deepEqual(hostedLoginOf(copied), login);
+  assert.deepEqual(hostedLoginFence(copied), { login });
+});
+
+test('a routed request carries its session and stored principal, for its own installation only', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  const beta = await hosted.install('TBETA', 'org_beta', 'UOWNERB');
+  const routed = await routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing);
+  assert.equal(routed.kind, 'installation');
+  if (routed.kind !== 'installation') return;
+  const reads = hostedLoginFence(routed.env)?.routed;
+  assert.equal(reads?.session?.betterAuthUserId, routed.login.betterAuthUserId);
+  assert.equal(reads?.session?.cookie, acme.ownerCookie);
+  assert.deepEqual(reads?.session?.setCookies, [], 'a fresh session has nothing to refresh');
+  assert.deepEqual(reads?.principal, await acme.identity.resolveBetterAuthPrincipal(routed.login.betterAuthUserId));
+  assert.equal(reads?.memberships, undefined, 'this host reads no memberships with the login');
+
+  // An MCP token carries the principal and no session.
+  const grant = await hosted.mcpGrant(acme.ownerCookie);
+  const mcp = await routeHostedRequest(hosted.mcpRequest(grant.accessToken), hosted.routing);
+  assert.equal(mcp.kind === 'installation' && hostedLoginFence(mcp.env)?.routed?.session, undefined);
+  assert.ok(mcp.kind === 'installation' && hostedLoginFence(mcp.env)?.routed?.principal);
+
+  // A confused host serving A's routed reads with B's env gets nothing from B.
+  const betaEnv = await hosted.routing.installationEnv({ betterAuthUserId: 'x', slackTeamId: 'TBETA', slackUserId: 'UOWNERB' });
+  const confused = Object.freeze({
+    ...betaEnv,
+    ...Object.fromEntries(Object.getOwnPropertySymbols(routed.env)
+      .filter((symbol) => symbol.description?.startsWith('chickpea.hosted-'))
+      .map((symbol) => [symbol, (routed.env as Record<symbol, unknown>)[symbol]])),
+  }) as PlatformEnv;
+  const crossAdmin = await createAdminRoutes({
+    identity: hosted.storeOf(betaEnv),
+    store: new SqliteConfigStore(':memory:', { agents: [] }),
+    settings: new SqliteSettingsStore(':memory:'),
+  }).fetch(hosted.adminRequest('/admin/api/team', acme.ownerCookie), confused);
+  assert.equal(crossAdmin.status, 401);
+  assert.equal((await hosted.serve(hosted.adminRequest('/admin/api/team', beta.ownerCookie))).response?.status, 200);
+});
+
+test('a session Better Auth refuses while refreshing it routes nowhere', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  // Due for refresh, and gone by the time the refresh writes (no row updates).
+  await hosted.backend.pool.query(`UPDATE session SET "expiresAt" = now() + interval '5 days', "updatedAt" = now() - interval '2 days'`);
+  await hosted.backend.pool.query(`CREATE FUNCTION keep_session() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`);
+  await hosted.backend.pool.query('CREATE TRIGGER keep_session BEFORE UPDATE ON session FOR EACH ROW EXECUTE FUNCTION keep_session()');
+  assert.deepEqual(await routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing),
+    { kind: 'unauthenticated' });
+  // Reading without refreshing still finds it.
+  assert.equal((await resolveHostedLogin(hosted.adminRequest('/admin', acme.ownerCookie), hosted.environment))?.slackUserId, 'UOWNERA');
+});
+
+test('a database failure while routing reads the session fails the request rather than signing it out', { timeout: 120_000 }, async (t) => {
+  const hosted = await hostedDeployment(t);
+  if (!hosted) return;
+  const acme = await hosted.install('TACME', 'org_acme', 'UOWNERA');
+  await hosted.backend.pool.query('ALTER TABLE session RENAME TO session_unreachable');
+  try {
+    await assert.rejects(routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing));
+  } finally {
+    await hosted.backend.pool.query('ALTER TABLE session_unreachable RENAME TO session');
+  }
+  assert.equal((await routeHostedRequest(hosted.adminRequest('/admin/api/team', acme.ownerCookie), hosted.routing)).kind, 'installation');
 });
 
 test('resolving a login reads the credential the route uses and nothing else', { timeout: 120_000 }, async (t) => {

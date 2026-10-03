@@ -190,6 +190,13 @@ export function parseBetterAuthDate(value: unknown): Date | null {
 
 export interface BetterAuthDatabaseBackend {
   database: NonNullable<BetterAuthOptions['database']>;
+  /**
+   * Better Auth reads a row with the rows it joins (a session with its user)
+   * in one statement. Only PostgreSQL's backend sets it: each of its
+   * statements is a network round trip. The SQLite backends read joined rows
+   * one by one, as before.
+   */
+  readonly nativeJoins?: true;
   /** True when Better Auth contains any identity, credential, membership, or session authority. */
   hasIdentityAuthority(): Promise<boolean>;
   absoluteExpiryForToken(token: string): Promise<Date | null>;

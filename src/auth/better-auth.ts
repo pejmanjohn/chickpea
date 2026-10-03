@@ -108,11 +108,37 @@ export function createBetterAuth(input: CreateBetterAuthInput) {
   });
 }
 
+/**
+ * Better Auth that only reads a request's session, a user's accounts and the
+ * JWKS, as hosted routing does before an installation serves the request:
+ * the same session settings and hooks, and keys of the same kind, with no
+ * other plugin. Hosted routing builds one per request, and initializing the
+ * MCP plugin costs a database read (its resource seed) each time. Its
+ * get-session signs no JWT into a response header: Chickpea reads none, and
+ * signing one costs another read. It also omits the oauth-provider's
+ * databaseHooks.session.delete (back-channel logout), which Chickpea does not offer.
+ */
+export function createBetterAuthSessionReader(input: Pick<CreateBetterAuthInput, 'backend' | 'baseURL' | 'secret'>) {
+  const baseURL = requireSupportedOrigin(input.baseURL);
+  return betterAuth({
+    ...createOptions({ ...input, baseURL }, Object.freeze({})),
+    plugins: [jwt({ ...JWT_OPTIONS, disableSettingJwtHeader: true })],
+  });
+}
+
 /** The production options are also the source of the pinned fresh-schema generator. */
 export function createBetterAuthOptions(input: CreateBetterAuthInput): BetterAuthOptions {
   const baseURL = requireSupportedOrigin(input.baseURL);
   return createOptions({ ...input, baseURL }, Object.freeze({}));
 }
+
+const JWT_OPTIONS = {
+  jwks: {
+    keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' },
+    rotationInterval: 30 * 24 * 60 * 60,
+    gracePeriod: 30 * 24 * 60 * 60,
+  },
+} as const satisfies Parameters<typeof jwt>[0];
 
 function createOptions(
   input: CreateBetterAuthInput & { baseURL: string },
@@ -187,7 +213,7 @@ function createOptions(
     },
     rateLimit: { enabled: false },
     advanced: {
-      database: { generateId: 'uuid' },
+      database: { generateId: 'uuid', ...(input.backend.nativeJoins ? { joins: true } : {}) },
       ipAddress: { ipAddressHeaders: ['cf-connecting-ip', 'x-forwarded-for'] },
       useSecureCookies: secureCookies,
     },
@@ -198,13 +224,7 @@ function createOptions(
         invitationExpiresIn: 7 * 24 * 60 * 60,
         async sendInvitationEmail() {},
       }),
-      jwt({
-        jwks: {
-          keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' },
-          rotationInterval: 30 * 24 * 60 * 60,
-          gracePeriod: 30 * 24 * 60 * 60,
-        },
-      }),
+      jwt(JWT_OPTIONS),
       mcp({
         resource: mcpResourceForOrigin(input.baseURL),
         loginPage: '/auth/mcp/login',

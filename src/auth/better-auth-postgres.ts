@@ -34,6 +34,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
   readonly database: NonNullable<BetterAuthOptions['database']>;
+  readonly nativeJoins = true;
 
   constructor(readonly pool: PostgresBetterAuthPool) {
     // Better Auth recognizes a pool by its `connect` method and selects PostgreSQL.
