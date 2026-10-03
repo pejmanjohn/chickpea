@@ -231,9 +231,9 @@ test('every object a DM, a channel turn, a thread follow-up, an Agent ask and a 
   assert.deepEqual(recording.addressed.filter(({ binding }) => binding === 'TAG_STATE').map(({ name }) => name),
     [installationObjectName(installation.env, 'singleton')]);
   // An owner's thread runner, its transcript and the guest's own transcript, per conversation.
-  assert.deepEqual(installation.stores.objectInventory.counts(), { routine_agent: 1, slack_agent: 3, thread_runner: 2 });
+  assert.deepEqual(installation.stores.objectInventory.counts(), { coding_worker: 0, routine_agent: 1, sandbox: 0, slack_agent: 3, thread_runner: 2 });
   for (const name of names) assert.match(name, /^[a-z_]+:i1~inst_inventory_a~/, 'every name is scoped to its installation');
-  assert.deepEqual(neighbour.stores.objectInventory.counts(), { routine_agent: 0, slack_agent: 0, thread_runner: 0 });
+  assert.deepEqual(neighbour.stores.objectInventory.counts(), { coding_worker: 0, routine_agent: 0, sandbox: 0, slack_agent: 0, thread_runner: 0 });
 });
 
 test('retention never prunes the inventory', async () => {
@@ -281,12 +281,12 @@ test('the backfill recovers the names that survive from before the inventory, an
     opaqueId('flueinstance', scopedObjectName({ installationId: installation.installationId }, 'agent_gone')), NOW, NOW,
   );
   installation.db.exec('PRAGMA foreign_keys = ON');
-  assert.deepEqual(installation.stores.objectInventory.counts(), { routine_agent: 0, slack_agent: 0, thread_runner: 0 });
+  assert.deepEqual(installation.stores.objectInventory.counts(), { coding_worker: 0, routine_agent: 0, sandbox: 0, slack_agent: 0, thread_runner: 0 });
 
   const backfill = installation.stores.objectInventory.backfill();
   assert.deepEqual(backfill, {
     // One thread's runner from the turns, plus incarnations 1 and 2 of the routed thread.
-    recovered: { routine_agent: 1, slack_agent: 1, thread_runner: 3 },
+    recovered: { coding_worker: 0, routine_agent: 1, sandbox: 0, slack_agent: 1, thread_runner: 3 },
     // The Flue instance the Work ledger saw. A runner whose turns aged out
     // leaves no reference anywhere, so the residue is a lower bound.
     unknownResidue: 1,
@@ -324,7 +324,7 @@ test('a warm attach issues no schema work for the inventory and keeps recording'
     const inventory = new InstallationObjectInventoryLogic(watched, env);
     assert.deepEqual(statements, []);
     inventory.recordThreadRunner(`${TEAM}:${CHANNEL}:1800000000.000100:owner-i1`);
-    assert.deepEqual(inventory.counts(), { routine_agent: 0, slack_agent: 0, thread_runner: 1 });
+    assert.deepEqual(inventory.counts(), { coding_worker: 0, routine_agent: 0, sandbox: 0, slack_agent: 0, thread_runner: 1 });
   } finally {
     db.close();
   }
@@ -399,39 +399,29 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     covered: 'gateway session: returns early under tenancy',
     sites: ["await namespace.get(namespace.idFromName('deployment')).wake();"],
   },
-  'cloudflare.ts': {
-    covered: 'coding Sandbox: off under tenancy',
-    sites: ['return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));'],
+  'sandbox/sandbox-object.ts': {
+    covered: 'sandbox, recorded by sandboxStub (the only opener of a named Sandbox) before it opens one',
+    sites: ['return getSandbox(binding as Parameters<typeof getSandbox>[0], name, options as Parameters<typeof getSandbox>[2]);'],
+  },
+  'sandbox/egress-outbound.ts': {
+    covered: "sandbox: the container's own, already recorded when its workspace was opened",
+    sites: ['const stub = platformEnv.SANDBOX.get(platformEnv.SANDBOX.idFromString(ctx.containerId));'],
   },
   'sandbox/select.ts': {
-    covered: 'coding Sandbox probe: off under tenancy',
+    covered: 'Container probe: one deployment object that holds no installation data',
     sites: ['const stub = namespace.get(namespace.idFromName(SANDBOX_CONTAINER_PROBE_NAME));'],
   },
   'sandbox/coding-task-stop.ts': {
-    covered: 'coding worker: off under tenancy',
+    covered: 'coding_worker of a task record, written only after the worker was recorded',
     sites: ['const stub = binding.get(binding.idFromName(instanceId));'],
   },
+  'agents/coding-worker-staging.ts': {
+    covered: 'coding_worker, recorded by the coordinator just before it stages the binding',
+    sites: ['const stub = namespace.get(namespace.idFromName(instanceId));'],
+  },
   'agents/coding-worker-task.ts': {
-    covered: 'coding worker and Sandbox: off under tenancy',
-    sites: [
-      'return getSandbox( binding as Parameters<typeof getSandbox>[0],',
-      'return init(CodingWorker, { id: instanceId });',
-    ],
-  },
-  'agents/coding-worker.ts': {
-    covered: 'coding Sandbox: off under tenancy',
-    sites: ['getSandbox( namespace as Parameters<typeof getSandbox>[0],'],
-  },
-  'agents/slack-thread.ts': {
-    covered: 'coding Sandbox: off under tenancy',
-    sites: [
-      'return getSandbox( binding as Parameters<typeof getSandbox>[0],',
-      'getSandbox( options.binding as Parameters<typeof getSandbox>[0],',
-    ],
-  },
-  'slack/thread-runner.ts': {
-    covered: 'coding Sandbox: off under tenancy',
-    sites: ['reconnectingSandboxStub(() => getSandbox( binding as Parameters<typeof getSandbox>[0],'],
+    covered: 'coding_worker, recorded before its task record and dispatch (Flue init)',
+    sites: ['return init(CodingWorker, { id: instanceId });'],
   },
 };
 

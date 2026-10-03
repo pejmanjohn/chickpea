@@ -1,4 +1,4 @@
-import { getSandbox } from '@cloudflare/sandbox';
+import type { getSandbox } from '@cloudflare/sandbox';
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
@@ -22,6 +22,7 @@ import {
 } from '../sandbox/coding-task-stop.ts';
 import { cloudflareSandboxOptionVariants } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { sandboxObjectName, sandboxStub } from '../sandbox/sandbox-object.ts';
 import { sandboxThreadKey } from '../sandbox/thread-key.ts';
 import { DoSqlStateDb } from '../state/do-state-db.ts';
 import {
@@ -74,15 +75,18 @@ import { MAX_TURN_DRAIN_BATCH } from './turn-jobs.ts';
 /** The coding Sandbox readers of one thread (identical for both executors). */
 export function sandboxTurnReaders(env: PlatformEnv): TurnExecutionPorts['sandboxes'] {
   return (sandboxKey) => {
-    const binding = env.SANDBOX ?? env.Sandbox;
-    if (!binding) return [];
-    // A replaced Sandbox instance leaves a dead stub; reconnect instead.
-    return cloudflareSandboxOptionVariants(sandboxKey).map((options) => () =>
-      reconnectingSandboxStub(() => getSandbox(
-        binding as Parameters<typeof getSandbox>[0],
-        sandboxKey,
-        options,
-      )) as ReturnType<typeof getSandbox> & SandboxTurnReader);
+    if (!(env.SANDBOX ?? env.Sandbox)) return [];
+    let name: string;
+    try {
+      name = sandboxObjectName(env, sandboxKey);
+    } catch {
+      // An installation that cannot name a Sandbox never opened one.
+      return [];
+    }
+    // A replaced Sandbox instance leaves a dead stub; reconnect instead. The
+    // uppercase bridge only ever applies to a standalone thread key.
+    return cloudflareSandboxOptionVariants(name).map((options) => () =>
+      reconnectingSandboxStub(() => sandboxStub(env, sandboxKey, options)) as ReturnType<typeof getSandbox> & SandboxTurnReader);
   };
 }
 

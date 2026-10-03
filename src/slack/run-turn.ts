@@ -5,6 +5,8 @@ import { WebClient } from '@slack/web-api';
 import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
+  type RuntimePlanCodingModelV1,
+  type RuntimePlanModelCredentialV3,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
@@ -41,7 +43,9 @@ import {
 } from './ui/host-surfaces.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { installationRefusesWork } from '../config/installation-admission.ts';
-import { installationOwnershipOf } from '../config/installation-scope.ts';
+import { deploymentServesManyInstallations, installationOwnershipOf } from '../config/installation-scope.ts';
+import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import { providerPrefix } from '../config/model-access.ts';
 import type { TurnEnvelopeV1 } from '../agents/turn-envelope.ts';
 import { buildTurnEnvelope } from './turn-envelope-builder.ts';
 import { browserCapabilityForTurn, websiteLoginsForTurn } from '../browser/capability.ts';
@@ -49,7 +53,7 @@ import type {
   SlackInteractionProgress,
   SlackInteractionProgressPatch,
 } from '../config/state-rpc.ts';
-import type { ResolvedAssignment } from '../config/types.ts';
+import type { ModelCredentialAttribution, ResolvedAssignment } from '../config/types.ts';
 import {
   freezeRuntimeModelRoute,
   resolveProviderAuthRoute,
@@ -2681,6 +2685,7 @@ async function freezeRuntimePlanForTurn(input: {
         },
         settings: settingsStore,
         ...(input.platformEnv ? { env: input.platformEnv } : {}),
+        agentCredential: input.assignment.modelCredential ?? null,
       })
     : undefined;
   const installation = installationOwnershipOf(input.platformEnv);
@@ -2728,7 +2733,61 @@ export async function freezeCodingModelForTurn(input: {
   settings: SettingsStore;
   env?: PlatformEnv;
   resolveModel?: typeof resolveRuntimeModel;
-}) {
+  /** The credential frozen for the Agent's own model with this turn. */
+  agentCredential?: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'> | null;
+  resolveCredential?: typeof resolveModelCredentialAttribution;
+}): Promise<RuntimePlanCodingModelV1> {
+  const coding = await resolveCodingModelRoute(input);
+  return deploymentServesManyInstallations(input.env) ? withHostedCodingCredential(coding, input) : coding;
+}
+
+/**
+ * An installation of a deployment serving many runs its coding worker on a
+ * frozen credential, as its Agent runs on one: the coding model's own, else
+ * the Agent's model and the Agent's credential, as a role whose provider
+ * has no key falls back today.
+ */
+async function withHostedCodingCredential(
+  coding: RuntimePlanCodingModelV1,
+  input: Parameters<typeof freezeCodingModelForTurn>[0],
+): Promise<RuntimePlanCodingModelV1> {
+  const agentCredential = input.agentCredential ? frozenCredential(input.agentCredential) : undefined;
+  if (coding.model === input.agentRoute.model) {
+    return agentCredential ? { ...coding, modelCredential: agentCredential } : coding;
+  }
+  const credential = await (input.resolveCredential ?? resolveModelCredentialAttribution)(
+    coding.model,
+    input.env,
+    input.settings,
+    undefined,
+    { registerUsage: false },
+  ).catch(() => null);
+  if (credential) return { ...coding, modelCredential: frozenCredential(credential) };
+  return {
+    model: input.agentRoute.model,
+    runtimeModel: input.agentRoute.runtimeModel,
+    ...(input.agentRoute.runtimeModelRoute ? { runtimeModelRoute: input.agentRoute.runtimeModelRoute } : {}),
+    attribution: {
+      role: 'coding',
+      source: 'agent_model',
+      providerId: providerPrefix(input.agentRoute.model),
+      fallback: true,
+    },
+    ...(agentCredential ? { modelCredential: agentCredential } : {}),
+  };
+}
+
+function frozenCredential(
+  credential: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'>,
+): RuntimePlanModelCredentialV3 {
+  return {
+    credentialRefId: credential.credentialRefId,
+    version: credential.version,
+    providerId: credential.providerId,
+  };
+}
+
+async function resolveCodingModelRoute(input: Parameters<typeof freezeCodingModelForTurn>[0]) {
   return resolveCodingModelForPlan({
     workspaceId: input.workspaceId,
     agent: { id: input.agent.id, kind: input.agent.kind },

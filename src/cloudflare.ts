@@ -35,10 +35,6 @@ import {
   ModelRoleRevisionConflictError,
   WorkspaceModelDefaultRevisionConflictError,
 } from './config/errors.ts';
-import {
-  getCachedInstallationToken,
-  getGithubConnection,
-} from './config/github-app.ts';
 import { slackAgentThreadKey } from './slack/thread-key.ts';
 import { gitIdentityConfigCommand, resolveWorkspaceGitIdentity } from './sandbox/git-identity.ts';
 import { recordDeliveredSlackAgentMessage } from './slack/public-context.ts';
@@ -49,11 +45,7 @@ import {
   verifySlackInstallationTurnAccess,
   type SlackInstallationExecutionResolver,
 } from './slack/installation-execution.ts';
-import {
-  parseSandboxAllowedHosts,
-  SANDBOX_PACKAGE_REGISTRY_HOSTS,
-  SANDBOX_SETTING_KEYS,
-} from './config/sandbox-settings.ts';
+import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from './config/sandbox-settings.ts';
 import type {
   PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
@@ -75,6 +67,7 @@ import type {
 import { buildRuntimeDrainStatus, tagStateStub } from './config/state-rpc.ts';
 import {
   installationOwnershipOf,
+  installationScopeOf,
   objectInstallationEnv,
   requireInstallationScope,
 } from './config/installation-scope.ts';
@@ -137,18 +130,19 @@ import type {
   WorkspaceInstallationPatch,
 } from './config/types.ts';
 import {
-  decideSandboxEgress,
-  REPOSITORY_PERMISSIONS,
-  resolveRepositoryInstallationScope,
-} from './sandbox/egress-handler.ts';
-import { githubAuthorizationHeader } from './sandbox/github-auth.ts';
-import {
   SandboxPolicyState,
-  sandboxEgressGrantsForMode,
+  type SandboxEgressContext,
   type SandboxEgressPolicy,
   type SandboxEgressPolicyInput,
   type SandboxPolicyStorage,
 } from './sandbox/cloudflare-policy.ts';
+import {
+  denySandboxOutbound,
+  githubSandboxOutbound,
+  packageRegistrySandboxOutbound,
+  type SandboxOutboundHandler,
+} from './sandbox/egress-outbound.ts';
+import { sandboxObjectEnv, type SandboxObjectContext } from './sandbox/sandbox-object.ts';
 import {
   checkpointBucket,
   isCheckpointSweepMinute,
@@ -177,10 +171,6 @@ import {
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
 } from './sandbox/workspace-checkpoints.ts';
-import {
-  isGithubPullRequestCreateResponse,
-  pullRequestProgressFromGithubResponse,
-} from './sandbox/progress.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
 import {
   SlackPresentationStateError,
@@ -247,6 +237,7 @@ import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
 import type { ObjectExportRequest, ObjectHostRequest } from './state/object-host.ts';
+import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
 import { cloudflareWorkerVersionId } from './config/cloudflare-version.ts';
@@ -367,41 +358,15 @@ registerCloudflareBindingProvider(env.AI);
 
 export { ContainerProxy } from '@cloudflare/sandbox';
 
-type SandboxOutboundContext = {
-  containerId: string;
-};
-
-type SandboxOutboundHandler = (
-  request: Request,
-  env: unknown,
-  ctx: SandboxOutboundContext,
-) => Promise<Response> | Response;
-
-interface SandboxNamespace {
-  idFromString(id: string): unknown;
-  get(id: unknown): Pick<
-    Sandbox,
-    | 'getEgressPolicy'
-    | 'getTurnId'
-    | 'getTurnProgress'
-    | 'prepareTurn'
-    | 'recordPullRequestProgress'
-  >;
-}
-
-type SandboxWorkerEnv = PlatformEnv & {
-  SANDBOX: SandboxNamespace;
-};
-
-const SANDBOX_BLOCKED_STATUS = 520;
-
 /**
- * Cloudflare's Sandbox SDK routes intercepted container HTTPS through these
- * Worker-side handlers. Profile grants are persisted as policy only; the
- * credential is minted after each request passes the pure policy decision and
- * is attached only to the Worker-side forwarded Request.
+ * Cloudflare's Sandbox SDK routes intercepted container HTTPS through
+ * Worker-side handlers (sandbox/egress-outbound.ts). Profile grants are
+ * persisted as policy only; the credential is minted after each request
+ * passes the pure policy decision and is attached only to the Worker-side
+ * forwarded Request. On a deployment serving many installations the object
+ * is named under one (sandbox/sandbox-object.ts) and serves only it.
  */
-export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
+export class Sandbox extends CloudflareSandbox<PlatformEnv> {
   interceptHttps = true;
   // Interception only covers HTTP and HTTPS. The container base class defaults
   // `enableInternet` to true (@cloudflare/containers container.js:325), which
@@ -414,6 +379,10 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
   // the allowlisted package registries keep flowing through the Worker
   // handlers; this only removes the path that bypasses them.
   enableInternet = false;
+
+  constructor(ctx: DurableObjectState, env: PlatformEnv) {
+    super(ctx, sandboxObjectEnv(ctx as unknown as SandboxObjectContext, env));
+  }
 
   /**
    * Reached only when the Containers SDK constructor succeeded, which requires
@@ -481,9 +450,7 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
    * Identity only; credentials never enter Git configuration.
    */
   async applyGitIdentity(): Promise<void> {
-    const identity = await resolveWorkspaceGitIdentity(
-      getSettingsStore(sandboxWorkerEnv(this.env)),
-    );
+    const identity = await resolveWorkspaceGitIdentity(getSettingsStore(this.env));
     const result = await this.exec(gitIdentityConfigCommand(identity));
     if (result.exitCode !== 0) throw new Error('Workspace Git identity was not applied');
   }
@@ -567,6 +534,19 @@ export class Sandbox extends CloudflareSandbox<SandboxWorkerEnv> {
     return this.policyState().getEgressPolicy();
   }
 
+  /**
+   * Everything an egress handler needs from this Sandbox in one call: the
+   * installation it serves (from its scoped env), its turn and the turn's
+   * policy.
+   */
+  async egressContext(): Promise<SandboxEgressContext> {
+    const installationId = installationScopeOf(this.env)?.installationId;
+    return {
+      ...(installationId ? { installationId } : {}),
+      ...(await this.policyState().egressContext()),
+    };
+  }
+
   async getTurnId(): Promise<string | undefined> {
     return this.policyState().getTurnId();
   }
@@ -601,161 +581,6 @@ Sandbox.outboundByHost = {
   ),
 } satisfies Record<string, SandboxOutboundHandler>;
 Sandbox.outbound = denySandboxOutbound;
-
-async function githubSandboxOutbound(
-  request: Request,
-  rawEnv: unknown,
-  ctx: SandboxOutboundContext,
-): Promise<Response> {
-  try {
-    const workerEnv = sandboxWorkerEnv(rawEnv);
-    const stub = sandboxStub(workerEnv, ctx.containerId);
-    const capturedTurnId = await stub.getTurnId();
-    if (!capturedTurnId) return denySandboxOutbound();
-    const policy = await stub.getEgressPolicy();
-    if (!policy.mode) return denySandboxOutbound();
-
-    // Credential-free preflight: validate the stored App-bound policy before
-    // loading the private key.
-    const preflightGrants = sandboxEgressGrantsForMode(policy, policy.mode);
-    if (!preflightGrants) return denySandboxOutbound();
-    const preflightDecision = decideSandboxEgress({
-      url: request.url,
-      method: request.method,
-      grants: preflightGrants,
-      allowedHosts: [],
-    });
-    if (!preflightDecision.allowed || preflightDecision.kind !== 'github') {
-      return denySandboxOutbound();
-    }
-
-    // Resolve the credential only after the preflight decision, then bind the
-    // stored policy to the current mode. Disconnecting the App invalidates the
-    // running container until a fresh turn reconfigures it.
-    const settings = getSettingsStore(workerEnv);
-    const connection = await getGithubConnection(settings);
-    if (connection.mode !== 'app') return denySandboxOutbound();
-    const grants = sandboxEgressGrantsForMode(policy, connection.mode);
-    if (!grants) return denySandboxOutbound();
-    const decision = decideSandboxEgress({
-      url: request.url,
-      method: request.method,
-      grants,
-      allowedHosts: [],
-    });
-    if (!decision.allowed || decision.kind !== 'github') {
-      return denySandboxOutbound();
-    }
-
-    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
-    if (!installation) return denySandboxOutbound();
-    const { token: credential } = await getCachedInstallationToken(
-      connection,
-      installation.id,
-      {
-        ...(installation.repositories
-          ? { repositories: installation.repositories }
-          : {}),
-        permissions: REPOSITORY_PERMISSIONS,
-      },
-    );
-
-    // Bind this request's decision to the turn captured before policy loading.
-    // A reconfiguration during credential resolution must be decided again by
-    // the next request, never forwarded under this turn's stale policy.
-    if ((await stub.getTurnId()) !== capturedTurnId) return denySandboxOutbound();
-    const headers = new Headers(request.headers);
-    headers.set('Authorization', githubAuthorizationHeader(request.url, credential));
-    const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
-    await recordPullRequestProgress(request, response, stub, capturedTurnId);
-    return response;
-  } catch {
-    // Authentication/configuration errors are deliberately indistinguishable
-    // from policy denials at the container boundary and never log token-bearing
-    // request material.
-    return denySandboxOutbound();
-  }
-}
-
-async function packageRegistrySandboxOutbound(
-  request: Request,
-  rawEnv: unknown,
-): Promise<Response> {
-  try {
-    const workerEnv = sandboxWorkerEnv(rawEnv);
-    const rawAllowedHosts = await getSettingsStore(workerEnv).getSetting(
-      SANDBOX_SETTING_KEYS.allowedHosts,
-    );
-    const decision = decideSandboxEgress({
-      url: request.url,
-      method: request.method,
-      grants: [],
-      allowedHosts: parseSandboxAllowedHosts(rawAllowedHosts),
-    });
-    if (!decision.allowed || decision.kind !== 'package-registry') {
-      return denySandboxOutbound();
-    }
-    // Manual redirects force every new origin back through interception,
-    // where it is evaluated independently against the host allowlist.
-    return fetch(new Request(request, { redirect: 'manual' }));
-  } catch {
-    return denySandboxOutbound();
-  }
-}
-
-function sandboxWorkerEnv(value: unknown): SandboxWorkerEnv {
-  if (typeof value !== 'object' || value === null) {
-    throw new Error('Sandbox Worker environment is unavailable');
-  }
-  const workerEnv = value as Partial<SandboxWorkerEnv>;
-  if (
-    !workerEnv.SANDBOX ||
-    typeof workerEnv.SANDBOX.idFromString !== 'function' ||
-    typeof workerEnv.SANDBOX.get !== 'function'
-  ) {
-    throw new Error('SANDBOX Durable Object binding is unavailable');
-  }
-  return workerEnv as SandboxWorkerEnv;
-}
-
-function sandboxStub(
-  workerEnv: SandboxWorkerEnv,
-  containerId: string,
-): Pick<
-  Sandbox,
-  'getEgressPolicy' | 'getTurnId' | 'getTurnProgress' | 'recordPullRequestProgress'
-> {
-  return workerEnv.SANDBOX.get(workerEnv.SANDBOX.idFromString(containerId));
-}
-
-async function recordPullRequestProgress(
-  request: Request,
-  response: Response,
-  stub: Pick<Sandbox, 'recordPullRequestProgress'>,
-  capturedTurnId: string,
-): Promise<void> {
-  if (!isGithubPullRequestCreateResponse(request.url, request.method, response.status)) {
-    return;
-  }
-
-  try {
-    const pullRequest = pullRequestProgressFromGithubResponse({
-      requestUrl: request.url,
-      requestMethod: request.method,
-      responseStatus: response.status,
-      responseBody: await response.clone().json(),
-    });
-    if (!pullRequest) return;
-    await stub.recordPullRequestProgress(pullRequest, capturedTurnId);
-  } catch {
-    // Progress recording is best-effort and must never turn a successful,
-    // policy-approved GitHub operation into a failed sandbox request.
-  }
-}
-
-function denySandboxOutbound(): Response {
-  return new Response('Origin is disallowed', { status: SANDBOX_BLOCKED_STATUS });
-}
 
 // Backoff before the alarm re-fires for a job whose attempt failed but is not
 // yet at the cap. A short delay (matching the DO alarm base retry) is enough:
@@ -1656,6 +1481,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async slackTurnEnvelopeGet(id: string) {
     return this.call((stores) => stores.turnJobs.getTurnEnvelope(id) ?? null);
+  }
+
+  async slackWorkspaceObjectRecord(object: InstallationWorkspaceObject) {
+    return this.call((stores) => {
+      stores.objectInventory.recordWorkspaceObject(object);
+      return null;
+    });
   }
 
   async slackFlueExistingInstanceReconcile(id: string, uid: string) {

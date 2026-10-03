@@ -120,10 +120,8 @@ import {
 import { usePersonalConnectionAuthorizationSlackTool } from '../connections/slack-authorization.ts';
 
 import type { SandboxCredentialMode } from '../sandbox/cloudflare-policy.ts';
-import {
-  CLOUDFLARE_SANDBOX_OPTIONS,
-  contentFreeSandboxExec,
-} from '../sandbox/lifecycle.ts';
+import { contentFreeSandboxExec } from '../sandbox/lifecycle.ts';
+import { sandboxStub } from '../sandbox/sandbox-object.ts';
 import {
   codingWorkspaceCapability,
   resolveCodingWorkspaceCapability,
@@ -1487,17 +1485,10 @@ function runtimePlanWorkspaceRosterSeed(
 ): WorkspaceRosterSeed | undefined {
   if (!plan.codingWorkspace || !isCloudflareTarget()) return undefined;
   const rosterKey = `${plan.conversation.continuityKey}:${plan.agentId}`;
-  const stub = reconnectingSandboxStub(async (): Promise<WorkspaceRosterStub> => {
-    const env = await resolveAgentPlatformEnv();
-    const binding = env?.SANDBOX ?? env?.Sandbox;
-    if (!binding) throw new Error('No Sandbox binding');
-    const { getSandbox } = await import('@cloudflare/sandbox');
-    return getSandbox(
-      binding as Parameters<typeof getSandbox>[0],
-      defaultWorkspaceId(sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(plan)),
-      CLOUDFLARE_SANDBOX_OPTIONS,
-    ) as unknown as WorkspaceRosterStub;
-  });
+  const stub = reconnectingSandboxStub(async (): Promise<WorkspaceRosterStub> => sandboxStub(
+    await resolveAgentPlatformEnv(),
+    defaultWorkspaceId(sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(plan)),
+  ));
   const unavailable = (error: unknown): never => {
     if (error instanceof FlueError) throw error;
     throw new SandboxUnavailableError(error);
@@ -1615,7 +1606,7 @@ async function createRuntimePlanWorkspace(
       unavailableFallback: false,
     });
     const session = await createCloudflareWorkspaceSession({
-      binding,
+      env,
       conversationKey: input.sandboxConversationKey ?? runtimePlanWorkspaceConversationKey(plan),
       name,
       generation,
@@ -1626,6 +1617,7 @@ async function createRuntimePlanWorkspace(
       ...(input.onOpen ? { onOpen: input.onOpen } : {}),
       settingsStore,
       monthlySessionCap: sandboxSettings.monthlySessionCap,
+      packageRegistryHosts: sandboxSettings.allowedHosts,
     });
     return {
       session: session.session,
@@ -2307,7 +2299,7 @@ async function resolveRuntimePlanImageClient(
  * checkpoints from before workspaces were tools carry over.
  */
 async function createCloudflareWorkspaceSession(options: {
-  binding: unknown;
+  env: PlatformEnv | undefined;
   conversationKey: string;
   /** The workspace name and retirement generation; the default workspace when absent. */
   name?: string;
@@ -2319,11 +2311,9 @@ async function createCloudflareWorkspaceSession(options: {
   onOpen?: () => void;
   settingsStore: ReturnType<typeof getSettingsStore>;
   monthlySessionCap: number;
+  packageRegistryHosts: readonly string[];
 }) {
-  const [{ cloudflareSandbox }, { getSandbox }] = await Promise.all([
-    import('@flue/runtime/cloudflare'),
-    import('@cloudflare/sandbox'),
-  ]);
+  const { cloudflareSandbox } = await import('@flue/runtime/cloudflare');
   const name = options.name ?? DEFAULT_WORKSPACE_NAME;
   const workspaceId = workspaceIdFor(options.conversationKey, name, options.generation ?? 0);
   const provider = (stub: WorkspaceSandboxStub) =>
@@ -2334,18 +2324,14 @@ async function createCloudflareWorkspaceSession(options: {
   // Never cache the stub in module state: it is bound to this agent DO's I/O
   // context, and the next turn in this thread may run in a different DO that
   // shares the isolate.
-  const mintStub = async () =>
-    getSandbox(
-      options.binding as Parameters<typeof getSandbox>[0],
-      workspaceId,
-      CLOUDFLARE_SANDBOX_OPTIONS,
-    ) as unknown as WorkspaceSandboxStub;
+  const mintStub = async () => sandboxStub<WorkspaceSandboxStub>(options.env, workspaceId);
   const session = new WorkspaceSession({
     id: workspaceId,
     name,
     agentId: options.agentId,
     grants: options.grants,
     ...(options.credentialMode ? { credentialMode: options.credentialMode } : {}),
+    packageRegistryHosts: options.packageRegistryHosts,
     turnId: options.turnId,
     ...(options.onOpen ? { onOpen: options.onOpen } : {}),
     mintStub,

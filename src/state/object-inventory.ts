@@ -24,12 +24,25 @@ import { schemaInstallRequired, type StateDb } from './state-db.ts';
  * - `slack_agent`: a Slack thread's Flue transcript, when a turn freezes its
  *   runtime plan (which names the instance);
  * - `routine_agent`: one routine attempt's Flue instance, when the attempt's
- *   dispatch envelope is persisted.
+ *   dispatch envelope is persisted;
+ * - `sandbox`: a coding workspace's Sandbox, by its hosted name
+ *   (sandbox/sandbox-object.ts), before anything addresses it;
+ * - `coding_worker`: a coding worker's Flue instance, before its task is
+ *   recorded or dispatched.
  *
  * The state store itself is implicit: its name is the installation's.
  */
-export const INSTALLATION_OBJECT_KINDS = ['routine_agent', 'slack_agent', 'thread_runner'] as const;
+export const INSTALLATION_OBJECT_KINDS = [
+  'coding_worker',
+  'routine_agent',
+  'sandbox',
+  'slack_agent',
+  'thread_runner',
+] as const;
 export type InstallationObjectKind = typeof INSTALLATION_OBJECT_KINDS[number];
+
+/** Objects of a coding workspace, recorded by whoever first addresses them (not by a store). */
+export type InstallationWorkspaceObjectKind = 'coding_worker' | 'sandbox';
 
 /** One recorded object: its kind and the exact name the host addresses it by. */
 export interface InstallationObjectRecord {
@@ -65,6 +78,12 @@ export interface InstallationObjectRecorder {
   recordAgentInstance(kind: 'routine_agent' | 'slack_agent', instanceId: string): void;
 }
 
+/** One object of a coding workspace, by the exact name that already names its installation. */
+export interface InstallationWorkspaceObject {
+  readonly kind: InstallationWorkspaceObjectKind;
+  readonly name: string;
+}
+
 const MAX_PAGE = 1_000;
 const DEFAULT_PAGE = 500;
 /** Owner incarnations of one thread route to name; a route past this is malformed. */
@@ -86,14 +105,7 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     private readonly now: () => number = Date.now,
   ) {
     this.scope = deploymentTenancy(env) === 'installation' ? requireInstallationScope(env) : undefined;
-    if (this.scope && schemaInstallRequired(db)) {
-      db.exec(`CREATE TABLE IF NOT EXISTS installation_object_inventory (
-        kind TEXT NOT NULL CHECK (kind IN ('routine_agent', 'slack_agent', 'thread_runner')),
-        name TEXT NOT NULL,
-        first_seen_at INTEGER NOT NULL,
-        PRIMARY KEY (kind, name)
-      )`);
-    }
+    if (this.scope && schemaInstallRequired(db)) installInventoryTable(db);
   }
 
   /** Whether this store records objects: it serves one installation of many. */
@@ -109,6 +121,22 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
   recordAgentInstance(kind: 'routine_agent' | 'slack_agent', instanceId: string): void {
     if (!this.scope) return;
     this.insert(kind, this.ownName(instanceId));
+  }
+
+  /**
+   * A coding workspace's Sandbox or coding worker, by its hosted name. Its
+   * opener records it here before addressing it; only a store serving one
+   * installation of many records anything.
+   */
+  recordWorkspaceObject(object: InstallationWorkspaceObject): void {
+    if (!this.scope) return;
+    const pattern = WORKSPACE_OBJECT_NAMES[object.kind];
+    if (!pattern) throw new Error('Unknown coding workspace object kind.');
+    const name = this.ownName(object.name);
+    if (!pattern.test(splitInstallationObjectName(name).name)) {
+      throw new InstallationContextError('installation_context_invalid', 'The object name is malformed.');
+    }
+    this.insert(object.kind, name);
   }
 
   /** Every recorded object, ordered by kind then name, a page at a time. */
@@ -141,7 +169,7 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
   /** Recorded objects per kind. */
   counts(): Record<InstallationObjectKind, number> {
     this.requireEnabled();
-    const counts = { routine_agent: 0, slack_agent: 0, thread_runner: 0 };
+    const counts = emptyCounts();
     for (const row of this.db.all(
       'SELECT kind, COUNT(*) AS count FROM installation_object_inventory GROUP BY kind',
     )) counts[String(row.kind) as InstallationObjectKind] = Number(row.count);
@@ -160,7 +188,8 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
    */
   backfill(): InstallationObjectBackfill {
     this.requireEnabled();
-    const recovered = { routine_agent: 0, slack_agent: 0, thread_runner: 0 };
+    // No coding workspace object predates the inventory: hosted Sandboxes arrived with it.
+    const recovered = emptyCounts();
     const runners = new Set<string>();
     const agents = { routine_agent: new Set<string>(), slack_agent: new Set<string>() };
     const ownAgent = (kind: 'routine_agent' | 'slack_agent', value: unknown) => {
@@ -238,7 +267,7 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     );
   }
 
-  /** A Flue instance ID this installation may own: one its own name scopes. */
+  /** An object name this installation may own: one its own name scopes. */
   private ownName(instanceId: string): string {
     const split = splitInstallationObjectName(instanceId);
     if (split.scope?.installationId !== this.scope!.installationId) {
@@ -262,6 +291,48 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
       );
     }
   }
+}
+
+/** The standalone part of a coding workspace object's hosted name, by kind. */
+const WORKSPACE_OBJECT_NAMES: Readonly<Record<InstallationWorkspaceObjectKind, RegExp>> = {
+  sandbox: /^w[a-z2-7]{21}$/,
+  coding_worker: /^codingworker_[a-f0-9]{40}$/,
+};
+
+const INVENTORY_TABLE_SQL = (table: string) => `CREATE TABLE IF NOT EXISTS ${table} (
+  kind TEXT NOT NULL CHECK (kind IN (${INSTALLATION_OBJECT_KINDS.map((kind) => `'${kind}'`).join(', ')})),
+  name TEXT NOT NULL,
+  first_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (kind, name)
+)`;
+
+/**
+ * Create the inventory, or widen an existing one's kinds: SQLite cannot
+ * alter a CHECK constraint, so a table that predates a kind is copied into
+ * one that admits it, rows and all, in one transaction.
+ */
+function installInventoryTable(db: StateDb): void {
+  const existing = db.get(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'installation_object_inventory'",
+  );
+  if (!existing) {
+    db.exec(INVENTORY_TABLE_SQL('installation_object_inventory'));
+    return;
+  }
+  const declared = String(existing.sql);
+  if (INSTALLATION_OBJECT_KINDS.every((kind) => declared.includes(`'${kind}'`))) return;
+  db.transaction(() => {
+    db.exec('DROP TABLE IF EXISTS installation_object_inventory_next');
+    db.exec(INVENTORY_TABLE_SQL('installation_object_inventory_next'));
+    db.exec(`INSERT INTO installation_object_inventory_next (kind, name, first_seen_at)
+      SELECT kind, name, first_seen_at FROM installation_object_inventory`);
+    db.exec('DROP TABLE installation_object_inventory');
+    db.exec('ALTER TABLE installation_object_inventory_next RENAME TO installation_object_inventory');
+  });
+}
+
+function emptyCounts(): Record<InstallationObjectKind, number> {
+  return Object.fromEntries(INSTALLATION_OBJECT_KINDS.map((kind) => [kind, 0])) as Record<InstallationObjectKind, number>;
 }
 
 /** The runner key a stored turn row runs on, or undefined for an unreadable row. */

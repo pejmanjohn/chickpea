@@ -25,7 +25,7 @@ import {
   parseChickpeaResponseMetadata,
 } from '../usage/response-metadata.ts';
 import { workspaceTaskDispatchKey, type CodingTaskRecordV1 } from './coding-task-record.ts';
-import type { CodingWorkerBindingV1 } from './coding-worker-binding.ts';
+import type { CodingWorkerBinding } from './coding-worker-binding.ts';
 import {
   SandboxConnectionDroppedError,
   SandboxSessionCapError,
@@ -107,7 +107,7 @@ export type WorkspaceTaskResult = {
 export interface CodingWorkerHandle {
   dispatch(request: {
     message: string;
-    initialData: CodingWorkerBindingV1;
+    initialData: CodingWorkerBinding;
     idempotencyKey: string;
   }): Promise<DispatchReceipt>;
   abort(): Promise<void>;
@@ -156,9 +156,15 @@ export interface WorkspaceTaskToolOptions {
   /** The session for a workspace name this response; a `use` that opens it. */
   resolve: WorkspaceResolver;
   /** The worker binding for a workspace id, frozen from the coordinator's plan. */
-  binding: (workspaceId: string) => CodingWorkerBindingV1;
+  binding: (workspaceId: string) => CodingWorkerBinding;
   /** The worker instance id for a binding. */
-  instanceId: (binding: CodingWorkerBindingV1) => string;
+  instanceId: (binding: CodingWorkerBinding) => string;
+  /**
+   * Make the worker addressable before anything names it: before its task
+   * record is written, and so before its dispatch. A failure refuses the
+   * task as an unavailable workspace.
+   */
+  prepareWorker?: (instanceId: string, binding: CodingWorkerBinding) => Promise<void>;
   client: CodingWorkerClient;
   /** This response's bookkeeping; one object for the whole response. */
   responseState: () => WorkspaceTaskResponseState;
@@ -313,6 +319,15 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
           pendingAt: (options.now ?? Date.now)(),
           timeoutMs: taskTimeoutMs,
         };
+        if (options.prepareWorker) {
+          try {
+            await options.prepareWorker(instanceId, binding);
+          } catch {
+            console.warn('[chickpea] coding worker could not be prepared');
+            milestones.stop('workspace_unavailable');
+            return failure('workspace_unavailable', WORKSPACE_UNAVAILABLE_MESSAGE);
+          }
+        }
         let hostTurnId: string | undefined;
         if (options.taskRecords) {
           try {
@@ -465,7 +480,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
  */
 export function pullRequestLinks(
   text: string,
-  binding: Pick<CodingWorkerBindingV1, 'repositories'>,
+  binding: Pick<CodingWorkerBinding, 'repositories'>,
 ): WorkspaceTaskPullRequest[] {
   const repositories = new Set(binding.repositories
     .filter((repository) => !repository.allRepos && repository.fullName)

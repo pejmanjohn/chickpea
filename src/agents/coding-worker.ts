@@ -26,20 +26,20 @@ import {
   codingWorkerInstanceId,
   codingWorkerRepositoryGrants,
   parseCodingWorkerBinding,
-  type CodingWorkerBindingV1,
+  type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../sandbox/coding-worker-instructions.ts';
 import {
-  CLOUDFLARE_SANDBOX_OPTIONS,
   contentFreeSandboxExec,
   serializeSandboxActivation,
 } from '../sandbox/lifecycle.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
+import { sandboxStub } from '../sandbox/sandbox-object.ts';
 import type { SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TurnEnvelopeContext } from './turn-envelope.ts';
-import { installationAgentExtension } from './cloudflare-extension.ts';
+import { codingWorkerCloudflareExtension } from './coding-worker-staging.ts';
 
 /**
  * A coding worker: one Flue agent instance per coding workspace and binding,
@@ -77,29 +77,20 @@ export function CodingWorker({ id }: AgentProps) {
  * cap, checkpoint restore) before dispatching, so this handle only needs the
  * readiness probe and the content-free command wrapper.
  */
-function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
+function codingWorkerSandbox(binding: CodingWorkerBinding): SandboxFactory {
   return {
     async createSandbox(options) {
       if (!isCloudflareTarget()) {
         throw new Error('Coding workers run only on the Cloudflare target.');
       }
-      const [{ cloudflareSandbox, getCloudflareContext }, { getSandbox }] = await Promise.all([
-        import('@flue/runtime/cloudflare'),
-        import('@cloudflare/sandbox'),
-      ]);
+      const { cloudflareSandbox, getCloudflareContext } = await import('@flue/runtime/cloudflare');
       const env = getCloudflareContext().env as PlatformEnv & { SANDBOX?: unknown; Sandbox?: unknown };
-      const namespace = env.SANDBOX ?? env.Sandbox;
-      if (!namespace) throw new Error('The coding workspace binding is unavailable.');
+      if (!(env.SANDBOX ?? env.Sandbox)) throw new Error('The coding workspace binding is unavailable.');
       // A task can run for most of an hour, and Cloudflare may replace the
       // Sandbox Durable Object instance meanwhile (the container survives).
       // Mint the stub lazily and again after a disconnect, never once per task.
       const stub = reconnectingSandboxStub(() =>
-        getSandbox(
-          namespace as Parameters<typeof getSandbox>[0],
-          binding.workspaceId,
-          CLOUDFLARE_SANDBOX_OPTIONS,
-        ),
-      );
+        sandboxStub<WorkerSandboxStub>(env, binding.workspaceId));
       await prepareCodingModel(
         binding,
         env,
@@ -114,13 +105,19 @@ function codingWorkerSandbox(binding: CodingWorkerBindingV1): SandboxFactory {
   };
 }
 
+/** The Sandbox surface the worker drives: the turn it serves, readiness, commands. */
+type WorkerSandboxStub = SandboxTurnContext & {
+  exists(path: string): Promise<unknown>;
+  exec(command: string, options?: { env?: Record<string, string>; [key: string]: unknown }): unknown;
+};
+
 /**
  * The coordinator turn's settings envelope. The coordinator binds the
  * workspace to its TurnJob before dispatching a task, so the workspace's
  * current turn id names it; a routine run's turn has no envelope.
  */
 async function codingWorkerTurn(
-  binding: CodingWorkerBindingV1,
+  binding: CodingWorkerBinding,
   workspace: SandboxTurnContext,
   env: PlatformEnv,
 ): Promise<TurnEnvelopeContext | undefined> {
@@ -142,7 +139,7 @@ async function codingWorkerTurn(
  * standalone reads live as each attempt starts.
  */
 export async function prepareCodingModel(
-  binding: CodingWorkerBindingV1,
+  binding: CodingWorkerBinding,
   env: PlatformEnv,
   turn?: TurnEnvelopeContext,
 ): Promise<void> {
@@ -162,8 +159,8 @@ export async function prepareCodingModel(
 
 // MUST stay a top-level string literal: see the note on ChickpeaRoutineExecution.
 CodingWorker.agentName = 'chickpea-coding-worker-v1';
-export const cloudflare = installationAgentExtension;
-CodingWorker.initialData = v.custom<CodingWorkerBindingV1>((value) => {
+export const cloudflare = codingWorkerCloudflareExtension;
+CodingWorker.initialData = v.custom<CodingWorkerBinding>((value) => {
   try {
     parseCodingWorkerBinding(value);
     return true;

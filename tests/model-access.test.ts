@@ -15,6 +15,12 @@ import { lookupAttemptModelAccess } from '../src/agents/model-access-lookup.ts';
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { createSlackTurnInput, rememberInProcessTurnInput } from '../src/agents/turn-input.ts';
 import {
+  codingWorkerInstanceId,
+  type CodingWorkerBinding,
+  type CodingWorkerBindingV2,
+} from '../src/sandbox/coding-worker-binding.ts';
+import { InstallationContextError } from '../src/config/installation-scope.ts';
+import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
 } from '../src/config/installation-admission.ts';
@@ -504,6 +510,86 @@ test('standalone binds the coding worker to the installation\'s current keys in 
       ['openai', 'sk-openai-worker-secret'],
       ['workers-ai', undefined],
     ]);
+  });
+});
+
+function hostedWorkerBinding(
+  installationId: string,
+  modelCredential?: CodingWorkerBindingV2['modelCredential'],
+): CodingWorkerBindingV2 {
+  return {
+    schemaVersion: 2,
+    workspaceId: 'T1:C1:1788000000.000100',
+    agentId: 'agent_lookup',
+    codingModel: { model: 'anthropic/claude-haiku-4-5', runtimeModel: 'anthropic/claude-haiku-4-5' },
+    repositories: [],
+    installation: { version: 1, installationId },
+    ...(modelCredential ? { modelCredential } : {}),
+  };
+}
+
+test('an installation\'s coding worker binds the credential its coordinator froze, and fails closed without it', async (t) => {
+  const { envA, envB, grant, rotate } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const frozen = await grant(envA, 'freeze');
+    const binding = hostedWorkerBinding('inst_a', {
+      credentialRefId: frozen.credentialRefId, version: frozen.credentialVersion, providerId: 'anthropic',
+    });
+    const instanceId = codingWorkerInstanceId(binding);
+    assert.match(instanceId, /^i1~inst_a~codingworker_[a-f0-9]{40}$/, 'the worker is named under its installation');
+    const staged = new Map<string, CodingWorkerBinding>([[instanceId, binding]]);
+    const lookup = (context: FlueExecutionContext, env: PlatformEnv | undefined) =>
+      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id));
+    const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
+
+    const access = await lookup(worker(instanceId), envA);
+    assert.deepEqual('grant' in access && access.grant, {
+      installationId: 'inst_a', providerId: 'anthropic', credentialRefId: frozen.credentialRefId,
+      credentialVersion: frozen.credentialVersion, runId: `sub_${instanceId}`, fundingSource: 'customer',
+    });
+
+    const sent: SentRequest[] = [];
+    const anthropic = recordingProvider('anthropic', sent);
+    const interceptor = createModelAccessInterceptor({
+      lookup: (context) => lookup(context, envA),
+      installationGrants: async () => { throw new Error('an installation of many reads no live grants'); },
+    });
+    await interceptor(AGENT_OPERATION, worker(instanceId), () => modelCall(anthropic, 'worker'));
+    assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['worker', KEY_A1]]);
+
+    // Nothing staged, a standalone binding, or a binding staged for another worker: no access at all.
+    const unstaged = codingWorkerInstanceId(hostedWorkerBinding('inst_a'));
+    await assert.rejects(lookup(worker(unstaged), envA),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+    const standaloneBinding: CodingWorkerBinding = { ...binding, schemaVersion: 1 } as never;
+    delete (standaloneBinding as Partial<CodingWorkerBindingV2>).installation;
+    delete (standaloneBinding as Partial<CodingWorkerBindingV2>).modelCredential;
+    const standaloneId = codingWorkerInstanceId(standaloneBinding);
+    staged.set(standaloneId, standaloneBinding);
+    await assert.rejects(lookup(worker(standaloneId), envA),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+    staged.set(unstaged, binding);
+    await assert.rejects(lookup(worker(unstaged), envA),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+    // Installation B's agent object never runs installation A's worker.
+    await assert.rejects(lookup(worker(instanceId), envB), InstallationContextError);
+    // A worker named under B carrying A's binding is refused before anything resolves.
+    const foreign = `i1~inst_b~${instanceId.split('~')[2]}`;
+    staged.set(foreign, binding);
+    await assert.rejects(lookup(worker(foreign), envB),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+
+    // A rotated key is another version: the frozen grant no longer resolves.
+    await rotate(envA, 'anthropic', { kind: 'save', apiKey: KEY_A2 });
+    sent.length = 0;
+    await assert.rejects(
+      interceptor(AGENT_OPERATION, { ...worker(instanceId), submissionId: 'sub_rotated' }, () => modelCall(anthropic, 'rotated')),
+      ModelCredentialRevisionError,
+    );
+    assert.deepEqual(sent, [], 'no request left the process');
+
+    // Standalone keeps today's live read for its workers.
+    assert.deepEqual(await lookup(worker('codingworker_standalone'), undefined), { env: undefined });
   });
 });
 

@@ -287,6 +287,12 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   ): Promise<import('./turn-job-types.ts').FlueDispatchEnvelopeV1>;
   /** The settings envelope frozen with this turn's dispatch, if any. */
   getTurnEnvelope?(id: string): Promise<import('../agents/turn-envelope.ts').TurnEnvelopeV1 | undefined>;
+  /**
+   * Record a coding workspace's Sandbox or coding worker in the installation's
+   * object inventory before addressing it. Only a deployment serving many
+   * installations (Cloudflare) has one.
+   */
+  recordWorkspaceObject?(object: import('../state/object-inventory.ts').InstallationWorkspaceObject): Promise<void>;
   reconcileFlueExistingInstance?(
     id: string,
     uid: string,
