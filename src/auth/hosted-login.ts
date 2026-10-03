@@ -1,6 +1,7 @@
 import { deploymentTenancy, installationScopeOf } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { BetterAuthPrincipalRecord, Organization, SlackIdentityBinding } from '../identity/types.ts';
+import type { BetterAuthMembershipRecord } from './better-auth-backend.ts';
 
 /**
  * The login a host serving many installations found a request's
@@ -36,6 +37,8 @@ export interface HostedRouteReads {
   readonly session?: HostedSessionRead;
   /** What the installation stored for the login (resolveBetterAuthPrincipal), whose binding routing checked. */
   readonly principal: BetterAuthPrincipalRecord;
+  /** Every Better Auth membership of the login's user, when the host read them with its accounts. */
+  readonly memberships?: readonly BetterAuthMembershipRecord[];
 }
 
 /**

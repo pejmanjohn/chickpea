@@ -90,7 +90,7 @@ export async function verifyMcpAccessToken(
 }
 
 /** The keys Better Auth signs its MCP access tokens with. */
-export async function betterAuthJwks(auth: ReturnType<typeof createBetterAuth>): Promise<{ keys: JWK[] }> {
+export async function betterAuthJwks(auth: { api: object }): Promise<{ keys: JWK[] }> {
   const api = auth.api as unknown as { getJwks(): Promise<{ keys?: JWK[] }> };
   const result = await api.getJwks();
   return { keys: Array.isArray(result.keys) ? result.keys : [] };

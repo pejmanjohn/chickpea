@@ -62,17 +62,23 @@ export class BetterAuthDirectory implements HumanIdentityDirectory {
     // Chickpea's migrations make that pair unique, so the row found is
     // normally the one the binding names. A database without that index can
     // hold another row for the pair; then the bound row is read by its ID.
-    // Hosted routing has read the former already, for this login.
+    // Hosted routing may have read both already, for this login.
+    const routed = fence?.routed;
+    const carried = routed?.memberships;
     const [stored, memberInOrganization] = await Promise.all([
-      fence?.routed?.principal ?? this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
-      this.input.backend.getMembershipForUser(betterAuthUserId, this.input.organizationId),
+      routed?.principal ?? this.input.access.resolveBetterAuthPrincipal(betterAuthUserId),
+      carried
+        ? carried.find((row) => row.userId === betterAuthUserId && row.organizationId === this.input.organizationId) ?? null
+        : this.input.backend.getMembershipForUser(betterAuthUserId, this.input.organizationId),
     ]);
     if (!stored || !memberInOrganization) return undefined;
     const { binding, organization, user, membership, overlay } = stored;
     if (!binding.betterAuthUserId || !binding.betterAuthMembershipId) return undefined;
     const betterAuthMembership = memberInOrganization.id === binding.betterAuthMembershipId
       ? memberInOrganization
-      : await this.input.backend.getMembership(binding.betterAuthMembershipId);
+      : carried
+        ? carried.find((row) => row.id === binding.betterAuthMembershipId) ?? null
+        : await this.input.backend.getMembership(binding.betterAuthMembershipId);
     if (!betterAuthMembership || betterAuthMembership.role !== 'member' ||
         betterAuthMembership.userId !== betterAuthUserId ||
         betterAuthMembership.organizationId !== this.input.organizationId ||

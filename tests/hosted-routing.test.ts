@@ -709,6 +709,7 @@ test('a routed request carries its session and stored principal, for its own ins
   assert.equal(reads?.session?.cookie, acme.ownerCookie);
   assert.deepEqual(reads?.session?.setCookies, [], 'a fresh session has nothing to refresh');
   assert.deepEqual(reads?.principal, await acme.identity.resolveBetterAuthPrincipal(routed.login.betterAuthUserId));
+  assert.equal(reads?.memberships, undefined, 'this host reads no memberships with the login');
 
   // An MCP token carries the principal and no session.
   const grant = await hosted.mcpGrant(acme.ownerCookie);

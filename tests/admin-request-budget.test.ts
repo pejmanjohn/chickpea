@@ -7,12 +7,13 @@ import { Hono } from 'hono';
 import pg from 'pg';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { mapBetterAuthMembership, type BetterAuthMembershipRecord } from '../src/auth/better-auth-backend.ts';
 import { withBetterAuthBackend } from '../src/auth/better-auth-environment.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { openPostgresBetterAuthBackend } from '../src/auth/better-auth-postgres.ts';
 import { applyPostgresBetterAuthMigrations } from '../src/auth/better-auth-postgres-migrations.ts';
 import { hostedLoginFence } from '../src/auth/hosted-login.ts';
-import { routeHostedRequest, type HostedRouting } from '../src/auth/hosted-routing.ts';
+import { routeHostedRequest, type HostedLoginRead, type HostedRouting } from '../src/auth/hosted-routing.ts';
 import { activateInstallerOwner } from '../src/auth/installer-owner.ts';
 import { recoveryOnlyGate, requestAuthControl } from '../src/auth/request-auth-control.ts';
 import { resolveInstallationEnv } from '../src/config/installation-lookup.ts';
@@ -222,6 +223,23 @@ after(async () => (await postgres?.catch(() => undefined))?.cluster?.stop());
 const HOSTED_ORIGIN = 'https://hosted.example';
 const HOSTED = { CHICKPEA_TENANCY: 'installation', CHICKPEA_AUTH_SECRET: SECRET } as PlatformEnv;
 
+/** What a host reads for a user in its one statement, from Better Auth's tables. */
+async function readLoginInOneStatement(pool: pg.Pool, betterAuthUserId: string): Promise<HostedLoginRead> {
+  const { rows } = await pool.query<{ accountId: string; memberships: unknown[] }>(
+    `SELECT a."accountId",
+       (SELECT coalesce(json_agg(json_build_object('id', m.id, 'organizationId', m."organizationId",
+          'userId', m."userId", 'role', m.role, 'createdAt', m."createdAt")), '[]'::json)
+          FROM member AS m WHERE m."userId" = a."userId") AS memberships
+     FROM account AS a WHERE a."userId" = $1 AND a."providerId" = 'slack'`,
+    [betterAuthUserId],
+  );
+  return {
+    slackAccountIds: rows.map((row) => row.accountId),
+    memberships: (rows[0]?.memberships ?? []).map(mapBetterAuthMembership)
+      .filter((row): row is BetterAuthMembershipRecord => row !== null),
+  };
+}
+
 /**
  * A signed-in Owner of one installation on a host serving many: the host's
  * routing on a PostgreSQL Better Auth, then the application's recovery gate
@@ -229,7 +247,7 @@ const HOSTED = { CHICKPEA_TENANCY: 'installation', CHICKPEA_AUTH_SECRET: SECRET 
  * every state-store call is counted; on Cloudflare each statement is a round
  * trip to the database, and each store call one to the Durable Object.
  */
-async function hostedSignedInAdmin(t: TestContext) {
+async function hostedSignedInAdmin(t: TestContext, options: { hostReadsLogin: boolean }) {
   const running = await cluster();
   if (!running.cluster) {
     t.skip(running.skip);
@@ -276,6 +294,7 @@ async function hostedSignedInAdmin(t: TestContext) {
       async listActive() { return []; },
     }, withBetterAuthBackend(HOSTED, backend), { slackTeamId: login.slackTeamId }),
     identity: () => countedIdentity,
+    ...(options.hostReadsLogin ? { readLogin: (userId: string) => readLoginInOneStatement(backend.pool as pg.Pool, userId) } : {}),
   };
   const app = new Hono();
   app.use('*', recoveryOnlyGate(() => countedIdentity));
@@ -318,8 +337,8 @@ const HOSTED_AUTHENTICATION = {
   'identity.recordAuthAudit': 2,
 };
 
-test('a hosted Admin GET reads the session once, in routing, and the principal once', { timeout: 120_000 }, async (t) => {
-  const admin = await hostedSignedInAdmin(t);
+test('a hosted Admin GET reads the session once, in one statement, and the login in one host statement', { timeout: 120_000 }, async (t) => {
+  const admin = await hostedSignedInAdmin(t, { hostReadsLogin: true });
   if (!admin) return;
   // Every store call each route makes, routing's and its handler's included: the
   // same as standalone Admin's, since routing's principal read is the only one.
@@ -332,17 +351,30 @@ test('a hosted Admin GET reads the session once, in routing, and the principal o
     assert.equal(response.status, status, path);
     assert.equal(calls.length, storeCalls, `${path}: ${calls.join(', ')}`);
     assert.equal(calls[0], 'identity.resolveBetterAuthPrincipal', `${path}: routing's read comes first`);
+    // Better Auth's session with its user (a native join), then the host's read of the login's
+    // accounts and memberships. Core's Admin adds no statement of its own.
+    assert.equal(statements.length, 2, `${path}: ${statements.join(' | ')}`);
+    assert.match(statements[0]!, /from "session" .*left join "user"/i, path);
+    assert.match(statements[1]!, /FROM account AS a/, path);
+    assert.equal(routingStatements, 2, `${path}: every statement is routing's`);
     assert.deepEqual(tally(calls, (call) => call.startsWith('identity.')), HOSTED_AUTHENTICATION, path);
-    // Routing reads the session and its user; Admin reads only the login's membership.
-    assert.equal(statements.filter((statement) => /from "session"/i.test(statement)).length, 1, `${path}: ${statements.join(' | ')}`);
-    assert.equal(statements.filter((statement) => /from "user"/i.test(statement)).length, 1, path);
-    assert.equal(statements.length - routingStatements, 1, `${path}: ${statements.slice(routingStatements).join(' | ')}`);
-    assert.match(statements.at(-1)!, /FROM member WHERE "userId" = \$1 AND "organizationId" = \$2/, path);
   }
 });
 
+test('without a host read of the login, a hosted Admin GET still reads the session only once', { timeout: 120_000 }, async (t) => {
+  const admin = await hostedSignedInAdmin(t, { hostReadsLogin: false });
+  if (!admin) return;
+  const { response, calls, statements } = await admin.get('/admin/api/providers');
+  assert.equal(response.status, 200);
+  // The session with its user; Better Auth's account read; the directory's membership read.
+  assert.equal(statements.length, 3, statements.join(' | '));
+  assert.equal(statements.filter((statement) => /from "session"/i.test(statement)).length, 1);
+  assert.match(statements[2]!, /FROM member WHERE "userId" = \$1 AND "organizationId" = \$2/);
+  assert.deepEqual(tally(calls, (call) => call.startsWith('identity.')), HOSTED_AUTHENTICATION);
+});
+
 test('a hosted session due for refresh is refreshed in routing, and Admin sets its cookie', { timeout: 120_000 }, async (t) => {
-  const admin = await hostedSignedInAdmin(t);
+  const admin = await hostedSignedInAdmin(t, { hostReadsLogin: true });
   if (!admin) return;
   // Last refreshed two days ago: due (updateAge is one day).
   await admin.backend.pool.query(`UPDATE session SET "expiresAt" = now() + interval '5 days', "updatedAt" = now() - interval '2 days'`);
@@ -361,11 +393,11 @@ test('a hosted session due for refresh is refreshed in routing, and Admin sets i
   // Refreshed once: the next request finds nothing to refresh.
   const next = await admin.get('/admin/api/providers');
   assert.equal(next.response.headers.getSetCookie().length, 0);
-  assert.equal(next.statements.filter((statement) => /^update "session"/i.test(statement)).length, 0);
+  assert.equal(next.statements.length, 2);
 });
 
 test('a routed session serves only a request presenting the same cookie', { timeout: 120_000 }, async (t) => {
-  const admin = await hostedSignedInAdmin(t);
+  const admin = await hostedSignedInAdmin(t, { hostReadsLogin: true });
   if (!admin) return;
   const { routed } = await admin.get('/admin/api/providers');
   if (routed.kind !== 'installation') return;

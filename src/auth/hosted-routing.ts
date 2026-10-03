@@ -4,7 +4,12 @@ import { Hono } from 'hono';
 import { InstallationContextError, requireInstallationScope } from '../config/installation-scope.ts';
 import { getIdentityStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { BetterAuthPrincipalRecord, IdentityStore } from '../identity/types.ts';
-import { BETTER_AUTH_SLACK_PROVIDER_ID, createBetterAuth, requireSupportedOrigin } from './better-auth.ts';
+import {
+  BETTER_AUTH_SLACK_PROVIDER_ID,
+  createBetterAuthSessionReader,
+  requireSupportedOrigin,
+} from './better-auth.ts';
+import type { BetterAuthMembershipRecord } from './better-auth-backend.ts';
 import { hostBetterAuthBackend, type BetterAuthEnvironment } from './better-auth-environment.ts';
 import { BetterAuthDirectory } from './better-auth-principal.ts';
 import { createBetterAuthPublicHandler, type BetterAuthPublicHandlerInput } from './better-auth-routes.ts';
@@ -37,6 +42,14 @@ export interface HostedRouting<E extends PlatformEnv> {
    * inactive installation throws InstallationContextError.
    */
   installationEnv(login: HostedLogin): Promise<E>;
+  /**
+   * Optional: a Better Auth user's Slack accounts and memberships, read by
+   * the host in place of Better Auth's account read and the directory's
+   * membership read. A host that reads them in the same statement as the
+   * registry entry of the workspace the one Slack account names answers
+   * `installationEnv` for that login from it, without reading again.
+   */
+  readLogin?(betterAuthUserId: string): Promise<HostedLoginRead>;
   /** The installation's identity store; by default its TagStateStore. */
   identity?: (env: E) => IdentityStore;
   /**
@@ -47,6 +60,14 @@ export interface HostedRouting<E extends PlatformEnv> {
    * registration per source before calling.
    */
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
+}
+
+/** What `HostedRouting.readLogin` answers from Better Auth's tables for one user. */
+export interface HostedLoginRead {
+  /** The account ID (`slack:TEAM:USER`) of each of the user's accounts with the Slack provider. */
+  readonly slackAccountIds: readonly string[];
+  /** Every membership the user holds, in any organization. */
+  readonly memberships: readonly BetterAuthMembershipRecord[];
 }
 
 /**
@@ -90,7 +111,7 @@ export async function serveHostedSharedAuth<E extends PlatformEnv>(
   routing: HostedRouting<E>,
 ): Promise<Response | undefined> {
   if (!isHostedSharedAuthPath(new URL(request.url).pathname)) return undefined;
-  const logins = hostedLogins(routing.environment);
+  const logins = hostedLogins(routing.environment, routing.readLogin);
   const handler = createBetterAuthPublicHandler({
     ...routing.environment,
     mayIssueTokens: (betterAuthUserId) => mayIssueHostedTokens(routing, logins, betterAuthUserId),
@@ -120,7 +141,7 @@ export async function routeHostedRequest<E extends PlatformEnv>(
   routing: HostedRouting<E>,
 ): Promise<HostedRoute<E>> {
   const mcp = new URL(request.url).pathname === MCP_PATH;
-  const presented = await presentedLogin(request, hostedLogins(routing.environment), { refresh: true });
+  const presented = await presentedLogin(request, hostedLogins(routing.environment, routing.readLogin), { refresh: true });
   if (!presented) {
     return mcp
       ? {
@@ -135,6 +156,7 @@ export async function routeHostedRequest<E extends PlatformEnv>(
     const reads: HostedRouteReads = {
       principal: routed.principal,
       ...(presented.session ? { session: presented.session } : {}),
+      ...(presented.memberships ? { memberships: presented.memberships } : {}),
     };
     return { kind: 'installation', env: withHostedLogin(routed.env, login, reads), login };
   }
@@ -165,10 +187,11 @@ async function presentedLogin(
   return token ? logins.fromAccessToken(token) : undefined;
 }
 
-/** A login, and the browser session it was read from. */
+/** A login, and what reading it found on the way. */
 interface PresentedLogin {
   login: HostedLogin;
   session?: HostedSessionRead;
+  memberships?: readonly BetterAuthMembershipRecord[];
 }
 
 type HostedLogins = ReturnType<typeof hostedLogins>;
@@ -176,18 +199,27 @@ type HostedLogins = ReturnType<typeof hostedLogins>;
 /**
  * Login lookups on the host's Better Auth, built on first use. This is
  * Better Auth before any installation, so it issues nothing: unlike
- * installationBetterAuth it has no installation's admission to issue for.
+ * installationBetterAuth it has no installation's admission to issue for,
+ * and it only reads (createBetterAuthSessionReader).
  */
-function hostedLogins(environment: BetterAuthEnvironment) {
-  let auth: ReturnType<typeof createBetterAuth> | undefined;
-  const betterAuth = () => auth ??= createBetterAuth(environment);
+function hostedLogins(environment: BetterAuthEnvironment, readLogin?: HostedRouting<PlatformEnv>['readLogin']) {
+  let auth: ReturnType<typeof createBetterAuthSessionReader> | undefined;
+  const betterAuth = () => auth ??= createBetterAuthSessionReader(environment);
   const forUser = async (betterAuthUserId: string): Promise<PresentedLogin | undefined> => {
-    const context = await betterAuth().$context;
-    const accounts = (await context.internalAdapter.findAccounts(betterAuthUserId))
-      .filter((account) => account.providerId === BETTER_AUTH_SLACK_PROVIDER_ID);
+    const read: Pick<HostedLoginRead, 'slackAccountIds'> & Partial<HostedLoginRead> = readLogin
+      ? await readLogin(betterAuthUserId)
+      : {
+          slackAccountIds: (await (await betterAuth().$context).internalAdapter.findAccounts(betterAuthUserId))
+            .filter((account) => account.providerId === BETTER_AUTH_SLACK_PROVIDER_ID)
+            .map((account) => account.accountId),
+        };
     // One login is one Slack account; Better Auth refuses linking a second.
-    const match = accounts.length === 1 ? SLACK_ACCOUNT.exec(accounts[0]!.accountId) : null;
-    return match ? { login: { betterAuthUserId, slackTeamId: match[1]!, slackUserId: match[2]! } } : undefined;
+    const match = read.slackAccountIds.length === 1 ? SLACK_ACCOUNT.exec(read.slackAccountIds[0]!) : null;
+    if (!match) return undefined;
+    return {
+      login: { betterAuthUserId, slackTeamId: match[1]!, slackUserId: match[2]! },
+      ...(read.memberships ? { memberships: read.memberships } : {}),
+    };
   };
   return {
     forUser,
@@ -288,7 +320,10 @@ async function mayIssueHostedTokens<E extends PlatformEnv>(
     access: identity,
     organizationId: control.betterAuthOrganizationId,
     canonicalAdminOrigin: origin,
-    hostedLogin: { login: presented.login, routed: { principal: routed.principal } },
+    hostedLogin: {
+      login: presented.login,
+      routed: { principal: routed.principal, ...(presented.memberships ? { memberships: presented.memberships } : {}) },
+    },
   }).resolveBetterAuthUser(betterAuthUserId);
   return resolution?.membership.status === 'active';
 }
