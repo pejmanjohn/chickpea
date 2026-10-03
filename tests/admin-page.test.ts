@@ -17982,8 +17982,8 @@ test('hosted Slack missing scopes keep the error with no app reinstall or recove
     if (hosting.selfHosted) {
       assert.match(tested.app.innerHTML, /missing required permissions\. Use the scoped recovery flow to repair it\./, `${mode}, connection test`);
     } else {
-      assert.doesNotMatch(tested.app.innerHTML, /missing required permissions|scoped recovery/, `${mode}, connection test`);
-      assert.match(tested.app.innerHTML, />slack_missing_scopes</, `${mode}, connection test: the generic text`);
+      assert.doesNotMatch(tested.app.innerHTML, /scoped recovery|>slack_missing_scopes</, `${mode}, connection test`);
+      assert.match(tested.app.innerHTML, /The Slack installation is missing required permissions\.</, `${mode}, connection test: the first sentence only`);
     }
   }
 });

@@ -4242,8 +4242,10 @@
     if (message === "slack_gateway_unreachable" && detail === "gateway_session_offline") return "Slack’s outbound API is reachable, but Chickpea’s inbound event session is offline. Retry now; the deployment health check will reconnect it automatically.";
     if (message === "slack_gateway_unreachable") return "The shared Slack connection is temporarily unavailable. Retry now; if it continues, open Slack setup and use Add to Slack again.";
     if (message === "slack_auth_failed") return "Slack rejected the installed bot credential.";
-    // Scoped recovery is the deployment's; hosted gets the generic text below.
-    if (message === "slack_missing_scopes" && SELF_HOSTED) return "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it.";
+    // Scoped recovery is the deployment's, so hosted keeps only the first sentence.
+    if (message === "slack_missing_scopes") return SELF_HOSTED
+      ? "The Slack installation is missing required permissions. Use the scoped recovery flow to repair it."
+      : "The Slack installation is missing required permissions.";
     return serverMessage || (detail ? message + ": " + detail : message);
   }
 
