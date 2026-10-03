@@ -65,6 +65,36 @@ export async function meterWorkspaceContainer(
   }
 }
 
+/** How long a started container's lease hold may take before its Sandbox stops waiting on it. */
+export const CONTAINER_START_HOLD_DEADLINE_MS = 10_000;
+
+/**
+ * Hold the lease of a container that just started, beside the start rather
+ * than in its way. The Containers SDK calls `onStart` inside
+ * `blockConcurrencyWhile`, so awaiting the installation's store there would
+ * stall every request to the Sandbox, egress lookups included. The returned
+ * promise settles when the hold does or the deadline passes, whichever comes
+ * first, and never rejects; a hold past its deadline still lands. Standalone
+ * meters nothing and gets no promise.
+ */
+export function holdStartedWorkspaceContainer(
+  env: Env,
+  input: { key: string; now: number },
+  options: { store?: LeaseStore; deadlineMs?: number } = {},
+): Promise<void> | undefined {
+  if (!metersContainers(env)) return undefined;
+  const hold = meterWorkspaceContainer(env, 'hold', input, options.store);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      // Content-free: names no installation or Sandbox.
+      console.warn(JSON.stringify({ component: 'sandbox_container_lease', event: 'hold_deadline' }));
+      resolve();
+    }, options.deadlineMs ?? CONTAINER_START_HOLD_DEADLINE_MS);
+  });
+  return Promise.race([hold, deadline]).finally(() => clearTimeout(timer));
+}
+
 /** Lapsed leases are swept every five minutes. */
 export function isContainerLeaseSweepMinute(scheduledTime: number): boolean {
   return new Date(scheduledTime).getUTCMinutes() % 5 === 0;
@@ -94,6 +124,15 @@ export async function maintainWorkspaceContainerLeases(env: Env, now: number, st
       return (await stub.isContainerRunning()) === true;
     },
   });
+}
+
+/** Whether the env's containers are metered; an env whose tenancy is malformed is, so its hold reports it. */
+function metersContainers(env: Env): boolean {
+  try {
+    return deploymentTenancy(env) === 'installation';
+  } catch {
+    return true;
+  }
 }
 
 /** The installation's store on a deployment serving many; standalone meters nothing. */

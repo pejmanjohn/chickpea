@@ -6,6 +6,7 @@ import { test, type TestContext } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { codingWorkerAdmission } from '../src/agents/coding-worker.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import {
   configureHostedSandboxPolicy,
@@ -55,10 +56,12 @@ import {
 import { decideSandboxEgress } from '../src/sandbox/egress-handler.ts';
 import {
   admitWorkspaceContainer,
+  holdStartedWorkspaceContainer,
   maintainWorkspaceContainerLeases,
   meterWorkspaceContainer,
   requireWorkspaceTurnAdmitted,
 } from '../src/sandbox/hosted-limits.ts';
+import { reserveMonthlySandboxSession } from '../src/sandbox/session-cap.ts';
 import { WorkspaceSession, type WorkspaceSandboxStub } from '../src/sandbox/workspace-session.ts';
 import {
   HOSTED_WORKSPACE_SESSION_CAP_MESSAGE,
@@ -298,6 +301,25 @@ test('maintenance closes a lapsed lease only once its container stopped, and sta
   assert.equal(usage.meteredSeconds, SANDBOX_CONTAINER_LEASE_MS / 1_000);
 });
 
+test('maintenance keeps a lapsed lease whose Sandbox cannot say, until a sweep hears it stopped', async (t) => {
+  const store = settingsStore(t);
+  await admitSandboxContainer({ store, key: 'do_1', running: false, limits: LIMITS, now: T0 });
+  const before = await store.getSetting(SANDBOX_CONTAINER_LEASES_KEY);
+  const later = T0 + 40 * MINUTE;
+  assert.deepEqual(await closeLapsedSandboxContainerLeases({
+    store, now: later, running: async () => { throw new Error('transient'); },
+  }), { closed: 0, renewed: 0 });
+  assert.equal(await store.getSetting(SANDBOX_CONTAINER_LEASES_KEY), before, 'the lease stands as it was');
+  const usage = await readSandboxContainerUsage({ store, now: later });
+  assert.equal(usage.running, 1, 'its slot stays taken');
+  assert.equal(usage.meteredSeconds, 0);
+  // A sweep that hears the container stopped charges it up to its lapse.
+  assert.deepEqual(await closeLapsedSandboxContainerLeases({
+    store, now: later + 5 * MINUTE, running: async () => false,
+  }), { closed: 1, renewed: 0 });
+  assert.equal((await readSandboxContainerUsage({ store, now: later })).meteredSeconds, SANDBOX_CONTAINER_LEASE_MS / 1_000);
+});
+
 test('the Sandbox wiring meters only an installation of many, never throws, and wakes only its own lease\'s Sandbox', async (t) => {
   const untouchable = new Proxy({}, { get() { throw new Error('standalone reads no store'); } }) as SqliteSettingsStore;
   const input = { key: 'do_1', running: false, limits: LIMITS, now: T0 };
@@ -326,6 +348,39 @@ test('the Sandbox wiring meters only an installation of many, never throws, and 
   await maintainWorkspaceContainerLeases(hostedEnv(INSTALLATION_A, { SANDBOX }), T0 + 40 * MINUTE, store);
   assert.deepEqual(woken, ['do_2']);
   assert.equal((await readSandboxContainerUsage({ store, now: T0 })).running, 0);
+
+  // A Sandbox that cannot be reached keeps its lease for the next sweep.
+  await meterWorkspaceContainer(envA, 'hold', { key: 'do_3', now: T0 }, store);
+  const unreachable = { idFromString: () => { throw new Error('unreachable'); }, get: SANDBOX.get };
+  await maintainWorkspaceContainerLeases(hostedEnv(INSTALLATION_A, { SANDBOX: unreachable }), T0 + 40 * MINUTE, store);
+  assert.equal((await readSandboxContainerUsage({ store, now: T0 })).running, 1);
+});
+
+test('a started container\'s lease hold runs beside the start, bounded, and only for an installation of many', async (t) => {
+  const untouchable = new Proxy({}, { get() { throw new Error('standalone reads no store'); } }) as SqliteSettingsStore;
+  assert.equal(holdStartedWorkspaceContainer(undefined, { key: 'do_1', now: T0 }, { store: untouchable }), undefined);
+  assert.equal(holdStartedWorkspaceContainer({ CHICKPEA_TENANCY: 'standalone' }, { key: 'do_1', now: T0 }, { store: untouchable }), undefined);
+
+  const envA = hostedEnv(INSTALLATION_A);
+  const store = settingsStore(t);
+  await holdStartedWorkspaceContainer(envA, { key: 'do_1', now: T0 }, { store });
+  assert.equal((await readSandboxContainerUsage({ store, now: T0 })).running, 1, 'the start is metered');
+
+  // An installation store that never answers does not hold the Sandbox past the deadline.
+  const stalled = {
+    getSettings: () => new Promise<never>(() => {}),
+    applySettingsPatch: () => new Promise<never>(() => {}),
+  } as unknown as SqliteSettingsStore;
+  const warned = t.mock.method(console, 'warn', () => {});
+  const hold = holdStartedWorkspaceContainer(envA, { key: 'do_2', now: T0 }, { store: stalled, deadlineMs: 20 });
+  assert.ok(hold);
+  const outcome = await Promise.race([
+    hold.then(() => 'settled'),
+    new Promise((resolve) => setTimeout(() => resolve('stalled'), 2_000)),
+  ]);
+  assert.equal(outcome, 'settled');
+  assert.equal(warned.mock.callCount(), 1);
+  assert.doesNotMatch(String(warned.mock.calls[0]!.arguments[0]), /inst_|do_2/, 'content-free');
 });
 
 // --- Activation ------------------------------------------------------------
@@ -335,34 +390,118 @@ function session(options: {
   reserve?: boolean;
   admission?: string;
   calls: string[];
+  turnId?: string;
+  /** The Sandbox's admission and lease settling, in place of the canned answers. */
+  admit?: () => Promise<string>;
+  settle?: () => Promise<void>;
+  reserveSession?: (reservationId: string) => Promise<boolean>;
 }) {
+  const turnId = options.turnId ?? 'turn_a';
   const stub = {
     async prepareTurn() {},
-    async beginWorkspaceTurn() { return { state: 'fresh', reservationId: 'turn_a', restorable: false }; },
+    async beginWorkspaceTurn() { return { state: 'fresh', reservationId: turnId, restorable: false }; },
     async configureEgress() {},
-    async admitContainer() { options.calls.push('admitContainer'); return options.admission ?? 'admitted'; },
+    async admitContainer() {
+      options.calls.push('admitContainer');
+      return options.admit ? options.admit() : options.admission ?? 'admitted';
+    },
+    async settleContainerLease() { options.calls.push('settleContainerLease'); await options.settle?.(); },
     async exists() { options.calls.push('exists'); return true; },
     async applyGitIdentity() {},
   };
   return new WorkspaceSession({
-    id: 'T1:C1:1.0', name: 'main', agentId: 'agent_coder', turnId: 'turn_a', credentialMode: 'app',
+    id: 'T1:C1:1.0', name: 'main', agentId: 'agent_coder', turnId, credentialMode: 'app',
     grants: [{ id: 'repo_1', installationId: 7, accountLogin: 'acme', fullName: 'acme/app', enabled: true }],
     mintStub: async () => stub as unknown as WorkspaceSandboxStub,
-    reserveSession: async () => { options.calls.push('reserveSession'); return options.reserve ?? true; },
+    reserveSession: async (reservationId) => {
+      options.calls.push('reserveSession');
+      return options.reserveSession ? options.reserveSession(reservationId) : options.reserve ?? true;
+    },
     toSandbox: async () => { throw new Error('unused'); },
     ...(options.hostedLimits ? { hostedLimits: options.hostedLimits } : {}),
   });
 }
 
-test('a hosted activation reserves its session, then admits its container, before the container starts', async () => {
+test('a hosted activation admits its container, then reserves its session, before the container starts', async () => {
   const calls: string[] = [];
   const stub = await session({ hostedLimits: LIMITS, calls }).activatable();
   await stub.exists('/workspace');
-  assert.deepEqual(calls, ['reserveSession', 'admitContainer', 'exists', 'exists']);
+  assert.deepEqual(calls, ['admitContainer', 'reserveSession', 'exists', 'exists']);
 
   const standalone: string[] = [];
   await (await session({ calls: standalone }).activatable()).exists('/workspace');
   assert.deepEqual(standalone, ['reserveSession', 'exists', 'exists'], 'standalone admits no container');
+});
+
+test('turns refused at the running limit spend no monthly sessions', async (t) => {
+  const store = settingsStore(t);
+  const limits = { monthlyContainerHours: 20, maxRunningContainers: 1 };
+  assert.equal(await admitSandboxContainer({ store, key: 'do_other', running: false, limits, now: T0 }), 'admitted');
+  for (const turnId of ['turn_1', 'turn_2', 'turn_3']) {
+    const calls: string[] = [];
+    const stub = await session({
+      hostedLimits: limits,
+      calls,
+      turnId,
+      admit: () => admitSandboxContainer({ store, key: 'do_1', running: false, limits, now: T0 + MINUTE }),
+      reserveSession: async (reservationId) =>
+        (await reserveMonthlySandboxSession({ store, cap: 50, reservationId })).allowed,
+    }).activatable();
+    await assert.rejects(stub.exists('/workspace'), SandboxUnavailableError);
+    assert.equal(calls.includes('reserveSession'), false, turnId);
+  }
+  const probe = await reserveMonthlySandboxSession({ store, cap: 50, reservationId: 'turn_probe' });
+  assert.equal(probe.count, 1, 'the three refused turns reserved nothing');
+});
+
+test('a session-cap refusal gives back the lease admission took; a running container keeps its own', async (t) => {
+  const store = settingsStore(t);
+  assert.equal((await reserveMonthlySandboxSession({ store, cap: 1, reservationId: 'turn_earlier' })).allowed, true);
+  for (const running of [false, true]) {
+    const key = running ? 'do_warm' : 'do_cold';
+    const calls: string[] = [];
+    const stub = await session({
+      hostedLimits: LIMITS,
+      calls,
+      turnId: `turn_${key}`,
+      admit: () => admitSandboxContainer({ store, key, running, limits: LIMITS, now: T0 }),
+      // As the Sandbox settles at a turn's end: renew a running container's lease, release a stopped one's.
+      settle: async () => {
+        if (running) await holdSandboxContainerLease({ store, key, now: T0 + MINUTE });
+        else await releaseSandboxContainerLease({ store, key, now: T0 + MINUTE });
+      },
+      reserveSession: async (reservationId) =>
+        (await reserveMonthlySandboxSession({ store, cap: 1, reservationId })).allowed,
+    }).activatable();
+    await assert.rejects(stub.exists('/workspace'), SandboxSessionCapError);
+    assert.deepEqual(calls, ['admitContainer', 'reserveSession', 'settleContainerLease'], key);
+  }
+  const leases = JSON.parse(String(await store.getSetting(SANDBOX_CONTAINER_LEASES_KEY))) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(leases), ['do_warm'], 'only the running container holds a slot');
+});
+
+test('a coding worker\'s own activation admits its container under the host\'s limits; standalone admits none', async (t) => {
+  const untouchable = new Proxy({}, { get() { throw new Error('standalone reads no store'); } }) as SqliteSettingsStore;
+  const asked: unknown[] = [];
+  const stub = (answer: string) => ({
+    async admitContainer(limits: unknown) { asked.push(limits); return answer as 'admitted'; },
+  });
+  assert.equal(codingWorkerAdmission({} as never, stub('admitted'), untouchable), undefined);
+  assert.equal(codingWorkerAdmission({ CHICKPEA_TENANCY: 'standalone' } as never, stub('admitted'), untouchable), undefined);
+
+  hostPolicy(t, () => STAGING_POLICY);
+  const store = await contraryTenant(t);
+  const envA = hostedEnv(INSTALLATION_A) as never;
+  await codingWorkerAdmission(envA, stub('admitted'), store)!();
+  assert.deepEqual(asked, [LIMITS], 'the host\'s limits, not the tenant\'s settings');
+  await assert.rejects(codingWorkerAdmission(envA, stub('running_limit'), store)!(), SandboxUnavailableError);
+  const capped = await codingWorkerAdmission(envA, stub('hours_cap'), store)!().then(() => undefined, (error: unknown) => error);
+  assert.ok(capped instanceof SandboxSessionCapError);
+  assert.equal(capped.hosted, true);
+
+  const source = readFileSync(new URL('../src/agents/coding-worker.ts', import.meta.url), 'utf8');
+  assert.match(source, /serializeSandboxActivation\(stub, WORKSPACE_DIR, codingWorkerAdmission\(env, stub\)\)/,
+    'the worker\'s activation goes through it');
 });
 
 test('hosted cap refusals say only the first sentence; running and unknown refusals are "temporarily unavailable"', async () => {
@@ -385,7 +524,7 @@ test('hosted cap refusals say only the first sentence; running and unknown refus
     const { error, calls } = await refusal({ hostedLimits: LIMITS, admission });
     assert.ok(error instanceof SandboxUnavailableError, admission);
     assert.equal(error.message, 'The coding workspace is temporarily unavailable.');
-    assert.equal(calls.includes('exists'), false);
+    assert.deepEqual(calls, ['admitContainer'], 'no session reserved, no container started');
   }
   // Standalone keeps both sentences.
   const { error } = await refusal({ reserve: false });
@@ -423,9 +562,14 @@ test('the Sandbox asks admission before a turn, admits its container, and meters
   assert.match(method('beginWorkspaceTurn'), /^[^]*?\{\s*\/\/[^\n]*\n\s*await requireWorkspaceTurnAdmitted\(this\.env\);/,
     'admission comes first');
   assert.match(method('admitContainer'), /admitWorkspaceContainer\(this\.env, \{\s*key: this\.ctx\.id\.toString\(\),\s*running: this\.containerRunning\(\),/);
-  assert.match(method('onStart'), /await super\.onStart\(\);\s*await meterWorkspaceContainer\(this\.env, 'hold'/);
-  assert.match(method('onStop'), /await super\.onStop\(params\);\s*await meterWorkspaceContainer\(this\.env, 'release'/);
-  assert.match(method('endTurn'), /meterWorkspaceContainer\(\s*this\.env,\s*this\.containerRunning\(\) \? 'hold' : 'release'/);
+  // onStart runs inside the SDK's blockConcurrencyWhile: it starts the hold and awaits nothing of it.
+  const onStart = method('onStart');
+  assert.match(onStart, /await super\.onStart\(\);[^]*?const hold = holdStartedWorkspaceContainer\(this\.env, \{ key: this\.ctx\.id\.toString\(\)/);
+  assert.match(onStart, /this\.startHold = hold;[^]*?\.waitUntil\(hold\);/);
+  assert.equal([...onStart.matchAll(/\bawait\b/g)].length, 1, 'only the SDK\'s own onStart is awaited');
+  assert.match(method('onStop'), /await super\.onStop\(params\);[^]*?await this\.startHold;\s*await meterWorkspaceContainer\(this\.env, 'release'/);
+  assert.match(method('settleContainerLease'), /meterWorkspaceContainer\(\s*this\.env,\s*this\.containerRunning\(\) \? 'hold' : 'release'/);
+  assert.match(method('endTurn'), /await this\.settleContainerLease\(\);\s*$/);
   assert.match(source, /if \(isContainerLeaseSweepMinute\(scheduledTime\)\) \{\s*try \{ await maintainWorkspaceContainerLeases\(platformEnv, scheduledTime\); \}/);
 });
 

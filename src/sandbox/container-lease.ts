@@ -108,8 +108,10 @@ export async function releaseSandboxContainerLease(input: { store: LeaseStore; k
 
 /**
  * Work maintenance: close each lapsed lease whose Sandbox says its container
- * is not running (or cannot say), charged up to its lapse, and renew the
- * others. Starts no container.
+ * is not running, charged up to its lapse, and renew those whose container
+ * runs. A Sandbox that cannot say keeps its lease, as it was, for the next
+ * sweep: a failed call must not free a running container's slot or lose its
+ * time. Starts no container.
  */
 export async function closeLapsedSandboxContainerLeases(input: {
   store: LeaseStore;
@@ -120,8 +122,11 @@ export async function closeLapsedSandboxContainerLeases(input: {
   const lapsed = Object.entries(parseLeases(raw)).filter(([, lease]) => lease.leaseUntil < input.now);
   if (lapsed.length === 0) return { closed: 0, renewed: 0 };
   const stillRunning = new Set<string>();
+  const stopped = new Set<string>();
   for (const [key] of lapsed) {
-    if (await input.running(key).catch(() => false)) stillRunning.add(key);
+    const running = await input.running(key).catch(() => undefined);
+    if (running === true) stillRunning.add(key);
+    else if (running === false) stopped.add(key);
   }
   return updateLeases(input.store, input.now, (leases) => {
     let charged = 0;
@@ -132,7 +137,7 @@ export async function closeLapsedSandboxContainerLeases(input: {
       if (stillRunning.has(key)) {
         lease.leaseUntil = input.now + SANDBOX_CONTAINER_LEASE_MS;
         renewed += 1;
-      } else if (lapsed.some(([lapsedKey]) => lapsedKey === key)) {
+      } else if (stopped.has(key)) {
         charged += runSeconds(lease, lease.leaseUntil);
         delete leases[key];
         closed += 1;

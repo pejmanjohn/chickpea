@@ -64,6 +64,21 @@ export function workspaceReservationId(
   return workspaceId === defaultWorkspaceId(conversationKey) ? reservationId : `${reservationId}:${workspaceId}`;
 }
 
+/**
+ * Admit a workspace container under the host's running limit and
+ * container-hours cap, before anything starts it. An exhausted cap is the
+ * hosted monthly-limit refusal; anything else refused is "temporarily
+ * unavailable".
+ */
+export async function admitHostedContainer(
+  stub: Pick<WorkspaceSandboxStub, 'admitContainer'>,
+  limits: SandboxContainerLimits,
+): Promise<void> {
+  const admission = await stub.admitContainer?.(limits);
+  if (admission === 'hours_cap') throw new SandboxSessionCapError({ hosted: true });
+  if (admission !== 'admitted') throw new SandboxUnavailableError();
+}
+
 /** What the Sandbox DO reports about a workspace without starting a container. */
 export type WorkspaceDescription = {
   running: boolean;
@@ -81,6 +96,8 @@ export interface WorkspaceSandboxStub extends DestroyableSandbox, SandboxTurnCon
   restoreWorkspace(fingerprint: string): Promise<'restored' | 'unavailable'>;
   /** Admit the container under the host's limits; called before it starts, and only with them. */
   admitContainer?(limits: SandboxContainerLimits): Promise<SandboxContainerAdmission>;
+  /** Renew a running container's lease, or release a stopped one's, such as one admission took for nothing. */
+  settleContainerLease?(): Promise<void>;
   describeWorkspace(fingerprint: string): Promise<WorkspaceDescription>;
   discardWorkspace(): Promise<void>;
   /** Revoke this turn's egress and checkpoint the workspace; the container stays warm. */
@@ -255,18 +272,19 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     if (!turn) throw new Error('Sandbox turn context is unavailable at activation');
     const { reservationId, restorable } = turn;
     const activatable = serializeSandboxActivation(stub, WORKSPACE_DIR, async () => {
-      const hosted = options.hostedLimits !== undefined;
+      const limits = options.hostedLimits;
+      // The host bounds running containers and their monthly time, warm reuse
+      // included. Admission comes first, so a turn it refuses reserves no
+      // session: each new message at the running limit would spend one.
+      if (limits) await admitHostedContainer(stub, limits);
       // Counted per container start: a warm follow-up carries the starting
       // turn's reservation and does not consume the cap again.
       if (!(await options.reserveSession(reservationId))) {
-        throw new SandboxSessionCapError({ hosted });
-      }
-      // The host also bounds running containers and their monthly time,
-      // warm reuse included; the session above stays reserved for a retry.
-      if (options.hostedLimits) {
-        const admission = await stub.admitContainer?.(options.hostedLimits);
-        if (admission === 'hours_cap') throw new SandboxSessionCapError({ hosted });
-        if (admission !== 'admitted') throw new SandboxUnavailableError();
+        // A container that will not start gives back the lease admission
+        // took; a running one keeps its own. A failed call is left to the
+        // turn's end, which settles the lease too.
+        if (limits) await stub.settleContainerLease?.().catch(() => undefined);
+        throw new SandboxSessionCapError({ hosted: limits !== undefined });
       }
       // A cold follow-up resumes from the thread's checkpoint. The restore
       // starts the container, so it happens only once the turn needs it.

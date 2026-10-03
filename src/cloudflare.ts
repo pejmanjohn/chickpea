@@ -146,6 +146,7 @@ import { sandboxObjectEnv, sandboxTurnReaders, type SandboxObjectContext } from 
 import type { SandboxContainerAdmission } from './sandbox/container-lease.ts';
 import {
   admitWorkspaceContainer,
+  holdStartedWorkspaceContainer,
   isContainerLeaseSweepMinute,
   maintainWorkspaceContainerLeases,
   meterWorkspaceContainer,
@@ -450,18 +451,43 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     });
   }
 
+  /**
+   * Renew a running container's lease for its warm window, or release a
+   * stopped one's, metering its run: at a turn's end, and when the session
+   * cap refused a container admission had let start.
+   */
+  async settleContainerLease(): Promise<void> {
+    await meterWorkspaceContainer(
+      this.env,
+      this.containerRunning() ? 'hold' : 'release',
+      { key: this.ctx.id.toString(), now: Date.now() },
+    );
+  }
+
   /** For work maintenance: whether a lease's container still runs. Starts nothing. */
   async isContainerRunning(): Promise<boolean> {
     return this.containerRunning();
   }
 
+  /** The last start's lease hold, which a stop's release waits for. */
+  private startHold: Promise<void> | undefined;
+
   override async onStart(): Promise<void> {
     await super.onStart();
-    await meterWorkspaceContainer(this.env, 'hold', { key: this.ctx.id.toString(), now: Date.now() });
+    // The Containers SDK runs this inside blockConcurrencyWhile, so the hold
+    // runs beside the start, bounded, and every start is still metered.
+    const hold = holdStartedWorkspaceContainer(this.env, { key: this.ctx.id.toString(), now: Date.now() });
+    if (hold) {
+      this.startHold = hold;
+      // The runtime has waitUntil on DurableObjectState; the module declaration omits it.
+      (this.ctx as DurableObjectState & { waitUntil(promise: Promise<unknown>): void }).waitUntil(hold);
+    }
   }
 
   override async onStop(params?: Parameters<CloudflareSandbox['onStop']>[0]): Promise<void> {
     await super.onStop(params);
+    // A start's hold still in flight lands first, so this release closes it.
+    await this.startHold;
     await meterWorkspaceContainer(this.env, 'release', { key: this.ctx.id.toString(), now: Date.now() });
   }
 
@@ -513,12 +539,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
         localBucket: true,
       }),
     });
-    // Renew a warm container's lease for its warm window; a stopped one's is released.
-    await meterWorkspaceContainer(
-      this.env,
-      this.containerRunning() ? 'hold' : 'release',
-      { key: this.ctx.id.toString(), now: Date.now() },
-    );
+    await this.settleContainerLease();
   }
 
   /**

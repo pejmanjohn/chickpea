@@ -173,6 +173,12 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
 
   if (!REPOSITORY_METHOD_SET.has(method)) return denied('method-denied');
   const grants = validEnabledRepositoryGrants(input.grants);
+  const github = (repositories: string[]): SandboxEgressDecision => ({
+    allowed: true,
+    kind: 'github',
+    repositories,
+    effect: githubRequestEffect(url, method, input.headers),
+  });
   if (host === 'github.com') {
     const repository = githubRepositoryFromPath(url.pathname);
     if (!repository) return denied('repository-required');
@@ -202,10 +208,6 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
     return denied('endpoint-denied', [canonical]);
   }
   return github([canonical]);
-
-  function github(repositories: string[]): SandboxEgressDecision {
-    return { allowed: true, kind: 'github', repositories, effect: githubRequestEffect(url, method, input.headers) };
-  }
 }
 
 /**

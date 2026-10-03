@@ -12,8 +12,10 @@ import * as v from 'valibot';
 
 import { repositoriesSkillForGrants } from '../config/connector-skills.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import { registerFrozenRuntimeModelRoute, resolveRuntimeModel } from '../config/runtime-model.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
+import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   getConfigStore,
@@ -29,6 +31,7 @@ import {
   type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
 import { CODING_WORKER_INSTRUCTIONS } from '../sandbox/coding-worker-instructions.ts';
+import { SandboxUnavailableError } from '../sandbox/errors.ts';
 import {
   contentFreeSandboxExec,
   serializeSandboxActivation,
@@ -37,6 +40,7 @@ import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import { sandboxStub } from '../sandbox/sandbox-object.ts';
 import type { SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
+import { admitHostedContainer, type WorkspaceSandboxStub } from '../sandbox/workspace-session.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TurnEnvelopeContext } from './turn-envelope.ts';
 import { codingWorkerCloudflareExtension } from './coding-worker-staging.ts';
@@ -75,7 +79,8 @@ export function CodingWorker({ id }: AgentProps) {
  * The workspace's container, reached through the same Sandbox Durable Object
  * the coordinator opened for this turn. The coordinator activates it (session
  * cap, checkpoint restore) before dispatching, so this handle only needs the
- * readiness probe and the content-free command wrapper.
+ * readiness probe, the content-free command wrapper and, on a deployment
+ * serving many installations, the host's container admission.
  */
 function codingWorkerSandbox(binding: CodingWorkerBinding): SandboxFactory {
   return {
@@ -96,7 +101,9 @@ function codingWorkerSandbox(binding: CodingWorkerBinding): SandboxFactory {
         env,
         await codingWorkerTurn(binding, stub as unknown as SandboxTurnContext, env),
       );
-      const guarded = contentFreeSandboxExec(serializeSandboxActivation(stub, WORKSPACE_DIR));
+      const guarded = contentFreeSandboxExec(
+        serializeSandboxActivation(stub, WORKSPACE_DIR, codingWorkerAdmission(env, stub)),
+      );
       return cloudflareSandbox(
         guarded as unknown as Parameters<typeof cloudflareSandbox>[0],
         { cwd: WORKSPACE_DIR },
@@ -105,11 +112,31 @@ function codingWorkerSandbox(binding: CodingWorkerBinding): SandboxFactory {
   };
 }
 
-/** The Sandbox surface the worker drives: the turn it serves, readiness, commands. */
-type WorkerSandboxStub = SandboxTurnContext & {
+/** The Sandbox surface the worker drives: the turn it serves, admission, readiness, commands. */
+type WorkerSandboxStub = SandboxTurnContext & Pick<WorkspaceSandboxStub, 'admitContainer'> & {
   exists(path: string): Promise<unknown>;
   exec(command: string, options?: { env?: Record<string, string>; [key: string]: unknown }): unknown;
 };
+
+/**
+ * The worker's own activation on a deployment serving many installations:
+ * its container, stopped since the coordinator's activation or still warm,
+ * is admitted under the host's running limit and container-hours cap like
+ * the coordinator's, with the policy as of this activation. Standalone has
+ * neither, and the coordinator's session reservation covers both.
+ */
+export function codingWorkerAdmission(
+  env: PlatformEnv,
+  stub: Pick<WorkspaceSandboxStub, 'admitContainer'>,
+  store?: SettingsStore,
+): (() => Promise<void>) | undefined {
+  if (!deploymentServesManyInstallations(env)) return undefined;
+  return async () => {
+    const limits = (await resolveSandboxSettings(store ?? getSettingsStore(env), env)).containerLimits;
+    if (!limits) throw new SandboxUnavailableError();
+    await admitHostedContainer(stub, limits);
+  };
+}
 
 /**
  * The coordinator turn's settings envelope. The coordinator binds the
