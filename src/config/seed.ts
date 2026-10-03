@@ -1,5 +1,6 @@
 import type { AgentChannelGrantInput, CustomAgentConfig } from './types.ts';
 import { CHICKPEA_AGENT_ID, CHICKPEA_AGENT_NAME } from './agent-id.ts';
+import { deploymentServesManyInstallations } from './installation-scope.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 
 // The keyless first-run model must be one Workers AI serves on the Workers
@@ -36,12 +37,15 @@ export function createSeededAgents(): CustomAgentConfig[] {
  * The keyless first-run Workspace default. On Cloudflare the Workers AI
  * binding answers before anyone adds a provider key; on Node there is no
  * keyless model, so the default stays pending until onboarding chooses one.
+ * A deployment serving many installations offers no Workers AI (it is
+ * deployment-funded), so its installations start as Node's do.
  */
 export function seededWorkspaceModelDefault(
-  options: { target?: SeedTarget } = {},
+  options: { target?: SeedTarget; env?: Record<string, unknown> } = {},
 ): string | undefined {
   const target = options.target ?? (isCloudflareTarget() ? 'cloudflare' : 'node');
-  return target === 'cloudflare' ? SEED_CLOUDFLARE_MODEL_PIN : undefined;
+  if (target !== 'cloudflare' || deploymentServesManyInstallations(options.env)) return undefined;
+  return SEED_CLOUDFLARE_MODEL_PIN;
 }
 
 /**

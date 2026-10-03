@@ -571,8 +571,38 @@ test('a fresh installation creates Chickpea as its default and the keyless Works
       'cloudflare/@cf/zai-org/glm-4.7-flash',
     );
     assert.equal(seededWorkspaceModelDefault({ target: 'node' }), undefined);
+    assert.equal(
+      seededWorkspaceModelDefault({ target: 'cloudflare', env: { CHICKPEA_TENANCY: 'installation' } }),
+      undefined,
+      'a deployment serving many installations has no Workers AI to seed',
+    );
   } finally {
     db.close();
+  }
+});
+
+test('an installation whose deployment cannot run the keyless model starts with no Workspace default', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  const db = openStateDb(':memory:');
+  const seededDb = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, { agents: createSeededAgents() });
+    store.ensureWorkspaceInstallation({ workspaceId: 'TKEYLESS', transportMode: 'direct', keylessModelDefault: false });
+    const keyless = store.getWorkspaceModelDefault('TKEYLESS');
+    assert.deepEqual(
+      { modelId: keyless?.modelId, provenance: keyless?.provenance },
+      { modelId: undefined, provenance: 'migration_pending' },
+    );
+    const seeded = new ConfigStoreLogic(seededDb, { agents: createSeededAgents() });
+    seeded.ensureWorkspaceInstallation({ workspaceId: 'TSEEDED', transportMode: 'direct' });
+    assert.equal(seeded.getWorkspaceModelDefault('TSEEDED')?.modelId, 'cloudflare/@cf/zai-org/glm-4.7-flash',
+      'standalone Cloudflare keeps its keyless first run');
+  } finally {
+    db.close();
+    seededDb.close();
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
   }
 });
 
