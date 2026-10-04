@@ -710,7 +710,7 @@ async function disableUserGroup(
   } catch (error) {
     if (!(error instanceof SlackTransportError)) throw error;
     if (error.code === 'already_disabled') return;
-    if (options.missing && USER_GROUP_NOT_FOUND.has(error.code)) return;
+    if (options.missing && error.code === USER_GROUP_NOT_FOUND) return;
     throw error;
   }
 }
@@ -725,8 +725,12 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
   }
 }
 
-/** An unknown user group: Slack documents `no_such_subteam`; `subteam_not_found` is accepted too. */
-const USER_GROUP_NOT_FOUND = new Set(['no_such_subteam', 'subteam_not_found']);
+/**
+ * Slack's documented answer for an unknown user group ("No usergroup found
+ * with the given ID"). Any other code, `subteam_not_found` included, is not
+ * proof the group is gone.
+ */
+const USER_GROUP_NOT_FOUND = 'no_such_subteam';
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   if (!agent.slackPresence) throw new Error(`Agent ${agent.id} has no Slack presence`);

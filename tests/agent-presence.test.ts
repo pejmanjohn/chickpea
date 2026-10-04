@@ -857,6 +857,27 @@ test('archive finishes when the Agent\'s user group no longer exists in Slack', 
   } finally { config.close(); }
 });
 
+test('archive takes only Slack\'s documented not-found code as proof a missing user group is gone', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport });
+    await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
+    await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
+    transport.groups = [];
+    // Not a Slack code: the group may still be live, so archive does not finish.
+    transport.disableError = new SlackTransportError('usergroups.disable', 'subteam_not_found');
+    await assert.rejects(() => reconciler.archive('agent_support'), AgentPresenceError);
+    const refused = await config.getAgent('agent_support');
+    assert.notEqual(refused.lifecycle, 'archived');
+    assert.equal(refused.slackPresence?.health, 'needs_attention');
+    transport.disableError = new SlackTransportError('usergroups.disable', 'no_such_subteam');
+    assert.equal((await reconciler.retry('agent_support')).lifecycle, 'archived');
+  } finally { config.close(); }
+});
+
 test('archive refuses a not-found answer for a user group Slack still lists', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
