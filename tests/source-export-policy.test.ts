@@ -217,6 +217,8 @@ test('the coding-sandbox Dockerfile builds only from digest-pinned bases, starti
   for (const image of [
     'docker.io/cloudflare/sandbox:0.12.10',
     `docker.io/cloudflare/sandbox@${digest}`,
+    `sandbox@${digest}`,
+    `\${REGISTRY}/cloudflare/sandbox:0.12.10@${digest}`,
     `docker.io/cloudflare/sandbox:0.12.10@sha256:${'a'.repeat(63)}`,
     `docker.io/cloudflare/sandbox:0.12.10@sha256:${'A'.repeat(64)}`,
     `docker.io/cloudflare/sandbox:\${SANDBOX_VERSION}@${digest}`,
