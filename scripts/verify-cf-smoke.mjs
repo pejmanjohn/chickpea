@@ -28,7 +28,7 @@
  * reuses an existing dist-cf artifact for iteration speed.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -624,6 +624,15 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
       !createdHtml.includes(OAUTH_CLIENT_SECRET),
     'programmatic app creation records write-only app credentials and advances setup',
     `HTTP ${created.status}`,
+  );
+  const iconUploads = backend.callsOfMethod('apps.icon.set');
+  check(
+    iconUploads.length === 1 && iconUploads[0].ok === true && iconUploads[0].body.app_id === APP_ID &&
+      iconUploads[0].body.file_type === 'image/png' &&
+      iconUploads[0].body.file_sha256 === createHash('sha256')
+        .update(readFileSync(join(REPO_ROOT, 'assets', 'bot-avatar.png'))).digest('hex'),
+    'the created app gets the Chickpea logo read through the Worker ASSETS binding',
+    `${iconUploads.length} apps.icon.set call(s)`,
   );
 
   const providerCallsBeforeInstall = backend.providerCalls().length;

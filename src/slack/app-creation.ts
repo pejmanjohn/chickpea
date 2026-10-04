@@ -1,3 +1,5 @@
+import { readPublicAsset } from '#chickpea-assets';
+
 import { readBoundedText } from '../http/bounded-body.ts';
 import { constantTimeEquals } from '../security/constant-time.ts';
 import { sha256HexNode } from '../security/digest.ts';
@@ -23,6 +25,15 @@ import {
 export const SLACK_SETUP_TTL_MS = SETUP_CAPABILITY_TTL_MS;
 const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
 const SLACK_MANIFEST_CREATE_URL = 'https://slack.com/api/apps.manifest.create';
+const SLACK_APP_ICON_SET_URL = 'https://slack.com/api/apps.icon.set';
+/**
+ * The Chickpea logo (512x512), also the shared gateway app's icon. It is a
+ * public asset, so every runtime that creates apps can read it.
+ */
+export const SLACK_APP_ICON_ASSET_PATH = 'bot-avatar.png';
+const SLACK_APP_ICON_TIMEOUT_MS = 10_000;
+const SLACK_APP_ICON_DEFAULT_RETRY_MS = 1_000;
+const SLACK_APP_ICON_MAX_RETRY_MS = 5_000;
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
 const MAX_CONFIGURATION_TOKEN_LENGTH = 512;
 const MAX_SECRET_LENGTH = 4_096;
@@ -120,6 +131,9 @@ interface SlackAppCreationServiceDependencies {
   fetch?: typeof fetch;
   apiBaseUrl?: string;
   now?: () => number;
+  /** PNG bytes set as the icon of an app this service creates. */
+  appIcon?: () => Promise<Uint8Array<ArrayBuffer>>;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class SlackAppCreationService {
@@ -216,12 +230,20 @@ export class SlackAppCreationService {
       await this.markAmbiguous(pending, 'incomplete_slack_success');
       throw ambiguousError();
     }
+    let recorded: SlackSetupTransaction;
     try {
-      return await this.recordSuccess(pending, fingerprint, created);
+      recorded = await this.recordSuccess(pending, fingerprint, created);
     } catch {
       await this.markAmbiguousIfPending(pending, 'local_persistence_error');
       throw ambiguousError();
     }
+    // The app exists from here on. Its icon is best effort: no outcome below
+    // fails, rolls back, or makes the creation ambiguous.
+    await this.recordAppIcon(
+      recorded.id,
+      await this.setAppIcon(token, created.appId).catch(() => 'icon_error'),
+    );
+    return recorded;
   }
 
   async adoptManual(input: {
@@ -286,6 +308,52 @@ export class SlackAppCreationService {
     });
   }
 
+  /** Returns `icon_set` or a token-free reason the icon was not set. */
+  private async setAppIcon(token: string, appId: string): Promise<string> {
+    let icon: Uint8Array<ArrayBuffer>;
+    try {
+      icon = await (this.dependencies.appIcon ?? (() => readPublicAsset(SLACK_APP_ICON_ASSET_PATH)))();
+    } catch { return 'icon_unavailable'; }
+    const url = slackApiMethodUrl(this.dependencies.apiBaseUrl, 'apps.icon.set', SLACK_APP_ICON_SET_URL);
+    for (let attempt = 1; ; attempt += 1) {
+      const body = new FormData();
+      body.set('app_id', appId);
+      body.set('file', new Blob([icon], { type: 'image/png' }), 'chickpea.png');
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+          body,
+          signal: AbortSignal.timeout(SLACK_APP_ICON_TIMEOUT_MS),
+        });
+      } catch { return 'network_error'; }
+      let payload: Record<string, unknown> = {};
+      try { payload = await boundedJson(response); } catch { /* classified below */ }
+      if (response.ok && payload.ok === true) return 'icon_set';
+      const code = safeSlackError(payload.error) ||
+        (response.status === 429 ? 'ratelimited' : response.ok ? 'invalid_slack_response' : `http_${response.status}`);
+      // Tier 1: retry once on a rate limit, honouring a short Retry-After.
+      const wait = code === 'ratelimited' && attempt === 1
+        ? retryAfterMs(response.headers.get('retry-after')) : undefined;
+      if (wait === undefined) return code;
+      await (this.dependencies.sleep ?? sleep)(wait);
+    }
+  }
+
+  private async recordAppIcon(setupId: string, reasonCode: string): Promise<void> {
+    try {
+      await this.dependencies.identity.recordAuthAudit({
+        event: 'authorization',
+        outcome: reasonCode === 'icon_set' ? 'success' : 'denied',
+        action: 'slack_setup.app_icon',
+        correlationId: setupId,
+        authenticatorKind: 'setup_capability',
+        reasonCode,
+      });
+    } catch { /* A diagnostic write never fails a created app. */ }
+  }
+
   private async markAmbiguous(setup: SlackSetupTransaction, errorCode: string): Promise<void> {
     await this.dependencies.identity.failSlackAppCreation({
       setupId: setup.id, expectedRevision: setup.revision,
@@ -307,6 +375,17 @@ export class SlackAppCreationService {
     }
     return setup;
   }
+}
+
+function retryAfterMs(header: string | null): number | undefined {
+  const value = header?.trim();
+  const ms = value ? /^\d{1,6}$/.test(value) ? Number(value) * 1_000 : undefined
+    : SLACK_APP_ICON_DEFAULT_RETRY_MS;
+  return ms !== undefined && ms <= SLACK_APP_ICON_MAX_RETRY_MS ? ms : undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function slackApiMethodUrl(baseUrl: string | undefined, method: string, fallback: string): string {
