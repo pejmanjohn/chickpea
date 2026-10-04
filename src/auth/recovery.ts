@@ -85,12 +85,14 @@ interface SlackCredentialRecoveryDependencies {
   settings: SettingsStore;
   expectedRecoveryToken: string;
   fetch?: typeof fetch;
+  apiBaseUrl?: string;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
   verification?: SlackInstallationVerificationDeps;
 }
 
 export class SlackCredentialRecoveryService {
+  // Always called through a local: Workers' global fetch rejects any other receiver.
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly randomBytes: (length: number) => Uint8Array;
@@ -205,8 +207,9 @@ export class SlackCredentialRecoveryService {
     const session = await this.inspect(input);
     if (session.status !== 'active') throw terminalCode(session);
     const token = configurationToken(input.configurationToken);
+    const exportUrl = this.slackUrl('apps.manifest.export', SLACK_MANIFEST_EXPORT_URL);
     const exported = await this.manifestRequest(
-      SLACK_MANIFEST_EXPORT_URL,
+      exportUrl,
       token,
       new URLSearchParams({ app_id: session.expectedAppId }).toString(),
       'application/x-www-form-urlencoded',
@@ -226,7 +229,7 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     const updated = await this.manifestRequest(
-      SLACK_MANIFEST_UPDATE_URL,
+      this.slackUrl('apps.manifest.update', SLACK_MANIFEST_UPDATE_URL),
       token,
       JSON.stringify({ app_id: session.expectedAppId, manifest: expected }),
       'application/json; charset=utf-8',
@@ -235,7 +238,7 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('app_mismatch');
     }
     const verified = await this.manifestRequest(
-      SLACK_MANIFEST_EXPORT_URL,
+      exportUrl,
       token,
       new URLSearchParams({ app_id: session.expectedAppId }).toString(),
       'application/x-www-form-urlencoded',
@@ -299,7 +302,8 @@ export class SlackCredentialRecoveryService {
     const appSecrets = await this.decryptStagedAppCredentials(session);
     let response: Response;
     try {
-      response = await this.fetchImpl(SLACK_BOT_TOKEN_URL, {
+      const fetchImpl = this.fetchImpl;
+      response = await fetchImpl(this.slackUrl('oauth.v2.access', SLACK_BOT_TOKEN_URL), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -437,6 +441,11 @@ export class SlackCredentialRecoveryService {
     }
   }
 
+  private slackUrl(method: string, fallback: string): string {
+    const base = this.dependencies.apiBaseUrl?.trim().replace(/\/+$/, '');
+    return base ? `${base}/${method}` : fallback;
+  }
+
   private async manifestRequest(
     url: string,
     token: string,
@@ -445,7 +454,8 @@ export class SlackCredentialRecoveryService {
   ): Promise<Record<string, unknown>> {
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
+      const fetchImpl = this.fetchImpl;
+      response = await fetchImpl(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': contentType },
         body,

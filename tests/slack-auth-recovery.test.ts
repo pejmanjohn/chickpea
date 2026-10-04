@@ -207,6 +207,13 @@ test('URL repair accepts only the unchanged app contract and never persists its 
     const waiting = await fixture.service.callback({
       ...authority, state: started.state, redirectUri: REDIRECT, code: 'url-repair-code',
     });
+    // Both Slack calls (manifest repair, then the bot token exchange) left
+    // through an unbound fetch, as a Cloudflare Worker requires.
+    assert.deepEqual(fixture.fetchCalls, [
+      'https://slack.com/api/apps.manifest.export', 'https://slack.com/api/apps.manifest.export',
+      'https://slack.com/api/apps.manifest.update', 'https://slack.com/api/apps.manifest.export',
+      'https://slack.com/api/oauth.v2.access',
+    ]);
     await fixture.recordChallenge('replacement-signing-secret');
     assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
     const active = await fixture.identity.getActiveSlackCredentialRevision(
@@ -218,6 +225,26 @@ test('URL repair accepts only the unchanged app contract and never persists its 
       (await fixture.identity.getSlackRecoverySession(begun.recoveryId))?.status,
       'consumed',
     );
+  } finally { fixture.close(); }
+});
+
+test('recovery sends its Slack Web API calls to a configured API base', async () => {
+  const fixture = await recoveryFixture({
+    initialOrigin: 'https://old-chickpea.example', manifestFlow: true, apiBaseUrl: 'http://127.0.0.1:9/api/',
+  });
+  try {
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    const manifest = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+    await fixture.service.repairUrls({ ...authority, configurationToken: 'xoxe.configuration-token-secret', expectedManifest: manifest });
+    await fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    // The browser still authorizes at Slack itself.
+    assert.equal(new URL(started.authorizationUrl).origin, 'https://slack.com');
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'api-base-code' });
+    assert.deepEqual(fixture.fetchCalls, [
+      'http://127.0.0.1:9/api/apps.manifest.export', 'http://127.0.0.1:9/api/apps.manifest.update',
+      'http://127.0.0.1:9/api/apps.manifest.export', 'http://127.0.0.1:9/api/oauth.v2.access',
+    ]);
   } finally { fixture.close(); }
 });
 
@@ -293,6 +320,7 @@ async function recoveryFixture(options: {
   coreOnly?: boolean;
   /** The app was created from a manifest without Slack's Stop event. */
   withoutStopEvent?: boolean;
+  apiBaseUrl?: string;
 } = {}) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const config = new SqliteConfigStore(':memory:');
@@ -336,6 +364,7 @@ async function recoveryFixture(options: {
   let exchangeCalls = 0;
   let exchangeForm: URLSearchParams | undefined;
   const manifestCalls: Array<{ method: string; authorization: string | null }> = [];
+  const fetchCalls: string[] = [];
   let updatedManifest: typeof manifest | undefined;
   const serviceCredentials = {
     state: identity,
@@ -343,8 +372,13 @@ async function recoveryFixture(options: {
   };
   const service = new SlackCredentialRecoveryService({
     identity, credentials: serviceCredentials, config, settings, expectedRecoveryToken: TOKEN, now: () => NOW,
+    ...(options.apiBaseUrl ? { apiBaseUrl: options.apiBaseUrl } : {}),
     randomBytes: (length) => new Uint8Array(length).fill(++counter),
-    fetch: async (url, init) => {
+    // Like Workers' global fetch, refuse any receiver but none (or the global
+    // scope): a call as `this.fetchImpl(...)` must not reach Slack.
+    fetch: async function (this: unknown, url: string | URL | Request, init?: RequestInit) {
+      if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+      fetchCalls.push(String(url));
       if (options.manifestFlow && String(url).endsWith('/apps.manifest.export')) {
         manifestCalls.push({ method: 'export', authorization: new Headers(init?.headers).get('authorization') });
         const exported = updatedManifest ?? manifest;
@@ -388,7 +422,7 @@ async function recoveryFixture(options: {
     },
   });
   return {
-    identity, config, settings, credentials: serviceCredentials, service, manifestCalls,
+    identity, config, settings, credentials: serviceCredentials, service, manifestCalls, fetchCalls,
     activeRevision: connected.revision,
     get exchangeCalls() { return exchangeCalls; },
     get exchangeForm() { return exchangeForm; },

@@ -258,6 +258,8 @@ export class FakeSlackBackend {
 
   private tsCounter = 0;
   private stopStreamCalls = 0;
+  /** The created app's manifest; it outlives wire-log resets, as the app does. */
+  private appManifest: unknown;
   // One-shot latches for `failFinalDeliveryOnce`: the first startStream and the
   // first markdown postMessage each fail once, then recover.
   private finalStreamFailedOnce = false;
@@ -782,7 +784,19 @@ export class FakeSlackBackend {
     headers: Record<string, string> = {},
   ): Record<string, unknown> {
     switch (method) {
+      case 'apps.manifest.export':
+      case 'apps.manifest.update': {
+        // Only the app this configuration token created, holding the manifest
+        // Slack last accepted for it.
+        if (!this.oauth || bearer(headers) !== this.oauth.configurationToken) return { ok: false, error: 'invalid_auth' };
+        if (body.app_id !== this.oauth.appId || !this.appManifest) return { ok: false, error: 'invalid_app_id' };
+        if (method === 'apps.manifest.export') return { ok: true, manifest: this.appManifest };
+        if (!body.manifest || typeof body.manifest !== 'object') return { ok: false, error: 'invalid_manifest' };
+        this.appManifest = body.manifest;
+        return { ok: true, app_id: this.oauth.appId };
+      }
       case 'apps.manifest.create':
+        if (this.oauth && bearer(headers) === this.oauth.configurationToken) this.appManifest = body.manifest;
         return this.oauth && bearer(headers) === this.oauth.configurationToken
           ? {
               ok: true,
