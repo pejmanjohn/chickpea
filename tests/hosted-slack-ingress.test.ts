@@ -278,9 +278,15 @@ test('a hosted delivery with a bad signature is refused before any store is read
 
 test('a hosted app\'s url_verification is answered without recording a challenge or finishing a setup', async (t) => {
   await withHostedInstallation(t, async (h) => {
+    // Nor does it look for a standalone credential recovery, which a host never runs.
+    const identity = h.stores.identity as unknown as Record<string, () => unknown>;
+    let recoveryLookups = 0;
+    identity.getWaitingSlackRecoverySession = () => { recoveryLookups += 1; return Promise.resolve(undefined); };
+    t.after(() => { delete identity.getWaitingSlackRecoverySession; });
     const response = await h.deliver('events', { token: '', type: 'url_verification', challenge: 'challenge-value' });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { challenge: 'challenge-value' });
+    assert.equal(recoveryLookups, 0);
     assert.equal(await h.stores.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), undefined);
     assert.equal(await h.stores.identity.getSlackSetupTransaction('setup_default'), undefined);
   });
