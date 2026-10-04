@@ -43,7 +43,7 @@ import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-provide
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
 
 /**
- * Hosted guided onboarding: a new sign-up's installer becomes the first Owner
+ * Hosted guided onboarding: the person who signs up becomes the first Owner
  * and the journey starts with Slack already connected, at Choose provider.
  * Existing installations and Members never see it, Workers AI is never
  * offered, and finishing opens Admin as usual. Standalone is unchanged.
@@ -71,7 +71,7 @@ function principalFor(role: AuthPrincipal['role'], ids: Partial<AuthPrincipal> =
 /**
  * One hosted sign-up, its stores built as its state object builds them, and
  * provisioned as the host provisions it: the bot, the workspace record, then
- * (`claim()`) the installer as first Owner.
+ * (`claim()`) the person signing up as first Owner.
  */
 async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
   const tenant = hostedInstallation(INSTALLATION, bindings);
@@ -153,7 +153,7 @@ async function json<T = Record<string, unknown>>(response: Response | Promise<Re
   return await (await response).json() as T;
 }
 
-test('a new hosted sign-up starts guided onboarding as its installer becomes the first Owner, at Choose provider with Slack connected', async (t) => {
+test('a new hosted sign-up starts guided onboarding as the person signing up becomes the first Owner, at Choose provider with Slack connected', async (t) => {
   const signup = await signUp(t);
   assert.equal(await signup.journey(), undefined, 'the host\'s bot and workspace record start nothing');
   await signup.claim();
@@ -269,7 +269,7 @@ test('an installation that signed up before onboarding started at sign-up, or is
   });
 });
 
-test('Members never see onboarding: only the Owner lands in it, and only the installer\'s claim starts it', async (t) => {
+test('Members never see onboarding: only the Owner lands in it, and only the first Owner\'s claim starts it', async (t) => {
   const signup = await signUp(t);
   await signup.claim();
   for (const role of ['member', 'admin'] as const) {

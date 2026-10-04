@@ -104,9 +104,9 @@ interface IdentityStoreOptions {
    */
   installation?: () => InstallationIdentity;
   /**
-   * Runs once, inside the transaction in which claimOwner makes a host's
-   * installer the installation's first Owner, so whatever it writes to this
-   * store commits with the claim or not at all.
+   * Runs once, inside the transaction in which claimOwner makes the person
+   * who signed up at a host the installation's first Owner, so whatever it
+   * writes to this store commits with the claim or not at all.
    */
   ownerClaimed?: (at: number) => void;
 }

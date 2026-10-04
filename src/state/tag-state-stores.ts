@@ -61,8 +61,8 @@ export function buildTagStateStores(
     objectInventory,
     identity: new IdentityStoreLogic(db, {
       installation: () => storeInstallationIdentity(installationBinding, env),
-      // A hosted sign-up's guided onboarding starts as its installer becomes
-      // the first Owner, with Slack already connected by the host.
+      // A hosted sign-up's guided onboarding starts as the person signing up
+      // becomes the first Owner, with Slack already connected by the host.
       ...(deploymentServesManyInstallations(env)
         ? { ownerClaimed: (at: number) => { stores.settings.applySettingsPatch(onboardingJourneyStart(at).patch); } }
         : {}),
