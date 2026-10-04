@@ -19,7 +19,12 @@ import {
   validateSlackBotInstallation,
   type SlackInstallationVerificationDeps,
 } from '../slack/installation-verification.ts';
-import { purgePendingSlackChallenge, verifyPendingSlackChallenge } from '../slack/installation-handshake.ts';
+import {
+  purgePendingSlackChallenge,
+  recordPendingSlackChallenge,
+  slackRequestSignedWith,
+  verifyPendingSlackChallenge,
+} from '../slack/installation-handshake.ts';
 import {
   SLACK_OPTIONAL_BOT_EVENTS,
   slackManifestFingerprint,
@@ -32,6 +37,7 @@ import { missingRequiredSlackBotScopes, REQUESTED_SLACK_BOT_SCOPES, SLACK_FEATUR
 import {
   decryptSlackSecretEnvelope,
   encryptSlackSecretEnvelope,
+  type CredentialKeyring,
   type SlackSecretEnvelopeContext,
 } from '../slack/secret-envelope.ts';
 import { decodeRecoverySecret, digestSlackRecoveryGrant } from './recovery-secret.ts';
@@ -429,13 +435,7 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('invalid_session');
     }
     try {
-      return await decryptSlackSecretEnvelope<{
-        clientId: string; clientSecret: string; signingSecret: string;
-      }>(
-        this.dependencies.credentials.keyring,
-        recoveryEnvelopeContext(session, session.appCredentialRevision),
-        session.appCredentialEnvelope,
-      );
+      return await stagedAppCredentials(this.dependencies.credentials.keyring, session);
     } catch {
       throw new SlackCredentialRecoveryError('stale_revision');
     }
@@ -500,6 +500,49 @@ export class SlackCredentialRecoveryService {
       authenticatorKind: 'deployment_token', reasonCode,
     });
   }
+}
+
+/**
+ * Slack's URL verification, kept as the Events proof that a recovery waiting
+ * on one finalizes with, when it is signed with the signing secret that
+ * recovery staged. The active bundle cannot check it: its key root may be
+ * lost, and its signing secret may be the one being replaced. Returns the
+ * challenge to answer, or undefined for a request that proves nothing.
+ */
+export async function recordSlackRecoveryEventsProof(
+  dependencies: {
+    identity: IdentityStore;
+    settings: SettingsStore;
+    keyring: CredentialKeyring;
+    now?: () => number;
+  },
+  request: { rawBody: string; signature: string; timestamp: string },
+): Promise<{ challenge: string } | undefined> {
+  const session = await dependencies.identity.getWaitingSlackRecoverySession();
+  if (!session) return undefined;
+  let signingSecret: string;
+  try {
+    ({ signingSecret } = await stagedAppCredentials(dependencies.keyring, session));
+  } catch {
+    return undefined;
+  }
+  if (!slackRequestSignedWith(signingSecret, request)) return undefined;
+  const recorded = await recordPendingSlackChallenge(dependencies.settings, request, {
+    now: (dependencies.now ?? Date.now)(),
+  });
+  return recorded.accepted ? { challenge: recorded.challenge } : undefined;
+}
+
+/** The app credentials a recovery session staged, encrypted for that session alone. */
+function stagedAppCredentials(keyring: CredentialKeyring, session: SlackRecoverySession) {
+  if (!session.appCredentialEnvelope || !session.appCredentialRevision) {
+    throw new SlackCredentialRecoveryError('invalid_session');
+  }
+  return decryptSlackSecretEnvelope<{ clientId: string; clientSecret: string; signingSecret: string }>(
+    keyring,
+    recoveryEnvelopeContext(session, session.appCredentialRevision),
+    session.appCredentialEnvelope,
+  );
 }
 
 function recoveryResult(session: SlackRecoverySession, sessionSecret: string) {

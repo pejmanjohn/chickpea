@@ -329,7 +329,11 @@ test('Cloudflare proxy forwards recovery authority without projecting raw grants
   const stub = rpcStub(calls, { kind: 'slack_recovery_session', session });
   const store = new CfIdentityStore(stub);
   assert.deepEqual(await store.getSlackRecoverySession(session.id), session);
-  assert.deepEqual(calls, [{ kind: 'get_slack_recovery_session', recoveryId: session.id }]);
+  assert.deepEqual(await store.getWaitingSlackRecoverySession(), session);
+  assert.deepEqual(calls, [
+    { kind: 'get_slack_recovery_session', recoveryId: session.id },
+    { kind: 'get_waiting_slack_recovery_session' },
+  ]);
 });
 
 test('Cloudflare proxy forwards digest-only invitation lookup', async () => {

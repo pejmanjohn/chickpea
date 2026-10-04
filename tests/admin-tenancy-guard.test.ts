@@ -8,6 +8,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
+import { SLACK_RECOVERY_CALLBACK_PATH } from '../src/slack/app-manifest.ts';
 
 const ORIGIN = 'https://hosted.example';
 const HOSTED = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_guard' });
@@ -21,7 +22,7 @@ const GUARDED: Array<[string, string]> = [
   ['POST', '/admin/slack-gateway/reconnect'], ['GET', '/admin/slack-gateway/refresh/finish'],
   ['GET', '/auth/slack/sign-in'], ['GET', '/auth/slack/continue.js'], ['POST', '/auth/slack/oidc/start'],
   ['GET', '/auth/slack/oidc/callback'], ['POST', '/auth/slack/install/start'], ['GET', '/auth/slack/install/callback'],
-  ['GET', '/auth/slack/invite'], ['GET', '/auth/slack/recovery/callback'],
+  ['GET', '/auth/slack/invite'], ['GET', SLACK_RECOVERY_CALLBACK_PATH],
   ['POST', '/internal/deployment/ready'], ['POST', '/internal/deployment/recover-delivery'],
   ['GET', '/internal/environment/authority'], ['GET', '/internal/environment/models'], ['POST', '/internal/environment/seed'],
   ['GET', '/admin/api/chickpea-cutover/preflight'], ['POST', '/admin/api/chickpea-cutover/activate'],

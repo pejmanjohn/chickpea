@@ -194,9 +194,9 @@ export function getFreePort() {
   return reserveVerificationPort();
 }
 
-export function signedHeaders(rawBody, { tamper = false } = {}) {
+export function signedHeaders(rawBody, { tamper = false, signingSecret = SIGNING_SECRET } = {}) {
   const timestamp = Math.floor(Date.now() / 1000);
-  let digest = createHmac('sha256', SIGNING_SECRET).update(`v0:${timestamp}:${rawBody}`).digest('hex');
+  let digest = createHmac('sha256', signingSecret).update(`v0:${timestamp}:${rawBody}`).digest('hex');
   if (tamper) {
     const last = digest.at(-1);
     digest = `${digest.slice(0, -1)}${last === '0' ? '1' : '0'}`;

@@ -7,6 +7,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
+  recordSlackRecoveryEventsProof,
   SlackCredentialRecoveryError,
   SlackCredentialRecoveryService,
   SLACK_RECOVERY_TTL_MS,
@@ -17,7 +18,7 @@ import {
   resolveSlackInstallationCredentials,
   stageSlackCredentialBundle,
 } from '../src/slack/installation-credentials.ts';
-import { recordPendingSlackChallenge } from '../src/slack/installation-handshake.ts';
+import { recordPendingSlackChallenge, SLACK_PENDING_ENVELOPE_SETTING } from '../src/slack/installation-handshake.ts';
 import {
   buildSlackAppManifest,
   slackManifestFingerprint,
@@ -167,6 +168,56 @@ test('lost encryption root stays recovery-only until same-app bot reauthorizatio
       (await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
       waiting.candidateRevision,
     );
+  } finally { fixture.close(); }
+});
+
+test('Slack\'s URL check signed with the staged secret is the Events proof a waiting recovery finalizes with', async () => {
+  const fixture = await recoveryFixture();
+  try {
+    const proof = (signingSecret: string) => recordSlackRecoveryEventsProof({
+      identity: fixture.identity, settings: fixture.settings, keyring: fixture.credentials.keyring, now: () => NOW,
+    }, fixture.signedChallenge(signingSecret));
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    await fixture.service.stageAppCredentials({
+      ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
+      clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    // Staged but not yet authorized: nothing waits on Events proof.
+    assert.equal(await fixture.identity.getWaitingSlackRecoverySession(), undefined);
+    assert.equal(await proof('replacement-signing-secret'), undefined);
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'proof-code' });
+    assert.equal((await fixture.identity.getWaitingSlackRecoverySession())?.id, authority.recoveryId);
+
+    // The active bundle's secret is the one recovery replaces; it proves nothing.
+    assert.equal(await proof('old-signing-secret'), undefined);
+    assert.equal(await fixture.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), undefined);
+    assert.deepEqual(await proof('replacement-signing-secret'), { challenge: 'recovery-proof' });
+    assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
+    assert.equal(await fixture.identity.getWaitingSlackRecoverySession(), undefined);
+    assert.equal(await proof('replacement-signing-secret'), undefined);
+  } finally { fixture.close(); }
+});
+
+test('a recovery waiting on Events proof past its 15 minutes takes none', async () => {
+  const fixture = await recoveryFixture();
+  try {
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    await fixture.service.stageAppCredentials({
+      ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
+      clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'late-code' });
+    fixture.clock.now = NOW + SLACK_RECOVERY_TTL_MS;
+    assert.equal(await fixture.identity.getWaitingSlackRecoverySession(), undefined);
+    assert.equal(await recordSlackRecoveryEventsProof({
+      identity: fixture.identity, settings: fixture.settings, keyring: fixture.credentials.keyring,
+      now: () => fixture.clock.now,
+    }, fixture.signedChallenge('replacement-signing-secret', fixture.clock.now)), undefined);
+    assert.equal(await fixture.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), undefined);
   } finally { fixture.close(); }
 });
 
@@ -322,7 +373,8 @@ async function recoveryFixture(options: {
   withoutStopEvent?: boolean;
   apiBaseUrl?: string;
 } = {}) {
-  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const clock = { now: NOW };
+  const identity = new SqliteIdentityStore(':memory:', { now: () => clock.now });
   const config = new SqliteConfigStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
   const credentials = { state: identity, keyring: generateCredentialKeyring('key_v1') };
@@ -422,21 +474,24 @@ async function recoveryFixture(options: {
     },
   });
   return {
-    identity, config, settings, credentials: serviceCredentials, service, manifestCalls, fetchCalls,
+    identity, config, settings, credentials: serviceCredentials, service, manifestCalls, fetchCalls, clock,
     activeRevision: connected.revision,
     get exchangeCalls() { return exchangeCalls; },
     get exchangeForm() { return exchangeForm; },
     get updatedManifest() { return updatedManifest; },
-    async recordChallenge(signingSecret: string) {
+    /** Slack's URL verification for this app, signed with `signingSecret`. */
+    signedChallenge(signingSecret: string, at = NOW) {
       const rawBody = JSON.stringify({
         type: 'url_verification', challenge: 'recovery-proof', api_app_id: 'A12345678', team_id: 'TACME',
       });
-      const timestamp = String(Math.floor(NOW / 1_000));
-      await recordPendingSlackChallenge(settings, {
+      const timestamp = String(Math.floor(at / 1_000));
+      return {
         rawBody, timestamp,
-        signature: `v0=${createHmac('sha256', signingSecret)
-          .update(`v0:${timestamp}:${rawBody}`).digest('hex')}`,
-      }, { now: NOW });
+        signature: `v0=${createHmac('sha256', signingSecret).update(`v0:${timestamp}:${rawBody}`).digest('hex')}`,
+      };
+    },
+    async recordChallenge(signingSecret: string) {
+      await recordPendingSlackChallenge(settings, this.signedChallenge(signingSecret), { now: NOW });
     },
     close() { identity.close(); config.close(); settings.close(); },
   };

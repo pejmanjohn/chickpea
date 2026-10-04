@@ -85,10 +85,7 @@ export async function verifyPendingSlackChallenge(
     await purgePendingSlackChallenge(store, raw);
     return { verified: false, reason: 'expired' };
   }
-  const expected = `v0=${createHmac('sha256', signingSecret)
-    .update(`v0:${envelope.timestamp}:${envelope.rawBody}`)
-    .digest('hex')}`;
-  if (!constantTimeEquals(expected, envelope.signature)) {
+  if (!slackRequestSignedWith(signingSecret, envelope)) {
     return { verified: false, reason: 'invalid_signature' };
   }
   const body = parseChallengeBody(envelope.rawBody);
@@ -108,6 +105,14 @@ export async function verifyPendingSlackChallenge(
     ...(body.appId ? { appId: body.appId } : {}),
     ...(body.teamId ? { teamId: body.teamId } : {}),
   };
+}
+
+/** Whether `signingSecret` made this request's Slack signature. */
+export function slackRequestSignedWith(signingSecret: string, input: PendingSlackChallengeInput): boolean {
+  const expected = `v0=${createHmac('sha256', signingSecret)
+    .update(`v0:${input.timestamp}:${input.rawBody}`)
+    .digest('hex')}`;
+  return constantTimeEquals(expected, input.signature);
 }
 
 export async function purgePendingSlackChallenge(
