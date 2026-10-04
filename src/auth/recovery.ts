@@ -85,6 +85,8 @@ interface SlackCredentialRecoveryDependencies {
   settings: SettingsStore;
   expectedRecoveryToken: string;
   fetch?: typeof fetch;
+  /** Slack Web API base, such as a local fake's `SLACK_API_URL`. Defaults to slack.com. */
+  apiBaseUrl?: string;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
   verification?: SlackInstallationVerificationDeps;
@@ -205,8 +207,9 @@ export class SlackCredentialRecoveryService {
     const session = await this.inspect(input);
     if (session.status !== 'active') throw terminalCode(session);
     const token = configurationToken(input.configurationToken);
+    const exportUrl = this.slackUrl('apps.manifest.export', SLACK_MANIFEST_EXPORT_URL);
     const exported = await this.manifestRequest(
-      SLACK_MANIFEST_EXPORT_URL,
+      exportUrl,
       token,
       new URLSearchParams({ app_id: session.expectedAppId }).toString(),
       'application/x-www-form-urlencoded',
@@ -226,7 +229,7 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     const updated = await this.manifestRequest(
-      SLACK_MANIFEST_UPDATE_URL,
+      this.slackUrl('apps.manifest.update', SLACK_MANIFEST_UPDATE_URL),
       token,
       JSON.stringify({ app_id: session.expectedAppId, manifest: expected }),
       'application/json; charset=utf-8',
@@ -235,7 +238,7 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('app_mismatch');
     }
     const verified = await this.manifestRequest(
-      SLACK_MANIFEST_EXPORT_URL,
+      exportUrl,
       token,
       new URLSearchParams({ app_id: session.expectedAppId }).toString(),
       'application/x-www-form-urlencoded',
@@ -301,7 +304,7 @@ export class SlackCredentialRecoveryService {
     try {
       // Called unbound: Workers' global fetch rejects any other receiver.
       const fetchImpl = this.fetchImpl;
-      response = await fetchImpl(SLACK_BOT_TOKEN_URL, {
+      response = await fetchImpl(this.slackUrl('oauth.v2.access', SLACK_BOT_TOKEN_URL), {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -437,6 +440,11 @@ export class SlackCredentialRecoveryService {
     } catch {
       throw new SlackCredentialRecoveryError('stale_revision');
     }
+  }
+
+  private slackUrl(method: string, fallback: string): string {
+    const base = this.dependencies.apiBaseUrl?.trim().replace(/\/+$/, '');
+    return base ? `${base}/${method}` : fallback;
   }
 
   private async manifestRequest(

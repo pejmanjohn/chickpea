@@ -2166,12 +2166,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const credentials = slackCredentialDependencies(c);
     const token = recoveryToken(c);
     if (!credentials || !token || !isValidRecoveryConfiguration(token)) return undefined;
+    const apiBaseUrl = slackApiBaseUrl(c);
     return new SlackCredentialRecoveryService({
       identity: identity(c),
       credentials,
       config: store(c),
       settings: settings(c),
       expectedRecoveryToken: token,
+      ...(apiBaseUrl ? { apiBaseUrl } : {}),
       ...(options.slackInstallFetch ? { fetch: options.slackInstallFetch } : {}),
       ...(options.slackInstallNow ? { now: options.slackInstallNow } : {}),
       ...(options.slackInstallRandomBytes ? { randomBytes: options.slackInstallRandomBytes } : {}),
