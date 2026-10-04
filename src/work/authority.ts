@@ -18,7 +18,7 @@ interface SlackExecutionAuthorityInput {
   workspaceId: string;
   channelId: string;
   assignment: ResolvedAssignment;
-  /** Live installation-wide network policy. Missing policy must never opt in. */
+  /** Installation-wide network policy. Missing policy must never opt in. */
   egressPolicy?: EgressPolicy;
   /** Explicit Memory/Routine controls still use their established legacy coordinators. */
   legacyOnlyTurn?: boolean;

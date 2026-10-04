@@ -127,16 +127,17 @@ test('hosted instructions and links leave out the Settings sections its Admin hi
   const base = 'https://chickpea.example.test';
   const standalone = workspaceManagementInstructions(base);
   const hostedText = workspaceManagementInstructions(base, hosted);
-  assert.ok(standalone.includes(`${base}/admin: Model providers (/admin/settings/providers), GitHub (/admin/settings/github), Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser), Outbound access (/admin/settings/outbound), Connectors (/admin/settings/connectors).`));
+  assert.ok(standalone.includes(`${base}/admin: Model providers (/admin/settings/providers), GitHub (/admin/settings/github), Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser), Connectors (/admin/settings/connectors).`));
+  assert.doesNotMatch(standalone, /Outbound|outbound/, 'Outbound access is retired in both modes');
   assert.ok(hostedText.includes(`${base}/admin: Model providers (/admin/settings/providers), GitHub (/admin/settings/github), Connectors (/admin/settings/connectors).`));
   assert.doesNotMatch(hostedText, /sandbox|Browser|Outbound|outbound/);
   assert.equal(
     hostedText,
-    standalone.replace(', Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser), Outbound access (/admin/settings/outbound)', ''),
+    standalone.replace(', Coding sandbox (/admin/settings/sandbox), Browser (/admin/settings/browser)', ''),
     'only those sections are removed',
   );
 
-  for (const section of ['sandbox', 'browser', 'outbound'] as const) {
+  for (const section of ['sandbox', 'browser'] as const) {
     assert.deepEqual(adminSettingsLinks(base, section), { admin: `${base}/admin/settings/${section}` }, `standalone ${section}`);
     assert.equal(adminSettingsLinks(base, section, hosted), undefined, `hosted ${section}`);
   }

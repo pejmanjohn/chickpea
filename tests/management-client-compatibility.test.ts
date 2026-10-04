@@ -412,11 +412,11 @@ test('server instructions stay under the client cap and link the deployment Admi
       '/admin/settings/providers',
       '/admin/settings/github',
       '/admin/settings/sandbox',
-      '/admin/settings/outbound',
       'mention it in Slack',
       'presentation.markdown',
       'links.admin',
     ]) assert.ok(text.includes(required), `instructions must mention ${required}`);
+    assert.ok(!text.includes('/admin/settings/outbound'), 'Outbound access is retired');
   }
 
   assert.equal(workspaceManagementAdminOrigin(undefined), undefined);

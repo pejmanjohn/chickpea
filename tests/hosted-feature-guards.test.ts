@@ -154,42 +154,27 @@ test('under tenancy the coding sandbox install, uninstall and settings routes ar
   assert.equal((await routes.request(`https://hosted.example${status}`, {}, ENV_A)).status, 500, 'hosted GET status');
 });
 
-test('under tenancy an outbound access write is not found, before any store is read; standalone writes get past the guard', async (t) => {
-  t.mock.method(console, 'error', () => {});
-  const routes = createAdminRoutes({ identity: untouchable(), store: untouchable(), settings: untouchable() });
-  const egress = '/admin/api/egress';
-  for (const method of ['PUT', 'PATCH', 'POST', 'DELETE']) {
-    for (const variant of [egress, '/admin//api/egress', `${egress}/`, '/admin/api/%65gress']) {
-      const response = await routes.request(`https://hosted.example${variant}`, { method }, ENV_A);
-      assert.equal(response.status, 404, `hosted ${method} ${variant}`);
-    }
-  }
-  assert.equal((await routes.request(`http://localhost${egress}`, { method: 'PUT' })).status, 500, 'standalone PUT');
-  // Reading stays served: past the guard to the identity store, which fails here.
-  assert.equal((await routes.request(`https://hosted.example${egress}`, {}, ENV_A)).status, 500, 'hosted GET');
-});
-
-test('under tenancy Admin reads the managed outbound policy, never the stored one; standalone reads and saves its own', async (t) => {
+test('the retired Outbound access route is not found in either mode, and its setting is neither read nor written', async (t) => {
   const settings = new SqliteSettingsStore(':memory:');
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   t.after(() => { settings.close(); store.close(); });
-  const routes = createAdminRoutes({ store, settings, ...testAdminAuthority('egress-guard-token') });
-  const headers = testAdminHeaders('egress-guard-token');
-  const read = async (env?: Record<string, unknown>) => {
-    const response = await routes.request('http://localhost/admin/api/egress', { headers }, env);
-    assert.equal(response.status, 200);
-    return (await response.json() as { policy: unknown }).policy;
-  };
-  const save = await routes.request('http://localhost/admin/api/egress', {
-    method: 'PUT',
-    headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ mode: 'open', domains: ['api.example.com'] }),
-  });
-  assert.equal(save.status, 200, 'standalone saves');
-  assert.deepEqual(await read(), { mode: 'open', domains: ['api.example.com'] }, 'standalone reads what it saved');
+  const routes = createAdminRoutes({ store, settings, ...testAdminAuthority('egress-retired-token') });
+  const headers = { ...testAdminHeaders('egress-retired-token'), 'content-type': 'application/json' };
   const reads = t.mock.method(settings, 'getSetting');
-  assert.deepEqual(await read(ENV_A), { mode: 'allowlist', domains: [] }, 'hosted reads the managed policy');
-  assert.equal(reads.mock.calls.filter(({ arguments: [key] }) => key === 'egress.policy').length, 0, 'hosted never reads the stored policy');
+  const writes = t.mock.method(settings, 'setSetting');
+  for (const [mode, env] of [['standalone', undefined], ['hosted', ENV_A]] as const) {
+    for (const method of ['GET', 'PUT']) {
+      const response = await routes.request('http://localhost/admin/api/egress', {
+        method,
+        headers,
+        ...(method === 'PUT' ? { body: JSON.stringify({ mode: 'open', domains: ['api.example.com'] }) } : {}),
+      }, env);
+      assert.equal(response.status, 404, `${mode} ${method}`);
+    }
+  }
+  const policyKey = ({ arguments: [key] }: { arguments: unknown[] }) => key === 'egress.policy';
+  assert.equal(reads.mock.calls.filter(policyKey).length, 0, 'no policy is read');
+  assert.equal(writes.mock.calls.filter(policyKey).length, 0, 'no policy is written');
 });
 
 test('under tenancy no turn or occurrence is offered the browser, even with a deployment Browserbase key', async (t) => {

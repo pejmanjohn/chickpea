@@ -233,11 +233,6 @@ import {
   WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import {
-  resolveEgressPolicy,
-  saveEgressPolicy,
-  type EgressPolicy,
-} from '../config/egress.ts';
-import {
   connectionHoldsInstallation,
   createInstallationToken,
   consumeGithubSetupState,
@@ -1151,7 +1146,7 @@ const apiConnectionSchema = v.pipe(
       // Path-only: a `?query` or `#fragment` is silently dropped by both
       // matchesEgressPrefix and just-bash, which would broaden credential
       // injection and permitted methods to the whole path. Reject them here, as
-      // the egress-domain validation already rejects smuggled URL components.
+      // the host validation above already rejects smuggled URL components.
       v.array(v.pipe(v.string(), v.trim(), v.regex(/^\/[^\s?#]*$/), v.maxLength(512))),
       v.maxLength(20),
     ),
@@ -1564,25 +1559,6 @@ const onboardingTrySchema = v.strictObject({
 
 const onboardingCompleteSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
-});
-
-const egressDomain = v.pipe(
-  v.string(),
-  v.trim(),
-  v.minLength(1),
-  v.maxLength(253),
-  v.check((domain) => validateMcpUrl(egressDomainUrl(domain)).ok, 'Domain not allowed'),
-  // The egress allow-list is origin-scoped: `normalizeEgressDomain` keeps only
-  // the hostname. Reject entries carrying a path/port/query/fragment/userinfo
-  // rather than silently discarding them — otherwise `example.com/private`
-  // would quietly widen access to the entire `example.com` origin. Mirrors the
-  // bare-host rule already enforced for connector hosts.
-  v.check(isBareEgressHost, 'Domain must be a bare host with no path, port, query, or fragment'),
-);
-
-const egressPolicySchema = v.object({
-  mode: v.picklist(['allowlist', 'open', 'off']),
-  domains: v.pipe(v.array(egressDomain), v.maxLength(100)),
 });
 
 const sandboxSettingsSchema = v.object({
@@ -7338,25 +7314,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     });
   });
 
-  // Hosted manages outbound access: GET answers its managed policy, and the
-  // middleware refuses a write before this handler runs.
-  app.get('/admin/api/egress', async (c) => {
-    return c.json({ policy: await resolveEgressPolicy(settings(c), c.env as PlatformEnv | undefined) });
-  });
-
-  app.put('/admin/api/egress', async (c) => {
-    const parsed = v.safeParse(egressPolicySchema, await readJson(c.req));
-    if (!parsed.success) {
-      return invalidRequest(c);
-    }
-    const policy: EgressPolicy = {
-      mode: parsed.output.mode,
-      domains: [...new Set(parsed.output.domains.map(normalizeEgressDomain))],
-    };
-    await saveEgressPolicy(settings(c), policy);
-    return c.json({ policy });
-  });
-
   app.get('/admin/api/sandbox/status', async (c) => {
     return c.json(await sandboxStatus(
       settings(c),
@@ -11772,7 +11729,7 @@ function isAdminPageGet(c: Context): boolean {
 // to install or remove the coding sandbox, which only whoever deploys can
 // complete, and creating, storing or removing the deployment's own GitHub App
 // (the host owns the platform App). The host's policy owns the sandbox's
-// runtime settings and outbound access, so only their status stays served.
+// runtime settings, so only its status stays served.
 const STANDALONE_ONLY_PREFIXES = [
   '/admin/setup',
   '/admin/recovery',
@@ -11803,8 +11760,6 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
   if (method === 'DELETE' && canonical === '/admin/api/slack-connection') return true;
   // The host's policy owns a hosted coding sandbox; its status stays readable.
   if ((method === 'PUT' || method === 'PATCH') && canonical === '/admin/api/sandbox/status') return true;
-  // The host manages outbound access; only its managed policy stays readable.
-  if (method !== 'GET' && method !== 'HEAD' && canonical === '/admin/api/egress') return true;
   // The host's platform GitHub App is the only one: no installation removes it whole (it disconnects one account).
   if (method === 'DELETE' && canonical === '/admin/api/github') return true;
   return STANDALONE_ONLY_PREFIXES.some((prefix) => canonical === prefix || canonical.startsWith(`${prefix}/`)) ||
@@ -12825,41 +12780,6 @@ function providerFavoritesFromBody(body: unknown): string[] | undefined {
   }
   const favorites = raw.filter((value): value is string => typeof value === 'string');
   return favorites.length === raw.length ? favorites : undefined;
-}
-
-function egressDomainUrl(domain: string): string {
-  const withoutScheme = domain.replace(/^[a-z][a-z\d+.-]*:\/\//i, '');
-  return `https://${withoutScheme}`;
-}
-
-// An egress allow-list entry must resolve to a bare host: the stored policy only
-// keeps the hostname, so any path/port/query/fragment/userinfo the operator
-// typed would be silently dropped and broaden access to the whole origin.
-function isBareEgressHost(domain: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(egressDomainUrl(domain));
-  } catch {
-    return false; // the validateMcpUrl check reports the invalid-host case
-  }
-  return (
-    url.port === '' &&
-    url.username === '' &&
-    url.password === '' &&
-    url.pathname === '/' &&
-    url.search === '' &&
-    url.hash === ''
-  );
-}
-
-function normalizeEgressDomain(domain: string): string {
-  const result = validateMcpUrl(egressDomainUrl(domain));
-  if (!result.ok) {
-    // The schema runs the same guard first, so reaching this branch would mean
-    // validation behavior changed between parsing and normalization.
-    throw new Error('Validated egress domain became invalid');
-  }
-  return new URL(result.url).hostname.toLowerCase();
 }
 
 async function providerRemovalImpact(

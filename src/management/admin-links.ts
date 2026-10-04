@@ -19,7 +19,6 @@ export const ADMIN_SETTINGS_SECTIONS = {
   github: 'GitHub',
   sandbox: 'Coding sandbox',
   browser: 'Browser',
-  outbound: 'Outbound access',
   'agents-clients': 'MCP',
 } as const;
 
@@ -27,16 +26,16 @@ export type AdminSettingsSection = keyof typeof ADMIN_SETTINGS_SECTIONS;
 
 /** Settings sections with no MCP operation today (a provider key or connector still hands off through a tool). */
 const ADMIN_ONLY_SETTINGS_SECTIONS: readonly AdminSettingsSection[] = [
-  'providers', 'github', 'sandbox', 'browser', 'outbound', 'connectors',
+  'providers', 'github', 'sandbox', 'browser', 'connectors',
 ];
 
 /**
  * Sections a deployment serving many installations leaves out of Admin: the
- * host runs the coding sandbox and manages outbound access, and the browser is
- * not offered. Nothing names or links them there.
+ * host runs the coding sandbox, and the browser is not offered. Nothing names
+ * or links them there.
  */
 const HOSTED_HIDDEN_SETTINGS_SECTIONS: ReadonlySet<AdminSettingsSection> = new Set([
-  'sandbox', 'browser', 'outbound',
+  'sandbox', 'browser',
 ]);
 
 /** Whether this deployment's Admin shows a Settings section. */

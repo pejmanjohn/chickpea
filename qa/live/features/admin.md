@@ -12,7 +12,7 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - The overflow menu holds Duplicate Agent, Archive or Restore, and the legacy default selector.
 - Destinations covers Slack: Overview, Connection (Test connection, Reconnect with Slack, Disconnect) and Channels.
 - Usage has period and breakdown selectors, four cards compared with the previous period, spend by breakdown, recent activity, a coverage line and the spending-limits sentence. A model outside the pinned catalog records tokens with no price (`price_unknown`), and a stale catalog entry (`price_stale`) makes Admin say estimates need a pricing update.
-- Settings has Connectors, Model providers, GitHub, Coding sandbox, Browser and Outbound access. Audit logs has no nav button and is reached by its path.
+- Settings has Connectors, Model providers, GitHub, Coding sandbox and Browser. Audit logs has no nav button and is reached by its path.
 - Form behaviour: typing keeps focus and caret through background refreshes, native dropdowns stay open through background renders, a deep link loads its tab data even when the page opened hidden, and a conflicting Memory save keeps the draft.
 
 ## How a person reaches it
@@ -43,7 +43,7 @@ Docs: `/admin/`, `/admin/tour/`, `/admin/sign-in-and-roles/`, `/admin/usage/`. R
 - Personal tokens have no Admin screen, so there is nothing to find there.
 - A hosted deployment shows a Slack permissions bar at the top of the main column when its grant lacks a requested scope (Owners get "Update in Slack", Admins a line asking for an Owner). Standalone lanes never show it; check its absence there and leave the hosted bar to the hosted profile.
 - `/admin?slack=updated`, where the hosted update returns, shows "Slack permissions updated." once. Admin reads the parameter before the canonical rewrite to `/admin/agents/<id>` drops the query, so test it on `/admin` itself.
-- A hosted deployment (installation tenancy) has no About & updates, Browser, Coding sandbox or Outbound access section, no Coding sandbox row in an Agent's Advanced settings, and no preparation or setup refresh in Connectors. That is by design, not missing; standalone lanes show them all. Hosted bash egress is always the empty allowlist plus each connection's own hosts, and `PUT /admin/api/egress` is not found there.
-- Standalone Outbound access saves and reads back, but it does not reach an Agent's bash: the runtime-plan sandbox never reads the policy and has no network without repository grants (`curl: command not found`). Grade a bash curl against it as that known behaviour, not a regression.
+- A hosted deployment (installation tenancy) has no About & updates, Browser or Coding sandbox section, no Coding sandbox row in an Agent's Advanced settings, and no preparation or setup refresh in Connectors. That is by design, not missing; standalone lanes show them all.
+- Neither mode has Outbound access: `/admin/settings/outbound` and `/admin/settings/egress-settings` land on Model providers, and `/admin/api/egress` is not found. The runtime-plan sandbox has no network without repository grants (`curl: command not found`); grade a bash curl as that known behaviour, not a regression.
 - Violet runs the sandbox profile with a stored Composio key, so its sandbox install section and Prepare connector defaults never render there; the both-mode render tests cover them.
 - On a lane that keeps every model provider key environment-managed and Composio configured with a stored key (Violet), the provider key removal confirm, its key hint and the Connectors "add a project key" summary never render. The GitHub Disconnect confirm is the reachable standalone self-hosting sentence there.

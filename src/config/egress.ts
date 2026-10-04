@@ -1,9 +1,6 @@
 import type { NetworkConfig, SecureFetch } from 'just-bash';
 import { bash, type SandboxFactory } from '@flue/runtime';
 
-import { deploymentServesManyInstallations } from './installation-scope.ts';
-import type { SettingsStore } from './settings-store.ts';
-
 type EgressMode = 'allowlist' | 'open' | 'off';
 
 export interface EgressPolicy {
@@ -22,14 +19,14 @@ export interface ResolvedApiConnection {
   authorize?: () => Promise<boolean>;
 }
 
+/**
+ * The installation-wide egress policy, always: an allowlist with no operator
+ * domains. Each connection adds its own scope; no setting changes it.
+ */
 export const DEFAULT_EGRESS_POLICY: EgressPolicy = {
   mode: 'allowlist',
   domains: [],
 };
-
-// Module-private: every read goes through resolveEgressPolicy and every write
-// through saveEgressPolicy, so no reader can skip the hosted rule.
-const EGRESS_SETTING_KEY = 'egress.policy';
 
 interface DnsAnswer {
   type?: unknown;
@@ -88,47 +85,6 @@ export interface ScopedDelegate {
 // operator "Domains" and, in `open` mode, arbitrary internet hosts. A connector
 // requesting a broader method must not widen this baseline for unrelated hosts.
 const BASE_EGRESS_METHODS = ['GET', 'HEAD', 'POST'] as const;
-
-export function parseEgressPolicy(raw: string | undefined): EgressPolicy {
-  if (raw === undefined) return DEFAULT_EGRESS_POLICY;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return DEFAULT_EGRESS_POLICY;
-  }
-
-  if (!isEgressPolicyShape(parsed)) return DEFAULT_EGRESS_POLICY;
-
-  return {
-    mode: parsed.mode,
-    domains: [...new Set(parsed.domains.map((domain) => domain.trim()).filter(Boolean))],
-  };
-}
-
-/**
- * The installation-wide egress policy a turn or Admin acts on. Standalone:
- * the operator's stored Outbound access setting. A deployment serving many
- * installations manages it: always DEFAULT_EGRESS_POLICY, an allowlist with
- * no operator domains, and an installation's stored setting is not read.
- * Connector scopes are granted per connection either way.
- */
-export async function resolveEgressPolicy(
-  settings: Pick<SettingsStore, 'getSetting'>,
-  env: Record<string, unknown> | undefined,
-): Promise<EgressPolicy> {
-  if (deploymentServesManyInstallations(env)) return DEFAULT_EGRESS_POLICY;
-  return parseEgressPolicy(await settings.getSetting(EGRESS_SETTING_KEY));
-}
-
-/** Store the operator's Outbound access policy. Hosted refuses the route before this runs. */
-export async function saveEgressPolicy(
-  settings: Pick<SettingsStore, 'setSetting'>,
-  policy: EgressPolicy,
-): Promise<void> {
-  await settings.setSetting(EGRESS_SETTING_KEY, JSON.stringify(policy));
-}
 
 // The combined network: every allow-listed prefix (domains + all connector
 // transforms) under one global method set. Used for the descriptive whole-policy
@@ -334,17 +290,6 @@ function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): Connecto
         ...(connector.authorize ? { authorize: connector.authorize } : {}),
       };
     });
-}
-
-function isEgressPolicyShape(value: unknown): value is EgressPolicy {
-  if (typeof value !== 'object' || value === null) return false;
-
-  const candidate = value as { mode?: unknown; domains?: unknown };
-  return (
-    (candidate.mode === 'allowlist' || candidate.mode === 'open' || candidate.mode === 'off') &&
-    Array.isArray(candidate.domains) &&
-    candidate.domains.every((domain) => typeof domain === 'string')
-  );
 }
 
 function normalizeDomain(domain: string): string | undefined {

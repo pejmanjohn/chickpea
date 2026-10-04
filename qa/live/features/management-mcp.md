@@ -10,7 +10,7 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - `confirm_workspace_change` applies a proposal exactly as previewed, only for the same requester from the same client. A changed revision, digest, permission or origin makes it stale or denied.
 - Small reversible single-field edits apply directly and can be reversed with `undo_workspace_change`. Changes take effect on the next admitted Slack event.
 - Setup handoffs: `prepare_connector_setup` returns an Admin URL locked to one Agent. `prepare_provider_setup` (Owner or Admin) returns a 24-hour link bound to the requester; `revoke_setup_link` cancels or reissues one.
-- Receipts carry `presentation.markdown`, `links.admin` and `links.slack`. Admin-only settings (GitHub, coding sandbox, browser, outbound access, connectors, avatars) have no tool; the server's instructions point to their Admin pages. A hosted deployment's instructions, `status` prompt and `/connect.md` leave out the coding sandbox, browser and outbound access, which its Admin does not show.
+- Receipts carry `presentation.markdown`, `links.admin` and `links.slack`. Admin-only settings (GitHub, coding sandbox, browser, connectors, avatars) have no tool; the server's instructions point to their Admin pages. A hosted deployment's instructions, `status` prompt and `/connect.md` leave out the coding sandbox and browser, which its Admin does not show.
 - Six MCP prompts (`new-agent`, `edit-agent`, `connect`, `schedule`, `import-skill`, `status`) that clients may show as slash commands.
 - `/connect` and `/connect.md` are public and answer before setup; `/mcp` answers 404 until Slack is connected.
 

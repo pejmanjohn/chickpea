@@ -157,9 +157,9 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
   const url = connectMcpUrl(origin);
   const admin = `${origin}${ADMIN_PATH}`;
   const settings = `${origin}${ADMIN_SETTINGS_PATH}`;
-  // Hosted Admin has no Coding sandbox or Outbound access page to send anyone to.
-  const adminManaged = adminSettingsSectionShown('sandbox', env) && adminSettingsSectionShown('outbound', env)
-    ? 'Model provider keys, GitHub setup, the coding sandbox, and outbound access are'
+  // Hosted Admin has no Coding sandbox page to send anyone to.
+  const adminManaged = adminSettingsSectionShown('sandbox', env)
+    ? 'Model provider keys, GitHub setup, and the coding sandbox are'
     : 'Model provider keys and GitHub setup are';
 
   const table = [

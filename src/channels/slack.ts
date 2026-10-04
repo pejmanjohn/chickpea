@@ -207,7 +207,7 @@ import {
 } from '../slack/private-channel-setup.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
-import { resolveEgressPolicy } from '../config/egress.ts';
+import { DEFAULT_EGRESS_POLICY } from '../config/egress.ts';
 import {
   isSlackMemberJoinedChannelEvent,
   parseSlackAgentSessionStopped,
@@ -2820,18 +2820,11 @@ async function processSlackEvent(
       action: surface === 'channel' && !liveChannelConfig ? 'snapshot' : 'live',
       outcome: 'admitted',
     });
-    let egressPolicy;
-    try {
-      egressPolicy = await resolveEgressPolicy(stores.settings, platformEnv);
-    } catch {
-      // Canary eligibility is fail-closed. A settings read failure still uses
-      // the established legacy lane and must not change Slack availability.
-    }
     const selectedExecution = selectSlackExecutionAuthority({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
       assignment,
-      ...(egressPolicy ? { egressPolicy } : {}),
+      egressPolicy: DEFAULT_EGRESS_POLICY,
       legacyOnlyTurn: deterministicCommand,
       ...(platformEnv ? { env: platformEnv } : {}),
     });
