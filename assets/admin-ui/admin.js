@@ -3132,6 +3132,7 @@
       state.agentConnections.refreshing = false;
       state.agentConnections.loaded = true;
       state.agentConnections.error = "";
+      dropDetachedAccountNotice();
       state.connectionAccountsSupported = true;
       if (state.customMcpToolEditor) {
         var editedAccount = state.agentConnections.attached.find(function (entry) {
@@ -3160,6 +3161,24 @@
       renderPreservingPagePosition();
     });
     return trackVisibleResourcePromise(resourceTicket, request);
+  }
+
+  // A success notice about one account lasts only while that account is
+  // attached to this Agent: a refresh after a disconnect drops it.
+  function setAgentConnectionNotice(text, accountId) {
+    state.agentConnections.notice = text;
+    state.agentConnections.noticeAccountId = accountId || "";
+  }
+
+  function dropDetachedAccountNotice() {
+    var accountId = state.agentConnections.noticeAccountId;
+    if (!accountId) return;
+    var stillAttached = (state.agentConnections.attached || []).some(function (entry) {
+      return entry.account && entry.account.id === accountId;
+    });
+    if (stillAttached) return;
+    state.agentConnections.notice = "";
+    state.agentConnections.noticeAccountId = "";
   }
 
   function invalidateAgentConnections(agentId, workspaceId) {
@@ -3662,6 +3681,7 @@
     render();
     var prepare = Promise.resolve();
     var accountCreated = false;
+    var createdAccountId = "";
     var googleClientSaved = false;
     if (form.kind === "mcp" && !form.preset && !mcpOauth) {
       var customTest = { id: connectionId, url: body.mcp.url, transport: body.mcp.transport, authMode: body.mcp.authMode };
@@ -3705,29 +3725,25 @@
       return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections", "POST", body);
     }).then(function (created) {
       accountCreated = true;
+      createdAccountId = created && created.account && created.account.id || "";
+      if ((googleOauth || mcpOauth) && !createdAccountId) throw new Error("Connection response was missing its account.");
       if (googleOauth) {
-        var accountId = created && created.account && created.account.id;
-        if (!accountId) throw new Error("Connection response was missing its account.");
-        return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/oauth/api/client", "PUT", {
+        return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(createdAccountId) + "/oauth/api/client", "PUT", {
           provider: "google",
           clientId: String(form.oauthClientId || "").trim(),
           clientSecret: String(form.oauthClientSecret || "").trim()
         }).then(function () {
           googleClientSaved = true;
-          return startConnectionAccountOAuth(accountId, true);
+          return startConnectionAccountOAuth(createdAccountId, true);
         });
       }
-      if (mcpOauth) {
-        var mcpAccountId = created && created.account && created.account.id;
-        if (!mcpAccountId) throw new Error("Connection response was missing its account.");
-        return startConnectionAccountOAuth(mcpAccountId, true, "mcp");
-      }
+      if (mcpOauth) return startConnectionAccountOAuth(createdAccountId, true, "mcp");
       state.connectionAccountForm = null;
       invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
     }).then(function (result) {
       if (result && result.oauthStarted) return;
-      state.agentConnections.notice = label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent.");
+      setAgentConnectionNotice(label + (form.kind === "api" && !form.preset ? " is saved. Its API token has not been verified." : " is connected to this Agent."), createdAccountId);
       render();
     }).catch(function (error) {
       if (accountCreated) {
@@ -3847,16 +3863,34 @@
     }
   }
 
-  function openManagedAuthorizationTab(url) {
-    var opened = null;
-    try { opened = window.open(url, "_blank", "noopener,noreferrer"); } catch (_) { opened = null; }
-    return !!opened;
+  // Open the sign-in tab blank inside the click that asked for it: Safari
+  // stops a page opening tabs once the click's request is in flight. A
+  // `noopener` feature would make window.open return null even for a tab
+  // that opened, so cut the opener here instead. Null means the browser
+  // blocked the tab.
+  function openManagedAuthorizationTab() {
+    if (typeof window === "undefined" || typeof window.open !== "function") return null;
+    var opened = window.open("", "chickpea-managed-auth-" + Date.now());
+    if (opened) opened.opener = null;
+    return opened;
+  }
+
+  // Whether the sign-in page is now open in `tab`.
+  function showManagedAuthorizationPage(tab, url) {
+    if (!tab || tab.closed) return false;
+    tab.location.assign(url);
+    return true;
+  }
+
+  function closeManagedAuthorizationTab(tab) {
+    if (tab && !tab.closed && typeof tab.close === "function") tab.close();
   }
 
   function startManagedAuthorization(body, label, context) {
     var form = state.connectionAccountForm;
     var agentId = context && context.agentId || state.profileDraft && state.profileDraft.id;
     if (!agentId || state.managedAuthorization) return;
+    var signInTab = openManagedAuthorizationTab();
     if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
     render();
@@ -3884,13 +3918,14 @@
         error: "",
         pollScheduled: false,
         pollAttempts: 0,
-        popupBlocked: !openManagedAuthorizationTab(authorizationUrl.href),
+        popupBlocked: !showManagedAuthorizationPage(signInTab, authorizationUrl.href),
         returnToSettings: !!(context && context.returnToSettings)
       };
       persistManagedAuthorization(state.managedAuthorization);
       render();
       pollManagedAuthorization();
     }).catch(function (error) {
+      closeManagedAuthorizationTab(signInTab);
       if (form && state.connectionAccountForm === form) {
         form.busy = false;
         form.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
@@ -3956,7 +3991,7 @@
             startManagedResourceSelection(connectedEntry.account.id);
             return;
           }
-          state.agentConnections.notice = label + " is connected and ready for this Agent.";
+          setAgentConnectionNotice(label + " is connected and ready for this Agent.", connectedAccountId);
           render();
         });
       }
@@ -4113,7 +4148,7 @@
       if (primarySection() === "settings" && state.settingsSection === "connectors") {
         state.connectionInventory.notice = notice;
       } else {
-        state.agentConnections.notice = notice;
+        setAgentConnectionNotice(notice, "");
       }
       render();
     }).catch(function (error) {
@@ -5938,7 +5973,7 @@
       }
     ).then(function () {
       state.managedResourceEditor = null;
-      state.agentConnections.notice = "Resource access saved. The selected connector is ready for this Agent.";
+      setAgentConnectionNotice("Resource access saved. The selected connector is ready for this Agent.", editor.accountId);
       invalidateAgentConnections(state.agentConnections.agentId);
       return loadAgentConnections(state.agentConnections.agentId);
     }).catch(function (error) {
@@ -13224,7 +13259,10 @@
     }
     if (action === "composio-setup-save") { submitComposioSetup(); }
     if (action === "managed-auth-open" && state.managedAuthorization) {
-      state.managedAuthorization.popupBlocked = !openManagedAuthorizationTab(state.managedAuthorization.authorizationUrl);
+      state.managedAuthorization.popupBlocked = !showManagedAuthorizationPage(
+        openManagedAuthorizationTab(),
+        state.managedAuthorization.authorizationUrl
+      );
       persistManagedAuthorization(state.managedAuthorization);
       render();
     }

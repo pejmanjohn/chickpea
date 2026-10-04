@@ -42,7 +42,12 @@ import {
   safeMutationRequest as safeAdminMutationRequest,
 } from './api-support.ts';
 import { requestOrigin } from '../http/request-origin.ts';
-import { connectOrigin } from '../management/connect.ts';
+import {
+  ADMIN_CODING_AGENTS_PATH,
+  ADMIN_PATH,
+  ADMIN_SETTINGS_PATH,
+  connectOrigin,
+} from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import {
@@ -3097,6 +3102,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
               membershipId: principal.membershipId,
               reasonCode: 'permission_denied',
             });
+            // A page lands somewhere this person may open, never on JSON.
+            if (isAdminPageGet(c) && !principal.machine) {
+              authResponseHeaders(c);
+              return c.redirect(refusedAdminPageDestination(c.req.path), 303);
+            }
           }
           throw error;
         }
@@ -11766,20 +11776,36 @@ function standaloneOnlyRoute(method: string, path: string): boolean {
     STANDALONE_ONLY_PATTERNS.some((pattern) => pattern.test(canonical));
 }
 
+/**
+ * An Admin page needs the permission its data API asks for, so a page someone
+ * reaches inside the app also loads when they reload or deep-link it.
+ */
+function permissionForAdminPage(path: string): Permission {
+  if (path === ADMIN_PATH || path === '/admin/agents' || path.startsWith('/admin/agents/')) return 'agent.create';
+  if (path === '/admin/team') return 'team.view';
+  // Settings → MCP reads only GET /admin/api/mcp-clients, which every
+  // signed-in person may read.
+  if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
+  return 'admin.configure';
+}
+
+/**
+ * Where a signed-in person lands from an Admin page they may not open, as the
+ * app's own navigation does: a Settings path opens their Settings page, and
+ * anything else opens Admin home. Every signed-in person may open both.
+ */
+function refusedAdminPageDestination(path: string): string {
+  return path === ADMIN_SETTINGS_PATH || path.startsWith(`${ADMIN_SETTINGS_PATH}/`)
+    ? ADMIN_CODING_AGENTS_PATH
+    : ADMIN_PATH;
+}
+
 function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permission {
   if (
     c.req.method === 'GET' &&
     ['/admin/slack-gateway/reconnect', '/admin/slack-gateway/refresh'].includes(c.req.path)
   ) return 'account.view';
-  if (isAdminPageGet(c)) {
-    if (
-      c.req.path === '/admin' ||
-      c.req.path === '/admin/agents' ||
-      c.req.path.startsWith('/admin/agents/')
-    ) return 'agent.create';
-    if (c.req.path === '/admin/team') return 'team.view';
-    return 'admin.configure';
-  }
+  if (isAdminPageGet(c)) return permissionForAdminPage(c.req.path);
   if (c.req.path === '/admin/logout') return 'account.view';
   // The coding-agent client table is the same public material `/connect.md`
   // serves unauthenticated, so any signed-in person may read it to connect

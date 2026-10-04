@@ -100,6 +100,10 @@ export function renderAdminPage(
   // Tests and fixtures render without a build; the authenticated route passes
   // the content hash so browsers never pair a new shell with a cached script.
   const assetVersion = options.assetVersion ?? 'dev';
+  // No referrer policy: the browser default sends other sites only Admin's
+  // origin, never a path. `same-origin` or `no-referrer` would also send
+  // `Origin: null` on cross-origin form POSTs, such as the GitHub App manifest
+  // form self-hosters submit to github.com.
   return `<!doctype html>
 <html lang="en">
 <head>
