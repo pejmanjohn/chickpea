@@ -15,8 +15,9 @@
  * skill entrypoints and qa/live/operator names a tracked file), the tracked
  * .mcp.json allowlist (only the lane browser servers through
  * scripts/lane-browser.mjs), release manifest and version agreement, lockfile
- * integrity hashes, package metadata, the authentication export contract, and
- * the npm pack manifest.
+ * integrity hashes, package metadata, the coding-sandbox base image pinned by
+ * digest at the SDK's version, the authentication export contract, and the npm
+ * pack manifest.
  * Exit 1 on any finding, 2 on a usage or structural error.
  */
 import path from 'node:path';

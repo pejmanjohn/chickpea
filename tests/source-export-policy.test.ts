@@ -7,7 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
-import { archiveFindings, docsIgnoreFindings, docsReferenceFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest, repositoryMcpConfigFindings } from '../scripts/lib/source-export-policy.mjs';
+import { archiveFindings, docsIgnoreFindings, docsReferenceFindings, extractArchive, leakScanFindings, publicSourceManifestFindings, readContents, readIndexManifest, readTrackedManifest, repositoryMcpConfigFindings, sandboxDockerfileFindings } from '../scripts/lib/source-export-policy.mjs';
 
 const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -197,4 +197,40 @@ test('the tracked .mcp.json is allowlisted deliberately: only the lane browser s
   assert.deepEqual(build({ mcpServers: { ...good.mcpServers, 'chrome-amber': { ...server('amber'), args: ['scripts/lane-browser.mjs', 'serve', 'amber'] } } }), [exact('amber')]);
   // The tracked file itself is the allowlist's subject.
   assert.deepEqual(build(readFileSync(join(REPOSITORY_ROOT, '.mcp.json'), 'utf8')), []);
+});
+
+test('the coding-sandbox Dockerfile builds only from digest-pinned bases, starting with the SDK\'s own version', () => {
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const packageJson = JSON.stringify({ dependencies: { '@cloudflare/sandbox': '0.12.10' } });
+  const findings = (dockerfile: string | undefined) => sandboxDockerfileFindings(new Map([
+    ['package.json', Buffer.from(packageJson)],
+    ...(dockerfile === undefined ? [] : [['Dockerfile', Buffer.from(dockerfile)] as const]),
+  ])) as string[];
+  const unpinned = (image: string) => `Dockerfile: FROM ${image} is not pinned by digest (image:tag@sha256:<64 hex>)`;
+  const notSdk = (found: string) => 'Dockerfile: the first base must be docker.io/cloudflare/sandbox tagged with the ' +
+    `@cloudflare/sandbox version in package.json (0.12.10), not ${found}`;
+
+  assert.deepEqual(findings(`# FROM docker.io/cloudflare/sandbox:0.12.10\nFROM docker.io/cloudflare/sandbox:0.12.10@${digest}\nRUN true\n`), []);
+  assert.deepEqual(findings(`from --platform=linux/amd64 docker.io/cloudflare/sandbox:0.12.10@${digest} AS base\nFROM base\n` +
+    `FROM registry.example.test:5000/tools/node:22@${digest} AS tools\nFROM tools\n`), [], 'stages, flags and a registry port');
+  // By tag alone, by digest alone, or by a variable: each is refused.
+  for (const image of [
+    'docker.io/cloudflare/sandbox:0.12.10',
+    `docker.io/cloudflare/sandbox@${digest}`,
+    `docker.io/cloudflare/sandbox:0.12.10@sha256:${'a'.repeat(63)}`,
+    `docker.io/cloudflare/sandbox:0.12.10@sha256:${'A'.repeat(64)}`,
+    `docker.io/cloudflare/sandbox:\${SANDBOX_VERSION}@${digest}`,
+  ]) {
+    assert.deepEqual(findings(`FROM ${image}\n`), [unpinned(image)], image);
+  }
+  // A later stage's base is held to the same rule.
+  assert.deepEqual(findings(`FROM docker.io/cloudflare/sandbox:0.12.10@${digest} AS base\nFROM ubuntu:22.04\n`), [unpinned('ubuntu:22.04')]);
+  // The pinned base must be the SDK's own image at the SDK's version.
+  assert.deepEqual(findings(`FROM docker.io/cloudflare/sandbox:0.12.9@${digest}\n`), [notSdk('docker.io/cloudflare/sandbox:0.12.9')]);
+  assert.deepEqual(findings(`FROM cloudflare/sandbox:0.12.10@${digest}\n`), [notSdk('cloudflare/sandbox:0.12.10')]);
+  assert.deepEqual(findings('RUN true\n'), ['Dockerfile: no FROM names a base image']);
+  assert.deepEqual(findings(undefined), ['Dockerfile: missing coding-sandbox Dockerfile']);
+  // The tracked Dockerfile and package.json are the rule's subject.
+  assert.deepEqual(sandboxDockerfileFindings(new Map(['Dockerfile', 'package.json'].map((path) =>
+    [path, readFileSync(join(REPOSITORY_ROOT, path))]))), []);
 });
