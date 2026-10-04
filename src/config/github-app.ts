@@ -12,8 +12,8 @@ import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
 /**
- * GitHub's hosts, reserved for the GitHub App integration: no custom API
- * connection may name one, so a pasted credential never reaches GitHub
+ * These GitHub hosts are reserved for the GitHub App integration: no custom
+ * API connection may name one, so a pasted credential never reaches them
  * outside the App's repository scoping, token and hosted write budget.
  * `uploads.github.com` (release assets) is reserved but not routed: neither
  * the repository connectors nor container egress forward it, so no App token

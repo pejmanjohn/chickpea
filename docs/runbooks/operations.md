@@ -291,6 +291,12 @@ change APIs, configuration, or schemas. Release notes must state supported
 starting versions, required operator actions, migrations, and rollback limits.
 There is no implied upgrade path from an unlisted experimental schema.
 
+A saved custom API connection that names `uploads.github.com` no longer reaches
+it: that host is now reserved for the GitHub App integration, like
+`api.github.com` and `github.com`, so Admin refuses it and each turn drops it
+from the connection's allowed hosts without notice, keeping a pasted credential
+away from GitHub outside the App's repository scoping and write budget.
+
 For Node upgrades:
 
 1. Read the destination release notes and confirm the starting version is
