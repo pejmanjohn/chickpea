@@ -748,6 +748,63 @@ export function packageMetadataFindings(root) {
   return findings;
 }
 
+export const sandboxDockerfilePath = 'Dockerfile';
+const SANDBOX_BASE_IMAGE = 'docker.io/cloudflare/sandbox';
+
+/** `name:tag@sha256:<64 hex>` as its name and tag, or why the reference is not one. */
+function digestPinnedImage(reference) {
+  if (reference.includes('$')) return { problem: 'names a build variable' };
+  const at = reference.indexOf('@');
+  if (at < 0 || !/^sha256:[a-f0-9]{64}$/.test(reference.slice(at + 1))) return { problem: 'is not pinned by digest' };
+  const tagged = reference.slice(0, at);
+  const colon = tagged.lastIndexOf(':');
+  if (colon <= tagged.lastIndexOf('/')) return { problem: 'is missing a tag' };
+  const tag = tagged.slice(colon + 1);
+  return /^\w[\w.-]{0,127}$/.test(tag) ? { name: tagged.slice(0, colon), tag } : { problem: 'has an invalid tag' };
+}
+
+/**
+ * The coding-sandbox image builds only from immutable bases: every `FROM`
+ * names `image:tag@sha256:<64 hex>` (or an earlier stage), and the final
+ * stage, through its stage aliases, builds on Cloudflare's Sandbox base at
+ * the exact `@cloudflare/sandbox` version the Worker ships, which the SDK
+ * checks when a container starts.
+ */
+export function sandboxDockerfileFindings(contents) {
+  const dockerfile = contents.get(sandboxDockerfilePath)?.toString('utf8');
+  if (dockerfile === undefined) return [`${sandboxDockerfilePath}: missing coding-sandbox Dockerfile`];
+  const sdkVersion = JSON.parse(contents.get('package.json')?.toString('utf8') ?? '{}')
+    .dependencies?.['@cloudflare/sandbox'];
+  const findings = [];
+  // Each stage alias maps to the pinned base it resolves to (undefined when unpinned).
+  const stages = new Map();
+  let sawFrom = false;
+  let finalBase;
+  for (const line of dockerfile.split(/\r?\n/)) {
+    const words = line.trim().split(/\s+/);
+    if (words[0]?.toUpperCase() !== 'FROM') continue;
+    const [image, as, stage] = words.slice(1).filter((word) => !word.startsWith('--'));
+    if (!image) continue;
+    sawFrom = true;
+    if (stages.has(image.toLowerCase())) {
+      finalBase = stages.get(image.toLowerCase());
+    } else {
+      const pinned = digestPinnedImage(image);
+      if (pinned.problem) findings.push(`${sandboxDockerfilePath}: FROM ${image} ${pinned.problem} (image:tag@sha256:<64 hex>)`);
+      finalBase = pinned.problem ? undefined : pinned;
+    }
+    if (as?.toUpperCase() === 'AS' && stage) stages.set(stage.toLowerCase(), finalBase);
+  }
+  if (!sawFrom) return [`${sandboxDockerfilePath}: no FROM names a base image`];
+  if (typeof sdkVersion !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(sdkVersion)) {
+    findings.push(`package.json: the ${sandboxDockerfilePath} base image tag needs an exact @cloudflare/sandbox version to match (found ${sdkVersion ?? 'none'})`);
+  } else if (finalBase && (finalBase.name !== SANDBOX_BASE_IMAGE || finalBase.tag !== sdkVersion)) {
+    findings.push(`${sandboxDockerfilePath}: the final stage must build on ${SANDBOX_BASE_IMAGE}:${sdkVersion} ` +
+      `(the @cloudflare/sandbox version in package.json), not ${finalBase.name}:${finalBase.tag}`);
+  }
+  return findings;
+}
+
 /** Public setup material must never prompt for, embed, or transport a credential. */
 export function authExportContractFindings(root) {
   const findings = [];
@@ -957,6 +1014,7 @@ export function inspectSource({ root, revision = 'HEAD', workingTree = false, ke
     check('lockfile integrity', () => lockfileIntegrityReport(join(state.treeRoot, 'package-lock.json')).unverified
       .map((name) => `${name}: package-lock entry has no integrity hash`));
     check('package metadata', () => packageMetadataFindings(state.treeRoot));
+    check('sandbox base image', () => sandboxDockerfileFindings(state.contents));
     check('authentication export contract', () => authExportContractFindings(state.treeRoot));
     check('npm pack manifest', () => packManifestFindings(state.treeRoot, state.entries));
     return finish(state, checks, keepScratch);

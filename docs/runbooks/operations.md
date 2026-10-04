@@ -291,6 +291,12 @@ change APIs, configuration, or schemas. Release notes must state supported
 starting versions, required operator actions, migrations, and rollback limits.
 There is no implied upgrade path from an unlisted experimental schema.
 
+A saved custom API connection that names `uploads.github.com` no longer reaches
+it: that host is now reserved for the GitHub App integration, like
+`api.github.com` and `github.com`, so Admin refuses it and each turn drops it
+from the connection's allowed hosts without notice, keeping a pasted credential
+away from GitHub outside the App's repository scoping and write budget.
+
 For Node upgrades:
 
 1. Read the destination release notes and confirm the starting version is
@@ -383,7 +389,10 @@ See [Node.js compatibility](https://developers.cloudflare.com/workers/runtime-ap
 The optional coding sandbox uses Cloudflare's `sandbox:0.12.10` container, whose
 embedded Node 22.23.2 runs sandbox tooling, not the Chickpea host or build. Its
 image tag must match `@cloudflare/sandbox`; leave this vendor-owned runtime alone
-when updating Chickpea's Node pin. Validate SDK/image updates separately.
+when updating Chickpea's Node pin. Validate SDK/image updates separately. The
+`Dockerfile` pins that tag by digest: an SDK update changes the version, tag and
+digest together, and `npm run verify:hygiene` refuses a mismatch or an unpinned
+`FROM`.
 
 ### Schedule account requirements during edits
 

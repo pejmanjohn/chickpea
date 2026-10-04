@@ -5575,3 +5575,36 @@ test('members cannot configure the installation Meta app', async () => {
     assert.equal(body.clientId, undefined);
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
+
+test('a custom API connection may not name any GitHub host the GitHub App integration manages', async () => {
+  const fixture = harness(new FakeTransport());
+  try {
+    await createAgent(fixture.app);
+    const patch = async (allowedHosts: string[]) => {
+      const { revision } = await fixture.store.getAgent('agent_support');
+      return fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+        method: 'PATCH',
+        headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: revision,
+          apiConnections: [{
+            id: 'pasted-token', displayName: 'Pasted token', allowedHosts, pathPrefixes: ['/repos'],
+            headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'POST'],
+            enabled: true, authMode: 'credential',
+          }],
+        }),
+      });
+    };
+    for (const host of ['api.github.com', 'github.com', 'uploads.github.com', 'Uploads.GitHub.com']) {
+      const refused = await patch(['api.example.com', host]);
+      assert.equal(refused.status, 400, host);
+      assert.deepEqual(await refused.json(), {
+        error: 'invalid_request',
+        message: 'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub',
+      }, host);
+    }
+    assert.deepEqual((await fixture.store.getAgent('agent_support')).apiConnections, []);
+    const accepted = await patch(['api.example.com']);
+    assert.equal(accepted.status, 200, await accepted.clone().text());
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});

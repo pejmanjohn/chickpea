@@ -1,13 +1,16 @@
 # Chickpea coding-sandbox image. Extends Cloudflare's Sandbox SDK base — the
 # tag MUST equal the @cloudflare/sandbox npm version (0.12.10); the SDK checks
-# compatibility at startup. Ubuntu 22.04, Node 22.23.2, git/curl/jq preinstalled.
+# compatibility at startup. The base is pinned by digest (the tag's manifest on
+# Docker Hub), so a retagged upstream image never changes a build; bump the tag
+# and digest together. `npm run verify:hygiene` refuses an unpinned FROM.
+# Ubuntu 22.04, Node 22.23.2, git/curl/jq preinstalled.
 # This vendor-owned runtime runs sandbox tools, not the Chickpea host/build.
 # It is independent of the Node 24 policy in .nvmrc; preserve SDK/image parity.
 #
 # Cloudflare hard rules (verified 2026-07-23): never set USER, never override
 # ENTRYPOINT (the base ENTRYPOINT runs the sandbox control-plane server). Extend
 # only with RUN layers, ordered rarely-changing -> often-changing for cache hits.
-FROM docker.io/cloudflare/sandbox:0.12.10
+FROM docker.io/cloudflare/sandbox:0.12.10@sha256:35c932d3e5b35f28d350800cf00551cac46dfe28274afb54e16325b8d8f560d1
 
 # Python + pytest — the default base is Node-only; needed to run Python repos'
 # test suites (`pip install -r requirements.txt && pytest`). Per-project deps are

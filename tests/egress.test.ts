@@ -849,7 +849,7 @@ test('the GitHub App integration always reserves GitHub hosts from custom connec
     allowedMethods: ['GET'],
   };
   const legacyConnector: ResolvedApiConnection = {
-    allowedHosts: ['API.GITHUB.COM', 'github.com', 'api.example.com'],
+    allowedHosts: ['API.GITHUB.COM', 'github.com', 'uploads.github.com', 'api.example.com'],
     pathPrefixes: ['/repos'],
     headerName: 'Authorization',
     headerValue: 'Bearer broad-token',
@@ -866,15 +866,18 @@ test('the GitHub App integration always reserves GitHub hosts from custom connec
   ]);
 
   // An already-saved GitHub-only custom connector with zero grants contributes
-  // no credential-bearing egress scope or transform.
-  const githubOnly = { ...legacyConnector, allowedHosts: ['api.github.com'] };
-  const plan = buildEgressPlan(
-    { mode: 'off', domains: [] },
-    { cloudflare: false },
-    mergeRepositoryAndApiConnectors([], [githubOnly]),
-  );
-  assert.deepEqual(plan.scopes, []);
-  assert.deepEqual(plan.baseNetwork.allowedUrlPrefixes, []);
+  // no credential-bearing egress scope or transform; nor does one naming only
+  // the release-asset upload host, which the App integration reserves too.
+  for (const host of ['api.github.com', 'uploads.github.com']) {
+    const githubOnly = { ...legacyConnector, allowedHosts: [host] };
+    const plan = buildEgressPlan(
+      { mode: 'off', domains: [] },
+      { cloudflare: false },
+      mergeRepositoryAndApiConnectors([], [githubOnly]),
+    );
+    assert.deepEqual(plan.scopes, [], host);
+    assert.deepEqual(plan.baseNetwork.allowedUrlPrefixes, [], host);
+  }
 });
 
 test('the repos scope refuses denied Actions endpoints while keeping rerun and cancel', async () => {
