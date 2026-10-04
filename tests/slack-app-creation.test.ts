@@ -394,7 +394,9 @@ test('a created app gets the bundled Chickpea logo through apps.icon.set with th
       identity: store,
       credentials,
       now: () => NOW,
-      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+      // Like Workers' global fetch, refuse any receiver but none.
+      fetch: async function (this: unknown, input: string | URL | Request, init?: RequestInit) {
+        if (this !== undefined) throw new TypeError('Illegal invocation');
         calls.push(new Request(input, init));
         return String(input).endsWith('/apps.icon.set')
           ? slackResponse({ ok: true })

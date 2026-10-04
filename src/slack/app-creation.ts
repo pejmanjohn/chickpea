@@ -315,13 +315,15 @@ export class SlackAppCreationService {
       icon = await (this.dependencies.appIcon ?? (() => readPublicAsset(SLACK_APP_ICON_ASSET_PATH)))();
     } catch { return 'icon_unavailable'; }
     const url = slackApiMethodUrl(this.dependencies.apiBaseUrl, 'apps.icon.set', SLACK_APP_ICON_SET_URL);
+    // Called unbound: Workers' global fetch rejects any other receiver.
+    const fetchImpl = this.fetchImpl;
     for (let attempt = 1; ; attempt += 1) {
       const body = new FormData();
       body.set('app_id', appId);
       body.set('file', new Blob([icon], { type: 'image/png' }), 'chickpea.png');
       let response: Response;
       try {
-        response = await this.fetchImpl(url, {
+        response = await fetchImpl(url, {
           method: 'POST',
           headers: { authorization: `Bearer ${token}` },
           body,
