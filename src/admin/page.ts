@@ -100,11 +100,16 @@ export function renderAdminPage(
   // Tests and fixtures render without a build; the authenticated route passes
   // the content hash so browsers never pair a new shell with a cached script.
   const assetVersion = options.assetVersion ?? 'dev';
+  // The referrer policy keeps Admin URLs from the pages it opens elsewhere,
+  // such as a provider's sign-in tab. It is `same-origin`, not `no-referrer`:
+  // `no-referrer` would also send `Origin: null` on Admin's own form POSTs,
+  // Sign out and the hosted Update in Slack, whose routes check Origin.
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
 <title>Chickpea · /admin</title>
 ${CHICKPEA_FAVICON_HTML}
 <style>:root{${CHICKPEA_WORDMARK_CSS}}</style>

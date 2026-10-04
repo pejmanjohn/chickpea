@@ -3132,7 +3132,7 @@
       state.agentConnections.refreshing = false;
       state.agentConnections.loaded = true;
       state.agentConnections.error = "";
-      dropDetachedAccountNotice(state.agentConnections);
+      dropDetachedAccountNotice();
       state.connectionAccountsSupported = true;
       if (state.customMcpToolEditor) {
         var editedAccount = state.agentConnections.attached.find(function (entry) {
@@ -3170,15 +3170,15 @@
     state.agentConnections.noticeAccountId = accountId || "";
   }
 
-  function dropDetachedAccountNotice(connections) {
-    var accountId = connections.noticeAccountId;
+  function dropDetachedAccountNotice() {
+    var accountId = state.agentConnections.noticeAccountId;
     if (!accountId) return;
-    var stillAttached = (connections.attached || []).some(function (entry) {
-      return entry.account && entry.account.id === accountId && entry.account.lifecycle !== "revoked";
+    var stillAttached = (state.agentConnections.attached || []).some(function (entry) {
+      return entry.account && entry.account.id === accountId;
     });
     if (stillAttached) return;
-    connections.notice = "";
-    connections.noticeAccountId = "";
+    state.agentConnections.notice = "";
+    state.agentConnections.noticeAccountId = "";
   }
 
   function invalidateAgentConnections(agentId, workspaceId) {
@@ -3726,23 +3726,18 @@
     }).then(function (created) {
       accountCreated = true;
       createdAccountId = created && created.account && created.account.id || "";
+      if ((googleOauth || mcpOauth) && !createdAccountId) throw new Error("Connection response was missing its account.");
       if (googleOauth) {
-        var accountId = created && created.account && created.account.id;
-        if (!accountId) throw new Error("Connection response was missing its account.");
-        return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(accountId) + "/oauth/api/client", "PUT", {
+        return postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/connections/" + encodeURIComponent(createdAccountId) + "/oauth/api/client", "PUT", {
           provider: "google",
           clientId: String(form.oauthClientId || "").trim(),
           clientSecret: String(form.oauthClientSecret || "").trim()
         }).then(function () {
           googleClientSaved = true;
-          return startConnectionAccountOAuth(accountId, true);
+          return startConnectionAccountOAuth(createdAccountId, true);
         });
       }
-      if (mcpOauth) {
-        var mcpAccountId = created && created.account && created.account.id;
-        if (!mcpAccountId) throw new Error("Connection response was missing its account.");
-        return startConnectionAccountOAuth(mcpAccountId, true, "mcp");
-      }
+      if (mcpOauth) return startConnectionAccountOAuth(createdAccountId, true, "mcp");
       state.connectionAccountForm = null;
       invalidateAgentConnections(agentId);
       return loadAgentConnections(agentId);
@@ -3868,21 +3863,34 @@
     }
   }
 
-  // Whether the sign-in tab opened. A `noopener` feature makes window.open
-  // return null even for a tab that opened, so open without it and cut the
-  // new tab's opener before its page can load.
-  function openManagedAuthorizationTab(url) {
-    var opened = null;
-    try { opened = window.open(url, "_blank"); } catch (_) { opened = null; }
-    if (!opened) return false;
-    try { opened.opener = null; } catch (_) { /* The tab is open either way. */ }
+  // Open the sign-in tab blank inside the click that asked for it: Safari
+  // stops a page opening tabs once the click's request is in flight. A
+  // `noopener` feature would make window.open return null even for a tab
+  // that opened, so cut the opener here instead. Null means the browser
+  // blocked the tab.
+  function openManagedAuthorizationTab() {
+    if (typeof window === "undefined" || typeof window.open !== "function") return null;
+    var opened = window.open("", "chickpea-managed-auth-" + Date.now());
+    if (opened) opened.opener = null;
+    return opened;
+  }
+
+  // Whether the sign-in page is now open in `tab`.
+  function showManagedAuthorizationPage(tab, url) {
+    if (!tab || tab.closed) return false;
+    tab.location.assign(url);
     return true;
+  }
+
+  function closeManagedAuthorizationTab(tab) {
+    if (tab && !tab.closed && typeof tab.close === "function") tab.close();
   }
 
   function startManagedAuthorization(body, label, context) {
     var form = state.connectionAccountForm;
     var agentId = context && context.agentId || state.profileDraft && state.profileDraft.id;
     if (!agentId || state.managedAuthorization) return;
+    var signInTab = openManagedAuthorizationTab();
     if (form) { form.busy = true; form.error = ""; }
     state.agentConnections.error = "";
     render();
@@ -3910,13 +3918,14 @@
         error: "",
         pollScheduled: false,
         pollAttempts: 0,
-        popupBlocked: !openManagedAuthorizationTab(authorizationUrl.href),
+        popupBlocked: !showManagedAuthorizationPage(signInTab, authorizationUrl.href),
         returnToSettings: !!(context && context.returnToSettings)
       };
       persistManagedAuthorization(state.managedAuthorization);
       render();
       pollManagedAuthorization();
     }).catch(function (error) {
+      closeManagedAuthorizationTab(signInTab);
       if (form && state.connectionAccountForm === form) {
         form.busy = false;
         form.error = (error && (error.serverMessage || error.message)) || "Could not start managed sign-in.";
@@ -13250,7 +13259,10 @@
     }
     if (action === "composio-setup-save") { submitComposioSetup(); }
     if (action === "managed-auth-open" && state.managedAuthorization) {
-      state.managedAuthorization.popupBlocked = !openManagedAuthorizationTab(state.managedAuthorization.authorizationUrl);
+      state.managedAuthorization.popupBlocked = !showManagedAuthorizationPage(
+        openManagedAuthorizationTab(),
+        state.managedAuthorization.authorizationUrl
+      );
       persistManagedAuthorization(state.managedAuthorization);
       render();
     }

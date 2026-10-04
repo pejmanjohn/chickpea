@@ -25,6 +25,15 @@ test('connection removal retries a schedule cleanup race once', () => {
   );
 });
 
+test('Admin sends no referrer off-origin but keeps the Origin its own form POSTs need', () => {
+  const html = renderAdminPage();
+  // `no-referrer` would also send `Origin: null` on Admin's own form POSTs,
+  // such as Sign out, whose routes check Origin.
+  const policies = [...html.matchAll(/<meta name="referrer" content="([^"]*)">/g)].map((match) => match[1]);
+  assert.deepEqual(policies, ['same-origin']);
+  assert.match(html, /<form id="admin-sign-out" method="post" action="\/admin\/logout"/);
+});
+
 test('admin navigation omits the unimplemented account destination', () => {
   const html = renderAdminPage();
   assert.doesNotMatch(html, /href="\/admin\/account"|>Account<\/a>/);
@@ -49,6 +58,15 @@ test('Destinations uses the shared Admin scale instead of prototype-sized chrome
   assert.match(html, /\.destination-rail-logo\s*\{[^}]*height:\s*34px;[^}]*width:\s*34px;/s);
   assert.match(html, /\.destination-rail-name\s*\{[^}]*font-size:\s*\.8125rem;/s);
 });
+
+interface OpenedWindow {
+  opener: unknown;
+  closed: boolean;
+  openedWithUrl: string;
+  assignedUrls: string[];
+  location: { assign(url: string): void };
+  close(): void;
+}
 
 interface FakeResponse {
   ok: boolean;
@@ -720,7 +738,7 @@ function runAdminPageHarness(
   apiOAuthClientPuts: Array<{ agentId: string; connectionId: string; body: Record<string, unknown> }>;
   assignedUrls: string[];
   openedUrls: string[];
-  openedWindows: Array<{ opener: unknown }>;
+  openedWindows: OpenedWindow[];
   mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
   apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }>;
@@ -1008,7 +1026,7 @@ function runAdminPageHarness(
   }> = [];
   const assignedUrls: string[] = [];
   const openedUrls: string[] = [];
-  const openedWindows: Array<{ opener: unknown }> = [];
+  const openedWindows: OpenedWindow[] = [];
   const mcpSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const mcpSecretDeletes: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
   const apiConnectionSecretPuts: Array<{ agentId: string; id: string; body: Record<string, unknown> }> = [];
@@ -1221,16 +1239,19 @@ function runAdminPageHarness(
         openedUrls.push(String(url));
       }
       if (/\bnoopener\b|\bnoreferrer\b/.test(String(features ?? ''))) return null;
-      const opened = {
+      const opened: OpenedWindow = {
         opener: window as unknown,
         closed: false,
+        openedWithUrl: String(url ?? ''),
+        assignedUrls: [],
         location: {
           assign(url: string) {
             openedUrls.push(String(url));
             assignedUrls.push(String(url));
+            opened.assignedUrls.push(String(url));
           },
         },
-        close() {},
+        close() { opened.closed = true; },
       };
       openedWindows.push(opened);
       return opened;
@@ -8014,6 +8035,14 @@ for (const popupsBlocked of [false, true]) {
     click({
       target: actionTarget({ 'data-action': 'connection-account-managed-reconnect', 'data-connection-id': account.id }),
     });
+    // Safari lets a page open a tab only inside the click, so the tab opens
+    // blank before the start request answers.
+    assert.equal(harness.managedAuthorizationPosts.length, 1);
+    if (!popupsBlocked) {
+      assert.equal(harness.openedWindows.length, 1);
+      assert.equal(harness.openedWindows[0]!.openedWithUrl, '');
+      assert.deepEqual(harness.openedWindows[0]!.assignedUrls, []);
+    }
     await flushAsync();
 
     assert.match(harness.app.innerHTML, /Finish sign-in in the new tab/);
@@ -8024,12 +8053,47 @@ for (const popupsBlocked of [false, true]) {
     } else {
       assert.deepEqual(harness.openedUrls, ['https://connect.composio.dev/link/lk_test']);
       assert.doesNotMatch(harness.app.innerHTML, blockedNotice);
-      // The provider's page never gets a handle back to Admin.
       assert.equal(harness.openedWindows.length, 1);
-      assert.equal(harness.openedWindows[0]!.opener, null);
+      const tab = harness.openedWindows[0]!;
+      assert.deepEqual(tab.assignedUrls, ['https://connect.composio.dev/link/lk_test']);
+      assert.equal(tab.closed, false);
+      // The provider's page never gets a handle back to Admin.
+      assert.equal(tab.opener, null);
     }
   });
 }
+
+test('a managed sign-in start that fails closes the blank tab it opened', async () => {
+  const { account, connectionAccounts } = managedReconnectFixture();
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    connectionAccounts,
+    managedStartError: {
+      status: 503, error: 'managed_provider_unavailable',
+      message: 'Gmail managed access is not configured for this deployment.',
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  await flushAsync();
+  click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+  await flushAsync();
+  click({
+    target: actionTarget({ 'data-action': 'connection-account-managed-reconnect', 'data-connection-id': account.id }),
+  });
+  assert.equal(harness.openedWindows.length, 1);
+  assert.equal(harness.openedWindows[0]!.closed, false);
+  await flushAsync();
+
+  assert.equal(harness.managedAuthorizationPosts.length, 1);
+  assert.equal(harness.openedWindows.length, 1);
+  assert.equal(harness.openedWindows[0]!.closed, true);
+  assert.deepEqual(harness.openedUrls, []);
+  assert.doesNotMatch(harness.app.innerHTML, /Finish sign-in in the new tab/);
+  assert.match(harness.app.innerHTML, /Gmail managed access is not configured for this deployment\./);
+});
 
 test('disconnecting an account drops its connected notice', async () => {
   const storageKey = 'chickpea.managed-authorization.v1:agent_conn';
