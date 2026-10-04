@@ -11,7 +11,15 @@ import { deploymentServesManyInstallations, installationScopeOf } from './instal
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
-const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com'] as const;
+/**
+ * GitHub's hosts, reserved for the GitHub App integration: no custom API
+ * connection may name one, so a pasted credential never reaches GitHub
+ * outside the App's repository scoping, token and hosted write budget.
+ * `uploads.github.com` (release assets) is reserved but not routed: neither
+ * the repository connectors nor container egress forward it, so no App token
+ * is ever attached to it and it never spends the write budget.
+ */
+const GITHUB_APP_MANAGED_HOSTS = ['api.github.com', 'github.com', 'uploads.github.com'] as const;
 
 const GITHUB_APP_MANAGED_HOST_SET = new Set<string>(GITHUB_APP_MANAGED_HOSTS);
 
