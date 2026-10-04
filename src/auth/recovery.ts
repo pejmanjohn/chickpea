@@ -85,7 +85,6 @@ interface SlackCredentialRecoveryDependencies {
   settings: SettingsStore;
   expectedRecoveryToken: string;
   fetch?: typeof fetch;
-  /** Slack Web API base, such as a local fake's `SLACK_API_URL`. Defaults to slack.com. */
   apiBaseUrl?: string;
   now?: () => number;
   randomBytes?: (length: number) => Uint8Array;
@@ -93,6 +92,7 @@ interface SlackCredentialRecoveryDependencies {
 }
 
 export class SlackCredentialRecoveryService {
+  // Always called through a local: Workers' global fetch rejects any other receiver.
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly randomBytes: (length: number) => Uint8Array;
@@ -302,7 +302,6 @@ export class SlackCredentialRecoveryService {
     const appSecrets = await this.decryptStagedAppCredentials(session);
     let response: Response;
     try {
-      // Called unbound: Workers' global fetch rejects any other receiver.
       const fetchImpl = this.fetchImpl;
       response = await fetchImpl(this.slackUrl('oauth.v2.access', SLACK_BOT_TOKEN_URL), {
         method: 'POST',
@@ -455,7 +454,6 @@ export class SlackCredentialRecoveryService {
   ): Promise<Record<string, unknown>> {
     let response: Response;
     try {
-      // Called unbound: Workers' global fetch rejects any other receiver.
       const fetchImpl = this.fetchImpl;
       response = await fetchImpl(url, {
         method: 'POST',
