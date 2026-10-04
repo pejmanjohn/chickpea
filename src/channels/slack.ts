@@ -551,7 +551,6 @@ function isSlackUrlVerification(rawBody: string): boolean {
  * Events requests here instead of to the route.
  */
 export async function answerSlackRecoveryEventsProof(c: Context): Promise<Response | undefined> {
-  if (c.req.method !== 'POST') return undefined;
   const ingress = await readSlackIngressBody(c.req.raw);
   if (!ingress.ok) return undefined;
   const challenge = await slackRecoveryChallenge(c.env as PlatformEnv | undefined, {

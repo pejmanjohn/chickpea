@@ -232,11 +232,12 @@ function onWorker(t: TestContext): void {
 }
 
 /**
- * A TAG_STATE namespace whose objects answer the identity and settings RPCs
- * as the state Durable Object does, over the stores it builds. Under
- * installation tenancy each installation's object is bound to its IDs.
+ * A TAG_STATE namespace whose objects answer the identity and settings RPCs,
+ * and the workspace installation read, as the state Durable Object does, over
+ * the stores it builds. Under installation tenancy each installation's object
+ * is bound to its IDs. `identityKinds` collects every identity RPC's kind.
  */
-function stateNamespace(platform: Record<string, unknown>) {
+function stateNamespace(platform: Record<string, unknown>, identityKinds: string[] = []) {
   const objects = new Map<string, TagStateStores>();
   const call = <T>(fn: () => T) => {
     try {
@@ -261,8 +262,12 @@ function stateNamespace(platform: Record<string, unknown>) {
     getByName(name: string) {
       const stores = this.stores(name);
       return {
-        identityExecute: (request: Parameters<TagStateStores['identity']['execute']>[0]) =>
-          call(() => stores.identity.execute(request)),
+        identityExecute: (request: Parameters<TagStateStores['identity']['execute']>[0]) => {
+          identityKinds.push(request.kind);
+          return call(() => stores.identity.execute(request));
+        },
+        configGetWorkspaceInstallation: (workspaceId: string) =>
+          call(() => stores.config.getWorkspaceInstallation(workspaceId) ?? null),
         settingGet: (key: string) => call(() => stores.settings.getSetting(key) ?? null),
         settingGetMany: (keys: readonly string[]) =>
           call(() => stores.settings.getSettings(keys).map((value) => value ?? null)),
@@ -550,7 +555,7 @@ test('a Worker that lost its key root recovers over HTTP and serves Slack with t
     connectionRevision: (await getIdentityStore(env).getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
   });
   // Slack's deliveries verify against the recovered bundle again.
-  assert.equal((await signedEvent(env, 'signing-secret', URL_VERIFICATION)).status, 200);
+  assert.equal((await signedEvent(env, 'signing-secret', APP_EVENT)).status, 200);
 });
 
 test('while recovery-only waits on Events proof, the Events URL answers only that proof', async (t) => {
@@ -609,6 +614,26 @@ test('recovery of a regenerated signing secret takes Slack\'s proof signed with 
     (await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, env)).signingSecret,
     'regenerated-signing-secret',
   );
-  assert.equal((await signedEvent(env, 'regenerated-signing-secret', URL_VERIFICATION)).status, 200);
-  assert.equal((await signedEvent(env, 'signing-secret', URL_VERIFICATION)).status, 401);
+  assert.equal((await signedEvent(env, 'regenerated-signing-secret', APP_EVENT)).status, 200);
+  assert.equal((await signedEvent(env, 'signing-secret', APP_EVENT)).status, 401);
+});
+
+test('Slack\'s ordinary deliveries do not look for a recovery', async (t) => {
+  onWorker(t);
+  const keyring = generateCredentialKeyring('key_v1');
+  const { bindings } = await deploymentBindings();
+  const identityKinds: string[] = [];
+  const env = {
+    TAG_STATE: stateNamespace({}, identityKinds), ...bindings,
+    CHICKPEA_CREDENTIAL_KEY_CURRENT_ID: keyring.currentKeyId,
+    [workerCredentialKeySlot(keyring.currentKeyId)]: keyring.keys[keyring.currentKeyId],
+  } as PlatformEnv;
+  await installSlackApp(env);
+  identityKinds.length = 0;
+  assert.equal((await signedEvent(env, 'signing-secret', APP_EVENT)).status, 200);
+  assert.ok(identityKinds.length > 0);
+  assert.ok(!identityKinds.includes('get_waiting_slack_recovery_session'), identityKinds.join());
+  // Slack's URL check is the one delivery a recovery may be waiting on.
+  assert.equal((await signedEvent(env, 'signing-secret', URL_VERIFICATION)).status, 200);
+  assert.ok(identityKinds.includes('get_waiting_slack_recovery_session'));
 });

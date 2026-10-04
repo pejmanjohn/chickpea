@@ -192,6 +192,10 @@ test('Slack\'s URL check signed with the staged secret is the Events proof a wai
 
     // The active bundle's secret is the one recovery replaces; it proves nothing.
     assert.equal(await proof('old-signing-secret'), undefined);
+    // Nor does a check Slack signed more than five minutes ago.
+    assert.equal(await recordSlackRecoveryEventsProof({
+      identity: fixture.identity, settings: fixture.settings, keyring: fixture.credentials.keyring, now: () => NOW,
+    }, fixture.signedChallenge('replacement-signing-secret', NOW - 6 * 60_000)), undefined);
     assert.equal(await fixture.settings.getSetting(SLACK_PENDING_ENVELOPE_SETTING), undefined);
     assert.deepEqual(await proof('replacement-signing-secret'), { challenge: 'recovery-proof' });
     assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
