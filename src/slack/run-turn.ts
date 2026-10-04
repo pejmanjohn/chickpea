@@ -1428,13 +1428,11 @@ async function runTurnAttempt(
           console.warn('[chickpea:management] deferred terminal intent will be recovered on delivery');
         });
       }
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'host_management_approval_succeeded',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'host_management_approval_succeeded',
+        modelInvoked: false,
+      });
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
@@ -1496,13 +1494,11 @@ async function runTurnAttempt(
             }
           : {}),
       });
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'host_management_approval_succeeded',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'host_management_approval_succeeded',
+        modelInvoked: false,
+      });
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
@@ -1540,13 +1536,11 @@ async function runTurnAttempt(
       const prepared = await workLifecycle?.prepareExecution(
         `Slack reaction response: ${interactionIntent.reaction}`,
       );
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'adapter_reaction_only',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'adapter_reaction_only',
+        modelInvoked: false,
+      });
       // Reading the persisted input is the ledger fence; its content is not
       // user-visible and the semantic reaction remains the approved output.
       void prepared;
@@ -1745,9 +1739,12 @@ async function runTurnAttempt(
         : {}),
     });
     const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
-    if (workLifecycle?.hasExecution) {
-      usageRecorder?.linkRunExecution(workLifecycle.executionId);
-    }
+    // Usage names the execution only once it exists. A creation queued behind
+    // a slow Work store links when it lands; usage recorded before then names
+    // none, never one that may not exist.
+    workLifecycle?.whenExecutionRecorded((executionId) => {
+      usageRecorder?.linkRunExecution(executionId);
+    });
     const executionPrompt = persistedPrompt ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
@@ -2269,6 +2266,12 @@ async function runTurnAttempt(
       }
       await removeWorkAcknowledgment();
     }
+    // Work writes queued behind a slow Work store are recorded now, within a
+    // bound. The reply and its cleanup are done, so the user waits for none of
+    // them. A yielded turn waits too: work left running after the alarm
+    // returns may never land, and the attempt that reattaches needs the
+    // execution this one opened.
+    await deliveryLifecycle?.settled();
   }
 }
 
