@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { hasDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
+import type { ResolvedAssignment } from '../src/config/types.ts';
+import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
+import { DEFERRED_SHADOW_WRITE_BUDGET_MS, ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { createWorkExecutionLifecycle } from '../src/work/executor.ts';
 import { SqliteWorkStore, WorkStoreLogic } from '../src/work/store.ts';
 import {
@@ -51,8 +55,13 @@ test('legacy shadow writes stop blocking after their bounded observer budget', {
   context.mock.method(console, 'warn', () => undefined);
   const never = new Promise<never>(() => undefined);
   const gaps: string[] = [];
+  let laterWrites = 0;
   const lifecycle = new ShadowWorkLifecycle({
-    store: { prepareRunInput: async () => never } as unknown as WorkStore,
+    store: {
+      prepareRunInput: async () => never,
+      createRunExecution: async () => { laterWrites += 1; },
+      recordRunExecutionRoute: async () => { laterWrites += 1; },
+    } as unknown as WorkStore,
     runId: 'run_shadow_budget' as RunId,
     attemptNumber: 1,
     agentName: 'profile_shadow_budget',
@@ -76,7 +85,126 @@ test('legacy shadow writes stop blocking after their bounded observer budget', {
   assert.equal(await preparation, undefined);
   assert.equal(Date.now(), NOW + 5);
   assert.equal(lifecycle.hasExecution, false);
+  // The write the turn stopped waiting for may still land: not a gap yet.
+  assert.deepEqual(gaps, []);
+  let drained = false;
+  const backlog = lifecycle.settled().then(() => { drained = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  context.mock.timers.tick(DEFERRED_SHADOW_WRITE_BUDGET_MS - 1);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(drained, false, 'the backlog waits its own budget for the slow write');
+  context.mock.timers.tick(1);
+  await backlog;
   assert.deepEqual(gaps, ['prepare_input']);
+  assert.equal(laterWrites, 0, 'nothing is recorded behind a write that never landed');
+});
+
+// Hosted run 9b: a thread runner reaches the state store over RPC, and one
+// write slower than the 100 ms observer budget left the DM's Run unsettled,
+// so onboarding's Try step never saw the delivered reply.
+for (const slow of [
+  'prepareRunInput',
+  'createRunExecution',
+  'recordRunExecutionRoute',
+  'settleRunExecution',
+  'recordRunResponse',
+  'startRunDelivery',
+  'finalizeRunDelivery',
+] as const) {
+  test(`a delivered DM still settles its Run when ${slow} outlives the observer budget`, async (context) => {
+    context.mock.method(console, 'warn', () => undefined);
+    const fixture = await slowDmFixture(slow);
+    try {
+      const gaps: string[] = [];
+      let tick = 0;
+      const lifecycle = await createWorkExecutionLifecycle(fixture.store, {
+        runId: fixture.runId,
+        attemptNumber: 1,
+        executorKind: 'agent',
+        agentName: 'agent_try',
+        canonicalModel: 'openai/gpt-5.6-terra',
+        routeEvidence: { providerAuthRoute: 'openai_api_key' },
+      }, { mode: 'observe', now: () => NOW + (++tick), onGap: (stage) => gaps.push(stage) });
+      // The whole turn runs while the slow write is still held: it never waits for it.
+      await lifecycle.prepareExecution('Hi Chickpea. What is a good first teammate?');
+      await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+      const attemptId = await lifecycle.beforeDelivery({
+        method: 'slack_chat_stream',
+        approvedOutput: 'Start with a planner.',
+        renderedPayload: '{"stop":"Start with a planner."}',
+      });
+      assert.ok(attemptId, 'delivery keeps its attempt behind the slow write');
+      await lifecycle.afterDelivery({
+        attemptId, outcome: 'delivered', deliveryRef: 'slack:D0TRY:1900000000.000002',
+      });
+      assert.equal(fixture.calls(slow), 1);
+      assert.notEqual((await fixture.store.getRun(fixture.runId))?.status, 'settled');
+
+      fixture.release();
+      await lifecycle.settled();
+
+      const run = await fixture.store.getRun(fixture.runId);
+      assert.equal(run?.status, 'settled');
+      assert.equal(run?.terminalDisposition, 'succeeded');
+      assert.equal(run?.deliveryStatus, 'delivered');
+      assert.equal(run?.deliveryRef, 'slack:D0TRY:1900000000.000002');
+      assert.equal((await fixture.store.getRunExecution(lifecycle.executionId))?.outcome, 'succeeded');
+      assert.equal(fixture.calls(slow), 1, 'the slow write is awaited, never repeated');
+      assert.deepEqual(gaps, []);
+      assert.deepEqual(
+        (await fixture.store.listAuditEvents(fixture.runId)).reverse().map((event) => event.eventType),
+        [
+          'work.run_admitted',
+          'work.input_prepared',
+          'work.execution_created',
+          'work.execution_route_recorded',
+          'work.execution_settled',
+          'work.response_recorded',
+          'work.delivery_started',
+          'work.delivery_delivered',
+        ],
+      );
+      assert.equal(await hasDeliveredOnboardingReply(fixture.store, fixture.onboarding), true);
+    } finally {
+      fixture.close();
+    }
+  });
+}
+
+test('a slow write that then fails is a gap, and nothing is recorded behind it', async (context) => {
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await slowDmFixture('prepareRunInput');
+  try {
+    const gaps: string[] = [];
+    const lifecycle = await createWorkExecutionLifecycle(fixture.store, {
+      runId: fixture.runId,
+      attemptNumber: 1,
+      executorKind: 'agent',
+      agentName: 'agent_try',
+      canonicalModel: 'openai/gpt-5.6-terra',
+      routeEvidence: {},
+    }, { mode: 'observe', onGap: (stage) => gaps.push(stage) });
+    assert.equal(await lifecycle.prepareExecution('prompt'), undefined);
+    await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const attemptId = await lifecycle.beforeDelivery({
+      method: 'slack_chat_post_message', approvedOutput: 'answer', renderedPayload: '{}',
+    });
+    await lifecycle.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:D0TRY:1.2' });
+
+    fixture.release(new Error('state store unavailable'));
+    await lifecycle.settled();
+
+    assert.deepEqual(gaps, ['prepare_input']);
+    assert.equal(fixture.calls('createRunExecution'), 0);
+    assert.equal(fixture.calls('finalizeRunDelivery'), 0);
+    assert.equal((await fixture.store.getRun(fixture.runId))?.status, 'admitted');
+    // Once a gap is recorded the lifecycle stays out of the way.
+    assert.equal(await lifecycle.beforeDelivery({
+      method: 'slack_chat_post_message', approvedOutput: 'answer', renderedPayload: '{}',
+    }), undefined);
+  } finally {
+    fixture.close();
+  }
 });
 
 test('durable observational Work waits past 100ms without turning a slow owner into a gap', async () => {
@@ -462,6 +590,78 @@ async function lifecycleFixture(
     lifecycle,
     close() {
       store.close();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+const TRY_ASSIGNMENT: ResolvedAssignment = {
+  workspaceId: 'T0TRY',
+  channelId: 'D0TRY',
+  agentId: 'agent_try',
+  model: 'openai/gpt-5.6-terra',
+  agent: {
+    id: 'agent_try',
+    kind: 'user',
+    revision: 1,
+    name: 'Try Guide',
+    instructions: 'Answer directly.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  },
+};
+
+/**
+ * An onboarding Try DM's Run in a store whose `slow` method is held until
+ * `release`, like a thread runner's state-store RPC that outlives the budget.
+ */
+async function slowDmFixture(slow: keyof WorkStore) {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-work-slow-'));
+  const base = new SqliteWorkStore(join(directory, 'state.sqlite'));
+  const turn: NormalizedSlackTurn = {
+    workspaceId: 'T0TRY',
+    channelId: 'D0TRY',
+    channelType: 'im',
+    eventId: 'Ev0TRY',
+    text: 'Hi Chickpea. What is a good first teammate?',
+    userId: 'U0OWNER',
+    messageTs: '1900000000.000001',
+    threadTs: '1900000000.000001',
+    source: 'dm_message',
+    contextMode: 'thread',
+  };
+  const admitted = await base.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: TRY_ASSIGNMENT, sourceVisibility: 'private', admittedAt: NOW,
+  }));
+  const counts = new Map<string, number>();
+  let release!: (error?: Error) => void;
+  const held = new Promise<void>((resolve, reject) => {
+    release = (error) => (error ? reject(error) : resolve());
+  });
+  held.catch(() => undefined);
+  const store = new Proxy(base, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      const bound = value.bind(target);
+      return async (...args: unknown[]) => {
+        counts.set(String(property), (counts.get(String(property)) ?? 0) + 1);
+        if (property === slow) await held;
+        return bound(...args);
+      };
+    },
+  }) as WorkStore;
+  return {
+    store,
+    runId: admitted.run.id,
+    onboarding: { workspaceId: turn.workspaceId, slackUserId: turn.userId, tryStartedAt: NOW },
+    calls: (method: string) => counts.get(method) ?? 0,
+    release,
+    close() {
+      base.close();
       rmSync(directory, { recursive: true, force: true });
     },
   };

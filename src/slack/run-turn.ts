@@ -1428,13 +1428,11 @@ async function runTurnAttempt(
           console.warn('[chickpea:management] deferred terminal intent will be recovered on delivery');
         });
       }
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'host_management_approval_succeeded',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'host_management_approval_succeeded',
+        modelInvoked: false,
+      });
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
@@ -1496,13 +1494,11 @@ async function runTurnAttempt(
             }
           : {}),
       });
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'host_management_approval_succeeded',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'host_management_approval_succeeded',
+        modelInvoked: false,
+      });
       if (approval.kind === 'message') {
         await statusTurn.prepareFinal();
         await presenter.deliverFinal(approval.text, 'markdown');
@@ -1540,13 +1536,11 @@ async function runTurnAttempt(
       const prepared = await workLifecycle?.prepareExecution(
         `Slack reaction response: ${interactionIntent.reaction}`,
       );
-      if (workLifecycle?.hasExecution) {
-        await workLifecycle.settleExecution({
-          outcome: 'succeeded',
-          rawStatus: 'adapter_reaction_only',
-          modelInvoked: false,
-        });
-      }
+      await workLifecycle?.settleExecution({
+        outcome: 'succeeded',
+        rawStatus: 'adapter_reaction_only',
+        modelInvoked: false,
+      });
       // Reading the persisted input is the ledger fence; its content is not
       // user-visible and the semantic reaction remains the approved output.
       void prepared;
@@ -2268,6 +2262,9 @@ async function runTurnAttempt(
         }
       }
       await removeWorkAcknowledgment();
+      // Work writes a slow store queued behind its budget: the reply and its
+      // cleanup are done, so recording them now slows nothing the user sees.
+      await deliveryLifecycle?.settled();
     }
   }
 }
