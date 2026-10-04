@@ -23,6 +23,9 @@
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
   var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox"];
+  // Hosted: where Settings › GitHub lives, and what it says until an account is connected.
+  var GITHUB_SETTINGS_PATH = "/admin/settings/github";
+  var GITHUB_INSTALL_COPY = "Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.";
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -163,6 +166,9 @@
     // Hosted only: the one-time notice after an Owner updated Chickpea's
     // Slack permissions, read from `?slack=updated` at boot.
     slackPermissionsUpdated: false,
+    // Hosted only: the one-time notice after someone connected a GitHub
+    // account, read from `?github=connected` at boot.
+    githubConnected: false,
     // Inline credentialed REST API editor. Its credential is transient and is
     // written to the API-connection secret endpoint only after the profile
     // policy saves successfully.
@@ -282,6 +288,9 @@
     githubOrg: "",
     githubDisconnectConfirm: false,
     githubDisconnectError: "",
+    // Hosted: the one connected account ({ id, accountLogin }) the open
+    // Disconnect dialog ends. Standalone disconnects the whole App.
+    githubDisconnectAccount: null,
     // Install-level coding sandbox. This is deliberately separate from profile
     // state: enabled repository grants imply availability, with no per-profile
     // sandbox switch.
@@ -1045,9 +1054,12 @@
         adminSurfaceClass = " admin-surface admin-surface-channel-detail";
       }
       app.className = "frame" + (isPrimaryAdminSurface() ? " primary-admin-shell" : "") + adminSurfaceClass;
-      // The notice shows on the page the update returned to; moving to
+      // A return notice shows on the page the host returned to; moving to
       // another page ends it.
-      if (resetPagePosition) state.slackPermissionsUpdated = false;
+      if (resetPagePosition) {
+        state.slackPermissionsUpdated = false;
+        state.githubConnected = false;
+      }
       app.innerHTML = topbarHtml() + '<div class="body">' + railHtml() + withSlackPermissionsBar(mainHtml()) + "</div>" + overlays;
     }
     restoreOpenDetails(app, openDetails);
@@ -1179,6 +1191,7 @@
       window.scrollTo(0, 0);
     }
     syncOnboardingActivity();
+    settleOnboardingGithubReturn();
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
@@ -1516,8 +1529,15 @@
   // It opens the main column rather than the page, so the desktop shell's
   // sticky sidebar keeps the full viewport height.
   function withSlackPermissionsBar(main) {
-    var bar = slackPermissionsBarHtml();
+    var bar = githubConnectedNoticeHtml() + slackPermissionsBarHtml();
     return bar ? main.replace(/^<main class="main"><div class="main-inner[^"]*">/, function (open) { return open + bar; }) : main;
+  }
+
+  // Hosted only: once, on the page a GitHub connect returned to.
+  function githubConnectedNoticeHtml() {
+    return !SELF_HOSTED && state.githubConnected
+      ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
+      : "";
   }
 
   function slackPermissionsBarHtml() {
@@ -1692,11 +1712,8 @@
 
   function onboardingRailHtml() {
     var stage = state.onboarding && state.onboarding.stage;
-    var current = stage === "connect_slack" ? 0
-      : stage === "choose_provider" ? 1
-        : stage === "choose_model" ? 2
-          : 3;
-    var labels = ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
+    var current = onboardingStepNumber() - 1;
+    var labels = onboardingStepLabels();
     return '<nav class="rail" aria-label="Setup progress"><div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Get started</span></div>' +
       labels.map(function (label, index) {
@@ -2439,7 +2456,7 @@
     var panel = selected
       ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
       : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of 4</p>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
       '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
@@ -2488,7 +2505,7 @@
       if (recommendation && model === recommendation.model) label += recommendation.caveat ? " \u00b7 free default" : " \u00b7 recommended";
       return '<option value="' + esc(model) + '"' + (model === state.onboardingModelSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
     }).join("");
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 3 of 4</p>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 3 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose your model</h1>' +
       '<p class="onboarding-lede">Pick the ' + esc(provider.name) + ' model Chickpea should use for replies. You can change this later.</p>' +
       '<div class="onboarding-model-provider"><span class="onboarding-model-provider-identity">' + onboardingProviderLogoHtml(provider) + '<span class="onboarding-model-provider-copy"><span>' + esc(provider.name) + '</span><span class="onboarding-model-provider-status">Connected</span></span></span><button type="button" class="btn btn-soft" data-action="onboarding-change-provider">Change provider</button></div>' +
@@ -2505,14 +2522,14 @@
     if (!workspace || !slackAppId) return '<div class="empty"><p class="field-error">The Chickpea conversation is unavailable. Reconnect Slack and try again.</p></div>';
     var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
     if (complete) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
+      return '<section class="onboarding-panel onboarding-panel-wide">' + onboardingGithubConnectedHtml() + '<span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
         '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
-      '<p class="onboarding-eyebrow">Step 4 of 4</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
+    return '<section class="onboarding-panel onboarding-panel-wide">' + onboardingGithubConnectedHtml() + '<div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
+      '<p class="onboarding-eyebrow">Step ' + onboardingStepLabels().length + ' of ' + onboardingStepLabels().length + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
       '<p class="onboarding-prompt-hint">Swap in your own team before you send it.</p>' +
@@ -2524,6 +2541,36 @@
       '<button type="button" class="btn btn-ghost" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Proceed to Dashboard') + '</button></div></section>';
   }
 
+  // Hosted onboarding offers Connect GitHub (optional) between the model and
+  // Try Chickpea while the host can start its connect flow; standalone never.
+  function onboardingGithubConnectPath() {
+    var path = !SELF_HOSTED && state.onboarding && state.onboarding.githubConnectPath;
+    return typeof path === "string" && /^\/(?![\/\\])/.test(path) ? path : "";
+  }
+
+  function onboardingStepLabels() {
+    return onboardingGithubConnectPath()
+      ? ["Connect Slack", "Choose provider", "Choose model", "Connect GitHub", "Try Chickpea"]
+      : ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
+  }
+
+  // Connecting returns here with `?github=connected`, landing on Try.
+  function onboardingGithubHtml() {
+    var busy = state.onboardingBusy;
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Optional</p>' +
+      '<h1 class="onboarding-title">Let Agents work on your code</h1>' +
+      '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' +
+      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
+      '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy) +
+      '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div></section>';
+  }
+
+  function onboardingGithubConnectedHtml() {
+    return !SELF_HOSTED && state.githubConnected
+      ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
+      : "";
+  }
+
   function onboardingMainHtml() {
     if (state.onboardingError && !state.onboarding) {
       return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
@@ -2532,6 +2579,7 @@
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
+    if (state.onboarding.stage === "connect_github" && onboardingGithubConnectPath()) return onboardingGithubHtml();
     if (state.onboarding.stage === "try") return onboardingTryHtml(false);
     return onboardingTryHtml(true);
   }
@@ -2540,14 +2588,15 @@
     var stage = state.onboarding && state.onboarding.stage;
     if (stage === "choose_provider") return 2;
     if (stage === "choose_model") return 3;
-    if (stage === "try" || stage === "complete") return 4;
+    if (stage === "connect_github" && onboardingGithubConnectPath()) return 4;
+    if (stage === "connect_github" || stage === "try" || stage === "complete") return onboardingStepLabels().length;
     return 1;
   }
 
   function onboardingOrientationHtml() {
     var current = onboardingStepNumber();
     var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
-    var labels = ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
+    var labels = onboardingStepLabels();
     return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
       var step = index + 1;
       var isComplete = journeyComplete || step < current;
@@ -2936,8 +2985,9 @@
 
   function githubDisconnectModalHtml() {
     if (!state.githubDisconnectConfirm) return "";
-    var status = state.githubStatus || { mode: "none", referencingProfiles: [] };
-    var profiles = status.referencingProfiles || [];
+    if (!SELF_HOSTED) return githubAccountDisconnectModalHtml();
+    var status = state.githubStatus || { mode: "none", referencingAgents: [] };
+    var profiles = status.referencingAgents || [];
     var names = joinNames(profiles.map(function (profile) {
       return '<span class="mono" style="color:var(--text);">' + esc(profile.name) + '</span>';
     }));
@@ -2951,6 +3001,22 @@
     return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="Disconnect GitHub" tabindex="-1" data-role="github-disconnect-dialog">' +
       '<h2 class="modal-title">Disconnect GitHub?</h2>' +
       '<p class="modal-body">Chickpea will remove the stored GitHub App credentials. ' + (SELF_HOSTED ? 'Environment-configured App credentials, if present, remain active. ' : '') + profileWarning + appNote + '</p>' +
+      (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
+      '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
+  }
+
+  // Hosted: one connected account. The host removes its app from that
+  // account on GitHub; Agents keep their selections for when it returns.
+  function githubAccountDisconnectModalHtml() {
+    var account = state.githubDisconnectAccount;
+    if (!account) return "";
+    var title = "Disconnect " + account.accountLogin + "?";
+    var button = state.githubBusy === "disconnect"
+      ? '<button type="button" class="btn btn-danger" disabled><span class="spinner"></span>Disconnecting&hellip;</button>'
+      : '<button type="button" class="btn btn-danger" data-action="github-disconnect-confirm">Disconnect</button>';
+    return '<div class="modal-backdrop"><div class="modal-card" role="dialog" aria-modal="true" aria-label="' + esc(title) + '" tabindex="-1" data-role="github-disconnect-dialog">' +
+      '<h2 class="modal-title">' + esc(title) + '</h2>' +
+      '<p class="modal-body">' + esc("Chickpea will remove its app from " + account.accountLogin + " on GitHub. Agents keep their repository selections, but can't use them until " + account.accountLogin + " is connected again.") + '</p>' +
       (state.githubDisconnectError ? '<p class="error" style="margin-top:10px;" role="alert" aria-live="assertive" tabindex="-1" data-role="github-disconnect-error">' + esc(state.githubDisconnectError) + '</p>' : "") +
       '<div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="github-disconnect-cancel"' + (state.githubBusy === "disconnect" ? " disabled" : "") + '>Keep connected</button><span class="spacer"></span>' + button + '</div></div></div>';
   }
@@ -4614,7 +4680,7 @@
 
   function skillImportBrowseAccountsHtml() {
     return repoAccountChoicesHtml({
-      installations: (state.githubStatus && state.githubStatus.installations) || [],
+      installations: SELF_HOSTED ? (state.githubStatus && state.githubStatus.installations) || [] : githubUsableInstallations(state.githubStatus),
       action: "import-browse-account",
       cancelAction: "import-browse-cancel",
       cancelLabel: "Cancel browsing",
@@ -6542,6 +6608,9 @@
   }
 
   function repositoryGrantMatchesPicker(grant, picker) {
+    // Hosted maps grants to accounts by name, so a reconnected account's
+    // grants are its own whatever installation they stored.
+    if (!SELF_HOSTED) return String(grant.accountLogin).toLowerCase() === String(picker.accountLogin).toLowerCase();
     if (grant.installationId === picker.installationId) return true;
     // Older grants may carry no installation id. Once the same account is
     // managed through an App installation, adopt those explicit rows so an
@@ -6552,13 +6621,15 @@
   }
 
   function repositoryAccountChoicesHtml(status) {
-    if (!state.repositoryAddOpen || !status || status.mode !== "app") return "";
+    if (!state.repositoryAddOpen || !status || (SELF_HOSTED && status.mode !== "app")) return "";
     return repoAccountChoicesHtml({
-      installations: status.installations || [],
+      installations: SELF_HOSTED ? status.installations || [] : githubUsableInstallations(status),
       action: "repo-manage",
       cancelAction: "repo-add-cancel",
       cancelLabel: "Cancel",
-      emptyCopy: "No GitHub App installations are available yet. Install the app on an account or organization, then refresh."
+      emptyCopy: SELF_HOSTED
+        ? "No GitHub App installations are available yet. Install the app on an account or organization, then refresh."
+        : esc(GITHUB_INSTALL_COPY)
     });
   }
 
@@ -6606,6 +6677,15 @@
       (exceedsLimit ? '<p class="field-error">An Agent can select at most 200 repository grants.</p>' : "") + '</div>';
   }
 
+  // Hosted: the connected account a group of grants belongs to. The host
+  // maps grants to accounts by name, whatever installation they stored.
+  function repositoryGroupAccount(group, installations) {
+    var login = String(group.accountLogin).toLowerCase();
+    return installations.find(function (installation) {
+      return String(installation.accountLogin).toLowerCase() === login;
+    }) || null;
+  }
+
   function repositoryGroupHtml(group) {
     var allRepositories = group.grants.some(function (grant) { return grant.allRepos === true; });
     var explicit = group.grants.filter(function (grant) { return grant.allRepos !== true; });
@@ -6624,9 +6704,19 @@
     // instead of a dead Manage button.
     var mode = state.githubStatus ? state.githubStatus.mode : "none";
     var manage = "";
-    if (mode === "app") {
+    var target = null;
+    if (!SELF_HOSTED) {
+      // Hosted: an account connects as a whole, so its grants are managed only
+      // while it is connected and active.
+      target = repositoryGroupAccount(group, githubUsableInstallations(state.githubStatus));
+      var suspended = !target && repositoryGroupAccount(group, (state.githubStatus && state.githubStatus.installations) || []);
+      manage = target
+        ? '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(target.id) + '" data-account="' + esc(target.accountLogin) + '">Manage</button>'
+        : suspended
+          ? '<span class="hint">Suspended on GitHub</span>'
+          : '<span class="hint">' + esc("Connect " + group.accountLogin + " to manage these.") + '</span>';
+    } else if (mode === "app") {
       var installations = (state.githubStatus && state.githubStatus.installations) || [];
-      var target = null;
       installations.forEach(function (installation) {
         if (group.installationId !== null && installation.id === group.installationId) target = installation;
       });
@@ -6639,7 +6729,7 @@
         ? '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(target.id) + '" data-account="' + esc(target.accountLogin) + '">Manage</button>'
         : '<span class="hint">Install the GitHub App on ' + esc(group.accountLogin) + ' to manage these.</span>';
     }
-    var allToggle = group.installationId === null ? "" :
+    var allToggle = group.installationId === null || (!SELF_HOSTED && !target) ? "" :
       '<label class="repo-all-label"><span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="repo-all" data-installation="' + esc(group.installationId) + '" data-account="' + esc(group.accountLogin) + '" ' + (allRepositories ? "checked" : "") + ' aria-label="All repositories for ' + esc(group.accountLogin) + '"></span><span class="field-label">All repositories</span></label>';
     return '<details class="repo-group" open><summary><span class="repo-avatar">' + esc(String(group.accountLogin || "?").slice(0, 1)) + '</span>' +
       '<span class="repo-group-name">' + esc(group.accountLogin) + '</span><span class="repo-group-count">' + esc(selectionLabel) + '</span></summary>' +
@@ -6649,6 +6739,11 @@
 
   function repositoryFooterHtml(status) {
     if (!status || status.mode !== "app") return "";
+    // Hosted: accounts are added from Settings › GitHub, which returns here.
+    if (!SELF_HOSTED) {
+      return '<div class="repo-footer"><button type="button" class="btn btn-ghost btn-sm" data-action="open-settings" data-section="github-settings">+ Add a GitHub account or org</button>' +
+        '<button type="button" class="btn btn-soft btn-sm i-lead" data-action="github-refresh">' + icon("arrow-path") + 'Refresh</button></div>';
+    }
     var addAccount = status.appSlug
       ? '<a class="btn btn-ghost btn-sm" href="https://github.com/apps/' + esc(encodeURIComponent(status.appSlug)) + '/installations/new" target="_blank" rel="noopener noreferrer">+ Add a GitHub account or org</a>'
       : '<button type="button" class="btn btn-ghost btn-sm" data-action="open-settings" data-section="github-settings">+ Add a GitHub account or org</button>';
@@ -6657,7 +6752,9 @@
   }
 
   function repositoriesPanelHtml(draft) {
-    var capabilityHint = '<p class="hint ptab-hint">Coding runs in a sandbox when this Agent has enabled repository grants and the install-wide tier is on.</p>';
+    var capabilityHint = SELF_HOSTED
+      ? '<p class="hint ptab-hint">Coding runs in a sandbox when this Agent has enabled repository grants and the install-wide tier is on.</p>'
+      : '<p class="hint ptab-hint">Coding runs in a sandbox when this Agent has repositories selected.</p>';
     if (!state.githubStatusLoaded) {
       return capabilityHint + '<div class="empty"><p class="hint">Loading GitHub connection&hellip;</p></div>';
     }
@@ -6667,6 +6764,14 @@
         '<button type="button" class="btn btn-soft btn-sm" data-action="github-refresh">Retry</button></div>';
     }
     if (status.mode !== "app") {
+      if (!SELF_HOSTED) {
+        // Hosted: nothing can mint, but grants of an account that was
+        // connected stay listed, each saying how to manage it again.
+        var keptGroups = repositoryGroups(draft);
+        return capabilityHint + '<div class="empty"><p class="field-label">' + esc(GITHUB_INSTALL_COPY) + '</p>' +
+          '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>' +
+          (keptGroups.length ? '<div class="repo-groups">' + keptGroups.map(repositoryGroupHtml).join("") + '</div>' : "");
+      }
       return capabilityHint + '<div class="empty"><p class="field-label">Connect GitHub to give this Agent access to repositories.</p>' +
         '<button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button></div>';
     }
@@ -8783,6 +8888,65 @@
       githubDisconnectPanelHtml();
   }
 
+  // Hosted: GitHub is the host's Chickpea app, so there is no app to create
+  // and no slug, ID or credential to show. Owners and Admins connect accounts
+  // through the host's flow: a plain form, so the browser follows the host's
+  // redirects to GitHub and back here.
+  function githubConnectPath(status) {
+    var path = status && status.connectPath;
+    return typeof path === "string" && /^\/(?![\/\\])/.test(path) ? path : "";
+  }
+
+  function githubConnectFormHtml(path, next, label, buttonClass, disabled) {
+    return '<form class="github-connect-form" method="post" action="' + esc(path) + '"><input type="hidden" name="next" value="' + esc(next) + '">' +
+      '<button type="submit" class="btn ' + buttonClass + '"' + (disabled ? " disabled" : "") + '>' + esc(label) + '</button></form>';
+  }
+
+  function githubInstallationSuspended(installation) {
+    return !!installation && installation.status === "suspended";
+  }
+
+  // The accounts repositories can be picked from: a suspended account mints nothing.
+  function githubUsableInstallations(status) {
+    return ((status && status.installations) || []).filter(function (installation) {
+      return !githubInstallationSuspended(installation);
+    });
+  }
+
+  // GitHub's settings page for the account's installation of the app.
+  function githubManageUrl(installation) {
+    var id = encodeURIComponent(String(installation.id));
+    return installation.accountType === "Organization"
+      ? "https://github.com/organizations/" + encodeURIComponent(installation.accountLogin) + "/settings/installations/" + id
+      : "https://github.com/settings/installations/" + id;
+  }
+
+  function githubHostedHtml(status) {
+    var installations = status.installations || [];
+    var connectPath = githubConnectPath(status);
+    if (!installations.length) {
+      return '<div class="empty"><p class="hint">' + esc(GITHUB_INSTALL_COPY) + '</p>' +
+        (connectPath ? githubConnectFormHtml(connectPath, GITHUB_SETTINGS_PATH, "Connect GitHub", "btn-primary btn-sm") : "") + '</div>';
+    }
+    var rows = installations.map(function (installation) {
+      var suspended = githubInstallationSuspended(installation);
+      var repoCount = installation.repoCount == null ? null : Number(installation.repoCount);
+      var repoLabel = suspended ? "" : repoCount == null ? "Repository count unavailable" : repoCount + " repositor" + (repoCount === 1 ? "y" : "ies");
+      return '<div class="prov-row"><div class="prov-head"><div class="github-installation-copy">' +
+        '<span class="github-installation-name">' + esc(installation.accountLogin) + '</span>' +
+        '<span class="github-installation-meta"><span class="badge badge-off">' + esc(installation.accountType) + '</span>' + (repoLabel ? '<span class="hint">' + esc(repoLabel) + '</span>' : "") + '</span></div>' +
+        (suspended
+          ? '<span class="badge badge-off"><span class="dot"></span>Suspended on GitHub</span>'
+          : '<span class="badge badge-on"><span class="dot"></span>Connected</span>') +
+        '<div class="prov-actions"><a class="btn btn-soft btn-sm" href="' + esc(githubManageUrl(installation)) + '" target="_blank" rel="noopener noreferrer">Manage on GitHub ↗</a>' +
+        '<button type="button" class="btn btn-ghost btn-sm danger-text" data-action="github-disconnect-open" data-installation="' + esc(installation.id) + '" data-account="' + esc(installation.accountLogin) + '"' + (state.githubBusy ? " disabled" : "") + '>Disconnect</button></div></div></div>';
+    }).join("");
+    return '<div class="github-installations">' + rows + '</div>' +
+      '<div class="action-well">' + (connectPath ? githubConnectFormHtml(connectPath, GITHUB_SETTINGS_PATH, "+ Add a GitHub account or org", "btn-soft btn-sm") : "") +
+      '<button type="button" class="btn btn-ghost btn-sm i-lead" data-action="github-refresh"' + (state.githubBusy ? " disabled" : "") + '>' + (state.githubBusy === "refresh" ? '<span class="spinner"></span>Refreshing&hellip;' : icon("arrow-path") + 'Refresh') + '</button>' +
+      (state.githubError ? '<span class="inline-status error" role="alert">' + esc(state.githubError) + '</span>' : "") + '</div>';
+  }
+
   function githubSectionHtml() {
     var status = state.githubStatus;
     var badge = status && status.mode === "app"
@@ -8798,7 +8962,8 @@
         '<div><button type="button" class="btn btn-soft btn-sm i-lead" data-action="github-refresh">' + icon("arrow-path") + 'Retry</button></div></section>';
     }
     var body;
-    if (status.mode === "app") body = githubAppHtml(status);
+    if (!SELF_HOSTED) body = githubHostedHtml(status);
+    else if (status.mode === "app") body = githubAppHtml(status);
     else body = githubNoneHtml();
     return '<section class="section" id="github-settings">' + head + body + '</section>';
   }
@@ -10653,7 +10818,8 @@
       if (requestId !== state.githubStatusRequestId || !settingsLoadIsCurrent(generation)) return;
       state.githubStatusLoaded = true;
       state.githubBusy = "";
-      state.githubError = (error && (error.serverMessage || error.message)) || "Could not load GitHub settings.";
+      // Hosted Admin shows no server codes.
+      state.githubError = (SELF_HOSTED && error && (error.serverMessage || error.message)) || "Could not load GitHub settings.";
     });
   }
 
@@ -10723,7 +10889,7 @@
   function openRepositoryAdd() {
     var status = state.githubStatus;
     if (!status || status.mode !== "app") return;
-    var installations = status.installations || [];
+    var installations = SELF_HOSTED ? status.installations || [] : githubUsableInstallations(status);
     if (installations.length === 1) {
       openRepositoryPicker(Number(installations[0].id), installations[0].accountLogin);
       return;
@@ -10887,15 +11053,21 @@
   }
 
   function disconnectGithub() {
-    if (state.githubBusy) return;
+    // Hosted ends one connected account; standalone removes the whole App.
+    var account = SELF_HOSTED ? null : state.githubDisconnectAccount;
+    if (state.githubBusy || (!SELF_HOSTED && !account)) return;
     state.githubStatusRequestId += 1;
     state.githubBusy = "disconnect";
     state.githubDisconnectError = "";
     render();
-    api("/admin/api/github", { method: "DELETE" }).then(function () {
+    var path = account
+      ? "/admin/api/github/installations/" + encodeURIComponent(String(account.id))
+      : "/admin/api/github";
+    api(path, { method: "DELETE" }).then(function () {
       state.githubBusy = "";
       state.githubDisconnectConfirm = false;
       state.githubDisconnectError = "";
+      state.githubDisconnectAccount = null;
       state.githubManifestOpen = false;
       state.githubStatus = null;
       state.githubStatusLoaded = false;
@@ -10903,9 +11075,24 @@
       return loadGithubStatus().then(render);
     }).catch(function (error) {
       state.githubBusy = "";
-      state.githubDisconnectError = (error && (error.serverMessage || error.message)) || "Could not disconnect GitHub.";
+      state.githubDisconnectError = SELF_HOSTED
+        ? (error && (error.serverMessage || error.message)) || "Could not disconnect GitHub."
+        : "Could not disconnect GitHub.";
       render();
     });
+  }
+
+  function closeGithubDisconnect() {
+    var account = state.githubDisconnectAccount;
+    state.githubDisconnectConfirm = false;
+    state.githubDisconnectError = "";
+    state.githubDisconnectAccount = null;
+    render();
+    var opener = account
+      ? document.querySelector('[data-action="github-disconnect-open"][data-installation="' + String(account.id) + '"]')
+      : null;
+    if (opener && opener.focus) opener.focus();
+    else focusAction("github-disconnect-open");
   }
 
   function loadSettings(generation) {
@@ -12595,6 +12782,38 @@
     });
   }
 
+  // Skip for now, or the return from connecting: the journey moves on to Try.
+  function settleOnboardingGithub() {
+    if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "connect_github") return;
+    state.onboardingBusy = true;
+    state.onboardingError = "";
+    render();
+    postJson("/admin/api/onboarding/github", "POST", {
+      expectedRevision: state.onboarding.revision
+    }).then(function (body) {
+      state.onboarding = body;
+      state.onboardingBusy = false;
+      state.onboardingNotice = "";
+      render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = onboardingMutationErrorText(error, "Could not load setup.");
+      render();
+    });
+  }
+
+  // A connect started from onboarding returns to it once; move on to Try.
+  var onboardingGithubReturnSettled = false;
+  function settleOnboardingGithubReturn() {
+    if (
+      onboardingGithubReturnSettled || !state.githubConnected || state.view !== "onboarding" ||
+      !state.onboarding || state.onboarding.stage !== "connect_github" || state.onboardingBusy
+    ) return;
+    onboardingGithubReturnSettled = true;
+    // After this render, not inside it.
+    Promise.resolve().then(settleOnboardingGithub);
+  }
+
   function copyOnboardingPrompt() {
     var copyFailed = function () {
       state.onboardingNotice = "Copy failed. Select the prompt and copy it manually.";
@@ -12957,10 +13176,7 @@
     if (state.githubDisconnectConfirm) {
       if (action === "github-disconnect-cancel") {
         if (state.githubBusy === "disconnect") return;
-        state.githubDisconnectConfirm = false;
-        state.githubDisconnectError = "";
-        render();
-        focusAction("github-disconnect-open");
+        closeGithubDisconnect();
       } else if (action === "github-disconnect-confirm") {
         disconnectGithub();
       }
@@ -13146,6 +13362,7 @@
       render();
     }
     if (action === "onboarding-model-continue") { selectOnboardingModel(); }
+    if (action === "onboarding-github-skip") { settleOnboardingGithub(); }
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
@@ -13491,7 +13708,16 @@
       render();
     }
     if (action === "github-refresh") { refreshGithubStatus(); }
-    if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode === "app") {
+    if (action === "github-disconnect-open" && !SELF_HOSTED) {
+      var disconnectInstallation = Number(target.getAttribute("data-installation"));
+      var disconnectAccount = target.getAttribute("data-account") || "";
+      if (Number.isInteger(disconnectInstallation) && disconnectInstallation > 0 && disconnectAccount) {
+        state.githubDisconnectAccount = { id: disconnectInstallation, accountLogin: disconnectAccount };
+        state.githubDisconnectConfirm = true;
+        state.githubDisconnectError = "";
+        render();
+      }
+    } else if (action === "github-disconnect-open" && state.githubStatus && state.githubStatus.mode === "app") {
       state.githubDisconnectConfirm = true;
       state.githubDisconnectError = "";
       render();
@@ -14645,10 +14871,7 @@
         focusGithubDisconnectDialog();
         return;
       }
-      state.githubDisconnectConfirm = false;
-      state.githubDisconnectError = "";
-      render();
-      focusAction("github-disconnect-open");
+      closeGithubDisconnect();
       return;
     }
     if (state.slackDisconnectConfirm && event.key === "Tab") {
@@ -14800,6 +15023,7 @@
       if (state.githubDisconnectConfirm) {
         state.githubDisconnectConfirm = false;
         state.githubDisconnectError = "";
+        state.githubDisconnectAccount = null;
       }
       if (state.ownerMemory.dirty && targetPath !== canonicalPath()) {
         history.pushState(null, "", canonicalPath());
@@ -16586,7 +16810,14 @@
         if (onFailed) onFailed();
         return;
       }
-      state.profileError = (error && (error.serverMessage || error.message)) || "Could not save this Agent.";
+      if (error && error.payload && error.payload.error === "github_account_not_connected") {
+        // Hosted: a GitHub account this save names was disconnected since the
+        // page loaded. Reload accounts so its group says how to connect it.
+        state.profileError = "Could not save this Agent.";
+        loadGithubStatus().then(render);
+      } else {
+        state.profileError = (error && (error.serverMessage || error.message)) || "Could not save this Agent.";
+      }
       render();
       if (onFailed) onFailed();
     });
@@ -16989,6 +17220,14 @@
       if (WORKSPACE_ADMIN_UI) state.slackPermissionsUpdated = true;
       slackReturnParams.delete("slack");
       history.replaceState(null, "", location.pathname + (slackReturnParams.toString() ? "?" + slackReturnParams.toString() : ""));
+    }
+    // The host returns here after someone connected a GitHub account, to the
+    // page the connect started from. The same once-only notice.
+    var githubReturnParams = new URLSearchParams(location.search || "");
+    if (githubReturnParams.get("github") === "connected") {
+      if (WORKSPACE_ADMIN_UI) state.githubConnected = true;
+      githubReturnParams.delete("github");
+      history.replaceState(null, "", location.pathname + (githubReturnParams.toString() ? "?" + githubReturnParams.toString() : ""));
     }
   }
   var initialRoute = canNavigate ? location.pathname : "/admin";

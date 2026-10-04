@@ -143,7 +143,9 @@ type SlackChannelsFixture = {
   truncated?: boolean;
 };
 type OnboardingFixture = {
-  stage: 'connect_slack' | 'choose_provider' | 'choose_model' | 'try' | 'complete';
+  stage: 'connect_slack' | 'choose_provider' | 'choose_model' | 'connect_github' | 'try' | 'complete';
+  /** Hosted only: the host's connect path, which adds the optional GitHub step. */
+  githubConnectPath?: string;
   revision: string;
   workspace: { id: string; name: string | null } | null;
   channel: { id: string; name: string } | null;
@@ -164,8 +166,12 @@ type GithubStatusFixture = {
     accountLogin: string;
     accountType: 'User' | 'Organization';
     repoCount: number | null;
+    /** Hosted only. */
+    status?: 'active' | 'suspended';
   }>;
-  referencingProfiles?: Array<{ id: string; name: string }>;
+  referencingAgents?: Array<{ id: string; name: string }>;
+  /** Hosted only: where Connect GitHub posts, or null when the host offers none. */
+  connectPath?: string | null;
 };
 type GithubRepoPageFixture = {
   repos: Array<{ fullName: string; private: boolean; defaultBranch: string }>;
@@ -570,6 +576,8 @@ function runAdminPageHarness(
     skillResolveError?: { status: number; error: string; message?: string };
     skillResolveFetch?: (source: string) => Promise<FakeResponse>;
     githubStatus?: GithubStatusFixture;
+    /** Hosted per-account disconnect answers with this error instead of ending the account. */
+    githubAccountDisconnectError?: { status: number; error: string };
     settingsLoadFetch?: (path: string, method: string) => Promise<FakeResponse> | undefined;
     websiteLoginsFetch?: (path: string, method: string, body: string | undefined) => Promise<FakeResponse> | undefined;
     githubRepoPages?: Record<string, GithubRepoPageFixture>;
@@ -663,6 +671,8 @@ function runAdminPageHarness(
   onboardingProviderPosts: Array<Record<string, unknown>>;
   onboardingTryPosts: Array<Record<string, unknown>>;
   onboardingCompletePosts: Array<Record<string, unknown>>;
+  onboardingGithubPosts: Array<Record<string, unknown>>;
+  githubAccountDisconnects: number[];
   slackBehaviorPuts: Array<Record<string, boolean>>;
   slackBehaviorGets(): number;
   slackTestCalls(): number;
@@ -953,6 +963,8 @@ function runAdminPageHarness(
   const onboardingProviderPosts: Array<Record<string, unknown>> = [];
   const onboardingTryPosts: Array<Record<string, unknown>> = [];
   const onboardingCompletePosts: Array<Record<string, unknown>> = [];
+  const onboardingGithubPosts: Array<Record<string, unknown>> = [];
+  const githubAccountDisconnects: number[] = [];
   const slackBehaviorPuts: Array<Record<string, boolean>> = [];
   let slackBehaviorGets = 0;
   let slackTestCalls = 0;
@@ -2175,6 +2187,17 @@ function runAdminPageHarness(
     if (path === '/admin/api/github/status' && method === 'GET' && githubStatus) {
       return Promise.resolve(jsonResponse(githubStatus));
     }
+    const githubAccountDisconnect = path.match(/^\/admin\/api\/github\/installations\/(\d+)$/);
+    if (githubAccountDisconnect && method === 'DELETE') {
+      githubAccountDisconnects.push(Number(githubAccountDisconnect[1]));
+      if (harnessOptions.githubAccountDisconnectError) {
+        return Promise.resolve(jsonResponse(
+          { error: harnessOptions.githubAccountDisconnectError.error },
+          harnessOptions.githubAccountDisconnectError.status,
+        ));
+      }
+      return Promise.resolve(jsonResponse({ ok: true, referencingAgents: [] }));
+    }
     if (path.startsWith('/admin/api/github/installations/') && path.includes('/repos?') && method === 'GET') {
       githubRepoCalls.push(path);
       if (githubRepoFetch) return githubRepoFetch(path);
@@ -2531,7 +2554,7 @@ function runAdminPageHarness(
       }
       onboarding = {
         ...(onboarding ?? {}),
-        stage: 'try',
+        stage: onboarding?.githubConnectPath ? 'connect_github' : 'try',
         revision: JSON.stringify({ ...body, tryStartedAt: 1_800_000_000_000 }),
         workspace: onboarding?.workspace ?? { id: 'T_DESIGN', name: 'Acme Inc' },
         channel: null,
@@ -2541,6 +2564,19 @@ function runAdminPageHarness(
         agentId: 'agent_chickpea',
         tryStartedAt: 1_800_000_000_000,
         completedAt: null,
+      };
+      return Promise.resolve(jsonResponse(onboarding));
+    }
+    if (path === '/admin/api/onboarding/github' && method === 'POST') {
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      onboardingGithubPosts.push(body);
+      if (!onboarding || onboarding.stage !== 'connect_github' || body.expectedRevision !== onboarding.revision) {
+        return Promise.resolve(jsonResponse({ error: 'onboarding_changed' }, 409));
+      }
+      onboarding = {
+        ...onboarding,
+        stage: 'try',
+        revision: JSON.stringify({ githubStepAt: 1_800_000_001_000 }),
       };
       return Promise.resolve(jsonResponse(onboarding));
     }
@@ -3066,6 +3102,8 @@ function runAdminPageHarness(
     onboardingProviderPosts,
     onboardingTryPosts,
     onboardingCompletePosts,
+    onboardingGithubPosts,
+    githubAccountDisconnects,
     slackBehaviorPuts,
     slackBehaviorGets: () => slackBehaviorGets,
     slackTestCalls: () => slackTestCalls,
@@ -5267,7 +5305,7 @@ test('a connection mutation refreshes Connections without loading hidden Agent r
 const connectedGithubStatus: GithubStatusFixture = {
   mode: 'app',
   installations: [{ id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 }],
-  referencingProfiles: [],
+  referencingAgents: [],
 };
 
 function githubStatusGets(harness: { settingsGetCalls: string[] }): number {
@@ -5350,7 +5388,7 @@ test('a repository draft mutation revalidates only Repositories on focus', async
     githubStatus: {
       mode: 'app',
       installations: [{ id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 }],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
   });
   await flushAsync();
@@ -6905,7 +6943,7 @@ test('the import panel keeps public paste open while connected GitHub adds priva
       installations: [
         { id: 9, accountLogin: 'acme', accountType: 'Organization', repoCount: 80 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoPages: {
       '9': {
@@ -7007,7 +7045,7 @@ test('a repository picked from GitHub remains editable before Find skills', asyn
       installations: [
         { id: 17, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoPages: {
       '17': {
@@ -7043,7 +7081,7 @@ test('GitHub import browsing chooses an installation locally and cancel preserve
         { id: 21, accountLogin: 'alice', accountType: 'User', repoCount: 2 },
         { id: 22, accountLogin: 'org<script>', accountType: 'Organization', repoCount: null },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoPages: {
       '22': {
@@ -7085,7 +7123,7 @@ test('GitHub import browsing chooses an installation locally and cancel preserve
 
 test('without a GitHub connection private discovery points to Settings but paste still works', async () => {
   const harness = runAdminPageHarness({
-    githubStatus: { mode: 'none', referencingProfiles: [] },
+    githubStatus: { mode: 'none', referencingAgents: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -7110,7 +7148,7 @@ test('GitHub import search ignores stale responses and keeps failures local to b
       installations: [
         { id: 31, accountLogin: 'acme', accountType: 'Organization', repoCount: 3 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoFetch: () =>
       new Promise<FakeResponse>((resolve) => {
@@ -7169,7 +7207,7 @@ test('a GitHub discovery failure preserves the source field and offers a local r
       installations: [
         { id: 41, accountLogin: 'acme', accountType: 'Organization', repoCount: null },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoError: {
       status: 502,
@@ -7207,7 +7245,7 @@ test('GitHub import search updates its local browser while retaining focus and l
       installations: [
         { id: 51, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoPages: {
       '51': {
@@ -7255,7 +7293,7 @@ test('a pending skill resolution cannot repaint a reopened import panel', async 
     },
   });
   const harness = runAdminPageHarness({
-    githubStatus: { mode: 'none', referencingProfiles: [] },
+    githubStatus: { mode: 'none', referencingAgents: [] },
     skillResolveFetch: (source) => new Promise<FakeResponse>((resolve) => {
       pending.set(source, resolve);
     }),
@@ -7290,7 +7328,7 @@ test('leaving the Skills tab closes only the nested import browser state', async
       installations: [
         { id: 61, accountLogin: 'acme', accountType: 'Organization', repoCount: 1 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoPages: {
       '61': {
@@ -14458,7 +14496,7 @@ test('the host\'s /admin?slack=updated landing shows the notice once and clears 
 test('leaving Slack settings starts the GitHub and sandbox settings loads', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/slack',
-    githubStatus: { mode: 'none', referencingProfiles: [] },
+    githubStatus: { mode: 'none', referencingAgents: [] },
   });
   await flushAsync();
   const click = harness.listeners.click;
@@ -14501,7 +14539,7 @@ test('leaving Settings while its shared loads are pending ignores their stale co
   const renderCountAfterLeaving = harness.renderHistory.length;
 
   pending.get('/admin/api/providers')?.(jsonResponse({ providers: [] }));
-  pending.get('/admin/api/github/status')?.(jsonResponse({ mode: 'none', referencingProfiles: [] }));
+  pending.get('/admin/api/github/status')?.(jsonResponse({ mode: 'none', referencingAgents: [] }));
   pending.get('/admin/api/sandbox/status')?.(jsonResponse({
     installRequested: false,
     installed: false,
@@ -17029,7 +17067,7 @@ test('the Repositories picker discards a stale search response and applies the c
       installations: [
         { id: 77, accountLogin: 'acme', accountType: 'Organization', repoCount: 4 },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoFetch: () =>
       new Promise<FakeResponse>((resolve) => {
@@ -17098,7 +17136,7 @@ test('a Repositories picker failure stays inside the picker and offers a local r
       installations: [
         { id: 78, accountLogin: 'acme', accountType: 'Organization', repoCount: null },
       ],
-      referencingProfiles: [],
+      referencingAgents: [],
     },
     githubRepoError: {
       status: 502,
@@ -17933,24 +17971,25 @@ test('hosted Admin leaves out guidance only a self-hoster can follow; standalone
     selfHostedOnly(removeWithPlan, /continues using the connected subscription\. An <span[^>]*>OPENAI_API_KEY<\/span> in the environment, if set, still applies\./,
       'the environment key that still applies beside the plan');
 
-    // Settings > GitHub: the disconnect panel and its confirmation.
+    // Settings > GitHub: the App-wide disconnect panel and its confirmation.
+    // Hosted has neither: it disconnects one account at a time (below).
     const github = runAdminPageHarness({
       ...hosting,
       initialPath: '/admin/settings/github',
       githubStatus: {
         mode: 'app', appSlug: 'chickpea-test',
         installations: [{ id: 9, accountLogin: 'acme', accountType: 'Organization', repoCount: 3 }],
-        referencingProfiles: [],
+        referencingAgents: [],
       },
     });
     await flushAsync();
     const panel = github.app.innerHTML;
-    assert.match(panel, selfHosted
-      ? /Removes stored GitHub App credentials from Chickpea\. Environment-configured App credentials stay active, and repository selections on Agents stay saved\./
-      : /Removes stored GitHub App credentials from Chickpea\. Repository selections on Agents stay saved\./, mode);
+    selfHostedOnly(panel, /Removes stored GitHub App credentials from Chickpea\. Environment-configured App credentials stay active, and repository selections on Agents stay saved\./,
+      'the App-wide disconnect panel');
+    if (!selfHosted) assert.doesNotMatch(panel, /Removes stored GitHub App credentials/);
     github.listeners.click?.({ target: actionTarget({ 'data-action': 'github-disconnect-open' }) });
     const confirm = github.app.innerHTML;
-    assert.match(confirm, /Chickpea will remove the stored GitHub App credentials\. /, mode);
+    selfHostedOnly(confirm, /Chickpea will remove the stored GitHub App credentials\. /, 'the stored-credential confirmation');
     selfHostedOnly(confirm, /Environment-configured App credentials, if present, remain active\./, 'environment-configured GitHub credentials');
   }
 });
@@ -18576,4 +18615,372 @@ test('a read-only Agent shows its website logins without Add or Remove', async (
   await flushAsync();
   assert.match(forbidden.harness.app.innerHTML, /Only Agent editors can view or change which website logins this Agent can use\./);
   assert.doesNotMatch(forbidden.harness.app.innerHTML, /data-action="website-login-(?:add|remove|retry)"/);
+});
+
+// ---- H14b: hosted GitHub (the host's Chickpea app) ---------------------------
+
+const HOSTED_GITHUB_ORG = 4_242_001;
+const HOSTED_GITHUB_USER = 4_242_002;
+const HOSTED_GITHUB_SUSPENDED = 4_242_003;
+const STRING_1 = 'Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.';
+const hostedGithubStatus = (overrides: Partial<GithubStatusFixture> = {}): GithubStatusFixture => ({
+  mode: 'app',
+  installations: [
+    { id: HOSTED_GITHUB_ORG, accountLogin: 'acme', accountType: 'Organization', repoCount: 3, status: 'active' },
+    { id: HOSTED_GITHUB_USER, accountLogin: 'octo', accountType: 'User', repoCount: 1, status: 'active' },
+    { id: HOSTED_GITHUB_SUSPENDED, accountLogin: 'paused-co', accountType: 'Organization', repoCount: null, status: 'suspended' },
+  ],
+  referencingAgents: [],
+  connectPath: '/github/connect',
+  ...overrides,
+});
+
+/** What a person reads: the page without markup, attributes or links. */
+function visibleText(html: string): string {
+  return html.replace(/<[^>]*>/g, ' ').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ');
+}
+
+function githubSettingsSection(html: string): string {
+  const start = html.indexOf('<section class="section" id="github-settings">');
+  assert.ok(start >= 0, 'the GitHub section renders');
+  return html.slice(start, html.indexOf('</section>', start) + '</section>'.length);
+}
+
+const SELF_MANAGED_GITHUB = [
+  /Create GitHub App/, /github-manifest/, /App slug/, /Accounts with access/,
+  /The app is registered on GitHub/, /GitHub rejected the stored App credentials/,
+  /Removes stored GitHub App credentials/, /Return here and refresh after installing/,
+  /\/installations\/new/, /chickpea-test/, /Install the GitHub App on/,
+];
+
+test('hosted Settings › GitHub lists connected accounts with Manage on GitHub and Disconnect, and none of the self-managed App setup', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github',
+    githubStatus: hostedGithubStatus({ appSlug: 'chickpea-test' }),
+  });
+  await flushAsync();
+  const section = githubSettingsSection(harness.app.innerHTML);
+  for (const pattern of SELF_MANAGED_GITHUB) assert.doesNotMatch(section, pattern, String(pattern));
+  assert.match(section, /Connect GitHub once, then grant repository access per Agent\./);
+  assert.match(section, /<span class="badge badge-on"><span class="dot"><\/span>Connected<\/span><\/div>/, 'the section is connected');
+  // One row per account, in the order the API sent.
+  assert.match(section, /acme[\s\S]*3 repositories[\s\S]*octo[\s\S]*1 repository[\s\S]*paused-co/);
+  // String 2 per account, to the account's own installation settings on GitHub.
+  assert.equal(section.split('>Manage on GitHub ↗</a>').length - 1, 3);
+  assert.match(section, new RegExp(`href="https://github\\.com/organizations/acme/settings/installations/${HOSTED_GITHUB_ORG}" target="_blank" rel="noopener noreferrer">Manage on GitHub ↗</a>`));
+  assert.match(section, new RegExp(`href="https://github\\.com/settings/installations/${HOSTED_GITHUB_USER}" target="_blank" rel="noopener noreferrer">Manage on GitHub ↗</a>`));
+  // String 3 for the suspended account, without a repository count or Connected.
+  const suspendedRow = section.slice(section.indexOf('paused-co'));
+  assert.match(suspendedRow, /^paused-co<\/span><span class="github-installation-meta"><span class="badge badge-off">Organization<\/span><\/span><\/div><span class="badge badge-off"><span class="dot"><\/span>Suspended on GitHub<\/span>/);
+  assert.equal(section.split('Suspended on GitHub').length - 1, 1);
+  assert.equal(section.split(`data-action="github-disconnect-open"`).length - 1, 3);
+  // Add another account through the host's connect path, back to this page.
+  assert.match(section, /<form class="github-connect-form" method="post" action="\/github\/connect"><input type="hidden" name="next" value="\/admin\/settings\/github"><button type="submit" class="btn btn-soft btn-sm">\+ Add a GitHub account or org<\/button><\/form>/);
+  // No IDs or installation numbers anywhere a person reads.
+  const text = visibleText(section);
+  for (const id of [HOSTED_GITHUB_ORG, HOSTED_GITHUB_USER, HOSTED_GITHUB_SUSPENDED]) assert.ok(!text.includes(String(id)), String(id));
+  assert.doesNotMatch(text, /installation \d|Installation ID|app_id/i);
+});
+
+test('hosted Settings › GitHub with nothing connected says how, and offers Connect GitHub only when the host can start it', async () => {
+  for (const connectPath of ['/github/connect', null] as const) {
+    const harness = runAdminPageHarness({
+      ...HOSTED_ADMIN, initialPath: '/admin/settings/github',
+      githubStatus: { mode: 'none', installations: [], referencingAgents: [], connectPath },
+    });
+    await flushAsync();
+    const section = githubSettingsSection(harness.app.innerHTML);
+    assert.match(section, /<span class="badge badge-off"><span class="dot"><\/span>Not connected<\/span>/);
+    assert.ok(section.includes(`<p class="hint">${STRING_1}</p>`), 'string 1');
+    for (const pattern of SELF_MANAGED_GITHUB) assert.doesNotMatch(section, pattern, String(pattern));
+    assert.doesNotMatch(section, /No repository access yet|GitHub App/);
+    if (connectPath) {
+      assert.match(section, /<form class="github-connect-form" method="post" action="\/github\/connect"><input type="hidden" name="next" value="\/admin\/settings\/github"><button type="submit" class="btn btn-primary btn-sm">Connect GitHub<\/button><\/form>/);
+    } else {
+      assert.doesNotMatch(section, /<form|Connect GitHub</, 'no button that would dead-end');
+    }
+  }
+  // A path the host did not make same-origin is never posted to.
+  const crossOrigin = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github',
+    githubStatus: { mode: 'none', installations: [], referencingAgents: [], connectPath: '//evil.example/x' },
+  });
+  await flushAsync();
+  assert.doesNotMatch(githubSettingsSection(crossOrigin.app.innerHTML), /<form|evil/);
+});
+
+test('hosted Disconnect names one account, ends it through the per-account route, and keeps server codes out of its error', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github', githubStatus: hostedGithubStatus(),
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'github-disconnect-open', 'data-installation': String(HOSTED_GITHUB_ORG), 'data-account': 'acme' }) });
+  const dialog = harness.app.innerHTML;
+  assert.match(dialog, /aria-label="Disconnect acme\?"/);
+  assert.match(dialog, /<h2 class="modal-title">Disconnect acme\?<\/h2>/);
+  assert.match(dialog, /<p class="modal-body">Chickpea will remove its app from acme on GitHub\. Agents keep their repository selections, but can&#39;t use them until acme is connected again\.<\/p>/);
+  assert.match(dialog, />Keep connected<\/button>/);
+  assert.match(dialog, /data-action="github-disconnect-confirm">Disconnect<\/button>/);
+  assert.doesNotMatch(dialog, /stored GitHub App credentials|Environment-configured|remains installed on GitHub/);
+
+  click({ target: actionTarget({ 'data-action': 'github-disconnect-cancel' }) });
+  assert.doesNotMatch(harness.app.innerHTML, /Disconnect acme\?/);
+  assert.deepEqual(harness.githubAccountDisconnects, []);
+
+  click({ target: actionTarget({ 'data-action': 'github-disconnect-open', 'data-installation': String(HOSTED_GITHUB_USER), 'data-account': 'octo' }) });
+  click({ target: actionTarget({ 'data-action': 'github-disconnect-confirm' }) });
+  await flushAsync();
+  assert.deepEqual(harness.githubAccountDisconnects, [HOSTED_GITHUB_USER]);
+  assert.ok(!harness.fetchCalls.some(({ path, method }) => method === 'DELETE' && path === '/admin/api/github'), 'never the App-wide route');
+  assert.doesNotMatch(harness.app.innerHTML, /data-role="github-disconnect-dialog"/);
+  assert.ok(githubStatusGets(harness) >= 2, 'the accounts reload after the disconnect');
+
+  const failing = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github', githubStatus: hostedGithubStatus(),
+    githubAccountDisconnectError: { status: 404, error: 'not_found' },
+  });
+  await flushAsync();
+  failing.listeners.click?.({ target: actionTarget({ 'data-action': 'github-disconnect-open', 'data-installation': String(HOSTED_GITHUB_ORG), 'data-account': 'acme' }) });
+  failing.listeners.click?.({ target: actionTarget({ 'data-action': 'github-disconnect-confirm' }) });
+  await flushAsync();
+  assert.match(failing.app.innerHTML, /data-role="github-disconnect-error">Could not disconnect GitHub\.<\/p>/);
+  const failedDialog = failing.app.innerHTML.slice(failing.app.innerHTML.indexOf('data-role="github-disconnect-dialog"'));
+  assert.doesNotMatch(visibleText(failedDialog), /not_found/);
+});
+
+test('the standalone Disconnect dialog names the Agents that reference GitHub repositories', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/github',
+    githubStatus: {
+      mode: 'app', appSlug: 'chickpea-test',
+      installations: [{ id: 9, accountLogin: 'acme', accountType: 'Organization', repoCount: 3 }],
+      referencingAgents: [{ id: 'agent_release', name: 'Release Profile' }, { id: 'agent_coder', name: 'Coder' }],
+    },
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'github-disconnect-open' }) });
+  const dialog = harness.app.innerHTML;
+  assert.match(dialog, /<b style="font-weight:500; color:var\(--text\);">2 Agents<\/b> reference GitHub repositories &mdash; /);
+  assert.match(dialog, />Release Profile<\/span>[\s\S]*>Coder<\/span>/);
+  assert.doesNotMatch(dialog, /No Agents currently reference GitHub repositories/);
+  assert.match(dialog, /Chickpea will remove the stored GitHub App credentials\./, 'standalone keeps its own dialog');
+});
+
+test('returning from a hosted GitHub connect shows GitHub connected. once and cleans the URL; standalone ignores it', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github', initialSearch: '?github=connected', githubStatus: hostedGithubStatus(),
+  });
+  await flushAsync();
+  const notice = '<div class="callout" role="status"><span>GitHub connected.</span></div>';
+  assert.equal(harness.app.innerHTML.split(notice).length - 1, 1);
+  assert.ok(opensMainColumn(harness.app.innerHTML, notice));
+  assert.ok(harness.historyReplaces.includes('/admin/settings/github'));
+  assert.ok(harness.historyReplaces.every((path) => !path.includes('github=')));
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'open-team' }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'moving on ends the notice');
+
+  const reload = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/settings/github', githubStatus: hostedGithubStatus() });
+  await flushAsync();
+  assert.doesNotMatch(reload.app.innerHTML, /GitHub connected\./);
+
+  const standalone = runAdminPageHarness({
+    initialPath: '/admin/settings/github', initialSearch: '?github=connected', githubStatus: connectedGithubStatus,
+  });
+  const baseline = runAdminPageHarness({ initialPath: '/admin/settings/github', githubStatus: connectedGithubStatus });
+  await flushAsync();
+  assert.doesNotMatch(standalone.app.innerHTML, /GitHub connected\./);
+  assert.deepEqual(standalone.historyReplaces, baseline.historyReplaces, 'standalone leaves the URL as it always has');
+});
+
+const hostedRepositoryAgent = {
+  ...releaseAgent,
+  repositories: [
+    { id: 'repo_acme', installationId: HOSTED_GITHUB_ORG, accountLogin: 'acme', fullName: 'acme/app', enabled: true },
+    { id: 'repo_gone', installationId: 5_555_001, accountLogin: 'gone-org', fullName: 'gone-org/legacy', enabled: true },
+    { id: 'repo_paused', installationId: HOSTED_GITHUB_SUSPENDED, accountLogin: 'paused-co', fullName: 'paused-co/site', enabled: true },
+  ],
+};
+
+async function hostedRepositoriesTab(githubStatus: GithubStatusFixture, extra: Parameters<typeof runAdminPageHarness>[0] = {}) {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/agents/agent_release', initialSearch: '?tab=repositories',
+    agents: [hostedRepositoryAgent], githubStatus, ...extra,
+  });
+  await flushAsync();
+  return harness;
+}
+
+function repositoryGroup(html: string, account: string): string {
+  const start = html.indexOf(`<span class="repo-group-name">${account}</span>`);
+  assert.ok(start >= 0, `${account} group`);
+  return html.slice(start, html.indexOf('</details>', start));
+}
+
+test('hosted Agent › Repositories: the sandbox hint, Manage for a connected account, and words instead of Manage for the others', async () => {
+  const harness = await hostedRepositoriesTab(hostedGithubStatus());
+  const html = harness.app.innerHTML;
+  assert.match(html, /<p class="hint ptab-hint">Coding runs in a sandbox when this Agent has repositories selected\.<\/p>/);
+  assert.doesNotMatch(html, /install-wide tier/);
+  assert.match(repositoryGroup(html, 'acme'), new RegExp(`data-action="repo-manage" data-installation="${HOSTED_GITHUB_ORG}" data-account="acme">Manage</button>`));
+  assert.match(repositoryGroup(html, 'acme'), /data-action="repo-all"/);
+  const gone = repositoryGroup(html, 'gone-org');
+  assert.match(gone, /<span class="hint">Connect gone-org to manage these\.<\/span>/);
+  assert.doesNotMatch(gone, /repo-manage|repo-all/, 'nothing that would save an account that is not connected');
+  assert.match(gone, /data-action="repo-remove" data-repository-id="repo_gone"/, 'its selections can still be removed');
+  const paused = repositoryGroup(html, 'paused-co');
+  assert.match(paused, /<span class="hint">Suspended on GitHub<\/span>/);
+  assert.doesNotMatch(paused, /repo-manage|repo-all|Connect paused-co/);
+  // The footer adds accounts from Settings › GitHub; no install link or refresh instruction.
+  assert.match(html, /<div class="repo-footer"><button type="button" class="btn btn-ghost btn-sm" data-action="open-settings" data-section="github-settings">\+ Add a GitHub account or org<\/button>/);
+  assert.doesNotMatch(html, /Return here and refresh after installing|\/installations\/new|Install the GitHub App on/);
+
+  // Adding repositories offers only the active accounts.
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'repo-add' }) });
+  const chooser = harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('repo-account-choices'));
+  assert.match(chooser, /data-account="acme"[\s\S]*data-account="octo"/);
+  assert.doesNotMatch(chooser.slice(0, chooser.indexOf('</div></div>')), /paused-co/);
+});
+
+test('hosted Agent › Repositories with nothing connected shows string 1 and keeps the saved selections listed', async () => {
+  const harness = await hostedRepositoriesTab({
+    mode: 'none', installations: [], referencingAgents: [], connectPath: '/github/connect',
+  });
+  const html = harness.app.innerHTML;
+  assert.ok(html.includes(`<p class="field-label">${STRING_1}</p><button type="button" class="btn btn-primary" data-action="open-settings" data-section="github-settings">Connect GitHub</button>`));
+  assert.doesNotMatch(html, /Connect GitHub to give this Agent access to repositories\./);
+  assert.match(repositoryGroup(html, 'acme'), /Connect acme to manage these\./);
+  assert.match(repositoryGroup(html, 'gone-org'), /Connect gone-org to manage these\./);
+  // A suspended account is still connected, and says so.
+  const suspendedOnly = await hostedRepositoriesTab({
+    mode: 'none', installations: [{ id: HOSTED_GITHUB_SUSPENDED, accountLogin: 'paused-co', accountType: 'Organization', repoCount: null, status: 'suspended' }],
+    referencingAgents: [], connectPath: '/github/connect',
+  });
+  assert.match(repositoryGroup(suspendedOnly.app.innerHTML, 'paused-co'), /Suspended on GitHub/);
+
+  // Standalone keeps its own words.
+  const standalone = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release', initialSearch: '?tab=repositories',
+    agents: [hostedRepositoryAgent], githubStatus: { mode: 'none', referencingAgents: [] },
+  });
+  await flushAsync();
+  assert.match(standalone.app.innerHTML, /Connect GitHub to give this Agent access to repositories\./);
+  assert.match(standalone.app.innerHTML, /the install-wide tier is on/);
+  assert.ok(!standalone.app.innerHTML.includes(STRING_1));
+});
+
+test('a hosted save refused because a GitHub account is not connected shows the generic save error and reloads the accounts', async () => {
+  const harness = await hostedRepositoriesTab(hostedGithubStatus(), {
+    agentWriteError: { status: 400, error: 'github_account_not_connected' },
+  });
+  const before = githubStatusGets(harness);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'repo-remove', 'data-repository-id': 'repo_acme' }) });
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Could not save this Agent\./);
+  assert.doesNotMatch(visibleText(harness.app.innerHTML), /github_account_not_connected/);
+  assert.ok(githubStatusGets(harness) > before, 'the accounts reload');
+});
+
+const hostedOnboardingProviders = {
+  providers: [
+    { id: 'anthropic', status: 'missing', modelCount: null },
+    { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscription: { state: 'disconnected', updatedAt: 0 } },
+    { id: 'openrouter', status: 'missing', modelCount: null },
+    { id: 'workers-ai', status: 'missing', modelCount: null },
+  ],
+  modelProviders: [
+    { id: 'anthropic', configured: true, source: 'stored', suggestions: ['anthropic/claude-sonnet-5'] },
+    { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+    { id: 'openrouter', configured: false, source: 'missing', suggestions: [] },
+  ],
+} as unknown as Pick<Parameters<typeof runAdminPageHarness>[0] & object, 'providers' | 'modelProviders'>;
+
+function onboardingAt(stage: OnboardingFixture['stage'], githubConnectPath?: string): OnboardingFixture {
+  return {
+    stage,
+    revision: JSON.stringify({ stage }),
+    workspace: { id: 'T_DESIGN', name: 'Acme Inc' },
+    channel: null,
+    providerId: 'anthropic',
+    modelId: stage === 'choose_model' ? null : 'anthropic/claude-sonnet-5',
+    slackAppId: 'A_CHICKPEA',
+    tryStartedAt: stage === 'choose_model' ? null : 1_800_000_000_000,
+    completedAt: null,
+    ...(githubConnectPath ? { githubConnectPath } : {}),
+  };
+}
+
+function onboardingLabels(html: string): string[] {
+  const rail = html.slice(html.indexOf('<ol class="onboarding-orientation"'), html.indexOf('</ol>'));
+  return [...rail.matchAll(/<span class="onboarding-step-label">([^<]*)<\/span>/g)].map((match) => match[1]!);
+}
+
+test('hosted onboarding offers Connect GitHub (optional) after the model; Skip for now goes to Try and changes nothing else', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('choose_model', '/github/connect'),
+  });
+  await flushAsync();
+  assert.deepEqual(onboardingLabels(harness.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
+  assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 3 of 5<\/p>/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-model-continue' }) });
+  await flushAsync();
+
+  const step = harness.app.innerHTML;
+  assert.match(step, /<li class="active" aria-current="step"><span class="onboarding-step-dot">4<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li>/);
+  assert.match(step, /<p class="onboarding-eyebrow">Optional<\/p><h1 class="onboarding-title">Let Agents work on your code<\/h1>/);
+  assert.ok(step.includes(`<p class="onboarding-lede">${STRING_1} You can skip this and connect GitHub later in Settings.</p>`), 'strings 1 and 22');
+  assert.match(step, /<form class="github-connect-form" method="post" action="\/github\/connect"><input type="hidden" name="next" value="\/admin\/onboarding"><button type="submit" class="btn btn-primary">Connect GitHub<\/button><\/form>/);
+  assert.match(step, /data-action="onboarding-github-skip">Skip for now<\/button>/);
+  assert.doesNotMatch(step, /Meet Chickpea in Slack/);
+
+  const before = harness.fetchCalls.length;
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-github-skip' }) });
+  await flushAsync();
+  assert.equal(harness.onboardingGithubPosts.length, 1);
+  assert.equal(harness.onboardingGithubPosts[0]?.expectedRevision, harness.onboardingTryPosts.length ? JSON.stringify({ ...harness.onboardingTryPosts[0], tryStartedAt: 1_800_000_000_000 }) : undefined);
+  const skipCalls = harness.fetchCalls.slice(before).filter(({ method }) => method !== 'GET');
+  assert.deepEqual(skipCalls, [{ path: '/admin/api/onboarding/github', method: 'POST' }], 'nothing else is written');
+  assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 5 of 5<\/p><h1 class="onboarding-title">Meet Chickpea in Slack<\/h1>/);
+  assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'a skip is not a connect');
+});
+
+test('a connect started in hosted onboarding returns to Try with GitHub connected.', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('connect_github', '/github/connect'),
+  });
+  await flushAsync();
+  await flushAsync();
+  assert.equal(harness.onboardingGithubPosts.length, 1, 'the return moves the journey on once');
+  const html = harness.app.innerHTML;
+  assert.match(html, /<section class="onboarding-panel onboarding-panel-wide"><div class="callout" role="status"><span>GitHub connected\.<\/span><\/div><div class="onboarding-success">/);
+  assert.match(html, /Step 5 of 5/);
+  assert.ok(harness.historyReplaces.every((path) => !path.includes('github=')));
+  harness.focusWindow();
+  await flushAsync();
+  assert.equal(harness.onboardingGithubPosts.length, 1);
+});
+
+test('standalone onboarding has no GitHub step, even with a connect path in its payload', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('choose_model', '/github/connect'),
+  });
+  await flushAsync();
+  assert.deepEqual(onboardingLabels(harness.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
+  assert.match(harness.app.innerHTML, /Step 3 of 4/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-model-continue' }) });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /Let Agents work on your code|Skip for now|github-connect-form/);
+  // Hosted without a connect path: the four standalone steps.
+  const hostedWithout = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders, onboarding: onboardingAt('try'),
+  });
+  await flushAsync();
+  assert.deepEqual(onboardingLabels(hostedWithout.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
+  assert.match(hostedWithout.app.innerHTML, /Step 4 of 4/);
 });

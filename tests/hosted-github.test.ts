@@ -23,7 +23,9 @@ import {
 } from '../src/config/github-app.ts';
 import {
   configureHostedGithub,
+  configureHostedGithubConnect,
   disconnectHostedGithubBinding,
+  hostedGithubConnectPath,
   HOSTED_GITHUB_BINDINGS_TTL_MS,
   resetHostedGithubForTests,
   type HostedGithubPort,
@@ -34,6 +36,14 @@ import {
   resetInstallationAdmissionForTests,
 } from '../src/config/installation-admission.ts';
 import { scopeInstallationEnv, splitInstallationObjectName } from '../src/config/installation-scope.ts';
+import {
+  beginOnboardingJourney,
+  parseOnboardingJourney,
+  readOnboardingJourney,
+  selectOnboardingProvider,
+  settleOnboardingGithubStep,
+  startOnboardingTry,
+} from '../src/config/onboarding-state.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig, RepositoryGrant } from '../src/config/types.ts';
@@ -540,7 +550,9 @@ test('X3 and X4: Admin lists only the installation\'s own accounts, and the pick
   // B, connected to nothing, is told so.
   const port = platform(t);
   port.bindings.set(INSTALLATION_B, []);
-  assert.deepEqual(await (await request(ENV_B, '/admin/api/github/status')).json(), { mode: 'none', referencingAgents: [] });
+  assert.deepEqual(await (await request(ENV_B, '/admin/api/github/status')).json(), {
+    mode: 'none', installations: [], connectPath: null, referencingAgents: [],
+  });
 });
 
 test('X5 skill import: a private repository resolves only through the installation\'s own binding for its owner', async (t) => {
@@ -850,4 +862,126 @@ test('Core declares the GitHub platform gate in hosted-capabilities.json, and sh
   const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')) as { files: string[] };
   assert.ok(packageJson.files.includes('hosted-capabilities.json'), 'npm ships it');
   assert.ok((REQUIRED_PACKAGED_FILES as string[]).includes('hosted-capabilities.json'), 'the release pack check requires it');
+});
+
+// --- H14b: hosted Admin's GitHub status, connect path and onboarding step ---
+
+test('hosted status lists active and suspended accounts, counts only active ones, and never names the App', async (t) => {
+  const port = platform(t);
+  port.bindings.set(INSTALLATION_A, [binding(GITHUB_A, 'acme-a'), binding(GITHUB_B + 1, 'acme-paused', 'suspended')]);
+  const fetched = github(t);
+  const { request } = hostedAdmin(t);
+  const body = await (await request(ENV_A, '/admin/api/github/status')).json() as Record<string, unknown>;
+  assert.deepEqual(body, {
+    mode: 'app',
+    installations: [
+      { id: GITHUB_A, accountLogin: 'acme-a', accountType: 'Organization', status: 'active', repoCount: 1 },
+      { id: GITHUB_B + 1, accountLogin: 'acme-paused', accountType: 'Organization', status: 'suspended', repoCount: null },
+    ],
+    connectPath: null,
+    referencingAgents: [],
+  });
+  assert.deepEqual(mints(fetched), [GITHUB_A], 'a suspended account is never minted for');
+  assert.deepEqual(appListings(fetched), []);
+  // Only suspended accounts: not connected, but listed so Admin can say so.
+  platform(t).bindings.set(INSTALLATION_A, [binding(GITHUB_A, 'acme-a', 'suspended')]);
+  const suspended = await (await request(ENV_A, '/admin/api/github/status')).json() as { mode: string; installations: unknown[] };
+  assert.equal(suspended.mode, 'none');
+  assert.deepEqual(suspended.installations, [{ id: GITHUB_A, accountLogin: 'acme-a', accountType: 'Organization', status: 'suspended', repoCount: null }]);
+  // Without a complete platform App, no account is listed.
+  platform(t, { app: undefined });
+  assert.deepEqual((await (await request(ENV_A, '/admin/api/github/status')).json() as { installations: unknown[] }).installations, []);
+});
+
+test('the connect path reaches Admin only from a host with a complete App, and only on a deployment serving many installations', async (t) => {
+  assert.throws(() => configureHostedGithubConnect({ path: 'https://evil.example/connect' }), /same-origin/);
+  assert.throws(() => configureHostedGithubConnect({ path: '//evil.example/connect' }), /same-origin/);
+  assert.throws(() => configureHostedGithubConnect({ path: '/\\evil.example' }), /same-origin/);
+  platform(t);
+  github(t);
+  const { request } = hostedAdmin(t);
+  const connectPath = async (env: Record<string, unknown> | undefined) =>
+    ((await (await request(env, '/admin/api/github/status')).json()) as { connectPath?: unknown }).connectPath;
+  assert.equal(await connectPath(ENV_A), null, 'no hook installed');
+  configureHostedGithubConnect({ path: '/github/connect' });
+  assert.equal(await connectPath(ENV_A), '/github/connect');
+  assert.equal(await connectPath(undefined), undefined, 'standalone status is unchanged');
+  platform(t, { app: undefined });
+  configureHostedGithubConnect({ path: '/github/connect' });
+  assert.equal(await connectPath(ENV_A), null, 'no App, no Connect that would fail at the host');
+  configureHostedGithub(undefined);
+  assert.equal(await hostedGithubConnectPath(), null, 'no port, no Connect');
+});
+
+async function onboardingAtTry(t: TestContext) {
+  const admin = hostedAdmin(t);
+  await admin.store.ensureWorkspaceInstallation({
+    workspaceId: 'TONBOARD', teamId: 'TONBOARD', appId: 'AONBOARD', botUserId: 'UONBOARDBOT',
+    gatewayBindingId: 'onboarding-gateway-binding', transportMode: 'gateway', runtimeContract: 'chickpea-v1',
+  });
+  const begun = await beginOnboardingJourney(admin.settings, 100);
+  const provider = await selectOnboardingProvider(admin.settings, { expectedRevision: begun.revision, workspaceId: 'TONBOARD', providerId: 'anthropic' });
+  await startOnboardingTry(admin.settings, {
+    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: 'UONBOARD', tryStartedAt: 300,
+  });
+  const read = async (env: Record<string, unknown> | undefined) =>
+    await (await admin.request(env, '/admin/api/onboarding')).json() as { stage: string; revision: string; githubConnectPath?: string };
+  const settle = (env: Record<string, unknown> | undefined, expectedRevision: string) =>
+    admin.request(env, '/admin/api/onboarding/github', { method: 'POST', body: JSON.stringify({ expectedRevision }) });
+  return { ...admin, read, settle };
+}
+
+test('hosted onboarding stops at Connect GitHub after the model while the host can connect; settling it moves on to Try', async (t) => {
+  platform(t);
+  configureHostedGithubConnect({ path: '/github/connect' });
+  const { settings, read, settle } = await onboardingAtTry(t);
+  const before = await read(ENV_A);
+  assert.equal(before.stage, 'connect_github');
+  assert.equal(before.githubConnectPath, '/github/connect');
+  assert.equal((await settle(ENV_A, 'stale')).status, 409);
+  const settled = await settle(ENV_A, before.revision);
+  assert.equal(settled.status, 200);
+  const after = await settled.json() as { stage: string; revision: string; githubConnectPath?: string };
+  assert.equal(after.stage, 'try');
+  assert.equal(after.githubConnectPath, '/github/connect', 'the rail keeps five steps');
+  assert.equal((await readOnboardingJourney(settings))?.journey.githubStepAt !== undefined, true, 'persisted as the other stages are');
+  assert.equal((await read(ENV_A)).stage, 'try');
+  // Settling again changes nothing.
+  const again = await settle(ENV_A, after.revision);
+  assert.equal((await again.json() as { revision: string }).revision, after.revision);
+});
+
+test('without a host connect path, and on standalone, onboarding goes from the model straight to Try', async (t) => {
+  platform(t);
+  const hosted = await onboardingAtTry(t);
+  const plain = await hosted.read(ENV_A);
+  assert.equal(plain.stage, 'try');
+  assert.equal('githubConnectPath' in plain, false);
+  assert.equal((await hosted.settle(ENV_A, plain.revision)).status, 404);
+  configureHostedGithubConnect({ path: '/github/connect' });
+  const standalone = await hosted.read(undefined);
+  assert.equal(standalone.stage, 'try');
+  assert.equal('githubConnectPath' in standalone, false);
+  assert.equal((await hosted.settle(undefined, standalone.revision)).status, 404);
+  assert.equal((await readOnboardingJourney(hosted.settings))?.journey.githubStepAt, undefined);
+});
+
+test('the GitHub step is part of the journey: it follows the model, and choosing a provider again resets it', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const begun = await beginOnboardingJourney(settings, 100);
+    await assert.rejects(settleOnboardingGithubStep(settings, begun.revision, 400), /before choosing a model/);
+    const provider = await selectOnboardingProvider(settings, { expectedRevision: begun.revision, workspaceId: 'T1', providerId: 'anthropic' });
+    const trying = await startOnboardingTry(settings, {
+      expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: 'U1', tryStartedAt: 300,
+    });
+    const settled = await settleOnboardingGithubStep(settings, trying.revision, 400);
+    assert.equal(settled.journey.githubStepAt, 400);
+    assert.equal((await settleOnboardingGithubStep(settings, settled.revision, 500)).revision, settled.revision, 'once recorded it stays');
+    assert.throws(() => parseOnboardingJourney(JSON.stringify({ version: 2, state: 'active', startedAt: 100, githubStepAt: 400 })), /invalid/);
+    const reselected = await selectOnboardingProvider(settings, { expectedRevision: settled.revision, workspaceId: 'T1', providerId: 'openai' });
+    assert.equal(reselected.journey.githubStepAt, undefined);
+  } finally {
+    settings.close();
+  }
 });

@@ -1263,6 +1263,8 @@ details[open].advanced summary::before {
 .paste-row { display: flex; flex-wrap: wrap; gap: 9px; }
 .paste-row .input { flex: 1; min-width: 220px; }
 .github-installations { display: flex; flex-direction: column; gap: 10px; }
+/* The Connect form's button sits in its row as if the form were not there. */
+.github-connect-form { display: contents; }
 .github-installations .prov-row + .prov-row { margin-top: 0; }
 .github-installation-copy { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
 .github-installation-name { color: var(--text); font-family: var(--mono); font-size: 0.8125rem; font-weight: 700; overflow-wrap: anywhere; }
