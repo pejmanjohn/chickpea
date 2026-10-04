@@ -200,7 +200,7 @@
     "hono": "^4.13.5",
     "image-in-browser": "3.6.0",
     "jose": "6.2.8",
-    "just-bash": "3.0.2",
+    "just-bash": "3.4.2",
     "pg": "8.23.1",
     "unpdf": "1.8.1",
     "valibot": "^1.4.2",
