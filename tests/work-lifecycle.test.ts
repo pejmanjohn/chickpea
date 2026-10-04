@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { hasDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
-import { DEFERRED_SHADOW_WRITE_BUDGET_MS, ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
+import {
+  DEFERRED_SHADOW_WRITE_BUDGET_MS,
+  SHADOW_BACKLOG_DEADLINE_MS,
+  ShadowWorkLifecycle,
+} from '../src/work/lifecycle.ts';
 import { createWorkExecutionLifecycle } from '../src/work/executor.ts';
 import { SqliteWorkStore, WorkStoreLogic } from '../src/work/store.ts';
 import {
@@ -127,6 +131,10 @@ for (const slow of [
       }, { mode: 'observe', now: () => NOW + (++tick), onGap: (stage) => gaps.push(stage) });
       // The whole turn runs while the slow write is still held: it never waits for it.
       await lifecycle.prepareExecution('Hi Chickpea. What is a good first teammate?');
+      const linked: string[] = [];
+      lifecycle.whenExecutionRecorded((executionId) => linked.push(executionId));
+      const creationHeld = slow === 'prepareRunInput' || slow === 'createRunExecution';
+      assert.deepEqual(linked, creationHeld ? [] : [lifecycle.executionId]);
       await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
       const attemptId = await lifecycle.beforeDelivery({
         method: 'slack_chat_stream',
@@ -150,6 +158,7 @@ for (const slow of [
       assert.equal(run?.deliveryRef, 'slack:D0TRY:1900000000.000002');
       assert.equal((await fixture.store.getRunExecution(lifecycle.executionId))?.outcome, 'succeeded');
       assert.equal(fixture.calls(slow), 1, 'the slow write is awaited, never repeated');
+      assert.deepEqual(linked, [lifecycle.executionId], 'usage can name the execution once it lands');
       assert.deepEqual(gaps, []);
       assert.deepEqual(
         (await fixture.store.listAuditEvents(fixture.runId)).reverse().map((event) => event.eventType),
@@ -185,6 +194,8 @@ test('a slow write that then fails is a gap, and nothing is recorded behind it',
       routeEvidence: {},
     }, { mode: 'observe', onGap: (stage) => gaps.push(stage) });
     assert.equal(await lifecycle.prepareExecution('prompt'), undefined);
+    const linked: string[] = [];
+    lifecycle.whenExecutionRecorded((executionId) => linked.push(executionId));
     await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
     const attemptId = await lifecycle.beforeDelivery({
       method: 'slack_chat_post_message', approvedOutput: 'answer', renderedPayload: '{}',
@@ -195,6 +206,7 @@ test('a slow write that then fails is a gap, and nothing is recorded behind it',
     await lifecycle.settled();
 
     assert.deepEqual(gaps, ['prepare_input']);
+    assert.deepEqual(linked, [], 'no execution that never existed is handed out');
     assert.equal(fixture.calls('createRunExecution'), 0);
     assert.equal(fixture.calls('finalizeRunDelivery'), 0);
     assert.equal((await fixture.store.getRun(fixture.runId))?.status, 'admitted');
@@ -205,6 +217,150 @@ test('a slow write that then fails is a gap, and nothing is recorded behind it',
   } finally {
     fixture.close();
   }
+});
+
+test('a finished turn waits a bounded time for its queued writes, then records a gap', { timeout: 5000 }, async (context) => {
+  context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
+  const warnings: string[] = [];
+  context.mock.method(console, 'warn', (message: unknown) => { warnings.push(String(message)); });
+  // Every write lands well inside its own budget, but together they would
+  // hold the thread's next message far longer than the backlog may.
+  const writes: string[] = [];
+  const store = Object.fromEntries([
+    'prepareRunInput', 'createRunExecution', 'recordRunExecutionRoute', 'settleRunExecution',
+    'recordRunResponse', 'startRunDelivery', 'finalizeRunDelivery',
+  ].map((method) => [method, async () => {
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    writes.push(method);
+  }])) as unknown as WorkStore;
+  const gaps: string[] = [];
+  const lifecycle = new ShadowWorkLifecycle({
+    store,
+    runId: 'run_shadow_backlog' as RunId,
+    attemptNumber: 1,
+    agentName: 'profile_shadow_backlog',
+    canonicalModel: 'openai/gpt-5.6-sol',
+    sensitivity: 'public',
+    routeEvidence: {},
+    mode: 'observe',
+    onGap: (stage) => gaps.push(stage),
+  });
+  const preparing = lifecycle.prepareExecution('prompt');
+  await advance(context, 100);
+  assert.equal(await preparing, undefined);
+  await lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+  const attemptId = await lifecycle.beforeDelivery({
+    method: 'slack_chat_post_message', approvedOutput: 'answer', renderedPayload: '{}',
+  });
+  assert.ok(attemptId);
+  await lifecycle.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:D0:1.2' });
+  assert.equal(Date.now(), NOW + 100, 'the turn waits one observer budget and none of the queued writes');
+
+  let finished = false;
+  const settling = lifecycle.settled().then(() => { finished = true; });
+  await advance(context, SHADOW_BACKLOG_DEADLINE_MS - 1);
+  assert.equal(finished, false);
+  assert.deepEqual(writes, ['prepareRunInput', 'createRunExecution']);
+  assert.deepEqual(gaps, []);
+  await advance(context, 1);
+  assert.equal(finished, true, 'the backlog stops at its deadline');
+  await settling;
+  assert.deepEqual(gaps, ['record_route'], 'the write in flight at the deadline is the gap');
+  assert.ok(warnings.some((warning) => warning.includes('gap at record_route')));
+  await advance(context, DEFERRED_SHADOW_WRITE_BUDGET_MS);
+  assert.deepEqual(
+    writes,
+    ['prepareRunInput', 'createRunExecution', 'recordRunExecutionRoute'],
+    'nothing behind the gap is written',
+  );
+});
+
+test('a resumed stream recovery waits for the writes queued before it, then finalizes its delivery', async (context) => {
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await lifecycleFixture('public');
+  try {
+    await fixture.lifecycle.prepareExecution('original prompt');
+    await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const pending = await fixture.lifecycle.beforeDelivery({ method: 'slack_chat_stream_resume',
+      approvedOutput: 'Approved answer', renderedPayload: '{"stop":"original suffix"}' });
+    const held = holdStoreMethod(fixture.store, 'settleRunExecution');
+    const gaps: string[] = [];
+    const resumed = await createWorkExecutionLifecycle(held.store, {
+      runId: fixture.runId, attemptNumber: 2, executorKind: 'agent', agentName: 'profile_alpha',
+      canonicalModel: 'openai/gpt-5.6-sol', flueInstanceRef: 'flueinstance_test', routeEvidence: {},
+      resumeSettled: true,
+    }, { mode: 'observe', now: () => NOW + 1000, onGap: (stage) => gaps.push(stage) });
+    assert.equal(await resumed.prepareExecution('rehydrated prompt'), 'original prompt');
+    // Outlives the observer budget: queued, and the recovery read is behind it.
+    await resumed.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    setTimeout(() => held.release(), 50);
+    const attemptId = await resumed.beforeDelivery({ method: 'slack_chat_stream_recover',
+      approvedOutput: 'Approved answer', renderedPayload: '{"update":"Approved answer"}' });
+    assert.equal(attemptId, pending, 'the recovery reads its pending delivery, never skips it');
+    const afterSettle = held.calls.slice(held.calls.indexOf('settleRunExecution'));
+    const landed = afterSettle.indexOf('settleRunExecution landed');
+    assert.ok(
+      landed > 0 && afterSettle.indexOf('getRun') > landed,
+      'the recovery read waits for the write queued before it',
+    );
+    await resumed.afterDelivery({ attemptId, outcome: 'delivered', deliveryRef: 'slack:C123:123.456' });
+    await resumed.settled();
+    const run = await fixture.store.getRun(fixture.runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.deliveryStatus, 'delivered');
+    assert.deepEqual(gaps, []);
+  } finally { fixture.close(); }
+});
+
+test('a resumed attempt reads its saved input although the read outlives the observer budget', async (context) => {
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await lifecycleFixture('public');
+  try {
+    await fixture.lifecycle.prepareExecution('original prompt');
+    await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    const held = holdStoreMethod(fixture.store, 'getContent');
+    const gaps: string[] = [];
+    const resumed = await createWorkExecutionLifecycle(held.store, {
+      runId: fixture.runId, attemptNumber: 2, executorKind: 'agent', agentName: 'profile_alpha',
+      canonicalModel: 'openai/gpt-5.6-sol', flueInstanceRef: 'flueinstance_test', routeEvidence: {},
+      resumeSettled: true,
+    }, { mode: 'observe', onGap: (stage) => gaps.push(stage) });
+    setTimeout(() => held.release(), 150);
+    assert.equal(await resumed.prepareExecution('rehydrated prompt'), 'original prompt');
+    assert.equal(resumed.hasExecution, true);
+    assert.deepEqual(gaps, []);
+  } finally { fixture.close(); }
+});
+
+test('a resumed read the store never answers is a gap after its bound', { timeout: 5000 }, async (context) => {
+  context.mock.method(console, 'warn', () => undefined);
+  const fixture = await lifecycleFixture('public');
+  try {
+    await fixture.lifecycle.prepareExecution('original prompt');
+    await fixture.lifecycle.settleExecution({ outcome: 'succeeded', rawStatus: 'flue_succeeded' });
+    await fixture.lifecycle.beforeDelivery({ method: 'slack_chat_stream_resume',
+      approvedOutput: 'Approved answer', renderedPayload: '{"stop":"original suffix"}' });
+    const held = holdStoreMethod(fixture.store, 'getRun', false);
+    const gaps: string[] = [];
+    const resumed = await createWorkExecutionLifecycle(held.store, {
+      runId: fixture.runId, attemptNumber: 2, executorKind: 'agent', agentName: 'profile_alpha',
+      canonicalModel: 'openai/gpt-5.6-sol', flueInstanceRef: 'flueinstance_test', routeEvidence: {},
+      resumeSettled: true,
+    }, { mode: 'observe', onGap: (stage) => gaps.push(stage) });
+    assert.equal(await resumed.prepareExecution('rehydrated prompt'), 'original prompt');
+    context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
+    held.arm();
+    let done = false;
+    const recovering = resumed.beforeDelivery({ method: 'slack_chat_stream_recover',
+      approvedOutput: 'Approved answer', renderedPayload: '{"update":"Approved answer"}' })
+      .then((attemptId) => { done = true; return attemptId; });
+    await advance(context, DEFERRED_SHADOW_WRITE_BUDGET_MS - 1);
+    assert.equal(done, false, 'the read waits its bound for the store');
+    await advance(context, 1);
+    assert.equal(done, true, 'and no longer');
+    assert.equal(await recovering, undefined);
+    assert.deepEqual(gaps, ['start_delivery']);
+  } finally { fixture.close(); }
 });
 
 test('durable observational Work waits past 100ms without turning a slow owner into a gap', async () => {
@@ -593,6 +749,38 @@ async function lifecycleFixture(
       rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+/** Advance mocked timers in steps, letting each step's promise work run. */
+async function advance(context: TestContext, ms: number, step = 100): Promise<void> {
+  for (let left = ms; left > 0; left -= step) {
+    context.mock.timers.tick(Math.min(step, left));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/** `base` with one method held, once armed, until `release`; `calls` lists every call in order. */
+function holdStoreMethod(base: WorkStore, method: keyof WorkStore, armed = true) {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let holding = armed;
+  const calls: string[] = [];
+  const store = new Proxy(base, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      const bound = value.bind(target);
+      return async (...args: unknown[]) => {
+        calls.push(String(property));
+        if (property !== method) return bound(...args);
+        if (holding) await held;
+        const result = await bound(...args);
+        calls.push(`${method} landed`);
+        return result;
+      };
+    },
+  }) as WorkStore;
+  return { store, calls, arm: () => { holding = true; }, release };
 }
 
 const TRY_ASSIGNMENT: ResolvedAssignment = {

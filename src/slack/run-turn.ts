@@ -1739,9 +1739,12 @@ async function runTurnAttempt(
         : {}),
     });
     const persistedPrompt = await workLifecycle?.prepareExecution(prompt);
-    if (workLifecycle?.hasExecution) {
-      usageRecorder?.linkRunExecution(workLifecycle.executionId);
-    }
+    // Usage names the execution only once it exists. A creation queued behind
+    // a slow Work store links when it lands; usage recorded before then names
+    // none, never one that may not exist.
+    workLifecycle?.whenExecutionRecorded((executionId) => {
+      usageRecorder?.linkRunExecution(executionId);
+    });
     const executionPrompt = persistedPrompt ?? prompt;
 
     // 3 + 4. Prompt the durable agent, then deliver the final — with clearStatus
@@ -2262,10 +2265,13 @@ async function runTurnAttempt(
         }
       }
       await removeWorkAcknowledgment();
-      // Work writes a slow store queued behind its budget: the reply and its
-      // cleanup are done, so recording them now slows nothing the user sees.
-      await deliveryLifecycle?.settled();
     }
+    // Work writes queued behind a slow Work store are recorded now, within a
+    // bound. The reply and its cleanup are done, so the user waits for none of
+    // them. A yielded turn waits too: work left running after the alarm
+    // returns may never land, and the attempt that reattaches needs the
+    // execution this one opened.
+    await deliveryLifecycle?.settled();
   }
 }
 

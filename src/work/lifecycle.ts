@@ -49,14 +49,26 @@ type ShadowLifecycleStage =
 
 type ShadowDeliveryOutcome = 'delivered' | 'failed' | 'unknown';
 
-/** `deferred`: queued behind a write that outlived its budget (see observe). */
-type ObservedWrite = 'recorded' | 'deferred' | false;
+/**
+ * What became of one observe-mode stage when the turn moved on: `deferred` is
+ * queued behind a write that outlived its budget (see observe); `gap` was not
+ * recorded, because this stage or an earlier one is a gap.
+ */
+type ObservedWrite = 'recorded' | 'deferred' | 'gap';
 
 /**
- * How long one deferred observational write may take. The turn no longer
- * waits on it: it awaits the backlog only after its reply and cleanup.
+ * How long one deferred observational write may take, and one read the turn
+ * needs, its wait behind deferred writes included. The turn never waits on a
+ * deferred write: it awaits the backlog only after its reply and cleanup.
  */
 export const DEFERRED_SHADOW_WRITE_BUDGET_MS = 5_000;
+
+/**
+ * How long a finished turn waits, in all, for the writes deferred behind a
+ * slow one. The thread's next message waits behind the turn, so whatever is
+ * still unrecorded then is a gap.
+ */
+export const SHADOW_BACKLOG_DEADLINE_MS = 10_000;
 
 /** The execution a lifecycle opens for an attempt that does not resume a saved one. */
 export function shadowRunExecutionId(runId: RunId, attemptNumber: number): RunExecutionId {
@@ -74,7 +86,7 @@ export class ShadowWorkLifecycle {
   private readonly now: () => number;
   private usable = true;
   private executionCreated = false;
-  /** Its creation is queued behind a slow write and has not landed yet. */
+  /** Its creation was queued behind a slow write (and may not have landed yet). */
   private executionDeferred = false;
   private terminalDisposition: RunDisposition = 'succeeded';
   /**
@@ -83,6 +95,11 @@ export class ShadowWorkLifecycle {
    * in order, off the turn's path. Undefined while writes keep up.
    */
   private backlog: Promise<boolean> | undefined;
+  /** Ends the deferred write in flight once the backlog is past its deadline. */
+  private stopBacklog!: () => void;
+  private readonly backlogStopped = new Promise<void>((resolve) => { this.stopBacklog = resolve; });
+  /** Waiting for a creation queued behind a slow write (see whenExecutionRecorded). */
+  private readonly executionWaiters: Array<(executionId: RunExecutionId) => void> = [];
 
   constructor(private readonly options: ShadowWorkLifecycleOptions) {
     this.now = options.now ?? Date.now;
@@ -99,12 +116,38 @@ export class ShadowWorkLifecycle {
     return this.executionCreated || this.executionDeferred;
   }
 
+  /** Only the legacy observer's writes are raced against a budget and can be deferred. */
+  private get bounded(): boolean {
+    return this.options.mode !== 'enforce' && this.options.persistenceMode !== 'durable';
+  }
+
+  /**
+   * Hands `use` this attempt's execution once it is recorded: at once, or when
+   * a creation queued behind a slow write lands. A creation that never lands
+   * is never handed out, so nothing comes to name an execution that does not
+   * exist.
+   */
+  whenExecutionRecorded(use: (executionId: RunExecutionId) => void): void {
+    if (this.executionCreated) use(this.executionId);
+    else if (this.executionDeferred && this.usable) this.executionWaiters.push(use);
+  }
+
   /**
    * Resolves once every write deferred behind a slow one is recorded or
-   * abandoned; never rejects. A legacy turn awaits it after its reply and
-   * cleanup, so the Run still settles and the user never waits for it.
+   * abandoned, within SHADOW_BACKLOG_DEADLINE_MS; never rejects. A legacy turn
+   * awaits it after its reply and cleanup, so the Run still settles and the
+   * user never waits for it. Past the deadline the write in flight is a gap,
+   * and nothing behind it is recorded.
    */
   async settled(): Promise<void> {
+    if (!this.backlog) return;
+    if (await settleWithin(this.drainBacklog(), SHADOW_BACKLOG_DEADLINE_MS) !== 'pending') return;
+    // The write in flight records the gap as it stops; the rest then skip.
+    this.stopBacklog();
+    await this.drainBacklog();
+  }
+
+  private async drainBacklog(): Promise<void> {
     let awaited: Promise<boolean> | undefined;
     while (this.backlog !== awaited) {
       awaited = this.backlog;
@@ -115,17 +158,15 @@ export class ShadowWorkLifecycle {
   async prepareExecution(preparedInput: string): Promise<string | undefined> {
     if (!this.usable) return undefined;
     if (this.options.resumedExecution) {
-      let body: string | undefined;
-      const resumed = await this.observe('prepare_input', async () => {
+      const body = await this.observeRead('prepare_input', async () => {
         const run = await this.options.store.getRun(this.options.runId);
         const content = run?.preparedInputRef ? await this.options.store.getContent(run.preparedInputRef) : undefined;
         if (!content?.body || run?.fencingToken !== this.fencingToken) {
           throw new Error('Saved execution input or ownership is unavailable.');
         }
-        body = content.body;
-        this.executionCreated = true;
+        return content.body;
       });
-      if (resumed === 'deferred') this.executionDeferred = true;
+      if (body !== undefined) this.executionRecorded();
       return body;
     }
     let preparedRun: RunRecord | undefined;
@@ -138,7 +179,7 @@ export class ShadowWorkLifecycle {
     const prepared = await this.observe('prepare_input', async () => {
       preparedRun = await this.options.store.prepareRunInput(input);
     });
-    if (!prepared) return undefined;
+    if (prepared === 'gap') return undefined;
     let preparedBody: string | undefined;
     // A deferred input is checked by its execution, which requires it.
     if (prepared === 'recorded') {
@@ -168,13 +209,12 @@ export class ShadowWorkLifecycle {
         : {}),
       startedAt: this.now(),
     };
-    const created = await this.observe(
-      'create_execution',
-      () => this.options.store.createRunExecution(execution),
-    );
-    if (!created) return undefined;
-    if (created === 'recorded') this.executionCreated = true;
-    else this.executionDeferred = true;
+    const created = await this.observe('create_execution', async () => {
+      await this.options.store.createRunExecution(execution);
+      this.executionRecorded();
+    });
+    if (created === 'gap') return undefined;
+    if (created === 'deferred') this.executionDeferred = true;
     if (!this.options.deferRoute) {
       const routeRecorded = await this.recordRoute();
       if (!routeRecorded) return undefined;
@@ -202,7 +242,7 @@ export class ShadowWorkLifecycle {
     return await this.observe(
       'record_route',
       () => this.options.store.recordRunExecutionRoute(input),
-    ) !== false;
+    ) !== 'gap';
   }
 
   async settleExecution(input: {
@@ -246,8 +286,7 @@ export class ShadowWorkLifecycle {
   }): Promise<string | undefined> {
     if (!this.tracksExecution || !this.usable) return undefined;
     if (this.options.resumedExecution && input.method === 'slack_chat_stream_recover') {
-      let attemptId: string | undefined;
-      await this.observe('start_delivery', async () => {
+      return this.observeRead('start_delivery', async () => {
         const run = await this.options.store.getRun(this.options.runId);
         const approved = run?.policyApprovedOutputRef
           ? await this.options.store.getContent(run.policyApprovedOutputRef) : undefined;
@@ -258,9 +297,8 @@ export class ShadowWorkLifecycle {
         }
         // This is reconciliation of the original effect, not a new delivery.
         // Keep its immutable render and attempt until Slack confirms replacement.
-        attemptId = run.deliveryAttemptId;
+        return run.deliveryAttemptId;
       });
-      return attemptId;
     }
     const response = {
       runId: this.options.runId,
@@ -275,7 +313,7 @@ export class ShadowWorkLifecycle {
       'record_response',
       () => this.options.store.recordRunResponse(response),
     );
-    if (!recorded) return undefined;
+    if (recorded === 'gap') return undefined;
     const attemptId = opaqueId(
       'delivery',
       `${this.executionId}:${input.method}`,
@@ -291,7 +329,7 @@ export class ShadowWorkLifecycle {
       'start_delivery',
       () => this.options.store.startRunDelivery(delivery),
     );
-    return started ? attemptId : undefined;
+    return started === 'gap' ? undefined : attemptId;
   }
 
   async afterDelivery(input: {
@@ -338,8 +376,38 @@ export class ShadowWorkLifecycle {
     );
   }
 
+  private executionRecorded(): void {
+    this.executionCreated = true;
+    for (const use of this.executionWaiters.splice(0)) use(this.executionId);
+  }
+
+  /**
+   * A read whose result the turn needs (a resumed attempt's saved input, a
+   * stream recovery's pending delivery). It is never deferred, or the turn
+   * would go on without its result: it waits for the writes deferred before
+   * it, then reads, all within DEFERRED_SHADOW_WRITE_BUDGET_MS, and is a gap
+   * past that. A store that keeps up answers it as quickly as before.
+   */
+  private async observeRead<T>(stage: ShadowLifecycleStage, read: () => Promise<T>): Promise<T | undefined> {
+    if (!this.usable) return undefined;
+    let value: T | undefined;
+    if (!this.bounded) {
+      const observed = await this.observe(stage, async () => { value = await read(); });
+      return observed === 'recorded' ? value : undefined;
+    }
+    const behind = this.backlog;
+    const outcome = await settleWithin((async () => {
+      // A write before it that is a gap has recorded that gap already.
+      if (behind && !await behind) return;
+      value = await read();
+    })(), DEFERRED_SHADOW_WRITE_BUDGET_MS);
+    if (outcome === 'fulfilled') return value;
+    this.recordGap(stage);
+    return undefined;
+  }
+
   private async observe(stage: ShadowLifecycleStage, write: () => unknown): Promise<ObservedWrite> {
-    if (!this.usable) return false;
+    if (!this.usable) return 'gap';
     if (this.backlog) {
       // Behind a write still in flight: keep the order, never wait for it.
       this.defer(stage, write);
@@ -377,7 +445,7 @@ export class ShadowWorkLifecycle {
       this.options.onGap?.(stage);
       if (this.options.mode === 'enforce') throw error;
       this.warnGap(stage);
-      return false;
+      return 'gap';
     }
   }
 
@@ -385,14 +453,23 @@ export class ShadowWorkLifecycle {
   private defer(stage: ShadowLifecycleStage, write: () => unknown): void {
     this.backlog = (this.backlog ?? Promise.resolve(true)).then(async (keptUp) => {
       if (!keptUp || !this.usable) return false;
-      if (await withinBudget(Promise.resolve().then(write), DEFERRED_SHADOW_WRITE_BUDGET_MS)) {
-        return true;
-      }
-      this.usable = false;
-      this.options.onGap?.(stage);
-      this.warnGap(stage);
+      const outcome = await settleWithin(
+        Promise.resolve().then(write),
+        DEFERRED_SHADOW_WRITE_BUDGET_MS,
+        this.backlogStopped,
+      );
+      if (outcome === 'fulfilled') return true;
+      this.recordGap(stage);
       return false;
     });
+  }
+
+  /** The first gap of an attempt; nothing after it is recorded or reported again. */
+  private recordGap(stage: ShadowLifecycleStage): void {
+    if (!this.usable) return;
+    this.usable = false;
+    this.options.onGap?.(stage);
+    this.warnGap(stage);
   }
 
   private warnGap(stage: ShadowLifecycleStage): void {
@@ -409,9 +486,11 @@ async function withinBudget(value: unknown, budgetMs: number): Promise<boolean> 
   return await settleWithin(Promise.resolve(value), budgetMs) === 'fulfilled';
 }
 
+/** `stop`, once it resolves, ends the wait early, as the budget would. */
 async function settleWithin(
   value: Promise<unknown>,
   budgetMs: number,
+  stop?: Promise<void>,
 ): Promise<'fulfilled' | 'rejected' | 'pending'> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -420,6 +499,7 @@ async function settleWithin(
       new Promise<'pending'>((resolve) => {
         timer = setTimeout(() => resolve('pending'), budgetMs);
       }),
+      ...(stop ? [stop.then(() => 'pending' as const)] : []),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
