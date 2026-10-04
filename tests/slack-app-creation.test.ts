@@ -472,6 +472,29 @@ test('the fake Slack used by the workerd smoke records the icon upload by digest
       file_type: 'image/png',
     });
     assert.equal((await store.listAuditEvents(10))[0]?.reasonCode, 'icon_set');
+
+    // The fake accepts exactly one PNG file part named `file`.
+    const png = await readFile('assets/bot-avatar.png');
+    const upload = async (parts: Array<[string, Blob]>) => {
+      const form = new FormData();
+      form.set('app_id', 'A12345678');
+      for (const [name, blob] of parts) form.append(name, blob, 'chickpea.png');
+      const response = await backend.asFetch()('https://slack.com/api/apps.icon.set', {
+        method: 'POST', headers: { authorization: `Bearer ${CONFIG_TOKEN}` }, body: form,
+      });
+      return ((await response.json()) as { ok: boolean }).ok;
+    };
+    assert.equal(await upload([['file', new Blob([png], { type: 'image/png' })]]), true);
+    assert.equal(await upload([
+      ['file', new Blob([png], { type: 'image/png' })],
+      ['file', new Blob([png], { type: 'image/png' })],
+    ]), false);
+    assert.equal(await upload([
+      ['file', new Blob([png], { type: 'image/png' })],
+      ['image', new Blob([png], { type: 'image/png' })],
+    ]), false);
+    assert.equal(await upload([['file', new Blob([png], { type: 'image/jpeg' })]]), false);
+    assert.equal(await upload([]), false);
   } finally {
     store.close();
   }
@@ -481,36 +504,40 @@ test('every icon failure still leaves the created app recorded, unambiguous, and
   const cases: Array<{
     name: string;
     reason: string;
+    // A transport or availability failure is never recorded as a denial.
+    outcome?: 'denied' | 'failure';
     iconCalls: number;
     appIcon?: () => Promise<Uint8Array<ArrayBuffer>>;
     icon?: () => Response | Promise<Response>;
     auditFails?: boolean;
     sleepFails?: boolean;
   }> = [
-    { name: 'icon bytes unavailable', reason: 'icon_unavailable', iconCalls: 0,
+    { name: 'icon bytes unavailable', reason: 'icon_unavailable', outcome: 'failure', iconCalls: 0,
       appIcon: async () => { throw new Error(`no asset ${CONFIG_TOKEN}`); } },
-    { name: 'network error', reason: 'network_error', iconCalls: 1,
+    { name: 'network error', reason: 'network_error', outcome: 'failure', iconCalls: 1,
       icon: () => { throw new Error(`socket closed ${CONFIG_TOKEN}`); } },
-    { name: 'Slack rejection', reason: 'invalid_icon_size', iconCalls: 1,
+    { name: 'Slack rejection', reason: 'invalid_icon_size', outcome: 'denied', iconCalls: 1,
       icon: () => slackResponse({ ok: false, error: 'invalid_icon_size' }) },
-    { name: 'revoked token', reason: 'token_revoked', iconCalls: 1,
+    { name: 'revoked token', reason: 'token_revoked', outcome: 'denied', iconCalls: 1,
       icon: () => slackResponse({ ok: false, error: 'token_revoked' }) },
-    { name: 'Slack internal error', reason: 'internal_error', iconCalls: 1,
+    { name: 'Slack internal error', reason: 'internal_error', outcome: 'failure', iconCalls: 1,
       icon: () => slackResponse({ ok: false, error: 'internal_error' }) },
-    { name: 'HTTP failure without a body', reason: 'http_502', iconCalls: 1,
+    { name: 'Slack error code on an HTTP 503', reason: 'invalid_auth', outcome: 'failure', iconCalls: 1,
+      icon: () => new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 503 }) },
+    { name: 'HTTP failure without a body', reason: 'http_502', outcome: 'failure', iconCalls: 1,
       icon: () => new Response(null, { status: 502 }) },
-    { name: 'HTTP failure with an ok body', reason: 'http_500', iconCalls: 1,
+    { name: 'HTTP failure with an ok body', reason: 'http_500', outcome: 'failure', iconCalls: 1,
       icon: () => new Response(JSON.stringify({ ok: true }), { status: 500 }) },
-    { name: 'malformed success', reason: 'invalid_slack_response', iconCalls: 1,
+    { name: 'malformed success', reason: 'invalid_slack_response', outcome: 'failure', iconCalls: 1,
       icon: () => new Response('<html>ok</html>', { status: 200 }) },
-    { name: 'unsafe error text', reason: 'invalid_slack_response', iconCalls: 1,
+    { name: 'unsafe error text', reason: 'invalid_slack_response', outcome: 'failure', iconCalls: 1,
       icon: () => slackResponse({ ok: false, error: `bad ${CONFIG_TOKEN}` }) },
-    { name: 'rate limit beyond the retry bound', reason: 'ratelimited', iconCalls: 1,
+    { name: 'rate limit beyond the retry bound', reason: 'ratelimited', outcome: 'failure', iconCalls: 1,
       icon: () => slackResponse429('30') },
     { name: 'audit write failure', reason: 'icon_set', iconCalls: 1, auditFails: true,
       icon: () => slackResponse({ ok: true }) },
-    { name: 'unexpected failure while waiting to retry', reason: 'icon_error', iconCalls: 1, sleepFails: true,
-      icon: () => slackResponse429('1') },
+    { name: 'unexpected failure while waiting to retry', reason: 'icon_error', outcome: 'failure', iconCalls: 1,
+      sleepFails: true, icon: () => slackResponse429('1') },
   ];
   for (const testCase of cases) {
     const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
@@ -570,7 +597,7 @@ test('every icon failure still leaves the created app recorded, unambiguous, and
         assert.equal(audits.length, 0, testCase.name);
       } else {
         assert.equal(audits.length, 1, testCase.name);
-        assert.equal(audits[0]?.outcome, 'denied', testCase.name);
+        assert.equal(audits[0]?.outcome, testCase.outcome, testCase.name);
         assert.equal(audits[0]?.reasonCode, testCase.reason, testCase.name);
       }
       assert.doesNotMatch(
@@ -601,6 +628,8 @@ test('a rate-limited icon call is retried exactly once after a bounded Retry-Aft
         () => new Response(null, { status: 429, headers: { 'retry-after': '1' } }),
         () => slackResponse({ ok: true }),
       ] },
+    { name: 'Retry-After 0 still waits the minimum', reason: 'icon_set', sleeps: [1_000],
+      responses: [() => slackResponse429('0'), () => slackResponse({ ok: true })] },
     { name: 'Retry-After at the bound', reason: 'icon_set', sleeps: [5_000],
       responses: [() => slackResponse429('5'), () => slackResponse({ ok: true })] },
     { name: 'Retry-After past the bound', reason: 'ratelimited', sleeps: [],
@@ -616,6 +645,7 @@ test('a rate-limited icon call is retried exactly once after a bounded Retry-Aft
     const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
     const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
     const sleeps: number[] = [];
+    const signals: AbortSignal[] = [];
     let iconCalls = 0;
     try {
       const setup = await setupTransaction(store);
@@ -626,6 +656,8 @@ test('a rate-limited icon call is retried exactly once after a bounded Retry-Aft
         sleep: async (ms) => { sleeps.push(ms); },
         fetch: async (input: string | URL | Request, init?: RequestInit) => {
           if (!String(input).endsWith('/apps.icon.set')) return successfulCreateFetch()('', {});
+          assert.ok(init?.signal instanceof AbortSignal && !init.signal.aborted, testCase.name);
+          signals.push(init.signal);
           const form = await new Request(input, init).formData();
           assert.equal(form.get('app_id'), 'A12345678', testCase.name);
           assert.ok(form.get('file') instanceof Blob, testCase.name);
@@ -643,12 +675,63 @@ test('a rate-limited icon call is retried exactly once after a bounded Retry-Aft
       });
       assert.equal(created.state, 'app_created', testCase.name);
       assert.equal(iconCalls, testCase.responses.length, testCase.name);
+      assert.equal(new Set(signals).size, iconCalls, `${testCase.name}: each attempt has its own timeout`);
       assert.deepEqual(sleeps, testCase.sleeps, testCase.name);
       const [audit] = await store.listAuditEvents(10);
       assert.equal(audit?.reasonCode, testCase.reason, testCase.name);
     } finally {
       store.close();
     }
+  }
+});
+
+test('each icon attempt carries a short timeout, and a timed-out attempt still leaves the created app', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+  const bounds: number[] = [];
+  const signals: unknown[] = [];
+  // Stand in for the clock: the timeout's signal fires as soon as the icon
+  // request waits on it, the way a stalled Slack would after the bound.
+  const clock = new AbortController();
+  const timeout = AbortSignal.timeout;
+  AbortSignal.timeout = (ms: number) => { bounds.push(ms); return clock.signal; };
+  try {
+    const setup = await setupTransaction(store);
+    const service = new SlackAppCreationService({
+      identity: store,
+      credentials,
+      now: () => NOW,
+      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        if (!String(input).endsWith('/apps.icon.set')) return successfulCreateFetch()('', {});
+        const signal = init?.signal;
+        signals.push(signal);
+        if (!(signal instanceof AbortSignal)) return slackResponse({ ok: true });
+        // Like fetch: refuse an aborted signal, otherwise settle only when it aborts.
+        signal.throwIfAborted();
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          clock.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+        });
+      },
+    });
+    const created = await service.create({
+      setupId: setup.id,
+      expectedRevision: setup.revision,
+      configurationToken: CONFIG_TOKEN,
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    assert.deepEqual(signals, [clock.signal]);
+    assert.deepEqual(bounds, [5_000]);
+    assert.equal(created.state, 'app_created');
+    const stored = await store.getSlackSetupTransaction(setup.id);
+    assert.equal(stored?.state, 'app_created');
+    assert.equal(stored?.lastErrorCode, null);
+    const [audit] = await store.listAuditEvents(10);
+    assert.equal(audit?.outcome, 'failure');
+    assert.equal(audit?.reasonCode, 'network_error');
+  } finally {
+    AbortSignal.timeout = timeout;
+    store.close();
   }
 });
 
