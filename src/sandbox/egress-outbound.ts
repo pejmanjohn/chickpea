@@ -15,7 +15,13 @@ import {
   resolveRepositoryInstallationScope,
 } from './egress-handler.ts';
 import { githubAuthorizationHeader } from './github-auth.ts';
-import { admitGithubWrite, githubWriteRateLimited } from './github-write-rate.ts';
+import {
+  admitGithubRequest,
+  githubAnswerText,
+  githubSecondaryLimitSeconds,
+  githubWriteRateLimited,
+  latchGithubRequests,
+} from './github-write-rate.ts';
 import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
@@ -29,11 +35,12 @@ import {
  * in one call, which installation it serves and what its turn may reach,
  * and reads every tenant-owned store through that installation's env. A
  * Sandbox that cannot name its installation on a deployment serving many,
- * or whose installation the host no longer admits, gets nothing, and that
- * installation's GitHub writes are rate-limited. Profile grants are
- * persisted as policy only; the GitHub credential is minted after each
- * request passes the pure policy decision and is attached only to the
- * Worker-side forwarded Request.
+ * or whose installation the host no longer admits, gets nothing. Serving
+ * many, each installation's GitHub writes are rate-limited, and all its
+ * GitHub requests are held while GitHub's secondary limit lasts
+ * (github-write-rate.ts). Profile grants are persisted as policy only; the
+ * GitHub credential is minted after each request passes the pure policy
+ * decision and is attached only to the Worker-side forwarded Request.
  */
 
 export type SandboxOutboundContext = {
@@ -114,10 +121,13 @@ export async function githubSandboxOutbound(
     if (!installation) return denySandboxOutbound();
 
     // An installation of many shares the platform's GitHub App: its writes
-    // are rate-limited before a token is minted for them.
-    if (context.installationId && decision.effect !== 'read' &&
-      !(await admitGithubWrite({ store: settings, kind: decision.effect, now: Date.now() }))) {
-      return githubWriteRateLimited();
+    // are rate-limited, and none of its requests leave while GitHub's
+    // secondary limit holds it. Both are refused before a token is minted.
+    if (context.installationId) {
+      const admission = await admitGithubRequest({
+        store: settings, installationId: context.installationId, effect: decision.effect, now: Date.now(),
+      });
+      if (!admission.admitted) return githubWriteRateLimited(admission.retryAfterSeconds);
     }
     const { token: credential } = await getCachedInstallationToken(
       connection,
@@ -137,6 +147,17 @@ export async function githubSandboxOutbound(
     const headers = new Headers(request.headers);
     headers.set('Authorization', githubAuthorizationHeader(request.url, credential));
     const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
+    if (context.installationId) {
+      const seconds = await githubSecondaryLimitSeconds({
+        status: response.status,
+        retryAfter: response.headers.get('retry-after'),
+        body: () => githubAnswerText(response),
+        now: Date.now(),
+      });
+      if (seconds !== undefined) {
+        await latchGithubRequests({ store: settings, installationId: context.installationId, seconds, now: Date.now() });
+      }
+    }
     await recordPullRequestProgress(request, response, stub, capturedTurnId);
     return response;
   } catch {

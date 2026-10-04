@@ -47,6 +47,7 @@ import { resolveRepositoryInstallationScope } from '../src/sandbox/egress-handle
 import { githubSandboxOutbound, SANDBOX_BLOCKED_STATUS, type SandboxEgressStub } from '../src/sandbox/egress-outbound.ts';
 import type { SandboxEgressContext } from '../src/sandbox/cloudflare-policy.ts';
 import { NEUTRAL_GIT_IDENTITY, resolveWorkspaceGitIdentity } from '../src/sandbox/git-identity.ts';
+import { GITHUB_WRITES_KEY } from '../src/sandbox/github-write-rate.ts';
 import { resolveCodingWorkspaceDecision } from '../src/slack/run-turn.ts';
 import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
 import { configureHostedSandboxPolicy, resetHostedSandboxPolicyForTests } from '../src/config/hosted-sandbox-policy.ts';
@@ -447,6 +448,8 @@ function onCloudflare(t: TestContext): Record<string, unknown> {
       return new Proxy({}, { get(_target, property) {
         if (property === 'then') return undefined;
         return async (...args: unknown[]) => {
+          // The installation's GitHub write counts and hold, which its own GitHub requests check.
+          if (String(property) === 'settingGet' && args[0] === GITHUB_WRITES_KEY) return { ok: true, value: null };
           reads.push(`${installationId}:${String(property)}:${JSON.stringify(args[0])}`);
           if (String(property) === 'settingGet' || String(property) === 'settingGetMany') {
             throw new Error('a tenant setting was read');

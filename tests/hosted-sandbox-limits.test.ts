@@ -707,23 +707,28 @@ test('crafted requests cannot pass a write off as a read', () => {
 });
 
 test('an installation writes to GitHub at most 60 times in 10 minutes and opens at most 30 pull requests a day', async (t) => {
+  // Refused until the oldest write or pull request leaves its window.
+  const refusedFor = (seconds: number) => ({ admitted: false, retryAfterSeconds: seconds });
   const store = settingsStore(t);
   for (let index = 0; index < GITHUB_WRITES_PER_WINDOW; index += 1) {
-    assert.equal(await admitGithubWrite({ store, kind: 'write', now: T0 + index }), true);
+    assert.equal((await admitGithubWrite({ store, kind: 'write', now: T0 + index })).admitted, true);
   }
-  assert.equal(await admitGithubWrite({ store, kind: 'write', now: T0 + 100 }), false);
-  assert.equal(await admitGithubWrite({ store, kind: 'pull_request', now: T0 + 100 }), false);
-  assert.equal(await admitGithubWrite({ store, kind: 'write', now: T0 + GITHUB_WRITE_WINDOW_MS }), true, 'the window slides');
+  assert.deepEqual(await admitGithubWrite({ store, kind: 'write', now: T0 + 100 }), refusedFor(GITHUB_WRITE_WINDOW_MS / 1_000));
+  assert.deepEqual(await admitGithubWrite({ store, kind: 'pull_request', now: T0 + 100 }), refusedFor(GITHUB_WRITE_WINDOW_MS / 1_000));
+  assert.deepEqual(await admitGithubWrite({ store, kind: 'write', now: T0 + 4 * MINUTE }), refusedFor(6 * 60));
+  assert.equal((await admitGithubWrite({ store, kind: 'write', now: T0 + GITHUB_WRITE_WINDOW_MS })).admitted, true, 'the window slides');
 
   const prs = settingsStore(t);
   let now = T0;
   for (let index = 0; index < GITHUB_PULL_REQUESTS_PER_WINDOW; index += 1) {
     now += GITHUB_WRITE_WINDOW_MS / 10;
-    assert.equal(await admitGithubWrite({ store: prs, kind: 'pull_request', now }), true);
+    assert.equal((await admitGithubWrite({ store: prs, kind: 'pull_request', now })).admitted, true);
   }
-  assert.equal(await admitGithubWrite({ store: prs, kind: 'pull_request', now: now + 1 }), false);
-  assert.equal(await admitGithubWrite({ store: prs, kind: 'write', now: now + 1 }), true, 'other writes go on');
-  assert.equal(await admitGithubWrite({ store: prs, kind: 'pull_request', now: T0 + 24 * 60 * MINUTE + MINUTE }), true);
+  // The first of the day's pull requests was opened a minute after T0.
+  assert.deepEqual(await admitGithubWrite({ store: prs, kind: 'pull_request', now: now + 1 }),
+    refusedFor(Math.ceil((T0 + MINUTE + 24 * 60 * MINUTE - (now + 1)) / 1_000)));
+  assert.equal((await admitGithubWrite({ store: prs, kind: 'write', now: now + 1 })).admitted, true, 'other writes go on');
+  assert.equal((await admitGithubWrite({ store: prs, kind: 'pull_request', now: T0 + 24 * 60 * MINUTE + MINUTE })).admitted, true);
 });
 
 /** A state store per installation, as Cloudflare's TAG_STATE serves them. */
@@ -800,7 +805,8 @@ test('hosted GitHub egress refuses an installation\'s write past its rate before
   const push = () => new Request('https://github.com/acme/app.git/git-receive-pack', { method: 'POST', body: 'pack' });
   const limited = await githubSandboxOutbound(push(), env(INSTALLATION_A), { containerId: 'do_a' });
   assert.equal(limited.status, 429);
-  assert.equal(limited.headers.get('Retry-After'), '600');
+  const retryAfter = Number(limited.headers.get('Retry-After'));
+  assert.ok(retryAfter > GITHUB_WRITE_WINDOW_MS / 1_000 - 5 && retryAfter <= GITHUB_WRITE_WINDOW_MS / 1_000, String(retryAfter));
   // The handler judges the request it forwards, headers included.
   const overridden = new Request('https://api.github.com/repos/acme/app/pulls/4', { headers: { 'X-HTTP-Method-Override': 'PATCH' } });
   assert.equal((await githubSandboxOutbound(overridden, env(INSTALLATION_A), { containerId: 'do_a' })).status, 429);

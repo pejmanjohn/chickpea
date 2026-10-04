@@ -36,6 +36,7 @@ import {
   SANDBOX_BLOCKED_STATUS,
   type SandboxEgressStub,
 } from '../src/sandbox/egress-outbound.ts';
+import { GITHUB_WRITES_KEY } from '../src/sandbox/github-write-rate.ts';
 import { CLOUDFLARE_SANDBOX_OPTIONS } from '../src/sandbox/lifecycle.ts';
 import {
   resetRecordedWorkspaceObjectsForTests,
@@ -335,6 +336,11 @@ test('hosted GitHub egress mints through its own installation\'s binding, never 
     getByName(name: string) {
       const installationId = splitInstallationObjectName(name).scope?.installationId ?? name;
       return {
+        // The installation's GitHub write counts and hold, which its own GitHub requests check.
+        async settingGet(key: string) {
+          assert.equal(key, GITHUB_WRITES_KEY);
+          return { ok: true, value: null };
+        },
         async settingGetMany(keys: readonly string[]) {
           read.push(installationId);
           return {

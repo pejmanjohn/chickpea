@@ -22,8 +22,9 @@ const PACKAGE_REGISTRY_HOST_SET = new Set<string>(SANDBOX_PACKAGE_REGISTRY_HOSTS
 
 /**
  * What an allowed GitHub request does, for the hosted write rate
- * (github-write-rate.ts): `read` only when it surely reads, `pull_request`
- * when it may open one, and `write` for everything else.
+ * (github-write-rate.ts), on container egress and the Worker-side bash
+ * connectors alike: `read` only when it surely reads, `pull_request` when
+ * it may open one, and `write` for everything else.
  */
 export type GithubRequestEffect = 'read' | 'write' | 'pull_request';
 
@@ -220,11 +221,13 @@ export function decideSandboxEgress(input: SandboxEgressInput): SandboxEgressDec
 
 /**
  * Judged on the same URL and method the decision allowed and egress
- * forwards. A method-override header or `_method` parameter makes any
- * request a write; a pull request path is matched as GitHub routes it,
- * decoded, with repeated slashes collapsed and in any letter case.
+ * forwards; the Worker-side bash connectors judge theirs here too
+ * (github-write-rate.ts). A method-override header or `_method` parameter
+ * makes any request a write; a pull request path is matched as GitHub
+ * routes it, decoded, with repeated slashes collapsed and in any letter
+ * case. `method` is upper case.
  */
-function githubRequestEffect(url: URL, method: string, headers: Headers | undefined): GithubRequestEffect {
+export function githubRequestEffect(url: URL, method: string, headers: Headers | undefined): GithubRequestEffect {
   const overridden = METHOD_OVERRIDE_HEADERS.some((name) => headers?.has(name) === true) ||
     [...url.searchParams.keys()].some((key) => key.toLowerCase() === '_method');
   if (!overridden) {
