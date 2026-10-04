@@ -788,16 +788,19 @@ async function exerciseSlackRecovery(baseUrl, backend, eventsUrl) {
     'recovery bot token exchange reaches Slack through the Worker fetch for a redirect the app registered',
     `HTTP ${callback.status}; ${exchanges.join(',') || 'no token exchange'}`,
   );
+  const forged = await postSignedEvent(eventsUrl, {
+    type: 'url_verification', challenge: 'cf-smoke-forged-proof',
+  }, { signingSecret: 'forged-workerd-signing-secret' });
   const proof = await postSignedEvent(eventsUrl, {
     type: 'url_verification', challenge: 'cf-smoke-recovery-proof',
   }, { signingSecret: regeneratedSecret });
   const finalized = await postForm(baseUrl, '/admin/recovery', { action: 'finalize' }, cookie);
   const finalizedHtml = await finalized.text();
   check(
-    proof.status === 200 && proof.body?.challenge === 'cf-smoke-recovery-proof' &&
+    forged.status === 401 && proof.status === 200 && proof.body?.challenge === 'cf-smoke-recovery-proof' &&
       finalized.status === 200 && finalizedHtml.includes('Slack connection repaired'),
-    'Slack\'s URL check signed with the regenerated secret answers, and finalize promotes the repair',
-    `proof HTTP ${proof.status}; finalize HTTP ${finalized.status}`,
+    'Slack\'s URL check signed with the regenerated secret answers (a forged one does not), and finalize promotes the repair',
+    `forged HTTP ${forged.status}; proof HTTP ${proof.status}; finalize HTTP ${finalized.status}`,
   );
   const [recovered, superseded] = [
     await postSignedEvent(eventsUrl, { type: 'url_verification', challenge: 'cf-smoke-after-recovery' },
