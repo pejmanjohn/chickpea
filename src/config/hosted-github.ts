@@ -114,12 +114,13 @@ export function configureHostedGithubConnect(connect: HostedGithubConnect | unde
 
 /**
  * The path Admin's Connect GitHub form posts to, or null when connecting
- * cannot start here: no path, no port, or no complete platform App.
+ * cannot start here: no path, no port, or no complete platform App. A caller
+ * that has already read the App passes it, so it is not read again.
  */
-export async function hostedGithubConnectPath(): Promise<string | null> {
+export async function hostedGithubConnectPath(app?: HostedGithubApp): Promise<string | null> {
   const path = connectPath;
   if (path === null || port === undefined) return null;
-  return await hostedGithubApp() ? path : null;
+  return (app ?? await hostedGithubApp()) ? path : null;
 }
 
 /** The platform App, or undefined when no port is installed or its App is incomplete. Never throws. */

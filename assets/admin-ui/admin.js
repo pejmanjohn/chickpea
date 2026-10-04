@@ -629,6 +629,11 @@
       .replace(/'/g, "&#39;");
   }
 
+  // A path on this origin that a host supplied for a link or form, or "".
+  function sameOriginPath(path) {
+    return typeof path === "string" && /^\/(?![\/\\])/.test(path) ? path : "";
+  }
+
   function api(path, options) {
     return fetch(path, Object.assign({ credentials: "same-origin" }, options || {})).then(function (response) {
       return response.text().then(function (text) {
@@ -1533,7 +1538,8 @@
     return bar ? main.replace(/^<main class="main"><div class="main-inner[^"]*">/, function (open) { return open + bar; }) : main;
   }
 
-  // Hosted only: once, on the page a GitHub connect returned to.
+  // Hosted only: once, on the page a GitHub connect returned to, Settings or
+  // onboarding's Try.
   function githubConnectedNoticeHtml() {
     return !SELF_HOSTED && state.githubConnected
       ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
@@ -1546,7 +1552,7 @@
       ? '<div class="callout slack-permissions-bar" role="status"><span>Slack permissions updated.</span></div>'
       : "";
     var permissions = state.slack && state.slack.slackPermissions;
-    if (!permissions || permissions.status !== "update_needed" || typeof permissions.updatePath !== "string" || !/^\/(?![/\\])/.test(permissions.updatePath)) return notice;
+    if (!permissions || permissions.status !== "update_needed" || !sameOriginPath(permissions.updatePath)) return notice;
     if (!permissions.canUpdate) {
       return notice + '<div class="callout slack-permissions-bar" role="status"><span>Chickpea needs a few new Slack permissions. Ask a Chickpea Owner to update them.</span></div>';
     }
@@ -2522,13 +2528,13 @@
     if (!workspace || !slackAppId) return '<div class="empty"><p class="field-error">The Chickpea conversation is unavailable. Reconnect Slack and try again.</p></div>';
     var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
     if (complete) {
-      return '<section class="onboarding-panel onboarding-panel-wide">' + onboardingGithubConnectedHtml() + '<span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
+      return '<section class="onboarding-panel onboarding-panel-wide">' + githubConnectedNoticeHtml() + '<span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
         '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide">' + onboardingGithubConnectedHtml() + '<div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
+    return '<section class="onboarding-panel onboarding-panel-wide">' + githubConnectedNoticeHtml() + '<div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
       '<p class="onboarding-eyebrow">Step ' + onboardingStepLabels().length + ' of ' + onboardingStepLabels().length + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
@@ -2544,8 +2550,7 @@
   // Hosted onboarding offers Connect GitHub (optional) between the model and
   // Try Chickpea while the host can start its connect flow; standalone never.
   function onboardingGithubConnectPath() {
-    var path = !SELF_HOSTED && state.onboarding && state.onboarding.githubConnectPath;
-    return typeof path === "string" && /^\/(?![\/\\])/.test(path) ? path : "";
+    return SELF_HOSTED || !state.onboarding ? "" : sameOriginPath(state.onboarding.githubConnectPath);
   }
 
   function onboardingStepLabels() {
@@ -2563,12 +2568,6 @@
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
       '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy) +
       '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div></section>';
-  }
-
-  function onboardingGithubConnectedHtml() {
-    return !SELF_HOSTED && state.githubConnected
-      ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
-      : "";
   }
 
   function onboardingMainHtml() {
@@ -6588,13 +6587,22 @@
     return (draft.repositories || []).filter(function (grant) { return grant && grant.enabled; });
   }
 
+  // Hosted maps a grant to its account by name, as the host's token minting
+  // does, whatever installation the grant stored.
+  function sameGithubAccount(left, right) {
+    return String(left).toLowerCase() === String(right).toLowerCase();
+  }
+
   function repositoryGroups(draft) {
     var groups = new Map();
     enabledRepositoryGrants(draft).forEach(function (grant) {
-      var accountLogin = grant.installationId === null
+      var accountLogin = grant.installationId === null && SELF_HOSTED
         ? (repositoryOwner(grant.fullName) || grant.accountLogin)
         : grant.accountLogin;
-      var key = grant.installationId === null ? "legacy:" + accountLogin : "app:" + grant.installationId;
+      // Hosted: one group per account, so an older grant and newer picks of
+      // the same account read as one.
+      var key = !SELF_HOSTED ? "account:" + String(accountLogin).toLowerCase()
+        : grant.installationId === null ? "legacy:" + accountLogin : "app:" + grant.installationId;
       var group = groups.get(key);
       if (!group) {
         group = { installationId: grant.installationId, accountLogin: accountLogin, grants: [] };
@@ -6608,9 +6616,9 @@
   }
 
   function repositoryGrantMatchesPicker(grant, picker) {
-    // Hosted maps grants to accounts by name, so a reconnected account's
-    // grants are its own whatever installation they stored.
-    if (!SELF_HOSTED) return String(grant.accountLogin).toLowerCase() === String(picker.accountLogin).toLowerCase();
+    // Hosted: a reconnected account's grants are its own whatever
+    // installation they stored.
+    if (!SELF_HOSTED) return sameGithubAccount(grant.accountLogin, picker.accountLogin);
     if (grant.installationId === picker.installationId) return true;
     // Older grants may carry no installation id. Once the same account is
     // managed through an App installation, adopt those explicit rows so an
@@ -6680,9 +6688,8 @@
   // Hosted: the connected account a group of grants belongs to. The host
   // maps grants to accounts by name, whatever installation they stored.
   function repositoryGroupAccount(group, installations) {
-    var login = String(group.accountLogin).toLowerCase();
     return installations.find(function (installation) {
-      return String(installation.accountLogin).toLowerCase() === login;
+      return sameGithubAccount(installation.accountLogin, group.accountLogin);
     }) || null;
   }
 
@@ -6729,8 +6736,10 @@
         ? '<button type="button" class="btn btn-soft btn-sm" data-action="repo-manage" data-installation="' + esc(target.id) + '" data-account="' + esc(target.accountLogin) + '">Manage</button>'
         : '<span class="hint">Install the GitHub App on ' + esc(group.accountLogin) + ' to manage these.</span>';
     }
-    var allToggle = group.installationId === null || (!SELF_HOSTED && !target) ? "" :
-      '<label class="repo-all-label"><span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="repo-all" data-installation="' + esc(group.installationId) + '" data-account="' + esc(group.accountLogin) + '" ' + (allRepositories ? "checked" : "") + ' aria-label="All repositories for ' + esc(group.accountLogin) + '"></span><span class="field-label">All repositories</span></label>';
+    // Hosted: "All repositories" belongs to the connected account.
+    var allInstallation = SELF_HOSTED ? group.installationId : target ? target.id : null;
+    var allToggle = allInstallation === null ? "" :
+      '<label class="repo-all-label"><span class="toggle"><span class="thumb"></span><input type="checkbox" data-action="repo-all" data-installation="' + esc(allInstallation) + '" data-account="' + esc(group.accountLogin) + '" ' + (allRepositories ? "checked" : "") + ' aria-label="All repositories for ' + esc(group.accountLogin) + '"></span><span class="field-label">All repositories</span></label>';
     return '<details class="repo-group" open><summary><span class="repo-avatar">' + esc(String(group.accountLogin || "?").slice(0, 1)) + '</span>' +
       '<span class="repo-group-name">' + esc(group.accountLogin) + '</span><span class="repo-group-count">' + esc(selectionLabel) + '</span></summary>' +
       '<div class="repo-group-body"><div class="repo-group-actions">' + allToggle + manage + '</div>' +
@@ -8893,8 +8902,7 @@
   // through the host's flow: a plain form, so the browser follows the host's
   // redirects to GitHub and back here.
   function githubConnectPath(status) {
-    var path = status && status.connectPath;
-    return typeof path === "string" && /^\/(?![\/\\])/.test(path) ? path : "";
+    return status ? sameOriginPath(status.connectPath) : "";
   }
 
   function githubConnectFormHtml(path, next, label, buttonClass, disabled) {
@@ -10982,8 +10990,12 @@
   function toggleAllRepositories(installationId, accountLogin, checked) {
     if (!state.profileDraft || !Number.isInteger(installationId) || installationId < 1) return;
     var current = state.profileDraft.repositories || [];
+    // Hosted groups an account's grants by name (see repositoryGroups).
+    function inGroup(grant) {
+      return SELF_HOSTED ? grant.installationId === installationId : sameGithubAccount(grant.accountLogin, accountLogin);
+    }
     if (checked) {
-      var retained = current.filter(function (grant) { return grant.installationId !== installationId; });
+      var retained = current.filter(function (grant) { return !inGroup(grant); });
       var usedIds = new Set(retained.map(function (grant) { return grant.id; }));
       retained.push({
         id: uniqueRepositoryGrantId("all", installationId, usedIds),
@@ -10996,7 +11008,7 @@
       state.profileDraft.repositories = retained;
     } else {
       state.profileDraft.repositories = current.filter(function (grant) {
-        return !(grant.installationId === installationId && grant.allRepos === true);
+        return !(inGroup(grant) && grant.allRepos === true);
       });
     }
     invalidateProfileRepositories(state.profileDraft.id);

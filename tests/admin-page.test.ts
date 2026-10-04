@@ -18871,6 +18871,49 @@ test('hosted Agent › Repositories with nothing connected shows string 1 and ke
   assert.ok(!standalone.app.innerHTML.includes(STRING_1));
 });
 
+test('hosted Agent › Repositories groups an account\'s grants by account, as hosted minting maps them, whatever installation each stored', async () => {
+  const harness = await hostedRepositoriesTab(hostedGithubStatus(), {
+    agents: [{
+      ...releaseAgent,
+      repositories: [
+        // Saved while acme was connected under an older installation.
+        { id: 'repo_acme_all', installationId: 5_555_009, accountLogin: 'acme', fullName: '', allRepos: true, enabled: true },
+        { id: 'repo_acme_app', installationId: HOSTED_GITHUB_ORG, accountLogin: 'ACME', fullName: 'acme/app', enabled: true },
+      ],
+    }],
+  });
+  const html = harness.app.innerHTML;
+  assert.equal((html.match(/<span class="repo-group-name">/g) ?? []).length, 1, 'one group');
+  const group = repositoryGroup(html, 'acme');
+  assert.match(group, /<span class="repo-group-count">All repositories<\/span>/);
+  assert.match(group, new RegExp(`data-action="repo-all" data-installation="${HOSTED_GITHUB_ORG}" data-account="acme" checked`));
+  assert.match(group, new RegExp(`data-action="repo-manage" data-installation="${HOSTED_GITHUB_ORG}" data-account="acme">Manage</button>`));
+  // Turning All repositories off ends the account's own, whichever installation it stored.
+  harness.listeners.change?.({
+    target: checkboxTarget({ 'data-action': 'repo-all', 'data-installation': String(HOSTED_GITHUB_ORG), 'data-account': 'acme' }, false),
+  });
+  assert.equal((harness.app.innerHTML.match(/<span class="repo-group-name">/g) ?? []).length, 1);
+  const after = repositoryGroup(harness.app.innerHTML, 'ACME');
+  assert.match(after, /<span class="repo-group-count">1 repository<\/span>/);
+  assert.match(after, /data-repository-id="repo_acme_app"/);
+  assert.doesNotMatch(after, /data-action="repo-all"[^>]* checked/);
+
+  // Standalone still groups by installation.
+  const standalone = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release', initialSearch: '?tab=repositories',
+    agents: [{
+      ...releaseAgent,
+      repositories: [
+        { id: 'repo_acme_all', installationId: 5_555_009, accountLogin: 'acme', fullName: '', allRepos: true, enabled: true },
+        { id: 'repo_acme_app', installationId: HOSTED_GITHUB_ORG, accountLogin: 'acme', fullName: 'acme/app', enabled: true },
+      ],
+    }],
+    githubStatus: connectedGithubStatus,
+  });
+  await flushAsync();
+  assert.equal((standalone.app.innerHTML.match(/<span class="repo-group-name">acme<\/span>/g) ?? []).length, 2);
+});
+
 test('a hosted save refused because a GitHub account is not connected shows the generic save error and reloads the accounts', async () => {
   const harness = await hostedRepositoriesTab(hostedGithubStatus(), {
     agentWriteError: { status: 400, error: 'github_account_not_connected' },

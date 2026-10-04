@@ -26,9 +26,10 @@ export interface OnboardingJourney {
   trySlackUserId?: string;
   tryStartedAt?: number;
   /**
-   * When a deployment serving many installations offered its optional
-   * Connect GitHub step after the model, the time the person connected or
-   * skipped it. Read only there; standalone journeys never carry it.
+   * On a deployment serving many installations, when the optional Connect
+   * GitHub step after the model was settled: the time the person connected
+   * or skipped it, or the time Try started when the step was not offered.
+   * Read only there; standalone journeys never carry it.
    */
   githubStepAt?: number;
   completedAt?: number;
@@ -99,6 +100,12 @@ export async function startOnboardingTry(
     modelId: string;
     slackUserId: string;
     tryStartedAt?: number;
+    /**
+     * Serving many installations with no Connect GitHub step to offer:
+     * settle the step now, so a connect path installed later never sends a
+     * journey that reached Try back to it.
+     */
+    githubStepNotOffered?: boolean;
   },
 ): Promise<OnboardingSnapshot> {
   const current = parseOnboardingJourney(input.expectedRevision);
@@ -107,12 +114,14 @@ export async function startOnboardingTry(
     throw new Error('Onboarding cannot start Try before choosing a provider.');
   }
   const selectedModelId = modelId(input.modelId, current.selectedProviderId);
+  const tryStartedAt = validTime(input.tryStartedAt ?? Date.now());
   return writeJourney(settings, input.expectedRevision, {
     ...current,
     agentId: agentId(input.agentId),
     selectedModelId,
     trySlackUserId: slackId(input.slackUserId, 'slackUserId'),
-    tryStartedAt: validTime(input.tryStartedAt ?? Date.now()),
+    tryStartedAt,
+    ...(input.githubStepNotOffered && current.githubStepAt === undefined ? { githubStepAt: tryStartedAt } : {}),
   });
 }
 

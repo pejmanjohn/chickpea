@@ -44,6 +44,8 @@ import {
   settleOnboardingGithubStep,
   startOnboardingTry,
 } from '../src/config/onboarding-state.ts';
+import { rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
+import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig, RepositoryGrant } from '../src/config/types.ts';
@@ -60,10 +62,12 @@ import { NEUTRAL_GIT_IDENTITY, resolveWorkspaceGitIdentity } from '../src/sandbo
 import { GITHUB_WRITES_KEY } from '../src/sandbox/github-write-rate.ts';
 import { resolveCodingWorkspaceDecision } from '../src/slack/run-turn.ts';
 import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
 import { configureHostedSandboxPolicy, resetHostedSandboxPolicyForTests } from '../src/config/hosted-sandbox-policy.ts';
 // @ts-expect-error Executable helpers are JavaScript, shared with the verifiers.
 import { REQUIRED_PACKAGED_FILES } from '../scripts/lib/source-export-policy.mjs';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -93,6 +97,7 @@ const binding = (githubInstallationId: number, accountLogin: string, status: 'ac
 });
 
 interface Port {
+  appReads: number;
   bindings: Map<string, unknown[]>;
   disconnected: Array<[string, number]>;
   gone: Array<[string, number]>;
@@ -104,6 +109,7 @@ function platform(t: TestContext, options: { app?: unknown; admitted?: (id: stri
   resetHostedGithubForTests();
   resetInstallationAdmissionForTests();
   const state: Port = {
+    appReads: 0,
     bindings: new Map<string, unknown[]>([
       [INSTALLATION_A, [binding(GITHUB_A, 'acme-a')]],
       [INSTALLATION_B, [binding(GITHUB_B, 'acme-b')]],
@@ -113,7 +119,7 @@ function platform(t: TestContext, options: { app?: unknown; admitted?: (id: stri
     lists: [],
   };
   const port: HostedGithubPort = {
-    app: () => ('app' in options ? options.app : PLATFORM_APP),
+    app: () => { state.appReads += 1; return 'app' in options ? options.app : PLATFORM_APP; },
     bindings: {
       async list(installationId) { state.lists.push(installationId); return state.bindings.get(installationId) ?? []; },
       async disconnect(installationId, githubInstallationId) {
@@ -373,12 +379,24 @@ test('mintableInstallation maps a grant to its account\'s binding under tenancy,
 
 const ADMIN_TOKEN = 'hosted-github-admin-token';
 
-function hostedAdmin(t: TestContext, agents: CustomAgentConfig[] = []) {
+/** A signed-in Member: may use Agents, may not configure the installation. */
+const memberPrincipal = (): AuthPrincipal => ({
+  userId: 'user_test_member', membershipId: 'membership_test_member', organizationId: 'org_oss', role: 'member',
+  authenticatorKind: 'test_slack_session', credentialId: 'session_test_member', correlationId: 'request_test_member', machine: false,
+});
+
+function hostedAdmin(
+  t: TestContext,
+  agents: CustomAgentConfig[] = [],
+  as: { identity?: SqliteIdentityStore; principal?: AuthPrincipal } = {},
+) {
   const store = new SqliteConfigStore(':memory:', { agents });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { store.close(); settings.close(); });
   const app = new Hono();
-  app.route('/', createAdminRoutes({ store, settings, knownProviders: new Set(['local-stub']), ...testAdminAuthority(ADMIN_TOKEN) }));
+  app.route('/', createAdminRoutes({
+    store, settings, knownProviders: new Set(['local-stub']), ...testAdminAuthority(ADMIN_TOKEN, undefined, as.identity, as.principal),
+  }));
   const request = (env: Record<string, unknown> | undefined, path: string, init: RequestInit = {}) => app.request(path, {
     ...init,
     headers: { ...testAdminHeaders(ADMIN_TOKEN), 'content-type': 'application/json', ...init.headers },
@@ -731,6 +749,16 @@ test('disconnect ends one of the installation\'s own bindings through the host; 
   assert.deepEqual(fetched, []);
 });
 
+test('a Member cannot disconnect a connected GitHub account', async (t) => {
+  const port = platform(t);
+  github(t);
+  const { request } = hostedAdmin(t, [], { principal: memberPrincipal() });
+  const refused = await request(ENV_A, `/admin/api/github/installations/${GITHUB_A}`, { method: 'DELETE' });
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json() as { error: string }).error, 'forbidden');
+  assert.deepEqual(port.disconnected, [], 'the host is never asked');
+});
+
 test('the host is asked to end only a binding the installation holds', async (t) => {
   const port = platform(t);
   assert.equal(await disconnectHostedGithubBinding(INSTALLATION_A, GITHUB_B), undefined);
@@ -897,14 +925,16 @@ test('the connect path reaches Admin only from a host with a complete App, and o
   assert.throws(() => configureHostedGithubConnect({ path: 'https://evil.example/connect' }), /same-origin/);
   assert.throws(() => configureHostedGithubConnect({ path: '//evil.example/connect' }), /same-origin/);
   assert.throws(() => configureHostedGithubConnect({ path: '/\\evil.example' }), /same-origin/);
-  platform(t);
+  const port = platform(t);
   github(t);
   const { request } = hostedAdmin(t);
   const connectPath = async (env: Record<string, unknown> | undefined) =>
     ((await (await request(env, '/admin/api/github/status')).json()) as { connectPath?: unknown }).connectPath;
   assert.equal(await connectPath(ENV_A), null, 'no hook installed');
   configureHostedGithubConnect({ path: '/github/connect' });
+  const reads = port.appReads;
   assert.equal(await connectPath(ENV_A), '/github/connect');
+  assert.equal(port.appReads - reads, 2, 'the connection reads the App once, and the status once more');
   assert.equal(await connectPath(undefined), undefined, 'standalone status is unchanged');
   platform(t, { app: undefined });
   configureHostedGithubConnect({ path: '/github/connect' });
@@ -966,6 +996,86 @@ test('without a host connect path, and on standalone, onboarding goes from the m
   assert.equal((await readOnboardingJourney(hosted.settings))?.journey.githubStepAt, undefined);
 });
 
+test('settling the GitHub step before the model is a conflict, not a server error', async (t) => {
+  platform(t);
+  configureHostedGithubConnect({ path: '/github/connect' });
+  const admin = hostedAdmin(t);
+  const begun = await beginOnboardingJourney(admin.settings, 100);
+  const provider = await selectOnboardingProvider(admin.settings, { expectedRevision: begun.revision, workspaceId: 'TONBOARD', providerId: 'anthropic' });
+  const early = await admin.request(ENV_A, '/admin/api/onboarding/github', { method: 'POST', body: JSON.stringify({ expectedRevision: provider.revision }) });
+  assert.equal(early.status, 409);
+  assert.deepEqual(await early.json(), { error: 'onboarding_try_required' });
+  assert.equal((await readOnboardingJourney(admin.settings))?.revision, provider.revision, 'nothing is written');
+});
+
+test('a Member cannot settle the onboarding GitHub step', async (t) => {
+  platform(t);
+  configureHostedGithubConnect({ path: '/github/connect' });
+  const { settings } = await onboardingAtTry(t);
+  const before = await readOnboardingJourney(settings);
+  const member = hostedAdmin(t, [], { principal: memberPrincipal() });
+  const refused = await member.request(ENV_A, '/admin/api/onboarding/github', { method: 'POST', body: JSON.stringify({ expectedRevision: before!.revision }) });
+  assert.equal(refused.status, 403);
+  assert.equal((await refused.json() as { error: string }).error, 'forbidden');
+});
+
+/** An Owner's onboarding at Choose model, signed in as a Slack user of the workspace, and a request that starts Try. */
+async function onboardingAtModel(t: TestContext, env: Record<string, unknown> | undefined) {
+  const identity = new SqliteIdentityStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  t.after(() => { identity.close(); usage.close(); invalidateProviderKeyCache(); });
+  invalidateProviderKeyCache();
+  const owner = await createSlackOwner(identity, { teamId: 'TONBOARD', userId: 'UONBOARD', suffix: 'h14b-onboarding' });
+  const admin = hostedAdmin(t, [], {
+    identity,
+    principal: {
+      userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId,
+      role: 'owner', authenticatorKind: 'test_slack_session', credentialId: 'session_h14b', correlationId: 'h14b', machine: false,
+    },
+  });
+  await admin.store.ensureWorkspaceInstallation({
+    workspaceId: 'TONBOARD', teamId: 'TONBOARD', appId: 'AONBOARD', botUserId: 'UONBOARDBOT',
+    gatewayBindingId: 'onboarding-gateway-binding', transportMode: 'gateway', runtimeContract: 'chickpea-v1',
+  });
+  await rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'h14b-onboarding-test-key' }, { env, settings: admin.settings, usage });
+  const begun = await beginOnboardingJourney(admin.settings, 100);
+  const provider = await selectOnboardingProvider(admin.settings, { expectedRevision: begun.revision, workspaceId: 'TONBOARD', providerId: 'anthropic' });
+  const startTry = async () => {
+    const workspace = await (await admin.request(env, '/admin/api/workspace-model-default')).json() as { workspaceDefault: { revision: number } };
+    const tried = await admin.request(env, '/admin/api/onboarding/try', {
+      method: 'POST',
+      body: JSON.stringify({ expectedRevision: provider.revision, modelId: 'anthropic/claude-sonnet-5', expectedDefaultRevision: workspace.workspaceDefault.revision }),
+    });
+    assert.equal(tried.status, 200, await tried.clone().text());
+    return await tried.json() as { stage: string };
+  };
+  return { ...admin, startTry };
+}
+
+test('a hosted journey that reached Try with no GitHub step offered stays at Try once the host can connect', async (t) => {
+  platform(t);
+  useDeploymentKeyring(t);
+  // Nothing here reaches a provider or GitHub.
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('no network in this test'); });
+  const hosted = await onboardingAtModel(t, ENV_A);
+  assert.equal((await hosted.startTry()).stage, 'try');
+  const journey = (await readOnboardingJourney(hosted.settings))!.journey;
+  assert.equal(journey.githubStepAt, journey.tryStartedAt, 'the step not offered is settled when Try starts');
+  // The host installs its connect path later: the journey stays at Try.
+  configureHostedGithubConnect({ path: '/github/connect' });
+  const later = await (await hosted.request(ENV_A, '/admin/api/onboarding')).json() as { stage: string; githubConnectPath?: string };
+  assert.equal(later.stage, 'try');
+  assert.equal(later.githubConnectPath, '/github/connect');
+  // A host that offers the step when Try starts stops there instead.
+  const offered = await onboardingAtModel(t, ENV_A);
+  assert.equal((await offered.startTry()).stage, 'connect_github');
+  assert.equal((await readOnboardingJourney(offered.settings))!.journey.githubStepAt, undefined);
+  // Standalone never records the step.
+  const standalone = await onboardingAtModel(t, undefined);
+  assert.equal((await standalone.startTry()).stage, 'try');
+  assert.equal((await readOnboardingJourney(standalone.settings))!.journey.githubStepAt, undefined);
+});
+
 test('the GitHub step is part of the journey: it follows the model, and choosing a provider again resets it', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   try {
@@ -978,8 +1088,13 @@ test('the GitHub step is part of the journey: it follows the model, and choosing
     const settled = await settleOnboardingGithubStep(settings, trying.revision, 400);
     assert.equal(settled.journey.githubStepAt, 400);
     assert.equal((await settleOnboardingGithubStep(settings, settled.revision, 500)).revision, settled.revision, 'once recorded it stays');
+    const again = await startOnboardingTry(settings, {
+      expectedRevision: settled.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: 'U1', tryStartedAt: 600,
+      githubStepNotOffered: true,
+    });
+    assert.equal(again.journey.githubStepAt, 400, 'starting Try again keeps it');
     assert.throws(() => parseOnboardingJourney(JSON.stringify({ version: 2, state: 'active', startedAt: 100, githubStepAt: 400 })), /invalid/);
-    const reselected = await selectOnboardingProvider(settings, { expectedRevision: settled.revision, workspaceId: 'T1', providerId: 'openai' });
+    const reselected = await selectOnboardingProvider(settings, { expectedRevision: again.revision, workspaceId: 'T1', providerId: 'openai' });
     assert.equal(reselected.journey.githubStepAt, undefined);
   } finally {
     settings.close();

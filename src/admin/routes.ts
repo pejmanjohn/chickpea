@@ -10129,6 +10129,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         agentId: CHICKPEA_AGENT_ID,
         modelId: parsed.output.modelId,
         slackUserId: actor.slackUserId,
+        githubStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
+          !await onboardingGithubConnectPath(c),
       });
       return onboardingResponse(c, started);
     } catch (error) {
@@ -12162,7 +12164,8 @@ function toRepositories(
  */
 async function hostedGithubStatus(env: PlatformEnv | undefined, connection: GithubConnection) {
   const scope = installationScopeOf(env);
-  const [app, connectPath] = await Promise.all([hostedGithubApp(), hostedGithubConnectPath()]);
+  const app = await hostedGithubApp();
+  const connectPath = app ? await hostedGithubConnectPath(app) : null;
   const bindings = scope && app ? await hostedGithubBindings(scope.installationId) : [];
   const installations = await Promise.all(bindings.map(async (binding) => {
     const account = {
