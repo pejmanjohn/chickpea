@@ -18984,3 +18984,48 @@ test('standalone onboarding has no GitHub step, even with a connect path in its 
   assert.deepEqual(onboardingLabels(hostedWithout.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
   assert.match(hostedWithout.app.innerHTML, /Step 4 of 4/);
 });
+
+test('hosted GitHub load failures show the shipped sentence, never the server code', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/settings/github',
+    settingsLoadFetch: (path, method) => path === '/admin/api/github/status' && method === 'GET'
+      ? Promise.resolve(jsonResponse({ error: 'internal_error' }, 500))
+      : undefined,
+  });
+  await flushAsync();
+  const section = githubSettingsSection(harness.app.innerHTML);
+  assert.match(section, /Could not load GitHub settings\./);
+  assert.doesNotMatch(visibleText(section), /internal_error/);
+});
+
+test('hosted Add repositories opens the one active account directly, never a suspended one', async () => {
+  const harness = await hostedRepositoriesTab(hostedGithubStatus({
+    installations: [
+      { id: HOSTED_GITHUB_ORG, accountLogin: 'acme', accountType: 'Organization', repoCount: 3, status: 'active' },
+      { id: HOSTED_GITHUB_SUSPENDED, accountLogin: 'paused-co', accountType: 'Organization', repoCount: null, status: 'suspended' },
+    ],
+  }));
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'repo-add' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /aria-label="Manage repositories for acme"/);
+  assert.doesNotMatch(harness.app.innerHTML, /repo-account-choices/);
+  assert.deepEqual(harness.githubRepoCalls, [`/admin/api/github/installations/${HOSTED_GITHUB_ORG}/repos?q=&page=1`]);
+});
+
+test('a failed onboarding return is tried once, and its error shows on the GitHub step', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('connect_github', '/github/connect'),
+    settingsLoadFetch: (path, method) => path === '/admin/api/onboarding/github' && method === 'POST'
+      ? Promise.resolve(jsonResponse({ error: 'internal_error' }, 500))
+      : undefined,
+  });
+  await flushAsync();
+  await flushAsync();
+  harness.focusWindow();
+  await flushAsync();
+  const posts = harness.fetchCalls.filter(({ path, method }) => path === '/admin/api/onboarding/github' && method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.match(harness.app.innerHTML, /Let Agents work on your code[\s\S]*<p class="field-error" role="alert">Could not load setup\.<\/p>/);
+  assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'the notice belongs to Try');
+});
