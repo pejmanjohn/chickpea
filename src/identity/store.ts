@@ -2923,7 +2923,7 @@ export class IdentityStoreLogic {
       eventId: newId('audit'), domain: 'identity', eventType: `identity.${input.event}`,
       outcome: input.outcome, actorClass: input.authenticatorKind,
       actorId: input.membershipId ?? null, subjectId: input.userId ?? null,
-      createdAt: input.at ?? this.now(), reasonCode: input.reasonCode ?? null,
+      createdAt: input.at ?? this.now(), reasonCode: input.reasonCode ? safeAudit(input.reasonCode) : null,
       metadataJson: JSON.stringify({
         action: safeAudit(input.action), correlationId: safeAudit(input.correlationId),
         authenticatorKind: safeAudit(input.authenticatorKind),

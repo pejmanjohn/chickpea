@@ -658,7 +658,8 @@ export interface SetMembershipAccessOverlayInput {
 
 export interface RecordIdentityAuthAuditInput {
   event: 'authentication' | 'authorization';
-  outcome: 'success' | 'denied';
+  /** `failure`: the action could not complete (transport or availability), as opposed to a refusal. */
+  outcome: 'success' | 'denied' | 'failure';
   action: string;
   correlationId: string;
   authenticatorKind: string;

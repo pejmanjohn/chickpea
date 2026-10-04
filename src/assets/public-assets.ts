@@ -18,6 +18,7 @@ export const PUBLIC_ASSET_PATHS = [
   ...ADMIN_UI_ASSET_PATHS,
   'chickpea-chatgpt-connect.mjs',
   'chickpea-mark-128.png', 'chickpea-favicon-32.png', 'chickpea-wordmark-512.png',
+  'bot-avatar.png',
   ...DEFAULT_AGENT_AVATAR_FILES.map((file) => `chickpea-avatars/agent-defaults/${file}`),
   ...ONBOARDING_ASSET_FILES.map((file) => `onboarding/${file}`),
   ...[

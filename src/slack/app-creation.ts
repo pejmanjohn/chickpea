@@ -1,3 +1,5 @@
+import { readPublicAsset } from '#chickpea-assets';
+
 import { readBoundedText } from '../http/bounded-body.ts';
 import { constantTimeEquals } from '../security/constant-time.ts';
 import { sha256HexNode } from '../security/digest.ts';
@@ -23,6 +25,20 @@ import {
 export const SLACK_SETUP_TTL_MS = SETUP_CAPABILITY_TTL_MS;
 const SLACK_APP_CREATION_INTERRUPT_GRACE_MS = 60_000;
 const SLACK_MANIFEST_CREATE_URL = 'https://slack.com/api/apps.manifest.create';
+const SLACK_APP_ICON_SET_URL = 'https://slack.com/api/apps.icon.set';
+/**
+ * The Chickpea logo (512x512), also the shared gateway app's icon. It is a
+ * public asset, so every runtime that creates apps can read it.
+ */
+export const SLACK_APP_ICON_ASSET_PATH = 'bot-avatar.png';
+// Each attempt is short: the operator's setup form waits on it.
+const SLACK_APP_ICON_TIMEOUT_MS = 5_000;
+const SLACK_APP_ICON_MIN_RETRY_MS = 1_000;
+const SLACK_APP_ICON_MAX_RETRY_MS = 5_000;
+// Slack answered but could not act now: availability, not a refusal.
+const SLACK_UNAVAILABLE_ERRORS = new Set([
+  'ratelimited', 'internal_error', 'fatal_error', 'service_unavailable', 'request_timeout',
+]);
 const MAX_SLACK_RESPONSE_BYTES = 64 * 1_024;
 const MAX_CONFIGURATION_TOKEN_LENGTH = 512;
 const MAX_SECRET_LENGTH = 4_096;
@@ -114,12 +130,20 @@ export async function openSlackSetupTransaction(
   }
 }
 
+interface AppIconResult {
+  outcome: 'success' | 'denied' | 'failure';
+  reasonCode: string;
+}
+
 interface SlackAppCreationServiceDependencies {
   identity: IdentityStore;
   credentials: SlackCredentialDependencies;
   fetch?: typeof fetch;
   apiBaseUrl?: string;
   now?: () => number;
+  /** PNG bytes set as the icon of an app this service creates. */
+  appIcon?: () => Promise<Uint8Array<ArrayBuffer>>;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class SlackAppCreationService {
@@ -216,12 +240,21 @@ export class SlackAppCreationService {
       await this.markAmbiguous(pending, 'incomplete_slack_success');
       throw ambiguousError();
     }
+    let recorded: SlackSetupTransaction;
     try {
-      return await this.recordSuccess(pending, fingerprint, created);
+      recorded = await this.recordSuccess(pending, fingerprint, created);
     } catch {
       await this.markAmbiguousIfPending(pending, 'local_persistence_error');
       throw ambiguousError();
     }
+    // The app exists from here on. Its icon is best effort: no outcome below
+    // fails, rolls back, or makes the creation ambiguous.
+    await this.recordAppIcon(
+      recorded.id,
+      await this.setAppIcon(token, created.appId)
+        .catch((): AppIconResult => ({ outcome: 'failure', reasonCode: 'icon_error' })),
+    );
+    return recorded;
   }
 
   async adoptManual(input: {
@@ -286,6 +319,60 @@ export class SlackAppCreationService {
     });
   }
 
+  /** Sets the new app's icon. The result's reason code never carries the token. */
+  private async setAppIcon(token: string, appId: string): Promise<AppIconResult> {
+    let icon: Uint8Array<ArrayBuffer>;
+    try {
+      icon = await (this.dependencies.appIcon ?? (() => readPublicAsset(SLACK_APP_ICON_ASSET_PATH)))();
+    } catch { return { outcome: 'failure', reasonCode: 'icon_unavailable' }; }
+    const url = slackApiMethodUrl(this.dependencies.apiBaseUrl, 'apps.icon.set', SLACK_APP_ICON_SET_URL);
+    // Called unbound: Workers' global fetch rejects any other receiver.
+    const fetchImpl = this.fetchImpl;
+    for (let attempt = 1; ; attempt += 1) {
+      const body = new FormData();
+      body.set('app_id', appId);
+      body.set('file', new Blob([icon], { type: 'image/png' }), 'chickpea.png');
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}` },
+          body,
+          signal: AbortSignal.timeout(SLACK_APP_ICON_TIMEOUT_MS),
+        });
+      } catch { return { outcome: 'failure', reasonCode: 'network_error' }; }
+      let payload: Record<string, unknown> = {};
+      try { payload = await boundedJson(response); } catch { /* classified below */ }
+      if (response.ok && payload.ok === true) return { outcome: 'success', reasonCode: 'icon_set' };
+      const slackCode = safeSlackError(payload.error);
+      const reasonCode = slackCode ||
+        (response.status === 429 ? 'ratelimited' : response.ok ? 'invalid_slack_response' : `http_${response.status}`);
+      // Tier 1: retry once on a rate limit, honouring a short Retry-After.
+      const wait = reasonCode === 'ratelimited' && attempt === 1
+        ? retryAfterMs(response.headers.get('retry-after')) : undefined;
+      if (wait === undefined) {
+        // Only Slack answering with its own refusal denied the icon. Anything
+        // else is a transport or availability failure.
+        const refused = slackCode !== '' && response.status < 500 && !SLACK_UNAVAILABLE_ERRORS.has(slackCode);
+        return { outcome: refused ? 'denied' : 'failure', reasonCode };
+      }
+      await (this.dependencies.sleep ?? sleep)(wait);
+    }
+  }
+
+  private async recordAppIcon(setupId: string, result: AppIconResult): Promise<void> {
+    try {
+      await this.dependencies.identity.recordAuthAudit({
+        event: 'authorization',
+        outcome: result.outcome,
+        action: 'slack_setup.app_icon',
+        correlationId: setupId,
+        authenticatorKind: 'setup_capability',
+        reasonCode: result.reasonCode,
+      });
+    } catch { /* A diagnostic write never fails a created app. */ }
+  }
+
   private async markAmbiguous(setup: SlackSetupTransaction, errorCode: string): Promise<void> {
     await this.dependencies.identity.failSlackAppCreation({
       setupId: setup.id, expectedRevision: setup.revision,
@@ -307,6 +394,23 @@ export class SlackAppCreationService {
     }
     return setup;
   }
+}
+
+/**
+ * The wait before the one retry, in whole Retry-After seconds. A missing or
+ * zero header waits the minimum. A longer wait than the bound, or anything but
+ * whole seconds, means no retry (undefined).
+ */
+function retryAfterMs(header: string | null): number | undefined {
+  const value = header?.trim();
+  if (!value) return SLACK_APP_ICON_MIN_RETRY_MS;
+  if (!/^\d{1,6}$/.test(value)) return undefined;
+  const ms = Math.max(Number(value) * 1_000, SLACK_APP_ICON_MIN_RETRY_MS);
+  return ms <= SLACK_APP_ICON_MAX_RETRY_MS ? ms : undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function slackApiMethodUrl(baseUrl: string | undefined, method: string, fallback: string): string {

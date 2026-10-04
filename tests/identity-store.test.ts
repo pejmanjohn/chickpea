@@ -387,6 +387,27 @@ test('retention scrubs inactive ciphertext while preserving active bindings and 
   }
 });
 
+test('an auth audit records a failure apart from a denial and refuses an unsafe reason code', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  try {
+    const audit = (outcome: 'denied' | 'failure', reasonCode?: string) => store.recordAuthAudit({
+      event: 'authorization', outcome, action: 'slack_setup.app_icon',
+      correlationId: 'setup_default', authenticatorKind: 'setup_capability',
+      ...(reasonCode === undefined ? {} : { reasonCode }),
+    });
+    await audit('failure', 'network_error');
+    await audit('denied', 'token_revoked');
+    await audit('denied');
+    await assert.rejects(async () => audit('failure', 'socket closed xoxe.secret'), IdentityStateError);
+    assert.deepEqual(
+      (await store.listAuditEvents()).map((event) => [event.outcome, event.reasonCode]).sort(),
+      [['denied', null], ['denied', 'token_revoked'], ['failure', 'network_error']],
+    );
+  } finally {
+    store.close();
+  }
+});
+
 test('pending Slack invitations expire durably and the same tuple then requires a fresh locator', async () => {
   let now = NOW;
   const store = new SqliteIdentityStore(':memory:', { now: () => now });

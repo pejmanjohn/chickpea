@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { mintSetupCapability } from '../src/auth/setup-capability.mjs';
@@ -6,6 +8,7 @@ import {
   openSlackSetupTransaction,
   SlackAppCreationError,
   SlackAppCreationService,
+  SLACK_APP_ICON_ASSET_PATH,
   SLACK_SETUP_TTL_MS,
 } from '../src/slack/app-creation.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
@@ -17,6 +20,7 @@ import {
 import { resolveSlackControlPlaneAppCredentials } from '../src/slack/installation-credentials.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../src/config/types.ts';
+import { FakeSlackBackend } from './parity/fake-slack.ts';
 
 const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
@@ -148,7 +152,8 @@ test('programmatic creation persists pending before Slack and atomically records
       configurationToken: CONFIG_TOKEN,
       manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
     });
-    assert.deepEqual(observedStates, ['app_creation_pending']);
+    // The icon call follows only once the created app is durably recorded.
+    assert.deepEqual(observedStates, ['app_creation_pending', 'app_created']);
     assert.equal(created.state, 'app_created');
     assert.equal(created.appId, 'A12345678');
     assert.ok(created.credentialRevision);
@@ -256,8 +261,8 @@ test('duplicate-tab creation acquires exactly one pending transition', async () 
       identity: store,
       credentials,
       now: () => NOW,
-      fetch: async () => {
-        calls += 1;
+      fetch: async (input: string | URL | Request) => {
+        if (String(input).endsWith('/apps.manifest.create')) calls += 1;
         await gate;
         return successfulCreateFetch()('', {});
       },
@@ -379,6 +384,391 @@ test('approval checkpoint survives restart and resume returns to app_created for
   }
 });
 
+test('a created app gets the bundled Chickpea logo through apps.icon.set with the same configuration token', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+  const calls: Request[] = [];
+  try {
+    const setup = await setupTransaction(store);
+    const service = new SlackAppCreationService({
+      identity: store,
+      credentials,
+      now: () => NOW,
+      // Like Workers' global fetch, refuse any receiver but none.
+      fetch: async function (this: unknown, input: string | URL | Request, init?: RequestInit) {
+        if (this !== undefined) throw new TypeError('Illegal invocation');
+        calls.push(new Request(input, init));
+        return String(input).endsWith('/apps.icon.set')
+          ? slackResponse({ ok: true })
+          : successfulCreateFetch()('', {});
+      },
+    });
+    const created = await service.create({
+      setupId: setup.id,
+      expectedRevision: setup.revision,
+      configurationToken: CONFIG_TOKEN,
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    assert.equal(created.state, 'app_created');
+    assert.deepEqual(calls.map((call) => call.url), [
+      'https://slack.com/api/apps.manifest.create',
+      'https://slack.com/api/apps.icon.set',
+    ]);
+    const icon = calls[1]!;
+    assert.equal(icon.method, 'POST');
+    assert.equal(icon.headers.get('authorization'), `Bearer ${CONFIG_TOKEN}`);
+    assert.match(icon.headers.get('content-type') ?? '', /^multipart\/form-data; boundary=/);
+    const form = await icon.formData();
+    assert.deepEqual([...form.keys()].sort(), ['app_id', 'file']);
+    assert.equal(form.get('app_id'), 'A12345678');
+    const file = form.get('file');
+    assert.ok(file instanceof Blob);
+    assert.equal(file.type, 'image/png');
+    // The default reader is the Node runtime's: the release checkout's asset.
+    assert.equal(SLACK_APP_ICON_ASSET_PATH, 'bot-avatar.png');
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), await readFile('assets/bot-avatar.png'));
+
+    const [audit] = await store.listAuditEvents(10);
+    assert.equal(audit?.outcome, 'success');
+    assert.equal(audit?.reasonCode, 'icon_set');
+    assert.match(audit?.metadataJson ?? '', /"action":"slack_setup\.app_icon"/);
+    assert.doesNotMatch(JSON.stringify(await store.listAuditEvents(10)), /configuration-token-secret/);
+  } finally {
+    store.close();
+  }
+});
+
+test('the fake Slack used by the workerd smoke records the icon upload by digest', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const backend = new FakeSlackBackend({
+    slack: {
+      oauth: {
+        appId: 'A12345678', clientId: '123.456', clientSecret: 'client-secret-value',
+        configurationToken: CONFIG_TOKEN, signingSecret: 'signing-secret-value',
+        botToken: 'xoxb-unused', installerUserId: 'UINSTALLER', privateKeyPem: '',
+        publicJwk: { kid: 'unused', alg: 'RS256', use: 'sig' },
+      },
+    },
+  });
+  try {
+    const setup = await setupTransaction(store);
+    await new SlackAppCreationService({
+      identity: store,
+      credentials: { state: store, keyring: generateCredentialKeyring('key_v1') },
+      now: () => NOW,
+      fetch: backend.asFetch(),
+    }).create({
+      setupId: setup.id,
+      expectedRevision: setup.revision,
+      configurationToken: CONFIG_TOKEN,
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    const uploads = backend.callsOfMethod('apps.icon.set');
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0]?.ok, true);
+    assert.deepEqual(uploads[0]?.body, {
+      app_id: 'A12345678',
+      file_sha256: createHash('sha256').update(await readFile('assets/bot-avatar.png')).digest('hex'),
+      file_type: 'image/png',
+    });
+    assert.equal((await store.listAuditEvents(10))[0]?.reasonCode, 'icon_set');
+
+    // The fake accepts exactly one PNG file part named `file`.
+    const png = await readFile('assets/bot-avatar.png');
+    const upload = async (parts: Array<[string, Blob]>) => {
+      const form = new FormData();
+      form.set('app_id', 'A12345678');
+      for (const [name, blob] of parts) form.append(name, blob, 'chickpea.png');
+      const response = await backend.asFetch()('https://slack.com/api/apps.icon.set', {
+        method: 'POST', headers: { authorization: `Bearer ${CONFIG_TOKEN}` }, body: form,
+      });
+      return ((await response.json()) as { ok: boolean }).ok;
+    };
+    assert.equal(await upload([['file', new Blob([png], { type: 'image/png' })]]), true);
+    assert.equal(await upload([
+      ['file', new Blob([png], { type: 'image/png' })],
+      ['file', new Blob([png], { type: 'image/png' })],
+    ]), false);
+    assert.equal(await upload([
+      ['file', new Blob([png], { type: 'image/png' })],
+      ['image', new Blob([png], { type: 'image/png' })],
+    ]), false);
+    assert.equal(await upload([['file', new Blob([png], { type: 'image/jpeg' })]]), false);
+    assert.equal(await upload([]), false);
+  } finally {
+    store.close();
+  }
+});
+
+test('every icon failure still leaves the created app recorded, unambiguous, and token-free', async () => {
+  const cases: Array<{
+    name: string;
+    reason: string;
+    // A transport or availability failure is never recorded as a denial.
+    outcome?: 'denied' | 'failure';
+    iconCalls: number;
+    appIcon?: () => Promise<Uint8Array<ArrayBuffer>>;
+    icon?: () => Response | Promise<Response>;
+    auditFails?: boolean;
+    sleepFails?: boolean;
+  }> = [
+    { name: 'icon bytes unavailable', reason: 'icon_unavailable', outcome: 'failure', iconCalls: 0,
+      appIcon: async () => { throw new Error(`no asset ${CONFIG_TOKEN}`); } },
+    { name: 'network error', reason: 'network_error', outcome: 'failure', iconCalls: 1,
+      icon: () => { throw new Error(`socket closed ${CONFIG_TOKEN}`); } },
+    { name: 'Slack rejection', reason: 'invalid_icon_size', outcome: 'denied', iconCalls: 1,
+      icon: () => slackResponse({ ok: false, error: 'invalid_icon_size' }) },
+    { name: 'revoked token', reason: 'token_revoked', outcome: 'denied', iconCalls: 1,
+      icon: () => slackResponse({ ok: false, error: 'token_revoked' }) },
+    { name: 'Slack internal error', reason: 'internal_error', outcome: 'failure', iconCalls: 1,
+      icon: () => slackResponse({ ok: false, error: 'internal_error' }) },
+    { name: 'Slack error code on an HTTP 503', reason: 'invalid_auth', outcome: 'failure', iconCalls: 1,
+      icon: () => new Response(JSON.stringify({ ok: false, error: 'invalid_auth' }), { status: 503 }) },
+    { name: 'HTTP failure without a body', reason: 'http_502', outcome: 'failure', iconCalls: 1,
+      icon: () => new Response(null, { status: 502 }) },
+    { name: 'HTTP failure with an ok body', reason: 'http_500', outcome: 'failure', iconCalls: 1,
+      icon: () => new Response(JSON.stringify({ ok: true }), { status: 500 }) },
+    { name: 'malformed success', reason: 'invalid_slack_response', outcome: 'failure', iconCalls: 1,
+      icon: () => new Response('<html>ok</html>', { status: 200 }) },
+    { name: 'unsafe error text', reason: 'invalid_slack_response', outcome: 'failure', iconCalls: 1,
+      icon: () => slackResponse({ ok: false, error: `bad ${CONFIG_TOKEN}` }) },
+    { name: 'rate limit beyond the retry bound', reason: 'ratelimited', outcome: 'failure', iconCalls: 1,
+      icon: () => slackResponse429('30') },
+    { name: 'audit write failure', reason: 'icon_set', iconCalls: 1, auditFails: true,
+      icon: () => slackResponse({ ok: true }) },
+    { name: 'unexpected failure while waiting to retry', reason: 'icon_error', outcome: 'failure', iconCalls: 1,
+      sleepFails: true, icon: () => slackResponse429('1') },
+  ];
+  for (const testCase of cases) {
+    const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+    const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+    let iconCalls = 0;
+    const sleeps: number[] = [];
+    const logged: unknown[] = [];
+    const originals = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+    try {
+      const setup = await setupTransaction(store);
+      if (testCase.auditFails) {
+        store.recordAuthAudit = () => { throw new Error(`audit down ${CONFIG_TOKEN}`); };
+      }
+      const service = new SlackAppCreationService({
+        identity: store,
+        credentials,
+        now: () => NOW,
+        sleep: async (ms) => {
+          if (testCase.sleepFails) throw new Error(`timer failed ${CONFIG_TOKEN}`);
+          sleeps.push(ms);
+        },
+        ...(testCase.appIcon ? { appIcon: testCase.appIcon } : {}),
+        fetch: async (input: string | URL | Request) => {
+          if (!String(input).endsWith('/apps.icon.set')) return successfulCreateFetch()('', {});
+          iconCalls += 1;
+          return testCase.icon!();
+        },
+      });
+      for (const level of ['log', 'warn', 'error', 'info'] as const) {
+        console[level] = (...args: unknown[]) => { logged.push(args); };
+      }
+      let created;
+      try {
+        created = await service.create({
+          setupId: setup.id,
+          expectedRevision: setup.revision,
+          configurationToken: CONFIG_TOKEN,
+          manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+        });
+      } finally {
+        Object.assign(console, originals);
+      }
+      assert.equal(created.state, 'app_created', testCase.name);
+      assert.equal(created.appId, 'A12345678', testCase.name);
+      assert.equal(iconCalls, testCase.iconCalls, testCase.name);
+      assert.deepEqual(sleeps, [], testCase.name);
+      const stored = await store.getSlackSetupTransaction(setup.id);
+      assert.equal(stored?.state, 'app_created', testCase.name);
+      assert.equal(stored?.lastErrorCode, null, testCase.name);
+      assert.equal(
+        (await store.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
+        created.credentialRevision,
+        testCase.name,
+      );
+      const audits = await store.listAuditEvents(10);
+      if (testCase.auditFails) {
+        assert.equal(audits.length, 0, testCase.name);
+      } else {
+        assert.equal(audits.length, 1, testCase.name);
+        assert.equal(audits[0]?.outcome, testCase.outcome, testCase.name);
+        assert.equal(audits[0]?.reasonCode, testCase.reason, testCase.name);
+      }
+      assert.doesNotMatch(
+        JSON.stringify({ created, stored, audits, logged }),
+        /configuration-token-secret/,
+        testCase.name,
+      );
+    } finally {
+      Object.assign(console, originals);
+      store.close();
+    }
+  }
+});
+
+test('a rate-limited icon call is retried exactly once after a bounded Retry-After', async () => {
+  const cases: Array<{
+    name: string;
+    responses: Array<() => Response>;
+    reason: string;
+    sleeps: number[];
+  }> = [
+    { name: 'Retry-After honoured', reason: 'icon_set', sleeps: [2_000],
+      responses: [() => slackResponse429('2'), () => slackResponse({ ok: true })] },
+    { name: 'missing Retry-After waits briefly', reason: 'icon_set', sleeps: [1_000],
+      responses: [() => slackResponse({ ok: false, error: 'ratelimited' }), () => slackResponse({ ok: true })] },
+    { name: 'HTTP 429 without a body', reason: 'icon_set', sleeps: [1_000],
+      responses: [
+        () => new Response(null, { status: 429, headers: { 'retry-after': '1' } }),
+        () => slackResponse({ ok: true }),
+      ] },
+    { name: 'Retry-After 0 still waits the minimum', reason: 'icon_set', sleeps: [1_000],
+      responses: [() => slackResponse429('0'), () => slackResponse({ ok: true })] },
+    { name: 'Retry-After at the bound', reason: 'icon_set', sleeps: [5_000],
+      responses: [() => slackResponse429('5'), () => slackResponse({ ok: true })] },
+    { name: 'Retry-After past the bound', reason: 'ratelimited', sleeps: [],
+      responses: [() => slackResponse429('6')] },
+    { name: 'unparseable Retry-After', reason: 'ratelimited', sleeps: [],
+      responses: [() => slackResponse429('Wed, 21 Oct 2026 07:28:00 GMT')] },
+    { name: 'second rate limit', reason: 'ratelimited', sleeps: [1_000],
+      responses: [() => slackResponse429('1'), () => slackResponse429('1')] },
+    { name: 'other failures are never retried', reason: 'service_unavailable', sleeps: [],
+      responses: [() => slackResponse({ ok: false, error: 'service_unavailable' })] },
+  ];
+  for (const testCase of cases) {
+    const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+    const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+    const sleeps: number[] = [];
+    const signals: AbortSignal[] = [];
+    let iconCalls = 0;
+    try {
+      const setup = await setupTransaction(store);
+      const service = new SlackAppCreationService({
+        identity: store,
+        credentials,
+        now: () => NOW,
+        sleep: async (ms) => { sleeps.push(ms); },
+        fetch: async (input: string | URL | Request, init?: RequestInit) => {
+          if (!String(input).endsWith('/apps.icon.set')) return successfulCreateFetch()('', {});
+          assert.ok(init?.signal instanceof AbortSignal && !init.signal.aborted, testCase.name);
+          signals.push(init.signal);
+          const form = await new Request(input, init).formData();
+          assert.equal(form.get('app_id'), 'A12345678', testCase.name);
+          assert.ok(form.get('file') instanceof Blob, testCase.name);
+          const response = testCase.responses[iconCalls];
+          iconCalls += 1;
+          assert.ok(response, `${testCase.name}: unexpected icon call ${iconCalls}`);
+          return response();
+        },
+      });
+      const created = await service.create({
+        setupId: setup.id,
+        expectedRevision: setup.revision,
+        configurationToken: CONFIG_TOKEN,
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+      });
+      assert.equal(created.state, 'app_created', testCase.name);
+      assert.equal(iconCalls, testCase.responses.length, testCase.name);
+      assert.equal(new Set(signals).size, iconCalls, `${testCase.name}: each attempt has its own timeout`);
+      assert.deepEqual(sleeps, testCase.sleeps, testCase.name);
+      const [audit] = await store.listAuditEvents(10);
+      assert.equal(audit?.reasonCode, testCase.reason, testCase.name);
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test('each icon attempt carries a short timeout, and a timed-out attempt still leaves the created app', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+  const bounds: number[] = [];
+  const signals: unknown[] = [];
+  // Stand in for the clock: the timeout's signal fires as soon as the icon
+  // request waits on it, the way a stalled Slack would after the bound.
+  const clock = new AbortController();
+  const timeout = AbortSignal.timeout;
+  AbortSignal.timeout = (ms: number) => { bounds.push(ms); return clock.signal; };
+  try {
+    const setup = await setupTransaction(store);
+    const service = new SlackAppCreationService({
+      identity: store,
+      credentials,
+      now: () => NOW,
+      fetch: async (input: string | URL | Request, init?: RequestInit) => {
+        if (!String(input).endsWith('/apps.icon.set')) return successfulCreateFetch()('', {});
+        const signal = init?.signal;
+        signals.push(signal);
+        if (!(signal instanceof AbortSignal)) return slackResponse({ ok: true });
+        // Like fetch: refuse an aborted signal, otherwise settle only when it aborts.
+        signal.throwIfAborted();
+        return new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          clock.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+        });
+      },
+    });
+    const created = await service.create({
+      setupId: setup.id,
+      expectedRevision: setup.revision,
+      configurationToken: CONFIG_TOKEN,
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    assert.deepEqual(signals, [clock.signal]);
+    assert.deepEqual(bounds, [5_000]);
+    assert.equal(created.state, 'app_created');
+    const stored = await store.getSlackSetupTransaction(setup.id);
+    assert.equal(stored?.state, 'app_created');
+    assert.equal(stored?.lastErrorCode, null);
+    const [audit] = await store.listAuditEvents(10);
+    assert.equal(audit?.outcome, 'failure');
+    assert.equal(audit?.reasonCode, 'network_error');
+  } finally {
+    AbortSignal.timeout = timeout;
+    store.close();
+  }
+});
+
+test('creation that Slack rejects or leaves ambiguous never attempts the icon', async () => {
+  for (const create of [
+    () => slackResponse({ ok: false, error: 'invalid_manifest' }),
+    () => slackResponse({ ok: true }),
+    () => new Response(null, { status: 500 }),
+  ]) {
+    const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+    const credentials = { state: store, keyring: generateCredentialKeyring('key_v1') };
+    const methods: string[] = [];
+    try {
+      const setup = await setupTransaction(store);
+      const service = new SlackAppCreationService({
+        identity: store,
+        credentials,
+        now: () => NOW,
+        fetch: async (input: string | URL | Request) => {
+          methods.push(String(input).split('/').at(-1)!);
+          return create();
+        },
+      });
+      await assert.rejects(() => service.create({
+        setupId: setup.id,
+        expectedRevision: setup.revision,
+        configurationToken: CONFIG_TOKEN,
+        manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+      }));
+      assert.deepEqual(methods, ['apps.manifest.create']);
+      assert.deepEqual(await store.listAuditEvents(10), []);
+    } finally {
+      store.close();
+    }
+  }
+});
+
 async function setupTransaction(store: SqliteIdentityStore) {
   const minted = await mintSetupCapability({ now: () => NOW });
   return openSlackSetupTransaction(store, {
@@ -405,5 +795,12 @@ function slackResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { 'content-type': 'application/json' },
+  });
+}
+
+function slackResponse429(retryAfter: string): Response {
+  return new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), {
+    status: 429,
+    headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
   });
 }

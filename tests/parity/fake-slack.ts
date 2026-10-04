@@ -308,7 +308,12 @@ export class FakeSlackBackend {
   asFetch(): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const request = input instanceof Request ? input : new Request(input, init);
-      const result = this.route(request.url, await request.clone().text(), headersObject(request.headers));
+      const headers = headersObject(request.headers);
+      // A multipart upload (an icon PNG) stays bytes; only text bodies decode.
+      const body = isMultipart(headers)
+        ? new Uint8Array(await request.clone().arrayBuffer())
+        : await request.clone().text();
+      const result = this.route(request.url, body, headers);
       if (result.rawBody !== undefined) {
         return new Response(result.rawBody, {
           status: result.status,
@@ -328,12 +333,14 @@ export class FakeSlackBackend {
       const chunks: Buffer[] = [];
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
-        const bodyString = Buffer.concat(chunks).toString('utf8');
+        const raw = Buffer.concat(chunks);
+        const headers = normalizeNodeHeaders(req.headers);
+        const body = isMultipart(headers) ? new Uint8Array(raw) : raw.toString('utf8');
         // Slow-turn path streams its own (delayed) response over `res`.
-        if (this.tryStreamDelayedProvider(req.url ?? '/', bodyString, res)) {
+        if (typeof body === 'string' && this.tryStreamDelayedProvider(req.url ?? '/', body, res)) {
           return;
         }
-        const result = this.route(req.url ?? '/', bodyString, normalizeNodeHeaders(req.headers));
+        const result = this.route(req.url ?? '/', body, headers);
         if (result.rawBody !== undefined) {
           res.writeHead(result.status, {
             'content-type': result.contentType ?? 'text/plain',
@@ -565,9 +572,10 @@ export class FakeSlackBackend {
     this.finalPostFailedOnce = false;
   }
 
+  /** `rawBody` is text, or the bytes of a multipart upload. */
   private route(
     url: string,
-    bodyString: string,
+    rawBody: string | Uint8Array,
     headers: Record<string, string> = {},
   ): RouteResult {
     const pathname = url.startsWith('http') ? new URL(url).pathname : (url.split('?')[0] ?? url);
@@ -575,7 +583,7 @@ export class FakeSlackBackend {
     // Control surface (never recorded to the wire log): reconfigure or reset the
     // backend between HTTP-transport scenarios.
     if (pathname === '/__config') {
-      this.configure(decodeWireBody(bodyString) as FakeSlackBackendConfig);
+      this.configure(wireBody(rawBody, headers) as FakeSlackBackendConfig);
       return { status: 200, body: { ok: true } };
     }
     if (pathname === '/__reset') {
@@ -610,7 +618,7 @@ export class FakeSlackBackend {
     } else {
       method = 'provider.run';
     }
-    const body = decodeWireBody(bodyString);
+    const body = wireBody(rawBody, headers);
 
     const entry: WireEntry = { kind: isSlack ? 'slack' : 'provider', method, url, body };
     this.wireLog.push(entry);
@@ -786,6 +794,18 @@ export class FakeSlackBackend {
               },
             }
           : { ok: false, error: 'invalid_auth' };
+      case 'apps.icon.set': {
+        // Only an app this configuration token created.
+        if (!this.oauth || bearer(headers) !== this.oauth.configurationToken) return { ok: false, error: 'invalid_auth' };
+        if (body.app_id !== this.oauth.appId) return { ok: false, error: 'invalid_app_id' };
+        // Exactly one file part: a PNG named `file` (a repeated name reads as
+        // a list), and no `url` alternative.
+        const fileParts = Object.keys(body).filter((key) => key.endsWith('_sha256'));
+        return fileParts.length === 1 && typeof body.file_sha256 === 'string' &&
+            body.file_type === 'image/png' && body.url === undefined
+          ? { ok: true }
+          : { ok: false, error: 'missing_arguments' };
+      }
       case 'oauth.v2.access':
         return this.oauth && body.client_id === this.oauth.clientId &&
             body.client_secret === this.oauth.clientSecret
@@ -1458,6 +1478,51 @@ function coerceFormValue(value: string): unknown {
     }
   }
   return value;
+}
+
+function isMultipart(headers: Record<string, string>): boolean {
+  return /^multipart\/form-data/i.test(headers['content-type'] ?? '');
+}
+
+/** A multipart upload is logged by its fields and each file's digest. */
+function wireBody(rawBody: string | Uint8Array, headers: Record<string, string>): Record<string, unknown> {
+  return typeof rawBody === 'string'
+    ? decodeWireBody(rawBody)
+    : multipartWireBody(rawBody, headers['content-type'] ?? '');
+}
+
+function multipartWireBody(raw: Uint8Array, contentType: string): Record<string, unknown> {
+  const boundary = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+  if (!boundary) return {};
+  const delimiter = Buffer.from(`--${boundary[1] ?? boundary[2]}`);
+  const buffer = Buffer.from(raw);
+  const fields: Record<string, unknown> = {};
+  // A repeated part name collects its values, so two files never read as one.
+  const add = (key: string, value: string) => {
+    const prior = fields[key];
+    fields[key] = prior === undefined ? value : [prior, value].flat();
+  };
+  let start = buffer.indexOf(delimiter);
+  while (start >= 0) {
+    const next = buffer.indexOf(delimiter, start + delimiter.length);
+    if (next < 0) break;
+    // Each part sits between the delimiter's CRLF and the CRLF before the next one.
+    const part = buffer.subarray(start + delimiter.length + 2, next - 2);
+    const split = part.indexOf('\r\n\r\n');
+    const head = split >= 0 ? part.subarray(0, split).toString('utf8') : '';
+    const name = /name="([^"]+)"/.exec(head)?.[1];
+    if (name) {
+      const content = part.subarray(split + 4);
+      if (/filename="/.test(head)) {
+        add(`${name}_sha256`, createHash('sha256').update(content).digest('hex'));
+        add(`${name}_type`, /content-type:\s*([^\r\n]+)/i.exec(head)?.[1]?.trim() ?? '');
+      } else {
+        add(name, content.toString('utf8'));
+      }
+    }
+    start = next;
+  }
+  return fields;
 }
 
 function headersObject(headers: Headers): Record<string, string> {

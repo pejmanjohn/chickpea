@@ -169,14 +169,14 @@ test('gateway handoff renderer and browser script reject destinations outside th
 test('capability-gated Admin setup creates an app without reflecting or retaining submitted secrets', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const authority = await mintSetupCapability({ now: () => NOW });
-  let calls = 0;
+  const methods: string[] = [];
   try {
     const app = createAdminRoutes({
       identity,
       slackCredentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
       slackAppCreationNow: () => NOW,
-      slackAppCreationFetch: (async (_input, init) => {
-        calls += 1;
+      slackAppCreationFetch: (async (input, init) => {
+        methods.push(String(input).split('/').at(-1)!);
         assert.equal(new Headers(init?.headers).get('authorization'), `Bearer ${CONFIG_TOKEN}`);
         assert.doesNotMatch(String(init?.body), /route-configuration-token/);
         return new Response(JSON.stringify({
@@ -218,7 +218,8 @@ test('capability-gated Admin setup creates an app without reflecting or retainin
     assert.match(html, /Continue to Slack/);
     assert.doesNotMatch(html, /Continue to Admin/);
     assert.doesNotMatch(html, /route-configuration-token|route-client-secret|route-signing-secret/);
-    assert.equal(calls, 1);
+    // Creation, then the best-effort logo, both with the submitted token.
+    assert.deepEqual(methods, ['apps.manifest.create', 'apps.icon.set']);
     const exported = await identity.exportSummary();
     assert.equal('locatorHash' in exported.slackSetupTransactions[0]!, false);
     assert.doesNotMatch(JSON.stringify(exported), /route-client-secret|route-signing-secret/);
