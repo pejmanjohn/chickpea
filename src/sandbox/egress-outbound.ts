@@ -15,7 +15,13 @@ import {
   resolveRepositoryInstallationScope,
 } from './egress-handler.ts';
 import { githubAuthorizationHeader } from './github-auth.ts';
-import { admitGithubWrite, githubWriteRateLimited } from './github-write-rate.ts';
+import {
+  admitGithubWrite,
+  githubAnswerText,
+  githubSecondaryLimitSeconds,
+  githubWriteRateLimited,
+  latchGithubWrites,
+} from './github-write-rate.ts';
 import {
   isGithubPullRequestCreateResponse,
   pullRequestProgressFromGithubResponse,
@@ -30,7 +36,8 @@ import {
  * and reads every tenant-owned store through that installation's env. A
  * Sandbox that cannot name its installation on a deployment serving many,
  * or whose installation the host no longer admits, gets nothing, and that
- * installation's GitHub writes are rate-limited. Profile grants are
+ * installation's GitHub writes are rate-limited, and held while GitHub's
+ * secondary limit lasts (github-write-rate.ts). Profile grants are
  * persisted as policy only; the GitHub credential is minted after each
  * request passes the pure policy decision and is attached only to the
  * Worker-side forwarded Request.
@@ -114,10 +121,11 @@ export async function githubSandboxOutbound(
     if (!installation) return denySandboxOutbound();
 
     // An installation of many shares the platform's GitHub App: its writes
-    // are rate-limited before a token is minted for them.
-    if (context.installationId && decision.effect !== 'read' &&
-      !(await admitGithubWrite({ store: settings, kind: decision.effect, now: Date.now() }))) {
-      return githubWriteRateLimited();
+    // are rate-limited, and held while GitHub's secondary limit lasts,
+    // before a token is minted for them.
+    if (context.installationId && decision.effect !== 'read') {
+      const admission = await admitGithubWrite({ store: settings, kind: decision.effect, now: Date.now() });
+      if (!admission.admitted) return githubWriteRateLimited(admission.retryAfterSeconds);
     }
     const { token: credential } = await getCachedInstallationToken(
       connection,
@@ -137,6 +145,16 @@ export async function githubSandboxOutbound(
     const headers = new Headers(request.headers);
     headers.set('Authorization', githubAuthorizationHeader(request.url, credential));
     const response = await fetch(new Request(request, { headers, redirect: 'manual' }));
+    if (context.installationId) {
+      const seconds = await githubSecondaryLimitSeconds({
+        status: response.status,
+        retryAfter: response.headers.get('retry-after'),
+        body: () => githubAnswerText(response),
+      });
+      if (seconds !== undefined) {
+        await latchGithubWrites({ store: settings, installationId: context.installationId, seconds, now: Date.now() });
+      }
+    }
     await recordPullRequestProgress(request, response, stub, capturedTurnId);
     return response;
   } catch {

@@ -61,6 +61,7 @@ import {
   createConnectorScopedBash,
   DEFAULT_EGRESS_POLICY,
   matchesEgressPrefix,
+  type ConnectorForward,
   type ResolvedApiConnection,
 } from '../config/egress.ts';
 import {
@@ -110,6 +111,7 @@ import {
   validEnabledRepositoryGrants,
 } from '../sandbox/egress-handler.ts';
 import { githubAuthorizationHeader } from '../sandbox/github-auth.ts';
+import { githubConnectorWriteGate } from '../sandbox/github-write-rate.ts';
 import {
   projectEffectiveApiConnections,
   resolveConnectionSecretForInvocation,
@@ -415,14 +417,22 @@ export async function resolveRepositoryAccess(
   if (enabled.length === 0) return none(true);
 
   let connection: GithubConnection;
+  let settings: SettingsStore;
   try {
-    connection = await getGithubConnection(getSettingsStore(env), env);
+    settings = getSettingsStore(env);
+    connection = await getGithubConnection(settings, env);
   } catch {
     console.warn('[chickpea] GitHub repository access skipped for this turn');
     return none(true);
   }
 
   if (connection.mode === 'none') return none(true);
+  // An installation of many shares the platform App: its bash writes draw on
+  // the write budget its container egress uses, and stop while GitHub's
+  // secondary limit holds them.
+  const gate = connection.platform
+    ? githubConnectorWriteGate({ store: settings, installationId: connection.platform.installationId })
+    : undefined;
 
   // Grouped by the installation each grant mints through: serving many
   // installations, its account's binding, never the ID the grant stores.
@@ -453,7 +463,7 @@ export async function resolveRepositoryAccess(
         return {
           installationId,
           grants,
-          connectors: repositoryConnectors(token, grants),
+          connectors: repositoryConnectors(token, grants, gate),
         };
       } catch (mintError) {
         // Deliberately omit the caught message: a hostile/custom fetch error can
@@ -480,7 +490,7 @@ export async function resolveRepositoryAccess(
               repositories: [grant.fullName.slice(grant.fullName.indexOf('/') + 1)],
               permissions: REPOSITORY_PERMISSIONS,
             });
-            return { grant, connectors: repositoryConnectors(token, [grant]) };
+            return { grant, connectors: repositoryConnectors(token, [grant], gate) };
           } catch {
             console.warn(
               `[chickpea] GitHub repository grant ${grant.fullName} skipped for this turn`,
@@ -514,6 +524,7 @@ export async function resolveRepositoryAccess(
 function repositoryConnectors(
   token: string,
   grants: readonly RepositoryGrant[],
+  forward: ConnectorForward | undefined,
 ): ResolvedApiConnection[] {
   const apiPrefixes = repositoryPrefixes(grants, '/repos/');
   const gitPrefixes = [
@@ -531,6 +542,7 @@ function repositoryConnectors(
     headerName: 'Authorization',
     headerValue: githubAuthorizationHeader(url, token),
     allowedMethods: [...REPOSITORY_METHODS],
+    ...(forward ? { forward } : {}),
   });
   return [
     {

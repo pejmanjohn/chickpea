@@ -17,7 +17,31 @@ export interface ResolvedApiConnection {
   /** Optional credential-free routing guard for scopes that share a URL path. */
   matchesRequest?: (url: string) => boolean;
   authorize?: () => Promise<boolean>;
+  forward?: ConnectorForward;
 }
+
+/** What a connector scope's fetch answers: GitHub's, a provider's, or a forward hook's own. */
+export type ConnectorFetchResult = Awaited<ReturnType<SecureFetch>>;
+
+/** One request a connector scope admitted by host, path, method and authority, before it leaves. */
+export interface ConnectorRequest {
+  url: string;
+  /** Upper case. */
+  method: string;
+  /** The request's own headers; the connector's credential is added later. */
+  headers: Headers;
+}
+
+/**
+ * An optional async hook around each request a connector scope forwards. It
+ * answers in the request's place, so the request never leaves, or calls
+ * `send` and sees the answer. `followRedirects: false` returns a redirect
+ * to the caller instead of sending the request again.
+ */
+export type ConnectorForward = (
+  request: ConnectorRequest,
+  send: (options?: { followRedirects: false }) => Promise<ConnectorFetchResult>,
+) => Promise<ConnectorFetchResult>;
 
 /**
  * The installation-wide egress policy, always: an allowlist with no operator
@@ -50,6 +74,7 @@ interface ConnectorScopeSpec {
   methods: string[];
   matchesRequest?: (url: string) => boolean;
   authorize?: () => Promise<boolean>;
+  forward?: ConnectorForward;
 }
 
 // A per-connector egress scope: a network whose allow-list contains ONLY this
@@ -63,6 +88,7 @@ interface EgressScope {
   network: NetworkConfig;
   matchesRequest?: (url: string) => boolean;
   authorize?: () => Promise<boolean>;
+  forward?: ConnectorForward;
 }
 
 interface EgressPlan {
@@ -79,6 +105,7 @@ export interface ScopedDelegate {
   delegate: SecureFetch;
   matchesRequest?: (url: string) => boolean;
   authorize?: () => Promise<boolean>;
+  forward?: ConnectorForward;
 }
 
 // The methods permitted for any host NOT governed by a specific connection —
@@ -153,6 +180,7 @@ export function buildEgressPlan(
     methods: new Set(spec.methods),
     ...(spec.matchesRequest ? { matchesRequest: spec.matchesRequest } : {}),
     ...(spec.authorize ? { authorize: spec.authorize } : {}),
+    ...(spec.forward ? { forward: spec.forward } : {}),
     // A scope network is never open-internet: its allow-list is exactly this
     // connector's hosts, so a redirect target outside them is refused by
     // just-bash's own allow-list re-check on each redirect hop.
@@ -218,6 +246,7 @@ export function createScopedFetch(params: {
         delegate: scope.delegate,
         matchesRequest: scope.matchesRequest,
         authorize: scope.authorize,
+        forward: scope.forward,
       })),
     )
     .sort((left, right) => right.prefix.length - left.prefix.length);
@@ -250,6 +279,13 @@ export function createScopedFetch(params: {
       const error = new Error('Connection authority changed; refresh the runtime.');
       error.name = 'BlockedUrlError';
       throw error;
+    }
+    if (route?.forward) {
+      const delegate = route.delegate;
+      return route.forward(
+        { url, method, headers: new Headers(options?.headers) },
+        (overrides) => delegate(url, { ...options, ...overrides }),
+      );
     }
     return (route ? route.delegate : params.baseDelegate)(url, options);
   };
@@ -288,6 +324,7 @@ function buildConnectorScopeSpecs(connectors: ResolvedApiConnection[]): Connecto
         methods: connector.allowedMethods,
         ...(connector.matchesRequest ? { matchesRequest: connector.matchesRequest } : {}),
         ...(connector.authorize ? { authorize: connector.authorize } : {}),
+        ...(connector.forward ? { forward: connector.forward } : {}),
       };
     });
 }
