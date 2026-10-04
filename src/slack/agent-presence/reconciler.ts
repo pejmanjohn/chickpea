@@ -696,9 +696,10 @@ export class AgentPresenceReconciler {
 /**
  * Disable an Agent's user group. Slack answers `already_disabled` when an
  * Owner or Admin deactivated it first, which is the state archive wants; a
- * group the workspace's list no longer has, and that Slack cannot find,
- * leaves no live handle either. A not-found answer for a group still listed
- * is a failure.
+ * group the workspace's list no longer has, and that Slack cannot find
+ * (`no_such_subteam`; any other code, `subteam_not_found` included, is not
+ * proof it is gone), leaves no live handle either. A not-found answer for a
+ * group still listed is a failure.
  */
 async function disableUserGroup(
   transport: SlackTransport,
@@ -710,7 +711,7 @@ async function disableUserGroup(
   } catch (error) {
     if (!(error instanceof SlackTransportError)) throw error;
     if (error.code === 'already_disabled') return;
-    if (options.missing && error.code === USER_GROUP_NOT_FOUND) return;
+    if (options.missing && error.code === 'no_such_subteam') return;
     throw error;
   }
 }
@@ -724,13 +725,6 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
     throw error;
   }
 }
-
-/**
- * Slack's documented answer for an unknown user group ("No usergroup found
- * with the given ID"). Any other code, `subteam_not_found` included, is not
- * proof the group is gone.
- */
-const USER_GROUP_NOT_FOUND = 'no_such_subteam';
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   if (!agent.slackPresence) throw new Error(`Agent ${agent.id} has no Slack presence`);
