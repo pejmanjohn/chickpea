@@ -32,6 +32,41 @@ test('fake Slack opens configured DMs with a channel and rejects unknown destina
   });
 });
 
+test('fake Slack keeps the created app manifest across log resets for export and update', async () => {
+  const token = 'xoxe.fake-configuration-token';
+  const backend = new FakeSlackBackend({
+    slack: {
+      oauth: {
+        appId: 'A0FAKE', clientId: '1.2', clientSecret: 'client-secret', configurationToken: token,
+        signingSecret: 'signing-secret', botToken: 'xoxb-fake', installerUserId: 'UINSTALLER',
+        privateKeyPem: '', publicJwk: { kid: 'unused', alg: 'RS256', use: 'sig' },
+      },
+    },
+  });
+  const call = async (method: string, body: string, contentType: string, bearer = token) => {
+    const response = await backend.asFetch()(`https://slack.com/api/${method}`, {
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': contentType }, body,
+    });
+    return response.json() as Promise<Record<string, unknown>>;
+  };
+  const exportManifest = (bearer?: string) =>
+    call('apps.manifest.export', 'app_id=A0FAKE', 'application/x-www-form-urlencoded', bearer);
+  assert.deepEqual(await exportManifest(), { ok: false, error: 'invalid_app_id' });
+  assert.equal((await call('apps.manifest.create', JSON.stringify({ manifest: { name: 'created' } }), 'application/json')).ok, true);
+  backend.reset();
+  assert.deepEqual(await exportManifest(), { ok: true, manifest: { name: 'created' } });
+  assert.deepEqual(await exportManifest('xoxe.other-token'), { ok: false, error: 'invalid_auth' });
+  assert.deepEqual(
+    await call('apps.manifest.update', JSON.stringify({ app_id: 'A0FAKE', manifest: { name: 'updated' } }), 'application/json'),
+    { ok: true, app_id: 'A0FAKE' },
+  );
+  assert.deepEqual(await exportManifest(), { ok: true, manifest: { name: 'updated' } });
+  assert.deepEqual(
+    await call('apps.manifest.update', JSON.stringify({ app_id: 'A0OTHER', manifest: { name: 'x' } }), 'application/json'),
+    { ok: false, error: 'invalid_app_id' },
+  );
+});
+
 test('fake published Agent handles produce real Slack-shaped mention events', async () => {
   const backend = new FakeSlackBackend();
   const response = await backend.asFetch()('https://slack.com/api/usergroups.create', {
