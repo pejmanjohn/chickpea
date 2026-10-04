@@ -12668,7 +12668,7 @@
     }).catch(function (error) {
       if (error && error.message === "onboarding_not_found") {
         state.onboarding = null;
-        state.onboardingError = "This install does not have an active setup journey.";
+        state.onboardingError = "This workspace does not have an active setup journey.";
       } else {
         state.onboardingError = (error && (error.serverMessage || error.message)) || "Could not load setup.";
       }
@@ -13014,7 +13014,7 @@
           return {
             body: null,
             error: error && error.message === "onboarding_not_found"
-              ? "This install does not have an active setup journey."
+              ? "This workspace does not have an active setup journey."
               : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
           };
         })
