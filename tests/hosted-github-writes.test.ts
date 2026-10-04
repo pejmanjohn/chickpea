@@ -11,20 +11,24 @@ import { SqliteSettingsStore, type SettingsPatch } from '../src/config/settings-
 import type { RepositoryGrant } from '../src/config/types.ts';
 import type { SandboxEgressContext } from '../src/sandbox/cloudflare-policy.ts';
 import { decideSandboxEgress } from '../src/sandbox/egress-handler.ts';
-import { githubSandboxOutbound, type SandboxEgressStub } from '../src/sandbox/egress-outbound.ts';
+import { githubSandboxOutbound, SANDBOX_BLOCKED_STATUS, type SandboxEgressStub } from '../src/sandbox/egress-outbound.ts';
 import {
+  admitGithubRequest,
   admitGithubWrite,
   githubConnectorWriteGate,
   githubSecondaryLimitSeconds,
+  GITHUB_HOLD_RECHECK_MS,
   GITHUB_LATCH_ALERT_WINDOW_MS,
+  GITHUB_PULL_REQUEST_WINDOW_MS,
   GITHUB_PULL_REQUESTS_PER_WINDOW,
   GITHUB_SECONDARY_LIMIT_MAX_SECONDS,
   GITHUB_SECONDARY_LIMIT_MIN_SECONDS,
   GITHUB_WRITE_WINDOW_MS,
   GITHUB_WRITES_KEY,
   GITHUB_WRITES_PER_WINDOW,
-  latchGithubWrites,
-  resetGithubWriteLatchesForTests,
+  latchGithubRequests,
+  resetGithubLatchesForTests,
+  type GithubAdmission,
 } from '../src/sandbox/github-write-rate.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -32,9 +36,9 @@ import { withEnv } from './helpers/env.ts';
  * H14a′: on a deployment serving many installations, an Agent's Worker-side
  * bash reaches GitHub through connectors carrying a platform App token. Its
  * writes draw on the same per-installation budget as container egress,
- * judged by the egress decision's own logic, and both paths stop writing
- * while GitHub's secondary limit holds the installation. Standalone is
- * unchanged.
+ * judged by the egress decision's own logic, and both paths stop every
+ * request, reads included, while GitHub's secondary limit holds the
+ * installation. Standalone is unchanged.
  */
 
 const INSTALLATION_A = `inst_${'0123456789abcdef'.repeat(2)}`;
@@ -46,6 +50,8 @@ const GITHUB_B = 202;
 const GRANT_A: RepositoryGrant = { id: 'repo_a', installationId: GITHUB_A, accountLogin: 'acme-a', fullName: 'acme-a/app', enabled: true };
 const GRANT_B: RepositoryGrant = { id: 'repo_b', installationId: GITHUB_B, accountLogin: 'acme-b', fullName: 'acme-b/app', enabled: true };
 const T0 = Date.UTC(2026, 9, 3, 12, 0, 0);
+/** A clock far from the real one, for waits GitHub gives as an HTTP date. */
+const T_FAR = Date.UTC(2031, 0, 1);
 const SECONDARY_LIMIT_BODY = JSON.stringify({
   message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
   documentation_url: 'https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits',
@@ -64,11 +70,23 @@ async function stored(store: Store): Promise<{ writes: number[]; pullRequests: n
   return raw === undefined ? undefined : JSON.parse(raw);
 }
 
-/** Writes already spent this window, as `count` timestamps just now. */
-const spentWrites = (count: number, pullRequests = 0) => JSON.stringify({
-  writes: Array.from({ length: count }, () => Date.now()),
-  pullRequests: Array.from({ length: pullRequests }, () => Date.now()),
+/** Writes already spent: `count` writes and `pullRequests` pull requests, each `ageMs` ago. */
+const spentWrites = (count: number, pullRequests = 0, ageMs = 0) => JSON.stringify({
+  writes: Array.from({ length: count }, () => Date.now() - ageMs),
+  pullRequests: Array.from({ length: pullRequests }, () => Date.now() - ageMs),
 });
+
+/** A Retry-After of `seconds`, less the few the test itself took on the real clock. */
+function assertWait(retryAfter: string | null | undefined, seconds: number, message = 'Retry-After'): void {
+  const value = Number(retryAfter);
+  assert.ok(value > seconds - 5 && value <= seconds, `${message}: ${retryAfter}, expected about ${seconds}`);
+}
+
+/** No holds or operator events left from another test in this isolate, before or after this one. */
+function freshIsolate(t: TestContext): void {
+  resetGithubLatchesForTests();
+  t.after(() => resetGithubLatchesForTests());
+}
 
 /**
  * A hosted deployment on Cloudflare: the platform App with A bound to
@@ -78,7 +96,7 @@ const spentWrites = (count: number, pullRequests = 0) => JSON.stringify({
 async function hosted(t: TestContext, seeds: Record<string, Record<string, string>> = {}) {
   resetHostedGithubForTests();
   resetInstallationAdmissionForTests();
-  resetGithubWriteLatchesForTests();
+  freshIsolate(t);
   configureHostedGithub({
     app: () => ({ appId: '910100', appSlug: 'chickpea-staging', privateKeyPem: PRIVATE_KEY, botUserId: 910_200 }),
     bindings: {
@@ -90,7 +108,7 @@ async function hosted(t: TestContext, seeds: Record<string, Record<string, strin
     },
   });
   configureInstallationAdmission(async () => 'admitted');
-  t.after(() => { resetHostedGithubForTests(); resetInstallationAdmissionForTests(); resetGithubWriteLatchesForTests(); });
+  t.after(() => { resetHostedGithubForTests(); resetInstallationAdmissionForTests(); });
   onCloudflare(t);
   const stores = new Map<string, SqliteSettingsStore>();
   for (const installationId of [INSTALLATION_A, INSTALLATION_B]) {
@@ -98,9 +116,15 @@ async function hosted(t: TestContext, seeds: Record<string, Record<string, strin
     for (const [key, value] of Object.entries(seeds[installationId] ?? {})) await store.setSetting(key, value);
     stores.set(installationId, store);
   }
-  const TAG_STATE = tagState((name) => stores.get(splitInstallationObjectName(name).scope?.installationId ?? name));
+  let countsBroken = false;
+  const TAG_STATE = tagState(
+    (name) => stores.get(splitInstallationObjectName(name).scope?.installationId ?? name),
+    (key) => countsBroken && key === GITHUB_WRITES_KEY,
+  );
   return {
     store: (installationId: string) => stores.get(installationId)!,
+    /** From now on the state store fails every read and write of the GitHub counts. */
+    breakCounts() { countsBroken = true; },
     env: (installationId: string) => scopeInstallationEnv({ ...HOSTED, TAG_STATE } as Record<string, unknown>, { installationId }),
     egressEnv: (installationId: string) => egressEnv({ ...HOSTED, TAG_STATE }, {
       installationId, turnId: 'turn_1', policy: { grants: [installationId === INSTALLATION_A ? GRANT_A : GRANT_B], mode: 'app' },
@@ -108,18 +132,28 @@ async function hosted(t: TestContext, seeds: Record<string, Record<string, strin
   };
 }
 
-/** Cloudflare's TAG_STATE over one settings store per object name. */
-function tagState(storeFor: (name: string) => SqliteSettingsStore | undefined) {
+/** Cloudflare's TAG_STATE over one settings store per object name; a `failing` key's reads and writes throw. */
+function tagState(storeFor: (name: string) => SqliteSettingsStore | undefined, failing: (key: string) => boolean = () => false) {
+  const check = (keys: ReadonlyArray<string | undefined>) => {
+    if (keys.some((key) => key !== undefined && failing(key))) throw new Error('state store unavailable');
+  };
   return {
     getByName(name: string) {
       const settings = storeFor(name);
       if (!settings) throw new Error('no such installation');
       return {
-        async settingGet(key: string) { return { ok: true, value: (await settings.getSetting(key)) ?? null }; },
+        async settingGet(key: string) {
+          check([key]);
+          return { ok: true, value: (await settings.getSetting(key)) ?? null };
+        },
         async settingGetMany(keys: readonly string[]) {
+          check(keys);
           return { ok: true, value: (await settings.getSettings(keys)).map((value) => value ?? null) };
         },
-        async settingApplyPatch(patch: SettingsPatch) { return { ok: true, value: await settings.applySettingsPatch(patch) }; },
+        async settingApplyPatch(patch: SettingsPatch) {
+          check([patch.expected?.key, ...(patch.set ?? []).map(({ key }) => key)]);
+          return { ok: true, value: await settings.applySettingsPatch(patch) };
+        },
       };
     },
   };
@@ -177,6 +211,8 @@ async function agentBash(env: Record<string, unknown>, grants: RepositoryGrant[]
   const sandbox = await createConnectorScopedBash(DEFAULT_EGRESS_POLICY, true, access.connectors).createSandbox({} as never);
   return {
     access,
+    /** curl's own result, for a request that may fail. */
+    exec: (args: string) => sandbox.exec(`curl -sS -i ${args}`),
     /** The HTTP status curl reports, and its Retry-After when one was sent. */
     async curl(args: string): Promise<{ status: number; retryAfter?: string }> {
       const result = await sandbox.exec(`curl -sS -i ${args}`);
@@ -195,25 +231,36 @@ const READ = 'https://api.github.com/repos/acme-a/app/contents/README.md';
 // --- The budget on the bash path ---------------------------------------------
 
 test('bash: an installation\'s GitHub writes are counted, and past the budget refused with a 429 before they leave', async (t) => {
-  const deployment = await hosted(t, { [INSTALLATION_A]: { [GITHUB_WRITES_KEY]: spentWrites(GITHUB_WRITES_PER_WINDOW - 1) } });
+  const deployment = await hosted(t, {
+    [INSTALLATION_A]: { [GITHUB_WRITES_KEY]: spentWrites(GITHUB_WRITES_PER_WINDOW - 1, 0, 200_000) },
+  });
   const sent = github(t);
   const bash = await agentBash(deployment.env(INSTALLATION_A), [GRANT_A]);
   assert.deepEqual(await bash.curl(ISSUE), { status: 200 }, 'the last write of the window');
   assert.equal((await stored(deployment.store(INSTALLATION_A)))?.writes.length, GITHUB_WRITES_PER_WINDOW, 'counted');
-  assert.deepEqual(await bash.curl(ISSUE), { status: 429, retryAfter: String(GITHUB_WRITE_WINDOW_MS / 1_000) });
-  assert.deepEqual(await bash.curl(`-X PATCH https://api.github.com/repos/acme-a/app/pulls/4 -d '{}'`),
-    { status: 429, retryAfter: '600' });
+  // Refused until the oldest write, 200 seconds old, leaves the ten-minute window.
+  const refused = await bash.curl(ISSUE);
+  assert.equal(refused.status, 429);
+  assertWait(refused.retryAfter, GITHUB_WRITE_WINDOW_MS / 1_000 - 200);
+  const patch = await bash.curl(`-X PATCH https://api.github.com/repos/acme-a/app/pulls/4 -d '{}'`);
+  assert.equal(patch.status, 429);
+  assertWait(patch.retryAfter, GITHUB_WRITE_WINDOW_MS / 1_000 - 200);
   assert.deepEqual(sent.map(({ method, url }) => `${method} ${url}`), ['POST https://api.github.com/repos/acme-a/app/issues'],
     'refused writes never reach GitHub');
   assert.equal((await stored(deployment.store(INSTALLATION_A)))?.writes.length, GITHUB_WRITES_PER_WINDOW, 'refusals are not counted');
 });
 
 test('bash: pull requests count per day as well', async (t) => {
-  const deployment = await hosted(t, { [INSTALLATION_A]: { [GITHUB_WRITES_KEY]: spentWrites(0, GITHUB_PULL_REQUESTS_PER_WINDOW - 1) } });
+  const deployment = await hosted(t, {
+    [INSTALLATION_A]: { [GITHUB_WRITES_KEY]: spentWrites(0, GITHUB_PULL_REQUESTS_PER_WINDOW - 1, 3_600_000) },
+  });
   const sent = github(t);
   const bash = await agentBash(deployment.env(INSTALLATION_A), [GRANT_A]);
   assert.equal((await bash.curl(PULL)).status, 200);
-  assert.deepEqual(await bash.curl(PULL), { status: 429, retryAfter: '600' });
+  // Refused until the oldest pull request, an hour old, leaves the day.
+  const refused = await bash.curl(PULL);
+  assert.equal(refused.status, 429);
+  assertWait(refused.retryAfter, (GITHUB_PULL_REQUEST_WINDOW_MS - 3_600_000) / 1_000);
   assert.equal((await bash.curl(ISSUE)).status, 200, 'other writes go on');
   assert.deepEqual(sent.map(({ url }) => new URL(url).pathname), ['/repos/acme-a/app/pulls', '/repos/acme-a/app/issues']);
   const counted = await stored(deployment.store(INSTALLATION_A));
@@ -259,6 +306,7 @@ test('bash: a method override header or `_method` parameter makes a read a write
 });
 
 test('the bash gate counts exactly what the egress decision judges a write', async (t) => {
+  freshIsolate(t);
   const cases: Array<[string, string, Record<string, string>?]> = [
     ['https://api.github.com/repos/acme-a/app/pulls', 'GET'],
     ['https://api.github.com/repos/acme-a/app/pulls', 'POST'],
@@ -348,7 +396,7 @@ test('container egress and bash draw on one budget per installation', async (t) 
   assert.equal((await bash.curl(ISSUE)).status, 200, 'the last write of the window, from bash');
   const refused = await githubSandboxOutbound(push(), deployment.egressEnv(INSTALLATION_A), { containerId: 'do_a' });
   assert.equal(refused.status, 429, 'egress sees the writes bash spent');
-  assert.equal(refused.headers.get('Retry-After'), '600');
+  assertWait(refused.headers.get('Retry-After'), GITHUB_WRITE_WINDOW_MS / 1_000);
   assert.equal((await bash.curl(ISSUE)).status, 429);
   assert.equal(sent.length, 2);
 
@@ -387,7 +435,7 @@ const NOT_SECONDARY: Array<{ name: string; answer: () => Response }> = [
   { name: 'a 404 with the message', answer: () => new Response(SECONDARY_LIMIT_BODY, { status: 404 }) },
 ];
 
-test('each secondary-limit shape, answered on bash, holds the installation\'s writes on both paths; reads go on', async (t) => {
+test('each secondary-limit shape, answered on bash, holds all the installation\'s requests on both paths', async (t) => {
   for (const shape of SHAPES) {
     const deployment = await hosted(t);
     let limited = true;
@@ -399,19 +447,23 @@ test('each secondary-limit shape, answered on bash, holds the installation\'s wr
     assert.ok(latchedUntil !== undefined, shape.name);
     assert.ok(latchedUntil >= started + shape.seconds * 1_000 && latchedUntil <= Date.now() + shape.seconds * 1_000, shape.name);
     limited = false;
-    const refused = await bash.curl(ISSUE);
-    assert.equal(refused.status, 429, shape.name);
-    assert.ok(Number(refused.retryAfter) > shape.seconds - 5 && Number(refused.retryAfter) <= shape.seconds, shape.name);
+    for (const request of [ISSUE, READ, PULL]) {
+      const refused = await bash.curl(request);
+      assert.equal(refused.status, 429, `${shape.name}: ${request}`);
+      assertWait(refused.retryAfter, shape.seconds, `${shape.name}: ${request}`);
+    }
+    const egress = (request: Request) => githubSandboxOutbound(request, deployment.egressEnv(INSTALLATION_A), { containerId: 'do_a' });
     const push = new Request('https://github.com/acme-a/app.git/git-receive-pack', { method: 'POST', body: 'pack' });
-    assert.equal((await githubSandboxOutbound(push, deployment.egressEnv(INSTALLATION_A), { containerId: 'do_a' })).status, 429,
-      `${shape.name}: egress writes are held too`);
-    assert.equal((await bash.curl(READ)).status, 200, `${shape.name}: reads go on`);
-    assert.deepEqual(sent.map(({ method }) => method), ['GET', 'GET'], `${shape.name}: no held write left`);
+    assert.equal((await egress(push)).status, 429, `${shape.name}: egress writes are held too`);
+    const heldRead = await egress(new Request(READ));
+    assert.equal(heldRead.status, 429, `${shape.name}: and egress reads`);
+    assertWait(heldRead.headers.get('Retry-After'), shape.seconds, shape.name);
+    assert.deepEqual(sent.map(({ method }) => method), ['GET'], `${shape.name}: nothing held left`);
     assert.equal((await stored(deployment.store(INSTALLATION_A)))?.writes.length, 0, 'held writes are not counted');
   }
 });
 
-test('each secondary-limit shape, answered on container egress, holds the installation\'s writes on both paths', async (t) => {
+test('each secondary-limit shape, answered on container egress, holds all the installation\'s requests on both paths', async (t) => {
   for (const shape of SHAPES) {
     const deployment = await hosted(t);
     let limited = true;
@@ -428,9 +480,10 @@ test('each secondary-limit shape, answered on container egress, holds the instal
     assert.ok(retryAfter > shape.seconds - 5 && retryAfter <= shape.seconds, `${shape.name}: ${retryAfter}`);
     const bash = await agentBash(deployment.env(INSTALLATION_A), [GRANT_A]);
     assert.equal((await bash.curl(ISSUE)).status, 429, `${shape.name}: bash writes are held too`);
+    assert.equal((await bash.curl(READ)).status, 429, `${shape.name}: and bash reads`);
     assert.equal((await githubSandboxOutbound(new Request(READ), deployment.egressEnv(INSTALLATION_A), { containerId: 'do_a' })).status,
-      200, `${shape.name}: reads go on`);
-    assert.deepEqual(sent.map(({ method }) => method), ['POST', 'GET'], shape.name);
+      429, `${shape.name}: and egress reads`);
+    assert.deepEqual(sent.map(({ method }) => method), ['POST'], shape.name);
     // Another installation is not held.
     const bashB = await agentBash(deployment.env(INSTALLATION_B), [GRANT_B]);
     assert.equal((await bashB.curl(`-X POST https://api.github.com/repos/acme-b/app/issues -d '{}'`)).status, 200, shape.name);
@@ -450,62 +503,204 @@ test('answers that are not a secondary limit hold nothing, on either path', asyn
 
 test('GitHub\'s wait is held at least a minute and at most an hour, in either Retry-After form', async () => {
   const seconds = (status: number, retryAfter: string | null, body = '') =>
-    githubSecondaryLimitSeconds({ status, retryAfter, body: async () => body });
+    githubSecondaryLimitSeconds({ status, retryAfter, body: async () => body, now: T_FAR });
   assert.equal(await seconds(403, '5'), GITHUB_SECONDARY_LIMIT_MIN_SECONDS);
   assert.equal(await seconds(429, '0'), GITHUB_SECONDARY_LIMIT_MIN_SECONDS);
   assert.equal(await seconds(403, '61'), 61);
   assert.equal(await seconds(429, '99999'), GITHUB_SECONDARY_LIMIT_MAX_SECONDS);
   assert.equal(await seconds(403, 'soon'), GITHUB_SECONDARY_LIMIT_MIN_SECONDS, 'a wait it cannot read is a minute');
-  const dated = await seconds(403, new Date(Date.now() + 300_000).toUTCString());
-  assert.ok(dated !== undefined && dated >= 299 && dated <= 300, 'an HTTP date');
+  assert.equal(await seconds(403, new Date(T_FAR + 300_000).toUTCString()), 300, 'an HTTP date, on the caller\'s clock');
   assert.equal(await seconds(403, null, SECONDARY_LIMIT_BODY), GITHUB_SECONDARY_LIMIT_MIN_SECONDS);
   assert.equal(await seconds(403, '', 'Secondary Rate Limit'), GITHUB_SECONDARY_LIMIT_MIN_SECONDS);
   assert.equal(await seconds(403, null, 'Forbidden'), undefined);
   // The body is read only when the status and a missing wait call for it.
   let reads = 0;
   const counting = async () => { reads += 1; return SECONDARY_LIMIT_BODY; };
-  await githubSecondaryLimitSeconds({ status: 200, retryAfter: null, body: counting });
-  await githubSecondaryLimitSeconds({ status: 403, retryAfter: '60', body: counting });
+  await githubSecondaryLimitSeconds({ status: 200, retryAfter: null, body: counting, now: T0 });
+  await githubSecondaryLimitSeconds({ status: 403, retryAfter: '60', body: counting, now: T0 });
   assert.equal(reads, 0);
-  assert.equal(await githubSecondaryLimitSeconds({ status: 403, retryAfter: null, body: async () => { throw new Error('gone'); } }),
-    undefined, 'an unreadable body is not the message');
+  assert.equal(await githubSecondaryLimitSeconds({
+    status: 403, retryAfter: null, body: async () => { throw new Error('gone'); }, now: T0,
+  }), undefined, 'an unreadable body is not the message');
 });
 
 test('the hold expires when its window passes, and a longer hold is kept', async (t) => {
+  freshIsolate(t);
   const store = settingsStore(t);
-  await latchGithubWrites({ store, installationId: INSTALLATION_A, seconds: 60, now: T0 });
+  await latchGithubRequests({ store, installationId: INSTALLATION_A, seconds: 60, now: T0 });
   assert.deepEqual(await admitGithubWrite({ store, kind: 'write', now: T0 }), { admitted: false, retryAfterSeconds: 60 });
   assert.deepEqual(await admitGithubWrite({ store, kind: 'pull_request', now: T0 + 59_001 }),
     { admitted: false, retryAfterSeconds: 1 });
   assert.equal((await admitGithubWrite({ store, kind: 'write', now: T0 + 60_000 })).admitted, true, 'the window passed');
   assert.equal((await stored(store))?.latchedUntil, undefined, 'a passed hold is dropped');
 
-  await latchGithubWrites({ store, installationId: INSTALLATION_A, seconds: 600, now: T0 + 60_000 });
-  await latchGithubWrites({ store, installationId: INSTALLATION_A, seconds: 60, now: T0 + 61_000 });
+  await latchGithubRequests({ store, installationId: INSTALLATION_A, seconds: 600, now: T0 + 60_000 });
+  await latchGithubRequests({ store, installationId: INSTALLATION_A, seconds: 60, now: T0 + 61_000 });
   assert.equal((await stored(store))?.latchedUntil, T0 + 660_000, 'a shorter hold does not cut a longer one');
   assert.equal((await stored(store))?.writes.length, 1, 'holding keeps the count');
   assert.deepEqual(await admitGithubWrite({ store, kind: 'write', now: T0 + 659_500 }), { admitted: false, retryAfterSeconds: 1 });
   assert.equal((await admitGithubWrite({ store, kind: 'write', now: T0 + 660_000 })).admitted, true);
 });
 
-test('the bash gate\'s hold expires on its own clock', async (t) => {
+test('the bash gate\'s hold expires on its own clock, a dated wait included', async (t) => {
+  freshIsolate(t);
   const store = settingsStore(t);
-  let now = T0;
+  let now = T_FAR;
   const gate = githubConnectorWriteGate({ store, installationId: INSTALLATION_A, now: () => now });
   const url = 'https://api.github.com/repos/acme-a/app/issues';
-  let answer: ConnectorFetchResult = { status: 403, statusText: 'Forbidden', headers: { 'retry-after': '75' }, body: new Uint8Array(), url };
+  let answer: ConnectorFetchResult = {
+    status: 403, statusText: 'Forbidden', headers: { 'retry-after': new Date(T_FAR + 75_000).toUTCString() }, body: new Uint8Array(), url,
+  };
   const sent: string[] = [];
   const send = async () => { sent.push(url); return answer; };
   const post = () => gate({ url, method: 'POST', headers: new Headers() }, send);
+  const get = () => gate({ url, method: 'GET', headers: new Headers() }, send);
   assert.equal((await post()).status, 403);
   answer = { ...answer, status: 201, headers: {} };
-  now = T0 + 74_000;
-  assert.deepEqual(await post(), {
-    status: 429, statusText: 'Too Many Requests', headers: { 'retry-after': '1' }, body: new Uint8Array(), url,
-  });
-  now = T0 + 75_000;
+  now = T_FAR + 74_000;
+  const held = { status: 429, statusText: 'Too Many Requests', headers: { 'retry-after': '1' }, body: new Uint8Array(), url };
+  assert.deepEqual(await post(), held);
+  assert.deepEqual(await get(), held, 'reads are held as long');
+  now = T_FAR + 75_000;
+  assert.equal((await get()).status, 201);
   assert.equal((await post()).status, 201);
-  assert.equal(sent.length, 2);
+  assert.equal(sent.length, 3);
+});
+
+test('reads check the hold in this isolate\'s memory, reading the state store at most once per recheck', async (t) => {
+  freshIsolate(t);
+  const inner = settingsStore(t);
+  let reads = 0;
+  const store: Store = {
+    async getSetting(key) { reads += 1; return inner.getSetting(key); },
+    applySettingsPatch: (patch) => inner.applySettingsPatch(patch),
+  };
+  let now = T0;
+  const gate = githubConnectorWriteGate({ store, installationId: INSTALLATION_A, now: () => now });
+  let sends = 0;
+  const get = () => gate({ url: READ, method: 'GET', headers: new Headers() }, async () => {
+    sends += 1;
+    return { status: 200, statusText: 'OK', headers: {}, body: new Uint8Array(), url: READ };
+  });
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal((await get()).status, 200);
+    now += 100;
+  }
+  assert.equal(reads, 1, 'twenty reads, one state read');
+
+  // Another isolate holds the installation: reads here learn of it at the next recheck.
+  await inner.setSetting(GITHUB_WRITES_KEY, JSON.stringify({ writes: [], pullRequests: [], latchedUntil: T0 + 120_000 }));
+  now = T0 + GITHUB_HOLD_RECHECK_MS - 1;
+  assert.equal((await get()).status, 200, 'until the recheck, as this isolate last read it');
+  now = T0 + GITHUB_HOLD_RECHECK_MS;
+  assert.equal((await get()).headers['retry-after'], String(120 - GITHUB_HOLD_RECHECK_MS / 1_000));
+  assert.equal(reads, 2);
+  now += 60_000;
+  assert.equal((await get()).status, 429);
+  assert.equal(reads, 2, 'a hold this isolate knows needs no state read');
+  now = T0 + 120_000;
+  assert.equal((await get()).status, 200, 'the hold has passed');
+  assert.equal(reads, 3);
+  assert.equal(sends, 22);
+});
+
+// --- Concurrency and failure ---------------------------------------------------
+
+/**
+ * A state store where every read and patch first yields to other work, so
+ * callers running together all read the row before any of them replaces it.
+ */
+function interleavingStore(t: TestContext) {
+  const inner = settingsStore(t);
+  let conflicts = 0;
+  const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    inner,
+    conflicts: () => conflicts,
+    async getSetting(key: string) {
+      await yieldTurn();
+      return inner.getSetting(key);
+    },
+    async applySettingsPatch(patch: SettingsPatch) {
+      await yieldTurn();
+      const applied = await inner.applySettingsPatch(patch);
+      if (!applied) conflicts += 1;
+      return applied;
+    },
+  };
+}
+
+test('parallel writes admit exactly what the budget has left, however they interleave', async (t) => {
+  const writes = interleavingStore(t);
+  await writes.inner.setSetting(GITHUB_WRITES_KEY, JSON.stringify({
+    writes: Array.from({ length: GITHUB_WRITES_PER_WINDOW - 8 }, () => T0 - 1_000), pullRequests: [],
+  }));
+  const admitted = await Promise.all(Array.from({ length: 20 }, () => admitGithubWrite({ store: writes, kind: 'write', now: T0 })));
+  assert.equal(admitted.filter(({ admitted }) => admitted).length, 8);
+  assert.ok(admitted.every((admission) => admission.admitted || admission.retryAfterSeconds === 599));
+  assert.equal((await stored(writes.inner))?.writes.length, GITHUB_WRITES_PER_WINDOW, 'each admitted write counted once');
+  assert.ok(writes.conflicts() > 0, 'the admissions raced');
+
+  const pulls = interleavingStore(t);
+  await pulls.inner.setSetting(GITHUB_WRITES_KEY, JSON.stringify({
+    writes: [], pullRequests: Array.from({ length: GITHUB_PULL_REQUESTS_PER_WINDOW - 3 }, () => T0 - 1_000),
+  }));
+  const opened = await Promise.all(Array.from({ length: 10 }, () => admitGithubWrite({ store: pulls, kind: 'pull_request', now: T0 })));
+  assert.equal(opened.filter(({ admitted }) => admitted).length, 3);
+  assert.equal((await stored(pulls.inner))?.pullRequests.length, GITHUB_PULL_REQUESTS_PER_WINDOW);
+  assert.ok(pulls.conflicts() > 0);
+});
+
+test('a hold racing admissions is never lost, and every admission after it is refused', async (t) => {
+  freshIsolate(t);
+  t.mock.method(console, 'warn', () => {});
+  for (const position of [0, 3, 6]) {
+    const store = interleavingStore(t);
+    const admissions: Array<Promise<GithubAdmission>> = [];
+    const started: Array<Promise<unknown>> = [];
+    for (let index = 0; index <= 6; index += 1) {
+      if (index === position) started.push(latchGithubRequests({ store, installationId: INSTALLATION_A, seconds: 60, now: T0 }));
+      if (index < 6) {
+        const admission = admitGithubWrite({ store, kind: 'write', now: T0 });
+        admissions.push(admission);
+        started.push(admission);
+      }
+    }
+    await Promise.all(started);
+    const results = await Promise.all(admissions);
+    const row = await stored(store.inner);
+    assert.equal(row?.latchedUntil, T0 + 60_000, `hold started ${position}th: stored`);
+    assert.equal(results.filter(({ admitted }) => admitted).length, position, `hold started ${position}th: only earlier writes`);
+    assert.equal(row?.writes.length, position, 'every admitted write counted');
+    assert.ok(store.conflicts() > 0, 'the hold raced the admissions');
+  }
+});
+
+test('a state store that fails during admission refuses the request before it leaves, on both paths', async (t) => {
+  const deployment = await hosted(t);
+  const sent = github(t);
+  const bash = await agentBash(deployment.env(INSTALLATION_A), [GRANT_A]);
+  deployment.breakCounts();
+  for (const request of [ISSUE, PULL, READ]) {
+    const result = await bash.exec(request);
+    assert.notEqual(result.exitCode, 0, `bash: ${request}`);
+    assert.equal(result.stdout, '', `bash: ${request}`);
+  }
+  const egress = (request: Request) => githubSandboxOutbound(request, deployment.egressEnv(INSTALLATION_A), { containerId: 'do_a' });
+  const push = new Request('https://github.com/acme-a/app.git/git-receive-pack', { method: 'POST', body: 'pack' });
+  assert.equal((await egress(push)).status, SANDBOX_BLOCKED_STATUS);
+  assert.equal((await egress(new Request(READ))).status, SANDBOX_BLOCKED_STATUS);
+  assert.deepEqual(sent, [], 'nothing reached GitHub');
+
+  // A store whose patches never land cannot count the write: it is refused, not sent.
+  const racing: Store = { async getSetting() { return undefined; }, async applySettingsPatch() { return false; } };
+  const gate = githubConnectorWriteGate({ store: racing, installationId: INSTALLATION_B, now: () => T0 });
+  let sends = 0;
+  await assert.rejects(gate({ url: 'https://api.github.com/repos/acme-b/app/issues', method: 'POST', headers: new Headers() }, async () => {
+    sends += 1;
+    return { status: 201, statusText: 'Created', headers: {}, body: new Uint8Array(), url: '' };
+  }));
+  assert.equal(sends, 0);
 });
 
 // --- The operator event --------------------------------------------------------
@@ -521,37 +716,36 @@ function capturedLogs(t: TestContext) {
 }
 
 test('two installations held within a minute raise one operator event; one, or two a minute apart, do not', async (t) => {
-  resetGithubWriteLatchesForTests();
-  t.after(() => resetGithubWriteLatchesForTests());
+  freshIsolate(t);
   const lines = capturedLogs(t);
   const alerts = () => lines.filter(({ record }) => record.event === 'github_secondary_limit_installations');
   const storeA = settingsStore(t);
   const storeB = settingsStore(t);
   const storeC = settingsStore(t);
 
-  await latchGithubWrites({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 });
-  await latchGithubWrites({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 + 30_000 });
+  await latchGithubRequests({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 });
+  await latchGithubRequests({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 + 30_000 });
   assert.deepEqual(alerts(), [], 'one installation, however often');
-  assert.deepEqual(lines.filter(({ record }) => record.event === 'github_writes_latched').map(({ record }) => record), [
-    { component: 'hosted_github', event: 'github_writes_latched', installationId: INSTALLATION_A, retryAfterSeconds: 60 },
-    { component: 'hosted_github', event: 'github_writes_latched', installationId: INSTALLATION_A, retryAfterSeconds: 60 },
+  assert.deepEqual(lines.filter(({ record }) => record.event === 'github_requests_latched').map(({ record }) => record), [
+    { component: 'hosted_github', event: 'github_requests_latched', installationId: INSTALLATION_A, retryAfterSeconds: 60 },
+    { component: 'hosted_github', event: 'github_requests_latched', installationId: INSTALLATION_A, retryAfterSeconds: 60 },
   ]);
 
-  await latchGithubWrites({ store: storeB, installationId: INSTALLATION_B, seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS - 1 });
+  await latchGithubRequests({ store: storeB, installationId: INSTALLATION_B, seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS - 1 });
   assert.deepEqual(alerts(), [{
     level: 'error',
     record: { component: 'hosted_github', event: 'github_secondary_limit_installations', installations: 2, windowSeconds: 60 },
   }]);
-  await latchGithubWrites({ store: storeC, installationId: 'inst_third', seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS });
+  await latchGithubRequests({ store: storeC, installationId: 'inst_third', seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS });
   assert.equal(alerts().length, 1, 'at most one event a minute');
 
   // A minute apart is not within a minute.
-  resetGithubWriteLatchesForTests();
+  resetGithubLatchesForTests();
   lines.length = 0;
-  await latchGithubWrites({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 });
-  await latchGithubWrites({ store: storeB, installationId: INSTALLATION_B, seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS });
+  await latchGithubRequests({ store: storeA, installationId: INSTALLATION_A, seconds: 60, now: T0 });
+  await latchGithubRequests({ store: storeB, installationId: INSTALLATION_B, seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS });
   assert.deepEqual(alerts(), [], 'a minute apart is not together');
-  await latchGithubWrites({ store: storeC, installationId: 'inst_third', seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS + 1 });
+  await latchGithubRequests({ store: storeC, installationId: 'inst_third', seconds: 60, now: T0 + GITHUB_LATCH_ALERT_WINDOW_MS + 1 });
   assert.equal(alerts().length, 1, 'B and C within the minute');
   assert.equal(alerts()[0]?.record.installations, 2);
 });
@@ -568,18 +762,26 @@ test('the operator event comes from real answers on both paths', async (t) => {
     [{ component: 'hosted_github', event: 'github_secondary_limit_installations', installations: 2, windowSeconds: 60 }]);
 });
 
-test('a hold that cannot be stored is reported, and the answer still reaches its caller', async (t) => {
-  resetGithubWriteLatchesForTests();
-  t.after(() => resetGithubWriteLatchesForTests());
+test('a hold that cannot be stored is reported, and still holds this isolate\'s requests', async (t) => {
+  freshIsolate(t);
   const lines = capturedLogs(t);
   const broken: Store = {
     async getSetting() { throw new Error('state store unavailable'); },
     async applySettingsPatch() { return false; },
   };
-  await latchGithubWrites({ store: broken, installationId: INSTALLATION_A, seconds: 60, now: T0 });
+  await latchGithubRequests({ store: broken, installationId: INSTALLATION_A, seconds: 60, now: T0 });
   const racing: Store = { async getSetting() { return undefined; }, async applySettingsPatch() { return false; } };
-  await latchGithubWrites({ store: racing, installationId: INSTALLATION_A, seconds: 60, now: T0 });
-  assert.equal(lines.filter(({ record }) => record.event === 'github_writes_latch_failed').length, 2);
+  await latchGithubRequests({ store: racing, installationId: INSTALLATION_A, seconds: 60, now: T0 });
+  assert.equal(lines.filter(({ record }) => record.event === 'github_requests_latch_failed').length, 2);
+  for (const effect of ['read', 'write', 'pull_request'] as const) {
+    assert.deepEqual(await admitGithubRequest({ store: broken, installationId: INSTALLATION_A, effect, now: T0 + 1_000 }),
+      { admitted: false, retryAfterSeconds: 59 }, effect);
+  }
+  // A shorter hold does not cut a longer one this isolate holds.
+  await latchGithubRequests({ store: racing, installationId: INSTALLATION_B, seconds: 600, now: T0 });
+  await latchGithubRequests({ store: racing, installationId: INSTALLATION_B, seconds: 60, now: T0 + 1_000 });
+  assert.deepEqual(await admitGithubRequest({ store: racing, installationId: INSTALLATION_B, effect: 'read', now: T0 + 120_000 }),
+    { admitted: false, retryAfterSeconds: 480 });
 });
 
 // --- Mints and standalone ------------------------------------------------------
@@ -610,7 +812,7 @@ test('standalone: bash connectors carry no gate, writes are not counted and GitH
   const store = settingsStore(t);
   const TAG_STATE = tagState(() => store);
   onCloudflare(t);
-  resetGithubWriteLatchesForTests();
+  freshIsolate(t);
   let answer = () => new Response('{}');
   const sent = github(t, () => answer());
   await withEnv({ GITHUB_APP_ID: 'standalone-app-77', GITHUB_APP_PRIVATE_KEY: PRIVATE_KEY, CHICKPEA_TENANCY: undefined }, async () => {

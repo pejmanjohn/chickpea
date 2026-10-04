@@ -11,12 +11,15 @@
  * (egress-handler.ts): anything that does not surely read is a write, and
  * one that may open a pull request (the REST create call; GraphQL and the
  * uploads host are not reachable through either path) also counts per day.
+ * Reads are never counted.
  *
  * When GitHub answers one of the installation's requests with a secondary
- * rate limit, its writes are held here until GitHub's wait passes, so they
- * stop before GitHub has cause to ban the App. Two installations held within
- * a minute suggest GitHub counts that limit for the whole App, and an
- * operator event says so.
+ * rate limit, all its GitHub requests, reads included, are held here until
+ * GitHub's wait passes, so they stop before GitHub has cause to ban the App.
+ * A read learns of a hold from this isolate's memory, which rereads the
+ * state store at most every few seconds. Two installations held within a
+ * minute suggest GitHub counts that limit for the whole App, and an operator
+ * event says so.
  */
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConnectorFetchResult, ConnectorForward } from '../config/egress.ts';
@@ -33,51 +36,86 @@ export const GITHUB_SECONDARY_LIMIT_MIN_SECONDS = 60;
 export const GITHUB_SECONDARY_LIMIT_MAX_SECONDS = 60 * 60;
 /** Installations held within this window raise the operator event. */
 export const GITHUB_LATCH_ALERT_WINDOW_MS = 60_000;
+/** How long a read trusts this isolate's word that an installation is not held. */
+export const GITHUB_HOLD_RECHECK_MS = 5_000;
 const MAX_CAS_ATTEMPTS = 12;
 const SECONDARY_LIMIT_MESSAGE = /secondary rate limit/i;
 /** GitHub's error bodies are short; no more of one is read. */
 const MAX_LIMIT_BODY_BYTES = 64 * 1024;
 
-export type GithubWriteAdmission = { admitted: true } | { admitted: false; retryAfterSeconds: number };
+export type GithubAdmission = { admitted: true } | { admitted: false; retryAfterSeconds: number };
+const ADMITTED: GithubAdmission = { admitted: true };
 
 interface StoredWrites {
   writes: number[];
   pullRequests: number[];
-  /** Until when GitHub's secondary limit holds the installation's writes. */
+  /** Until when GitHub's secondary limit holds the installation's requests. */
   latchedUntil?: number;
 }
 
 /**
- * Count one write, or refuse it while the installation's writes are held
- * or its ten-minute writes or daily pull requests are spent. A refused write
- * is not counted.
+ * Admit one of the installation's GitHub requests before it leaves: none
+ * while GitHub's secondary limit holds the installation, and a write only
+ * within its budget, which counts it. A read is never counted.
+ */
+export async function admitGithubRequest(input: {
+  store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
+  installationId: string;
+  effect: GithubRequestEffect;
+  now: number;
+}): Promise<GithubAdmission> {
+  const { store, installationId, effect, now } = input;
+  const known = knownHolds.get(installationId);
+  if (known && known.until > now) return refusedUntil(known.until, now);
+  if (effect !== 'read') return admitGithubWrite({ store, kind: effect, now });
+  if (known && now - known.checkedAt < GITHUB_HOLD_RECHECK_MS) return ADMITTED;
+  const until = parseWrites(await store.getSetting(GITHUB_WRITES_KEY)).latchedUntil ?? 0;
+  rememberHold(installationId, until, now);
+  return until > now ? refusedUntil(until, now) : ADMITTED;
+}
+
+/**
+ * Count one write, or refuse it while the installation is held or its
+ * ten-minute writes or daily pull requests are spent, with the seconds until
+ * it would be admitted. A refused write is not counted.
  */
 export async function admitGithubWrite(input: {
   store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
   kind: Exclude<GithubRequestEffect, 'read'>;
   now: number;
-}): Promise<GithubWriteAdmission> {
+}): Promise<GithubAdmission> {
   const { store, kind, now } = input;
   for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
     const raw = await store.getSetting(GITHUB_WRITES_KEY);
     const stored = parseWrites(raw);
-    if (stored.latchedUntil !== undefined && stored.latchedUntil > now) {
-      return { admitted: false, retryAfterSeconds: Math.max(1, Math.ceil((stored.latchedUntil - now) / 1_000)) };
-    }
+    const heldUntil = stored.latchedUntil ?? 0;
+    if (heldUntil > now) return refusedUntil(heldUntil, now);
     const writes = stored.writes.filter((at) => at > now - GITHUB_WRITE_WINDOW_MS);
     const pullRequests = stored.pullRequests.filter((at) => at > now - GITHUB_PULL_REQUEST_WINDOW_MS);
-    const spent: GithubWriteAdmission = { admitted: false, retryAfterSeconds: GITHUB_WRITE_WINDOW_MS / 1_000 };
-    if (writes.length >= GITHUB_WRITES_PER_WINDOW) return spent;
-    if (kind === 'pull_request' && pullRequests.length >= GITHUB_PULL_REQUESTS_PER_WINDOW) return spent;
+    const spentUntil = Math.max(
+      roomAt(writes, GITHUB_WRITES_PER_WINDOW, GITHUB_WRITE_WINDOW_MS),
+      kind === 'pull_request' ? roomAt(pullRequests, GITHUB_PULL_REQUESTS_PER_WINDOW, GITHUB_PULL_REQUEST_WINDOW_MS) : 0,
+    );
+    if (spentUntil > now) return refusedUntil(spentUntil, now);
     writes.push(now);
     if (kind === 'pull_request') pullRequests.push(now);
-    if (await replaceWrites(store, raw, { writes, pullRequests })) return { admitted: true };
+    if (await replaceWrites(store, raw, { writes, pullRequests })) return ADMITTED;
   }
   throw new Error('Could not count a GitHub write after concurrent updates');
 }
 
-/** A refused write: the caller sees an HTTP "slow down", never a policy denial. */
-export function githubWriteRateLimited(retryAfterSeconds = GITHUB_WRITE_WINDOW_MS / 1_000): Response {
+/** When a budget of `limit` per window, spent at `spentAt` within it, has room again; 0 while it has room. */
+function roomAt(spentAt: readonly number[], limit: number, windowMs: number): number {
+  if (spentAt.length < limit) return 0;
+  return ([...spentAt].sort((a, b) => a - b)[spentAt.length - limit] ?? 0) + windowMs;
+}
+
+function refusedUntil(until: number, now: number): GithubAdmission {
+  return { admitted: false, retryAfterSeconds: Math.max(1, Math.ceil((until - now) / 1_000)) };
+}
+
+/** A refused request: the caller sees an HTTP "slow down", never a policy denial. */
+export function githubWriteRateLimited(retryAfterSeconds: number): Response {
   return new Response(null, {
     status: 429,
     headers: { 'Retry-After': String(retryAfterSeconds) },
@@ -89,53 +127,54 @@ export function githubWriteRateLimited(retryAfterSeconds = GITHUB_WRITE_WINDOW_M
  * 403 or 429 that names a retry-after, or whose body is GitHub's
  * secondary-limit message. At least a minute and at most an hour; undefined
  * for any other answer, a primary limit included. `body` is read only for a
- * 403 or 429 that names no wait.
+ * 403 or 429 that names no wait; `now` dates a wait given as an HTTP date.
  */
 export async function githubSecondaryLimitSeconds(answer: {
   status: number;
   retryAfter: string | null | undefined;
   body: () => Promise<string>;
+  now: number;
 }): Promise<number | undefined> {
   if (answer.status !== 403 && answer.status !== 429) return undefined;
   const retryAfter = answer.retryAfter?.trim();
   if (!retryAfter && !SECONDARY_LIMIT_MESSAGE.test(await answer.body().catch(() => ''))) return undefined;
-  const named = retryAfter ? retryAfterSeconds(retryAfter) : undefined;
+  const named = retryAfter ? retryAfterSeconds(retryAfter, answer.now) : undefined;
   return Math.min(GITHUB_SECONDARY_LIMIT_MAX_SECONDS, Math.max(GITHUB_SECONDARY_LIMIT_MIN_SECONDS, named ?? 0));
 }
 
 /**
- * Hold the installation's GitHub writes for `seconds`, or keep a longer hold
- * already in place, and note it for the operator. Never throws: the answer
- * that caused it still reaches its caller.
+ * Hold the installation's GitHub requests for `seconds`, or keep a longer
+ * hold already in place: in this isolate at once, and in the state store for
+ * every other. Never throws: the answer that caused it still reaches its
+ * caller.
  */
-export async function latchGithubWrites(input: {
+export async function latchGithubRequests(input: {
   store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
   installationId: string;
   seconds: number;
   now: number;
 }): Promise<void> {
   const { store, installationId, seconds, now } = input;
-  noteGithubWriteLatch(installationId, seconds, now);
+  const until = now + seconds * 1_000;
+  rememberHold(installationId, Math.max(knownHolds.get(installationId)?.until ?? 0, until), now);
+  noteGithubLatch(installationId, seconds, now);
   try {
     for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
       const raw = await store.getSetting(GITHUB_WRITES_KEY);
       const stored = parseWrites(raw);
-      const latchedUntil = Math.max(stored.latchedUntil ?? 0, now + seconds * 1_000);
+      const latchedUntil = Math.max(stored.latchedUntil ?? 0, until);
       if (await replaceWrites(store, raw, { ...stored, latchedUntil })) return;
     }
   } catch {
     // Reported below.
   }
-  console.warn(JSON.stringify({ component: 'hosted_github', event: 'github_writes_latch_failed' }));
+  console.warn(JSON.stringify({ component: 'hosted_github', event: 'github_requests_latch_failed' }));
 }
 
 /**
- * The Worker-side bash connectors' gate, for one installation of many: each
- * write is counted against the installation's budget, shared with container
- * egress, and refused with a 429 before it leaves when the budget is spent
- * or GitHub's secondary limit holds it. A write is sent once, never again
- * after a redirect, so every write that leaves is counted. Any answer that
- * is a secondary limit holds the installation's writes.
+ * The Worker-side bash connectors' gate for one installation: a refused
+ * request is answered with a 429 in its place. A write is sent once, never
+ * again after a redirect, so every write that leaves is counted.
  */
 export function githubConnectorWriteGate(input: {
   store: Pick<SettingsStore, 'getSetting' | 'applySettingsPatch'>;
@@ -146,17 +185,16 @@ export function githubConnectorWriteGate(input: {
   const clock = input.now ?? Date.now;
   return async (request, send) => {
     const effect = githubRequestEffect(new URL(request.url), request.method, request.headers);
-    if (effect !== 'read') {
-      const admission = await admitGithubWrite({ store, kind: effect, now: clock() });
-      if (!admission.admitted) return rateLimitedResult(request.url, admission.retryAfterSeconds);
-    }
+    const admission = await admitGithubRequest({ store, installationId, effect, now: clock() });
+    if (!admission.admitted) return rateLimitedResult(request.url, admission.retryAfterSeconds);
     const result = await (effect === 'read' ? send() : send({ followRedirects: false }));
     const seconds = await githubSecondaryLimitSeconds({
       status: result.status,
       retryAfter: result.headers['retry-after'],
       body: async () => new TextDecoder().decode(result.body.subarray(0, MAX_LIMIT_BODY_BYTES)),
+      now: clock(),
     });
-    if (seconds !== undefined) await latchGithubWrites({ store, installationId, seconds, now: clock() });
+    if (seconds !== undefined) await latchGithubRequests({ store, installationId, seconds, now: clock() });
     return result;
   };
 }
@@ -197,13 +235,27 @@ function rateLimitedResult(url: string, retryAfterSeconds: number): ConnectorFet
 }
 
 /** Seconds from a Retry-After value, either form; undefined when it names neither. */
-function retryAfterSeconds(value: string): number | undefined {
+function retryAfterSeconds(value: string, now: number): number | undefined {
   if (/^\d+$/.test(value)) return Number(value);
   const at = Date.parse(value);
-  return Number.isFinite(at) ? Math.ceil((at - Date.now()) / 1_000) : undefined;
+  return Number.isFinite(at) ? Math.ceil((at - now) / 1_000) : undefined;
 }
 
-/** The installations whose writes this isolate held, and when; for the operator event. */
+/** Each installation's hold as this isolate last knew it, and when it learned it. */
+const knownHolds = new Map<string, { until: number; checkedAt: number }>();
+/** Past this many, installations neither held nor checked within the recheck are forgotten. */
+const KNOWN_HOLDS_PRUNE_AT = 256;
+
+function rememberHold(installationId: string, until: number, now: number): void {
+  if (knownHolds.size >= KNOWN_HOLDS_PRUNE_AT) {
+    for (const [id, known] of knownHolds) {
+      if (known.until <= now && now - known.checkedAt >= GITHUB_HOLD_RECHECK_MS) knownHolds.delete(id);
+    }
+  }
+  knownHolds.set(installationId, { until, checkedAt: now });
+}
+
+/** The installations this isolate held, and when; for the operator event. */
 const recentLatches = new Map<string, number>();
 let alertedAt = Number.NEGATIVE_INFINITY;
 
@@ -213,9 +265,9 @@ let alertedAt = Number.NEGATIVE_INFINITY;
  * holds; the per-hold line names the installation, so the host can count
  * across isolates too.
  */
-function noteGithubWriteLatch(installationId: string, seconds: number, now: number): void {
+function noteGithubLatch(installationId: string, seconds: number, now: number): void {
   console.warn(JSON.stringify({
-    component: 'hosted_github', event: 'github_writes_latched', installationId, retryAfterSeconds: seconds,
+    component: 'hosted_github', event: 'github_requests_latched', installationId, retryAfterSeconds: seconds,
   }));
   recentLatches.set(installationId, now);
   for (const [id, at] of recentLatches) {
@@ -231,7 +283,8 @@ function noteGithubWriteLatch(installationId: string, seconds: number, now: numb
   }));
 }
 
-export function resetGithubWriteLatchesForTests(): void {
+export function resetGithubLatchesForTests(): void {
+  knownHolds.clear();
   recentLatches.clear();
   alertedAt = Number.NEGATIVE_INFINITY;
 }

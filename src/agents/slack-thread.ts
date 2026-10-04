@@ -416,23 +416,13 @@ export async function resolveRepositoryAccess(
   if (configured.length === 0) return none(false);
   if (enabled.length === 0) return none(true);
 
-  let connection: GithubConnection;
-  let settings: SettingsStore;
-  try {
-    settings = getSettingsStore(env);
-    connection = await getGithubConnection(settings, env);
-  } catch {
+  const github = await turnGithubConnection(env);
+  if (!github) {
     console.warn('[chickpea] GitHub repository access skipped for this turn');
     return none(true);
   }
-
+  const { connection, gate } = github;
   if (connection.mode === 'none') return none(true);
-  // An installation of many shares the platform App: its bash writes draw on
-  // the write budget its container egress uses, and stop while GitHub's
-  // secondary limit holds them.
-  const gate = connection.platform
-    ? githubConnectorWriteGate({ store: settings, installationId: connection.platform.installationId })
-    : undefined;
 
   // Grouped by the installation each grant mints through: serving many
   // installations, its account's binding, never the ID the grant stores.
@@ -519,6 +509,26 @@ export async function resolveRepositoryAccess(
     credentialMode: 'app',
     governsGithubHosts: true,
   };
+}
+
+/**
+ * The GitHub connection a turn mints through and, serving many
+ * installations, the gate its bash connectors pass: the installation shares
+ * the platform App, so its bash requests draw on the write budget and obey
+ * the hold its container egress does. Undefined when it cannot be read.
+ */
+async function turnGithubConnection(
+  env: PlatformEnv | undefined,
+): Promise<{ connection: GithubConnection; gate?: ConnectorForward } | undefined> {
+  try {
+    const settings = getSettingsStore(env);
+    const connection = await getGithubConnection(settings, env);
+    if (connection.mode !== 'app' || !connection.platform) return { connection };
+    const installationId = connection.platform.installationId;
+    return { connection, gate: githubConnectorWriteGate({ store: settings, installationId }) };
+  } catch {
+    return undefined;
+  }
 }
 
 function repositoryConnectors(
