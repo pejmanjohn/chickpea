@@ -25,12 +25,11 @@ test('connection removal retries a schedule cleanup race once', () => {
   );
 });
 
-test('Admin sends no referrer off-origin but keeps the Origin its own form POSTs need', () => {
+test('Admin keeps the browser\'s default referrer policy, so its cross-origin form POSTs keep their Origin', () => {
   const html = renderAdminPage();
-  // `no-referrer` would also send `Origin: null` on Admin's own form POSTs,
-  // such as Sign out, whose routes check Origin.
-  const policies = [...html.matchAll(/<meta name="referrer" content="([^"]*)">/g)].map((match) => match[1]);
-  assert.deepEqual(policies, ['same-origin']);
+  // `same-origin` or `no-referrer` would send `Origin: null` on a cross-origin
+  // form POST, such as the GitHub App manifest form submitted to github.com.
+  assert.doesNotMatch(html, /<meta name="referrer"/);
   assert.match(html, /<form id="admin-sign-out" method="post" action="\/admin\/logout"/);
 });
 
