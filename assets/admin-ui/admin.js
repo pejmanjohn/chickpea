@@ -724,8 +724,12 @@
     return state.grants.filter(function (grant) { return grant.agentId === agentId; });
   }
 
+  // Admin's default Agent: the first one not archived, so landing never opens
+  // an archived Agent while an active one exists.
   function firstAgent() {
-    return state.agents[0] || null;
+    return state.agents.find(function (agent) {
+      return (agent.lifecycle || (agent.enabled ? "active" : "archived")) !== "archived";
+    }) || state.agents[0] || null;
   }
 
   function clearCustomConnectionMode() {
@@ -950,7 +954,7 @@
       return;
     }
     if (!WORKSPACE_ADMIN_UI && parts[1] && parts[1] !== "agents") {
-      var memberAgent = state.agents[0] || null;
+      var memberAgent = firstAgent();
       if (memberAgent) return openProfileEditor(memberAgent);
       enterProfiles(null);
       return;
@@ -1014,7 +1018,7 @@
       openDestination(parts[3] === "connection" ? "connection" : parts[3] === "channels" ? "channels" : "overview");
       return;
     }
-    var initialAgent = state.agents[0] || null;
+    var initialAgent = firstAgent();
     if (initialAgent) return openProfileEditor(initialAgent);
     else enterProfiles(null);
   }
@@ -12319,7 +12323,9 @@
       revision: Number.isInteger(agent.revision) ? agent.revision : 1,
       name: agent.name,
       description: agent.description || "",
-      handle: (agent.slackPresence && agent.slackPresence.requestedHandle) || handleFromAgentName(agent.name),
+      // The handle Slack shows. A requested handle is stored as typed (or as the
+      // Agent's name when none was given), so it can differ from the handle.
+      handle: (agent.slackPresence && (agent.slackPresence.normalizedHandle || agent.slackPresence.requestedHandle)) || handleFromAgentName(agent.name),
       editPolicy: agent.editPolicy || "creator_and_admins",
       lifecycle: agent.lifecycle || (agent.enabled ? "active" : "archived"),
       slackPresence: agent.slackPresence ? JSON.parse(JSON.stringify(agent.slackPresence)) : null,
@@ -13347,7 +13353,7 @@
     if (action === "open-profiles") {
       var requestedProfileId = target.getAttribute("data-agent") || "";
       if (!requestedProfileId && target.getAttribute("data-section-switcher") === "true") {
-        requestedProfileId = state.editingAgentId || state.profileLastAgentId || (state.agents[0] && state.agents[0].id) || "";
+        requestedProfileId = state.editingAgentId || state.profileLastAgentId || (firstAgent() && firstAgent().id) || "";
       }
       enterProfiles(requestedProfileId);
     }
@@ -16657,7 +16663,7 @@
     } else if (action === "edit-profile") {
       var selected = agentById((pending && pending.agent) || "");
       if (selected) openProfileEditor(selected);
-      else enterProfiles(state.profileLastAgentId || ((state.agents[0] && state.agents[0].id) || ""));
+      else enterProfiles(state.profileLastAgentId || ((firstAgent() && firstAgent().id) || ""));
     } else if (action === "new-profile") {
       openNewProfile();
     } else if (action === "duplicate-profile") {
