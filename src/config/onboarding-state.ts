@@ -25,6 +25,13 @@ export interface OnboardingJourney {
   selectedModelId?: string;
   trySlackUserId?: string;
   tryStartedAt?: number;
+  /**
+   * On a deployment serving many installations, when the optional Connect
+   * GitHub step after the model was settled: the time the person connected
+   * or skipped it, or the time Try started when the step was not offered.
+   * Read only there; standalone journeys never carry it.
+   */
+  githubStepAt?: number;
   completedAt?: number;
 }
 
@@ -80,6 +87,7 @@ export async function selectOnboardingProvider(
   delete journey.selectedModelId;
   delete journey.trySlackUserId;
   delete journey.tryStartedAt;
+  delete journey.githubStepAt;
   delete journey.completedAt;
   return writeJourney(settings, input.expectedRevision, journey);
 }
@@ -92,6 +100,12 @@ export async function startOnboardingTry(
     modelId: string;
     slackUserId: string;
     tryStartedAt?: number;
+    /**
+     * Serving many installations with no Connect GitHub step to offer:
+     * settle the step now, so a connect path installed later never sends a
+     * journey that reached Try back to it.
+     */
+    githubStepNotOffered?: boolean;
   },
 ): Promise<OnboardingSnapshot> {
   const current = parseOnboardingJourney(input.expectedRevision);
@@ -100,13 +114,33 @@ export async function startOnboardingTry(
     throw new Error('Onboarding cannot start Try before choosing a provider.');
   }
   const selectedModelId = modelId(input.modelId, current.selectedProviderId);
+  const tryStartedAt = validTime(input.tryStartedAt ?? Date.now());
   return writeJourney(settings, input.expectedRevision, {
     ...current,
     agentId: agentId(input.agentId),
     selectedModelId,
     trySlackUserId: slackId(input.slackUserId, 'slackUserId'),
-    tryStartedAt: validTime(input.tryStartedAt ?? Date.now()),
+    tryStartedAt,
+    ...(input.githubStepNotOffered && current.githubStepAt === undefined ? { githubStepAt: tryStartedAt } : {}),
   });
+}
+
+/**
+ * Records that the person connected GitHub or skipped the optional step, so
+ * the journey moves on to Try. It changes nothing else, and once recorded it
+ * stays.
+ */
+export async function settleOnboardingGithubStep(
+  settings: SettingsStore,
+  expectedRevision: string,
+  at: number = Date.now(),
+): Promise<OnboardingSnapshot> {
+  const current = parseOnboardingJourney(expectedRevision);
+  if (current.state !== 'active' || current.githubStepAt !== undefined) {
+    return { journey: current, revision: expectedRevision };
+  }
+  if (!current.tryStartedAt) throw new Error('Onboarding cannot settle GitHub before choosing a model.');
+  return writeJourney(settings, expectedRevision, { ...current, githubStepAt: validTime(at) });
 }
 
 export async function completeOnboardingJourney(
@@ -168,6 +202,7 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
       ? { trySlackUserId: slackId(value.trySlackUserId, 'slackUserId') }
       : {}),
     ...(isTime(value.tryStartedAt) ? { tryStartedAt: value.tryStartedAt } : {}),
+    ...(isTime(value.githubStepAt) ? { githubStepAt: value.githubStepAt } : {}),
     ...(isTime(value.completedAt) ? { completedAt: value.completedAt } : {}),
   };
   const hasAnyChannel = Boolean(journey.selectedChannelId || journey.selectedChannelName);
@@ -187,6 +222,7 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
   const tryValid = !journey.tryStartedAt || hasChannel || dmTryValid;
   if (hasAnyChannel !== hasChannel || !newSelectionValid || !tryValid ||
       (journey.selectedModelId && !journey.tryStartedAt) ||
+      (journey.githubStepAt !== undefined && !journey.tryStartedAt) ||
       (journey.state === 'complete' && (!journey.tryStartedAt || !journey.completedAt))) {
     throw new Error('Stored onboarding journey is invalid.');
   }

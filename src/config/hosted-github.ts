@@ -7,7 +7,8 @@
  * those bindings in its registry, never in a tenant store, and installs this
  * port once at module scope: the App's credentials and bot account, and per
  * installation the list of live bindings, their disconnect, and a report
- * that GitHub no longer knows one.
+ * that GitHub no longer knows one. Connecting an account is the host's own
+ * flow: Admin's Connect GitHub form posts to the path the host supplies.
  *
  * Fail closed. Without the port, with an App that is not complete, or when
  * the binding list cannot be read, the installation has no GitHub
@@ -61,7 +62,23 @@ interface CachedBindings {
   readonly at: number;
 }
 
+/**
+ * Where Admin's Connect GitHub form posts: a same-origin path, such as
+ * `/github/connect`. The plain form (`application/x-www-form-urlencoded`)
+ * carries one field, `next`: the Admin path to return to, either
+ * `/admin/settings/github` or `/admin/onboarding`. Admin sends no Core token,
+ * so the host's route must enforce Origin, the session and the role itself,
+ * and accept only an `/admin` path as `next`. After binding an account the
+ * host redirects to `next` with `?github=connected`, which Admin shows once
+ * as "GitHub connected." and removes; from onboarding it also moves the
+ * journey on to Try. Any other outcome is the host's own page.
+ */
+export interface HostedGithubConnect {
+  path: string;
+}
+
 let port: HostedGithubPort | undefined;
+let connectPath: string | null = null;
 let clock: () => number = Date.now;
 const answers = new Map<string, CachedBindings>();
 const pending = new Map<string, Promise<readonly HostedGithubBinding[]>>();
@@ -77,6 +94,33 @@ export function configureHostedGithub(next: HostedGithubPort | undefined): void 
 /** Whether a host installed its port, for a readiness probe or a boot check. */
 export function hostedGithubConfigured(): boolean {
   return port !== undefined;
+}
+
+/**
+ * Install the host's connect path, once at module scope; undefined removes it.
+ * Without it, Admin offers no Connect GitHub and onboarding has no GitHub step.
+ */
+export function configureHostedGithubConnect(connect: HostedGithubConnect | undefined): void {
+  if (connect === undefined) {
+    connectPath = null;
+    return;
+  }
+  const path = connect.path;
+  if (typeof path !== 'string' || !/^\/(?![/\\])[A-Za-z0-9/_.~-]{0,255}$/.test(path)) {
+    throw new Error('The GitHub connect path must be a same-origin path.');
+  }
+  connectPath = path;
+}
+
+/**
+ * The path Admin's Connect GitHub form posts to, or null when connecting
+ * cannot start here: no path, no port, or no complete platform App. A caller
+ * that has already read the App passes it, so it is not read again.
+ */
+export async function hostedGithubConnectPath(app?: HostedGithubApp): Promise<string | null> {
+  const path = connectPath;
+  if (path === null || port === undefined) return null;
+  return (app ?? await hostedGithubApp()) ? path : null;
 }
 
 /** The platform App, or undefined when no port is installed or its App is incomplete. Never throws. */
@@ -234,6 +278,7 @@ function logAtMostEachMinute(event: string, level: 'error' | 'warn'): void {
 
 export function resetHostedGithubForTests(options: { now?: () => number } = {}): void {
   configureHostedGithub(undefined);
+  configureHostedGithubConnect(undefined);
   clock = options.now ?? Date.now;
   loggedAt.clear();
 }

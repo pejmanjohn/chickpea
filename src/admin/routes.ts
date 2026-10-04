@@ -207,6 +207,7 @@ import {
   ONBOARDING_PROVIDER_IDS,
   readOnboardingJourney,
   selectOnboardingProvider,
+  settleOnboardingGithubStep,
   startOnboardingTry,
   type OnboardingProviderId,
   type OnboardingSnapshot,
@@ -243,6 +244,7 @@ import {
   consumeGithubSetupState,
   exchangeGithubAppManifest,
   getGithubConnection,
+  type GithubConnection,
   getRepositoryInstallation,
   githubErrorIsRateLimited,
   githubErrorStatus,
@@ -257,7 +259,12 @@ import {
   normalizePrivateKeyPem,
   saveGithubSetupState,
 } from '../config/github-app.ts';
-import { disconnectHostedGithubBinding } from '../config/hosted-github.ts';
+import {
+  disconnectHostedGithubBinding,
+  hostedGithubApp,
+  hostedGithubBindings,
+  hostedGithubConnectPath,
+} from '../config/hosted-github.ts';
 import { classifyMcpError, McpBlockedUrlError, mcpDebugText, safeMcpFailureText } from '../config/mcp-errors.ts';
 import {
   discoverMcpConnectionIdentity,
@@ -377,6 +384,7 @@ import {
   deploymentServesManyInstallations,
   deploymentTenancy,
   installationCacheKey,
+  installationScopeOf,
   requireInstallationScope,
 } from '../config/installation-scope.ts';
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
@@ -7505,6 +7513,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const referencingAgents = (await store(c).listUserAgents())
         .filter((agent) => agent.repositories.length > 0)
         .map(({ id, name }) => ({ id, name }));
+      if (deploymentServesManyInstallations(c.env as PlatformEnv | undefined)) {
+        return c.json({
+          ...await hostedGithubStatus(c.env as PlatformEnv | undefined, connection),
+          referencingAgents,
+        });
+      }
       if (connection.mode !== 'app') {
         return c.json({
           mode: connection.mode,
@@ -9849,6 +9863,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ]);
   };
 
+  // Serving many installations, onboarding offers Connect GitHub (optional)
+  // after the model while the host supplies a connect path; standalone never.
+  const onboardingGithubConnectPath = async (c: Context): Promise<string | null> =>
+    deploymentServesManyInstallations(c.env as PlatformEnv | undefined) ? hostedGithubConnectPath() : null;
+
   const onboardingResponse = async (
     c: Context,
     initial: OnboardingSnapshot,
@@ -9856,11 +9875,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     let snapshot = initial;
     const { journey } = snapshot;
+    const githubConnectPath = await onboardingGithubConnectPath(c);
+    const githubStep = githubConnectPath ? { githubConnectPath } : {};
     if (journey.state === 'complete') {
       const installation = journey.selectedWorkspaceId
         ? await store(c).getWorkspaceInstallation(journey.selectedWorkspaceId)
         : undefined;
       return c.json({
+        ...githubStep,
         stage: 'complete',
         revision: snapshot.revision,
         agentId: journey.agentId ?? null,
@@ -9883,6 +9905,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const slack = await onboardingSlackContext(c);
     if (!slack.connected || !slack.teamId) {
       return c.json({
+        ...githubStep,
         stage: 'connect_slack',
         revision: snapshot.revision,
         agentId: null,
@@ -9914,8 +9937,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           snapshot = raced;
         }
       }
+      const stage = snapshot.journey.state === 'complete'
+        ? 'complete'
+        : githubConnectPath && snapshot.journey.githubStepAt === undefined ? 'connect_github' : 'try';
       return c.json({
-        stage: snapshot.journey.state === 'complete' ? 'complete' : 'try',
+        ...githubStep,
+        stage,
         revision: snapshot.revision,
         agentId: journey.agentId ?? null,
         redirectTo: snapshot.journey.state === 'complete' ? '/admin/agents' : null,
@@ -9934,6 +9961,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     return c.json({
+      ...githubStep,
       stage: journey.selectedProviderId ? 'choose_model' : 'choose_provider',
       revision: snapshot.revision,
       agentId: journey.agentId ?? null,
@@ -10101,8 +10129,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         agentId: CHICKPEA_AGENT_ID,
         modelId: parsed.output.modelId,
         slackUserId: actor.slackUserId,
+        githubStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
+          !await onboardingGithubConnectPath(c),
       });
       return onboardingResponse(c, started);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  // Connect GitHub (optional): a return from connecting, or Skip for now,
+  // moves the journey on to Try. Nothing about GitHub changes here.
+  app.post('/admin/api/onboarding/github', async (c) => {
+    const parsed = v.safeParse(onboardingCompleteSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      if (!await onboardingGithubConnectPath(c)) return c.json({ error: 'not_found' }, 404);
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+      if (!snapshot.journey.tryStartedAt) {
+        return c.json({ error: 'onboarding_try_required' }, 409);
+      }
+      return onboardingResponse(c, await settleOnboardingGithubStep(settings(c), snapshot.revision));
     } catch (error) {
       return internalError(c, error);
     }
@@ -12100,6 +12152,38 @@ function toRepositories(
     ...(repository.allRepos !== undefined ? { allRepos: repository.allRepos } : {}),
     enabled: repository.enabled,
   }));
+}
+
+/**
+ * Settings › GitHub on a deployment serving many installations: the GitHub
+ * accounts this installation connected, from the host's bindings (suspended
+ * ones too, so Admin can say so) while the platform App is complete, and the
+ * path the Connect form posts to. Never the App's slug, and never GitHub's
+ * list of the App's installations. `mode` is `app` only while an active
+ * account can mint.
+ */
+async function hostedGithubStatus(env: PlatformEnv | undefined, connection: GithubConnection) {
+  const scope = installationScopeOf(env);
+  const app = await hostedGithubApp();
+  const connectPath = app ? await hostedGithubConnectPath(app) : null;
+  const bindings = scope && app ? await hostedGithubBindings(scope.installationId) : [];
+  const installations = await Promise.all(bindings.map(async (binding) => {
+    const account = {
+      id: binding.githubInstallationId,
+      accountLogin: binding.accountLogin,
+      accountType: binding.accountType,
+      status: binding.status,
+    };
+    // A suspended account mints nothing, so its repositories cannot be counted.
+    if (binding.status !== 'active' || connection.mode !== 'app') return { ...account, repoCount: null };
+    try {
+      return { ...account, repoCount: (await listInstallationRepos(connection, binding.githubInstallationId, { page: 1 })).totalCount };
+    } catch {
+      return { ...account, repoCount: null };
+    }
+  }));
+  installations.sort((left, right) => left.accountLogin.localeCompare(right.accountLogin));
+  return { mode: connection.mode, installations, connectPath };
 }
 
 /**
