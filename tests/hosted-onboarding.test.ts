@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { markSlackInstallationEnded } from '../src/channels/slack.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { activateInstallerOwner, claimInstallerOwner, type InstallerOwnerInput } from '../src/auth/installer-owner.ts';
 import { signInSlackMember } from '../src/auth/member-sign-in.ts';
@@ -112,9 +113,9 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
     const membership = (await identity.getMembership(claim.membershipId!))!;
     return principalFor('owner', { userId: membership.userId, membershipId: membership.id, organizationId: membership.organizationId });
   };
-  const admin = (principal: AuthPrincipal) => {
+  const admin = (principal: AuthPrincipal, stores: { config?: ConfigStore; settings?: SettingsStore } = {}) => {
     const app = createAdminRoutes({
-      store: config, settings, usage, slackCredentials: credentials,
+      store: stores.config ?? config, settings: stores.settings ?? settings, usage, slackCredentials: credentials,
       ...testAdminAuthority(TOKEN, ORIGIN, identity, principal),
     });
     return (path: string, init: RequestInit = {}) => app.request(`${ORIGIN}${path}`, {
@@ -149,6 +150,34 @@ async function withProviders(run: () => Promise<void>): Promise<void> {
   }
 }
 
+/** `store` with `method` failing, as a store that cannot be read fails. */
+function failing<S extends object>(store: S, method: string, fails: (...args: unknown[]) => boolean = () => true): S {
+  return new Proxy(store, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (typeof value !== 'function') return value;
+      if (property !== method) return value.bind(target);
+      return async (...args: unknown[]) => {
+        if (fails(...args)) throw new Error('store unavailable');
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+/** Runs `request` with the console's warnings captured. */
+async function warnings(request: () => Promise<void>): Promise<unknown[][]> {
+  const captured: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { captured.push(args); };
+  try {
+    await request();
+  } finally {
+    console.warn = warn;
+  }
+  return captured;
+}
+
 async function json<T = Record<string, unknown>>(response: Response | Promise<Response>): Promise<T> {
   return await (await response).json() as T;
 }
@@ -177,6 +206,57 @@ test('a new hosted sign-up starts guided onboarding as the person signing up bec
   assert.equal((await admin('/admin/onboarding')).status, 200);
   // A link with a purpose opens what it asks for.
   assert.equal((await admin('/admin?slack=updated')).status, 200);
+});
+
+test('a hosted Owner whose Slack connection ended before finishing opens Admin, never onboarding\'s Connect Slack step', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  assert.equal((await admin('/admin')).status, 302);
+  // Slack uninstalled the app, or revoked its token, as the host records it.
+  await markSlackInstallationEnded(signup.config, TEAM, 'tokens_revoked');
+  assert.equal((await json(admin('/admin/api/onboarding'))).stage, 'connect_slack', 'the journey waits on Slack');
+  // Admin opens, where its Slack status leads the Owner back through the host.
+  const opened = await admin('/admin');
+  assert.equal(opened.status, 200);
+  assert.match(await opened.text(), /<html/);
+  // Onboarding itself opens Admin instead of standalone's own Slack setup.
+  const page = await admin('/admin/onboarding');
+  assert.equal(page.status, 302);
+  assert.equal(page.headers.get('location'), '/admin');
+  assert.equal(page.headers.get('cache-control'), 'no-store');
+  assert.equal((await signup.journey())?.journey.state, 'active', 'opening either changes nothing');
+});
+
+test('a personal token, even an Owner\'s, is refused Admin\'s page, never landed in onboarding', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const machine = signup.admin({ ...await signup.ownerPrincipal(), machine: true, authenticatorKind: 'personal_token' });
+  const opened = await machine('/admin');
+  assert.equal(opened.status, 403);
+  assert.equal(opened.headers.get('location'), null);
+  assert.equal((await signup.journey())?.journey.state, 'active');
+});
+
+test('when the journey or Slack cannot be read, Admin and onboarding open as usual and the log says so', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const owner = await signup.ownerPrincipal();
+  const journeyUnread = signup.admin(owner, {
+    settings: failing(signup.settings, 'getSetting', (key) => key === ONBOARDING_JOURNEY_KEY),
+  });
+  assert.deepEqual(await warnings(async () => {
+    const opened = await journeyUnread('/admin');
+    assert.equal(opened.status, 200);
+    assert.match(await opened.text(), /<html/);
+  }), [['[chickpea] Hosted onboarding state unavailable']]);
+  const slackUnread = signup.admin(owner, { config: failing(signup.config, 'listWorkspaceInstallations') });
+  assert.deepEqual(await warnings(async () => {
+    assert.equal((await slackUnread('/admin')).status, 200);
+    const page = await slackUnread('/admin/onboarding');
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /<html/);
+  }), [['[chickpea] Hosted onboarding state unavailable'], ['[chickpea] Hosted onboarding state unavailable']]);
 });
 
 test('the hosted journey runs Choose provider, Choose model and Try; finishing opens Admin as usual', async (t) => {
@@ -382,4 +462,8 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   const app = createAdminRoutes({ store: config, settings, ...testAdminAuthority(TOKEN, ORIGIN) });
   const opened = await app.request(`${ORIGIN}/admin`, { headers: testAdminHeaders(TOKEN) });
   assert.equal(opened.status, 200);
+  // Without Slack, its onboarding opens at its own Connect Slack step.
+  const onboarding = await json(app.request(`${ORIGIN}/admin/api/onboarding`, { headers: testAdminHeaders(TOKEN) }));
+  assert.equal(onboarding.stage, 'connect_slack');
+  assert.equal((await app.request(`${ORIGIN}/admin/onboarding`, { headers: testAdminHeaders(TOKEN) })).status, 200);
 });

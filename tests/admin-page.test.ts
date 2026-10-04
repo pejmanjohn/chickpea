@@ -19035,6 +19035,26 @@ test('hosted onboarding opens at Choose provider with Slack done, offering API k
   assert.doesNotMatch(openai, /ChatGPT|subscription|settings\/providers\?return=onboarding/);
 });
 
+test('hosted onboarding never shows standalone\'s Connect Slack step: an Owner whose Slack connection ended opens Admin', async () => {
+  const connectSlack: OnboardingFixture = {
+    ...onboardingAt('choose_model', '/github/connect'),
+    stage: 'connect_slack', workspace: null, providerId: null, modelId: null, slackAppId: null, tryStartedAt: null,
+  };
+  const hosted = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', slackConnection: disconnectedSlackFixture(), onboarding: connectSlack,
+  });
+  await flushAsync();
+  assert.deepEqual(hosted.assignedUrls, ['/admin']);
+  assert.ok(hosted.renderHistory.every((html) => !html.includes('Finish connecting Slack')));
+
+  const standalone = runAdminPageHarness({
+    initialPath: '/admin/onboarding', slackConnection: disconnectedSlackFixture(), onboarding: connectSlack,
+  });
+  await flushAsync();
+  assert.deepEqual(standalone.assignedUrls, []);
+  assert.match(standalone.app.innerHTML, /<h1 class="onboarding-title">Finish connecting Slack<\/h1>/);
+});
+
 test('standalone onboarding has no GitHub step, even with a connect path in its payload', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding', ...hostedOnboardingProviders,

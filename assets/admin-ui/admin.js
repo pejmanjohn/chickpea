@@ -1197,6 +1197,7 @@
     }
     syncOnboardingActivity();
     settleOnboardingGithubReturn();
+    leaveHostedSlackStep();
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
@@ -2383,6 +2384,20 @@
     return state.view === "onboarding" && state.onboarding && state.onboarding.stage === "connect_slack";
   }
 
+  // Connect Slack is standalone's own setup. Hosted, Slack is connected at the
+  // host: an Owner whose connection ended opens Admin, whose Slack status
+  // leads them back there.
+  function hostedSlackStep() {
+    return !SELF_HOSTED && isOnboardingSlackConnection();
+  }
+
+  var hostedSlackStepLeft = false;
+  function leaveHostedSlackStep() {
+    if (hostedSlackStepLeft || !hostedSlackStep()) return;
+    hostedSlackStepLeft = true;
+    location.assign("/admin");
+  }
+
   function onboardingConnectHtml() {
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Slack setup</p>' +
       '<h1 class="onboarding-title">Finish connecting Slack</h1>' +
@@ -2575,7 +2590,7 @@
     if (state.onboardingError && !state.onboarding) {
       return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
     }
-    if (!state.onboarding) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
+    if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
