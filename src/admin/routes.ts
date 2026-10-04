@@ -6107,7 +6107,75 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }));
   };
 
-  app.get('/admin', adminPage);
+  // Already set up: any saved provider key, plus any active, enabled Agent or
+  // any Chickpea workspace with a default model. The key need not be for that
+  // Agent's or default's provider.
+  const installationSetUp = async (c: Context): Promise<boolean> => {
+    const sources = await describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c));
+    if (PROVIDER_KEY_IDS.every((id) => sources[id] === 'missing')) return false;
+    const configStore = store(c);
+    const [installations, agents] = await Promise.all([
+      configStore.listWorkspaceInstallations(),
+      configStore.listUserAgents(),
+    ]);
+    if (agents.some((agent) => agent.lifecycle === 'active' && agent.enabled)) return true;
+    const defaults = await Promise.all(installations
+      .filter((installation) => installation.runtimeContract === 'chickpea-v1')
+      .map((installation) => configStore.getWorkspaceModelDefault(installation.workspaceId)));
+    return defaults.some((workspaceDefault) => Boolean(workspaceDefault?.modelId));
+  };
+
+  // Onboarding's Connect Slack step is standalone's own setup. Hosted, Slack
+  // is connected at the host, and Admin's Slack status leads an Owner whose
+  // connection ended back there.
+  const hostedSlackConnected = async (c: Context): Promise<boolean> => {
+    const slack = await onboardingSlackContext(c);
+    return slack.connected && Boolean(slack.teamId);
+  };
+
+  // A hosted Owner signs up at the host, which then opens Admin: until the
+  // guided onboarding their sign-up started is finished, opening Admin lands
+  // the Owner in it, unless the installation is already set up or its Slack
+  // connection ended. A link with a query opens what it asks for. Standalone
+  // lands there from its own setup.
+  const hostedOnboardingUnfinished = async (c: Context): Promise<boolean> => {
+    const principal = principalByContext.get(c);
+    if (deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation' ||
+        principal?.role !== 'owner' || principal.machine || new URL(c.req.url).search) return false;
+    const snapshot = await readOnboardingJourney(settings(c));
+    if (snapshot?.journey.state !== 'active' || await installationSetUp(c)) return false;
+    return hostedSlackConnected(c);
+  };
+
+  app.get('/admin', async (c) => {
+    let unfinished = false;
+    try {
+      unfinished = await hostedOnboardingUnfinished(c);
+    } catch {
+      // Guidance only: Admin opens as usual when the journey cannot be read.
+      console.warn('[chickpea] Hosted onboarding state unavailable');
+    }
+    if (!unfinished) return adminPage(c);
+    c.header('Cache-Control', 'no-store');
+    return c.redirect('/admin/onboarding', 302);
+  });
+
+  // Hosted, an unfinished journey whose Slack connection ended would stop at
+  // Connect Slack: onboarding opens Admin instead.
+  app.get('/admin/onboarding', async (c) => {
+    let waitsOnSlack = false;
+    if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
+      try {
+        const snapshot = await readOnboardingJourney(settings(c));
+        waitsOnSlack = snapshot?.journey.state === 'active' && !await hostedSlackConnected(c);
+      } catch {
+        console.warn('[chickpea] Hosted onboarding state unavailable');
+      }
+    }
+    if (!waitsOnSlack) return adminPage(c);
+    c.header('Cache-Control', 'no-store');
+    return c.redirect('/admin', 302);
+  });
 
   app.post('/admin/logout', async (c) => {
     authResponseHeaders(c);
@@ -9790,10 +9858,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const installation = teamInfo.teamId
       ? installations.find((candidate) => candidate.workspaceId === teamInfo.teamId)
       : installations.find((candidate) => candidate.transportMode === 'direct');
+    // Hosted, the host owns the Slack app and its signing secret, and the
+    // installation stores only its bot, as the Slack card reads it.
+    const appConnected = deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation'
+      ? installation?.transportMode === 'direct'
+      : credentials.signingSecret !== 'missing';
     const connected =
       Boolean(installation) && installation?.health !== 'revoked' &&
-      credentials.botToken !== 'missing' &&
-      credentials.signingSecret !== 'missing';
+      credentials.botToken !== 'missing' && appConnected;
     return {
       connected,
       teamId: teamInfo.teamId ?? installation?.workspaceId,
