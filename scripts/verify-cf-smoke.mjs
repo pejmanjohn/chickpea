@@ -79,6 +79,7 @@ const OAUTH_CLIENT_ID = '123456.789012';
 const OAUTH_CLIENT_SECRET = 'fake-confidential-client-secret';
 const OAUTH_CONFIGURATION_TOKEN = 'xoxe.fake-workerd-configuration-token';
 const OAUTH_BOT_TOKEN = 'xoxb-fake-workerd-bot-token';
+const RECOVERY_TOKEN = '5c'.repeat(32);
 const CHANNEL = 'C0SMOKE';
 const AI_CHANNEL = 'C0SMOKEAI';
 const MENTION_TS = '1782770400.000100';
@@ -383,6 +384,7 @@ function writeDevVars(fakeUrl) {
     join(CF_OUTPUT_DIR, 'chickpea', '.dev.vars'),
     [
       `CHICKPEA_AUTH_SECRET=${AUTH_SECRET}`,
+      `CHICKPEA_RECOVERY_TOKEN=${RECOVERY_TOKEN}`,
       'CHICKPEA_CREDENTIAL_KEY_CURRENT_ID=key_v1',
       `CHICKPEA_CREDENTIAL_KEY_KEY_V1=${Buffer.alloc(32, 7).toString('base64url')}`,
       `SLACK_TAG_PUBLIC_URL=${PUBLIC_ORIGIN}`,
@@ -721,6 +723,55 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
     unauthenticated.status === 401,
     'Admin APIs still fail closed without the Slack-established browser session',
     `HTTP ${unauthenticated.status}`,
+  );
+}
+
+/**
+ * Same-app Slack credential recovery through the built Worker. URL repair
+ * (apps.manifest.export/update with a configuration token) and the bot token
+ * exchange (oauth.v2.access) each leave the Worker through its global fetch,
+ * which workerd refuses to call as a method of another object. Runs last: it
+ * leaves an inactive candidate waiting on signed Events proof.
+ */
+async function exerciseSlackRecovery(baseUrl, backend) {
+  const wireStart = backend.wireLog.length;
+  const slackCalls = (prefix) => backend.wireLog.slice(wireStart)
+    .filter((entry) => entry.method.startsWith(prefix)).map((entry) => `${entry.method}:${entry.ok}`);
+  const begun = await postForm(baseUrl, '/admin/recovery', { action: 'begin', recoveryToken: RECOVERY_TOKEN });
+  const cookie = [
+    responseCookie(begun, '__Secure-chickpea_slack_recovery_browser='),
+    responseCookie(begun, '__Secure-chickpea_slack_recovery='),
+  ].filter(Boolean).join('; ');
+  check(
+    begun.status === 200 && (await begun.text()).includes('name="action" value="stage"') &&
+      cookie.split('; ').length === 2,
+    'the deployment recovery token opens one browser-bound repair session',
+    `HTTP ${begun.status}`,
+  );
+  const staged = await postForm(baseUrl, '/admin/recovery', {
+    action: 'stage', appId: APP_ID, teamId: WORKSPACE, clientId: OAUTH_CLIENT_ID,
+    clientSecret: OAUTH_CLIENT_SECRET, signingSecret: SIGNING_SECRET,
+    configurationToken: OAUTH_CONFIGURATION_TOKEN,
+  }, cookie);
+  const authorization = slackAuthorizationUrlFromHandoff(await staged.text());
+  const repair = slackCalls('apps.manifest.');
+  check(
+    staged.status === 200 && authorization.origin === 'https://slack.com' &&
+      sameArray(repair, ['apps.manifest.export:true', 'apps.manifest.update:true', 'apps.manifest.export:true']),
+    'recovery URL repair reaches Slack through the Worker fetch',
+    `HTTP ${staged.status}; ${repair.join(',') || 'no manifest calls'}`,
+  );
+  const callback = await fetch(
+    `${baseUrl}/auth/slack/recovery/callback?state=${
+      encodeURIComponent(authorization.searchParams.get('state') ?? '')}&code=recovery-smoke-code`,
+    { headers: { cookie } },
+  );
+  const exchanges = slackCalls('oauth.v2.access');
+  check(
+    callback.status === 200 && (await callback.text()).includes('name="action" value="finalize"') &&
+      sameArray(exchanges, ['oauth.v2.access:true']),
+    'recovery bot token exchange reaches Slack through the Worker fetch and waits on signed Events',
+    `HTTP ${callback.status}; ${exchanges.join(',') || 'no token exchange'}`,
   );
 }
 
@@ -1962,6 +2013,8 @@ async function main() {
         );
       }
     }
+
+    await exerciseSlackRecovery(baseUrl, backend);
 
     if (failures.length > 0) {
       throw new Error(`assertions failed: ${failures.join('; ')}`);

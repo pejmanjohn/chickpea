@@ -774,6 +774,20 @@ export class FakeSlackBackend {
     headers: Record<string, string> = {},
   ): Record<string, unknown> {
     switch (method) {
+      case 'apps.manifest.export':
+      case 'apps.manifest.update': {
+        // Only the app this configuration token created. Its manifest is the
+        // last one Slack accepted on the wire, from create or update.
+        if (!this.oauth || bearer(headers) !== this.oauth.configurationToken) return { ok: false, error: 'invalid_auth' };
+        if (body.app_id !== this.oauth.appId) return { ok: false, error: 'invalid_app_id' };
+        if (method === 'apps.manifest.update') {
+          return body.manifest && typeof body.manifest === 'object'
+            ? { ok: true, app_id: this.oauth.appId } : { ok: false, error: 'invalid_manifest' };
+        }
+        const manifest = this.wireLog.findLast((entry) => entry.ok === true &&
+          ['apps.manifest.create', 'apps.manifest.update'].includes(entry.method))?.body.manifest;
+        return manifest ? { ok: true, manifest } : { ok: false, error: 'invalid_app_id' };
+      }
       case 'apps.manifest.create':
         return this.oauth && bearer(headers) === this.oauth.configurationToken
           ? {

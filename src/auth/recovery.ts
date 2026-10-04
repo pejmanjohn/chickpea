@@ -299,7 +299,9 @@ export class SlackCredentialRecoveryService {
     const appSecrets = await this.decryptStagedAppCredentials(session);
     let response: Response;
     try {
-      response = await this.fetchImpl(SLACK_BOT_TOKEN_URL, {
+      // Called unbound: Workers' global fetch rejects any other receiver.
+      const fetchImpl = this.fetchImpl;
+      response = await fetchImpl(SLACK_BOT_TOKEN_URL, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
@@ -445,7 +447,9 @@ export class SlackCredentialRecoveryService {
   ): Promise<Record<string, unknown>> {
     let response: Response;
     try {
-      response = await this.fetchImpl(url, {
+      // Called unbound: Workers' global fetch rejects any other receiver.
+      const fetchImpl = this.fetchImpl;
+      response = await fetchImpl(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': contentType },
         body,
