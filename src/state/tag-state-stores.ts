@@ -1,3 +1,5 @@
+import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
+import { onboardingJourneyStart } from '../config/onboarding-state.ts';
 import { SettingsStoreLogic } from '../config/settings-store.ts';
 import { SnapshotStoreLogic } from '../config/snapshot-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -59,6 +61,11 @@ export function buildTagStateStores(
     objectInventory,
     identity: new IdentityStoreLogic(db, {
       installation: () => storeInstallationIdentity(installationBinding, env),
+      // A hosted sign-up's guided onboarding starts as its installer becomes
+      // the first Owner, with Slack already connected by the host.
+      ...(deploymentServesManyInstallations(env)
+        ? { ownerClaimed: (at: number) => { stores.settings.applySettingsPatch(onboardingJourneyStart(at).patch); } }
+        : {}),
     }),
     config: new ConfigStoreLogic(db),
     snapshots: new SnapshotStoreLogic(db),

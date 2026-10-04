@@ -2451,12 +2451,12 @@
       var ready = onboardingProviderConfigured(provider.id);
       var status = ready
         ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
-        : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" ? "Needs API key or subscription" : provider.sublabel) + '</span>';
+        : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" && SELF_HOSTED ? "Needs API key or subscription" : provider.sublabel) + '</span>';
       return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
         onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.tabName || provider.name) + '</span>' + status + '</span></button>';
     }).join("");
     var canContinue = !!selected && (configured || (selected.id !== "cloudflare" && !!String(state.onboardingProviderKey || "").trim()));
-    var description = selected && selected.id === "openai"
+    var description = selected && selected.id === "openai" && SELF_HOSTED
       ? "Use OpenAI models with a Platform API key or ChatGPT subscription."
       : selected && selected.description;
     var panel = selected
@@ -2470,8 +2470,9 @@
       '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button></div></section>';
   }
 
+  // Hosted, OpenAI is an API key only: no ChatGPT subscription is offered there.
   function onboardingProviderConfigurationHtml(selected, configured) {
-    var subscriptionSetup = selected.id === "openai"
+    var subscriptionSetup = selected.id === "openai" && SELF_HOSTED
       ? '<div class="onboarding-form-actions"><p class="hint"><strong>Have a ChatGPT subscription?</strong><br>' + (IS_CLOUDFLARE ? 'Connect your plan with a local coding agent, then return here to choose a model.' : 'Sign in to use your plan for chat, then return here to choose a model.') + '</p><a class="btn btn-primary" href="/admin/settings/providers?return=onboarding">' + (IS_CLOUDFLARE ? 'Connect ChatGPT' : 'Connect ChatGPT subscription') + '</a></div>'
       : "";
     return subscriptionSetup + (configured

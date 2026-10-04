@@ -1,5 +1,5 @@
 import { isRecord } from '../security/content-validation.ts';
-import type { SettingsStore } from './settings-store.ts';
+import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
 
 export const ONBOARDING_JOURNEY_KEY = 'onboarding.journey.v2';
@@ -54,16 +54,30 @@ export async function beginOnboardingJourney(
 ): Promise<OnboardingSnapshot> {
   const existing = await readOnboardingJourney(settings);
   if (existing) return existing;
-  const journey: OnboardingJourney = { version: 2, state: 'active', startedAt: validTime(startedAt) };
-  const revision = JSON.stringify(journey);
-  const created = await settings.applySettingsPatch({
-    expected: { key: ONBOARDING_JOURNEY_KEY, value: null },
-    set: [{ key: ONBOARDING_JOURNEY_KEY, value: revision }],
-  });
-  if (created) return { journey, revision };
+  const start = onboardingJourneyStart(startedAt);
+  if (await settings.applySettingsPatch(start.patch)) return start.snapshot;
   const raced = await readOnboardingJourney(settings);
   if (!raced) throw new Error('Onboarding journey changed concurrently.');
   return raced;
+}
+
+/**
+ * A new journey, and the write that starts it where none exists yet (where
+ * one exists the write changes nothing), for a caller that applies it inside
+ * its own store transaction.
+ */
+export function onboardingJourneyStart(
+  startedAt: number,
+): { patch: SettingsPatch; snapshot: OnboardingSnapshot } {
+  const journey: OnboardingJourney = { version: 2, state: 'active', startedAt: validTime(startedAt) };
+  const revision = JSON.stringify(journey);
+  return {
+    patch: {
+      expected: { key: ONBOARDING_JOURNEY_KEY, value: null },
+      set: [{ key: ONBOARDING_JOURNEY_KEY, value: revision }],
+    },
+    snapshot: { journey, revision },
+  };
 }
 
 export async function selectOnboardingProvider(

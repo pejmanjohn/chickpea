@@ -19008,6 +19008,33 @@ test('a connect started in hosted onboarding returns to Try with GitHub connecte
   assert.equal(harness.onboardingGithubPosts.length, 1);
 });
 
+test('hosted onboarding opens at Choose provider with Slack done, offering API keys only', async () => {
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding',
+    modelProviders: [
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5'] },
+      { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
+      { id: 'openrouter', configured: false, source: 'missing', suggestions: [] },
+    ],
+    onboarding: { ...onboardingAt('choose_model', '/github/connect'), stage: 'choose_provider', providerId: null, modelId: null, tryStartedAt: null },
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.deepEqual(onboardingLabels(html), ['Connect Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
+  assert.match(html, /<li class="complete"><span class="onboarding-step-dot">&#10003;<\/span><span class="onboarding-step-label">Connect Slack<\/span><\/li>/);
+  assert.match(html, /<p class="onboarding-eyebrow">Step 2 of 5<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
+  assert.deepEqual([...html.matchAll(/data-action="onboarding-provider-select" data-provider="([^"]+)"/g)].map((match) => match[1]),
+    ['openai', 'anthropic', 'openrouter']);
+  assert.match(html, /<span>OpenAI<\/span><span class="onboarding-provider-tab-sub">Needs API key<\/span>/);
+  assert.doesNotMatch(html, /Workers AI|subscription/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' }) });
+  const openai = harness.app.innerHTML;
+  assert.match(openai, /<p class="hint">Use OpenAI models with a Platform API key\.<\/p>/);
+  assert.match(openai, /id="onboarding-provider-key"/);
+  assert.doesNotMatch(openai, /ChatGPT|subscription|settings\/providers\?return=onboarding/);
+});
+
 test('standalone onboarding has no GitHub step, even with a connect path in its payload', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/onboarding', ...hostedOnboardingProviders,

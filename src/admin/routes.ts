@@ -6107,7 +6107,47 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }));
   };
 
-  app.get('/admin', adminPage);
+  // Already set up: a saved provider key and an Agent that answers, either
+  // Chickpea on the workspace's default model or an active Agent.
+  const installationSetUp = async (c: Context): Promise<boolean> => {
+    const sources = await describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c));
+    if (PROVIDER_KEY_IDS.every((id) => sources[id] === 'missing')) return false;
+    const configStore = store(c);
+    const [installations, agents] = await Promise.all([
+      configStore.listWorkspaceInstallations(),
+      configStore.listUserAgents(),
+    ]);
+    if (agents.some((agent) => agent.lifecycle === 'active' && agent.enabled)) return true;
+    const defaults = await Promise.all(installations
+      .filter((installation) => installation.runtimeContract === 'chickpea-v1')
+      .map((installation) => configStore.getWorkspaceModelDefault(installation.workspaceId)));
+    return defaults.some((workspaceDefault) => Boolean(workspaceDefault?.modelId));
+  };
+
+  // A hosted Owner signs up at the host, which then opens Admin: until the
+  // guided onboarding their sign-up started is finished, opening Admin lands
+  // the Owner in it, unless the installation is already set up. A link with
+  // a query opens what it asks for. Standalone lands there from its own setup.
+  const hostedOnboardingUnfinished = async (c: Context): Promise<boolean> => {
+    const principal = principalByContext.get(c);
+    if (deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation' ||
+        principal?.role !== 'owner' || principal.machine || new URL(c.req.url).search) return false;
+    const snapshot = await readOnboardingJourney(settings(c));
+    return snapshot?.journey.state === 'active' && !await installationSetUp(c);
+  };
+
+  app.get('/admin', async (c) => {
+    let unfinished = false;
+    try {
+      unfinished = await hostedOnboardingUnfinished(c);
+    } catch {
+      // Guidance only: Admin opens as usual when the journey cannot be read.
+      console.warn('[chickpea] Hosted onboarding state unavailable');
+    }
+    if (!unfinished) return adminPage(c);
+    c.header('Cache-Control', 'no-store');
+    return c.redirect('/admin/onboarding', 302);
+  });
 
   app.post('/admin/logout', async (c) => {
     authResponseHeaders(c);
@@ -9790,10 +9830,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const installation = teamInfo.teamId
       ? installations.find((candidate) => candidate.workspaceId === teamInfo.teamId)
       : installations.find((candidate) => candidate.transportMode === 'direct');
+    // Hosted, the host owns the Slack app and its signing secret, and the
+    // installation stores only its bot, as the Slack card reads it.
+    const appConnected = deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation'
+      ? installation?.transportMode === 'direct'
+      : credentials.signingSecret !== 'missing';
     const connected =
       Boolean(installation) && installation?.health !== 'revoked' &&
-      credentials.botToken !== 'missing' &&
-      credentials.signingSecret !== 'missing';
+      credentials.botToken !== 'missing' && appConnected;
     return {
       connected,
       teamId: teamInfo.teamId ?? installation?.workspaceId,

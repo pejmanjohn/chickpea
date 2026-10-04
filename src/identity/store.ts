@@ -103,16 +103,24 @@ interface IdentityStoreOptions {
    * standalone keeps the fixed IDs.
    */
   installation?: () => InstallationIdentity;
+  /**
+   * Runs once, inside the transaction in which claimOwner makes a host's
+   * installer the installation's first Owner, so whatever it writes to this
+   * store commits with the claim or not at all.
+   */
+  ownerClaimed?: (at: number) => void;
 }
 
 export class IdentityStoreLogic {
   private readonly audit: AuditStoreLogic;
   private readonly now: () => number;
   private readonly installation: () => InstallationIdentity;
+  private readonly ownerClaimed: ((at: number) => void) | undefined;
 
   constructor(private readonly db: StateDb, options: IdentityStoreOptions = {}) {
     this.now = options.now ?? Date.now;
     this.installation = options.installation ?? (() => STANDALONE_INSTALLATION_IDENTITY);
+    this.ownerClaimed = options.ownerClaimed;
     if (schemaInstallRequired(db)) installIdentityMigrations(db);
     this.audit = new AuditStoreLogic(db);
   }
@@ -2057,7 +2065,13 @@ export class IdentityStoreLogic {
   }
 
   claimOwner(input: ClaimOwnerInput): IdentityResolution {
-    return this.db.transaction(() => this.claimOwnerInTransaction(input));
+    return this.db.transaction(() => {
+      // A repeat for an Owner already claimed resolves them again and starts nothing.
+      const claiming = this.getOwnerClaim()?.status === 'reserved';
+      const resolution = this.claimOwnerInTransaction(input);
+      if (claiming) this.ownerClaimed?.(input.at ?? this.now());
+      return resolution;
+    });
   }
 
   activateFirstOwner(input: ActivateFirstOwnerInput): IdentityResolution {
