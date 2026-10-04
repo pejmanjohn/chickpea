@@ -66,6 +66,7 @@
     "vite.config.ts",
     "vite.node.config.ts",
     "slack-app-manifest.json",
+    "hosted-capabilities.json",
     "tsconfig.json",
     "wrangler.jsonc",
     "release.json",

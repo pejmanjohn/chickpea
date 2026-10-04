@@ -115,9 +115,16 @@ export function matchesGrantedCodeSearch(
   return grantedCodeSearchRepositories(url, grants) !== undefined;
 }
 
+/**
+ * The one installation every requested repository is granted through, and
+ * the repository names to down-scope its token to. `installationOf` names a
+ * grant's installation for minting (github-app.ts mintableInstallation);
+ * standalone takes the grant's own.
+ */
 export function resolveRepositoryInstallationScope(
   grants: readonly RepositoryGrant[],
   repositories: readonly string[],
+  installationOf: (grant: RepositoryGrant) => number | undefined = (grant) => grant.installationId ?? undefined,
 ): { id: number; repositories?: string[] } | undefined {
   const enabled = validEnabledRepositoryGrants(grants);
   const installationIds = new Set<number>();
@@ -128,17 +135,18 @@ export function resolveRepositoryInstallationScope(
       enabled.find(
         (candidate) =>
           candidate.allRepos === true &&
-          candidate.installationId !== null &&
+          installationOf(candidate) !== undefined &&
           repositoryGrantMatches(candidate, repository),
       ) ??
       enabled.find(
         (candidate) =>
           candidate.allRepos !== true &&
-          candidate.installationId !== null &&
+          installationOf(candidate) !== undefined &&
           repositoryGrantMatches(candidate, repository),
       );
-    if (!grant || grant.installationId === null) return undefined;
-    installationIds.add(grant.installationId);
+    const installationId = grant ? installationOf(grant) : undefined;
+    if (!grant || installationId === undefined) return undefined;
+    installationIds.add(installationId);
     if (grant.allRepos === true) installationWide = true;
     repositoryNames.push(repository.slice(repository.indexOf('/') + 1));
   }

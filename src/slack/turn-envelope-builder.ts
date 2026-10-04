@@ -42,7 +42,7 @@ export async function buildTurnEnvelope(
       () => null,
     ),
     input.settings.getSettings(TURN_ENVELOPE_SETTING_KEYS),
-    getGithubConnection(input.settings).then(
+    getGithubConnection(input.settings, input.env).then(
       (connection) => connection.mode === 'app',
       () => false,
     ),

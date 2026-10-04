@@ -43,3 +43,4 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 - The activity status reads "Using a skill…" then "Reviewing skill results…", never names the skill, and must clear when the reply lands.
 - A large repository hits the 40-directory cap. Narrow it with `owner/repo@skill` or a directory URL.
 - To switch off a connector skill, save a disabled Agent skill with the same name. Removing that row brings the built-in skill back.
+- A private import in Admin first asks GitHub anonymously from the Worker. On a deployed lane GitHub's anonymous rate limit can answer that probe with `github_rate_limited`, for private and missing repositories alike, and the GitHub App path is then never tried. Grade it blocked (upstream) and retry after the limit resets.

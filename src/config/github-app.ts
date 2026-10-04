@@ -1,5 +1,13 @@
 import { encodeBase64Url } from '../security/base64url.ts';
 import { trimmedNonEmpty } from '../security/content-validation.ts';
+import {
+  hostedGithubApp,
+  hostedGithubBindings,
+  reportHostedGithubInstallationGone,
+  type HostedGithubBinding,
+} from './hosted-github.ts';
+import { requireInstallationAdmitted } from './installation-admission.ts';
+import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
 import type { SettingsStore } from './settings-store.ts';
 
 export const GITHUB_API_BASE = 'https://api.github.com';
@@ -80,7 +88,32 @@ export type GithubConnection =
       appId: string;
       appSlug?: string;
       privateKeyPem: string;
+      /** Only on a deployment serving many installations: the platform App, scoped to one installation. */
+      platform?: GithubPlatformScope;
     };
+
+/**
+ * The installation a platform App connection serves and the GitHub accounts
+ * it may mint for: its active bindings, from the host. Only
+ * getGithubConnection creates one; every mint, listing and repository lookup
+ * refuses a scope it did not create.
+ */
+export interface GithubPlatformScope {
+  readonly installationId: string;
+  readonly botUserId: number;
+  readonly bindings: readonly HostedGithubBinding[];
+}
+
+/** A GitHub installation this connection may not use: unbound, not admitted, or a deployment serving many without its platform scope. */
+export class GithubInstallationNotMintableError extends Error {
+  readonly name = 'GithubInstallationNotMintableError';
+  readonly code = 'github_installation_not_mintable';
+  constructor() {
+    super('This GitHub installation is not available to this installation (github_installation_not_mintable).');
+  }
+}
+
+const issuedPlatformScopes = new WeakSet<GithubPlatformScope>();
 
 interface GithubInstallation {
   id: number;
@@ -244,7 +277,19 @@ export async function mintAppJwt(input: {
   return `${signingInput}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
-export async function getGithubConnection(settings: SettingsStore): Promise<GithubConnection> {
+/**
+ * The deployment's GitHub App connection. On a deployment serving many
+ * installations, decided from `env` and from the deployment's own variables
+ * so a caller that omits `env` still gets it, the connection is the host's
+ * platform App scoped to `env`'s installation and its active bindings, or
+ * none; it never reads the tenant's `github.app.*` settings or the
+ * deployment's GITHUB_APP_* variables. Standalone reads those, as before.
+ */
+export async function getGithubConnection(
+  settings: SettingsStore,
+  env?: Record<string, unknown>,
+): Promise<GithubConnection> {
+  if (deploymentServesManyInstallations(env)) return hostedGithubConnection(env);
   const [storedAppId, storedAppSlug, storedPrivateKey] = await settings.getSettings([
     GITHUB_SETTING_KEYS.appId,
     GITHUB_SETTING_KEYS.appSlug,
@@ -269,6 +314,92 @@ export async function getGithubConnection(settings: SettingsStore): Promise<Gith
   return { mode: 'none' };
 }
 
+async function hostedGithubConnection(env: Record<string, unknown> | undefined): Promise<GithubConnection> {
+  const scope = installationScopeOf(env);
+  if (!scope) return { mode: 'none' };
+  const app = await hostedGithubApp();
+  if (!app) return { mode: 'none' };
+  const bindings = (await hostedGithubBindings(scope.installationId)).filter((binding) => binding.status === 'active');
+  if (!bindings.length) return { mode: 'none' };
+  const platform: GithubPlatformScope = Object.freeze({
+    installationId: scope.installationId,
+    botUserId: app.botUserId,
+    bindings: Object.freeze(bindings),
+  });
+  issuedPlatformScopes.add(platform);
+  return { mode: 'app', appId: app.appId, appSlug: app.appSlug, privateKeyPem: app.privateKeyPem, platform };
+}
+
+/**
+ * The connection's platform scope when it serves one installation of many,
+ * undefined on standalone. Refuses a scope getGithubConnection did not
+ * create, and a deployment serving many installations without one (a
+ * standalone-shaped connection there would mint for any installation ID).
+ */
+function platformScopeOf(app: Extract<GithubConnection, { mode: 'app' }>): GithubPlatformScope | undefined {
+  if (app.platform) {
+    if (!issuedPlatformScopes.has(app.platform)) throw new GithubInstallationNotMintableError();
+    return app.platform;
+  }
+  if (deploymentServesManyInstallations()) throw new GithubInstallationNotMintableError();
+  return undefined;
+}
+
+const sameGithubLogin = (left: string, right: string) => left.toLowerCase() === right.toLowerCase();
+
+/**
+ * The one place a repository grant's installation for minting comes from.
+ * Standalone: the grant's own installation ID. Serving many installations:
+ * the installation's active binding for the grant's account, whatever ID the
+ * grant stores, or none.
+ */
+export function mintableInstallation(
+  conn: GithubConnection,
+  grant: { accountLogin: string; installationId: number | null; fullName?: string; allRepos?: boolean | undefined },
+): number | undefined {
+  if (conn.mode !== 'app') return undefined;
+  let platform: GithubPlatformScope | undefined;
+  try {
+    platform = platformScopeOf(conn);
+  } catch {
+    return undefined;
+  }
+  if (!platform) return grant.installationId ?? undefined;
+  // A repository outside the grant's own account is never this binding's, even
+  // though GitHub would refuse the token there anyway.
+  if (grant.allRepos !== true && grant.fullName !== undefined &&
+      !sameGithubLogin(grant.fullName.split('/')[0] ?? '', grant.accountLogin)) {
+    return undefined;
+  }
+  return platform.bindings.find((binding) => sameGithubLogin(binding.accountLogin, grant.accountLogin))
+    ?.githubInstallationId;
+}
+
+/** Whether this connection may use a GitHub installation ID: always on standalone, an active binding of its own otherwise. */
+export function connectionHoldsInstallation(conn: GithubConnection, installationId: number): boolean {
+  if (conn.mode !== 'app') return false;
+  try {
+    const platform = platformScopeOf(conn);
+    return !platform || platform.bindings.some((binding) => binding.githubInstallationId === installationId);
+  } catch {
+    return false;
+  }
+}
+
+/** Refuses a mint for an installation this connection does not hold, or for an installation the host no longer admits. */
+async function admitInstallationMint(
+  app: Extract<GithubConnection, { mode: 'app' }>,
+  installationId: number,
+): Promise<GithubPlatformScope | undefined> {
+  const platform = platformScopeOf(app);
+  if (!platform) return undefined;
+  if (!platform.bindings.some((binding) => binding.githubInstallationId === installationId)) {
+    throw new GithubInstallationNotMintableError();
+  }
+  await requireInstallationAdmitted(platform.installationId);
+  return platform;
+}
+
 export interface GithubAppBotUser {
   appId: string;
   slug: string;
@@ -288,14 +419,21 @@ const botUserRetryAfter = new Map<string, number>();
  * daily so a renamed App is picked up. The slug comes from GET /app; the bot
  * user id is public (GET /users/<slug>[bot]). A failed refresh keeps the
  * cached account; with none, the result is undefined and GitHub is retried at
- * most every ten minutes per isolate.
+ * most every ten minutes per isolate. On a deployment serving many
+ * installations the platform App's bot comes from the host, and no tenant
+ * setting is read or written.
  */
 export async function resolveGithubAppBotUser(
   settings: SettingsStore,
   fetchImpl: FetchImpl = fetch,
+  env?: Record<string, unknown>,
 ): Promise<GithubAppBotUser | undefined> {
-  const connection = await getGithubConnection(settings);
+  const connection = await getGithubConnection(settings, env);
   if (connection.mode !== 'app') return undefined;
+  const platform = platformScopeOf(connection);
+  if (platform) {
+    return connection.appSlug ? { appId: connection.appId, slug: connection.appSlug, id: platform.botUserId } : undefined;
+  }
   const stored = parseBotUser(await settings.getSetting(GITHUB_SETTING_KEYS.botUser));
   const cached = stored?.appId === connection.appId
     ? { appId: stored.appId, slug: stored.slug, id: stored.id }
@@ -368,11 +506,24 @@ function parseBotUser(raw: string | undefined): CachedGithubAppBotUser | undefin
   return undefined;
 }
 
+/**
+ * The App's installations. Serving many installations, only the
+ * installation's own bindings, without asking GitHub: the App's full list
+ * names every installation's accounts.
+ */
 export async function listInstallations(
   conn: GithubConnection,
   fetchImpl: FetchImpl = fetch,
 ): Promise<GithubInstallation[]> {
   const app = requireAppConnection(conn);
+  const platform = platformScopeOf(app);
+  if (platform) {
+    return platform.bindings.map((binding) => ({
+      id: binding.githubInstallationId,
+      accountLogin: binding.accountLogin,
+      accountType: binding.accountType,
+    }));
+  }
   const jwt = await currentAppJwt(app);
   const installations: GithubInstallation[] = [];
   for (let page = 1; page <= 3; page += 1) {
@@ -397,6 +548,9 @@ export async function listInstallations(
  * A 404 is deliberately returned as null: GitHub uses the same status for a
  * missing repository and one the App cannot access, and callers must not claim
  * a more specific cause. Other failures retain githubErrorStatus metadata.
+ * Serving many installations, only the installation's own binding for the
+ * repository's owner, and only while GitHub resolves the repository to it
+ * (a repository transferred elsewhere resolves to null).
  */
 export async function getRepositoryInstallation(
   conn: GithubConnection,
@@ -408,6 +562,10 @@ export async function getRepositoryInstallation(
     throw new Error('Invalid GitHub repository');
   }
   const [owner, repo] = fullName.split('/') as [string, string];
+  const platform = platformScopeOf(app);
+  const bound = platform?.bindings.find((binding) => sameGithubLogin(binding.accountLogin, owner));
+  if (platform && !bound) return null;
+  if (platform) await requireInstallationAdmitted(platform.installationId);
   const jwt = await currentAppJwt(app);
   try {
     const response = await githubFetch(
@@ -415,7 +573,8 @@ export async function getRepositoryInstallation(
       { headers: githubHeaders(`Bearer ${jwt}`) },
       fetchImpl,
     );
-    return parseInstallation(await response.json());
+    const installation = parseInstallation(await response.json());
+    return bound && installation.id !== bound.githubInstallationId ? null : installation;
   } catch (error) {
     if (githubErrorStatus(error) === 404) return null;
     throw error;
@@ -502,17 +661,27 @@ export async function createInstallationToken(
   if (!Number.isSafeInteger(installationId) || installationId < 1) {
     throw new Error('Invalid GitHub installation id');
   }
+  const platform = await admitInstallationMint(app, installationId);
   const jwt = await currentAppJwt(app);
-  const response = await githubFetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
-    {
-      method: 'POST',
-      headers: githubHeaders(`Bearer ${jwt}`, true),
-      body: JSON.stringify(options),
-      signal: AbortSignal.timeout(INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS),
-    },
-    fetchImpl,
-  );
+  let response: Response;
+  try {
+    response = await githubFetch(
+      `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
+      {
+        method: 'POST',
+        headers: githubHeaders(`Bearer ${jwt}`, true),
+        body: JSON.stringify(options),
+        signal: AbortSignal.timeout(INSTALLATION_TOKEN_REQUEST_TIMEOUT_MS),
+      },
+      fetchImpl,
+    );
+  } catch (error) {
+    // GitHub no longer knows a bound installation: the host re-reads GitHub and ends the binding if so.
+    if (platform && githubErrorStatus(error) === 404) {
+      reportHostedGithubInstallationGone(platform.installationId, installationId);
+    }
+    throw error;
+  }
   const raw: unknown = await response.json();
   if (!isRecord(raw) || typeof raw.token !== 'string' || typeof raw.expires_at !== 'string') {
     throw new Error('GitHub installation token response was invalid');
@@ -526,6 +695,9 @@ export async function createInstallationToken(
  * an agent turn. Runtime callers always supply the fixed repository permission
  * cap; the cache key follows GitHub's repository down-scope, while an omitted
  * repository set intentionally collapses all installation-wide requests.
+ * Serving many installations, the mint gate runs before the cache, and the
+ * key carries the installation served, so an unbound GitHub installation
+ * never reaches a cached token.
  */
 export async function getCachedInstallationToken(
   conn: GithubConnection,
@@ -537,12 +709,14 @@ export async function getCachedInstallationToken(
   fetchImpl: FetchImpl = fetch,
 ): Promise<{ token: string; expiresAt: string }> {
   const app = requireAppConnection(conn);
+  const platform = await admitInstallationMint(app, installationId);
   const nowMs = Date.now();
   for (const [key, entry] of installationTokenCache) {
     if (nowMs >= entry.validUntilMs) installationTokenCache.delete(key);
   }
   const cacheKey = installationTokenCacheKey(
     app.appId,
+    platform?.installationId,
     installationId,
     options.repositories,
   );
@@ -577,6 +751,8 @@ export async function exchangeGithubAppManifest(
   code: string,
   fetchImpl: FetchImpl = fetch,
 ): Promise<GithubManifestConversion> {
+  // A deployment serving many installations uses the host's platform App; no tenant creates its own.
+  if (deploymentServesManyInstallations()) throw new GithubInstallationNotMintableError();
   const response = await githubFetch(
     `${GITHUB_API_BASE}/app-manifests/${encodeURIComponent(code)}/conversions`,
     { method: 'POST', headers: githubHeaders() },
@@ -613,12 +789,13 @@ function requireAppConnection(
 
 function installationTokenCacheKey(
   appId: string,
+  scope: string | undefined,
   installationId: number,
   repositories: string[] | undefined,
 ): string {
   const repositorySet =
     repositories === undefined ? null : [...new Set(repositories)].sort();
-  return JSON.stringify(['app', appId, installationId, repositorySet]);
+  return JSON.stringify(['app', appId, scope ?? null, installationId, repositorySet]);
 }
 
 async function currentAppJwt(

@@ -1,6 +1,7 @@
 import {
   getCachedInstallationToken,
   getGithubConnection,
+  mintableInstallation,
 } from '../config/github-app.ts';
 import { requireInstallationAdmitted } from '../config/installation-admission.ts';
 import { deploymentTenancy, scopeInstallationEnv } from '../config/installation-scope.ts';
@@ -89,7 +90,8 @@ export async function githubSandboxOutbound(
     // stored policy to the current mode. Disconnecting the App invalidates the
     // running container until a fresh turn reconfigures it.
     const settings = getSettingsStore(env);
-    const connection = await getGithubConnection(settings);
+    // Serving many installations, the platform App scoped to this Sandbox's installation and its bindings.
+    const connection = await getGithubConnection(settings, env);
     if (connection.mode !== 'app') return denySandboxOutbound();
     const grants = sandboxEgressGrantsForMode(policy, connection.mode);
     if (!grants) return denySandboxOutbound();
@@ -104,7 +106,11 @@ export async function githubSandboxOutbound(
       return denySandboxOutbound();
     }
 
-    const installation = resolveRepositoryInstallationScope(grants, decision.repositories);
+    const installation = resolveRepositoryInstallationScope(
+      grants,
+      decision.repositories,
+      (grant) => mintableInstallation(connection, grant),
+    );
     if (!installation) return denySandboxOutbound();
 
     // An installation of many shares the platform's GitHub App: its writes
