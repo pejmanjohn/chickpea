@@ -40,6 +40,7 @@ Docs: `/agents/repositories/`, `/agents/coding-sandbox/`, `/reference/limits/`. 
 
 - Slack shows the reply and the pull request link. GitHub (`provider`) shows the author login `<slug>[bot]`. An App without an uploaded logo shows its owner's avatar, so check the login, not the picture.
 - Start every sandbox case in a new thread: the sandbox choice is made when a conversation begins. A granted Agent on a core lane has no workspace tools, which is correct.
+- With the sandbox off, a granted Agent's bash `curl` reaches only its repositories on GitHub. Without a `User-Agent` header GitHub itself answers 403 "Request forbidden by administrative rules"; send `-H "User-Agent: …"` before reading that as an egress block. Other hosts fail with `URL not in allow-list`.
 - The lane test repository is large. A one-file fix with install and tests took about 20 minutes, so keep tasks small and never plan 40-minute ones.
 - Never redeploy during an idle window: any Durable Object reset restarts the 30-minute idle clock. The docs coding sandbox page still lists a 5-minute idle sleep; the runbook and product use 30.
 - Read the working indicator from a fresh load of the Slack web client in the lane browser.
