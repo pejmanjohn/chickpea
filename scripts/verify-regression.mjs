@@ -10,7 +10,6 @@ import { evidenceRefs, offlineEvent, readRun, updateRun } from './lib/verificati
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
-import { NODE_TEST_TIMEOUT_ARGS } from './lib/test-timeout.mjs';
 import { lockfileDrift, staleDependenciesMessage } from './lib/installed-dependencies.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,8 +79,11 @@ export function changedFiles(base, root = ROOT) {
   ].filter(Boolean))] };
 }
 
-/** Focused test files run with the repository's per-test timeout (scripts/lib/test-timeout.mjs). */
-export const testStepArgs = (files) => ['--test', ...NODE_TEST_TIMEOUT_ARGS, '--import', 'tsx', ...files];
+/**
+ * Focused test files run through the root suite's runner: the same per-test
+ * timeout, and a file whose tests do not all report fails instead of passing.
+ */
+export const testStepArgs = (files) => [path.join(ROOT, 'scripts', 'run-tests.mjs'), ...files];
 
 export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
 

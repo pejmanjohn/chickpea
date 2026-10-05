@@ -12,7 +12,10 @@
  * A file whose process ends without reporting a single test counts as failed.
  * node:test reports such a file as passing (its only event is a file-level
  * pass with no subtests), which is how a worker that dies quietly with exit 0
- * used to pass the gate.
+ * used to pass the gate. So does a file whose process ends before all of its
+ * tests report: its own summary is missing, or counts more tests than arrived
+ * (scripts/lib/test-file-reports.mjs). node:test passes that file too, because
+ * its process still exits 0.
  *
  * Files start longest first: node:test dequeues them in the given order, and a
  * slow file that starts late sets the tail of the whole pass. `--typecheck`
@@ -21,7 +24,12 @@
  *
  * A test fails after PER_TEST_TIMEOUT_MS (scripts/lib/test-timeout.mjs) and
  * each file's process exits once its tests and hooks finish, so one hung test
- * fails in minutes instead of holding the host reservation.
+ * fails in minutes instead of holding the host reservation. That exit discards
+ * reports still queued for the pipe, so each file's process writes its reports
+ * with blocking writes (scripts/lib/test-report-pipe.mjs).
+ *
+ * The root suite, the CLI package's tests and verify:regression's focused test
+ * steps all run through this runner.
  */
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -29,7 +37,10 @@ import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
+import { recordFileReports } from './lib/test-file-reports.mjs';
 import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
+
+const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
@@ -99,35 +110,37 @@ function startTypecheck(controller) {
 
 async function runFiles(list, concurrency, signal) {
   const failed = new Set();
-  const reported = new Set();
   // A child spawned by node:test inherits this marker and would treat the
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
-  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}) });
+  const stream = run({
+    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE],
+    timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}),
+  });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {
     if (event.file) failed.add(resolve(event.file));
   });
-  // The file itself is reported as one pass/fail event whose name is its path;
-  // anything else under that file is a real test that ran.
-  for (const type of ['test:pass', 'test:fail']) {
-    stream.on(type, (event) => {
-      if (event.file && resolve(event.file) !== resolve(event.name)) reported.add(resolve(event.file));
-    });
-  }
+  const reports = recordFileReports(stream);
   const report = stream.compose(spec);
   report.pipe(process.stdout, { end: false });
   await finished(report);
-  const silent = list.filter((file) => !reported.has(file) && !failed.has(file));
+  const passed = list.filter((file) => !failed.has(file));
+  const silent = passed.filter((file) => reports.reported(file) === 0);
   if (silent.length > 0) {
     console.error(`\n[run-tests] ${silent.length} file(s) ended without reporting any test; treating each as failed:\n${listing(silent)}`);
     for (const file of silent) failed.add(file);
   }
+  const incomplete = passed.filter((file) => !silent.includes(file) && reports.shortfall(file) !== undefined);
+  if (incomplete.length > 0) {
+    console.error(`\n[run-tests] ${incomplete.length} file(s) ended before all of their tests reported; treating each as failed:\n${listing(incomplete, reports.shortfall)}`);
+    for (const file of incomplete) failed.add(file);
+  }
   return [...failed];
 }
 
-function listing(paths) {
-  return paths.map((path) => `  ${relative(process.cwd(), path)}`).join('\n');
+function listing(paths, detail) {
+  return paths.map((path) => `  ${relative(process.cwd(), path)}${detail ? `: ${detail(path)}` : ''}`).join('\n');
 }

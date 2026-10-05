@@ -4,13 +4,13 @@
  * slowest test measured in a full pass takes about 9 s.
  *
  * A timeout alone does not end a file whose hung test keeps a server or timer
- * alive, so the runner also exits each test process once its tests (and their
- * `after` hooks) have finished. packages/cli/package.json passes the same flags.
+ * alive, so scripts/run-tests.mjs also exits each test process once its tests
+ * (and their `after` hooks) have finished. The CLI package's tests and
+ * verify:regression's focused test steps run through that runner too.
  */
 import { fileURLToPath } from 'node:url';
 
 export const PER_TEST_TIMEOUT_MS = 120_000;
-export const NODE_TEST_TIMEOUT_ARGS = Object.freeze([`--test-timeout=${PER_TEST_TIMEOUT_MS}`, '--test-force-exit']);
 
 const RUNNER_FIXTURES = fileURLToPath(new URL('../../tests/fixtures/run-tests/', import.meta.url));
 
