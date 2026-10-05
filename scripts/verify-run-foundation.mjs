@@ -133,14 +133,15 @@ const FOCUSED_TESTS = [
   'tests/run-ordering.test.ts',
   'tests/run-recovery.test.ts',
   // The Node turn relay, its turn jobs and Slack Work admission
-  // (src/slack/{node-turn-relay,turn-jobs,work-admission}.ts), whose own test
-  // files were deleted.
+  // (src/slack/{node-turn-relay,turn-jobs,work-admission}.ts). The relay's and
+  // the turn jobs' own test files were deleted.
   'tests/node-turn-relay-stop.test.ts',
   'tests/node-turn-relay-drain-failure.test.ts',
   'tests/node-turn-relay-parallel-threads.test.ts',
   'tests/node-turn-relay-presentation-port.test.ts',
   'tests/turn-job-rollback.test.ts',
   'tests/hosted-admission.test.ts',
+  'tests/slack-work-admission.test.ts',
   'tests/work-model-invocation.test.ts',
   'tests/non-slack-adapter-contract.test.ts',
   'tests/status-relay.test.ts',
