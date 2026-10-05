@@ -656,6 +656,18 @@ export const OBJECT_DIGEST_BUDGET: ObjectDigestBudget = Object.freeze({
   databaseBytes: 2 * 1024 * 1024 * 1024,
 });
 
+/**
+ * The version of what a content digest's time depends on besides the
+ * object's size and the platform, so a host can bind its staging measurement
+ * of that time to this and `OBJECT_DIGEST_BUDGET` rather than to a commit.
+ * Bump it with any change to the digest's algorithm, encoding, record order
+ * or coverage (`objectStorageDigest`), to `OBJECT_DIGEST_BUDGET`, or to a
+ * restore quiesce path: the state store's, the thread runner's or the
+ * Sandbox's `quiesce` hook. tests/hosted-object-restore.test.ts pins each:
+ * the digest of a fixed storage, the budget, and a fingerprint of that source.
+ */
+export const OBJECT_DIGEST_CONTRACT = 'object-digest.v1';
+
 /** Key-value entries a digest lists at once: up to 2 MB each, so at most 32 MB held. */
 const DIGEST_KV_BATCH = 16;
 
