@@ -94,7 +94,7 @@ export function agentSlackHandle(
  * the built-in Chickpea lists and describes Agents, so a handle in its reply
  * names that Agent and never asks it.
  */
-export function agentAsksTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
+export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
   return agent.kind === 'user';
 }
 
@@ -108,7 +108,7 @@ function turnMayAskAgents(
   assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agent'>,
 ): boolean {
   return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel' &&
-    agentAsksTeammates(assignment.agent);
+    agentMayAskTeammates(assignment.agent);
 }
 
 // A handle word: `@` (with the word joiner neutralization may leave after

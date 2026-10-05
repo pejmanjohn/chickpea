@@ -9,7 +9,7 @@ import type {
   ModelCredentialAttribution,
   ResolvedAssignment,
 } from './types.ts';
-import { agentAsksTeammates } from '../slack/agent-asks.ts';
+import { agentMayAskTeammates } from '../slack/agent-asks.ts';
 
 const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -179,7 +179,7 @@ type TeammateAssignment = Pick<ResolvedAssignment, 'channelTeammates'> & {
 
 /** The Channel teammates this Agent may ask: none for the built-in Chickpea. */
 function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
-  return agentAsksTeammates(assignment.agent) ? assignment.channelTeammates ?? [] : [];
+  return agentMayAskTeammates(assignment.agent) ? assignment.channelTeammates ?? [] : [];
 }
 
 /**

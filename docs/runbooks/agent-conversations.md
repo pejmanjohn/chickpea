@@ -36,9 +36,9 @@ needs a number only Finance has, so its reply says:
    Agent. A person mentioning a different Agent still hands the thread over,
    as before.
 
-Each Agent is told which other Agents work in the Channel and their handles,
-and when to ask: only when it needs a teammate's answer, never in passing or
-to say thanks.
+Each user Agent is told which other Agents work in the Channel and their
+handles, and when to ask: only when it needs a teammate's answer, never in
+passing or to say thanks.
 
 ## Mentioning several Agents at once
 
