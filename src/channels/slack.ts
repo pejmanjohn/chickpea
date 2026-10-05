@@ -2434,7 +2434,7 @@ async function processSlackEvent(
       // A guest answering an ask keeps its own frozen configuration, so the
       // owner's snapshot is never replaced by the guest's.
       const guestAgent = routedAssignment.threadGuest ? routedAssignment.agent : undefined;
-      const frozenAssignment = await getOrReplaceSnapshotForRoute(
+      const frozenAssignment = await withAdmittedModelCredential(await getOrReplaceSnapshotForRoute(
         stores.snapshots,
         guestAgent ? slackGuestThreadKey(threadKey, guestAgent.id) : threadKey,
         guestAgent
@@ -2444,17 +2444,8 @@ async function processSlackEvent(
               modelAttribution: policyAssignment.modelAttribution,
             }
           : { ...routed.route, modelAttribution: policyAssignment.modelAttribution },
-        async () => {
-          const config = effectiveSlackConfigFromAssignment(policyAssignment);
-          const modelCredential = await resolveModelCredentialAttribution(
-            config.model,
-            platformEnv,
-            stores.settings,
-            stores.usage,
-          );
-          return { ...config, ...(modelCredential ? { modelCredential } : {}) };
-        },
-      );
+        () => effectiveSlackConfigFromAssignment(policyAssignment),
+      ), platformEnv, stores);
       assignment = {
         ...frozenAssignment,
         ...(routedAssignment.runtimeContract
@@ -2816,7 +2807,7 @@ async function processSlackEvent(
       // Candidate classification may take long enough for configuration to
       // change. Re-resolve at promotion; the ensuing TurnJob is the freeze.
       if (surface === 'channel') {
-        assignment = liveChannelConfig
+        assignment = await withAdmittedModelCredential(liveChannelConfig
           ? await resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
               agents: stores.config,
               grants: stores.config,
@@ -2825,7 +2816,7 @@ async function processSlackEvent(
               resolveEffectiveSlackConfig(turn.workspaceId, turn.channelId, {
                 agents: stores.config,
                 grants: stores.config,
-              }, process.env, assignment.agentId, platformEnv));
+              }, process.env, assignment.agentId, platformEnv)), platformEnv, stores);
       }
     } finally {
       releaseClassifier();
@@ -4040,6 +4031,26 @@ async function recordInteractionClassifierUsage(input: {
       : 'usage_not_reported',
   });
   await recorder.repairAfterTerminal();
+}
+
+/**
+ * A thread's snapshot keeps its configuration, not its model credential: each
+ * turn takes the credential current when it is admitted, and its TurnJob keeps
+ * that one for retries. An older snapshot's first-turn credential is dropped.
+ */
+async function withAdmittedModelCredential<T extends Pick<ResolvedAssignment, 'modelCredential'> & { model: string }>(
+  config: T,
+  platformEnv: PlatformEnv | undefined,
+  stores: Pick<AppStores, 'settings' | 'usage'>,
+): Promise<Omit<T, 'modelCredential'> & Pick<ResolvedAssignment, 'modelCredential'>> {
+  const { modelCredential: _snapshotCredential, ...current } = config;
+  const modelCredential = await resolveModelCredentialAttribution(
+    config.model,
+    platformEnv,
+    stores.settings,
+    stores.usage,
+  );
+  return modelCredential ? { ...current, modelCredential } : current;
 }
 
 /**
