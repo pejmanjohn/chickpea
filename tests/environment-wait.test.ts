@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +24,10 @@ import { runEnvironmentCli } from '../scripts/chickpea-environment.mjs';
 const {
   createEnvironmentRegistry,
   claimEnvironment,
+  heartbeatEnvironmentClaim,
   readEnvironmentRegistry,
+  reclaimEnvironment,
+  readEnvironmentStatus,
   releaseEnvironment,
 } = environmentRegistryModule;
 
@@ -284,4 +289,58 @@ test('two waiters cannot both acquire the same free lane', async (t) => {
   assert.deepEqual(results.map(({ kind }: { kind: string }) => kind).sort(), ['acquired', 'timeout']);
   const registry = readEnvironmentRegistry(options(f.root, f.third));
   assert.ok([f.first, f.second].includes(registry.targets.amber.claim.canonicalWorktreePath));
+});
+
+test('a claim heartbeats on claim and reuse, reports silence, and is never taken for it', async (t) => {
+  const f = fixture();
+  t.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const start = Date.parse('2026-10-04T00:00:00.000Z');
+  let clock = start;
+  const at = (worktreePath: string) => ({ ...options(f.root, worktreePath), now: () => clock });
+  const claim = claimEnvironment('amber', at(f.first));
+  const seen = () => readEnvironmentStatus({ ...at(f.second), target: 'amber' }).targets[0].claim;
+  assert.equal(seen().heartbeatAt, claim.claimedAt, 'claiming is the first heartbeat');
+  clock = start + 45 * 60_000;
+  assert.equal(seen().silentMs, 45 * 60_000);
+
+  // Silence is advisory: another worktree neither takes nor heartbeats the claim.
+  const waited = await waitForEnvironmentClaim('amber', { ...at(f.second), timeoutMs: 0, pollMs: 250 });
+  assert.equal(waited.kind, 'timeout');
+  assert.throws(() => heartbeatEnvironmentClaim('amber', at(f.second)),
+    (error: any) => error.code === 'CLAIM_OWNER_MISMATCH');
+  assert.equal(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.claim.leaseNonce, claim.leaseNonce);
+
+  // The holder's reused wait-claim is its heartbeat and writes no registry revision.
+  const revision = readEnvironmentRegistry(options(f.root, f.first)).revision;
+  const reused = await waitForEnvironmentClaim('amber', { ...at(f.first), timeoutMs: 0, pollMs: 250 });
+  assert.equal(reused.reused, true);
+  assert.equal(reused.heartbeatAt, new Date(clock).toISOString());
+  assert.equal(seen().silentMs, 0);
+  assert.equal(readEnvironmentRegistry(options(f.root, f.first)).revision, revision);
+
+  // Restamping its own claim is a heartbeat too.
+  clock += 5 * 60_000;
+  reclaimEnvironment('amber', { ...at(f.first), requireSameWorktree: true });
+  assert.deepEqual([seen().heartbeatAt, seen().silentMs], [new Date(clock).toISOString(), 0]);
+
+  // Release removes the heartbeat with the claim.
+  const beatFile = join(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.evidenceRoot, 'claim-heartbeat.json');
+  const earlierBeat = readFileSync(beatFile, 'utf8');
+  releaseEnvironment('amber', { ...at(f.first), ownerHeadMayMove: true });
+  assert.equal(existsSync(beatFile), false, 'release leaves no heartbeat behind');
+  clock = start + 50 * 60_000;
+  const next = claimEnvironment('amber', at(f.third));
+  assert.equal(seen().heartbeatAt, next.claimedAt);
+
+  // A claim with no heartbeat for its lease, as from an older checkout that
+  // never writes one, shows its claim time only and is never called silent.
+  // A heartbeat left by an earlier lease never vouches for it.
+  unlinkSync(beatFile);
+  clock = start + 200 * 60_000;
+  const older = seen();
+  assert.equal(older.heartbeatAt, null);
+  assert.equal(older.silentMs, null);
+  assert.equal(older.leaseAgeMs, 150 * 60_000);
+  writeFileSync(beatFile, earlierBeat, { mode: 0o600 });
+  assert.equal(seen().heartbeatAt, null, 'an earlier lease\'s heartbeat does not vouch for it');
 });

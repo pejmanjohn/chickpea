@@ -10,6 +10,7 @@ import { evidenceRefs, offlineEvent, readRun, updateRun } from './lib/verificati
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
+import { NODE_TEST_TIMEOUT_ARGS } from './lib/test-timeout.mjs';
 import { lockfileDrift, staleDependenciesMessage } from './lib/installed-dependencies.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -79,7 +80,23 @@ export function changedFiles(base, root = ROOT) {
   ].filter(Boolean))] };
 }
 
+/** Focused test files run with the repository's per-test timeout (scripts/lib/test-timeout.mjs). */
+export const testStepArgs = (files) => ['--test', ...NODE_TEST_TIMEOUT_ARGS, '--import', 'tsx', ...files];
+
 export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
+
+/**
+ * Hygiene and typecheck start no workerd, server, port or test database, so
+ * the leading run of them executes before the host reservation is taken.
+ * Everything from the first build, test file, proof or smoke onward runs
+ * under it (host-checks.md).
+ */
+export const HOST_FREE_SCRIPTS = Object.freeze(['verify:hygiene', 'typecheck']);
+export const needsHostReservation = (step) => !(step.kind === 'npm' && HOST_FREE_SCRIPTS.includes(step.script));
+export function splitAtHostReservation(steps) {
+  const first = steps.findIndex(needsHostReservation);
+  return first === -1 ? { hostFree: steps, hostBound: [] } : { hostFree: steps.slice(0, first), hostBound: steps.slice(first) };
+}
 
 /**
  * Runs steps in plan order. Consecutive steps that share a `group` run
@@ -105,6 +122,31 @@ export async function runRegressionSteps(steps, run) {
   return results;
 }
 
+/**
+ * Runs the plan's host-free prefix, then takes the host reservation through
+ * `acquire` before the first build, test file, proof or smoke. A failed prefix
+ * never reserves.
+ */
+export async function runWithHostReservation(steps, run, acquire) {
+  const { hostFree, hostBound } = splitAtHostReservation(steps);
+  const results = await runRegressionSteps(hostFree, run);
+  if (hostBound.length && results.every(({ status }) => status === 0)) {
+    await acquire();
+    results.push(...await runRegressionSteps(hostBound, run));
+  }
+  return results;
+}
+
+/**
+ * Releases the reservation after the run. An interrupted step may have left
+ * children running, so its reservation stays for inspection. A run whose
+ * host-free prefix stopped never took one and has nothing to keep or report.
+ */
+export function settleHostLease(lease, interrupted, warn = console.error) {
+  if (!interrupted) lease?.release();
+  else if (lease) warn('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
+}
+
 /** Runs one step to completion; piped output is collected into `output`. */
 function spawnStep(command, args, options, timeoutMs) {
   return new Promise((done) => {
@@ -121,7 +163,7 @@ export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene (seconds, no host reservation); the remaining steps run cheapest first.\n--record saves private logs, durations, failures and final release receipts.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\n--record saves private logs, durations, failures and final release receipts.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -143,8 +185,9 @@ export async function main(argv) {
       throw new Error('Release checks require clean committed source; verify:oss-export archives HEAD. Use changed or regression for working changes.');
     }
     if (options.mode === 'release') assertReleaseEnvironment(ROOT);
-    // Hygiene alone needs neither installed dependencies, loopback, nor the
-    // host reservation; everything else does.
+    // Hygiene alone needs neither installed dependencies nor loopback;
+    // everything else does. Only steps from the first host-bound one onward
+    // take the host reservation.
     const expensive = plan.steps.some((step) => !isHygieneStep(step));
     if (expensive && !existsSync(path.join(ROOT, 'node_modules', 'tsx'))) throw new Error('Run npm ci first with the repository Node version.');
     const drift = expensive ? lockfileDrift(ROOT) : [];
@@ -155,7 +198,13 @@ export async function main(argv) {
         throw new Error('An offline attempt is still open. Inspect the owning process and log; record offline_interrupted only after its processes have stopped.');
       }
     }
-    if (expensive) {
+    const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
+    let env = {
+      ...regressionEnvironment(),
+      npm_config_cache: path.join(scratch, 'npm-cache'),
+      WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
+    };
+    const acquireHost = async () => {
       const waitingSource = options.waitMs ? sourceInputs(ROOT) : null;
       const controller = new AbortController();
       const cancel = () => controller.abort();
@@ -169,13 +218,7 @@ export async function main(argv) {
         if (afterWait.head !== waitingSource.head || afterWait.tree !== waitingSource.tree) throw new Error('Source changed while waiting for host checks. Rerun the affected plan before executing it.');
       }
       if (options.waitMs) console.error(JSON.stringify({ status: 'host_acquired', waitedMs: lease.waitedMs }));
-    }
-    const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
-    const env = {
-      ...regressionEnvironment(),
-      ...lease?.env,
-      npm_config_cache: path.join(scratch, 'npm-cache'),
-      WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
+      env = { ...env, ...lease.env };
     };
     if (expensive) {
       const probe = spawnSync(process.execPath, ['--input-type=module', '-e',
@@ -194,7 +237,7 @@ export async function main(argv) {
     const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint,
       executionFingerprint, sourceExportCoverage: 1, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
     const nodeBuilt = plan.steps.some((step) => step.kind === 'npm' && step.script === 'flue:build');
-    const results = await runRegressionSteps(plan.steps, async (step, concurrent) => {
+    const runStep = async (step, concurrent) => {
       const label = offlineStepLabel(step);
       const started = Date.now();
       const attempt = options.record ? record({ type: 'offline_begin', planId: receiptPlan.id, label, fingerprint, node: process.version, source: input, ownerPid: process.pid }) : undefined;
@@ -205,7 +248,7 @@ export async function main(argv) {
       const args = step.kind === 'npm'
         ? [process.env.npm_execpath, 'run', step.script, ...scriptArgs]
         : step.kind === 'tests'
-          ? ['--test', '--import', 'tsx', ...step.files]
+          ? testStepArgs(step.files)
           : [step.file];
       // npm supplies its executable path on every platform. Direct node users
       // can use PATH without enabling a shell for any user input.
@@ -228,7 +271,8 @@ export async function main(argv) {
         category: !stable ? 'inputs_changed' : result.error ? 'infrastructure' : status === 0 ? null : 'unknown',
         durationMs: Date.now() - started, evidence: evidenceRefs([log]) });
       return status;
-    });
+    };
+    const results = await runWithHostReservation(plan.steps, runStep, acquireHost);
     const passed = results.length === plan.steps.length && results.every(({ status }) => status === 0)
       && (!options.record || sourceInputs(ROOT).tree === input.tree);
     if (receiptPlan) {
@@ -244,8 +288,7 @@ export async function main(argv) {
     console.error(error instanceof Error ? error.message : String(error));
     return error.code === 'HOST_CHECKS_TIMEOUT' ? 3 : error.code === 'HOST_CHECKS_CANCELLED' ? 130 : 2;
   } finally {
-    if (!interrupted) lease?.release();
-    else console.error('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
+    settleHostLease(lease, interrupted);
   }
 }
 

@@ -62,3 +62,37 @@ test('host slot rejects a second worktree process, permits inherited child and p
   lease.release();
   acquireHostChecks({ file, env: {}, cwd: 'second-checkout' }).release();
 });
+
+test('a hold over fifteen minutes warns the waiter once per owner and never takes the slot', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-hold-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, 'owner.json');
+  const started = Date.parse('2026-10-04T00:00:00.000Z');
+  const owner = acquireHostChecks({ file, env: {}, cwd: 'first', now: () => started });
+  const original = readFileSync(file, 'utf8');
+  const minutes = (value: number) => () => started + value * 60_000;
+  // Fail-fast callers see the age in the refusal; the owner is untouched.
+  assert.throws(() => acquireHostChecks({ file, env: {}, cwd: 'second', now: minutes(16) }),
+    (error: any) => error.code === 'HOST_CHECKS_BUSY' && error.heldMs === 16 * 60_000
+      && /Held for 16 min, over the 15-minute warning/.test(error.message) && /Never steal/.test(error.message));
+  assert.throws(() => acquireHostChecks({ file, env: {}, cwd: 'second', now: minutes(14) }),
+    (error: any) => error.code === 'HOST_CHECKS_BUSY' && !/warning/.test(error.message));
+  assert.equal(readFileSync(file, 'utf8'), original);
+
+  const quiet: any[] = [];
+  await assert.rejects(waitForHostChecks({ file, env: {}, waitMs: 60, pollMs: 10, now: minutes(14),
+    onWait: (event: unknown) => quiet.push(event) }), { code: 'HOST_CHECKS_TIMEOUT' });
+  assert.deepEqual(quiet.map((event) => event.warning), [undefined], 'a fourteen-minute hold reports contention only');
+  assert.equal(quiet[0].heldMs, 14 * 60_000);
+
+  const events: any[] = [];
+  const timer = setTimeout(() => owner.release(), 80);
+  t.after(() => clearTimeout(timer));
+  const next = await waitForHostChecks({ file, env: {}, cwd: 'second', waitMs: 2000, pollMs: 10, now: minutes(16),
+    onWait: (event: unknown) => events.push(event) });
+  assert.deepEqual(events.map((event) => event.warning ?? event.status), ['waiting', 'HOST_CHECKS_HELD_LONG'],
+    'one warning across many polls of the same owner');
+  assert.match(events[1].message, /ask its owner whether a check is hung\. Never steal, stop or remove it/);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).cwd, 'second', 'acquired only after the owner released');
+  next.release();
+});

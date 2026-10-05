@@ -18,6 +18,10 @@
  * slow file that starts late sets the tail of the whole pass. `--typecheck`
  * runs `tsc --noEmit` beside the pass instead of before it; a type error stops
  * the pass as soon as tsc reports it.
+ *
+ * A test fails after PER_TEST_TIMEOUT_MS (scripts/lib/test-timeout.mjs) and
+ * each file's process exits once its tests and hooks finish, so one hung test
+ * fails in minutes instead of holding the host reservation.
  */
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -25,6 +29,7 @@ import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
+import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
@@ -99,7 +104,7 @@ async function runFiles(list, concurrency, signal) {
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
-  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], ...(signal ? { signal } : {}) });
+  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}) });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {

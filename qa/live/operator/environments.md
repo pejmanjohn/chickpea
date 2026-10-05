@@ -31,6 +31,19 @@
    holder and ask before adopting. All registered lanes busy means preserve pending work and
    use the bounded wait described above. See [host coordination](hosts.md) for
    longer waits and host reservations.
+
+   Each claim also carries an advisory `heartbeatAt`, shown with the holder's
+   silence in `env status` and the kickoff doctor. Claiming, `restamp`, a
+   guarded deploy, attestation and a `wait-claim` that reuses the worktree's
+   own claim refresh it, and `release` removes it; during a long run, rerun
+   that `wait-claim` between case groups. After 30 minutes of silence the
+   doctor warns that the holder may have stopped. A claim made from an older
+   checkout, such as a pinned hosted Core, has no heartbeat: `heartbeatAt` and
+   `silentMs` are null, and the doctor reports "no heartbeat (older checkout)"
+   with the claim time only, never silence. The heartbeat never expires,
+   releases, takes or adopts a claim, and `wait-claim` ignores it: choose
+   another lane, and ask the maintainer once before anyone releases or adopts
+   a silent holder's claim.
 3. Prefer an initialized local workerd/HTTP lane for repeated application edits.
    Run `npm run dev:cf -- status --lane <lane>` in its owning worktree. From a
    different named worktree of the same Git repository, discovery is read-only:

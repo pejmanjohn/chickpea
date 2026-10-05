@@ -10,7 +10,7 @@ import { lockfileDrift } from '../scripts/lib/installed-dependencies.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
-import { changedFiles, isHygieneStep, main, parseRegressionArgs, regressionEnvironment, runRegressionSteps } from '../scripts/verify-regression.mjs';
+import { changedFiles, isHygieneStep, main, needsHostReservation, parseRegressionArgs, regressionEnvironment, runRegressionSteps, runWithHostReservation, settleHostLease, splitAtHostReservation } from '../scripts/verify-regression.mjs';
 
 const testFiles = readdirSync(new URL('.', import.meta.url), { recursive: true })
   .map(String).filter((file) => file.endsWith('.test.ts')).map((file) => `tests/${file.replaceAll('\\', '/')}`);
@@ -144,6 +144,64 @@ test('every plan starts with source hygiene and orders the rest cheapest first',
   }
   assert.equal(isHygieneStep({ kind: 'npm', script: 'verify:hygiene' }), true);
   assert.equal(isHygieneStep({ kind: 'npm', script: 'build' }), false);
+});
+
+test('hygiene and typecheck run before the host reservation; builds, tests, proofs and smokes run under it', () => {
+  const scripts = (steps: any[]) => steps.map((step) => step.script ?? step.file ?? step.kind);
+  const narrow = splitAtHostReservation(createRegressionPlan({ files: ['src/routines/scheduler.ts'], testFiles }).steps);
+  assert.deepEqual(scripts(narrow.hostFree), ['verify:hygiene', 'typecheck']);
+  assert.equal(scripts(narrow.hostBound)[0], 'build');
+  assert.ok(scripts(narrow.hostBound).includes('tests'));
+  for (const [plan, free] of [
+    [createRegressionPlan({ mode: 'regression', testFiles }), ['verify:hygiene', 'typecheck']],
+    // The full suite typechecks beside its tests, under the reservation.
+    [createRegressionPlan({ files: ['src/new-runtime.ts'], testFiles }), ['verify:hygiene']],
+    [createRegressionPlan({ mode: 'release', testFiles }), ['verify:hygiene']],
+  ] as const) {
+    const split = splitAtHostReservation(plan.steps);
+    assert.deepEqual(scripts(split.hostFree), free);
+    for (const script of ['build', 'verify:cf-smoke', 'verify:cf-smoke:alarm']) assert.ok(scripts(split.hostBound).includes(script), `${plan.mode} reserves ${script}`);
+  }
+  const docs = splitAtHostReservation(createRegressionPlan({ files: ['README.md'], testFiles }).steps);
+  assert.deepEqual(docs.hostBound, [], 'a hygiene-only plan never reserves');
+  for (const step of [{ kind: 'npm', script: 'build' }, { kind: 'npm', script: 'test' }, { kind: 'npm', script: 'flue:build' },
+    { kind: 'tests', files: [] }, { kind: 'node', file: 'scripts/verify-flue-offline-turn.mjs' }, { kind: 'npm', script: 'verify:cf-smoke' },
+    { kind: 'npm', script: 'verify:oss-export' }, { kind: 'npm', script: 'verify:admin-ui' }]) {
+    assert.equal(needsHostReservation(step), true, JSON.stringify(step));
+  }
+  for (const script of ['verify:hygiene', 'typecheck']) assert.equal(needsHostReservation({ kind: 'npm', script }), false);
+});
+
+test('the runner holds the reservation for every host-bound step and never for a failed prefix', async () => {
+  const steps = createRegressionPlan({ files: ['src/routines/scheduler.ts'], testFiles }).steps;
+  let held = false, acquired = 0;
+  const seen: string[] = [];
+  const acquire = async () => { acquired += 1; held = true; };
+  const results = await runWithHostReservation(steps, async (step: any) => { seen.push(`${step.script ?? step.file ?? step.kind}:${held}`); return 0; }, acquire);
+  assert.equal(acquired, 1);
+  assert.equal(results.length, steps.length);
+  assert.deepEqual(seen.slice(0, 3), ['verify:hygiene:false', 'typecheck:false', 'build:true']);
+  assert.ok(seen.slice(2).every((entry) => entry.endsWith(':true')), seen.join(', '));
+  held = false; acquired = 0;
+  const failed = await runWithHostReservation(steps, async (step: any) => (step.script === 'typecheck' ? 2 : 0), acquire);
+  assert.deepEqual(failed.map((result: any) => result.script), ['verify:hygiene', 'typecheck']);
+  assert.equal(acquired, 0, 'a type error never waits for or holds the host');
+});
+
+test('an interrupted run keeps a reservation it took and reports one only when it took one', () => {
+  const warnings: string[] = [];
+  const warn = (message: string) => warnings.push(message);
+  let released = 0;
+  const lease = { release: () => { released += 1; } };
+  settleHostLease(lease, false, warn);
+  assert.deepEqual([released, warnings.length], [1, 0], 'a finished run releases');
+  settleHostLease(lease, true, warn);
+  assert.equal(released, 1, 'an interrupted run keeps its reservation for inspection');
+  assert.match(warnings.join('\n'), /^Interrupted check: host reservation retained\./);
+  warnings.length = 0;
+  settleHostLease(undefined, true, warn);
+  settleHostLease(undefined, false, warn);
+  assert.deepEqual(warnings, [], 'a prefix step that stopped before the reservation claims none was retained');
 });
 
 test('checks run in plan order and preserve the first failure without replay', async () => {

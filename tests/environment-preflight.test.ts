@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
-import { claimEnvironment, environmentMarkerPath, readEnvironmentRegistry, withEnvironmentInstallationClaim, reclaimEnvironment, recordEnvironmentInstallation, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
+import { claimEnvironment, environmentMarkerPath, readEnvironmentRegistry, readEnvironmentStatus, withEnvironmentInstallationClaim, reclaimEnvironment, recordEnvironmentInstallation, recordEnvironmentAttestation, releaseEnvironment } from '../scripts/lib/environment-registry.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
 import { adoptEnvironmentFromFile, beginEnvironmentDeployment, readLocalEnvironmentContract, completeEnvironmentDeployment, environmentDeployReceiptPath, preflightEnvironmentMutation, readEnvironmentDeployReceipt, reconcileEnvironmentDeployment, recheckEnvironmentMutationAuthority, resumeEnvironmentDeployment, writeEnvironmentBaseline, writeEnvironmentSchemaAdvancementIntent, withEnvironmentReleaseFence } from '../scripts/lib/environment-preflight.mjs';
 // @ts-expect-error Executable environment modules intentionally have no declarations.
@@ -885,6 +885,29 @@ test('no-effect abort preserves the attestation present immediately before inten
     observeAuthority: async () => authority('amber', { activeVersion: 'version-amber' }),
   });
   assert.deepEqual(readEnvironmentRegistry(f.options).targets.amber.lastAttestation, attestation);
+});
+
+test('an attestation and a deploy intent are the holder\'s heartbeat and leave its claim unchanged', async (context) => {
+  const f = fixture();
+  context.after(() => rmSync(f.parent, { recursive: true, force: true }));
+  const at = (minutes: number) => ({ ...f.options, now: () => NOW + minutes * 60_000 });
+  const iso = (minutes: number) => new Date(NOW + minutes * 60_000).toISOString();
+  const seen = (minutes: number) => readEnvironmentStatus({ ...at(minutes), target: 'amber' }).targets[0].claim;
+  const claim = claimEnvironment('amber', f.options);
+  assert.equal(seen(0).heartbeatAt, claim.claimedAt);
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...at(5), baseline: baseline(), localContract: localContract(),
+    observeAuthority: async () => authority(),
+  });
+  recordEnvironmentAttestation('amber', {
+    doctorSnapshot: { repositoryRevision: f.revision, servingVersion: 'version-amber', lock: { status: 'clear' } },
+    attestation: { servingVersion: 'version-amber', targetFingerprint: `sha256:${'a'.repeat(64)}` },
+  }, at(40));
+  assert.deepEqual([seen(41).heartbeatAt, seen(41).silentMs], [iso(40), 60_000]);
+  beginEnvironmentDeployment(preflight, { ...at(80), localContract: preflight.localContract });
+  assert.deepEqual([seen(81).heartbeatAt, seen(81).silentMs], [iso(80), 60_000]);
+  const after = readEnvironmentRegistry(f.options).targets.amber.claim;
+  assert.deepEqual([after.leaseNonce, after.claimedAt, after.expiresAt], [claim.leaseNonce, claim.claimedAt, claim.expiresAt]);
 });
 
 test('a partial schema advancement adopts the exact existing intent and resumes upload', async (context) => {

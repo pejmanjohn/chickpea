@@ -7,12 +7,30 @@ with only local installation settings changed, follow the
 [update guide](../../../UPDATE_CHICKPEA_CLOUDFLARE.md) without contributor host
 reservations, process inspection, or test suites.
 
-Use `verify:regression` for normal check groups. It reserves
-`~/.chickpea/verification-host/owner.json` for the whole serial group, including
-export children. A plan that consists only of `verify:hygiene` (seconds, no
-servers, no build) runs without a reservation; so does `npm run verify:hygiene`
-on its own. The reservation is shared across this user's worktrees and
-does not depend on a checkout's temporary directory. For standalone commands:
+## What takes the reservation
+
+The reservation, `~/.chickpea/verification-host/owner.json`, is for work that
+competes for this host's ports, processes, build output or CPU long enough to
+time out another task's fixtures:
+
+- builds, including the build inside a guarded deploy;
+- workerd smokes and boot checks;
+- any suite or test file that starts workerd or a server, binds a port, or
+  starts a test Postgres database. This repository's full `npm test` does all
+  of these, so it stays reserved.
+
+Typecheck, plain unit tests and mutation passes that start none of those do
+not take it. Run them directly, before or while waiting for the reservation.
+When unsure whether a test file starts a fixture, read it or reserve it; a
+fixture that binds a port keeps taking its port from the shared port lock
+either way.
+
+Use `verify:regression` for normal check groups. It runs `verify:hygiene` and,
+when the plan has a separate one, `typecheck` first without the reservation,
+then reserves the host for the rest of the serial group, including export
+children. A plan that consists only of `verify:hygiene` never reserves. The
+reservation is shared across this user's worktrees and does not depend on a
+checkout's temporary directory. For standalone commands:
 
 ```sh
 npm run verify:host -- npm test
@@ -25,9 +43,9 @@ npm run verify:regression -- --area verification --wait-ms 300000
 For a deliberate multi-command group, pass a shell explicitly and set isolated
 database variables as in CONTRIBUTING. Nested commands inherit the owner's
 reservation. A competing process exits before running checks and reports the
-owner PID, checkout and exact file. Continue source review, typechecking or
-small unit checks that do not start heavy fixtures. Retry the reservation after
-the owner finishes; do not kill, suspend or change that task's processes.
+owner PID, checkout and exact file. Continue source review, typechecking, plain
+unit tests and mutation passes. Retry the reservation after the owner finishes;
+do not kill, suspend or change that task's processes.
 
 The wrapper does not discover older unwrapped tests. Before the first group in
 a session, inspect known active test/build processes and coordinate with their
@@ -40,6 +58,23 @@ poll. On normal release the pending command acquires and continues automatically
 Exit 3 is timeout and 130 is cancellation; neither runs the pending command nor
 changes the owner. Invalid, stopped, or inaccessible owners require reconciliation.
 The regression runner also refuses source changes made during its wait.
+
+## Long holds
+
+A reservation held for more than 15 minutes is reported, never taken. The
+busy refusal and the first wait status name the hold's age, and a waiter gets
+one `HOST_CHECKS_HELD_LONG` warning per owner; the kickoff doctor shows it as a
+warning. A full regression executes in about four minutes, so a longer hold is
+usually a long build group, a hung test, or a stopped owner. Ask the owner, or
+the maintainer once, and keep waiting or working on unreserved checks
+meanwhile. The warning never authorizes removing, stopping or reclaiming the
+reservation; a stopped owner still needs the reconciliation below.
+
+Every test run here fails a single test after two minutes and then lets its
+file's process exit, so one hung test fails the run in minutes instead of
+holding the reservation. The slowest test in a full pass takes about 9 s.
+Treat a timed-out test as a failure to diagnose; do not raise the limit to get
+a pass.
 
 After interruption, the reservation stays in place. Inspect its PID, descendants,
 checkout and partial logs. Only after proving that its entire group has stopped

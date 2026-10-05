@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+// @ts-expect-error Executable helpers are JavaScript, shared with the runners.
+import { NODE_TEST_TIMEOUT_ARGS, PER_TEST_TIMEOUT_MS, runnerTestTimeoutMs } from '../scripts/lib/test-timeout.mjs';
+// @ts-expect-error Executable helpers are JavaScript, shared with the runners.
+import { testStepArgs } from '../scripts/verify-regression.mjs';
 
 const RUNNER = new URL('../scripts/run-tests.mjs', import.meta.url).pathname;
 const FIXTURES = new URL('./fixtures/run-tests/', import.meta.url).pathname;
@@ -103,4 +107,35 @@ test('a concurrent typecheck failure stops the test pass and fails the run', () 
 test('a clean concurrent typecheck leaves the pass result unchanged', () => {
   assert.equal(runWithTypecheck(['pass.test.ts'], 'tsc-pass.mjs').status, 0);
   assert.equal(runWithTypecheck(['fail.test.ts'], 'tsc-pass.mjs').status, 1);
+});
+
+test('a hung test that holds a live handle fails at the per-test timeout instead of holding the run', () => {
+  const started = Date.now();
+  const result = runRunner(['pass.test.ts', 'hang.test.ts'], { RUN_TESTS_FIXTURE_TIMEOUT_MS: '1000' });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /test timed out after 1000ms/);
+  assert.match(result.stderr, /still failing alone:[\s\S]*hang\.test\.ts/);
+  assert.ok(Date.now() - started < 60_000, 'both passes end within seconds of the timeout');
+});
+
+test('the fixture timeout override shortens only a pass over the runner\'s own fixtures', () => {
+  const hang = join(FIXTURES, 'hang.test.ts');
+  const real = resolve(FIXTURES, '../../run-tests.test.ts');
+  const short = { RUN_TESTS_FIXTURE_TIMEOUT_MS: '1000' };
+  assert.equal(runnerTestTimeoutMs([hang], short), 1000);
+  assert.equal(runnerTestTimeoutMs([hang, real], short), PER_TEST_TIMEOUT_MS, 'one real file keeps the real limit for the pass');
+  assert.equal(runnerTestTimeoutMs([real], short), PER_TEST_TIMEOUT_MS);
+  assert.equal(runnerTestTimeoutMs([real], { RUN_TESTS_FIXTURE_TIMEOUT_MS: '999999999' }), PER_TEST_TIMEOUT_MS, 'nor can it lengthen a real run');
+  assert.equal(runnerTestTimeoutMs([resolve(FIXTURES, '../run-tests-elsewhere/hang.test.ts')], short), PER_TEST_TIMEOUT_MS);
+  assert.equal(runnerTestTimeoutMs([hang], {}), PER_TEST_TIMEOUT_MS);
+  for (const value of ['-1', '0', '1.5', 'soon']) assert.equal(runnerTestTimeoutMs([hang], { RUN_TESTS_FIXTURE_TIMEOUT_MS: value }), PER_TEST_TIMEOUT_MS, value);
+  assert.equal(runnerTestTimeoutMs([], short), PER_TEST_TIMEOUT_MS);
+});
+
+test('every test runner shares the two-minute per-test timeout and exits after its tests', () => {
+  assert.equal(PER_TEST_TIMEOUT_MS, 120_000);
+  assert.deepEqual(NODE_TEST_TIMEOUT_ARGS, ['--test-timeout=120000', '--test-force-exit']);
+  const cli = JSON.parse(readFileSync(new URL('../packages/cli/package.json', import.meta.url), 'utf8')).scripts.test.split(' ');
+  for (const arg of NODE_TEST_TIMEOUT_ARGS) assert.ok(cli.includes(arg), `packages/cli test passes ${arg}`);
+  assert.deepEqual(testStepArgs(['tests/a.test.ts']), ['--test', ...NODE_TEST_TIMEOUT_ARGS, '--import', 'tsx', 'tests/a.test.ts']);
 });
