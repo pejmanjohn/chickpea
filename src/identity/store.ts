@@ -145,6 +145,7 @@ export class IdentityStoreLogic {
       case 'sweep_slack_identity_retention': return { kind: 'slack_credential_retention', result: this.sweepSlackIdentityRetention(request.at, request.candidateMaxAgeMs) };
       case 'create_slack_recovery_session': return { kind: 'slack_recovery_session', session: this.createSlackRecoverySession(request.input) };
       case 'get_slack_recovery_session': return { kind: 'slack_recovery_session', session: this.getSlackRecoverySession(request.recoveryId) ?? null };
+      case 'get_waiting_slack_recovery_session': return { kind: 'slack_recovery_session', session: this.getWaitingSlackRecoverySession() ?? null };
       case 'stage_slack_recovery_app_credentials': return { kind: 'slack_recovery_session', session: this.stageSlackRecoveryAppCredentials(request.input) };
       case 'start_slack_recovery_oauth': return { kind: 'slack_recovery_session', session: this.startSlackRecoveryOAuth(request.input) };
       case 'update_slack_recovery_manifest': return { kind: 'slack_recovery_session', session: this.updateSlackRecoveryManifest(request.input) };
@@ -696,6 +697,16 @@ export class IdentityStoreLogic {
     const row = this.db.get(
       'SELECT * FROM identity_slack_recovery_sessions WHERE recovery_id = ?',
       nonEmpty(recoveryId, 'Slack recovery ID'),
+    );
+    return row ? slackRecoverySessionFromRow(row) : undefined;
+  }
+
+  getWaitingSlackRecoverySession(): SlackRecoverySession | undefined {
+    const row = this.db.get(
+      `SELECT * FROM identity_slack_recovery_sessions
+       WHERE status = 'waiting_events' AND expires_at > ?
+       ORDER BY created_at DESC, recovery_id DESC LIMIT 1`,
+      this.now(),
     );
     return row ? slackRecoverySessionFromRow(row) : undefined;
   }

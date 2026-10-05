@@ -53,7 +53,8 @@ import {
   observeResponseMetadata,
   responseMetadataInterceptor,
 } from './usage/response-metadata.ts';
-import { channel } from './channels/slack.ts';
+import { answerSlackRecoveryEventsProof, channel } from './channels/slack.ts';
+import { SLACK_EVENTS_PATH } from './slack/app-manifest.ts';
 import {
   bootstrapRuntimeProviders,
   WORKERS_AI_CONTEXT_WINDOW_FLOOR,
@@ -163,9 +164,12 @@ app.post(GATEWAY_HTTP_PATH, (c) => {
   return handleHttpDeliveryRequest(c.req.raw, input => tagStateStub(c.env as PlatformEnv).receiveGatewayHttp(input));
 });
 // Recovery-only closes everything but Slack credential recovery and the paths
-// with their own bearer capability. Admin mounts the same gate; it and
-// authentication reuse this read.
-app.use('*', recoveryOnlyGate((c) => getIdentityStore(c.env as PlatformEnv | undefined)));
+// with their own bearer capability; the Events URL answers only recovery's
+// signed proof. Admin mounts the same gate; it and authentication reuse this read.
+app.use('*', recoveryOnlyGate(
+  (c) => getIdentityStore(c.env as PlatformEnv | undefined),
+  new Map([[SLACK_EVENTS_PATH, answerSlackRecoveryEventsProof]]),
+));
 // Starts the shared startup/periodic wake for durable compatibility TurnJobs
 // and ledger-authoritative interactive Runs. Ledger admission stays default-off
 // and exact-channel scoped by SLACK_TAG_LEDGER_CANARY_CHANNELS.

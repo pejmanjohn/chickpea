@@ -5,6 +5,7 @@ import {
   type SlackChannelOptions,
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
+import type { Context } from 'hono';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -36,6 +37,8 @@ import {
   getOrReplaceSnapshotForRoute,
 } from '../config/snapshot-store.ts';
 import {
+  getIdentityStore,
+  getSettingsStore,
   getSlackCredentialDependencies,
   getSlackStateStore,
   resolveStores,
@@ -111,6 +114,7 @@ import {
 } from '../slack/hosted-slack-app.ts';
 import { recordFirstHostedSlackDelivery } from '../slack/hosted-installation.ts';
 import { recordPendingSlackChallenge } from '../slack/installation-handshake.ts';
+import { recordSlackRecoveryEventsProof } from '../auth/recovery.ts';
 import { SlackInstallOAuthService } from '../slack/install-oauth.ts';
 import {
   prepareSlackShadowAdmission,
@@ -420,6 +424,8 @@ const verifiedEventsHandler: SlackRouteHandler = async (c, next) => {
   const rawBody = new TextDecoder().decode(ingress.body);
   const signature = c.req.header('x-slack-signature') ?? '';
   const timestamp = c.req.header('x-slack-request-timestamp') ?? '';
+  const recoveryChallenge = await slackRecoveryChallenge(platformEnv, { rawBody, signature, timestamp });
+  if (recoveryChallenge !== undefined) return c.json({ challenge: recoveryChallenge });
   const verification = await slackDeliveryVerification(platformEnv);
   if (!verification) {
     return c.json({ error: 'slack_not_configured' }, 401);
@@ -536,6 +542,52 @@ function isSlackUrlVerification(rawBody: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The Events URL's answer while credential recovery is the only way out of
+ * recovery-only: Slack's URL verification for that recovery
+ * (slackRecoveryChallenge), and nothing else. The recovery-only gate sends
+ * Events requests here instead of to the route.
+ */
+export async function answerSlackRecoveryEventsProof(c: Context): Promise<Response | undefined> {
+  if (c.req.method !== 'POST') return undefined;
+  const ingress = await readSlackIngressBody(c.req.raw);
+  if (!ingress.ok) return undefined;
+  const challenge = await slackRecoveryChallenge(c.env as PlatformEnv | undefined, {
+    rawBody: new TextDecoder().decode(ingress.body),
+    signature: c.req.header('x-slack-signature') ?? '',
+    timestamp: c.req.header('x-slack-request-timestamp') ?? '',
+  });
+  return challenge === undefined ? undefined : c.json({ challenge });
+}
+
+/**
+ * The challenge of Slack's URL verification for a standalone credential
+ * recovery waiting on its Events proof, once kept for that recovery's
+ * finalize. It is checked with the signing secret recovery staged, which is
+ * what Slack now signs with; the active bundle's may be unreadable or the one
+ * being replaced. Undefined for every other request.
+ */
+async function slackRecoveryChallenge(
+  platformEnv: PlatformEnv | undefined,
+  request: { rawBody: string; signature: string; timestamp: string },
+): Promise<string | undefined> {
+  if (deploymentTenancy(platformEnv) !== 'standalone' || !isSlackUrlVerification(request.rawBody)) {
+    return undefined;
+  }
+  let keyring;
+  try {
+    ({ keyring } = getSlackCredentialDependencies(platformEnv));
+  } catch {
+    return undefined;
+  }
+  const proof = await recordSlackRecoveryEventsProof({
+    identity: getIdentityStore(platformEnv),
+    settings: getSettingsStore(platformEnv),
+    keyring,
+  }, request);
+  return proof?.challenge;
 }
 
 const verifiedInteractionsHandler: SlackRouteHandler = async (c, next) => {

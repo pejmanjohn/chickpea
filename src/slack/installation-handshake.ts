@@ -31,7 +31,7 @@ type VerifyPendingSlackChallengeResult =
   | { verified: true; purgeReceipt: string; appId?: string; teamId?: string }
   | {
       verified: false;
-      reason: 'missing' | 'expired' | 'invalid_signature' | 'app_mismatch' |
+      reason: 'missing' | 'expired' | 'predates_flow' | 'invalid_signature' | 'app_mismatch' |
         'workspace_mismatch';
     };
 
@@ -44,15 +44,11 @@ export async function recordPendingSlackChallenge(
   if (new TextEncoder().encode(input.rawBody).byteLength > MAX_PENDING_SLACK_CHALLENGE_BYTES) {
     return { accepted: false, reason: 'oversized' };
   }
-  const timestampSeconds = parseTimestamp(input.timestamp);
-  const body = parseChallengeBody(input.rawBody);
-  if (!body || !/^v0=[a-f0-9]{64}$/i.test(input.signature) || timestampSeconds === undefined) {
-    return { accepted: false, reason: 'invalid_envelope' };
-  }
   const now = options.now ?? Date.now();
-  if (Math.abs(now - timestampSeconds * 1_000) > SLACK_REQUEST_FRESHNESS_MS) {
-    return { accepted: false, reason: 'stale_timestamp' };
-  }
+  const body = parseChallengeBody(input.rawBody);
+  const headers = slackRequestHeadersProblem(input, now);
+  if (!body || headers === 'invalid_envelope') return { accepted: false, reason: 'invalid_envelope' };
+  if (headers) return { accepted: false, reason: headers };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await store.getSetting(SLACK_PENDING_ENVELOPE_SETTING);
     const existing = current ? parseStoredEnvelope(current) : undefined;
@@ -76,7 +72,13 @@ export async function recordPendingSlackChallenge(
 export async function verifyPendingSlackChallenge(
   store: SettingsStore,
   signingSecret: string,
-  options: { now?: number; expectedAppId?: string; expectedTeamId?: string } = {},
+  options: {
+    now?: number;
+    expectedAppId?: string;
+    expectedTeamId?: string;
+    /** When the flow waiting on this proof began; a check Slack made before it proves nothing for it. */
+    receivedSince?: number;
+  } = {},
 ): Promise<VerifyPendingSlackChallengeResult> {
   const raw = await store.getSetting(SLACK_PENDING_ENVELOPE_SETTING);
   if (!raw) return { verified: false, reason: 'missing' };
@@ -85,10 +87,10 @@ export async function verifyPendingSlackChallenge(
     await purgePendingSlackChallenge(store, raw);
     return { verified: false, reason: 'expired' };
   }
-  const expected = `v0=${createHmac('sha256', signingSecret)
-    .update(`v0:${envelope.timestamp}:${envelope.rawBody}`)
-    .digest('hex')}`;
-  if (!constantTimeEquals(expected, envelope.signature)) {
+  if (options.receivedSince !== undefined && envelope.receivedAt < options.receivedSince) {
+    return { verified: false, reason: 'predates_flow' };
+  }
+  if (!slackRequestSignedWith(signingSecret, envelope)) {
     return { verified: false, reason: 'invalid_signature' };
   }
   const body = parseChallengeBody(envelope.rawBody);
@@ -108,6 +110,39 @@ export async function verifyPendingSlackChallenge(
     ...(body.appId ? { appId: body.appId } : {}),
     ...(body.teamId ? { teamId: body.teamId } : {}),
   };
+}
+
+/**
+ * Whether a Slack request's signature header is well formed and its timestamp
+ * within five minutes of `now`. Both cost nothing, so a caller can refuse a
+ * request that fails them before any state read or decryption.
+ */
+export function slackRequestHeadersFresh(
+  input: Pick<PendingSlackChallengeInput, 'signature' | 'timestamp'>,
+  now: number,
+): boolean {
+  return slackRequestHeadersProblem(input, now) === undefined;
+}
+
+function slackRequestHeadersProblem(
+  input: Pick<PendingSlackChallengeInput, 'signature' | 'timestamp'>,
+  now: number,
+): 'invalid_envelope' | 'stale_timestamp' | undefined {
+  const timestampSeconds = parseTimestamp(input.timestamp);
+  if (!/^v0=[a-f0-9]{64}$/i.test(input.signature) || timestampSeconds === undefined) {
+    return 'invalid_envelope';
+  }
+  return Math.abs(now - timestampSeconds * 1_000) > SLACK_REQUEST_FRESHNESS_MS
+    ? 'stale_timestamp'
+    : undefined;
+}
+
+/** Whether `signingSecret` made this request's Slack signature. */
+export function slackRequestSignedWith(signingSecret: string, input: PendingSlackChallengeInput): boolean {
+  const expected = `v0=${createHmac('sha256', signingSecret)
+    .update(`v0:${input.timestamp}:${input.rawBody}`)
+    .digest('hex')}`;
+  return constantTimeEquals(expected, input.signature);
 }
 
 export async function purgePendingSlackChallenge(

@@ -3,6 +3,13 @@ import { createHash } from 'node:crypto';
 export const SLACK_APP_NAME_MAX_LENGTH = 35;
 export const SLACK_BOT_DISPLAY_NAME_MAX_LENGTH = 80;
 export const SLACK_BOT_OAUTH_CALLBACK_PATH = '/auth/slack/install/callback';
+/**
+ * Credential recovery's bot authorization returns here. Slack accepts a
+ * redirect at or below a registered Redirect URL, so this sits under the bot
+ * callback every app made from this manifest registers: an app that needs
+ * recovery is one made before today, and a URL of its own would not be there.
+ */
+export const SLACK_RECOVERY_CALLBACK_PATH = `${SLACK_BOT_OAUTH_CALLBACK_PATH}/recovery`;
 export const SLACK_OIDC_CALLBACK_PATH = '/auth/slack/oidc/callback';
 export const SLACK_EVENTS_PATH = '/channels/slack/events';
 export const SLACK_INTERACTIONS_PATH = '/channels/slack/interactions';

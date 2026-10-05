@@ -629,6 +629,11 @@ export class CfIdentityStore implements IdentityStore {
     if (response.kind !== 'slack_recovery_session') throw unexpectedIdentityResponse();
     return orUndefined(response.session);
   }
+  async getWaitingSlackRecoverySession() {
+    const response = await this.execute({ kind: 'get_waiting_slack_recovery_session' });
+    if (response.kind !== 'slack_recovery_session') throw unexpectedIdentityResponse();
+    return orUndefined(response.session);
+  }
   async stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput) {
     const response = await this.execute({ kind: 'stage_slack_recovery_app_credentials', input });
     if (response.kind !== 'slack_recovery_session' || !response.session) throw unexpectedIdentityResponse();

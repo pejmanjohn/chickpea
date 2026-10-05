@@ -516,6 +516,7 @@ import {
 } from '../slack/installation-verification.ts';
 import {
   buildSlackAppManifest,
+  SLACK_RECOVERY_CALLBACK_PATH,
   slackManifestPrefillUrl,
 } from '../slack/app-manifest.ts';
 import {
@@ -4077,7 +4078,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           manifest,
         });
         const started = await service.startBotOAuth({
-          ...authority, redirectUri: `${requestOrigin(c)}/auth/slack/recovery/callback`,
+          ...authority, redirectUri: `${requestOrigin(c)}${SLACK_RECOVERY_CALLBACK_PATH}`,
         });
         await recoveryLimiterSuccess(limiter, source, action);
         return c.html(renderSlackAuthorizationHandoffPage(started.authorizationUrl));
@@ -4111,7 +4112,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  app.get('/auth/slack/recovery/callback', async (c) => {
+  app.get(SLACK_RECOVERY_CALLBACK_PATH, async (c) => {
     authResponseHeaders(c);
     const service = slackRecoveryService(c);
     const token = recoveryToken(c);
@@ -4128,7 +4129,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...authority,
         state: boundedSetupField(c.req.query('state'), 512),
         code: boundedSetupField(c.req.query('code'), 2_048),
-        redirectUri: `${requestOrigin(c)}/auth/slack/recovery/callback`,
+        redirectUri: `${requestOrigin(c)}${SLACK_RECOVERY_CALLBACK_PATH}`,
       });
       await Promise.all([
         limiter.recordSuccess('slack_recovery_callback_source', source),

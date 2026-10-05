@@ -821,6 +821,10 @@ export class FakeSlackBackend {
           : { ok: false, error: 'missing_arguments' };
       }
       case 'oauth.v2.access':
+        // Slack returns a browser, and exchanges its code, only for a
+        // redirect at or below a Redirect URL the app registered.
+        if (this.appManifest && typeof body.redirect_uri === 'string' &&
+            !registersRedirect(this.appManifest, body.redirect_uri)) return { ok: false, error: 'bad_redirect_uri' };
         return this.oauth && body.client_id === this.oauth.clientId &&
             body.client_secret === this.oauth.clientSecret
           ? {
@@ -1553,6 +1557,18 @@ function normalizeNodeHeaders(headers: IncomingHttpHeaders): Record<string, stri
     }
   }
   return normalized;
+}
+
+function registersRedirect(manifest: unknown, redirectUri: string): boolean {
+  const registered = (manifest as { oauth_config?: { redirect_urls?: unknown } }).oauth_config?.redirect_urls;
+  let redirect: URL;
+  try { redirect = new URL(redirectUri); } catch { return false; }
+  return Array.isArray(registered) && registered.some((value) => {
+    let url: URL;
+    try { url = new URL(String(value)); } catch { return false; }
+    return url.origin === redirect.origin &&
+      (redirect.pathname === url.pathname || redirect.pathname.startsWith(`${url.pathname}/`));
+  });
 }
 
 function bearer(headers: Record<string, string>): string | undefined {

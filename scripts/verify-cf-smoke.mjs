@@ -736,13 +736,17 @@ async function completeSlackNativeSetup(baseUrl, eventsUrl, setup, backend) {
 }
 
 /**
- * Same-app Slack credential recovery through the built Worker. URL repair
+ * Same-app Slack credential recovery through the built Worker, after the
+ * app's signing secret was regenerated in Slack. URL repair
  * (apps.manifest.export/update with a configuration token) and the bot token
- * exchange (oauth.v2.access) each leave the Worker through its global fetch,
- * which workerd refuses to call as a method of another object. Runs last: it
- * leaves an inactive candidate waiting on signed Events proof.
+ * exchange (oauth.v2.access, refused like Slack for a redirect the app did not
+ * register) each leave the Worker through its global fetch, which workerd
+ * refuses to call as a method of another object. Slack's URL check, signed
+ * with the new secret, is the Events proof finalize promotes with. Runs last:
+ * the recovered bundle replaces the one the earlier checks used.
  */
-async function exerciseSlackRecovery(baseUrl, backend) {
+async function exerciseSlackRecovery(baseUrl, backend, eventsUrl) {
+  const regeneratedSecret = 'regenerated-workerd-signing-secret';
   const wireStart = backend.wireLog.length;
   const slackCalls = (prefix) => backend.wireLog.slice(wireStart)
     .filter((entry) => entry.method.startsWith(prefix)).map((entry) => `${entry.method}:${entry.ok}`);
@@ -759,7 +763,7 @@ async function exerciseSlackRecovery(baseUrl, backend) {
   );
   const staged = await postForm(baseUrl, '/admin/recovery', {
     action: 'stage', appId: APP_ID, teamId: WORKSPACE, clientId: OAUTH_CLIENT_ID,
-    clientSecret: OAUTH_CLIENT_SECRET, signingSecret: SIGNING_SECRET,
+    clientSecret: OAUTH_CLIENT_SECRET, signingSecret: regeneratedSecret,
     configurationToken: OAUTH_CONFIGURATION_TOKEN,
   }, cookie);
   const authorization = slackAuthorizationUrlFromHandoff(await staged.text());
@@ -770,8 +774,10 @@ async function exerciseSlackRecovery(baseUrl, backend) {
     'recovery URL repair reaches Slack through the Worker fetch',
     `HTTP ${staged.status}; ${repair.join(',') || 'no manifest calls'}`,
   );
+  // Slack sends the browser back to the redirect recovery asked for.
+  const redirect = new URL(authorization.searchParams.get('redirect_uri') ?? '', baseUrl);
   const callback = await fetch(
-    `${baseUrl}/auth/slack/recovery/callback?state=${
+    `${baseUrl}${redirect.pathname}?state=${
       encodeURIComponent(authorization.searchParams.get('state') ?? '')}&code=recovery-smoke-code`,
     { headers: { cookie } },
   );
@@ -779,8 +785,32 @@ async function exerciseSlackRecovery(baseUrl, backend) {
   check(
     callback.status === 200 && (await callback.text()).includes('name="action" value="finalize"') &&
       sameArray(exchanges, ['oauth.v2.access:true']),
-    'recovery bot token exchange reaches Slack through the Worker fetch and waits on signed Events',
+    'recovery bot token exchange reaches Slack through the Worker fetch for a redirect the app registered',
     `HTTP ${callback.status}; ${exchanges.join(',') || 'no token exchange'}`,
+  );
+  const forged = await postSignedEvent(eventsUrl, {
+    type: 'url_verification', challenge: 'cf-smoke-forged-proof',
+  }, { signingSecret: 'forged-workerd-signing-secret' });
+  const proof = await postSignedEvent(eventsUrl, {
+    type: 'url_verification', challenge: 'cf-smoke-recovery-proof',
+  }, { signingSecret: regeneratedSecret });
+  const finalized = await postForm(baseUrl, '/admin/recovery', { action: 'finalize' }, cookie);
+  const finalizedHtml = await finalized.text();
+  check(
+    forged.status === 401 && proof.status === 200 && proof.body?.challenge === 'cf-smoke-recovery-proof' &&
+      finalized.status === 200 && finalizedHtml.includes('Slack connection repaired'),
+    'Slack\'s URL check signed with the regenerated secret answers (a forged one does not), and finalize promotes the repair',
+    `forged HTTP ${forged.status}; proof HTTP ${proof.status}; finalize HTTP ${finalized.status}`,
+  );
+  const [recovered, superseded] = [
+    await postSignedEvent(eventsUrl, { type: 'url_verification', challenge: 'cf-smoke-after-recovery' },
+      { signingSecret: regeneratedSecret }),
+    await postSignedEvent(eventsUrl, { type: 'url_verification', challenge: 'cf-smoke-after-recovery' }),
+  ];
+  check(
+    recovered.status === 200 && recovered.body?.challenge === 'cf-smoke-after-recovery' && superseded.status === 401,
+    'after recovery Slack deliveries verify with the regenerated secret, not the replaced one',
+    `regenerated HTTP ${recovered.status}; replaced HTTP ${superseded.status}`,
   );
 }
 
@@ -2023,7 +2053,7 @@ async function main() {
       }
     }
 
-    await exerciseSlackRecovery(baseUrl, backend);
+    await exerciseSlackRecovery(baseUrl, backend, eventsUrl);
 
     if (failures.length > 0) {
       throw new Error(`assertions failed: ${failures.join('; ')}`);

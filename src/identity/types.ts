@@ -941,6 +941,8 @@ export interface IdentityStore extends HumanIdentityDirectory {
   sweepSlackIdentityRetention(at: number, candidateMaxAgeMs: number): Promise<SlackCredentialRetentionResult>;
   createSlackRecoverySession(input: CreateSlackRecoverySessionInput): Promise<SlackRecoverySession>;
   getSlackRecoverySession(recoveryId: string): Promise<SlackRecoverySession | undefined>;
+  /** The unexpired recovery session waiting on Slack's signed Events proof, if any. */
+  getWaitingSlackRecoverySession(): Promise<SlackRecoverySession | undefined>;
   stageSlackRecoveryAppCredentials(input: StageSlackRecoveryAppCredentialsInput): Promise<SlackRecoverySession>;
   startSlackRecoveryOAuth(input: StartSlackRecoveryOAuthInput): Promise<SlackRecoverySession>;
   updateSlackRecoveryManifest(input: UpdateSlackRecoveryManifestInput): Promise<SlackRecoverySession>;
@@ -1051,6 +1053,7 @@ export type IdentityRpcRequest =
   | { kind: 'sweep_slack_identity_retention'; at: number; candidateMaxAgeMs: number }
   | { kind: 'create_slack_recovery_session'; input: CreateSlackRecoverySessionInput }
   | { kind: 'get_slack_recovery_session'; recoveryId: string }
+  | { kind: 'get_waiting_slack_recovery_session' }
   | { kind: 'stage_slack_recovery_app_credentials'; input: StageSlackRecoveryAppCredentialsInput }
   | { kind: 'start_slack_recovery_oauth'; input: StartSlackRecoveryOAuthInput }
   | { kind: 'update_slack_recovery_manifest'; input: UpdateSlackRecoveryManifestInput }
