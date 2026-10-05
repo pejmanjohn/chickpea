@@ -47,6 +47,7 @@ import {
 } from './slack/installation-execution.ts';
 import { SANDBOX_PACKAGE_REGISTRY_HOSTS } from './config/sandbox-settings.ts';
 import type {
+  ModelCredentialStore,
   PublishModelCredentialInput,
   ReplaceEncryptedCredentialRevisionInput,
   RewrapModelCredentialInput,
@@ -3279,7 +3280,14 @@ function localGatewayAppStores(stores: TagStateStores): AppStores {
   } as unknown as AppStores;
 }
 
-function localSettingsStore(stores: TagStateStores): SettingsStore {
+/**
+ * This state store's settings for the work it runs itself: management, the
+ * alarm's turns and ledger runs. An installation of a deployment serving many
+ * reads and writes its saved model keys only through a store's model
+ * credential methods, so this port carries them; without them every such
+ * read here (listing the workspace, a turn's credential) fails.
+ */
+function localSettingsStore(stores: TagStateStores): SettingsStore & ModelCredentialStore {
   return {
     getSetting: async (key) => stores.settings.getSetting(key),
     getSettings: async (keys) => stores.settings.getSettings(keys),
@@ -3288,6 +3296,9 @@ function localSettingsStore(stores: TagStateStores): SettingsStore {
     applySettingsPatch: async (patch) => stores.settings.applySettingsPatch(patch),
     mergeSettingStringSet: async (key, values) =>
       stores.settings.mergeSettingStringSet(key, values),
+    readModelCredential: async (providerId) => stores.settings.readModelCredential(providerId),
+    publishModelCredential: async (input) => stores.settings.publishModelCredential(input),
+    rewrapModelCredential: async (input) => stores.settings.rewrapModelCredential(input),
   };
 }
 
