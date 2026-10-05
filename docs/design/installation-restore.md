@@ -57,7 +57,12 @@ customer UI or change to standalone routing, storage, or startup.
   starts a new bookmark, and no mark was written. `contentDigest` is the
   digest of the storage that session holds, read in the same input gate, or
   null when it is over the digest's bound (below): a record for the
-  operator, which decides nothing (see below).
+  operator, which decides nothing (see below). On staging the abort did not
+  apply the restore: the next call reached a new session still holding the
+  mark, and the restore stayed pending until the object's next wake after an
+  eviction. So `restore_not_applied` means not yet, and a later restart with
+  the same receipt, past an eviction, answers `applied: true` (Staging
+  proof).
 
 Each call runs in one input gate. Refusals are thrown outside it and leave
 the object running. Cloudflare validates the opaque bookmark's retained
@@ -130,6 +135,10 @@ arrives, so the host maps each refusal by its message. The messages, with
 | `restore_unavailable` | This object has no SQLite restore context. |
 | `restore_unavailable` | This object has no ID to bind its content digest to. |
 
+The `restore_not_applied` message is Core's exact string, which the host
+matches, but it overstates: the restore has not applied yet and stays
+pending (Staging proof). The receipt is still owed (step 4).
+
 ## The fence is the storage, not the bookmark
 
 A Durable Object's current bookmark is not a write position alone. Every
@@ -156,7 +165,7 @@ restart.
 The prepared current bookmark stays the object's undo point: restoring to
 it brings back exactly the storage the digest describes.
 
-## Telling an applied restore from one that never applied
+## Telling an applied restore from one not yet applied
 
 Restart's answer, not the digest, decides whether a restore applied. The
 digest cannot: the host cannot read an object's storage at T, since
@@ -170,9 +179,10 @@ So scheduling writes the restore mark, holding the fence, right after it
 schedules the restore. The fence did not exist at T, so storage at T never
 holds this mark, and a restore discards every write since T, the mark
 among them. A later session that still holds the mark restarted without
-restoring, and restart refuses there with `restore_not_applied`: stop for
-review. Restart answers `applied: true` only once the mark is gone, so the
-rule the host checks is that answer, given the receipt. The post-restart
+restoring, and restart refuses there with `restore_not_applied`: the
+restore has not applied yet, and the receipt stays owed (step 4). Restart
+answers `applied: true` only once the mark is gone, so the rule the host
+checks is that answer, given the receipt. The post-restart
 `contentDigest` is evidence for the operator record only: equal to the
 prepared digest is expected of an object that held at T what it held at
 preparation, and a Sandbox's wake changes it either way.
@@ -213,9 +223,14 @@ that and a production CPU assumed twice as slow, the worst case is 1.1 s x
 30 s of CPU a request gets. Without the values bound, 490,000 rows of 100
 columns took 2.79-2.82 s in the same run, about 9.6 s with the same
 allowances: a margin of only 3x, which is why wide rows have their own
-bound. Reading pages a deployed object has not cached is not measured
-locally, so a staging measurement of the largest real object gates apply
-(see Staging proof).
+bound. The twofold assumption did not hold. On the platform the digest is
+CPU-bound at 7-28 µs of CPU per record, depending on the shape, against
+2 µs locally: 3.5 to 14 times slower
+(`~/.chickpea/plans/hosted/evidence/digest-scale-bench/README.md`). At the
+bound, key-value entries and 30-column rows then take about 10-15 s warm,
+over the 10 s Staging proof allows. Reading pages a deployed object has
+not cached is not measured locally, so a staging measurement of the
+largest real object gates apply (see Staging proof).
 
 Reading a row at a time keeps memory to one row (at most 2 MB) and 16
 key-value entries, far under an isolate's 128 MB. The count is
@@ -291,9 +306,10 @@ The host serving many installations must implement these jobs:
 4. `restore_apply --confirm inst_…`: require the saved installation
    confirmation and keep it suspended. Check the prepared record and T's
    remaining retention window. Never deploy during apply, from the first
-   schedule until every receipt has its restart answer: a deploy restarts
-   every Durable Object, which applies every scheduled restore at once, in
-   arbitrary order.
+   schedule until every receipt has answered `applied: true`: a deploy
+   restarts every Durable Object, which applies every scheduled restore at
+   once, in arbitrary order. A receipt that answered `restore_not_applied`
+   is still owed.
    - Schedule: call `scheduleInstallationObjectRestore` serially in plan
      order with each object's exact prepared fence, content digest and
      target. Persist each receipt before the next call. A restore is per
@@ -301,14 +317,16 @@ The host serving many installations must implement these jobs:
    - A scheduled restore cannot be cancelled. Cloudflare has no undo for
      `onNextSessionRestoreBookmark`, and the session holding it refuses
      another schedule with `restore_already_scheduled`. It applies on the
-     object's next wake of any kind: a restart, an eviction, a deploy, any
-     call. So never stop at a refusal and resume: the receipted objects would
-     restore later, out of order, under live traffic. Either finish: settle
-     the refusal as below, prepare the refused object again, schedule it and
-     continue. Or back out: restart every receipted object as below, then
-     apply again with each one's receipt `undoBookmark` as its target:
-     prepare each again for its new fence, schedule every one, then restart
-     them in plan order. Either way, step 6 follows.
+     object's next wake after an eviction or a deploy, whatever wakes it;
+     on staging, not in the new session Core's restart started (Staging
+     proof). So never stop at a refusal and resume: the receipted objects
+     would restore later, out of order, under live traffic. Either finish:
+     settle the refusal as below, prepare the refused object again, schedule
+     it and continue. Or back out: restart every receipted object as below
+     until each answers `applied: true`, then apply again with each one's
+     receipt `undoBookmark` as its target: prepare each again for its new
+     fence, schedule every one, then restart them in plan order. Either
+     way, step 6 follows.
    - An object evicted since preparation has a new current bookmark and
      still schedules. `restore_content_moved` means something wrote to it
      since preparation, which suspension should have prevented: review
@@ -319,29 +337,32 @@ The host serving many installations must implement these jobs:
      digest, never the current bookmark.
    - Restart: only once every prepared object has a receipt, call
      `restartInstallationObject` for each in plan order with its receipt's
-     fence. Its answer, `applied: true` given the receipt, means the restore
-     applied. `restore_not_applied` means the object restarted still holding
-     the restore mark, so the restore did not apply yet: stop for review.
-     It is not final. On staging the restore stayed pending after the abort
-     and applied on the object's next wake after eviction, about twenty
-     minutes later (Staging proof, below). Until restart is fixed, an object
-     that answered it still holds its restore. Recover as from
-     `restore_content_moved`, but only after reading the object again past
-     an eviction:
-     review, prepare the object again (its digest now covers the mark),
-     schedule it to the same target, which writes the mark again with the
-     new fence, and restart it with the new receipt. The first prepared
-     fence stays the undo point. Restart an object only with its latest
-     receipt: with an earlier one, restart answers for what the storage now
-     holds, not for the restore that receipt scheduled. Keep the answer's
-     `contentDigest` with the receipt as a record; it decides nothing. Keep
-     progress and partial-failure evidence outside the installation.
+     fence. Only its answer `applied: true`, given the receipt, settles the
+     receipt: the restore applied. `restore_not_applied` means the object
+     restarted still holding the restore mark: the restore has not applied
+     yet and is still pending. On staging it applied on the object's next
+     wake after an eviction (Staging proof, below). Treat the receipt as
+     owed: keep the installation suspended, deploy nothing, and leave the
+     object uncalled for two to three minutes, so that Cloudflare evicts it.
+     Then, before restarting the next object, call restart again with the
+     same receipt: the call wakes the object, the restore applies, and
+     restart answers `applied: true`. Do not prepare or schedule the object
+     again: on staging that only scheduled another restore, which the next
+     restart again left pending. Only a mark still present after a restart
+     past an eviction is a case for review. When an object was prepared
+     again, restart it only with its latest receipt: with an earlier one,
+     restart answers for what the storage now holds, not for the restore
+     that receipt scheduled. Its first prepared fence stays the undo point.
+     Keep the answer's `contentDigest` with the receipt as a record; it
+     decides nothing. Keep progress and partial-failure evidence outside the
+     installation.
    - A back-out's preparation reads restored objects, which may hold the
      work they held at T: a running job, an interrupted dispatch. They
      refuse with `restore_object_busy` until it settles, so run
      `cancel_pending` over them first, as in step 6.
-   - Never resume while any receipt lacks that answer, including the
-     receipts of a back-out.
+   - Never resume while any receipt lacks `applied: true`, including the
+     receipts of a back-out. A receipt that answered `restore_not_applied`
+     still lacks it.
 5. Confirm a schedule whose answer was lost by calling it again with
    exactly the original fence, digest and target: a session that still
    holds it returns the receipt. Any other call to that session, a new
@@ -351,22 +372,23 @@ The host serving many installations must implement these jobs:
    call scheduled anything: restoring twice to one target gives the same
    storage. Never infer from a moved bookmark that a restore applied: every
    new session moves it, applied or not. If the call is refused with
-   `restore_content_moved`, the restore applied or something wrote, and
-   nothing tells them apart; review, then prepare it again and schedule it
-   to the same target. One write restart does tell apart: when the first
-   call scheduled a restore that never applied, its mark remains, and
-   restart with the original fence answers `restore_not_applied`. Either
-   way the first prepared fence remains the undo point. The runtime logs
-   the abort as `Installation point-in-time restore`; a caller may see only
-   a reset error.
+   `restore_content_moved`, restart with the original fence before anything
+   else. When the first call scheduled a restore that has not applied yet,
+   its mark remains, and restart answers `restore_not_applied`: that
+   restore is owed, so settle it as in step 4 and do not prepare it again.
+   Otherwise the restore applied or something wrote, and nothing tells them
+   apart; review, then prepare it again and schedule it to the same target.
+   Either way the first prepared fence remains the undo point. The runtime
+   logs the abort as `Installation point-in-time restore`; a caller may see
+   only a reset error.
 6. Census after restore and run `cancel_pending` while still suspended, after
-   every restart has returned, over the union of saved pre-restore objects
-   and the new inventory, state store last. Restored objects resume their
-   own work as soon as they restart; the suspension refuses each agent
-   operation at the admission check, and the cancellation settles the jobs
-   and records left behind. Restored queued jobs and delivery records must
-   not replay on resume. Capture the post-cancellation census and verify acceptance before
-   resume.
+   every restart has answered `applied: true`, over the union of saved
+   pre-restore objects and the new inventory, state store last. Restored
+   objects resume their own work as soon as they restart; the suspension
+   refuses each agent operation at the admission check, and the
+   cancellation settles the jobs and records left behind. Restored queued
+   jobs and delivery records must not replay on resume. Capture the
+   post-cancellation census and verify acceptance before resume.
 
 ## Objects younger than T, and objects erased after T
 
@@ -408,12 +430,14 @@ in local development. Unit fakes cover the contract, not actual recovery.
 **Results so far (2026-10-05).** The second staging rehearsal found that
 restart does not apply a restore. Each restart through `ctx.abort()`, a call
 into the session that had scheduled the restore, came back with the mark
-still there (`restore_not_applied`), and that restore applied about twenty
-minutes later, on the object's first wake after eviction. Objects whose
-scheduling session was evicted before restart answered `applied`. In a
-separate test, an abort in the same request as `onNextSessionRestoreBookmark`
-did apply. Hosts do not offer apply until restart makes the restore apply
-and staging shows it.
+still there (`restore_not_applied`). On one object, the state store, that
+restore was seen to apply later, on its next wake after eviction: twenty
+minutes later, because nothing called it sooner. Objects whose scheduling
+session was evicted before restart answered `applied`. In a separate test
+on a disposable benchmark Worker, not on staging, an abort in the same
+request as `onNextSessionRestoreBookmark` did apply, and the caller
+received a rejected call carrying the abort reason. Hosts do not offer
+apply until restart makes the restore apply and staging shows it.
 
 The rehearsal also established the following:
 - An idle object keeps its content digest across eviction (a state store, a
@@ -423,11 +447,19 @@ The rehearsal also established the following:
 - `getBookmarkForTime` throws a generic error for a time before an object's
   first write.
 - The undo bookmark most likely keeps the mark.
+- A T chosen on the host's clock, 13 minutes before preparation, resolved
+  to the intended history.
 
-Measured on the platform, the digest is slower than locally. A warm
-benchmark put 500,000 key-value entries at about 15 s and 500,000 rows of 30
-columns at about 10 s, both over the 10 s this bound allows, so
+On staging, preparation's digest passed the gate below on one tenant's
+largest objects, as the host timed it: its state store, 4,905 records, took
+2,495 ms cold (the first call after an eviction) and 728 ms warm, and its
+largest transcript agent, 213 records, 441 ms and 358 ms. A state store of
+243 records, read after its restore, took 1,892 ms and 248 ms. At scale
+the digest is slower than locally: a warm benchmark on the disposable
+Worker put 500,000 key-value entries at about 15 s and 500,000 rows of 30
+columns at about 10 s, both over the 10 s the gate allows, so
 `OBJECT_DIGEST_BUDGET` must come down before apply is enabled.
+
 Prove on staging, on disposable objects:
 
 - Schedule, restart and the next session's answer restore SQL and key-value
