@@ -28,6 +28,13 @@
  * reports still queued for the pipe, so each file's process writes its reports
  * with blocking writes (scripts/lib/test-report-pipe.mjs).
  *
+ * `--fail-on-retry` still reruns each failed file alone, so the log says
+ * whether it is flaky or broken, but fails the run even when every rerun
+ * passes. verify:regression's focused test steps use it: that command never
+ * reruns to green, and a flaky changed test must not pass quietly. A caller
+ * that sets RUN_TESTS_RESULT_FILE also gets every rerun file and its outcome
+ * alone (scripts/lib/test-run-results.mjs).
+ *
  * The root suite, the CLI package's tests and verify:regression's focused test
  * steps all run through this runner.
  */
@@ -37,9 +44,12 @@ import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
+import { fileURLToPath } from 'node:url';
 import { recordFileReports } from './lib/test-file-reports.mjs';
+import { appendRunResult, RUN_RESULT_FILE_ENV } from './lib/test-run-results.mjs';
 import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
 
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
 
 const CONCURRENCY = 8;
@@ -54,13 +64,24 @@ const SLOW_FIRST = [
 ];
 
 const args = process.argv.slice(2);
-const withTypecheck = args[0] === '--typecheck';
-const files = (withTypecheck ? args.slice(1) : args).map((file) => resolve(file));
+const options = new Set();
+while (['--typecheck', '--fail-on-retry'].includes(args[0])) options.add(args.shift());
+const withTypecheck = options.has('--typecheck');
+const failOnRetry = options.has('--fail-on-retry');
+const files = args.map((file) => resolve(file));
+// Out of the environment before any test process starts, so a runner that a
+// test starts cannot write into this pass's result file.
+const resultFile = process.env[RUN_RESULT_FILE_ENV];
+delete process.env[RUN_RESULT_FILE_ENV];
 if (files.length === 0) {
-  console.error('Usage: node scripts/run-tests.mjs [--typecheck] <test files...>');
+  console.error('Usage: node scripts/run-tests.mjs [--typecheck] [--fail-on-retry] <test files...>');
   process.exitCode = 2;
 } else {
-  process.exitCode = await main(longestFirst(files));
+  const result = await main(longestFirst(files));
+  if (resultFile) {
+    appendRunResult(resultFile, { ...result, retries: result.retries.map(({ file, alone }) => ({ file: relative(ROOT, file), alone })) });
+  }
+  process.exitCode = result.exitCode;
 }
 
 function slowRank(file) {
@@ -75,24 +96,31 @@ function longestFirst(list) {
     .map(({ file }) => file);
 }
 
+/** Resolves to the pass's exit code and every file it reran alone, with that rerun's outcome. */
 async function main(list) {
   const controller = new AbortController();
   const typecheck = withTypecheck ? startTypecheck(controller) : undefined;
   const failed = await runFiles(list, CONCURRENCY, controller.signal);
-  if (typecheck && (await typecheck) !== 0) return 1;
-  if (failed.length === 0) return 0;
+  const result = (exitCode, retries = [], failedOnRetry = false) => ({ exitCode, retries, failedOnRetry });
+  if (typecheck && (await typecheck) !== 0) return result(1);
+  if (failed.length === 0) return result(0);
   if (failed.length > MAX_RETRIED_FILES) {
     console.error(`\n[run-tests] ${failed.length} test files failed; not retrying.`);
-    return 1;
+    return result(1);
   }
   console.log(`\n[run-tests] ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency; rerunning each alone once:\n${listing(failed)}`);
   const stillFailing = await runFiles(failed, 1);
+  const retries = failed.map((file) => ({ file, alone: stillFailing.includes(file) ? 'fail' : 'pass' }));
   if (stillFailing.length > 0) {
     console.error(`\n[run-tests] still failing alone:\n${listing(stillFailing)}`);
-    return 1;
+    return result(1, retries);
+  }
+  if (failOnRetry) {
+    console.error(`\n[run-tests] PASSED ONLY ON RETRY: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone; --fail-on-retry fails the run on any retry:\n${listing(failed)}`);
+    return result(1, retries, true);
   }
   console.log(`\n[run-tests] RETRIED IN ISOLATION: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone. Treat this as a host race unless it repeats:\n${listing(failed)}`);
-  return 0;
+  return result(0, retries);
 }
 
 /** Resolves to tsc's exit code; a failure prints tsc's output and aborts the pass. */

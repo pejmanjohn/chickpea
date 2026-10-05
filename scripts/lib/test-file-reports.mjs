@@ -36,21 +36,20 @@ export function recordFileReports(stream) {
   });
   return {
     /** Tests and suites that reported from `file`'s process. */
-    reported: (file) => {
-      const reports = files.get(resolve(file));
-      return reports ? reports.tests + reports.suites : 0;
-    },
+    reported: (file) => reportedCount(files.get(resolve(file))),
     /** Why `file`'s reports are incomplete, or undefined when they are not. */
     shortfall: (file) => reportShortfall(files.get(resolve(file))),
   };
 }
 
+const reportedCount = (reports) => (reports ? reports.tests + reports.suites : 0);
+
 function reportShortfall(reports) {
-  const reported = reports ? reports.tests + reports.suites : 0;
+  const reported = reportedCount(reports);
   if (!reports?.summary) return `${reported} test(s) reported, then its process ended without the file's summary`;
   const { tests, suites } = reports.summary;
   if (reports.tests !== tests || reports.suites !== suites) {
-    return `${reported} test(s) reported of the ${tests + suites} its summary counts`;
+    return `its summary counts ${tests + suites} test(s), but only ${reported} reported`;
   }
   return undefined;
 }

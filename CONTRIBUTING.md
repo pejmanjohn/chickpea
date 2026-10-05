@@ -119,7 +119,10 @@ test steps run through the same runner. A file that fails, or whose process
 ends before all of its tests report (no test at all, no summary of its own, or
 fewer tests than that summary counts), is rerun once alone; a file that then
 passes is logged as `RETRIED IN ISOLATION`, and a file that fails or comes up
-short twice fails the run. node:test itself passes any file whose process exits 0. Local
+short twice fails the run. node:test itself passes any file whose process
+exits 0. `verify:regression`'s focused test steps pass `--fail-on-retry`, so a
+file that passes only alone fails the step there, and every step's receipt
+and the run summary list each file a runner reran (`retries`). Local
 verification servers take loopback ports from `scripts/lib/verification-ports.mjs`:
 a fixed range outside the OS ephemeral range, locked per host under
 `~/.chickpea/verification-host/ports/`, so the suite's own connections cannot

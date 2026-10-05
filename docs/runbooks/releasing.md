@@ -77,7 +77,8 @@ The root test suite runs through `scripts/run-tests.mjs` under 8-way
 concurrency: files that fail, or whose process ends before all of their tests
 report (no test at all, no summary of their own, or fewer tests than that
 summary counts), are rerun once, alone. A file that passes alone is logged as
-`RETRIED IN ISOLATION` and the run still passes; note it in the release notes.
+`RETRIED IN ISOLATION` and the run still passes; the step's receipt and the run
+summary list it under `retries`. Note it in the release notes.
 A file that fails or comes up short twice, or more failing files than the
 runner's concurrency, fails the run. Verification servers take loopback ports from a fixed range outside
 the OS ephemeral range, locked per host under
