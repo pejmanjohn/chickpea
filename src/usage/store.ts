@@ -1656,7 +1656,8 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
  * An estimate derives from the measurement and the pricing a release ships.
  * During a rolling deploy, or after a backfill, the same terminal can be
  * Unknown (`unknown` or `partial`) under one release and priced under another;
- * that is not a different measurement. Two different priced estimates still
+ * that is not a different measurement, nor is the same amount priced under
+ * another price version. Two priced estimates of different amounts still
  * conflict.
  */
 function sameEstimate(
@@ -1667,7 +1668,6 @@ function sameEstimate(
     measurement.estimateCompleteness === input.estimateCompleteness &&
     measurement.estimateAmountMicros === input.estimateAmountMicros &&
     measurement.estimateCurrency === input.estimateCurrency &&
-    measurement.priceVersionId === input.priceVersionId &&
     measurement.priceUnknownReason === input.priceUnknownReason
   ) || unpricedEstimate(measurement) || unpricedEstimate(input);
 }

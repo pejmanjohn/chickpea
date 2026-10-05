@@ -147,6 +147,7 @@ test('a terminal replayed by a release that prices it differently is the same me
       ['op_partial_then_unlisted', partial, unlisted],
       ['op_unlisted_then_priced', unlisted, priced],
       ['op_priced_then_unlisted', priced, unlisted],
+      ['op_priced_then_other_version', priced, { ...priced, priceVersionId: 'anthropic_2026-07-28' }],
     ] as const) {
       await admit(operationId);
       const recorded = await store.recordTerminal(terminal(operationId, { ...haiku, ...first }));
