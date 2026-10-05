@@ -436,8 +436,9 @@ algorithm and coverage, the budget, the quiesce hooks, the objects' size and
 the platform. The contract versions the first three: Core bumps it with any
 change to the digest's algorithm, encoding, record order or coverage, to the
 budget, or to a quiesce hook, and its tests pin each, so such a change fails
-until it is recorded. A Core that declares the contract and budget measured
-keeps apply enabled; one that declares others is measured again. The objects'
+until it is recorded. While the Core a host runs declares the contract and
+budget its measurement recorded, apply stays enabled; a Core that declares
+either differently is measured again before apply reopens. The objects'
 size and the platform are not in the contract: the host measures again as the
 objects grow.
 

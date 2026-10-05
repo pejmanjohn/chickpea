@@ -1287,13 +1287,15 @@ test('a fixed storage digests to the value recorded for the digest contract', as
 /**
  * The source a digest's time and reads depend on besides its budget, by
  * file: the digest and what it calls, the restore calls that run it within
- * the input gate, and each quiesce hook with the reads it makes.
+ * the input gate, and each quiesce hook with the reads it makes. When any of
+ * them starts calling a declaration not listed here, list it.
  */
 const DIGEST_CONTRACT_SOURCE: Readonly<Record<string, readonly string[]>> = {
   'src/state/object-host.ts': [
-    'objectRestoreHostFunctions', 'restoreExclusive', 'DIGEST_KV_BATCH', 'objectStorageDigest', 'digestTooLarge',
-    'OWN_SCHEMA_ENTRY', 'listTables', 'encodeSqlValue', 'encodeStoredValue', 'quoteIdentifier',
+    'objectRestoreHostFunctions', 'objectHostFunctions', 'restoreExclusive', 'DIGEST_KV_BATCH', 'objectStorageDigest',
+    'digestTooLarge', 'OWN_SCHEMA_ENTRY', 'listTables', 'encodeSqlValue', 'encodeStoredValue', 'quoteIdentifier',
   ],
+  'src/cloudflare.ts': ['containerState'],
   'src/state/state-store-host.ts': ['quiesce', 'quiesceStateStoreForRestore'],
   'src/slack/turn-jobs.ts': ['PENDING_ROW', 'hasInterruptedAlarmDispatch', 'hasHandoffs'],
   'src/slack/gateway/inbox.ts': ['hasInFlight'],
@@ -1302,7 +1304,10 @@ const DIGEST_CONTRACT_SOURCE: Readonly<Record<string, readonly string[]>> = {
   'src/sandbox/sandbox-host.ts': ['quiesce', 'quiesceSandboxForRestore', 'containerSchedules'],
 };
 
-/** A node's tokens without comments or layout, so only a change to the code moves the fingerprint. */
+/**
+ * A node's tokens without comments, so a comment or re-indented code leaves the
+ * fingerprint alone; a change inside a string, its whitespace included, moves it.
+ */
 function codeTokens(node: ts.Node, source: ts.SourceFile): string[] {
   if (ts.isJSDoc(node)) return [];
   const children = node.getChildren(source);
@@ -1332,9 +1337,10 @@ test('the digest and quiesce source matches the fingerprint recorded for the dig
   });
   assert.equal(
     createHash('sha256').update(JSON.stringify(declarations)).digest('hex'),
-    'f79fa7147e82e0af8d28324f00f6d4399a8ca6f91e51d3cad6014ed52a5257ca',
+    'f3f84f3586ff8655eff2fd631f97ab11f59afeb0c3a32e4cccfa380934f7ed0c',
     'The digest or a restore quiesce path changed. If the change affects the digest\'s time or what it reads, '
-      + 'bump OBJECT_DIGEST_CONTRACT; either way, record the new fingerprint here.',
+      + 'bump OBJECT_DIGEST_CONTRACT; either way, record the new fingerprint here. If it now calls a declaration '
+      + 'not listed in DIGEST_CONTRACT_SOURCE, list it.',
   );
 });
 
