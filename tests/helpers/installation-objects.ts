@@ -133,13 +133,19 @@ export class FakeObjectStorage {
     return 'bookmark_before_restore';
   }
 
-  /** A new session: it applies any scheduled restore, which moves the current bookmark, with a new context. */
+  /**
+   * A new session, after a restart or an eviction: it applies any scheduled
+   * restore, with a new context. As on Cloudflare, every session starts a new
+   * current bookmark, whether or not anything was restored or written.
+   */
   restart(): void {
     this.sessions += 1;
     if (this.scheduledRestoreBookmark !== undefined) {
       this.restoredBookmark = this.scheduledRestoreBookmark;
       this.scheduledRestoreBookmark = undefined;
       this.currentBookmark = `restored:${this.restoredBookmark}`;
+    } else {
+      this.currentBookmark = `session${this.sessions}:${this.currentBookmark}`;
     }
     this.restoreContext = new FakeObjectRestoreContext(this, this.restoreContext.id);
     this.onRestart?.();

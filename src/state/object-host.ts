@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   deploymentTenancy,
   InstallationContextError,
@@ -36,16 +38,25 @@ export interface ObjectRestoreBookmarks {
   /** The fence scheduling must present, from this same object; also its undo point. */
   readonly currentBookmark: string;
   readonly targetBookmark: string;
+  /**
+   * The object's storage when the fence was read, as `objectStorageDigest`.
+   * Scheduling compares it, not the bookmark: every new session of an object
+   * starts a new current bookmark without any write.
+   */
+  readonly contentDigest: string;
 }
 
 export interface ObjectRestoreRequest extends ObjectHostRequest {
   readonly expectedCurrentBookmark: string;
+  /** The `contentDigest` read with that fence: scheduling refuses once the storage differs from it. */
+  readonly expectedContentDigest: string;
   readonly targetBookmark: string;
 }
 
 /** A scheduled restore: the object's storage becomes `targetBookmark` when it next restarts. */
 export interface ObjectRestoreReceipt {
   readonly expectedCurrentBookmark: string;
+  readonly expectedContentDigest: string;
   readonly targetBookmark: string;
   /** Cloudflare's bookmark for just before the restore; restoring to it undoes the restore. */
   readonly undoBookmark: string;
@@ -76,8 +87,9 @@ export interface InstallationObjectRestoreRpc {
   /**
    * Restarts the object when this session has the restore scheduled, which
    * interrupts the call. Otherwise returns only once the bookmark has left
-   * the fence, proving the restore applied, and refuses with
-   * `restore_not_scheduled` while the object still holds the fence.
+   * the fence, and refuses with `restore_not_scheduled` while the object
+   * still holds it. Every new session leaves the fence, so the return proves
+   * the restore applied only to a caller holding its receipt.
    */
   chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest): Promise<ObjectRestoreApplied>;
 }
@@ -101,7 +113,7 @@ const OBJECT_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 export type ObjectRestoreErrorCode =
   | 'restore_time_invalid'
   | 'restore_bookmark_invalid'
-  | 'restore_bookmark_moved'
+  | 'restore_content_moved'
   | 'restore_unavailable'
   | 'restore_object_busy'
   | 'restore_already_scheduled'
@@ -129,9 +141,16 @@ const scheduledRestores = new WeakMap<HostObjectRestoreContext, ObjectRestoreRec
  * each against its own fence, before any of them restarts into restored
  * state and writes to another (see docs/design/installation-restore.md).
  * Cloudflare validates the opaque target bookmark and its retained history.
+ *
+ * Scheduling checks the storage, not the bookmark, against preparation: a
+ * Durable Object evicted and woken again starts a new current bookmark
+ * without writing anything, so an idle object's bookmark rarely survives
+ * until scheduling, while its storage does.
  */
 export function objectRestoreHostFunctions(object: {
   readonly env: Record<string, unknown> | undefined;
+  /** What the content digest covers: the storage a restore replaces. */
+  readonly storage: HostObjectStorage;
   readonly restoreContext?: HostObjectRestoreContext;
   /** Ownership checks beyond the object's name, within the input gate of every restore call. */
   readonly assertOwner?: (scope: InstallationScope) => void;
@@ -163,15 +182,19 @@ export function objectRestoreHostFunctions(object: {
         await object.quiesce?.();
         const targetBookmark = await ctx.storage.getBookmarkForTime(timestamp);
         const currentBookmark = await ctx.storage.getCurrentBookmark();
-        return { timestamp, currentBookmark, targetBookmark };
+        const contentDigest = await objectStorageDigest(object.storage);
+        return { timestamp, currentBookmark, targetBookmark, contentDigest };
       });
     },
     async chickpeaHostRestore(request) {
       const scope = assertObjectHostCall(object.env, request);
-      const { expectedCurrentBookmark, targetBookmark } = request;
+      const { expectedCurrentBookmark, expectedContentDigest, targetBookmark } = request;
       if (typeof expectedCurrentBookmark !== 'string' || !expectedCurrentBookmark.trim() ||
           typeof targetBookmark !== 'string' || !targetBookmark.trim()) {
         throw new ObjectRestoreError('restore_bookmark_invalid', 'Restore requires current and target bookmarks.');
+      }
+      if (typeof expectedContentDigest !== 'string' || !expectedContentDigest.trim()) {
+        throw new ObjectRestoreError('restore_bookmark_invalid', 'Restore requires the content digest read with its fence.');
       }
       const ctx = context();
       return restoreExclusive(ctx, async () => {
@@ -179,17 +202,20 @@ export function objectRestoreHostFunctions(object: {
         // A repeated call, whose first answer was lost, gets the same receipt.
         const scheduled = scheduledRestores.get(ctx);
         if (scheduled) {
-          if (scheduled.expectedCurrentBookmark === expectedCurrentBookmark && scheduled.targetBookmark === targetBookmark) {
+          if (scheduled.expectedCurrentBookmark === expectedCurrentBookmark &&
+              scheduled.expectedContentDigest === expectedContentDigest && scheduled.targetBookmark === targetBookmark) {
             return scheduled;
           }
           throw alreadyScheduled();
         }
         await object.quiesce?.();
-        if (await ctx.storage.getCurrentBookmark() !== expectedCurrentBookmark) {
-          throw new ObjectRestoreError('restore_bookmark_moved', 'The current bookmark moved; prepare the restore again.');
+        // Not the bookmark: a new session moves it without a write. Any write
+        // since preparation that changed what is stored moves the digest.
+        if (await objectStorageDigest(object.storage) !== expectedContentDigest) {
+          throw new ObjectRestoreError('restore_content_moved', 'The storage changed since the restore was prepared; prepare it again.');
         }
         const undoBookmark = await ctx.storage.onNextSessionRestoreBookmark(targetBookmark);
-        const receipt: ObjectRestoreReceipt = { expectedCurrentBookmark, targetBookmark, undoBookmark };
+        const receipt: ObjectRestoreReceipt = { expectedCurrentBookmark, expectedContentDigest, targetBookmark, undoBookmark };
         scheduledRestores.set(ctx, receipt);
         return receipt;
       });
@@ -212,7 +238,8 @@ export function objectRestoreHostFunctions(object: {
           // Not reached once the reset takes effect; a session that runs on must not report the restore applied.
           throw new ObjectRestoreError('restore_restarting', 'The object is restarting to apply its restore; call again.');
         }
-        // A new session: any restore scheduled before it has applied, and moved the bookmark off the fence.
+        // A new session: any restore scheduled before it has applied. Every
+        // session starts a new bookmark, so this proves nothing without a receipt.
         const currentBookmark = await ctx.storage.getCurrentBookmark();
         if (currentBookmark === expectedCurrentBookmark) {
           throw new ObjectRestoreError('restore_not_scheduled', 'No restore is scheduled or applied: the object still holds the fence.');
@@ -485,6 +512,51 @@ export async function exportObjectPage(
     if (entries.size < KV_BATCH) break;
   }
   return page(null);
+}
+
+/**
+ * A SHA-256 digest of everything a restore replaces: each schema entry (but
+ * SQLite's and Durable Objects' own), every row of every table in key order,
+ * every key-value entry and the alarm. Unlike an export, it leaves nothing
+ * out. Equal digests mean equal storage whatever the bookmarks say; a write
+ * that changes what is stored changes it, and one that stores the same
+ * values again does not.
+ */
+export async function objectStorageDigest(storage: HostObjectStorage): Promise<string> {
+  const hash = createHash('sha256');
+  const add = (record: unknown): void => {
+    hash.update(JSON.stringify(record));
+    hash.update('\n');
+  };
+  for (const entry of storage.sql.exec(
+    `SELECT type, name, tbl_name, sql FROM sqlite_master
+     WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'
+     ORDER BY type, name`,
+  ).toArray()) {
+    add(['schema', entry.type, entry.name, entry.tbl_name, entry.sql ?? null]);
+  }
+  for (const table of listTables(storage)) {
+    let after: SqlKey | undefined;
+    for (;;) {
+      const rows = readRows(storage, table, after);
+      for (const { key, row } of rows) {
+        add(['row', table.name, Object.entries(row).map(([column, value]) => [column, encodeSqlValue(value)])]);
+        after = key;
+      }
+      if (rows.length < ROW_BATCH) break;
+    }
+  }
+  let startAfter: string | undefined;
+  for (;;) {
+    const entries = await storage.list({ ...(startAfter === undefined ? {} : { startAfter }), limit: KV_BATCH });
+    for (const [key, value] of entries) {
+      add(['kv', key, encodeStoredValue(value)]);
+      startAfter = key;
+    }
+    if (entries.size < KV_BATCH) break;
+  }
+  add(['alarm', await storage.getAlarm()]);
+  return `sha256:${hash.digest('hex')}`;
 }
 
 interface ExportCursor {

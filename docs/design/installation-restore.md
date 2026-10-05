@@ -10,17 +10,21 @@ customer UI or change to standalone routing, storage, or startup.
 ## Host functions
 
 - `chickpeaHostRestoreBookmarks({ installationId, timestamp })` returns
-  `{ timestamp, currentBookmark, targetBookmark }`. T is Unix epoch
-  milliseconds within the past 30 days and strictly before now on the
+  `{ timestamp, currentBookmark, targetBookmark, contentDigest }`. T is Unix
+  epoch milliseconds within the past 30 days and strictly before now on the
   object's clock. The host's and the object's clocks differ, so choose a T
-  well in the past, never the current time.
+  well in the past, never the current time. `contentDigest` is a SHA-256
+  over everything the restore replaces: each schema entry, every row of
+  every table in key order, every key-value entry and the alarm.
 - `chickpeaHostRestore({ installationId, expectedCurrentBookmark,
-  targetBookmark })` refuses a moved current bookmark, awaits
-  `storage.onNextSessionRestoreBookmark(targetBookmark)` and returns the
-  receipt `{ expectedCurrentBookmark, targetBookmark, undoBookmark }`. It does
-  not restart the object. The object remembers the receipt for the rest of
-  its session: a repeated call returns it, and a different restore or a new
-  preparation in that session is refused with `restore_already_scheduled`.
+  expectedContentDigest, targetBookmark })` refuses with
+  `restore_content_moved` when the object's storage no longer matches the
+  prepared digest, awaits `storage.onNextSessionRestoreBookmark(targetBookmark)`
+  and returns the receipt `{ expectedCurrentBookmark, expectedContentDigest,
+  targetBookmark, undoBookmark }`. It does not restart the object. The object
+  remembers the receipt for the rest of its session: a repeated call returns
+  it, and a different restore or a new preparation in that session is
+  refused with `restore_already_scheduled`.
 - `chickpeaHostRestoreRestart({ installationId, expectedCurrentBookmark })`
   takes the receipt's fence. The session holding that restore calls
   `ctx.abort('Installation point-in-time restore')`, which interrupts the
@@ -30,16 +34,17 @@ customer UI or change to standalone routing, storage, or startup.
   object still holds it. A scheduled restore applies on the object's next
   session, so after a receipt that return proves the restore applied, also
   when an eviction applied it before the restart. Without a receipt it
-  proves nothing: any write moves a bookmark, and a Sandbox writes its SDK
-  alarm whenever it wakes.
+  proves nothing: every new session starts a new bookmark.
 
 Each call runs in one input gate. Refusals leave the object running.
 Cloudflare validates the opaque bookmark's retained history. A Sandbox must
 have its container stopped and that stop recorded before preparation or
 scheduling (`restore_object_busy` otherwise; retry once it settles). Both
 calls then delete the Containers SDK's alarm, if set, before reading the
-fence: a waking Sandbox arms it, and a second later it deletes itself, which
-would move the fence just read.
+fence and the digest: a waking Sandbox arms it, and a second later it
+deletes itself, which would change the storage just read. So a Sandbox
+evicted since preparation schedules unless its wake wrote more than that
+alarm.
 
 The host wrappers in `src/state/installation-objects.ts` validate ownership
 before resolving a stub. `scheduleInstallationObjectRestore` and
@@ -53,6 +58,31 @@ whether the inventory is complete. `prepareInstallationRestore(env, census,
 T)` reads every planned object's bookmarks and reports each object as
 prepared, skipped or failed instead of stopping at the first failure.
 
+## The fence is the storage, not the bookmark
+
+A Durable Object's current bookmark is not a write position alone. Every
+session of an object, after an eviction or a restart, starts a new current
+bookmark without writing anything: on staging, three idle objects prepared
+under suspension each had a new current bookmark three minutes later, with
+nothing but bookmark reads reaching them, while each one's bookmark for T
+stayed the same. Cloudflare evicts an idle object within minutes, and apply
+runs minutes after preparation, so a fence compared by bookmark refuses
+almost every object.
+
+What the fence guards against is a write between preparation and
+scheduling, which suspension and `cancel_pending` should have made
+impossible: work the restore would discard unreviewed, an object created
+and recorded in the state store that no census lists, or a restored object
+writing to one not yet scheduled. So scheduling compares the storage
+itself, within the same input gate as the scheduling: a session that only
+read leaves the digest as it was, and any write that changes what is stored
+changes it. A write that stores the same values again goes unnoticed; it
+changed nothing the restore discards. The digest reads every row, so it
+costs one full read of each object at preparation and at scheduling.
+
+The prepared current bookmark stays the object's undo point: restoring to
+it brings back exactly the storage the digest describes.
+
 ## Order: schedule everything, then restart callee first
 
 Restored objects write to each other when they wake. A Sandbox restored
@@ -60,9 +90,9 @@ inside a coding turn has the container status `running`; its next session's
 SDK alarm records the stop, and `Sandbox.onStop` releases its lease in the
 state store. A runner resumes its restored jobs and calls the state store.
 The state store's alarm hands turns to runners. With one object restored and
-restarted at a time, a restored object can move the fence of one still
-waiting, whichever order is chosen, and the waiting object is then refused
-with `restore_bookmark_moved`.
+restarted at a time, a restored object can write to one still waiting,
+whichever order is chosen, and the waiting object is then refused with
+`restore_content_moved`.
 
 So apply has two phases. First every object is scheduled against its own
 fence while all of them still run pre-restore state. Then they restart in
@@ -89,11 +119,11 @@ The host serving many installations must implement these jobs:
    the legacy names it recovers with `firstSeenAt` 0, so prepare never skips
    them.
 3. `restore_prepare`: call `prepareInstallationRestore` with the saved census
-   and T. Persist each prepared object's current and target bookmarks, the
-   skipped and failed objects, T, the target deployment and the installation
-   in a private operator record. Offer apply only when nothing failed and the
-   skipped list has been reviewed. Each prepared current bookmark is also
-   that object's undo point.
+   and T. Persist each prepared object's current and target bookmarks and
+   content digest, the skipped and failed objects, T, the target deployment
+   and the installation in a private operator record. Offer apply only when
+   nothing failed and the skipped list has been reviewed. Each prepared
+   current bookmark is also that object's undo point.
 4. `restore_apply --confirm inst_…`: require the saved installation
    confirmation and keep it suspended. Check the prepared record and T's
    remaining retention window. Never deploy during apply, from the first
@@ -101,9 +131,9 @@ The host serving many installations must implement these jobs:
    every Durable Object, which applies every scheduled restore at once, in
    arbitrary order.
    - Schedule: call `scheduleInstallationObjectRestore` serially in plan
-     order with each object's exact prepared fence and target. Persist each
-     receipt before the next call. A restore is per object, not a
-     transaction across the installation.
+     order with each object's exact prepared fence, content digest and
+     target. Persist each receipt before the next call. A restore is per
+     object, not a transaction across the installation.
    - A scheduled restore cannot be cancelled. Cloudflare has no undo for
      `onNextSessionRestoreBookmark`, and the session holding it refuses
      another schedule with `restore_already_scheduled`. It applies on the
@@ -115,10 +145,14 @@ The host serving many installations must implement these jobs:
      apply again with each one's receipt `undoBookmark` as its target:
      prepare each again for its new fence, schedule every one, then restart
      them in plan order. Either way, step 6 follows.
-   - A Sandbox evicted since preparation wakes with a new SDK alarm, which
-     moves its fence, so scheduling refuses it. Prepare that Sandbox again
-     and schedule it straight away. Any other moved fence needs review before
-     it is prepared again. Never replace a moved fence and retry silently.
+   - An object evicted since preparation has a new current bookmark and
+     still schedules. `restore_content_moved` means something wrote to it
+     since preparation, which suspension should have prevented: review
+     before preparing it again. A Sandbox whose wake wrote more than its SDK
+     alarm may be prepared again and scheduled straight away. Never replace a
+     refused fence and retry silently. A host that reads every object again
+     before scheduling, to stop before anything is scheduled, compares the
+     digest, never the current bookmark.
    - Restart: only once every prepared object has a receipt, call
      `restartInstallationObject` for each in plan order with its receipt's
      fence. Its answer, `applied: true`, proves the restore applied. Keep
@@ -126,14 +160,15 @@ The host serving many installations must implement these jobs:
    - Never resume while any receipt lacks that answer, including the
      receipts of a back-out.
 5. Confirm a schedule whose answer was lost by calling it again: a session
-   that still holds it returns the receipt. If that is refused with
-   `restore_bookmark_moved`, apply the rule: under suspension, a current
-   bookmark that differs from the prepared fence after an apply attempt means
-   the apply happened; the session that held the restore has ended, so it
-   has applied. A Sandbox's wake writes its own alarm, so for a
-   Sandbox prepare again and schedule to the same target instead. Restoring
-   twice to one target gives the same storage, and the first prepared fence
-   remains the undo point. The runtime logs the abort as
+   that still holds it returns the receipt. A later session schedules again
+   when its storage still matches the prepared digest, whether or not the
+   first call scheduled anything: restoring twice to one target gives the
+   same storage. Never infer from a moved bookmark that a restore applied:
+   every new session moves it, applied or not. If the call is refused with
+   `restore_content_moved`, the restore applied or something wrote, and
+   nothing tells them apart; review, then prepare it again and schedule it
+   to the same target. Either way the first prepared fence remains the undo
+   point. The runtime logs the abort as
    `Installation point-in-time restore`; a caller may see only a reset error.
 6. Census after restore and run `cancel_pending` while still suspended, after
    every restart has returned, over the union of saved pre-restore objects
@@ -188,7 +223,10 @@ Prove on staging, on disposable objects:
 - Whether `onNextSessionRestoreBookmark` itself moves the current bookmark,
   and what the caller of an aborted call receives.
 - That the next session's current bookmark differs from the prepared fence,
-  even for a target equal to it: restart's answer relies on it.
+  even for a target equal to it: restart's answer relies on it. Observed for
+  sessions without a restore: an idle object woken again has a new bookmark.
+- That an idle object of each kind evicted and woken again keeps its content
+  digest, so nothing it runs on waking writes.
 - What `getBookmarkForTime(T)` does for T before an object's first write: an
   error, the empty database or the first write. Check that prepare's
   `younger_than_target` skips agree with it.
