@@ -22,7 +22,6 @@ import {
 } from '../src/state/installation-objects.ts';
 import { buildInstallationRestorePlan } from '../src/state/installation-restore.ts';
 import {
-  OBJECT_RESTORE_WINDOW_MS,
   ObjectRestoreError,
   objectHostFunctions,
   type InstallationObjectRestoreRpc,
@@ -39,6 +38,8 @@ import {
 
 const NOW = 1_800_000_000_000;
 const T = NOW - 60_000;
+/** Cloudflare's point-in-time recovery window, spelled out so a changed window fails here. */
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
 const A = 'inst_restore_a';
 const B = 'inst_restore_b';
 const HOSTED = { CHICKPEA_TENANCY: 'installation' };
@@ -99,7 +100,7 @@ test('preparation reads T and the current fence within the input gate without wr
 });
 
 for (const [label, timestamp] of [
-  ['older than 30 days', NOW - OBJECT_RESTORE_WINDOW_MS - 1],
+  ['older than 30 days', NOW - THIRTY_DAYS_MS - 1],
   ['in the future', NOW + 1],
   ['NaN', Number.NaN],
   ['infinite', Number.POSITIVE_INFINITY],
@@ -124,7 +125,7 @@ test('preparation accepts T exactly 30 days ago and T equal to now', async (t) =
   t.mock.method(Date, 'now', () => NOW);
   const { host, storage } = genericHost();
   t.after(() => storage.database.close());
-  for (const timestamp of [NOW - OBJECT_RESTORE_WINDOW_MS, NOW]) {
+  for (const timestamp of [NOW - THIRTY_DAYS_MS, NOW]) {
     assert.equal((await host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp })).timestamp, timestamp);
   }
 });
