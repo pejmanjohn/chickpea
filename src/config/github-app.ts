@@ -686,7 +686,7 @@ export async function createInstallationToken(
   } catch (error) {
     // GitHub no longer knows a bound installation: the host re-reads GitHub and ends the binding if so.
     if (platform && githubErrorStatus(error) === 404) {
-      reportHostedGithubInstallationGone(platform.installationId, installationId);
+      await reportHostedGithubInstallationGone(platform.installationId, installationId);
     }
     throw error;
   }

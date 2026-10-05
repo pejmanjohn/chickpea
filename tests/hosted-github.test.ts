@@ -118,18 +118,26 @@ function platform(t: TestContext, options: { app?: unknown; admitted?: (id: stri
     gone: [],
     lists: [],
   };
+  const unbind = (installationId: string, githubInstallationId: number) => {
+    const live = state.bindings.get(installationId) ?? [];
+    const kept = live.filter((entry) => (entry as { githubInstallationId: number }).githubInstallationId !== githubInstallationId);
+    state.bindings.set(installationId, kept);
+    return kept.length !== live.length;
+  };
   const port: HostedGithubPort = {
     app: () => { state.appReads += 1; return 'app' in options ? options.app : PLATFORM_APP; },
     bindings: {
       async list(installationId) { state.lists.push(installationId); return state.bindings.get(installationId) ?? []; },
       async disconnect(installationId, githubInstallationId) {
         state.disconnected.push([installationId, githubInstallationId]);
-        const live = state.bindings.get(installationId) ?? [];
-        const kept = live.filter((entry) => (entry as { githubInstallationId: number }).githubInstallationId !== githubInstallationId);
-        state.bindings.set(installationId, kept);
-        return kept.length !== live.length;
+        return unbind(installationId, githubInstallationId);
       },
-      reportGone(installationId, githubInstallationId) { state.gone.push([installationId, githubInstallationId]); },
+      // The host's re-check, a round trip later: GitHub no longer knows the installation, so its binding ends.
+      async reportGone(installationId, githubInstallationId) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        state.gone.push([installationId, githubInstallationId]);
+        unbind(installationId, githubInstallationId);
+      },
     },
   };
   configureHostedGithub(port);
@@ -346,15 +354,25 @@ test('a binding list serves 30 seconds, then the host is asked again', async (t)
   assert.deepEqual(port.lists, [INSTALLATION_A, INSTALLATION_A]);
 });
 
-test('a mint GitHub answers 404 is reported gone to the host, and the installation\'s bindings are read again', async (t) => {
+test('a mint GitHub answers 404 fails once the host has taken its report, and the binding the host ended is read again', async (t) => {
   const port = platform(t);
   github(t, { mintStatus: 404 });
-  const a = await hostedConnection(ENV_A);
-  await assert.rejects(createInstallationToken(a, GITHUB_A, {}), (error: unknown) => (error as { status?: number }).status === 404);
-  await new Promise((resolve) => setImmediate(resolve));
+  const notFound = (error: unknown) => (error as { status?: number }).status === 404;
+  await assert.rejects(createInstallationToken(await hostedConnection(ENV_A), GITHUB_A, {}), notFound);
+  // Nothing is left running: on Workers, work a request leaves unawaited is cancelled with its response.
   assert.deepEqual(port.gone, [[INSTALLATION_A, GITHUB_A]]);
-  await hostedConnection(ENV_A);
+  assert.deepEqual(await hostedConnection(ENV_A), { mode: 'none' });
   assert.deepEqual(port.lists, [INSTALLATION_A, INSTALLATION_A]);
+
+  // A host that cannot take the report: the mint still fails with GitHub's answer.
+  const warn = t.mock.method(console, 'warn', () => {});
+  configureHostedGithub({ app: () => PLATFORM_APP, bindings: {
+    list: async () => [binding(GITHUB_A, 'acme-a')], disconnect: async () => false,
+    reportGone: async () => { throw new Error('registry down'); },
+  } });
+  await assert.rejects(createInstallationToken(await hostedConnection(ENV_A), GITHUB_A, {}), notFound);
+  assert.deepEqual(warn.mock.calls.map(({ arguments: [line] }) => JSON.parse(String(line))),
+    [{ component: 'hosted_github', event: 'github_report_gone_failed' }]);
 });
 
 test('mintableInstallation maps a grant to its account\'s binding under tenancy, and to its own ID on standalone', async (t) => {
@@ -545,6 +563,25 @@ test('X2 Sandbox egress: a container request mints only its installation\'s bind
     'standalone resolution is unchanged: the grant\'s own ID');
 });
 
+test('a coding task\'s mint GitHub answers 404, in its turn or its Sandbox\'s egress, fails once the host has taken the report', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  github(t, { mintStatus: 404 });
+  const { TAG_STATE } = onCloudflare(t);
+  const grant = { id: 'repo_a', installationId: GITHUB_A, accountLogin: 'acme-a', fullName: 'acme-a/coding-app', enabled: true };
+  let port = platform(t);
+  const turn = await resolveRepositoryAccess([grant], hostedEnv(INSTALLATION_A, { TAG_STATE }) as never);
+  assert.deepEqual(turn.grants, []);
+  assert.deepEqual(port.gone, [[INSTALLATION_A, GITHUB_A]]);
+
+  port = platform(t);
+  const env = egressEnv({ ...HOSTED, TAG_STATE }, {
+    installationId: INSTALLATION_A, turnId: 'turn_a', policy: { grants: [grant], mode: 'app' },
+  });
+  const egress = await githubSandboxOutbound(new Request('https://api.github.com/repos/acme-a/coding-app/contents/README.md'), env, { containerId: 'do_a' });
+  assert.equal(egress.status, SANDBOX_BLOCKED_STATUS);
+  assert.deepEqual(port.gone, [[INSTALLATION_A, GITHUB_A]]);
+});
+
 // --- X3, X4, X5 through Admin, and the tenancy refusals ---
 
 test('X3 and X4: Admin lists only the installation\'s own accounts, and the picker refuses another installation\'s ID', async (t) => {
@@ -571,6 +608,20 @@ test('X3 and X4: Admin lists only the installation\'s own accounts, and the pick
   assert.deepEqual(await (await request(ENV_B, '/admin/api/github/status')).json(), {
     mode: 'none', installations: [], connectPath: null, referencingAgents: [],
   });
+});
+
+test('Settings › GitHub answers once the host has taken the report of an installation GitHub no longer knows', async (t) => {
+  const port = platform(t);
+  github(t, { mintStatus: 404 });
+  const { request } = hostedAdmin(t, [agent()]);
+  const status = await (await request(ENV_A, '/admin/api/github/status')).json() as {
+    installations: Array<{ id: number; repoCount: number | null }>;
+  };
+  assert.deepEqual(status.installations.map(({ id, repoCount }) => [id, repoCount]), [[GITHUB_A, null]]);
+  assert.deepEqual(port.gone, [[INSTALLATION_A, GITHUB_A]]);
+  // The next visit reads the bindings again, and the one the host ended is gone.
+  const after = await (await request(ENV_A, '/admin/api/github/status')).json() as { mode: string; installations: unknown[] };
+  assert.deepEqual([after.mode, after.installations], ['none', []]);
 });
 
 test('X5 skill import: a private repository resolves only through the installation\'s own binding for its owner', async (t) => {
