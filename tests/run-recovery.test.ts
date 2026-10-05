@@ -84,6 +84,36 @@ test('the coding model a worker ran on and its usage survive durable settlement 
   } finally { db.close(); }
 });
 
+test('one-hour cache writes survive durable settlement storage', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const id = 'one-hour-cache-replay';
+    const reportedUsage = {
+      inputTokens: 231, outputTokens: 732, cacheReadTokens: 85_706, cacheWriteTokens: 15_654,
+      cacheWrite1hTokens: 15_654, totalTokens: 102_323,
+    };
+    const codingWorkerUsage = [{
+      schemaVersion: 1 as const, toolCallId: 'call-1', model: 'anthropic/claude-haiku-4-5', status: 'completed' as const,
+      usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 40, cacheWrite1h: 40, totalTokens: 55 }, settledAt: NOW - 1_000,
+    }];
+    turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Test usage.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch(id, 'Test usage.', { generation: id });
+    turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    turns.recordFlueSettlement(id, { outcome: 'completed', settledAt: NOW, result: {
+      text: 'Answered.', codingModel: 'anthropic/claude-haiku-4-5', codingWorkerUsage,
+      requestedModel: 'anthropic/claude-haiku-4-5', returnedModel: null, reportedUsage, usageCompleteness: 'complete',
+    } });
+    const restored = turns.getFlueSettlement(id);
+    // A replayed delivery prices the turn and its worker as the first one did.
+    assert.deepEqual(restored?.outcome === 'completed' ? restored.result.reportedUsage : undefined, reportedUsage);
+    assert.deepEqual(restored?.outcome === 'completed' ? restored.result.codingWorkerUsage : undefined, codingWorkerUsage);
+  } finally { db.close(); }
+});
+
 test('pull request recovery uses descriptive link text', () => {
   assert.equal(replayTextForTurnProgress({
     pullRequest: {

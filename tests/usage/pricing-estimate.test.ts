@@ -3,7 +3,6 @@ import { test } from 'node:test';
 
 import { RELEASE_PRICE_CATALOGS } from '../../src/usage/pricing/catalog.ts';
 import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
-import type { RecordUsageTerminalInput } from '../../src/usage/types.ts';
 
 const OBSERVED_AT = Date.UTC(2026, 6, 28, 12);
 
@@ -12,7 +11,7 @@ function measurement(
   model: string,
   inputTokens: number | null,
   outputTokens: number | null,
-  overrides: Partial<RecordUsageTerminalInput> = {},
+  overrides: Partial<Parameters<typeof estimateUsage>[0]> = {},
 ) {
   return {
     observedAt: OBSERVED_AT,
@@ -149,6 +148,56 @@ test('Anthropic cache prices apply only from their review date, and outlast the 
   }));
   assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
   assert.equal(afterJulyStale.priceVersionId, 'anthropic-cache_2026-10-04');
+});
+
+test('one-hour cache writes leave an estimate partial, whatever the catalog holds', () => {
+  const partial = {
+    estimateCompleteness: 'partial',
+    estimateAmountMicros: null,
+    estimateCurrency: null,
+    priceVersionId: null,
+    priceUnknownReason: 'pricing_dimension_unknown',
+  };
+  const cached = {
+    observedAt: Date.UTC(2026, 9, 5, 6),
+    cacheReadTokens: 85_706,
+    cacheWriteTokens: 15_654,
+    totalTokens: 102_323,
+  };
+  assert.equal(
+    estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 231, 732, {
+      ...cached,
+      cacheWrite1hTokens: 0,
+    })).estimateAmountMicros,
+    32_029,
+  );
+  assert.deepEqual(
+    estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 231, 732, {
+      ...cached,
+      cacheWrite1hTokens: 1,
+    })),
+    partial,
+  );
+  // Never `price_unknown` or `price_stale`: a later release backfills those
+  // from the stored counts, which do not split out one-hour writes.
+  assert.deepEqual(
+    estimateUsage(measurement('custom', 'local-model', 1, 1, {
+      cacheWriteTokens: 5,
+      cacheWrite1hTokens: 5,
+      totalTokens: 7,
+    })),
+    partial,
+  );
+  const openai = RELEASE_PRICE_CATALOGS.find((version) => version.providerId === 'openai')!;
+  assert.deepEqual(
+    estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
+      observedAt: openai.staleAfter,
+      cacheWriteTokens: 3,
+      cacheWrite1hTokens: 3,
+      totalTokens: 18,
+    })),
+    partial,
+  );
 });
 
 test('non-zero cache usage without a matching price dimension stays partial', () => {

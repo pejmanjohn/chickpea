@@ -109,6 +109,7 @@ export type FlueSettlementCheckpointV1 =
           outputTokens: number | null;
           cacheReadTokens?: number | null;
           cacheWriteTokens?: number | null;
+          cacheWrite1hTokens?: number | null;
           totalTokens: number | null;
         } | null;
         usageCompleteness: 'complete' | 'partial' | 'not_reported';

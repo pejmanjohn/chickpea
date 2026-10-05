@@ -85,6 +85,7 @@ import {
 } from '../slack/interaction-intent.ts';
 import {
   InteractionUsageRecorder,
+  interactionReportedUsage,
   usageRuntimeRecordingEnabled,
 } from '../usage/runtime-recorder.ts';
 import { parseMemoryCommand } from '../memory/commands.ts';
@@ -4029,19 +4030,7 @@ async function recordInteractionClassifierUsage(input: {
     ...(input.platformEnv ? { platformEnv: input.platformEnv } : {}),
   });
   await recorder.admit();
-  const reported = input.classification.result?.reportedUsage;
-  const usage = reported &&
-    reported.inputTokens !== null &&
-    reported.outputTokens !== null &&
-    reported.totalTokens !== null
-      ? {
-        inputTokens: reported.inputTokens,
-        outputTokens: reported.outputTokens,
-        cacheReadTokens: reported.cacheReadTokens ?? 0,
-        cacheWriteTokens: reported.cacheWriteTokens ?? 0,
-        totalTokens: reported.totalTokens,
-      }
-    : null;
+  const usage = interactionReportedUsage(input.classification.result?.reportedUsage);
   await recorder.recordTerminal({
     status: input.classification.failed ? 'failed' : 'completed',
     usage,

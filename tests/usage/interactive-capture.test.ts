@@ -287,6 +287,57 @@ test('an Anthropic turn that reads and writes the prompt cache is priced and cou
   }
 });
 
+test('one-hour cache writes leave a turn and its coding worker without a complete estimate', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const startedAt = Date.UTC(2026, 9, 5, 6, 14);
+    const seconds = String(startedAt / 1_000);
+    const cached = { input: 231, output: 732, cacheRead: 85_706, cacheWrite: 15_654, totalTokens: 102_323 };
+    const worker = (toolCallId: string, cacheWrite1h?: number) => ({
+      schemaVersion: 1 as const,
+      toolCallId,
+      model: 'anthropic/claude-haiku-4-5',
+      status: 'completed' as const,
+      usage: { ...cached, ...(cacheWrite1h ? { cacheWrite1h } : {}) },
+      returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5' },
+      settledAt: startedAt + 10_000,
+    });
+    const recorder = new InteractiveUsageRecorder({
+      turn: { ...turn, messageTs: `${seconds}.0001`, threadTs: `${seconds}.0001` },
+      assignment: { ...assignment, model: 'anthropic/claude-haiku-4-5' },
+      requestedModel: 'anthropic/claude-haiku-4-5',
+      operationId: 'msg_long_cache',
+      executionId: 'exec_long_cache',
+      store,
+      now: () => startedAt + 30_000,
+    });
+    await recorder.admit();
+    await recorder.recordSuccess(success({
+      requestedModel: 'anthropic/claude-haiku-4-5',
+      returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5' },
+      reportedUsage: {
+        inputTokens: 231,
+        outputTokens: 732,
+        cacheReadTokens: 85_706,
+        cacheWriteTokens: 15_654,
+        cacheWrite1hTokens: 15_654,
+        totalTokens: 102_323,
+      },
+      codingWorkerUsage: [worker('call-1', 4_000), worker('call-2')],
+    }));
+    const estimates = Object.fromEntries((await store.getOperation('msg_long_cache'))!.measurements
+      .map((row) => [row.executionId, [row.estimateCompleteness, row.priceUnknownReason]]));
+    assert.deepEqual(estimates, {
+      exec_long_cache: ['partial', 'pricing_dimension_unknown'],
+      'exec_long_cache:coding:1': ['partial', 'pricing_dimension_unknown'],
+      // The same usage written for five minutes is priced.
+      'exec_long_cache:coding:2': ['complete', null],
+    });
+  } finally {
+    store.close();
+  }
+});
+
 test('a real recovery invocation adds usage while one execution persistence retry is idempotent', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {

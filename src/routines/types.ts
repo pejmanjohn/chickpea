@@ -421,6 +421,8 @@ export interface RoutineAgentUsageV1 {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheWriteTokens: number | null;
+  /** The part of `cacheWriteTokens` written for one hour; present only when non-zero. */
+  cacheWrite1hTokens?: number;
   totalTokens: number | null;
   completeness: 'complete' | 'partial' | 'not_reported';
 }

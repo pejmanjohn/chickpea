@@ -25,6 +25,8 @@ interface UsageEstimateInput extends Pick<
 > {
   cacheReadTokens?: number | null;
   cacheWriteTokens?: number | null;
+  /** The part of `cacheWriteTokens` written for one hour, which no catalog prices. */
+  cacheWrite1hTokens?: number | null;
   totalTokens?: number | null;
 }
 
@@ -36,6 +38,10 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   ) {
     return unknown('pricing_dimension_unknown', input.usageCompleteness === 'partial' ? 'partial' : 'unknown');
   }
+  // Decided before the catalog lookup: the store keeps no one-hour count, so
+  // this measurement must never read as `price_unknown` or `price_stale`,
+  // which a later release's backfill would price as complete.
+  if (input.cacheWrite1hTokens) return unknown('pricing_dimension_unknown', 'partial');
   const provider = input.returnedProvider ?? input.providerRoute ?? input.requestedProvider;
   const model = input.returnedModel ?? input.requestedModel;
   if (!provider || !model) return unknown('pricing_dimension_unknown');

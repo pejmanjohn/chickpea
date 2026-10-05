@@ -201,6 +201,60 @@ test('routine reply metadata yields one bounded aggregate with returned-model ev
   );
 });
 
+test('a routine that wrote the cache for one hour has no complete estimate', async () => {
+  const reply = (cacheWrite1h?: number) => ({
+    submissionId: 'submission_long_cache', text: '', data: {},
+    metadata: {
+      [CHICKPEA_RESPONSE_METADATA_KEY]: {
+        schemaVersion: 1,
+        requestedModel: 'anthropic/claude-haiku-4-5',
+        usage: {
+          input: 231, output: 732, cacheRead: 85_706, cacheWrite: 15_654, totalTokens: 102_323,
+          ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+        },
+        returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5' },
+      },
+    },
+  });
+  assert.equal(routineUsageFromAgentReply(reply(15_654), config.model).cacheWrite1hTokens, 15_654);
+  for (const cacheWrite1h of [undefined, 0, -1]) {
+    assert.equal(
+      'cacheWrite1hTokens' in routineUsageFromAgentReply(reply(cacheWrite1h), config.model),
+      false,
+      String(cacheWrite1h),
+    );
+  }
+
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const at = Date.UTC(2026, 9, 5, 6);
+    for (const [operationId, cacheWrite1h] of [['rrun_short_cache', undefined], ['rrun_long_cache', 15_654]] as const) {
+      const recorder = new RoutineUsageRecorder({
+        operationId, executionId: `exec_${operationId}`, startedAt: at,
+        workspaceId: routine.workspaceId, channelId: routine.channelId,
+        agentId: config.agentId, agentLabel: config.agent.name,
+        routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
+        credentialRefId: null, credentialVersion: null, store: usage, now: () => at + 1_000,
+      });
+      await recorder.admit();
+      await recorder.recordTerminal({
+        status: 'completed',
+        usage: {
+          input: 231, output: 732, cacheRead: 85_706, cacheWrite: 15_654, totalTokens: 102_323,
+          ...(cacheWrite1h ? { cacheWrite1h } : {}),
+        },
+        returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5' },
+      });
+    }
+    const estimate = async (operationId: string) =>
+      (await usage.getOperation(operationId))?.measurements[0]?.estimateCompleteness;
+    assert.equal(await estimate('rrun_short_cache'), 'complete');
+    assert.equal(await estimate('rrun_long_cache'), 'partial');
+  } finally {
+    usage.close();
+  }
+});
+
 test('Scheduled Work detail prefers linked ledger facts and labels historical rows honestly', async () => {
   const usage = new SqliteUsageStore(':memory:');
   try {

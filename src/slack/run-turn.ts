@@ -159,6 +159,7 @@ import type { SlackArtifactReceipt } from './artifact-receipts.ts';
 import {
   InteractiveUsageRecorder,
   InteractionUsageRecorder,
+  interactionReportedUsage,
   usageRuntimeRecordingEnabled,
   type UsagePersistenceEvent,
 } from '../usage/runtime-recorder.ts';
@@ -2399,19 +2400,7 @@ async function recordExplicitInteractionClassifierUsage(input: {
       : {}),
   });
   await recorder.admit();
-  const reported = input.classification.result?.reportedUsage;
-  const usage = reported &&
-    reported.inputTokens !== null &&
-    reported.outputTokens !== null &&
-    reported.totalTokens !== null
-      ? {
-        inputTokens: reported.inputTokens,
-        outputTokens: reported.outputTokens,
-        cacheReadTokens: reported.cacheReadTokens ?? 0,
-        cacheWriteTokens: reported.cacheWriteTokens ?? 0,
-        totalTokens: reported.totalTokens,
-      }
-    : null;
+  const usage = interactionReportedUsage(input.classification.result?.reportedUsage);
   await recorder.recordTerminal({
     status: input.classification.failed ? 'failed' : 'completed',
     usage,
