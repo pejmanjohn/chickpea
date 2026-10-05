@@ -90,14 +90,25 @@ export function agentSlackHandle(
 }
 
 /**
- * Whether this turn's replies may ask other Agents: a chickpea-v1 Channel
- * thread. A DM has one Agent, and a legacy installation has no handles.
+ * Whether this Agent's replies may ask other Agents. Only user Agents ask:
+ * the built-in Chickpea lists and describes Agents, so a handle in its reply
+ * names that Agent and never asks it.
+ */
+export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
+  return agent.kind === 'user';
+}
+
+/**
+ * Whether this turn's replies may ask other Agents: a user Agent's
+ * chickpea-v1 Channel thread. A DM has one Agent, and a legacy installation
+ * has no handles.
  */
 function turnMayAskAgents(
   turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
-  assignment: Pick<ResolvedAssignment, 'runtimeContract'>,
+  assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agent'>,
 ): boolean {
-  return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel';
+  return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel' &&
+    agentMayAskTeammates(assignment.agent);
 }
 
 // A handle word: `@` (with the word joiner neutralization may leave after

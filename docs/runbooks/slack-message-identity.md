@@ -267,7 +267,8 @@ Channel. For the handles of those teammates only, a plain `@handle` in prose,
 or a user-group mention of one, is delivered as a live
 `<!subteam^ID|@handle>`. Agent handles are zero-member user groups, so the
 mention notifies nobody; it renders as a mention and asks that Agent (see
-[Agent conversations](agent-conversations.md)). Every other user group stays
+[Agent conversations](agent-conversations.md)). The built-in Chickpea asks
+nobody, so every handle in its reply stays inert. Every other user group stays
 inert, and code keeps its literal characters. A handle word changes only once
 it is complete, so streamed prefixes stay prefixes of the final text.
 

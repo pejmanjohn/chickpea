@@ -16,7 +16,9 @@ needs a number only Finance has, so its reply says:
    handle of another Agent that can work in the Channel, that Agent gets a
    turn in the same thread. The mention renders as a live Slack mention of
    that Agent; Agent handles have no members, so it notifies nobody. Mentions inside code, email addresses, and URLs
-   do not count, and an Agent never asks itself.
+   do not count, and an Agent never asks itself. The built-in Chickpea never
+   asks: it lists and describes Agents, so a handle in its reply is not a live
+   mention and asks nobody.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which
    person started the exchange.
@@ -34,9 +36,9 @@ needs a number only Finance has, so its reply says:
    Agent. A person mentioning a different Agent still hands the thread over,
    as before.
 
-Each Agent is told which other Agents work in the Channel and their handles,
-and when to ask: only when it needs a teammate's answer, never in passing or
-to say thanks.
+Each user Agent is told which other Agents work in the Channel and their
+handles, and when to ask: only when it needs a teammate's answer, never in
+passing or to say thanks.
 
 ## Mentioning several Agents at once
 

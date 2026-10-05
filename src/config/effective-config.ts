@@ -4,10 +4,12 @@ import { ModelResolutionError } from './errors.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type {
+  AgentTeammate,
   CustomAgentConfig,
   ModelCredentialAttribution,
   ResolvedAssignment,
 } from './types.ts';
+import { agentMayAskTeammates } from '../slack/agent-asks.ts';
 
 const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
@@ -171,6 +173,15 @@ function runtimeIdentityInstruction(
   return parts.join(' ');
 }
 
+type TeammateAssignment = Pick<ResolvedAssignment, 'channelTeammates'> & {
+  agent: Pick<CustomAgentConfig, 'kind'>;
+};
+
+/** The Channel teammates this Agent may ask: none for the built-in Chickpea. */
+function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
+  return agentMayAskTeammates(assignment.agent) ? assignment.channelTeammates ?? [] : [];
+}
+
 /**
  * Whom this Agent can ask in this Channel, and how asking works: a plain
  * `@handle` in its reply asks that Agent, which answers in the thread after
@@ -179,9 +190,9 @@ function runtimeIdentityInstruction(
  * handle works in the Channel.
  */
 export function agentTeammateInstructions(
-  assignment: Pick<ResolvedAssignment, 'channelTeammates' | 'threadGuest'>,
+  assignment: TeammateAssignment & Pick<ResolvedAssignment, 'threadGuest'>,
 ): string | undefined {
-  const teammates = assignment.channelTeammates ?? [];
+  const teammates = askableTeammates(assignment);
   if (teammates.length === 0) return undefined;
   const example = teammates[0]!.handle;
   const guest = assignment.threadGuest === true;
@@ -201,9 +212,9 @@ export function agentTeammateInstructions(
 
 /** The teammates' handles a reply may mention live, or none. */
 export function agentTeammateHandles(
-  assignment: Pick<ResolvedAssignment, 'channelTeammates'>,
+  assignment: TeammateAssignment,
 ): ReadonlyMap<string, string> | undefined {
-  const teammates = assignment.channelTeammates ?? [];
+  const teammates = askableTeammates(assignment);
   return teammates.length
     ? new Map(teammates.map(({ handle, userGroupId }) => [handle, userGroupId]))
     : undefined;

@@ -197,7 +197,9 @@ npm run verify:regression -- --area routines --record "$run_dir/run.json"
 npm run verify:live:record -- begin --case channel-schedule --reason "Fixed persisted destination; new conversation and due occurrence" --run "$run_dir/run.json"
 ```
 
-Paths refer to files you actually saved. Repeat `--evidence` or
+Paths refer to files you actually saved. A file that keeps changing, such as
+a running `lane:tail` log, makes the case stale as soon as it changes; copy
+it and reference the copy. Repeat `--evidence` or
 `--proof surface=path` when a surface has multiple receipts. The helper verifies
 receipt presence and integrity, not the assertions inside them. It still rejects
 a pass that lacks any proof surface required by the selected case.
