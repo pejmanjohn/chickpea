@@ -10,7 +10,7 @@ import { lockfileDrift } from '../scripts/lib/installed-dependencies.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
 import { createRegressionPlan } from '../scripts/lib/regression-plan.mjs';
 // @ts-expect-error Executable helpers are JavaScript, shared with the CLI.
-import { changedFiles, isHygieneStep, main, needsHostReservation, parseRegressionArgs, regressionEnvironment, runRegressionSteps, runWithHostReservation, settleHostLease, splitAtHostReservation } from '../scripts/verify-regression.mjs';
+import { changedFiles, isHygieneStep, main, needsHostReservation, parseRegressionArgs, regressionEnvironment, runRegressionSteps, runWithHostReservation, settleHostLease, splitAtHostReservation, stepOutcome } from '../scripts/verify-regression.mjs';
 
 const testFiles = readdirSync(new URL('.', import.meta.url), { recursive: true })
   .map(String).filter((file) => file.endsWith('.test.ts')).map((file) => `tests/${file.replaceAll('\\', '/')}`);
@@ -229,6 +229,33 @@ test('a group runs together, every member finishes, and a failure stops later st
   assert.deepEqual(calls, ['test:false', 'a:true', 'b:true', 'c:true']);
   assert.equal(peak, 3);
   assert.deepEqual(results.map((result: { script: string, status: number }) => `${result.script}=${result.status}`), ['test=0', 'a=1', 'b=0', 'c=0']);
+});
+
+test('a step\'s result carries the details its run reports, such as the files the test runner reran alone', async () => {
+  const retries = [{ file: 'tests/a.test.ts', alone: 'pass' }];
+  const results = await runRegressionSteps([{ script: 'test' }, { kind: 'tests', files: ['tests/a.test.ts'] }],
+    async (step: { script?: string }) => (step.script === 'test' ? { status: 0, retries } : 1));
+  assert.deepEqual(results.map(({ durationMs, ...result }: { durationMs: number }) => result), [
+    { script: 'test', status: 0, retries }, { kind: 'tests', files: ['tests/a.test.ts'], status: 1 },
+  ]);
+});
+
+test('a step that ran the test runner records every file it reran alone, and a retry that alone failed the step reads as flaky', () => {
+  const run = (exitCode: number, retries: object[], failedOnRetry = false) => ({ exitCode, retries, failedOnRetry });
+  const passedAlone = { file: 'tests/a.test.ts', alone: 'pass' }, failedAlone = { file: 'tests/b.test.ts', alone: 'fail' };
+  const finished = { exitCode: 0, stable: true };
+  // No runner, no retries field; a clean runner pass records an empty list.
+  assert.deepEqual(stepOutcome(finished), { status: 0, category: null });
+  assert.deepEqual(stepOutcome({ ...finished, runs: [run(0, [])] }), { status: 0, category: null, retries: [] });
+  // The full suite's one rerun still passes, but its retries are on the receipt.
+  assert.deepEqual(stepOutcome({ ...finished, runs: [run(0, [passedAlone]), run(0, [])] }), { status: 0, category: null, retries: [passedAlone] });
+  // A focused step's --fail-on-retry failure.
+  assert.deepEqual(stepOutcome({ exitCode: 1, stable: true, runs: [run(1, [passedAlone], true)] }), { status: 1, category: 'flaky', retries: [passedAlone] });
+  // A file that failed alone too is a plain failure.
+  assert.deepEqual(stepOutcome({ exitCode: 1, stable: true, runs: [run(1, [passedAlone, failedAlone])] }), { status: 1, category: 'unknown', retries: [passedAlone, failedAlone] });
+  assert.deepEqual(stepOutcome({ exitCode: 1, stable: true, runs: [run(0, [passedAlone]), run(1, [])] }).category, 'unknown');
+  assert.deepEqual(stepOutcome({ exitCode: 0, stable: false, runs: [run(0, [])] }), { status: 1, category: 'inputs_changed', retries: [] });
+  assert.deepEqual(stepOutcome({ exitCode: null, stable: true, error: new Error('spawn') }), { status: 1, category: 'infrastructure' });
 });
 
 test('proofs after the suite form one group behind a single Node build; the export stays last and alone', () => {

@@ -9,7 +9,7 @@ const node = process.execPath;
 const commands = [
   ['--import', 'tsx', 'scripts/build-model-catalog.mjs'],
   [
-    '--test', '--import', 'tsx',
+    'scripts/run-tests.mjs',
     'tests/model-catalog.test.ts',
     'tests/model-catalog-refresh.test.ts',
     'tests/model-catalog-concurrency.test.ts',

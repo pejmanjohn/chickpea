@@ -128,15 +128,21 @@ const FOCUSED_TESTS = [
   'tests/work-store.test.ts',
   'tests/work-retention.test.ts',
   'tests/work-state-rpc.test.ts',
-  'tests/work-admission.test.ts',
   'tests/work-lifecycle.test.ts',
   'tests/run-driver.test.ts',
   'tests/run-ordering.test.ts',
   'tests/run-recovery.test.ts',
-  'tests/node-turn-relay.test.ts',
+  // The Node turn relay, its turn jobs and Slack Work admission
+  // (src/slack/{node-turn-relay,turn-jobs,work-admission}.ts), whose own test
+  // files were deleted.
+  'tests/node-turn-relay-stop.test.ts',
+  'tests/node-turn-relay-drain-failure.test.ts',
+  'tests/node-turn-relay-parallel-threads.test.ts',
+  'tests/node-turn-relay-presentation-port.test.ts',
+  'tests/turn-job-rollback.test.ts',
+  'tests/hosted-admission.test.ts',
   'tests/work-model-invocation.test.ts',
   'tests/non-slack-adapter-contract.test.ts',
-  'tests/turn-jobs.test.ts',
   'tests/status-relay.test.ts',
   'tests/slack-thread-context.test.ts',
   'tests/web-client-presenter.test.ts',
@@ -180,9 +186,7 @@ async function main() {
   const matrixOnly = process.argv.includes('--matrix');
   if (!matrixOnly) {
     run('run foundation focused contract tests', process.execPath, [
-      '--test',
-      '--import',
-      'tsx',
+      resolve(REPO_ROOT, 'scripts', 'run-tests.mjs'),
       ...FOCUSED_TESTS,
     ]);
   }

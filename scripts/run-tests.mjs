@@ -12,7 +12,10 @@
  * A file whose process ends without reporting a single test counts as failed.
  * node:test reports such a file as passing (its only event is a file-level
  * pass with no subtests), which is how a worker that dies quietly with exit 0
- * used to pass the gate.
+ * used to pass the gate. So does a file whose process ends before all of its
+ * tests report: its own summary is missing, or counts more tests than arrived
+ * (scripts/lib/test-file-reports.mjs). node:test passes that file too, because
+ * its process still exits 0.
  *
  * Files start longest first: node:test dequeues them in the given order, and a
  * slow file that starts late sets the tail of the whole pass. `--typecheck`
@@ -21,7 +24,19 @@
  *
  * A test fails after PER_TEST_TIMEOUT_MS (scripts/lib/test-timeout.mjs) and
  * each file's process exits once its tests and hooks finish, so one hung test
- * fails in minutes instead of holding the host reservation.
+ * fails in minutes instead of holding the host reservation. That exit discards
+ * reports still queued for the pipe, so each file's process writes its reports
+ * with blocking writes (scripts/lib/test-report-pipe.mjs).
+ *
+ * `--fail-on-retry` still reruns each failed file alone, so the log says
+ * whether it is flaky or broken, but fails the run even when every rerun
+ * passes. verify:regression's focused test steps use it: that command never
+ * reruns to green, and a flaky changed test must not pass quietly. A caller
+ * that sets RUN_TESTS_RESULT_FILE also gets every rerun file and its outcome
+ * alone (scripts/lib/test-run-results.mjs).
+ *
+ * The root suite, the CLI package's tests and verify:regression's focused test
+ * steps all run through this runner.
  */
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -29,7 +44,13 @@ import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
+import { fileURLToPath } from 'node:url';
+import { recordFileReports } from './lib/test-file-reports.mjs';
+import { appendRunResult, RUN_RESULT_FILE_ENV } from './lib/test-run-results.mjs';
 import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const REPORT_PIPE = new URL('./lib/test-report-pipe.mjs', import.meta.url).href;
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
@@ -43,13 +64,24 @@ const SLOW_FIRST = [
 ];
 
 const args = process.argv.slice(2);
-const withTypecheck = args[0] === '--typecheck';
-const files = (withTypecheck ? args.slice(1) : args).map((file) => resolve(file));
+const options = new Set();
+while (['--typecheck', '--fail-on-retry'].includes(args[0])) options.add(args.shift());
+const withTypecheck = options.has('--typecheck');
+const failOnRetry = options.has('--fail-on-retry');
+const files = args.map((file) => resolve(file));
+// Out of the environment before any test process starts, so a runner that a
+// test starts cannot write into this pass's result file.
+const resultFile = process.env[RUN_RESULT_FILE_ENV];
+delete process.env[RUN_RESULT_FILE_ENV];
 if (files.length === 0) {
-  console.error('Usage: node scripts/run-tests.mjs [--typecheck] <test files...>');
+  console.error('Usage: node scripts/run-tests.mjs [--typecheck] [--fail-on-retry] <test files...>');
   process.exitCode = 2;
 } else {
-  process.exitCode = await main(longestFirst(files));
+  const result = await main(longestFirst(files));
+  if (resultFile) {
+    appendRunResult(resultFile, { ...result, retries: result.retries.map(({ file, alone }) => ({ file: relative(ROOT, file), alone })) });
+  }
+  process.exitCode = result.exitCode;
 }
 
 function slowRank(file) {
@@ -64,24 +96,31 @@ function longestFirst(list) {
     .map(({ file }) => file);
 }
 
+/** Resolves to the pass's exit code and every file it reran alone, with that rerun's outcome. */
 async function main(list) {
   const controller = new AbortController();
   const typecheck = withTypecheck ? startTypecheck(controller) : undefined;
   const failed = await runFiles(list, CONCURRENCY, controller.signal);
-  if (typecheck && (await typecheck) !== 0) return 1;
-  if (failed.length === 0) return 0;
+  const result = (exitCode, retries = [], failedOnRetry = false) => ({ exitCode, retries, failedOnRetry });
+  if (typecheck && (await typecheck) !== 0) return result(1);
+  if (failed.length === 0) return result(0);
   if (failed.length > MAX_RETRIED_FILES) {
     console.error(`\n[run-tests] ${failed.length} test files failed; not retrying.`);
-    return 1;
+    return result(1);
   }
   console.log(`\n[run-tests] ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency; rerunning each alone once:\n${listing(failed)}`);
   const stillFailing = await runFiles(failed, 1);
+  const retries = failed.map((file) => ({ file, alone: stillFailing.includes(file) ? 'fail' : 'pass' }));
   if (stillFailing.length > 0) {
     console.error(`\n[run-tests] still failing alone:\n${listing(stillFailing)}`);
-    return 1;
+    return result(1, retries);
+  }
+  if (failOnRetry) {
+    console.error(`\n[run-tests] PASSED ONLY ON RETRY: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone; --fail-on-retry fails the run on any retry:\n${listing(failed)}`);
+    return result(1, retries, true);
   }
   console.log(`\n[run-tests] RETRIED IN ISOLATION: ${failed.length} file(s) failed under ${CONCURRENCY}-way concurrency and passed alone. Treat this as a host race unless it repeats:\n${listing(failed)}`);
-  return 0;
+  return result(0, retries);
 }
 
 /** Resolves to tsc's exit code; a failure prints tsc's output and aborts the pass. */
@@ -99,35 +138,37 @@ function startTypecheck(controller) {
 
 async function runFiles(list, concurrency, signal) {
   const failed = new Set();
-  const reported = new Set();
   // A child spawned by node:test inherits this marker and would treat the
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
-  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}) });
+  const stream = run({
+    files: list, concurrency, execArgv: ['--import', 'tsx', '--import', REPORT_PIPE],
+    timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}),
+  });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {
     if (event.file) failed.add(resolve(event.file));
   });
-  // The file itself is reported as one pass/fail event whose name is its path;
-  // anything else under that file is a real test that ran.
-  for (const type of ['test:pass', 'test:fail']) {
-    stream.on(type, (event) => {
-      if (event.file && resolve(event.file) !== resolve(event.name)) reported.add(resolve(event.file));
-    });
-  }
+  const reports = recordFileReports(stream);
   const report = stream.compose(spec);
   report.pipe(process.stdout, { end: false });
   await finished(report);
-  const silent = list.filter((file) => !reported.has(file) && !failed.has(file));
+  const passed = list.filter((file) => !failed.has(file));
+  const silent = passed.filter((file) => reports.reported(file) === 0);
   if (silent.length > 0) {
     console.error(`\n[run-tests] ${silent.length} file(s) ended without reporting any test; treating each as failed:\n${listing(silent)}`);
     for (const file of silent) failed.add(file);
   }
+  const incomplete = passed.filter((file) => !silent.includes(file) && reports.shortfall(file) !== undefined);
+  if (incomplete.length > 0) {
+    console.error(`\n[run-tests] ${incomplete.length} file(s) ended before all of their tests reported; treating each as failed:\n${listing(incomplete, reports.shortfall)}`);
+    for (const file of incomplete) failed.add(file);
+  }
   return [...failed];
 }
 
-function listing(paths) {
-  return paths.map((path) => `  ${relative(process.cwd(), path)}`).join('\n');
+function listing(paths, detail) {
+  return paths.map((path) => `  ${relative(process.cwd(), path)}${detail ? `: ${detail(path)}` : ''}`).join('\n');
 }

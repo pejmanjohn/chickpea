@@ -10,8 +10,8 @@ import { evidenceRefs, offlineEvent, readRun, updateRun } from './lib/verificati
 import { offlineStepLabel } from './lib/verification-offline.mjs';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
-import { NODE_TEST_TIMEOUT_ARGS } from './lib/test-timeout.mjs';
 import { lockfileDrift, staleDependenciesMessage } from './lib/installed-dependencies.mjs';
+import { failedOnlyOnRetry, readRunResults, RUN_RESULT_FILE_ENV } from './lib/test-run-results.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -80,8 +80,28 @@ export function changedFiles(base, root = ROOT) {
   ].filter(Boolean))] };
 }
 
-/** Focused test files run with the repository's per-test timeout (scripts/lib/test-timeout.mjs). */
-export const testStepArgs = (files) => ['--test', ...NODE_TEST_TIMEOUT_ARGS, '--import', 'tsx', ...files];
+/**
+ * Focused test files run through the root suite's runner: the same per-test
+ * timeout, and a file whose tests do not all report fails instead of passing.
+ * A file that passes only when rerun alone fails the step too: this command
+ * never reruns to green, and a flaky changed test must not pass quietly. The
+ * full suite (`npm test`) keeps the runner's one rerun over hundreds of files;
+ * every step records the files its runners reran (stepOutcome).
+ */
+export const testStepArgs = (files) => [path.join(ROOT, 'scripts', 'run-tests.mjs'), '--fail-on-retry', ...files];
+
+/**
+ * A finished step's status and receipt fields. `runs` holds the passes its
+ * test runners recorded (scripts/lib/test-run-results.mjs), or is undefined
+ * when the step ran none. Such a step's receipt lists every file a runner
+ * reran alone, pass or fail, so a retry is never only a line in a log.
+ */
+export function stepOutcome({ exitCode, error, stable, runs }) {
+  const status = stable ? exitCode ?? 1 : 1;
+  const category = !stable ? 'inputs_changed' : error ? 'infrastructure' : status === 0 ? null
+    : runs && failedOnlyOnRetry(runs) ? 'flaky' : 'unknown';
+  return { status, category, ...(runs ? { retries: runs.flatMap((run) => run.retries) } : {}) };
+}
 
 export const isHygieneStep = (step) => step.kind === 'npm' && step.script === 'verify:hygiene';
 
@@ -102,7 +122,9 @@ export function splitAtHostReservation(steps) {
  * Runs steps in plan order. Consecutive steps that share a `group` run
  * together, and all of them finish: a killed sibling would strand its child
  * processes and the host reservation. The run stops after the first step or
- * group with a failure and never reruns to green.
+ * group with a failure and never reruns to green. `run` resolves to a step's
+ * exit status, or to `{ status, ...details }` whose details (such as the test
+ * runner's retries) join that step's result.
  */
 export async function runRegressionSteps(steps, run) {
   const results = [];
@@ -112,8 +134,9 @@ export async function runRegressionSteps(steps, run) {
     const batch = steps.slice(index, end);
     const settled = await Promise.all(batch.map(async (step) => {
       const started = Date.now();
-      const status = await run(step, batch.length > 1);
-      return { ...step, status, durationMs: Date.now() - started };
+      const outcome = await run(step, batch.length > 1);
+      const { status, ...details } = typeof outcome === 'number' ? { status: outcome } : outcome;
+      return { ...step, status, ...details, durationMs: Date.now() - started };
     }));
     results.push(...settled);
     if (settled.some(({ status }) => status !== 0)) break;
@@ -163,7 +186,7 @@ export async function main(argv) {
   let lease, interrupted = false;
   try {
     if (argv.includes('--help')) {
-      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\n--record saves private logs, durations, failures and final release receipts.`);
+      console.log(`Usage: npm run verify:regression -- [--mode changed|regression|release] [--area NAME] [--base REF] [--plan] [--record PRIVATE_RUN] [--timeout-ms MS] [--wait-ms MS]\nAreas: ${Object.keys(REGRESSION_AREAS).join(', ')}\n--area may repeat and selects explicit scope; otherwise changed mode includes branch and uncommitted changes.\nEvery plan starts with verify:hygiene, then typecheck when the plan has a separate one; both run before the host reservation is taken. The remaining steps run cheapest first under it.\n--record saves private logs, durations, failures, test files rerun alone and final release receipts.`);
       return 0;
     }
     const options = parseRegressionArgs(argv);
@@ -237,6 +260,7 @@ export async function main(argv) {
     const receiptPlan = options.record ? record({ type: 'offline_plan', source: input, node: process.version, mode: options.mode, steps: plan.steps, fingerprint,
       executionFingerprint, sourceExportCoverage: 1, testFiles: testFiles.filter((file) => /^tests\/(?:[^/]+|usage\/[^/]+)\.test\.ts$/.test(file)) }) : undefined;
     const nodeBuilt = plan.steps.some((step) => step.kind === 'npm' && step.script === 'flue:build');
+    let stepCount = 0;
     const runStep = async (step, concurrent) => {
       const label = offlineStepLabel(step);
       const started = Date.now();
@@ -253,7 +277,9 @@ export async function main(argv) {
       // npm supplies its executable path on every platform. Direct node users
       // can use PATH without enabling a shell for any user input.
       const directNpm = step.kind === 'npm' && !process.env.npm_execpath;
-      const stepEnv = step.group && nodeBuilt ? { ...env, CHICKPEA_NODE_BUILD_READY: '1' } : env;
+      // Each test runner the step starts records the files it reran alone here.
+      const runResults = path.join(scratch, `test-runs-${stepCount += 1}.jsonl`);
+      const stepEnv = { ...env, ...(step.group && nodeBuilt ? { CHICKPEA_NODE_BUILD_READY: '1' } : {}), [RUN_RESULT_FILE_ENV]: runResults };
       // Concurrent unrecorded steps would interleave on the terminal; their output is printed when they finish.
       const piped = fd === undefined && concurrent;
       const stdio = fd !== undefined ? ['ignore', fd, fd] : piped ? ['ignore', 'pipe', 'pipe'] : 'inherit';
@@ -265,24 +291,26 @@ export async function main(argv) {
       if (piped) console.log(`\n--- ${label} (exit ${result.status ?? result.signal}) ---\n${result.output}`);
       if (result.signal || result.error) interrupted = true;
       const stable = !options.record || sourceInputs(ROOT).tree === input.tree;
-      const status = stable ? result.status ?? 1 : 1;
+      const { status, category, retries } = stepOutcome({ exitCode: result.status, error: result.error, stable, runs: readRunResults(runResults) });
+      if (retries?.length) console.error(`${label}: ${retries.length} test file(s) rerun alone: ${retries.map(({ file, alone }) => `${file} (${alone} alone)`).join(', ')}`);
       if (attempt) record({ type: 'offline_finish', planId: receiptPlan.id, attemptId: attempt.id, label, fingerprint, node: process.version,
-        result: status === 0 ? 'pass' : 'fail', exitCode: result.status, signal: result.signal,
-        category: !stable ? 'inputs_changed' : result.error ? 'infrastructure' : status === 0 ? null : 'unknown',
-        durationMs: Date.now() - started, evidence: evidenceRefs([log]) });
-      return status;
+        result: status === 0 ? 'pass' : 'fail', exitCode: result.status, signal: result.signal, category,
+        ...(retries ? { retries } : {}), durationMs: Date.now() - started, evidence: evidenceRefs([log]) });
+      return retries ? { status, retries } : status;
     };
     const results = await runWithHostReservation(plan.steps, runStep, acquireHost);
     const passed = results.length === plan.steps.length && results.every(({ status }) => status === 0)
       && (!options.record || sourceInputs(ROOT).tree === input.tree);
+    // Every test file a runner reran alone, by step, whether or not the run passed.
+    const retries = results.flatMap((result) => (result.retries ?? []).map((retry) => ({ step: offlineStepLabel(result), ...retry })));
     if (receiptPlan) {
-      record({ type: 'offline_summary', planId: receiptPlan.id, result: passed ? 'pass' : 'fail' });
+      record({ type: 'offline_summary', planId: receiptPlan.id, result: passed ? 'pass' : 'fail', retries });
       if (passed && options.mode === 'release') {
         const evidence = readRun(options.record).events.filter((event) => event.type === 'offline_finish' && event.planId === receiptPlan.id).flatMap((event) => event.evidence);
         record({ type: 'checkpoint', result: 'pass', source: input, node: process.version, planId: receiptPlan.id, fingerprint, evidence });
       }
     }
-    console.log(JSON.stringify({ result: passed ? 'pass' : 'fail', results, coverage: plan.coverage }, null, 2));
+    console.log(JSON.stringify({ result: passed ? 'pass' : 'fail', retries, results, coverage: plan.coverage }, null, 2));
     return passed ? 0 : 1;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
