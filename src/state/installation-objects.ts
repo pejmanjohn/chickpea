@@ -118,7 +118,10 @@ export async function exportInstallationObject(
 
 /**
  * restore_prepare: read one object's current fence, its bookmark for T and
- * the digest of its storage while suspended.
+ * the digest of its name and storage while suspended. Refused with
+ * `restore_object_busy` while the object has work it resumes on waking, and
+ * with `restore_object_too_large` over the digest's bound
+ * (`OBJECT_DIGEST_BUDGET`).
  */
 export async function readInstallationObjectRestoreBookmarks(
   env: Record<string, unknown>,
@@ -133,10 +136,11 @@ export async function readInstallationObjectRestoreBookmarks(
  * restore_apply, first phase: schedule one object's restore against its
  * prepared fence and return the receipt, the object's undo bookmark included.
  * Refused with `restore_content_moved` once the object's storage differs from
- * the prepared `expectedContentDigest`; an object that was only evicted and
- * woken since preparation schedules. The object keeps running until
- * `restartInstallationObject`. A repeated call reaching the same session
- * returns the same receipt.
+ * the prepared `expectedContentDigest`, or that digest is another object's;
+ * an object that was only evicted and woken since preparation schedules. The
+ * object keeps running until `restartInstallationObject`. A repeated call
+ * reaching the same session with the same fence, digest and target returns
+ * the same receipt.
  */
 export async function scheduleInstallationObjectRestore(
   env: Record<string, unknown>,
@@ -165,8 +169,10 @@ const RESTART_ATTEMPTS = 3;
  * the next session, where the restore has applied, and returns. An object
  * evicted since scheduling answers the first call the same way. A return
  * proves the bookmark left the fence, which every new session does, so it
- * proves the restore applied only given its receipt; an object that still
- * holds the fence refuses with `restore_not_scheduled`. An error thrown over
+ * proves the restore applied only given its receipt, and its `contentDigest`
+ * equal to the prepared one shows that it did not, unless T held that same
+ * storage; an object that still holds the fence refuses with
+ * `restore_not_scheduled`. An error thrown over
  * RPC loses its class, so every failed call is retried, up to
  * `RESTART_ATTEMPTS` calls; the last failure is thrown.
  */

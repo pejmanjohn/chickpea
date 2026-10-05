@@ -3,6 +3,7 @@ import {
   type InstallationOwnership,
 } from '../config/installation-scope.ts';
 import type { CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
+import { ObjectRestoreError } from '../state/object-host.ts';
 import type { StateDb } from '../state/state-db.ts';
 import type { SlackRunFacts } from './status-registry.ts';
 import type { TurnStopNotice } from './turn-job-types.ts';
@@ -577,6 +578,23 @@ export class ThreadRunnerJobStore {
       'UPDATE runner_stops SET ending_reported = 1 WHERE ending_outcome IS NOT NULL AND ending_reported = 0',
     );
     return dropped;
+  }
+}
+
+/**
+ * Before a restore reads a runner's fence and digest (state/object-host.ts):
+ * refuse while a job is marked running or a stop still owes its abort or
+ * coding cascade. A new instance arms its alarm at once for either
+ * (SlackThreadRunner's constructor), and an operator's `cancel_pending`
+ * leaves both, so the storage would move before scheduling. Retry once the
+ * runner's alarm has settled them: a running job settles as its run ends.
+ */
+export function quiesceThreadRunnerForRestore(jobs: Pick<ThreadRunnerJobStore, 'hasRunning' | 'hasOwedStops'>): void {
+  if (jobs.hasRunning() || jobs.hasOwedStops()) {
+    throw new ObjectRestoreError(
+      'restore_object_busy',
+      'The thread runner has a job running or a stop owed; retry once its alarm has settled them.',
+    );
   }
 }
 

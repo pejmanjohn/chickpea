@@ -28,6 +28,9 @@ declare module 'cloudflare:workers' {
 
   interface SqlStorageCursor {
     toArray(): SqlRow[];
+    /** Each row as its values in column order, stepping the statement one row at a time. */
+    raw(): IterableIterator<Array<SqlRow[string]>>;
+    readonly columnNames: string[];
     /** Exactly one row or it throws — use only for queries that guarantee it. */
     one(): SqlRow;
     /**

@@ -18,6 +18,7 @@ interface Probe {
   seeded: ObjectState;
   paged: { text: string; pages: number };
   whole: { text: string; pages: number };
+  digests: Record<'first' | 'again' | 'written' | 'reverted' | 'otherName' | 'refused', string>;
   refused: string;
   afterRefusal: ObjectState;
   cancelled: { alarmCleared: boolean };
@@ -31,7 +32,9 @@ interface Probe {
  * The host functions over real workerd Durable Object storage, at the
  * production compatibility date and installation tenancy: an export reads
  * every SQL table (one without a rowid) and key-value entry, pages
- * concatenate to the whole, another installation is refused, cancelling
+ * concatenate to the whole, the content digest reads each table a row at a
+ * time (the cursor's raw rows and column names) and stops at its budget,
+ * another installation is refused, cancelling
  * clears the alarm, and erasing removes every table, entry and the alarm.
  */
 test('host functions export, refuse, quiet and erase a real Durable Object\'s storage', {
@@ -83,6 +86,14 @@ test('host functions export, refuse, quiet and erase a real Durable Object\'s st
       { t: 'kv', key: 'flue:wake', value: { at: { $date: '2027-01-15T08:00:00.000Z' }, seen: { $map: [['a', 1]] } } },
       { t: 'kv', key: 'plain', value: 'value' },
     ]);
+
+    const { digests } = probe;
+    assert.match(digests.first, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(digests.again, digests.first, 'unchanged storage, unchanged digest');
+    assert.notEqual(digests.written, digests.first, 'a row written moves it');
+    assert.equal(digests.reverted, digests.first, 'deleted again, the storage and its digest are as before');
+    assert.notEqual(digests.otherName, digests.first, 'the digest binds the object\'s name');
+    assert.equal(digests.refused, 'restore_object_too_large');
 
     assert.match(probe.refused, /another installation/);
     assert.deepEqual(probe.afterRefusal, probe.seeded);

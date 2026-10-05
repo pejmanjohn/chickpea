@@ -1,11 +1,17 @@
 // Real workerd Durable Object storage under the host functions every
 // installation object delegates to: seed an object with SQL tables (one
 // without a rowid), BLOBs, key-value entries and an alarm, export it a page
-// at a time, refuse another installation, erase it and read back what is left.
+// at a time, digest it, refuse another installation, erase it and read back
+// what is left.
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
 import { objectInstallationEnv } from '../../../src/config/installation-scope.ts';
-import { objectHostFunctions, type InstallationObjectHostRpc } from '../../../src/state/object-host.ts';
+import {
+  objectHostFunctions,
+  objectStorageDigest,
+  type HostObjectStorage,
+  type InstallationObjectHostRpc,
+} from '../../../src/state/object-host.ts';
 
 interface Env {
   CHICKPEA_TENANCY: string;
@@ -56,6 +62,30 @@ export class ProbeObject extends DurableObject {
     return { text, pages };
   }
 
+  /**
+   * The content digest read twice, after a row written and deleted again,
+   * after a row changed, under another name, and over a budget of 10 records.
+   */
+  async digests(): Promise<Record<string, string>> {
+    const storage = this.ctx.storage as unknown as HostObjectStorage;
+    const name = this.ctx.id.name!;
+    const digest = (as = name, budget?: { rows: number; bytes: number }) => objectStorageDigest(storage, as, budget);
+    const first = await digest();
+    const again = await digest();
+    this.ctx.storage.sql.exec("INSERT INTO keyed (a, b, v) VALUES ('later', 1, 'x')");
+    const written = await digest();
+    this.ctx.storage.sql.exec("DELETE FROM keyed WHERE a = 'later'");
+    const reverted = await digest();
+    const otherName = await digest(`${name}-other`);
+    let refused = '';
+    try {
+      await digest(name, { rows: 10, bytes: 1024 * 1024 });
+    } catch (error) {
+      refused = (error as { code?: string }).code ?? String(error);
+    }
+    return { first, again, written, reverted, otherName, refused };
+  }
+
   async erase(installationId: string): Promise<{ erased: true }> {
     return this.host().chickpeaHostErase({ installationId });
   }
@@ -88,6 +118,7 @@ export default {
       const seeded = await object.state();
       const paged = await object.exportAll('inst_probe', 4_096);
       const whole = await object.exportAll('inst_probe', 4 * 1024 * 1024);
+      const digests = await object.digests();
       let refused = '';
       try {
         await object.erase('inst_other');
@@ -102,7 +133,7 @@ export default {
       const afterErase = await object.state();
       const reexported = await object.exportAll('inst_probe', 4_096);
       return Response.json({
-        seeded, paged, whole, refused, afterRefusal, cancelled, afterCancel, erased, afterErase, reexported,
+        seeded, paged, whole, digests, refused, afterRefusal, cancelled, afterCancel, erased, afterErase, reexported,
       });
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.stack ?? error.message : String(error) }, { status: 500 });

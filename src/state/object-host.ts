@@ -39,16 +39,20 @@ export interface ObjectRestoreBookmarks {
   readonly currentBookmark: string;
   readonly targetBookmark: string;
   /**
-   * The object's storage when the fence was read, as `objectStorageDigest`.
-   * Scheduling compares it, not the bookmark: every new session of an object
-   * starts a new current bookmark without any write.
+   * The object's name and storage when the fence was read, as
+   * `objectStorageDigest`. Scheduling compares it, not the bookmark: every
+   * new session of an object starts a new current bookmark without any write.
    */
   readonly contentDigest: string;
 }
 
 export interface ObjectRestoreRequest extends ObjectHostRequest {
   readonly expectedCurrentBookmark: string;
-  /** The `contentDigest` read with that fence: scheduling refuses once the storage differs from it. */
+  /**
+   * The `contentDigest` this object's preparation read with that fence:
+   * scheduling refuses once the storage differs from it, or when it is
+   * another object's.
+   */
   readonly expectedContentDigest: string;
   readonly targetBookmark: string;
 }
@@ -69,12 +73,23 @@ export interface ObjectRestoreRestartRequest extends ObjectHostRequest {
 
 /**
  * Returned only by a session with no restore scheduled in it whose current
- * bookmark is no longer the fence: the restore scheduled against that fence
- * has applied, as it does on the object's next session.
+ * bookmark is no longer the fence. Every new session leaves the fence, so
+ * `applied` means only that this is a later session than the one that
+ * scheduled: given the receipt, the restore has applied, as a scheduled
+ * restore does on the object's next session.
  */
 export interface ObjectRestoreApplied {
   readonly applied: true;
   readonly currentBookmark: string;
+  /**
+   * The storage this session holds, as `objectStorageDigest`, read in the
+   * same input gate as `currentBookmark`; null when it is over the digest
+   * budget. Equal to the prepared `contentDigest`, the restore did not apply,
+   * unless the object held at T exactly what it held at preparation. A
+   * different digest shows that the storage changed, not that the restore
+   * caused it: a waking Sandbox arms its container runtime's alarm.
+   */
+  readonly contentDigest: string | null;
 }
 
 export interface InstallationObjectRestoreRpc {
@@ -89,13 +104,16 @@ export interface InstallationObjectRestoreRpc {
    * interrupts the call. Otherwise returns only once the bookmark has left
    * the fence, and refuses with `restore_not_scheduled` while the object
    * still holds it. Every new session leaves the fence, so the return proves
-   * the restore applied only to a caller holding its receipt.
+   * the restore applied only to a caller holding its receipt; its digest
+   * shows whether the storage changed.
    */
   chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest): Promise<ObjectRestoreApplied>;
 }
 
 /** The SQLite PITR and lifecycle APIs from DurableObjectState, without a runtime import. */
 export interface HostObjectRestoreContext {
+  /** The name the object was addressed by, which its content digest binds. */
+  readonly id: { readonly name?: string };
   readonly storage: {
     getCurrentBookmark(): Promise<string>;
     getBookmarkForTime(timestamp: number | Date): Promise<string>;
@@ -113,7 +131,9 @@ const OBJECT_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 export type ObjectRestoreErrorCode =
   | 'restore_time_invalid'
   | 'restore_bookmark_invalid'
+  | 'restore_digest_invalid'
   | 'restore_content_moved'
+  | 'restore_object_too_large'
   | 'restore_unavailable'
   | 'restore_object_busy'
   | 'restore_already_scheduled'
@@ -145,7 +165,9 @@ const scheduledRestores = new WeakMap<HostObjectRestoreContext, ObjectRestoreRec
  * Scheduling checks the storage, not the bookmark, against preparation: a
  * Durable Object evicted and woken again starts a new current bookmark
  * without writing anything, so an idle object's bookmark rarely survives
- * until scheduling, while its storage does.
+ * until scheduling, while its storage does. The digest is bounded by
+ * `OBJECT_DIGEST_BUDGET`: it runs inside `blockConcurrencyWhile`, which
+ * resets the object after 30 seconds.
  */
 export function objectRestoreHostFunctions(object: {
   readonly env: Record<string, unknown> | undefined;
@@ -160,13 +182,20 @@ export function objectRestoreHostFunctions(object: {
    * otherwise make right after the read. Never on restart.
    */
   readonly quiesce?: () => Promise<void>;
+  /** `OBJECT_DIGEST_BUDGET` unless a test sets a smaller one. */
+  readonly digestBudget?: ObjectDigestBudget;
 }): InstallationObjectRestoreRpc {
-  const context = (): HostObjectRestoreContext => {
-    if (!object.restoreContext) {
-      throw new ObjectRestoreError('restore_unavailable', 'This object has no SQLite restore context.');
-    }
-    return object.restoreContext;
+  /** The object's session context and the name its digest binds. */
+  const context = (): { ctx: HostObjectRestoreContext; name: string } => {
+    const ctx = object.restoreContext;
+    if (!ctx) throw new ObjectRestoreError('restore_unavailable', 'This object has no SQLite restore context.');
+    // Every object a host addresses has its name: it scopes the object to its installation.
+    const name = ctx.id.name;
+    if (!name) throw new ObjectRestoreError('restore_unavailable', 'This object has no name to bind its content digest to.');
+    return { ctx, name };
   };
+  const digest = (name: string): Promise<string> =>
+    objectStorageDigest(object.storage, name, object.digestBudget ?? OBJECT_DIGEST_BUDGET);
   return {
     async chickpeaHostRestoreBookmarks(request) {
       const scope = assertObjectHostCall(object.env, request);
@@ -175,14 +204,14 @@ export function objectRestoreHostFunctions(object: {
       if (!Number.isSafeInteger(timestamp) || timestamp < now - OBJECT_RESTORE_WINDOW_MS || timestamp >= now) {
         throw new ObjectRestoreError('restore_time_invalid', 'Restore time must be within the past 30 days and before now.');
       }
-      const ctx = context();
+      const { ctx, name } = context();
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
         if (scheduledRestores.has(ctx)) throw alreadyScheduled();
         await object.quiesce?.();
         const targetBookmark = await ctx.storage.getBookmarkForTime(timestamp);
         const currentBookmark = await ctx.storage.getCurrentBookmark();
-        const contentDigest = await objectStorageDigest(object.storage);
+        const contentDigest = await digest(name);
         return { timestamp, currentBookmark, targetBookmark, contentDigest };
       });
     },
@@ -194,12 +223,15 @@ export function objectRestoreHostFunctions(object: {
         throw new ObjectRestoreError('restore_bookmark_invalid', 'Restore requires current and target bookmarks.');
       }
       if (typeof expectedContentDigest !== 'string' || !expectedContentDigest.trim()) {
-        throw new ObjectRestoreError('restore_bookmark_invalid', 'Restore requires the content digest read with its fence.');
+        throw new ObjectRestoreError('restore_digest_invalid', 'Restore requires the content digest read with its fence.');
       }
-      const ctx = context();
+      const { ctx, name } = context();
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
-        // A repeated call, whose first answer was lost, gets the same receipt.
+        // The session holding a restore answers a repeated call, whose first
+        // answer was lost, with the same receipt, but only when it presents
+        // the same fence, digest and target. Anything else, and a new
+        // preparation, is refused until the object restarts.
         const scheduled = scheduledRestores.get(ctx);
         if (scheduled) {
           if (scheduled.expectedCurrentBookmark === expectedCurrentBookmark &&
@@ -209,10 +241,11 @@ export function objectRestoreHostFunctions(object: {
           throw alreadyScheduled();
         }
         await object.quiesce?.();
-        // Not the bookmark: a new session moves it without a write. Any write
-        // since preparation that changed what is stored moves the digest.
-        if (await objectStorageDigest(object.storage) !== expectedContentDigest) {
-          throw new ObjectRestoreError('restore_content_moved', 'The storage changed since the restore was prepared; prepare it again.');
+        if (await digest(name) !== expectedContentDigest) {
+          throw new ObjectRestoreError(
+            'restore_content_moved',
+            'The storage no longer matches the prepared digest, or the digest is another object\'s; prepare it again.',
+          );
         }
         const undoBookmark = await ctx.storage.onNextSessionRestoreBookmark(targetBookmark);
         const receipt: ObjectRestoreReceipt = { expectedCurrentBookmark, expectedContentDigest, targetBookmark, undoBookmark };
@@ -226,7 +259,7 @@ export function objectRestoreHostFunctions(object: {
       if (typeof expectedCurrentBookmark !== 'string' || !expectedCurrentBookmark.trim()) {
         throw new ObjectRestoreError('restore_bookmark_invalid', 'Restart requires the fence the restore was scheduled against.');
       }
-      const ctx = context();
+      const { ctx, name } = context();
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
         const scheduled = scheduledRestores.get(ctx);
@@ -244,7 +277,15 @@ export function objectRestoreHostFunctions(object: {
         if (currentBookmark === expectedCurrentBookmark) {
           throw new ObjectRestoreError('restore_not_scheduled', 'No restore is scheduled or applied: the object still holds the fence.');
         }
-        return { applied: true as const, currentBookmark };
+        // The restored storage may be larger than the prepared one: over the
+        // budget the answer stands without a digest rather than failing.
+        let contentDigest: string | null = null;
+        try {
+          contentDigest = await digest(name);
+        } catch (error) {
+          if (!(error instanceof ObjectRestoreError && error.code === 'restore_object_too_large')) throw error;
+        }
+        return { applied: true as const, currentBookmark, contentDigest };
       });
     },
   };
@@ -355,7 +396,12 @@ const KV_BATCH = 128;
 /** The storage surface these functions use: a Durable Object's `ctx.storage`. */
 export interface HostObjectStorage {
   readonly sql: {
-    exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] };
+    exec(query: string, ...bindings: unknown[]): {
+      toArray(): Record<string, unknown>[];
+      /** Steps the statement a row at a time, each row its values in column order, as `SqlStorageCursor` does. */
+      raw(): Iterable<unknown[]>;
+      readonly columnNames: readonly string[];
+    };
   };
   list(options?: { startAfter?: string; limit?: number }): Promise<Map<string, unknown>>;
   deleteAll(): Promise<void>;
@@ -377,6 +423,9 @@ export function objectHostFunctions(object: {
   readonly restoreContext?: HostObjectRestoreContext;
   readonly onErased?: () => void;
   readonly cancel?: (now: number) => Omit<ObjectPendingWorkCancellation, 'alarmCleared'>;
+  /** Refuses a restore's preparation and scheduling while the object has work owed (see `objectRestoreHostFunctions`). */
+  readonly quiesce?: () => Promise<void>;
+  readonly digestBudget?: ObjectDigestBudget;
 }): InstallationObjectHostRpc {
   return {
     ...objectRestoreHostFunctions(object),
@@ -514,46 +563,89 @@ export async function exportObjectPage(
   return page(null);
 }
 
+/** How much one content digest may read before it refuses (see `OBJECT_DIGEST_BUDGET`). */
+export interface ObjectDigestBudget {
+  /** Records: the name, schema entries, table headers, rows, key-value entries and the alarm. */
+  readonly rows: number;
+  /** UTF-8 bytes of their serialized form, BLOBs in base64. */
+  readonly bytes: number;
+}
+
 /**
- * A SHA-256 digest of everything a restore replaces: each schema entry (but
- * SQLite's and Durable Objects' own), every row of every table in key order,
- * every key-value entry and the alarm. Unlike an export, it leaves nothing
- * out. Equal digests mean equal storage whatever the bookmarks say; a write
- * that changes what is stored changes it, and one that stores the same
- * values again does not.
+ * The bound on one content digest: 500,000 records or 512 MiB serialized.
+ * The digest runs inside `blockConcurrencyWhile`, after whose 30 seconds
+ * Cloudflare resets the object, so an object too large to digest in time
+ * would be reset by every preparation and could never be restored. Measured
+ * on local workerd SQLite inside the gate, a digest at this bound takes at
+ * most 1.1 s for rows of up to 30 columns, 512 MiB of transcript chunks or
+ * 490,000 key-value entries, and 2.9 s for rows of the platform's widest
+ * table (100 columns); a refusal stops within 0.4 s. Even with a production
+ * CPU twice as slow, that is a tenth of the gate's 30 s and of the 30 s of
+ * CPU a request gets, and a fifth for the widest rows. Reading a row at a
+ * time keeps memory to one row (at most 2 MB) and 16 key-value entries, far
+ * under an isolate's 128 MB.
  */
-export async function objectStorageDigest(storage: HostObjectStorage): Promise<string> {
+export const OBJECT_DIGEST_BUDGET: ObjectDigestBudget = Object.freeze({ rows: 500_000, bytes: 512 * 1024 * 1024 });
+
+/** Key-value entries a digest lists at once: up to 2 MB each, so at most 32 MB held. */
+const DIGEST_KV_BATCH = 16;
+
+/**
+ * A SHA-256 digest of one object's name and everything a restore replaces:
+ * each schema entry (but SQLite's and Durable Objects' own), every row of
+ * every table in key order, every key-value entry and the alarm. Unlike an
+ * export, it leaves nothing out. Equal digests mean the same object holding
+ * equal storage whatever the bookmarks say; a write that changes what is
+ * stored changes it, and one that stores the same values again does not.
+ * Values are compared as JavaScript reads them, so it does not tell apart an
+ * INTEGER from an equal REAL or integers beyond 2^53 that read alike, and
+ * leaves out `sqlite_sequence` (AUTOINCREMENT counters) with SQLite's own tables.
+ *
+ * Each table is one statement read a row at a time as an array of values,
+ * its column names hashed once: memory holds one row, not the table. Past
+ * `budget` it stops reading and refuses with `restore_object_too_large`.
+ */
+export async function objectStorageDigest(
+  storage: HostObjectStorage,
+  name: string,
+  budget: ObjectDigestBudget = OBJECT_DIGEST_BUDGET,
+): Promise<string> {
   const hash = createHash('sha256');
+  let rows = 0;
+  let bytes = 0;
   const add = (record: unknown): void => {
-    hash.update(JSON.stringify(record));
-    hash.update('\n');
+    const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+    rows += 1;
+    bytes += line.byteLength;
+    if (rows > budget.rows || bytes > budget.bytes) {
+      throw new ObjectRestoreError(
+        'restore_object_too_large',
+        `This object holds more than a restore can check: over ${budget.rows} records or ${budget.bytes} bytes.`,
+      );
+    }
+    hash.update(line);
   };
+  add(['object', name]);
   for (const entry of storage.sql.exec(
-    `SELECT type, name, tbl_name, sql FROM sqlite_master
-     WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'
-     ORDER BY type, name`,
-  ).toArray()) {
-    add(['schema', entry.type, entry.name, entry.tbl_name, entry.sql ?? null]);
+    `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE ${OWN_SCHEMA_ENTRY} ORDER BY type, name`,
+  ).raw()) {
+    add(['schema', ...entry]);
   }
   for (const table of listTables(storage)) {
-    let after: SqlKey | undefined;
-    for (;;) {
-      const rows = readRows(storage, table, after);
-      for (const { key, row } of rows) {
-        add(['row', table.name, Object.entries(row).map(([column, value]) => [column, encodeSqlValue(value)])]);
-        after = key;
-      }
-      if (rows.length < ROW_BATCH) break;
-    }
+    const rowsOf = storage.sql.exec(
+      `SELECT * FROM ${quoteIdentifier(table.name)} ORDER BY ${table.keyColumns.map(quoteIdentifier).join(', ')}`,
+    );
+    add(['table', table.name, rowsOf.columnNames]);
+    for (const values of rowsOf.raw()) add(['row', values.map(encodeSqlValue)]);
   }
   let startAfter: string | undefined;
   for (;;) {
-    const entries = await storage.list({ ...(startAfter === undefined ? {} : { startAfter }), limit: KV_BATCH });
+    const entries = await storage.list({ ...(startAfter === undefined ? {} : { startAfter }), limit: DIGEST_KV_BATCH });
     for (const [key, value] of entries) {
       add(['kv', key, encodeStoredValue(value)]);
       startAfter = key;
     }
-    if (entries.size < KV_BATCH) break;
+    if (entries.size < DIGEST_KV_BATCH) break;
   }
   add(['alarm', await storage.getAlarm()]);
   return `sha256:${hash.digest('hex')}`;
@@ -584,15 +676,16 @@ interface ExportedTable {
 }
 
 /**
- * The object's own tables, by name. SQLite's internal tables and Durable
- * Objects' reserved `_cf_` tables (which hold key-value storage, exported
- * through `list`) are not readable as SQL.
+ * A `sqlite_master` entry of the object's own: not SQLite's internal ones nor
+ * Durable Objects' reserved `_cf_` ones (which hold key-value storage, read
+ * through `list`), which are not readable as SQL.
  */
+const OWN_SCHEMA_ENTRY = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'";
+
+/** The object's own tables, by name. */
 function listTables(storage: HostObjectStorage): ExportedTable[] {
   return storage.sql.exec(
-    `SELECT name, sql FROM sqlite_master
-     WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'
-     ORDER BY name`,
+    `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND ${OWN_SCHEMA_ENTRY} ORDER BY name`,
   ).toArray().map((row) => {
     const name = String(row.name);
     const sql = typeof row.sql === 'string' ? row.sql : null;
