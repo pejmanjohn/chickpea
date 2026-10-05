@@ -661,14 +661,14 @@ test('X5 skill import: a private repository resolves only through the installati
   assert.deepEqual(JSON.parse(token.body!), { repositories: ['skills'], permissions: { contents: 'read' } });
 });
 
-test('X5 skill import: a rate-limited anonymous probe still imports through the binding that grants the repository, and refuses any other', async (t) => {
+test('X5 skill import: a rate-limited anonymous probe still imports through the binding that grants the repository, and otherwise stays rate-limited', async (t) => {
   platform(t);
   const { request } = hostedAdmin(t);
   const resolve = (env: Record<string, unknown>, source: string) =>
     request(env, '/admin/api/skills/resolve', { method: 'POST', body: JSON.stringify({ source }) });
-  const refused = {
-    error: 'repository_not_found_or_inaccessible',
-    message: 'Repository not found or not accessible. Check the source and GitHub App access.',
+  const rateLimited = {
+    error: 'github_rate_limited',
+    message: 'GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.',
   };
   for (const anonymous of [{ status: 429 }, { status: 403, headers: { 'retry-after': '60' } }]) {
     const label = String(anonymous.status);
@@ -680,18 +680,18 @@ test('X5 skill import: a rate-limited anonymous probe still imports through the 
     assert.deepEqual(resolution.skills.map(({ name }) => name), ['bound-skill'], label);
     assert.deepEqual(mints(fetched), [GITHUB_A], label);
 
-    // B holds no binding for A's account: refused, with no App lookup and no mint.
+    // B holds no binding for A's account: still the rate limit, with no App lookup and no mint.
     fetched = github(t, { anonymous });
     const foreign = await resolve(ENV_B, 'acme-a/skills');
-    assert.equal(foreign.status, 404, label);
-    assert.deepEqual(await foreign.json(), refused, label);
+    assert.equal(foreign.status, 429, label);
+    assert.deepEqual(await foreign.json(), rateLimited, label);
     assert.deepEqual(fetched.filter(({ url }) => url.endsWith('/installation') || url.endsWith('/access_tokens')), [], label);
 
     // A's binding does not select the repository, so GitHub refuses its token.
     github(t, { anonymous, mintStatus: 422 });
     const unselected = await resolve(ENV_A, 'acme-a/unselected');
-    assert.equal(unselected.status, 404, label);
-    assert.deepEqual(await unselected.json(), refused, label);
+    assert.equal(unselected.status, 429, label);
+    assert.deepEqual(await unselected.json(), rateLimited, label);
   }
 });
 
