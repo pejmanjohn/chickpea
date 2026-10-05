@@ -554,6 +554,7 @@ async function runTurnAttempt(
       publicUrl,
       userId: turn.userId,
       workspaceId: turn.workspaceId,
+      modelRepair: true,
     }, undefined, {
       deliverySafety: options.executionAuthority === 'ledger' ? 'ledger' : 'legacy',
       ...(options.onPublicMessageDelivered
@@ -1396,6 +1397,8 @@ async function runTurnAttempt(
     // The turn's model cannot run until Model providers is repaired: say so
     // once, as the thread's Agent, with nothing dispatched.
     if (modelRepairText !== undefined) {
+      presenter.setFooterModelRepair();
+      agentViewPresentation?.setFooterModelRepair();
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(modelRepairText, 'plain_text', 'error');
       await finishStatus('failure');

@@ -409,7 +409,10 @@ export interface ManagementAgentCreatedWelcome {
   proposalId?: string;
   /** Durable immediate-creation request that owns this welcome. */
   creationOperationId?: string;
-  /** Internal correlation for settling the Slack Run after this deferred post is acknowledged. */
+  /**
+   * Internal correlation: the deferred turn's Run id. Its Slack presentation
+   * and its Work Run settle once this post is acknowledged or abandoned.
+   */
   presentationRunId?: string;
   /** Durable Slack turn held open until this deferred receipt settles. */
   turnJobId?: string;

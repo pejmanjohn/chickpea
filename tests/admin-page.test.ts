@@ -4148,6 +4148,29 @@ test('saving an Agent reloads its detail-scoped DM audience after the roster ref
   assert.doesNotMatch(harness.app.innerHTML, /DM access unavailable/);
 });
 
+test('the Handle field shows the Slack handle when the requested handle is the Agent name', async () => {
+  // A management recipe that names no handle stores the Agent's name as the
+  // requested handle; Slack publishes its normalized form.
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{
+      ...releaseAgent,
+      name: 'HR9 Recipe Probe Two',
+      slackPresence: {
+        requestedHandle: 'HR9 Recipe Probe Two',
+        normalizedHandle: 'hr9-recipe-probe-two',
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: { kind: 'generated', revision: 1, seed: 'recipe-seed' },
+      },
+    }],
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML, /<input class="input mono" id="p-handle" type="text" maxlength="80" value="hr9-recipe-probe-two"/);
+  assert.doesNotMatch(harness.app.innerHTML, /id="p-handle"[^>]*value="HR9 Recipe Probe Two"/);
+});
+
 test('Agent roster uses each Agent Slack avatar when one is available', async () => {
   const avatarUrl = 'https://secure.gravatar.com/avatar/agent-release?s=192&d=identicon';
   const harness = runAdminPageHarness({
@@ -5659,6 +5682,64 @@ test('agent-first Admin lands on the Default Agent with Destinations in lower na
   assert.match(harness.app.innerHTML, /class="agent-roster-item active" data-action="edit-profile" data-agent="agent_release"[^>]*aria-current="page"/);
   assert.match(harness.app.innerHTML, /data-action="open-destinations"[^>]*>Destinations<\/button>/);
   assert.doesNotMatch(harness.app.innerHTML, />Profiles<\/button>|aria-label="Profiles"|>New profile</);
+});
+
+test('Admin lands on the first active Agent when an archived Agent sorts before it', async () => {
+  // The inventory is ordered by id, so an archived Agent can come first.
+  const archivedAgent = {
+    ...releaseAgent,
+    id: 'agent_archived',
+    name: 'Archived Helper',
+    enabled: false,
+    lifecycle: 'archived',
+  };
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [archivedAgent, { ...releaseAgent, lifecycle: 'active' }],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+  assert.match(harness.app.innerHTML, /<h1 class="page-title">Release Profile<\/h1>/);
+  // The archived Agent stays one click away in the roster.
+  assert.match(harness.app.innerHTML, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_archived"/);
+});
+
+test('Admin lands on an active Agent before a draft or needs-attention Agent that sorts first', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [
+      { ...releaseAgent, id: 'agent_a_draft', name: 'Draft Helper', lifecycle: 'draft' },
+      { ...releaseAgent, id: 'agent_b_attention', name: 'Attention Helper', lifecycle: 'needs_attention' },
+      { ...releaseAgent, lifecycle: 'active' },
+    ],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+});
+
+test('with no active Agent, Admin lands on a draft Agent before an archived one', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [
+      { ...releaseAgent, id: 'agent_a_archived', name: 'Archived Helper', enabled: false, lifecycle: 'archived' },
+      { ...releaseAgent, lifecycle: 'draft' },
+    ],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+});
+
+test('Admin still opens an archived Agent when it is the only Agent', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [{ ...releaseAgent, enabled: false, lifecycle: 'archived' }],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
 });
 
 test('Agent detail follows the approved compact hierarchy and capability vocabulary', async () => {

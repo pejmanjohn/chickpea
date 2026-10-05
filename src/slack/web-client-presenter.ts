@@ -159,6 +159,8 @@ export interface SlackPresenterTarget {
   userId?: string;
   workspaceId?: string;
   memoryFooterItems?: readonly string[];
+  /** The reply is a model-key repair reply (see SlackReplyFooter.modelRepair). */
+  modelRepair?: boolean;
 }
 
 export interface SlackArtifactInput {
@@ -1117,6 +1119,11 @@ export class WebClientPresenter {
     this.target.memoryFooterItems = memoryItems;
   }
 
+  /** Mark the reply a model-key repair reply, known only once its model fails readiness. */
+  setFooterModelRepair(): void {
+    this.target.modelRepair = true;
+  }
+
   private replyFooter(): SlackReplyFooter {
     return {
       agentName: this.target.agentName,
@@ -1124,6 +1131,7 @@ export class WebClientPresenter {
       agentId: this.target.agentId,
       publicUrl: this.target.publicUrl,
       memoryItems: this.target.memoryFooterItems,
+      ...(this.target.modelRepair ? { modelRepair: true } : {}),
     };
   }
 

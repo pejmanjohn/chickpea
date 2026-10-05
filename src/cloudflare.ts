@@ -2944,6 +2944,7 @@ async function drainCloudflareManagementReceipts(
     resolveClient: async (workspaceId: string) =>
       (await resolveInstallation(workspaceId)).client,
   };
+  const work = stores.work as unknown as WorkStore;
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
@@ -2955,6 +2956,7 @@ async function drainCloudflareManagementReceipts(
       record,
       presentation,
       (turnJobId) => stores.turnJobs.markError(turnJobId),
+      work,
     ),
     deliver: (record) => deliverManagementReceiptToSlack(record, {
       identity: stores.identity as unknown as IdentityStore,
@@ -2966,6 +2968,7 @@ async function drainCloudflareManagementReceipts(
             delivery,
             stores.config,
             presentation,
+            work,
           );
         } finally {
           if (isAgentCreatedWelcome(deliveredRecord.receipt) &&

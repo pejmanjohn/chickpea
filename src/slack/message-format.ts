@@ -3,6 +3,8 @@ import {
   pemArmorRanges,
   redactCredentialLikeContent,
 } from '../security/content-validation.ts';
+import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { adminSettingsPath, type AdminSettingsSection } from '../management/admin-links.ts';
 import type { CompletedSlackArtifactReceipt } from './artifact-receipts.ts';
 import type { SlackNativeTableBlock } from './table-presentation.ts';
 
@@ -60,6 +62,7 @@ export interface RenderedSlackMessage {
 
 interface SlackAdminUrlParams {
   agentId?: string;
+  settingsSection?: AdminSettingsSection;
   channelId?: string;
 }
 
@@ -82,6 +85,8 @@ export interface SlackReplyFooter {
   publicUrl?: string | undefined;
   /** Omit the Admin link while keeping Agent/model attribution. */
   includeConfigureLink?: boolean | undefined;
+  /** The reply asks for a model key in Settings › Model providers (see footerConfigureTarget). */
+  modelRepair?: boolean | undefined;
   memoryItems?: readonly string[] | undefined;
   scheduled?: boolean | undefined;
 }
@@ -923,7 +928,7 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
     segments.push(escapeSlackControlCharacters(footer.modelLabel));
   }
   if (footer.includeConfigureLink !== false) {
-    segments.push(renderSlackConfigureLink(footer.publicUrl, { agentId: footer.agentId }));
+    segments.push(renderSlackConfigureLink(footer.publicUrl, footerConfigureTarget(footer)));
   }
   if (footer.scheduled) segments.push('Scheduled');
   for (const item of footer.memoryItems ?? []) {
@@ -933,6 +938,16 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
     type: 'context',
     elements: [{ type: 'mrkdwn', text: segments.join(' | ') }],
   };
+}
+
+/**
+ * Where a reply's Configure link opens: the Agent's Admin page. The built-in
+ * Chickpea Agent has none, so its model-key repair reply opens Settings ›
+ * Model providers and its other replies open Admin home.
+ */
+function footerConfigureTarget(footer: SlackReplyFooter): SlackAdminUrlParams {
+  if (footer.agentId !== CHICKPEA_AGENT_ID) return { agentId: footer.agentId };
+  return footer.modelRepair ? { settingsSection: 'providers' } : {};
 }
 
 // The one place that turns a public URL into the Slack-visible "Configure" link
@@ -1066,6 +1081,8 @@ export function buildSlackAdminUrl(
 
   if (params.agentId) {
     url.pathname = `/admin/agents/${encodeURIComponent(params.agentId)}`;
+  } else if (params.settingsSection) {
+    url.pathname = adminSettingsPath(params.settingsSection);
   }
   if (params.channelId) {
     url.searchParams.set('channel', params.channelId);

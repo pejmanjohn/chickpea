@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 import type { WebClient } from '@slack/web-api';
 
 import { activityStatus } from '../src/activity/status.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { RuntimeModelReadinessError } from '../src/config/runtime-model.ts';
 import { PROVIDER_KEY_ENV_VARS, PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
@@ -46,15 +47,23 @@ const agent: ResolvedAssignment['agent'] = {
   repositories: [],
 };
 
-function inheriting(model: string): ResolvedAssignment {
+/** The built-in Chickpea Agent, which has no Admin page. */
+const chickpea: ResolvedAssignment['agent'] = {
+  ...agent,
+  id: CHICKPEA_AGENT_ID,
+  kind: 'system',
+  name: 'Chickpea',
+};
+
+function inheriting(model: string, subject: ResolvedAssignment['agent'] = agent): ResolvedAssignment {
   return {
     workspaceId: 'T_MODEL_REPAIR',
     channelId: 'D_MODEL_REPAIR',
-    agentId: agent.id,
+    agentId: subject.id,
     runtimeContract: 'chickpea-v1',
     model,
     modelAttribution: { source: 'workspace_default', workspaceDefaultRevision: 2, providerId: model.split('/')[0]! },
-    agent,
+    agent: subject,
   };
 }
 
@@ -96,6 +105,8 @@ async function message(
     env?: Record<string, string | undefined>;
     /** Admission already showed the thread a "Thinking" status, as the relay does. */
     admitted?: boolean;
+    /** The turn has no durable presentation: the presenter posts the reply itself. */
+    withoutPresentation?: boolean;
   } = {},
 ) {
   turns += 1;
@@ -159,6 +170,13 @@ async function message(
   } as unknown as SlackPresentationStatePort;
   const posts: Array<Record<string, unknown>> = [];
   const statuses: string[] = [];
+  /** The Configure link of every footer Slack was sent, wherever it went. */
+  const configureLinks: string[] = [];
+  const noteFooter = (input: unknown) => {
+    for (const match of JSON.stringify(input).matchAll(/<([^|<>]+)\|Configure>/g)) {
+      configureLinks.push(match[1]!);
+    }
+  };
   const ok = async () => ({ ok: true, ts: '1788100099.000100', channel: turn.channelId, messages: [] });
   const client = {
     apiCall: ok,
@@ -175,15 +193,17 @@ async function message(
     chat: {
       postMessage: async (input: Record<string, unknown>) => {
         posts.push(input);
+        noteFooter(input);
         return { ok: true, ts: '1788100099.000200', channel: turn.channelId };
       },
       startStream: async (input: Record<string, unknown>) => {
         posts.push(input);
+        noteFooter(input);
         return { ok: true, ts: '1788100099.000300', channel: turn.channelId };
       },
-      appendStream: ok,
-      stopStream: ok,
-      update: ok,
+      appendStream: async (input: unknown) => { noteFooter(input); return ok(); },
+      stopStream: async (input: unknown) => { noteFooter(input); return ok(); },
+      update: async (input: unknown) => { noteFooter(input); return ok(); },
       delete: ok,
     },
   } as unknown as WebClient;
@@ -215,7 +235,7 @@ async function message(
       runId,
       turnId: `turn_${runId}`,
       runAttempt: 1,
-      presentationState,
+      ...(options.withoutPresentation ? {} : { presentationState }),
       publicUrl: 'https://chickpea.example',
       settingsStore: settings,
       usageRecordingEnabled: false,
@@ -230,7 +250,7 @@ async function message(
     settings.close();
     db.close();
   }
-  return { posts, outcomes, dispatched, statuses, presentation };
+  return { posts, outcomes, dispatched, statuses, presentation, configureLinks };
 }
 
 /** The text of a post, or of a stream's first chunks. */
@@ -242,7 +262,7 @@ function replyText(post: Record<string, unknown>): string {
 }
 
 test('a Workspace default whose provider key was removed gets the repair reply once, as the installation\'s bot', async () => {
-  const { posts, outcomes, dispatched } = await message(inheriting('openai/gpt-5.6-luna'));
+  const { posts, outcomes, dispatched, configureLinks } = await message(inheriting('openai/gpt-5.6-luna'));
   assert.equal(dispatched, 0, 'nothing dispatched');
   const replies = posts.filter((post) => replyText(post).includes(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT));
   assert.equal(replies.length, 1, 'one repair reply');
@@ -250,6 +270,31 @@ test('a Workspace default whose provider key was removed gets the repair reply o
   assert.equal(replies[0]!.icon_url, undefined);
   assert.doesNotMatch(posts.map(replyText).join('\n'), /failed before completion|needs setup/);
   assert.deepEqual(outcomes, ['failed'], 'the turn is settled, not retried');
+  // A user Agent's Configure link still opens its own Admin page.
+  assert.deepEqual(configureLinks, ['https://chickpea.example/admin/agents/agent_model_repair']);
+});
+
+const MODEL_PROVIDERS_URL = 'https://chickpea.example/admin/settings/providers';
+
+test('the built-in Chickpea\'s model-key repair reply links Configure to Settings › Model providers', async () => {
+  for (const variant of [{}, { withoutPresentation: true }] as const) {
+    const { posts, outcomes, dispatched, configureLinks } = await message(
+      inheriting('openai/gpt-5.6-luna', chickpea),
+      variant,
+    );
+    assert.equal(dispatched, 0);
+    assert.equal(posts.filter((post) => replyText(post).includes(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT)).length, 1);
+    assert.deepEqual(configureLinks, [MODEL_PROVIDERS_URL], JSON.stringify(variant));
+    assert.deepEqual(outcomes, ['failed']);
+  }
+});
+
+test('the built-in Chickpea\'s repair reply for a Workspace with no default model links Model providers too', async () => {
+  const { model: _model, ...unresolved } = inheriting('openai/gpt-5.6-luna', chickpea);
+  const { posts, dispatched, configureLinks } = await message(unresolved);
+  assert.equal(dispatched, 0);
+  assert.equal(posts.filter((post) => replyText(post).includes(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT)).length, 1);
+  assert.deepEqual(configureLinks, [MODEL_PROVIDERS_URL]);
 });
 
 test('a selected Agent\'s repair reply comes from that Agent', async () => {
@@ -334,6 +379,13 @@ test('a hosted installation whose Workspace default is still a Workers AI model 
   );
   assert.equal(presentation.terminalDelivery.state, 'intended');
   assert.equal(presentation.activityProjection.state, 'cleared', 'no status is left showing');
+  // Hosted Admin serves the same routes: the built-in Chickpea links Model providers.
+  const hostedChickpea = await message(
+    inheriting('cloudflare/@cf/zai-org/glm-4.7-flash', chickpea),
+    { env: hostedEnv, admitted: true },
+  );
+  assert.equal(hostedChickpea.posts.filter((post) => replyText(post).includes(WORKSPACE_DEFAULT_MODEL_REPAIR_TEXT)).length, 1);
+  assert.deepEqual(hostedChickpea.configureLinks, [MODEL_PROVIDERS_URL]);
   assert.ok(
     presentation.cleanup.state === 'not_required' || presentation.cleanup.operation.certainty === 'acknowledged',
     'the status cleanup is acknowledged',

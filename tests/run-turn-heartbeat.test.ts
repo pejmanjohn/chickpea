@@ -40,7 +40,13 @@ import { SLACK_SELF_MENTION_PLACEHOLDER } from '../src/slack/web-client-context.
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { repairTerminalSlackPresentation } from '../src/slack/presentation-repair.ts';
-import { completeAgentWelcomeDelivery } from '../src/management/receipts.ts';
+import {
+  completeAgentWelcomeDelivery,
+  drainManagementReceiptOutbox,
+  failAgentWelcomeTurn,
+  type AgentWelcomeWorkPort,
+} from '../src/management/receipts.ts';
+import { WorkStateError } from '../src/work/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
@@ -861,6 +867,392 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
   } finally {
     f.close();
   }
+});
+
+/**
+ * Chickpea's DM turn creates an Agent and defers its reply, the welcome, to
+ * the receipt outbox. The turn runs under a real Work Run and V3 presentation.
+ */
+async function deferredWelcomeTurn(name: string) {
+  const f = await createManagementAdapterFixture(`run-turn-welcome-run-${name}`);
+  const chickpea = await f.config.materializeChickpeaAgent();
+  const bootstrapAgent = await f.config.createAgent({
+    id: 'agent_welcome_run_bootstrap',
+    name: 'Bootstrap',
+    instructions: 'Provide the initial Workspace routing target.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  const installation = await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.binding.slackTeamId,
+    transportMode: 'direct',
+    defaultAgentId: bootstrapAgent.id,
+    teamId: f.admin.binding.slackTeamId,
+    botUserId: 'U_CHICKPEA',
+  });
+  await f.config.updateWorkspaceInstallation(
+    f.admin.binding.slackTeamId,
+    { runtimeContract: 'chickpea-v1', health: 'healthy' },
+    installation.revision,
+  );
+  const turn: NormalizedSlackTurn = {
+    workspaceId: f.admin.binding.slackTeamId,
+    channelId: 'D_WELCOME_RUN',
+    eventId: `Ev_WELCOME_RUN_${name}`,
+    text: 'Create a Deck Agent.',
+    userId: f.admin.binding.slackUserId,
+    actorMembershipId: f.admin.membership.id,
+    messageTs: '305.1',
+    threadTs: '305.1',
+    source: 'dm_message',
+    channelType: 'im',
+    contextMode: 'dm_history',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+  };
+  const assignment: ResolvedAssignment = {
+    workspaceId: turn.workspaceId,
+    channelId: turn.channelId,
+    agentId: CHICKPEA_AGENT_ID,
+    runtimeContract: 'chickpea-v1',
+    model: 'local-stub/management',
+    modelAttribution: { source: 'pinned', providerId: 'local-stub' },
+    agent: chickpea,
+  };
+  const applied = await f.service.applyWorkspaceChanges({
+    context: {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack' as const,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        threadTs: turn.threadTs,
+        messageTs: turn.messageTs,
+        requestText: turn.text,
+        conversationKind: 'im' as const,
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    },
+    idempotencyKey: `welcome-run-${name}`,
+    operations: [{
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_welcome_run_deck',
+        name: 'Deck',
+        description: 'Creates polished presentations.',
+        requestedHandle: 'welcome-run-deck',
+        editPolicy: 'creator_and_admins',
+        instructions: 'Create polished presentations.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      },
+    }],
+  });
+  if (!('operationId' in applied)) assert.fail('expected applied creation');
+  const created = await f.config.getAgent('agent_welcome_run_deck');
+  await f.config.updateAgent(created.id, {
+    slackPresence: {
+      ...created.slackPresence!,
+      desiredState: 'active',
+      health: 'healthy',
+      userGroupId: 'SWELCOMERUNDECK',
+    },
+  }, created.revision);
+
+  const work = new SqliteWorkStore(':memory:');
+  const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const h = v3PresentationHarness(turn, runId);
+  const client = {
+    apiCall: async () => ({ ok: true }),
+    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    conversations: { history: async () => ({ ok: true, messages: [] }) },
+    chat: {
+      startStream: async () => ({ ok: true, ts: '306.1' }),
+      appendStream: async () => ({ ok: true }),
+      stopStream: async () => ({ ok: true }),
+      postMessage: async () => ({ ok: true, channel: turn.channelId, ts: '306.1' }),
+    },
+  } as unknown as WebClient;
+  let deferred = 0;
+  await runTurn(turn, assignment, { SLACK_TAG_PUBLIC_URL: 'https://chickpea.example' }, {
+    client,
+    turnId: `turn_WELCOME_RUN_${name}`,
+    runId,
+    presentationState: h.state,
+    workStore: work,
+    agentPrompt: async (): Promise<AgentDispatchResult> => ({
+      text: 'The model says the Agent was created. This text must stay hidden.',
+      agentCreationTerminal: {
+        schemaVersion: 1,
+        operationId: applied.operationId,
+        creationItemId: 'create',
+        agentId: created.id,
+        connectorMentions: [],
+        followOnNotices: [],
+      },
+      requestedModel: 'local-stub/management',
+      returnedModel: { provider: 'local-stub', id: 'management' },
+      reportedUsage: null,
+      usageCompleteness: 'not_reported',
+    }),
+    appStores: {
+      config: f.config,
+      identity: f.identity,
+      memory: f.memory,
+      management: f.management,
+      work,
+    } as never,
+    onDeferredTerminal: () => { deferred += 1; },
+    usageRecordingEnabled: false,
+  });
+  assert.equal(deferred, 1);
+  const outbox = await f.management.getOutboxForOperation(applied.operationId);
+  if (!outbox || !('kind' in outbox.receipt) || outbox.receipt.kind !== 'agent_created_welcome') {
+    assert.fail('expected a deferred Agent welcome');
+  }
+  // The deferred turn ends without settling its Run; the welcome owns that.
+  assert.equal((await work.getRun(runId))?.status, 'executing');
+  return {
+    f, work, h, turn, assignment, client, runId, outbox,
+    close() { h.db.close(); work.close(); f.close(); },
+  };
+}
+
+/** The welcome's Work calls, each answered by `work`. */
+function portOver(work: SqliteWorkStore): AgentWelcomeWorkPort {
+  return {
+    getRun: (runId) => work.getRun(runId),
+    getBinding: (bindingId) => work.getBinding(bindingId),
+    recordRunResponse: (input) => work.recordRunResponse(input),
+    startRunDelivery: (input) => work.startRunDelivery(input),
+    finalizeRunDelivery: (input) => work.finalizeRunDelivery(input),
+    settleRunWithoutDelivery: (input) => work.settleRunWithoutDelivery(input),
+  };
+}
+
+/** Run `body` and return what it warned, one line per call. */
+async function warningsDuring(body: () => Promise<unknown>): Promise<string[]> {
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' '));
+  };
+  try {
+    await body();
+  } finally { console.warn = warn; }
+  return warnings;
+}
+
+test('a posted Agent welcome settles the Work Run of the turn that created the Agent', async () => {
+  const t = await deferredWelcomeTurn('posted');
+  try {
+    const delivery = {
+      workspaceId: t.turn.workspaceId,
+      channelId: t.turn.channelId,
+      threadTs: t.turn.threadTs,
+      messageTs: '306.2',
+      text: 'Deck is ready.',
+      persona: 'agent' as const,
+      client: t.client,
+    };
+    const presentation = { state: t.h.state, resolveClient: async () => t.client };
+    await completeAgentWelcomeDelivery(t.outbox, delivery, t.f.config, presentation, t.work);
+
+    const run = await t.work.getRun(t.runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.terminalDisposition, 'succeeded');
+    assert.equal(run?.deliveryStatus, 'delivered');
+    assert.equal(run?.deliveryRef, `slack:${t.turn.channelId}:306.2`);
+    const approved = run?.policyApprovedOutputRef
+      ? await t.work.getContent(run.policyApprovedOutputRef)
+      : undefined;
+    assert.equal(approved?.body, 'Deck is ready.');
+    assert.equal(approved?.sensitivity, 'private');
+
+    // A redelivered acknowledgement leaves the settled Run as it is, quietly.
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+    try {
+      await completeAgentWelcomeDelivery(t.outbox, delivery, t.f.config, presentation, t.work);
+    } finally { console.warn = warn; }
+    assert.deepEqual(await t.work.getRun(t.runId), run);
+    assert.deepEqual(warnings.filter((line) => /Run settlement failed/.test(line)), []);
+  } finally { t.close(); }
+});
+
+test('an Agent welcome the outbox gives up on settles its creation turn\'s Work Run as failed', async () => {
+  const t = await deferredWelcomeTurn('abandoned');
+  try {
+    const marked: string[] = [];
+    await failAgentWelcomeTurn(t.outbox, undefined, (turnJobId) => { marked.push(turnJobId); }, t.work);
+
+    const run = await t.work.getRun(t.runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.terminalDisposition, 'failed');
+    assert.equal(run?.deliveryStatus, 'not_applicable');
+    assert.equal(run?.safeFailureCode, 'slack_delivery_exhausted');
+    assert.deepEqual(marked, ['turn_WELCOME_RUN_abandoned']);
+  } finally { t.close(); }
+});
+
+test('the receipt outbox settles the creation turn\'s Work Run as failed when it gives up on the welcome', async () => {
+  const t = await deferredWelcomeTurn('drained');
+  try {
+    const marked: string[] = [];
+    const result = await drainManagementReceiptOutbox({
+      management: t.f.management,
+      deliver: async () => {
+        throw Object.assign(new Error('Slack refused the post'), { data: { error: 'channel_not_found' } });
+      },
+      onTerminalFailure: (record) => failAgentWelcomeTurn(
+        record,
+        undefined,
+        (turnJobId) => { marked.push(turnJobId); },
+        t.work,
+      ),
+      now: () => Date.now() + 60_000,
+    });
+
+    assert.ok(result.failed >= 1, 'the welcome failed terminally');
+    const run = await t.work.getRun(t.runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.terminalDisposition, 'failed');
+    assert.equal(run?.safeFailureCode, 'slack_delivery_exhausted');
+    assert.deepEqual(marked, ['turn_WELCOME_RUN_drained']);
+  } finally { t.close(); }
+});
+
+test('an approval\'s welcome settles its Run as succeeded, even posted before the approval settles its execution', async () => {
+  const t = await deferredWelcomeTurn('approval');
+  const turn: NormalizedSlackTurn = {
+    ...t.turn,
+    eventId: 'Ev_WELCOME_RUN_APPROVAL',
+    text: 'approve',
+    messageTs: '307.1',
+    threadTs: '307.1',
+    managementApprovalProposalId: 'proposal_welcome_run_approval',
+  };
+  const admitted = await t.work.admitShadowRun(prepareSlackShadowAdmission({
+    turn, assignment: t.assignment, sourceVisibility: 'private', admittedAt: Date.now(),
+  }));
+  const runId = admitted.run.id;
+  const h = v3PresentationHarness(turn, runId);
+  try {
+    const record = { ...t.outbox, receipt: { ...t.outbox.receipt, presentationRunId: runId } };
+    let invoked = 0;
+    const warnings = await warningsDuring(() => runTurn(turn, t.assignment, {
+      SLACK_TAG_PUBLIC_URL: 'https://chickpea.example',
+    }, {
+      client: t.client,
+      turnId: 'turn_WELCOME_RUN_APPROVAL',
+      runId,
+      presentationState: h.state,
+      workStore: t.work,
+      agentPrompt: async () => { throw new Error('an approval never prompts the Agent'); },
+      invokeManagementApproval: async () => {
+        invoked += 1;
+        // The state owner posts the welcome before this turn settles its execution.
+        await completeAgentWelcomeDelivery(record, {
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          threadTs: t.turn.threadTs,
+          messageTs: '308.1',
+          text: 'Deck is ready.',
+          persona: 'chickpea',
+          client: t.client,
+        }, t.f.config, undefined, t.work);
+        return { kind: 'agent_welcome_queued', outboxId: record.outboxId };
+      },
+      appStores: {
+        config: t.f.config,
+        identity: t.f.identity,
+        memory: t.f.memory,
+        management: t.f.management,
+        work: t.work,
+      } as never,
+      usageRecordingEnabled: false,
+    }));
+
+    assert.equal(invoked, 1);
+    const run = await t.work.getRun(runId);
+    assert.equal(run?.status, 'settled');
+    assert.equal(run?.terminalDisposition, 'succeeded');
+    assert.equal(run?.deliveryStatus, 'delivered');
+    assert.equal(run?.deliveryRef, `slack:${turn.channelId}:308.1`);
+    assert.deepEqual(
+      warnings.filter((line) => /recovered delivery|Run settlement failed|Run left unsettled/.test(line)),
+      [],
+    );
+  } finally {
+    h.db.close();
+    t.close();
+  }
+});
+
+test('an Agent welcome reports the Run it cannot settle, with the Work refusal\'s code', async () => {
+  const t = await deferredWelcomeTurn('reported');
+  try {
+    const delivery = {
+      workspaceId: t.turn.workspaceId,
+      channelId: t.turn.channelId,
+      threadTs: t.turn.threadTs,
+      messageTs: '306.3',
+      text: 'Deck is ready.',
+      persona: 'chickpea' as const,
+      client: t.client,
+    };
+    // The creation turn's first Work write is still queued behind a slow
+    // store: its Run has not reached its input yet.
+    const behind = await t.work.admitShadowRun(prepareSlackShadowAdmission({
+      turn: { ...t.turn, eventId: 'Ev_WELCOME_RUN_BEHIND', messageTs: '309.1', threadTs: '309.1' },
+      assignment: t.assignment,
+      sourceVisibility: 'private',
+      admittedAt: Date.now(),
+    }));
+    const early = { ...t.outbox, receipt: { ...t.outbox.receipt, presentationRunId: behind.run.id } };
+    const unsettled = await warningsDuring(() =>
+      completeAgentWelcomeDelivery(early, delivery, t.f.config, undefined, t.work));
+    assert.equal((await t.work.getRun(behind.run.id))?.status, 'admitted');
+    assert.equal(unsettled.length, 1);
+    assert.match(unsettled[0]!, /Agent welcome Run left unsettled/);
+    assert.match(unsettled[0]!, /"reason":"run_admitted"/);
+
+    // A Run whose binding cannot be read is reported too.
+    const unbound = await warningsDuring(() => completeAgentWelcomeDelivery(t.outbox, delivery, t.f.config, undefined, {
+      ...portOver(t.work),
+      getBinding: async () => undefined,
+    }));
+    assert.equal((await t.work.getRun(t.runId))?.status, 'executing');
+    assert.equal(unbound.length, 1);
+    assert.match(unbound[0]!, /"reason":"binding_missing"/);
+
+    // A Work refusal is logged by its code, not by the class every refusal shares.
+    const refusing: AgentWelcomeWorkPort = {
+      ...portOver(t.work),
+      recordRunResponse: async () => {
+        throw new WorkStateError('work_fence_stale', 'The Run fence moved.');
+      },
+    };
+    const refused = await warningsDuring(() =>
+      completeAgentWelcomeDelivery(t.outbox, delivery, t.f.config, undefined, refusing));
+    assert.equal((await t.work.getRun(t.runId))?.status, 'executing');
+    assert.equal(refused.length, 1);
+    assert.match(refused[0]!, /Agent welcome Run settlement failed/);
+    assert.match(refused[0]!, /"failureCode":"work_fence_stale"/);
+  } finally { t.close(); }
 });
 
 test('runTurn queues an Agent welcome as the pending terminal delivery', async () => {

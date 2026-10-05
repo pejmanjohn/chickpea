@@ -848,6 +848,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
   if (!options.state) {
     const identity = getIdentityStore(env);
     const config = getConfigStore(env);
+    const work = options.work ?? getWorkStore(env);
     const presentationState = slackPresentationStatePort(state, env);
     const presentation = presentationState
       ? {
@@ -869,6 +870,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
         (turnJobId) => state.markTurnError
           ? state.markTurnError(turnJobId)
           : state.markTurnDelivered?.(turnJobId),
+        work,
       ),
       deliver: (record) => deliverManagementReceiptToSlack(record, {
         identity,
@@ -880,6 +882,7 @@ async function drainNodeWakePassOnce(options: NodeTurnRelayDrainOptions): Promis
               delivery,
               config,
               presentation,
+              work,
             );
           } finally {
             if (isAgentCreatedWelcome(deliveredRecord.receipt) &&

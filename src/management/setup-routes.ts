@@ -105,6 +105,7 @@ import {
   getSettingsStore,
   getSlackStateStore,
   getUsageStore,
+  getWorkStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
@@ -2342,6 +2343,7 @@ async function finishSetup(
           )).client,
       }
     : undefined;
+  const work = getWorkStore(dependencies.platformEnv);
   await drainManagementReceiptOutbox({
     management: dependencies.management,
     onDeliveredSettled: (record) => completeSettledAgentWelcomeHandoff(
@@ -2349,7 +2351,7 @@ async function finishSetup(
       dependencies.config,
       dependencies.management,
     ),
-    onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation),
+    onTerminalFailure: (record) => failAgentWelcomeDelivery(record, presentation, work),
     deliver: (record) => (options.deliverReceipt ?? deliverManagementReceiptToSlack)(record, {
       identity: dependencies.identity,
       ...(dependencies.platformEnv ? { env: dependencies.platformEnv } : {}),
@@ -2358,6 +2360,7 @@ async function finishSetup(
         delivery,
         dependencies.config,
         presentation,
+        work,
       ),
     }),
     now: () => at,
