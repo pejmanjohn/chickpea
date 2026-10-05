@@ -637,6 +637,10 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     return this.host().chickpeaHostRestore(request);
   }
 
+  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+    return this.host().chickpeaHostRestoreRestart(request);
+  }
+
   private host(): SandboxHostRpc {
     return sandboxHostFunctions({
       env: this.env,
@@ -647,6 +651,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
       stopRecorded: () => containerStopRecorded(() => this.getState()),
       releaseLease: () => this.releaseContainerLease(),
       currentCheckpoint: () => this.workspaceState().currentCheckpoint(),
+      containerState: () => this.getState(),
     });
   }
 
@@ -1043,6 +1048,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
 
   async chickpeaHostRestore(request: ObjectRestoreRequest) {
     return this.host().chickpeaHostRestore(request);
+  }
+
+  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+    return this.host().chickpeaHostRestoreRestart(request);
   }
 
   async chickpeaHostInventoryBackfill(request: ObjectHostRequest) {

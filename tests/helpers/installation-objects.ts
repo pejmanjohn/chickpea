@@ -37,9 +37,17 @@ export class FakeObjectStorage {
   deleteAllCalls = 0;
   currentBookmark = 'bookmark_current';
   targetBookmark = 'bookmark_target';
+  /** The restore the next session applies, as `onNextSessionRestoreBookmark` scheduled it. */
   scheduledRestoreBookmark: string | undefined;
+  /** The bookmark the last restart restored. */
+  restoredBookmark: string | undefined;
   readonly bookmarkCalls: Array<{ method: string; timestamp?: number | Date; bookmark?: string }> = [];
-  readonly restoreContext = new FakeObjectRestoreContext(this);
+  /** The current session's context; a restart replaces it, as the runtime constructs the object again. */
+  restoreContext: FakeObjectRestoreContext = new FakeObjectRestoreContext(this);
+  /** Sessions started: one, plus one per restart. */
+  sessions = 1;
+  /** What the object's next session does on waking, after the restart applied any restore. */
+  onRestart: (() => void) | undefined;
   private depth = 0;
 
   constructor() {
@@ -125,6 +133,18 @@ export class FakeObjectStorage {
     return 'bookmark_before_restore';
   }
 
+  /** A new session: it applies any scheduled restore, which moves the current bookmark, with a new context. */
+  restart(): void {
+    this.sessions += 1;
+    if (this.scheduledRestoreBookmark !== undefined) {
+      this.restoredBookmark = this.scheduledRestoreBookmark;
+      this.scheduledRestoreBookmark = undefined;
+      this.currentBookmark = `restored:${this.restoredBookmark}`;
+    }
+    this.restoreContext = new FakeObjectRestoreContext(this, this.restoreContext.id);
+    this.onRestart?.();
+  }
+
   /** As on SQLite-backed objects at compatibility date 2026-02-24 or later: tables, entries and the alarm. */
   async deleteAll(): Promise<void> {
     this.deleteAllCalls += 1;
@@ -175,8 +195,10 @@ export class FakeObjectRestoreContext implements HostObjectRestoreContext {
     }
   }
 
+  /** Resets the session: the storage restarts, and the interrupted RPC fails. */
   abort(reason?: string): void {
     this.aborts += 1;
+    this.storage.restart();
     throw new FakeObjectAbort(reason);
   }
 }
@@ -267,15 +289,17 @@ export function hostedDeployment(installationIds: readonly string[], options: {
       let stores: TagStateStores | undefined = installation.stores;
       object = {
         binding, name, storage: installation.storage, env,
-        host: stateStoreHostFunctions({
-          env, storage: installation.storage, restoreContext: installation.storage.restoreContext,
-          stores: () => stores ??= buildTagStateStores(
-            new DoSqlStateDb(installation.storage.asDurableObjectStorage()), env, { gatewayLeaseOwner: 'test' },
-          ),
-          onErased: () => { stores = undefined; },
-          ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
-          ...(options.persistenceTelemetrySink ? { persistenceTelemetrySink: options.persistenceTelemetrySink } : {}),
-        }) as unknown as DeploymentObject['host'],
+        get host() {
+          return stateStoreHostFunctions({
+            env, storage: installation.storage, restoreContext: installation.storage.restoreContext,
+            stores: () => stores ??= buildTagStateStores(
+              new DoSqlStateDb(installation.storage.asDurableObjectStorage()), env, { gatewayLeaseOwner: 'test' },
+            ),
+            onErased: () => { stores = undefined; },
+            ...(options.stopAgents ? { stopAgents: options.stopAgents } : {}),
+            ...(options.persistenceTelemetrySink ? { persistenceTelemetrySink: options.persistenceTelemetrySink } : {}),
+          }) as unknown as DeploymentObject['host'];
+        },
       };
     } else if (binding === 'SANDBOX') {
       // As the Sandbox class: its env from its own name, its checkpoint bucket the installation's view.
@@ -289,51 +313,57 @@ export function hostedDeployment(installationIds: readonly string[], options: {
       const installation = installations.get(splitInstallationObjectName(name).scope?.installationId ?? '');
       object = {
         binding, name, storage, env: sandboxEnv, container, lifecycle,
-        host: sandboxHostFunctions({
-          env: sandboxEnv,
-          storage,
-          restoreContext: storage.restoreContext,
-          running: () => container.running,
-          destroy: async () => {
-            container.running = false;
-            container.destroyed += 1;
-            lifecycle.push('destroy');
-            // As the Containers SDK's monitor, which records the stop a moment later.
-            setTimeout(() => { storage.kv.set(CONTAINER_STATE_KEY, { status: 'stopped_with_code', exitCode: 137 }); },
-              STOP_RECORD_DELAY_MS);
-          },
-          stopRecorded: async () => {
-            const state = async () => (storage.kv.get(CONTAINER_STATE_KEY) ?? { status: 'stopped' }) as { status: string };
-            if (await containerStopRecorded(state, { pollMs: 1 })) lifecycle.push('stop recorded');
-          },
-          // As the Sandbox's lease release, keyed here by the object's name.
-          releaseLease: async () => {
-            lifecycle.push('lease released');
-            const settings = installation?.stores.settings;
-            if (!settings) return;
-            await meterWorkspaceContainer(sandboxEnv, 'release', { key: name, now: Date.now() }, {
-              getSettings: async (keys) => settings.getSettings(keys),
-              applySettingsPatch: async (patch) => settings.applySettingsPatch(patch),
-            });
-          },
-          currentCheckpoint: () => sandboxWorkspaceState(storage).currentCheckpoint(),
-        }) as unknown as DeploymentObject['host'],
+        get host() {
+          return sandboxHostFunctions({
+            env: sandboxEnv,
+            storage,
+            restoreContext: storage.restoreContext,
+            running: () => container.running,
+            destroy: async () => {
+              container.running = false;
+              container.destroyed += 1;
+              lifecycle.push('destroy');
+              // As the Containers SDK's monitor, which records the stop a moment later.
+              setTimeout(() => { storage.kv.set(CONTAINER_STATE_KEY, { status: 'stopped_with_code', exitCode: 137 }); },
+                STOP_RECORD_DELAY_MS);
+            },
+            stopRecorded: async () => {
+              const state = async () => (storage.kv.get(CONTAINER_STATE_KEY) ?? { status: 'stopped' }) as { status: string };
+              if (await containerStopRecorded(state, { pollMs: 1 })) lifecycle.push('stop recorded');
+            },
+            // As the Sandbox's lease release, keyed here by the object's name.
+            releaseLease: async () => {
+              lifecycle.push('lease released');
+              const settings = installation?.stores.settings;
+              if (!settings) return;
+              await meterWorkspaceContainer(sandboxEnv, 'release', { key: name, now: Date.now() }, {
+                getSettings: async (keys) => settings.getSettings(keys),
+                applySettingsPatch: async (patch) => settings.applySettingsPatch(patch),
+              });
+            },
+            currentCheckpoint: () => sandboxWorkspaceState(storage).currentCheckpoint(),
+            // As the SDK's getState: a status never recorded reads as stopped.
+            containerState: async () => (storage.kv.get(CONTAINER_STATE_KEY) ?? { status: 'stopped' }) as { status: string },
+          }) as unknown as DeploymentObject['host'];
+        },
       };
     } else {
       const storage = new FakeObjectStorage();
       object = {
         binding, name, storage, env,
-        host: objectHostFunctions({
-          env, storage, restoreContext: storage.restoreContext,
-          ...(binding === 'SLACK_THREAD_RUNNER'
-            ? {
-                cancel: (now: number) => {
-                  const { settled, running } = runnerJobs(storage).cancelOpen(now);
-                  return { runnerJobs: settled, runnerJobsRunning: running };
-                },
-              }
-            : {}),
-        }) as unknown as DeploymentObject['host'],
+        get host() {
+          return objectHostFunctions({
+            env, storage, restoreContext: storage.restoreContext,
+            ...(binding === 'SLACK_THREAD_RUNNER'
+              ? {
+                  cancel: (now: number) => {
+                    const { settled, running } = runnerJobs(storage).cancelOpen(now);
+                    return { runnerJobs: settled, runnerJobsRunning: running };
+                  },
+                }
+              : {}),
+          }) as unknown as DeploymentObject['host'];
+        },
       };
     }
     objects.set(key, object);

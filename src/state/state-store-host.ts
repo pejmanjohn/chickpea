@@ -97,7 +97,7 @@ export function stateStoreHostFunctions(store: {
   return {
     ...objectRestoreHostFunctions({
       ...store,
-      assertRestorable: ({ installationId }) => assertBinding(installationId),
+      assertOwner: ({ installationId }) => assertBinding(installationId),
     }),
     async chickpeaHostInventory(request) {
       return stores(request).objectInventory.list(request);

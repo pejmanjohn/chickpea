@@ -315,6 +315,10 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostRestore(request);
   }
 
+  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+    return this.host().chickpeaHostRestoreRestart(request);
+  }
+
   /**
    * Delete every table, key-value entry and the alarm of this runner. It must
    * be the runner's last contact: any later call, an admission or a host

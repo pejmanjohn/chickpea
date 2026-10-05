@@ -57,6 +57,10 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
       return agentHost(this).chickpeaHostRestore(request);
     }
 
+    async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+      return agentHost(this).chickpeaHostRestoreRestart(request);
+    }
+
     /**
      * Host RPC: delete every table, key-value entry and the alarm of this
      * instance. It must be the instance's last contact: any later call

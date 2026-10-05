@@ -116,6 +116,8 @@ export function sandboxHostFunctions(sandbox: {
   readonly releaseLease: () => Promise<void>;
   /** The handle of the checkpoint the Sandbox records, if any. */
   readonly currentCheckpoint: () => Promise<unknown>;
+  /** The container runtime's recorded status (the SDK's `getState`). */
+  readonly containerState: () => Promise<{ status: string }>;
 }): SandboxHostRpc {
   const stop = async (): Promise<boolean> => {
     if (!sandbox.running()) return false;
@@ -125,11 +127,7 @@ export function sandboxHostFunctions(sandbox: {
   return {
     ...objectRestoreHostFunctions({
       ...sandbox,
-      assertRestorable: () => {
-        if (sandbox.running()) {
-          throw new ObjectRestoreError('restore_object_busy', 'Stop the Sandbox container before preparing a restore.');
-        }
-      },
+      quiesce: () => quiesceSandboxForRestore(sandbox),
     }),
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(sandbox.env, request);
@@ -165,4 +163,41 @@ export function sandboxHostFunctions(sandbox: {
       return { stopped: await stop() };
     },
   };
+}
+
+/**
+ * Before a Sandbox's fence is read: refuse unless its container is stopped
+ * and that stop settled, then delete the container runtime's alarm. Whenever
+ * a Sandbox wakes, the Containers SDK arms that alarm a second out and, with
+ * no container running, the alarm records any pending stop (`onStop`, which
+ * releases the lease in the state store), runs due container schedules and
+ * deletes itself. Each of those is a write after the fence was read. With
+ * the stop recorded and no schedule, deleting itself is all it would do, so
+ * the deletion lands before the read instead. Refused otherwise: the alarm
+ * still has lifecycle work to do, and a retry once it has run succeeds.
+ */
+async function quiesceSandboxForRestore(sandbox: {
+  readonly storage: HostObjectStorage;
+  readonly running: () => boolean;
+  readonly containerState: () => Promise<{ status: string }>;
+}): Promise<void> {
+  if (sandbox.running()) {
+    throw new ObjectRestoreError('restore_object_busy', 'Stop the Sandbox container before restoring it.');
+  }
+  if ((await sandbox.containerState()).status !== 'stopped' || containerSchedules(sandbox.storage) > 0) {
+    throw new ObjectRestoreError(
+      'restore_object_busy',
+      'The Sandbox container stop is still settling; retry in a few seconds.',
+    );
+  }
+  if (await sandbox.storage.getAlarm() !== null) await sandbox.storage.deleteAlarm();
+}
+
+/** Rows of the Containers SDK's `container_schedules` table, which its constructor creates. */
+function containerSchedules(storage: HostObjectStorage): number {
+  const table = storage.sql.exec(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'container_schedules'",
+  ).toArray();
+  if (table.length === 0) return 0;
+  return Number(storage.sql.exec('SELECT COUNT(*) AS count FROM container_schedules').toArray()[0]?.count ?? 0);
 }

@@ -57,7 +57,9 @@ import type {
   ObjectExportPage,
   ObjectPendingWorkCancellation,
   ObjectRestoreBookmarks,
+  ObjectRestoreReceipt,
   ObjectRestoreRequest,
+  ObjectRestoreSession,
 } from './object-host.ts';
 import type {
   InstallationObjectBackfill,
@@ -124,27 +126,64 @@ export async function readInstallationObjectRestoreBookmarks(
 }
 
 /**
- * restore_apply: restore one object using its prepared bookmarks, then abort it.
- * The host must keep the installation suspended and handle an interrupted RPC
- * by reconciling the object's state, not by blindly retrying with a new fence.
+ * restore_apply, first phase: schedule one object's restore against its
+ * prepared fence and return the receipt, the object's undo bookmark included.
+ * The object keeps running until `restartInstallationObject`. A repeated call
+ * reaching the same session returns the same receipt.
  */
-export async function restoreInstallationObject(
+export async function scheduleInstallationObjectRestore(
   env: Record<string, unknown>,
   object: InstallationObject,
   options: Pick<ObjectRestoreRequest, 'expectedCurrentBookmark' | 'targetBookmark'> & { confirmInstallationId: string },
-): Promise<void> {
-  const scope = hostScope(env);
-  if (options.confirmInstallationId !== scope.installationId) {
-    throw new InstallationContextError(
-      'installation_context_mismatch',
-      'Restore must be confirmed with the installation it restores.',
-    );
-  }
+): Promise<ObjectRestoreReceipt> {
+  const scope = confirmedRestoreScope(env, options.confirmInstallationId);
   return objectStub(env, scope, object).chickpeaHostRestore({
     installationId: scope.installationId,
     expectedCurrentBookmark: options.expectedCurrentBookmark,
     targetBookmark: options.targetBookmark,
   });
+}
+
+/** How many calls a restart makes: the one the abort interrupts, the one that confirms, one spare. */
+const RESTART_ATTEMPTS = 3;
+
+/**
+ * restore_apply, second phase: restart one object so its scheduled restore
+ * applies, and confirm it. A call reaching a session with a restore scheduled
+ * aborts that session, so its RPC fails; the next call, over a fresh stub,
+ * reaches the next session, where the restore has applied, and returns. So a
+ * return proves no restore is pending, and after a receipt that the restore
+ * applied. An error thrown over RPC loses its class, so every failed call is
+ * retried, up to `RESTART_ATTEMPTS` calls; the last failure is thrown.
+ */
+export async function restartInstallationObject(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  options: { confirmInstallationId: string },
+): Promise<ObjectRestoreSession> {
+  const scope = confirmedRestoreScope(env, options.confirmInstallationId);
+  let failure: unknown;
+  for (let attempt = 0; attempt < RESTART_ATTEMPTS; attempt += 1) {
+    // Resolved per call: a reset object's stub is broken. Addressing refusals throw here, at once.
+    const stub = objectStub(env, scope, object);
+    try {
+      return await stub.chickpeaHostRestoreRestart({ installationId: scope.installationId });
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
+function confirmedRestoreScope(env: Record<string, unknown>, confirmInstallationId: string): InstallationScope {
+  const scope = hostScope(env);
+  if (confirmInstallationId !== scope.installationId) {
+    throw new InstallationContextError(
+      'installation_context_mismatch',
+      'Restore must be confirmed with the installation it restores.',
+    );
+  }
+  return scope;
 }
 
 /**
