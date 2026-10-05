@@ -97,6 +97,60 @@ test('the current GLM 5.3 price applies to both Cloudflare execution routes', ()
   }
 });
 
+test('Anthropic estimates include cache reads and 5-minute cache writes', () => {
+  const observedAt = Date.UTC(2026, 9, 5, 6);
+  const cached = {
+    observedAt,
+    cacheReadTokens: 85_706,
+    cacheWriteTokens: 15_654,
+    totalTokens: 102_323,
+  };
+  for (const model of ['claude-haiku-4-5', 'claude-haiku-4-5-20251001']) {
+    // 231 × $1 + 732 × $5 + 85,706 × $0.10 + 15,654 × $1.25 per million tokens.
+    assert.deepEqual(estimateUsage(measurement('anthropic', model, 231, 732, cached)), {
+      estimateCompleteness: 'complete',
+      estimateAmountMicros: 32_029,
+      estimateCurrency: 'USD',
+      priceVersionId: 'anthropic-cache_2026-10-04',
+      priceUnknownReason: null,
+    });
+  }
+  // A first turn writes the whole prompt to the cache and reads nothing.
+  assert.equal(estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 10, 172, {
+    observedAt,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 37_261,
+    totalTokens: 37_443,
+  })).estimateAmountMicros, 47_446);
+});
+
+test('Anthropic cache prices apply only from their review date, and outlast the July snapshot', () => {
+  const cached = {
+    cacheReadTokens: 85_706,
+    cacheWriteTokens: 15_654,
+    totalTokens: 102_323,
+  };
+  assert.deepEqual(
+    estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 231, 732, {
+      ...cached,
+      observedAt: Date.UTC(2026, 9, 3, 23),
+    })),
+    {
+      estimateCompleteness: 'partial',
+      estimateAmountMicros: null,
+      estimateCurrency: null,
+      priceVersionId: null,
+      priceUnknownReason: 'pricing_dimension_unknown',
+    },
+  );
+  const july = RELEASE_PRICE_CATALOGS.find((version) => version.id === 'anthropic_2026-07-28')!;
+  const afterJulyStale = estimateUsage(measurement('anthropic', 'claude-haiku-4-5', 1_000, 200, {
+    observedAt: july.staleAfter,
+  }));
+  assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
+  assert.equal(afterJulyStale.priceVersionId, 'anthropic-cache_2026-10-04');
+});
+
 test('non-zero cache usage without a matching price dimension stays partial', () => {
   assert.deepEqual(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {

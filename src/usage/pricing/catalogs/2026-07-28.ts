@@ -13,6 +13,8 @@ const GLM_5_3_REVIEWED_AT = Date.UTC(2026, 7, 27);
 const GLM_5_3_STALE_AFTER = GLM_5_3_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const GLM_4_7_REVIEWED_AT = Date.UTC(2026, 8, 4);
 const GLM_4_7_STALE_AFTER = GLM_4_7_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
+const ANTHROPIC_CACHE_REVIEWED_AT = Date.UTC(2026, 9, 4);
+const ANTHROPIC_CACHE_STALE_AFTER = ANTHROPIC_CACHE_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
 function version(
   input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
@@ -26,9 +28,10 @@ function version(
 
 /**
  * Release-pinned list-price snapshots for only the U0 fixture-proven routes.
- * Workers AI cached input is modeled from the published model rate. Other
- * cache discounts, batch/priority tiers, negotiated pricing, credits, taxes,
- * and routing-specific adjustments are deliberately not modeled.
+ * Workers AI cached input and Anthropic cache reads and writes are modeled
+ * from the published model rates. Other cache discounts, batch/priority tiers,
+ * negotiated pricing, credits, taxes, and routing-specific adjustments are
+ * deliberately not modeled.
  */
 export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
   version({
@@ -244,6 +247,30 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
       unitScale: 1_000_000,
       inputMicrosPerUnit: 60_000,
       outputMicrosPerUnit: 400_000,
+      basis: 'standard_input_output',
+    }],
+  }),
+  // Anthropic reports cache reads and writes on almost every turn, and a
+  // measurement with a cache dimension the rate lacks stays unpriced. Writes
+  // use the 5-minute rate: the runtime requests the default cache duration.
+  version({
+    id: 'anthropic-cache_2026-10-04',
+    providerId: 'anthropic',
+    sourceUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
+    effectiveFrom: ANTHROPIC_CACHE_REVIEWED_AT,
+    reviewedAt: ANTHROPIC_CACHE_REVIEWED_AT,
+    staleAfter: ANTHROPIC_CACHE_STALE_AFTER,
+    currency: 'USD',
+    rates: [{
+      providerId: 'anthropic',
+      modelId: 'claude-haiku-4-5',
+      modelAliases: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'],
+      currency: 'USD',
+      unitScale: 1_000_000,
+      inputMicrosPerUnit: 1_000_000,
+      outputMicrosPerUnit: 5_000_000,
+      cacheReadMicrosPerUnit: 100_000,
+      cacheWriteMicrosPerUnit: 1_250_000,
       basis: 'standard_input_output',
     }],
   }),

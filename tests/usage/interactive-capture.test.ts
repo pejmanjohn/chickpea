@@ -240,6 +240,53 @@ test('runtime estimates are independently flagged and retain immutable price pro
   }
 });
 
+test('an Anthropic turn that reads and writes the prompt cache is priced and counted', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const startedAt = Date.UTC(2026, 9, 5, 6, 14);
+    const seconds = String(startedAt / 1_000);
+    const recorder = new InteractiveUsageRecorder({
+      turn: { ...turn, messageTs: `${seconds}.0001`, threadTs: `${seconds}.0001` },
+      assignment: {
+        ...assignment,
+        model: 'anthropic/claude-haiku-4-5',
+        modelAttribution: { ...assignment.modelAttribution!, providerId: 'anthropic' },
+        modelCredential: {
+          ...assignment.modelCredential!,
+          credentialRefId: 'cred_anthropic_byok',
+          providerId: 'anthropic',
+        },
+      },
+      requestedModel: 'anthropic/claude-haiku-4-5',
+      operationId: 'msg_cached',
+      executionId: 'exec_cached',
+      store,
+      now: () => startedAt + 30_000,
+    });
+    await recorder.admit();
+    await recorder.recordSuccess(success({
+      requestedModel: 'anthropic/claude-haiku-4-5',
+      returnedModel: { provider: 'anthropic', id: 'claude-haiku-4-5' },
+      reportedUsage: {
+        inputTokens: 231,
+        outputTokens: 732,
+        cacheReadTokens: 85_706,
+        cacheWriteTokens: 15_654,
+        totalTokens: 102_323,
+      },
+    }));
+    const measurement = (await store.getOperation('msg_cached'))?.measurements[0];
+    assert.equal(measurement?.estimateCompleteness, 'complete');
+    assert.equal(measurement?.estimateAmountMicros, 32_029);
+    assert.equal(measurement?.priceVersionId, 'anthropic-cache_2026-10-04');
+    const summary = await store.summarize({ from: startedAt - 1, to: startedAt + 60_000 });
+    assert.equal(summary.totals.pricedOperationCount, 1);
+    assert.equal(summary.totals.estimateAmountMicros, 32_029);
+  } finally {
+    store.close();
+  }
+});
+
 test('a real recovery invocation adds usage while one execution persistence retry is idempotent', async () => {
   const store = new SqliteUsageStore(':memory:');
   try {

@@ -23,6 +23,7 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       'cloudflare-workers-ai',
       'cloudflare',
       'cloudflare-workers-ai',
+      'anthropic',
     ],
   );
   for (const version of RELEASE_PRICE_CATALOGS) {
@@ -53,6 +54,24 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       ['@cf/zai-org/glm-5.3-flash', 150_000, 500_000, 30_000],
       ['@cf/zai-org/glm-4.7-flash', 60_000, 400_000, null],
       ['@cf/zai-org/glm-4.7-flash', 60_000, 400_000, null],
+    ],
+  );
+  // Anthropic reports cache reads and writes, so its current price prices both.
+  assert.deepEqual(
+    RELEASE_PRICE_CATALOGS
+      .filter((version) => version.providerId === 'anthropic')
+      .map((version) => [
+        version.id,
+        version.effectiveFrom,
+        version.rates[0]?.modelId,
+        version.rates[0]?.inputMicrosPerUnit,
+        version.rates[0]?.outputMicrosPerUnit,
+        version.rates[0]?.cacheReadMicrosPerUnit ?? null,
+        version.rates[0]?.cacheWriteMicrosPerUnit ?? null,
+      ]),
+    [
+      ['anthropic_2026-07-28', Date.UTC(2026, 6, 28), 'claude-haiku-4-5', 1_000_000, 5_000_000, null, null],
+      ['anthropic-cache_2026-10-04', Date.UTC(2026, 9, 4), 'claude-haiku-4-5', 1_000_000, 5_000_000, 100_000, 1_250_000],
     ],
   );
 });
