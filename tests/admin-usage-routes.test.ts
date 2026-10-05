@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { usageEstimatesEnabled } from '../src/usage/pricing/estimate.ts';
 import { usageRuntimeRecordingEnabled } from '../src/usage/runtime-recorder.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
@@ -213,6 +214,12 @@ test('usage Admin APIs are authenticated, bounded, and expose no content fields'
     assert.match(metadataText, /limitsManagedByChickpea":false/);
     assert.match(metadataText, /rawRetentionDays":90/);
     assert.match(metadataText, /composio-2026-08-15/);
+    // Admin needs each version's effective date to tell which one prices a model now.
+    assert.deepEqual(
+      (JSON.parse(metadataText) as { catalogs: Array<{ id: string; effectiveFrom: number }> }).catalogs
+        .map(({ id, effectiveFrom }) => ({ id, effectiveFrom })),
+      RELEASE_PRICE_CATALOGS.map(({ id, effectiveFrom }) => ({ id, effectiveFrom })),
+    );
     assert.doesNotMatch(metadataText, /apiKey|authorization|billingCredential|clientSecret/i);
 
     const instances = await app.request(
