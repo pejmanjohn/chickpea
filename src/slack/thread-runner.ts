@@ -27,6 +27,8 @@ import {
   type InstallationObjectHostRpc,
   type ObjectExportRequest,
   type ObjectHostRequest,
+  type ObjectRestoreBookmarksRequest,
+  type ObjectRestoreRequest,
 } from '../state/object-host.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
@@ -305,6 +307,14 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostExportPage(request);
   }
 
+  async chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest) {
+    return this.host().chickpeaHostRestoreBookmarks(request);
+  }
+
+  async chickpeaHostRestore(request: ObjectRestoreRequest) {
+    return this.host().chickpeaHostRestore(request);
+  }
+
   /**
    * Delete every table, key-value entry and the alarm of this runner. It must
    * be the runner's last contact: any later call, an admission or a host
@@ -323,6 +333,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return objectHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,
+      restoreContext: this.ctx,
       // Nothing of the erased runner stays in memory: its stores, its turns'
       // live status, their observation targets and the jobs it carried.
       onErased: () => {

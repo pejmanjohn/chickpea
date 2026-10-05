@@ -8,7 +8,9 @@ import {
   assertObjectHostCall,
   eraseObjectStorage,
   exportObjectPage,
+  objectRestoreHostFunctions,
   type HostObjectStorage,
+  type HostObjectRestoreContext,
   type InstallationObjectHostRpc,
   type ObjectEraseResult,
   type ObjectExportPage,
@@ -66,6 +68,7 @@ export interface StateStoreHostRpc extends Omit<InstallationObjectHostRpc, 'chic
 export function stateStoreHostFunctions(store: {
   readonly env: Record<string, unknown> | undefined;
   readonly storage: HostObjectStorage;
+  readonly restoreContext?: HostObjectRestoreContext;
   readonly stores: () => TagStateStores;
   readonly onErased: () => void;
   readonly stopAgents?: (agents: readonly AgentStopTarget[]) => Promise<{ stopped: number; notStopped: number }>;
@@ -76,7 +79,26 @@ export function stateStoreHostFunctions(store: {
     assertObjectHostCall(store.env, request);
     return store.stores();
   };
+  const assertBinding = (installationId: string): void => {
+    const bound = store.storage.sql.exec(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'installation_binding'",
+    ).toArray().length > 0
+      ? store.storage.sql.exec(
+        "SELECT installation_id FROM installation_binding WHERE binding_key = 'installation'",
+      ).toArray()[0]
+      : undefined;
+    if (bound && bound.installation_id !== installationId) {
+      throw new InstallationContextError(
+        'installation_context_mismatch',
+        'This state store belongs to another installation.',
+      );
+    }
+  };
   return {
+    ...objectRestoreHostFunctions({
+      ...store,
+      assertRestorable: ({ installationId }) => assertBinding(installationId),
+    }),
     async chickpeaHostInventory(request) {
       return stores(request).objectInventory.list(request);
     },
@@ -106,19 +128,7 @@ export function stateStoreHostFunctions(store: {
     /** Erased last: its own binding must name the installation too. */
     async chickpeaHostErase(request) {
       const scope = assertObjectHostCall(store.env, request);
-      const bound = store.storage.sql.exec(
-        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'installation_binding'",
-      ).toArray().length > 0
-        ? store.storage.sql.exec(
-          "SELECT installation_id FROM installation_binding WHERE binding_key = 'installation'",
-        ).toArray()[0]
-        : undefined;
-      if (bound && bound.installation_id !== scope.installationId) {
-        throw new InstallationContextError(
-          'installation_context_mismatch',
-          'This state store belongs to another installation.',
-        );
-      }
+      assertBinding(scope.installationId);
       const erased = await eraseObjectStorage(store.storage);
       store.onErased();
       return erased;

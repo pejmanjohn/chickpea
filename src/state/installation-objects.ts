@@ -1,6 +1,6 @@
 /**
  * What a host serving many installations calls, from an operator job, to
- * enumerate, export, erase and quiet the Durable Objects one installation
+ * enumerate, export, restore, erase and quiet the Durable Objects one installation
  * owns. Each function takes that installation's scoped env
  * (`scopeInstallationEnv`), addresses only objects its name scopes to it, and
  * passes the installation along so the object checks it against its own
@@ -56,6 +56,8 @@ import type {
   ObjectExportMode,
   ObjectExportPage,
   ObjectPendingWorkCancellation,
+  ObjectRestoreBookmarks,
+  ObjectRestoreRequest,
 } from './object-host.ts';
 import type {
   InstallationObjectBackfill,
@@ -109,6 +111,40 @@ export async function exportInstallationObject(
 ): Promise<ObjectExportPage> {
   const scope = hostScope(env);
   return objectStub(env, scope, object).chickpeaHostExportPage({ installationId: scope.installationId, ...options });
+}
+
+/** restore_prepare: read one object's current fence and its bookmark for T while suspended. */
+export async function readInstallationObjectRestoreBookmarks(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  timestamp: number,
+): Promise<ObjectRestoreBookmarks> {
+  const scope = hostScope(env);
+  return objectStub(env, scope, object).chickpeaHostRestoreBookmarks({ installationId: scope.installationId, timestamp });
+}
+
+/**
+ * restore_apply: restore one object using its prepared bookmarks, then abort it.
+ * The host must keep the installation suspended and handle an interrupted RPC
+ * by reconciling the object's state, not by blindly retrying with a new fence.
+ */
+export async function restoreInstallationObject(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  options: Pick<ObjectRestoreRequest, 'expectedCurrentBookmark' | 'targetBookmark'> & { confirmInstallationId: string },
+): Promise<void> {
+  const scope = hostScope(env);
+  if (options.confirmInstallationId !== scope.installationId) {
+    throw new InstallationContextError(
+      'installation_context_mismatch',
+      'Restore must be confirmed with the installation it restores.',
+    );
+  }
+  return objectStub(env, scope, object).chickpeaHostRestore({
+    installationId: scope.installationId,
+    expectedCurrentBookmark: options.expectedCurrentBookmark,
+    targetBookmark: options.targetBookmark,
+  });
 }
 
 /**

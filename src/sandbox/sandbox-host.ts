@@ -3,7 +3,11 @@ import {
   CODING_WORKSPACE_EXPORT_NOTE,
   eraseObjectStorage,
   OBJECT_EXPORT_FORMAT,
+  objectRestoreHostFunctions,
+  ObjectRestoreError,
   type HostObjectStorage,
+  type HostObjectRestoreContext,
+  type InstallationObjectRestoreRpc,
   type ObjectEraseResult,
   type ObjectExportPage,
   type ObjectExportRecord,
@@ -44,7 +48,7 @@ export interface SandboxContainerStop {
   readonly stopped: boolean;
 }
 
-export interface SandboxHostRpc {
+export interface SandboxHostRpc extends InstallationObjectRestoreRpc {
   /** The export's one line for a Sandbox: its header and the note why nothing follows. */
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   /**
@@ -101,6 +105,7 @@ export async function containerStopRecorded(
 export function sandboxHostFunctions(sandbox: {
   readonly env: Record<string, unknown> | undefined;
   readonly storage: HostObjectStorage;
+  readonly restoreContext?: HostObjectRestoreContext;
   /** Whether the container runs now. */
   readonly running: () => boolean;
   /** Destroys the container (the SDK's `destroy`). */
@@ -118,6 +123,14 @@ export function sandboxHostFunctions(sandbox: {
     return true;
   };
   return {
+    ...objectRestoreHostFunctions({
+      ...sandbox,
+      assertRestorable: () => {
+        if (sandbox.running()) {
+          throw new ObjectRestoreError('restore_object_busy', 'Stop the Sandbox container before preparing a restore.');
+        }
+      },
+    }),
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(sandbox.env, request);
       if (request.mode !== 'portable' && request.mode !== 'full') {

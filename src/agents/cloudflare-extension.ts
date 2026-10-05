@@ -2,9 +2,12 @@ import { objectInstallationEnv, type ObjectContext } from '../config/installatio
 import {
   objectHostFunctions,
   type HostObjectStorage,
+  type HostObjectRestoreContext,
   type InstallationObjectHostRpc,
   type ObjectExportRequest,
   type ObjectHostRequest,
+  type ObjectRestoreBookmarksRequest,
+  type ObjectRestoreRequest,
 } from '../state/object-host.ts';
 
 /**
@@ -20,7 +23,7 @@ type AgentObjectClass = new (...args: never[]) => object;
 
 /** What the host functions read from the Durable Object an agent instance is. */
 interface AgentObjectState {
-  readonly ctx: { readonly storage: HostObjectStorage };
+  readonly ctx: HostObjectRestoreContext & { readonly storage: HostObjectStorage };
   readonly env: Record<string, unknown> | undefined;
 }
 
@@ -30,7 +33,7 @@ interface AgentObjectState {
  * installation's env (see installation-scope.ts). Standalone: unchanged.
  *
  * It also answers a host serving many installations (an operator job, see
- * state/installation-objects.ts): export its storage, erase it, or clear its
+ * state/installation-objects.ts): export or restore its storage, erase it, or clear its
  * alarm. Each refuses on standalone and for any installation but the one the
  * instance ID scopes.
  */
@@ -44,6 +47,14 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
     /** Host RPC: one page of this instance's storage (its transcript and Flue's own records). */
     async chickpeaHostExportPage(request: ObjectExportRequest) {
       return agentHost(this).chickpeaHostExportPage(request);
+    }
+
+    async chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest) {
+      return agentHost(this).chickpeaHostRestoreBookmarks(request);
+    }
+
+    async chickpeaHostRestore(request: ObjectRestoreRequest) {
+      return agentHost(this).chickpeaHostRestore(request);
     }
 
     /**
@@ -68,7 +79,7 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
 
 function agentHost(agent: object): InstallationObjectHostRpc {
   const self = agent as AgentObjectState;
-  return objectHostFunctions({ env: self.env, storage: self.ctx.storage });
+  return objectHostFunctions({ env: self.env, storage: self.ctx.storage, restoreContext: self.ctx });
 }
 
 /** The `cloudflare` export of an agent with no other object extension. */

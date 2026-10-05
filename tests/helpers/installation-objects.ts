@@ -18,7 +18,7 @@ import { SandboxWorkspaceState } from '../../src/sandbox/workspace-lifecycle.ts'
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
 import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
-import { objectHostFunctions } from '../../src/state/object-host.ts';
+import { objectHostFunctions, type HostObjectRestoreContext } from '../../src/state/object-host.ts';
 import type { AgentStopTarget } from '../../src/state/pending-work.ts';
 import { stateStoreHostFunctions } from '../../src/state/state-store-host.ts';
 import { buildTagStateStores, type TagStateStores } from '../../src/state/tag-state-stores.ts';
@@ -35,6 +35,11 @@ export class FakeObjectStorage {
   readonly kv = new Map<string, unknown>();
   alarm: number | null = null;
   deleteAllCalls = 0;
+  currentBookmark = 'bookmark_current';
+  targetBookmark = 'bookmark_target';
+  scheduledRestoreBookmark: string | undefined;
+  readonly bookmarkCalls: Array<{ method: string; timestamp?: number | Date; bookmark?: string }> = [];
+  readonly restoreContext = new FakeObjectRestoreContext(this);
   private depth = 0;
 
   constructor() {
@@ -104,6 +109,22 @@ export class FakeObjectStorage {
     this.alarm = null;
   }
 
+  async getCurrentBookmark(): Promise<string> {
+    this.bookmarkCalls.push({ method: 'getCurrentBookmark' });
+    return this.currentBookmark;
+  }
+
+  async getBookmarkForTime(timestamp: number | Date): Promise<string> {
+    this.bookmarkCalls.push({ method: 'getBookmarkForTime', timestamp });
+    return this.targetBookmark;
+  }
+
+  async onNextSessionRestoreBookmark(bookmark: string): Promise<string> {
+    this.bookmarkCalls.push({ method: 'onNextSessionRestoreBookmark', bookmark });
+    this.scheduledRestoreBookmark = bookmark;
+    return 'bookmark_before_restore';
+  }
+
   /** As on SQLite-backed objects at compatibility date 2026-02-24 or later: tables, entries and the alarm. */
   async deleteAll(): Promise<void> {
     this.deleteAllCalls += 1;
@@ -127,6 +148,36 @@ export class FakeObjectStorage {
 
   asDurableObjectStorage(): DurableObjectStorage {
     return this as unknown as DurableObjectStorage;
+  }
+}
+
+/** Abort interrupts the real object's RPC rather than returning a success receipt. */
+export class FakeObjectAbort extends Error {}
+
+export class FakeObjectRestoreContext implements HostObjectRestoreContext {
+  inGate = false;
+  gates = 0;
+  callbackRejections = 0;
+  aborts = 0;
+
+  constructor(readonly storage: FakeObjectStorage, readonly id: { name?: string } = {}) {}
+
+  async blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+    this.gates += 1;
+    this.inGate = true;
+    try {
+      return await callback();
+    } catch (error) {
+      this.callbackRejections += 1;
+      throw error;
+    } finally {
+      this.inGate = false;
+    }
+  }
+
+  abort(reason?: string): void {
+    this.aborts += 1;
+    throw new FakeObjectAbort(reason);
   }
 }
 
@@ -217,7 +268,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
       object = {
         binding, name, storage: installation.storage, env,
         host: stateStoreHostFunctions({
-          env, storage: installation.storage,
+          env, storage: installation.storage, restoreContext: installation.storage.restoreContext,
           stores: () => stores ??= buildTagStateStores(
             new DoSqlStateDb(installation.storage.asDurableObjectStorage()), env, { gatewayLeaseOwner: 'test' },
           ),
@@ -241,6 +292,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
         host: sandboxHostFunctions({
           env: sandboxEnv,
           storage,
+          restoreContext: storage.restoreContext,
           running: () => container.running,
           destroy: async () => {
             container.running = false;
@@ -272,7 +324,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
       object = {
         binding, name, storage, env,
         host: objectHostFunctions({
-          env, storage,
+          env, storage, restoreContext: storage.restoreContext,
           ...(binding === 'SLACK_THREAD_RUNNER'
             ? {
                 cancel: (now: number) => {
