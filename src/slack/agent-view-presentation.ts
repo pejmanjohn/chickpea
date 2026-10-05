@@ -314,6 +314,11 @@ export class SlackAgentViewPresentation {
     this.options.footer = { ...this.options.footer, memoryItems };
   }
 
+  /** Mark the reply a model-key repair reply, known only once its model fails readiness. */
+  setFooterModelRepair(): void {
+    this.options.footer = { ...this.options.footer, modelRepair: true };
+  }
+
   /**
    * Persist the activity intent before its Slack write. The admission activity
    * already owns a pending receipt, so the first call reuses it; later facts

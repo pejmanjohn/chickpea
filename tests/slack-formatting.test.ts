@@ -916,6 +916,25 @@ test('reply footers render Agent, model, and optional configure link', () => {
   );
 });
 
+test('the built-in Chickpea\'s Configure link opens Admin home, or Model providers for a model-key repair reply', () => {
+  // The built-in Chickpea has no Admin page of its own.
+  const chickpea = { agentName: 'Chickpea', agentId: 'agent_chickpea', publicUrl: 'https://demo.example' };
+  assert.equal(
+    renderSlackReplyFooterBlock(chickpea).elements[0]?.text,
+    'Chickpea | <https://demo.example/admin|Configure>',
+  );
+  assert.equal(
+    renderSlackReplyFooterBlock({ ...chickpea, modelRepair: true }).elements[0]?.text,
+    'Chickpea | <https://demo.example/admin/settings/providers|Configure>',
+  );
+  // Any other Agent's reply, a repair reply included, opens that Agent.
+  assert.equal(
+    renderSlackReplyFooterBlock({ ...chickpea, agentName: 'Analyst', agentId: 'agent_analyst', modelRepair: true })
+      .elements[0]?.text,
+    'Analyst | <https://demo.example/admin/agents/agent_analyst|Configure>',
+  );
+});
+
 test('scheduled reply footers add only the Scheduled segment', () => {
   const footer = { agentName: 'Analyst', agentId: 'analyst', modelLabel: 'openai/test', includeConfigureLink: false };
   assert.equal(renderSlackReplyFooterBlock(footer).elements[0]?.text, 'Analyst | openai/test');
