@@ -45,7 +45,10 @@ export interface HostedGithubPort {
     list(installationId: string): Promise<unknown>;
     /** Ends one of the installation's live bindings; false when it holds no such binding. */
     disconnect(installationId: string, githubInstallationId: number): Promise<boolean>;
-    /** A mint for a bound installation got 404 from GitHub: the host re-reads GitHub and follows it. */
+    /**
+     * A mint for a bound installation got 404 from GitHub: the host re-reads
+     * GitHub and follows it. The failed mint waits for this to settle.
+     */
     reportGone(installationId: string, githubInstallationId: number): Promise<void> | void;
   };
 }
@@ -187,15 +190,18 @@ export async function disconnectHostedGithubBinding(
   }
 }
 
-/** Tells the host GitHub answered 404 for a bound installation's mint. Never throws. */
-export function reportHostedGithubInstallationGone(installationId: string, githubInstallationId: number): void {
+/**
+ * Tells the host GitHub answered 404 for a bound installation's mint, and
+ * settles once the host has answered. The failed mint awaits it: on Workers,
+ * work a request leaves unawaited is cancelled when its response is sent.
+ * Never throws.
+ */
+export async function reportHostedGithubInstallationGone(installationId: string, githubInstallationId: number): Promise<void> {
   const current = port;
   forgetHostedGithubBindings(installationId);
   if (!current) return;
   try {
-    void Promise.resolve(current.bindings.reportGone(installationId, githubInstallationId)).catch(() => {
-      logAtMostEachMinute('github_report_gone_failed', 'warn');
-    });
+    await current.bindings.reportGone(installationId, githubInstallationId);
   } catch {
     logAtMostEachMinute('github_report_gone_failed', 'warn');
   }
