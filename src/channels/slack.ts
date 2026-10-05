@@ -5,6 +5,7 @@ import {
   type SlackChannelOptions,
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
+import type { Context } from 'hono';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -27,7 +28,6 @@ import {
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
-import type { Context } from 'hono';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
@@ -551,6 +551,7 @@ function isSlackUrlVerification(rawBody: string): boolean {
  * Events requests here instead of to the route.
  */
 export async function answerSlackRecoveryEventsProof(c: Context): Promise<Response | undefined> {
+  if (c.req.method !== 'POST') return undefined;
   const ingress = await readSlackIngressBody(c.req.raw);
   if (!ingress.ok) return undefined;
   const challenge = await slackRecoveryChallenge(c.env as PlatformEnv | undefined, {

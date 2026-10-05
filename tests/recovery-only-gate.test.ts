@@ -457,10 +457,10 @@ function postRecovery(env: PlatformEnv, cookie: string, fields: Record<string, s
 }
 
 /** A delivery to the Events URL, signed as Slack signs with `signingSecret`. */
-function signedEvent(env: PlatformEnv, signingSecret: string, body: Record<string, unknown>) {
+function signedEvent(env: PlatformEnv, signingSecret: string, body: Record<string, unknown>, method = 'POST') {
   const rawBody = JSON.stringify(body);
   const timestamp = String(Math.floor(Date.now() / 1_000));
-  return send(env, 'POST', '/channels/slack/events', {
+  return send(env, method, '/channels/slack/events', {
     headers: {
       'content-type': 'application/json',
       'x-slack-request-timestamp': timestamp,
@@ -589,6 +589,8 @@ test('while recovery-only waits on Events proof, the Events URL answers only tha
   for (const response of [
     await signedEvent(env, 'signing-secret', APP_EVENT),
     await signedEvent(env, 'some-other-secret', URL_VERIFICATION),
+    // Slack checks the Events URL with a POST; the same check sent another way proves nothing.
+    await signedEvent(env, 'signing-secret', URL_VERIFICATION, 'PUT'),
     await send(env, 'GET', '/channels/slack/events'),
   ]) {
     assert.equal(response.status, 404);

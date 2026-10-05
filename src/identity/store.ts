@@ -704,7 +704,8 @@ export class IdentityStoreLogic {
   getWaitingSlackRecoverySession(): SlackRecoverySession | undefined {
     const row = this.db.get(
       `SELECT * FROM identity_slack_recovery_sessions
-       WHERE status = 'waiting_events' AND expires_at > ?`,
+       WHERE status = 'waiting_events' AND expires_at > ?
+       ORDER BY created_at DESC, recovery_id DESC LIMIT 1`,
       this.now(),
     );
     return row ? slackRecoverySessionFromRow(row) : undefined;
