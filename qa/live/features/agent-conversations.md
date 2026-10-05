@@ -30,6 +30,7 @@ Docs: `/slack/conversations/`; operator detail in [Agent conversations](../../..
 
 - Every Agent posts as the app's one bot user. Check each answer's sender, avatar and footer, and the order of answers.
 - The person should never read the same answer twice, so a silent ending by the thread's Agent is a pass. Prove the silent turn ran from Admin's sessions API (`no_op`).
+- To prove Chickpea's listing asks nobody, list in a channel where run Agents are granted, check its reply's blocks hold no `usergroup` element, read the thread again at least two minutes later, and confirm Admin's sessions API shows only Chickpea's run. Pair it with an ask between two run Agents as the positive control.
 - An occasional one-line restatement by the thread's Agent after a hand-back is an accepted known limit.
 - Whether an Agent asks at all is a model choice. Grade it on the lane's configured model, separately from host behaviour such as admission, hand-back and limits. Earlier prompt-only fixes for this flow were unreliable, which is why the hand-back is host-side.
 - An ask that is not admitted is silent by design. Pair it with a healthy positive control and the `[chickpea] host-addressed turn not admitted` line in a bounded tail started before the action.
