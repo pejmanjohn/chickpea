@@ -2944,7 +2944,6 @@ async function drainCloudflareManagementReceipts(
     resolveClient: async (workspaceId: string) =>
       (await resolveInstallation(workspaceId)).client,
   };
-  // The in-DO Work logic answers synchronously; awaiting it is the same.
   const work = stores.work as unknown as WorkStore;
   await drainManagementReceiptOutbox({
     management: stores.management as unknown as ManagementStore,

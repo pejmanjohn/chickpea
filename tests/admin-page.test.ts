@@ -5705,6 +5705,33 @@ test('Admin lands on the first active Agent when an archived Agent sorts before 
   assert.match(harness.app.innerHTML, /class="agent-roster-item" data-action="edit-profile" data-agent="agent_archived"/);
 });
 
+test('Admin lands on an active Agent before a draft or needs-attention Agent that sorts first', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [
+      { ...releaseAgent, id: 'agent_a_draft', name: 'Draft Helper', lifecycle: 'draft' },
+      { ...releaseAgent, id: 'agent_b_attention', name: 'Attention Helper', lifecycle: 'needs_attention' },
+      { ...releaseAgent, lifecycle: 'active' },
+    ],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+});
+
+test('with no active Agent, Admin lands on a draft Agent before an archived one', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin',
+    agents: [
+      { ...releaseAgent, id: 'agent_a_archived', name: 'Archived Helper', enabled: false, lifecycle: 'archived' },
+      { ...releaseAgent, lifecycle: 'draft' },
+    ],
+  });
+  await flushAsync();
+
+  assert.equal(harness.locationPath(), '/admin/agents/agent_release');
+});
+
 test('Admin still opens an archived Agent when it is the only Agent', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin',

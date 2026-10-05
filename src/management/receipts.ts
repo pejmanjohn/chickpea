@@ -22,7 +22,7 @@ import {
 } from '../slack/agent-routing.ts';
 import type { ManagementStore } from './store.ts';
 import { opaqueId } from '../work/admission.ts';
-import type { RunId, WorkStore } from '../work/types.ts';
+import { WorkStateError, type RunId, type WorkStore } from '../work/types.ts';
 import { RoutineStateError, type RoutineStore } from '../routines/types.ts';
 import type {
   ManagementReceiptDestination,
@@ -193,6 +193,13 @@ const UNSETTLED_RUN_STATUSES = new Set(['input_ready', 'executing', 'response_re
  * settling its Run, so the Run is settled here: delivered when the welcome
  * posts, failed when the outbox gives up. Best effort and repeatable: the
  * Slack post is already final, so a Work failure is logged, never thrown.
+ *
+ * A Run this cannot settle is reported, not retried. The outbox calls this
+ * once, after its irreversible post, and nothing drives a delivered receipt
+ * again. A Run still before its input (its turn's Work writes queued behind a
+ * slow store) could only be waited for here, holding every later receipt for
+ * up to that backlog's deadline (SHADOW_BACKLOG_DEADLINE_MS) with no promise
+ * it lands. It stays unsettled, and the warning names its status.
  */
 async function settleAgentWelcomeRun(
   record: ManagementReceiptOutboxRecord,
@@ -202,12 +209,15 @@ async function settleAgentWelcomeRun(
     | { kind: 'failed' },
 ): Promise<void> {
   if (!work || !isAgentCreatedWelcome(record.receipt)) return;
-  // The turn records its Work Run id as the presentation Run id.
   const runId = record.receipt.presentationRunId as RunId | undefined;
   if (!runId) return;
   try {
     const run = await work.getRun(runId);
-    if (!run || !UNSETTLED_RUN_STATUSES.has(run.status)) return;
+    if (run?.status === 'settled') return;
+    if (!run || !UNSETTLED_RUN_STATUSES.has(run.status)) {
+      warnAgentWelcomeRunUnsettled(record, `run_${run?.status ?? 'missing'}`);
+      return;
+    }
     const at = Date.now();
     if (outcome.kind === 'failed') {
       await work.settleRunWithoutDelivery({
@@ -220,7 +230,13 @@ async function settleAgentWelcomeRun(
       return;
     }
     const binding = await work.getBinding(run.bindingId);
-    if (!binding || binding.sourceVisibility === 'unknown') return;
+    if (!binding || binding.sourceVisibility === 'unknown') {
+      warnAgentWelcomeRunUnsettled(
+        record,
+        binding ? 'binding_visibility_unknown' : 'binding_missing',
+      );
+      return;
+    }
     const method = 'slack_chat_post_message';
     const attemptId = opaqueId('delivery', `${runId}:${record.outboxId}`);
     await work.recordRunResponse({
@@ -252,15 +268,26 @@ async function settleAgentWelcomeRun(
       outcome: 'delivered',
       deliveryRef: `slack:${outcome.channelId}:${outcome.messageTs}`,
       // An approval can queue its welcome before it settles its execution.
+      // Without a disposition, finalizeRunDelivery falls back to
+      // recoveredTerminalDisposition, which takes a delivery with no settled
+      // execution for a recovered one (and warns as much).
       terminalDisposition: 'succeeded',
       finalizedAt: at,
     });
   } catch (error) {
     console.warn('[chickpea:management] Agent welcome Run settlement failed', JSON.stringify({
       outboxId: record.outboxId,
-      failureCode: error instanceof Error ? error.name : 'unknown',
+      // Every Work refusal is a WorkStateError; its code says which one.
+      failureCode: error instanceof WorkStateError ? error.code : receiptDeliveryFailureCode(error),
     }));
   }
+}
+
+function warnAgentWelcomeRunUnsettled(record: ManagementReceiptOutboxRecord, reason: string): void {
+  console.warn('[chickpea:management] Agent welcome Run left unsettled', JSON.stringify({
+    outboxId: record.outboxId,
+    reason,
+  }));
 }
 
 export async function completeAgentWelcomeDelivery(

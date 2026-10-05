@@ -724,12 +724,14 @@
     return state.grants.filter(function (grant) { return grant.agentId === agentId; });
   }
 
-  // Admin's default Agent: the first one not archived, so landing never opens
-  // an archived Agent while an active one exists.
+  // Admin's default Agent: the first active one, else the first not archived,
+  // so landing never opens a draft, needs-attention or archived Agent while an
+  // active one exists.
   function firstAgent() {
-    return state.agents.find(function (agent) {
-      return (agent.lifecycle || (agent.enabled ? "active" : "archived")) !== "archived";
-    }) || state.agents[0] || null;
+    function lifecycle(agent) { return agent.lifecycle || (agent.enabled ? "active" : "archived"); }
+    return state.agents.find(function (agent) { return lifecycle(agent) === "active"; }) ||
+      state.agents.find(function (agent) { return lifecycle(agent) !== "archived"; }) ||
+      state.agents[0] || null;
   }
 
   function clearCustomConnectionMode() {
