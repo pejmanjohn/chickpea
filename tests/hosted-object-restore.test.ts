@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
+
+import ts from 'typescript';
 
 import { installationAgentObject } from '../src/agents/cloudflare-extension.ts';
 import { CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME } from '../src/agents/names.ts';
@@ -1223,7 +1226,7 @@ test('the digest budget is 500,000 records, 16,000,000 values, 512 MiB or a 2 Gi
   // Spelled out so a changed budget fails here, beside the design note's figures.
   assert.deepEqual(OBJECT_DIGEST_BUDGET, {
     rows: 500_000, cells: 16_000_000, bytes: 512 * 1024 * 1024, databaseBytes: 2 * 1024 * 1024 * 1024,
-  });
+  }, 'The digest budget changed: if that is intended, bump OBJECT_DIGEST_CONTRACT and record the new budget here.');
   const storage = new FakeObjectStorage(PROBE);
   t.after(() => storage.database.close());
   const id = storage.objectId;
@@ -1260,6 +1263,79 @@ test('wide rows reach the values bound before the records bound', async (t) => {
   const budget = { ...UNBOUNDED, rows: 1_000, cells: 32 * 20 };
   await assert.rejects(objectStorageDigest(storage, storage.objectId, budget), { code: 'restore_object_too_large' });
   assert.match(await objectStorageDigest(storage, storage.objectId, { ...budget, cells: 2_000 }), /^sha256:/);
+});
+
+test('a fixed storage digests to the value recorded for the digest contract', async (t) => {
+  const storage = new FakeObjectStorage(PROBE);
+  t.after(() => storage.database.close());
+  storage.sql.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, score REAL, data BLOB)');
+  storage.sql.exec('CREATE INDEX notes_body ON notes (body)');
+  storage.sql.exec("INSERT INTO notes (body, score, data) VALUES ('first', 1.5, x'00ff'), ('second', NULL, NULL)");
+  storage.sql.exec('CREATE TABLE pairs (k1 TEXT, k2 INTEGER, value TEXT, PRIMARY KEY (k1, k2)) WITHOUT ROWID');
+  storage.sql.exec("INSERT INTO pairs VALUES ('b', 1, 'one'), ('a', 2, 'two')");
+  await storage.put('kv_a', { value: 1, $tag: 'kept' });
+  await storage.put('kv_b', new Map([['at', new Date(NOW)]]));
+  await storage.put('kv_c', new Set([1n]));
+  await storage.setAlarm(NOW + 60_000);
+  assert.equal(
+    await objectStorageDigest(storage, 'a'.repeat(64)),
+    'sha256:e2f0c6dd8a67c5699699e81c2e3fb044d9a5d399930634e8e88ff406ccb415d7',
+    'This storage digests differently: if that is intended, bump OBJECT_DIGEST_CONTRACT and record the new digest here.',
+  );
+});
+
+/**
+ * The source a digest's time and reads depend on besides its budget, by
+ * file: the digest and what it calls, the restore calls that run it within
+ * the input gate, and each quiesce hook with the reads it makes.
+ */
+const DIGEST_CONTRACT_SOURCE: Readonly<Record<string, readonly string[]>> = {
+  'src/state/object-host.ts': [
+    'objectRestoreHostFunctions', 'restoreExclusive', 'DIGEST_KV_BATCH', 'objectStorageDigest', 'digestTooLarge',
+    'OWN_SCHEMA_ENTRY', 'listTables', 'encodeSqlValue', 'encodeStoredValue', 'quoteIdentifier',
+  ],
+  'src/state/state-store-host.ts': ['quiesce', 'quiesceStateStoreForRestore'],
+  'src/slack/turn-jobs.ts': ['PENDING_ROW', 'hasInterruptedAlarmDispatch', 'hasHandoffs'],
+  'src/slack/gateway/inbox.ts': ['hasInFlight'],
+  'src/slack/thread-runner.ts': ['quiesce'],
+  'src/slack/thread-runner-jobs.ts': ['hasRunning', 'hasOwedStops', 'quiesceThreadRunnerForRestore'],
+  'src/sandbox/sandbox-host.ts': ['quiesce', 'quiesceSandboxForRestore', 'containerSchedules'],
+};
+
+/** A node's tokens without comments or layout, so only a change to the code moves the fingerprint. */
+function codeTokens(node: ts.Node, source: ts.SourceFile): string[] {
+  if (ts.isJSDoc(node)) return [];
+  const children = node.getChildren(source);
+  if (children.length > 0) return children.flatMap((child) => codeTokens(child, source));
+  const text = node.getText(source);
+  return text ? [text] : [];
+}
+
+test('the digest and quiesce source matches the fingerprint recorded for the digest contract', () => {
+  const declarations = Object.entries(DIGEST_CONTRACT_SOURCE).flatMap(([path, names]) => {
+    const source = ts.createSourceFile(
+      path, readFileSync(new URL(`../${path}`, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true,
+    );
+    const found: Array<[string, string, string]> = [];
+    const visit = (node: ts.Node): void => {
+      if ((ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node) || ts.isMethodDeclaration(node) ||
+          ts.isPropertyAssignment(node)) && node.name && ts.isIdentifier(node.name) && names.includes(node.name.text)) {
+        found.push([path, node.name.text, codeTokens(node, source).join(' ')]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    for (const name of names) {
+      assert.ok(found.some(([, declared]) => declared === name), `${path} no longer declares ${name}: list where it moved`);
+    }
+    return found;
+  });
+  assert.equal(
+    createHash('sha256').update(JSON.stringify(declarations)).digest('hex'),
+    'f79fa7147e82e0af8d28324f00f6d4399a8ca6f91e51d3cad6014ed52a5257ca',
+    'The digest or a restore quiesce path changed. If the change affects the digest\'s time or what it reads, '
+      + 'bump OBJECT_DIGEST_CONTRACT; either way, record the new fingerprint here.',
+  );
 });
 
 test('a database over its size bound is refused before the input gate, quiesce or anything is read', async (t) => {

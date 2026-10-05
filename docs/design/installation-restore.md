@@ -430,5 +430,16 @@ Prove on staging, on disposable objects:
 - That a T a few seconds before now, chosen on the host's clock, resolves to
   the intended history.
 
+A host binds the gate's measurement to `OBJECT_DIGEST_CONTRACT` and
+`OBJECT_DIGEST_BUDGET`, not to a Core commit. The digest's time depends on its
+algorithm and coverage, the budget, the quiesce hooks, the objects' size and
+the platform. The contract versions the first three: Core bumps it with any
+change to the digest's algorithm, encoding, record order or coverage, to the
+budget, or to a quiesce hook, and its tests pin each, so such a change fails
+until it is recorded. A Core that declares the contract and budget measured
+keeps apply enabled; one that declares others is measured again. The objects'
+size and the platform are not in the contract: the host measures again as the
+objects grow.
+
 See the
 [Cloudflare PITR API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api).
