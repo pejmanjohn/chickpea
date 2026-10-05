@@ -116,6 +116,7 @@ export function createUsageAdminApi(options: UsageAdminApiOptions): Hono {
           id: catalog.id,
           providerId: catalog.providerId,
           sourceUrl: catalog.sourceUrl,
+          effectiveFrom: catalog.effectiveFrom,
           reviewedAt: catalog.reviewedAt,
           staleAfter: catalog.staleAfter,
           currency: catalog.currency,

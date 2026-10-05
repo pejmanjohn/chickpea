@@ -99,6 +99,7 @@ interface AgentReportedUsage {
   outputTokens: number | null;
   cacheReadTokens?: number | null;
   cacheWriteTokens?: number | null;
+  cacheWrite1hTokens?: number | null;
   totalTokens: number | null;
 }
 
@@ -1207,6 +1208,9 @@ function parseReportedUsage(value: unknown): {
     outputTokens: isTokenCount(record.output) ? record.output : null,
     cacheReadTokens: isTokenCount(record.cacheRead) ? record.cacheRead : null,
     cacheWriteTokens: isTokenCount(record.cacheWrite) ? record.cacheWrite : null,
+    ...(isTokenCount(record.cacheWrite1h) && record.cacheWrite1h > 0
+      ? { cacheWrite1hTokens: record.cacheWrite1h }
+      : {}),
     totalTokens: isTokenCount(record.totalTokens) ? record.totalTokens : null,
   };
   const values = [

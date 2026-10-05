@@ -122,7 +122,7 @@ export class InteractiveUsageRecorder {
       cacheWriteTokens: usage?.cacheWriteTokens ?? null,
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: unknownReason,
-    });
+    }, usage?.cacheWrite1hTokens ?? null);
     this.terminalInput = terminal;
     this.workerTerminals = (result.codingWorkerUsage ?? []).map((record, index) =>
       this.codingWorkerTerminal(record, index, terminal.finishedAt));
@@ -265,7 +265,11 @@ export class InteractiveUsageRecorder {
     };
     return {
       ...terminal,
-      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+      ...estimateForRuntime(
+        { ...terminal, cacheWrite1hTokens: usage?.cacheWrite1h ?? null },
+        this.options.platformEnv,
+        this.options.processEnv,
+      ),
     };
   }
 
@@ -299,6 +303,7 @@ export class InteractiveUsageRecorder {
       | 'totalTokens'
       | 'usageUnknownReason'
     >,
+    cacheWrite1hTokens: number | null = null,
   ): RecordUsageTerminalInput {
     const finishedAt = this.options.replaySettlementAt ?? this.now();
     const terminal = {
@@ -317,7 +322,11 @@ export class InteractiveUsageRecorder {
     };
     return {
       ...terminal,
-      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+      ...estimateForRuntime(
+        { ...terminal, cacheWrite1hTokens },
+        this.options.platformEnv,
+        this.options.processEnv,
+      ),
     };
   }
 }
@@ -358,6 +367,7 @@ interface RoutineReportedUsage {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
+  cacheWrite1h?: number;
   totalTokens: number;
 }
 
@@ -392,7 +402,28 @@ interface InteractionReportedUsage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  cacheWrite1hTokens?: number;
   totalTokens: number;
+}
+
+/** A classifier call's reported usage as the recorder takes it; null when a count is missing. */
+export function interactionReportedUsage(
+  reported: AgentDispatchResult['reportedUsage'] | undefined,
+): InteractionReportedUsage | null {
+  if (
+    !reported ||
+    reported.inputTokens === null ||
+    reported.outputTokens === null ||
+    reported.totalTokens === null
+  ) return null;
+  return {
+    inputTokens: reported.inputTokens,
+    outputTokens: reported.outputTokens,
+    cacheReadTokens: reported.cacheReadTokens ?? 0,
+    cacheWriteTokens: reported.cacheWriteTokens ?? 0,
+    ...(reported.cacheWrite1hTokens ? { cacheWrite1hTokens: reported.cacheWrite1hTokens } : {}),
+    totalTokens: reported.totalTokens,
+  };
 }
 
 export class InteractionUsageRecorder {
@@ -482,7 +513,11 @@ export class InteractionUsageRecorder {
     };
     this.terminalInput = {
       ...terminal,
-      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+      ...estimateForRuntime(
+        { ...terminal, cacheWrite1hTokens: usage?.cacheWrite1hTokens ?? null },
+        this.options.platformEnv,
+        this.options.processEnv,
+      ),
     };
     const outcome = await persistUsage(
       () => this.options.store.recordTerminal(this.terminalInput!),
@@ -615,7 +650,11 @@ export class RoutineUsageRecorder {
     };
     const terminalInput: RecordUsageTerminalInput = {
       ...terminal,
-      ...estimateForRuntime(terminal, this.options.platformEnv, this.options.processEnv),
+      ...estimateForRuntime(
+        { ...terminal, cacheWrite1hTokens: usage?.cacheWrite1h ?? null },
+        this.options.platformEnv,
+        this.options.processEnv,
+      ),
     };
     this.terminalInput = terminalInput;
     const outcome = await persistUsage(
@@ -820,21 +859,7 @@ function normalizeInteractionUsage(
 }
 
 function estimateForRuntime(
-  terminal: Pick<
-    RecordUsageTerminalInput,
-    | 'observedAt'
-    | 'providerRoute'
-    | 'returnedProvider'
-    | 'requestedProvider'
-    | 'returnedModel'
-    | 'requestedModel'
-    | 'usageCompleteness'
-    | 'inputTokens'
-    | 'outputTokens'
-    | 'cacheReadTokens'
-    | 'cacheWriteTokens'
-    | 'totalTokens'
-  >,
+  terminal: Parameters<typeof estimateUsage>[0],
   platformEnv: PlatformEnv | undefined,
   processEnv: NodeJS.ProcessEnv | undefined,
 ) {

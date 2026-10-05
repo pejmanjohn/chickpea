@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
+import { estimateUsage } from '../src/usage/pricing/estimate.ts';
 import { SqliteUsageStore, UsageStateError } from '../src/usage/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import type { AdmitUsageOperationInput, RecordUsageTerminalInput } from '../src/usage/types.ts';
@@ -93,6 +94,81 @@ test('usage admission and terminal recording are idempotent and immutable', asyn
       (error: unknown) =>
         error instanceof UsageStateError && error.code === 'usage_measurement_conflict',
     );
+  } finally {
+    store.close();
+  }
+});
+
+test('a terminal replayed by a release that prices it differently is the same measurement', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const observedAt = Date.UTC(2026, 9, 5, 6);
+    const haiku = {
+      finishedAt: observedAt,
+      observedAt,
+      providerRoute: 'anthropic',
+      requestedProvider: 'anthropic',
+      requestedModel: 'claude-haiku-4-5',
+      returnedProvider: 'anthropic',
+      returnedModel: 'claude-haiku-4-5',
+      credentialRefId: null,
+      credentialVersion: null,
+      inputTokens: 231,
+      outputTokens: 732,
+      cacheReadTokens: 85_706,
+      cacheWriteTokens: 15_654,
+      totalTokens: 102_323,
+    };
+    // A release without this model's cache prices, and one with them.
+    const partial = {
+      estimateCompleteness: 'partial',
+      estimateAmountMicros: null,
+      estimateCurrency: null,
+      priceVersionId: null,
+      priceUnknownReason: 'pricing_dimension_unknown',
+    } as const;
+    const priced = estimateUsage({ ...haiku, usageCompleteness: 'complete' });
+    assert.equal(priced.estimateAmountMicros, 32_029);
+    // A release without any price for this model.
+    const unlisted = { ...partial, estimateCompleteness: 'unknown', priceUnknownReason: 'price_unknown' } as const;
+
+    const admit = (operationId: string) => store.admitOperation(operation(operationId, {
+      startedAt: observedAt - 1_000,
+      requestedProvider: 'anthropic',
+      requestedModel: 'claude-haiku-4-5',
+      credentialRefId: null,
+      credentialVersion: null,
+    }));
+    // Either release can replay during a rolling deploy. The first write stays.
+    for (const [operationId, first, replay] of [
+      ['op_unknown_then_priced', partial, priced],
+      ['op_priced_then_unknown', priced, partial],
+      ['op_unlisted_then_partial', unlisted, partial],
+      ['op_partial_then_unlisted', partial, unlisted],
+      ['op_unlisted_then_priced', unlisted, priced],
+      ['op_priced_then_unlisted', priced, unlisted],
+      ['op_priced_then_other_version', priced, { ...priced, priceVersionId: 'anthropic_2026-07-28' }],
+    ] as const) {
+      await admit(operationId);
+      const recorded = await store.recordTerminal(terminal(operationId, { ...haiku, ...first }));
+      assert.deepEqual(
+        await store.recordTerminal(terminal(operationId, { ...haiku, ...replay })),
+        recorded,
+        operationId,
+      );
+    }
+
+    const conflict = (error: unknown) =>
+      error instanceof UsageStateError && error.code === 'usage_measurement_conflict';
+    const changed = { cacheWriteTokens: 15_655, totalTokens: 102_324 };
+    for (const [operationId, replay] of [
+      ['op_unknown_then_priced', { ...haiku, ...changed, ...estimateUsage({ ...haiku, ...changed, usageCompleteness: 'complete' }) }],
+      ['op_unknown_then_priced', { ...haiku, ...changed, ...partial }],
+      ['op_priced_then_unknown', { ...haiku, ...changed, ...partial }],
+      ['op_priced_then_unknown', { ...haiku, ...priced, estimateAmountMicros: 32_030 }],
+    ] as const) {
+      await assert.rejects(store.recordTerminal(terminal(operationId, replay)), conflict, operationId);
+    }
   } finally {
     store.close();
   }

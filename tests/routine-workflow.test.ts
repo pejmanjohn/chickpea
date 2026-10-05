@@ -418,6 +418,38 @@ test('routine settlement persists measured cached tokens in the occurrence row',
   } finally { store.close(); }
 });
 
+test('a routine settlement keeps one-hour cache writes, so its Usage estimate stays partial', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const runs: Record<string, string> = {};
+    for (const [suffix, cacheWrite1h] of [['short_cache', undefined], ['long_cache', 10]] as const) {
+      const fixture = await admittedFixture(store, suffix);
+      runs[suffix] = fixture.run.id;
+      const reply = { ...successfulReply(),
+        data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'no_op', message: '' }] },
+        metadata: { chickpea: { schemaVersion: 1, requestedModel: 'anthropic/claude-haiku-4-5',
+          usage: { input: 3, output: 45, cacheRead: 4482, cacheWrite: 10, totalTokens: 4540,
+            ...(cacheWrite1h ? { cacheWrite1h } : {}) } } },
+      };
+      await executeRoutineOccurrence({ env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+        { ...dependencies([]), usageRecordingEnabled: true, usageStore: usage, handle: fakeHandle({ reply }) });
+    }
+    const settlement = (await store.getRun(runs.long_cache!))?.flueAgentSettlement;
+    assert.equal(settlement?.outcome === 'completed' ? settlement.result.usage.cacheWrite1hTokens : undefined, 10);
+    const estimate = async (suffix: string) => {
+      const measurement = (await usage.getOperation(runs[suffix]!))?.measurements[0];
+      return [measurement?.estimateCompleteness, measurement?.priceUnknownReason];
+    };
+    // Nothing prices this model on the fixture's date; one-hour writes still read as partial.
+    assert.deepEqual(await estimate('short_cache'), ['unknown', 'price_unknown']);
+    assert.deepEqual(await estimate('long_cache'), ['partial', 'pricing_dimension_unknown']);
+  } finally {
+    usage.close();
+    store.close();
+  }
+});
+
 test('the routine envelope freezes the image capability its Agent role resolves', async () => {
   const roleReader = (modelId?: string) => ({
     async getWorkspaceModelRole(workspaceId: string, role: NonChatModelRole) {

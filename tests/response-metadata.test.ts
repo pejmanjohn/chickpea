@@ -5,6 +5,7 @@ import type { PromptUsage } from '@flue/runtime';
 
 import {
   CHICKPEA_RESPONSE_METADATA_KEY,
+  parseChickpeaResponseMetadata,
   responseUsageMetadata,
 } from '../src/usage/response-metadata.ts';
 
@@ -37,4 +38,17 @@ test('response metadata carries cache-aware measured usage and bounded model ide
   });
   assert.equal(CHICKPEA_RESPONSE_METADATA_KEY, 'chickpea');
   assert.doesNotMatch(JSON.stringify(metadata), /cost|prompt|completion/);
+});
+
+test('response metadata carries one-hour cache writes only when there are some', () => {
+  const long = responseUsageMetadata('anthropic/claude-haiku-4-5', usage, undefined, 6);
+  assert.equal(long.usage.cacheWrite1h, 6);
+  assert.deepEqual(parseChickpeaResponseMetadata(long), long);
+
+  const short = responseUsageMetadata('anthropic/claude-haiku-4-5', usage);
+  assert.equal('cacheWrite1h' in short.usage, false);
+  for (const cacheWrite1h of [0, -1, 1.5, '6']) {
+    const parsed = parseChickpeaResponseMetadata({ ...short, usage: { ...short.usage, cacheWrite1h } });
+    assert.deepEqual(parsed, short, String(cacheWrite1h));
+  }
 });

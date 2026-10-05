@@ -1016,6 +1016,7 @@ async function recordUsage(
           output: usage.outputTokens,
           cacheRead: usage.cacheReadTokens ?? 0,
           cacheWrite: usage.cacheWriteTokens ?? 0,
+          ...(usage.cacheWrite1hTokens ? { cacheWrite1h: usage.cacheWrite1hTokens } : {}),
           totalTokens: usage.totalTokens,
         } }
       : {}),
@@ -1141,6 +1142,9 @@ export function routineUsageFromAgentReply(
     outputTokens: completeness === 'complete' ? reported.output : null,
     cacheReadTokens: completeness === 'complete' ? reported.cacheRead : null,
     cacheWriteTokens: completeness === 'complete' ? reported.cacheWrite : null,
+    ...(completeness === 'complete' && reported.cacheWrite1h
+      ? { cacheWrite1hTokens: reported.cacheWrite1h }
+      : {}),
     totalTokens: completeness === 'complete' ? reported.totalTokens : null,
     completeness,
   };
@@ -1175,6 +1179,9 @@ function responseMetadata(reply: AgentReply): ChickpeaResponseMetadata | undefin
       output: counts.output as number,
       cacheRead: isTokenCount(counts.cacheRead) ? counts.cacheRead : 0,
       cacheWrite: isTokenCount(counts.cacheWrite) ? counts.cacheWrite : 0,
+      ...(isTokenCount(counts.cacheWrite1h) && counts.cacheWrite1h > 0
+        ? { cacheWrite1h: counts.cacheWrite1h }
+        : {}),
       totalTokens: counts.totalTokens as number,
     },
     ...(returnedModel ? { returnedModel } : {}),

@@ -1652,31 +1652,30 @@ function sameTerminal(measurement: UsageMeasurement, input: RecordUsageTerminalI
     sameEstimate(measurement, input);
 }
 
+/**
+ * An estimate derives from the measurement and the pricing a release ships.
+ * During a rolling deploy, or after a backfill, the same terminal can be
+ * Unknown (`unknown` or `partial`) under one release and priced under another;
+ * that is not a different measurement, nor is the same amount priced under
+ * another price version. Two priced estimates of different amounts still
+ * conflict.
+ */
 function sameEstimate(
   measurement: UsageMeasurement,
   input: RecordUsageTerminalInput,
 ): boolean {
-  if (
+  return (
     measurement.estimateCompleteness === input.estimateCompleteness &&
     measurement.estimateAmountMicros === input.estimateAmountMicros &&
     measurement.estimateCurrency === input.estimateCurrency &&
-    measurement.priceVersionId === input.priceVersionId &&
     measurement.priceUnknownReason === input.priceUnknownReason
-  ) return true;
-  if (
-    input.estimateCompleteness !== 'unknown' ||
-    input.estimateAmountMicros !== null ||
-    input.estimateCurrency !== null ||
-    input.priceVersionId !== null ||
-    (input.priceUnknownReason !== 'price_unknown' && input.priceUnknownReason !== 'price_stale')
-  ) return false;
-  const enriched = estimateUsage(input);
-  return enriched.estimateCompleteness === 'complete' &&
-    measurement.estimateCompleteness === enriched.estimateCompleteness &&
-    measurement.estimateAmountMicros === enriched.estimateAmountMicros &&
-    measurement.estimateCurrency === enriched.estimateCurrency &&
-    measurement.priceVersionId === enriched.priceVersionId &&
-    measurement.priceUnknownReason === enriched.priceUnknownReason;
+  ) || unpricedEstimate(measurement) || unpricedEstimate(input);
+}
+
+function unpricedEstimate(
+  estimate: Pick<UsageMeasurement, 'estimateCompleteness'>,
+): boolean {
+  return estimate.estimateCompleteness === 'unknown' || estimate.estimateCompleteness === 'partial';
 }
 
 function sameCredential(

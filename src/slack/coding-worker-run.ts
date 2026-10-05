@@ -50,6 +50,7 @@ export const CodingWorkerUsageSchema = v.strictObject({
     output: NonNegativeInt,
     cacheRead: NonNegativeInt,
     cacheWrite: NonNegativeInt,
+    cacheWrite1h: v.optional(NonNegativeInt),
     totalTokens: NonNegativeInt,
   })),
   returnedModel: v.optional(v.strictObject({
