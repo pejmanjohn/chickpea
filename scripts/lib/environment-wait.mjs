@@ -7,6 +7,7 @@ import {
   assertLiveEnvironmentClaim,
   claimEnvironment,
   environmentMarkerPath,
+  heartbeatEnvironmentClaim,
   readEnvironmentStatus,
   releaseEnvironment,
 } from './environment-registry.mjs';
@@ -83,7 +84,11 @@ export async function waitForEnvironmentClaim(selector, options = {}) {
         });
       }
       const existing = assertLiveEnvironmentClaim(status.selectedTarget, registryOptions).claim;
-      return acquiredResult(existing, selector, startedAt, monotonicNow(), true);
+      // Reusing its own claim is the holder's heartbeat. It is advisory, so a
+      // failed write never fails the wait.
+      let heartbeatAt = null;
+      try { heartbeatAt = heartbeatEnvironmentClaim(status.selectedTarget, registryOptions).heartbeatAt; } catch { /* advisory */ }
+      return acquiredResult(existing, selector, startedAt, monotonicNow(), true, heartbeatAt);
     }
     // Normal claim historically repairs an orphan marker. Waiting is deliberately
     // narrower: leave that evidence untouched for an explicit reconciliation.
@@ -167,7 +172,7 @@ function retryableStatus({ health, claim, verifierLock }) {
     || (health === 'ready' && verifierLock.status === 'live');
 }
 
-function acquiredResult(claim, selector, startedAt, finishedAt, reused) {
+function acquiredResult(claim, selector, startedAt, finishedAt, reused, heartbeatAt = claim.claimedAt) {
   return Object.freeze({
     schemaVersion: 'chickpea-environment-wait-result/v1',
     kind: 'acquired',
@@ -176,6 +181,7 @@ function acquiredResult(claim, selector, startedAt, finishedAt, reused) {
     waitedMs: measuredDuration(startedAt, finishedAt),
     reused,
     claim,
+    heartbeatAt,
   });
 }
 

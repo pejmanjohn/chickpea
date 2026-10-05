@@ -22,6 +22,7 @@ import path, { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { QA_TARGETS, ORIGINAL_QA_TARGETS, validQaFleet } from '../../src/config/qa-targets.ts';
 import { assertNodeInstallationClean } from './environment-installation-node.mjs';
+import { CLAIM_HEARTBEAT_SCHEMA, claimHeartbeatAt, claimHeartbeatPath, claimSilentMs } from './environment-claim-heartbeat.mjs';
 
 import {
   readTargetLock,
@@ -315,7 +316,7 @@ export function claimEnvironment(target, options = {}) {
       const code = Date.parse(registration.claim.expiresAt) <= now
         ? 'CLAIM_EXPIRED_RECLAIM_REQUIRED'
         : 'TARGET_CLAIMED';
-      throw fail(code, publicClaim(registration.claim, now));
+      throw fail(code, publicClaim(registration.claim, now, registration.evidenceRoot));
     }
     const nextRevision = registry.revision + 1;
     const claim = makeClaim(selected, worktree, nextRevision, now, options);
@@ -351,7 +352,7 @@ export function reclaimEnvironment(target, options = {}) {
     // `restamp` moves this worktree's own claim to its current HEAD and never
     // takes a lane from anyone else, live or expired.
     if (options.requireSameWorktree === true && !sameWorktree) {
-      throw fail('CLAIM_OWNER_MISMATCH', publicClaim(previous, now));
+      throw fail('CLAIM_OWNER_MISMATCH', publicClaim(previous, now, registry.targets[target].evidenceRoot));
     }
     let adoptedOrphan = false;
     if (Date.parse(previous.expiresAt) > now && !sameWorktree) {
@@ -361,7 +362,7 @@ export function reclaimEnvironment(target, options = {}) {
       // operator may adopt it explicitly. This is never automatic.
       const orphaned = !(options.worktreeExists ?? existsSync)(previous.canonicalWorktreePath);
       if (!orphaned || options.adoptOrphan !== true) {
-        throw fail('TARGET_CLAIMED', { ...publicClaim(previous, now), orphaned });
+        throw fail('TARGET_CLAIMED', { ...publicClaim(previous, now, registry.targets[target].evidenceRoot), orphaned });
       }
       adoptedOrphan = true;
     }
@@ -528,6 +529,7 @@ export function recordEnvironmentDeploymentIntent(target, intent, options = {}) 
     trimAudit(next.audit);
     validateRegistry(next, options.allowLegacyRegistryRecovery === true);
     writeRegistryRevision(root, next, options);
+    tryClaimHeartbeat(registration, claim, nowMs(options));
     return Object.freeze({ target, registryRevision: nextRevision, intentDigest: intent.intentDigest });
   }, options);
 }
@@ -541,6 +543,24 @@ export function assertLiveEnvironmentClaim(target, options = {}) {
   const claim = assertMatchingClaim(registry, target, worktree, options);
   if (Date.parse(claim.expiresAt) <= nowMs(options)) throw fail('CLAIM_EXPIRED_RECLAIM_REQUIRED');
   return { registry, registration: registry.targets[target], claim, worktree };
+}
+
+/**
+ * The holder says it is still working. Only the claim's own worktree, at the
+ * claimed HEAD, with a live lease may heartbeat. It writes no registry
+ * revision and changes no lease: `env status` and the kickoff doctor report
+ * the silence, and an operator, never this code, decides about a silent claim.
+ */
+export function heartbeatEnvironmentClaim(target, options = {}) {
+  assertActiveTarget(target);
+  const root = canonicalRoot(options.root ?? defaultEnvironmentRoot());
+  return withRegistryLock(root, () => {
+    const { registration, claim } = assertLiveEnvironmentClaim(target, { ...options, root });
+    assertSafeEvidenceRoot(registration.evidenceRoot);
+    const now = nowMs(options);
+    writeClaimHeartbeat(registration, claim, now);
+    return Object.freeze({ target, heartbeatAt: new Date(now).toISOString() });
+  }, options);
 }
 
 export function assertEnvironmentMutationClaim(target, authority, options = {}) {
@@ -900,6 +920,7 @@ export function recordEnvironmentAttestation(target, result, options = {}) {
     trimAudit(next.audit);
     validateRegistry(next, options.allowLegacyRegistryRecovery === true);
     writeRegistryRevision(root, next, options);
+    tryClaimHeartbeat(registration, claim, now);
     return lastAttestation;
   }, options);
 }
@@ -1043,6 +1064,7 @@ export function recordEnvironmentDeployment(target, receipt, options = {}) {
     trimAudit(final.audit);
     validateRegistry(final, options.allowLegacyRegistryRecovery === true);
     writeRegistryRevision(root, final, options);
+    tryClaimHeartbeat(registration, claim, now);
     return Object.freeze({ target, registryRevision: finalRevision, servingVersion: receipt.activeVersion });
   }, options);
 }
@@ -1416,6 +1438,7 @@ function assertWorktreeClaimAvailable(registry, worktree, exceptTarget, now) {
     throw fail('WORKTREE_ALREADY_CLAIMED', publicClaim(
       registry.targets[existing].claim,
       now,
+      registry.targets[existing].evidenceRoot,
     ));
   }
 }
@@ -1932,7 +1955,7 @@ function statusForTarget(registration, now, options) {
     workspaceLabel: registration.workspaceLabel,
     appAlias: `env-${registration.target}-slack-app`,
     appLabel: registration.slackAppLabel,
-    claim: registration.claim ? publicClaim(registration.claim, now) : null,
+    claim: registration.claim ? publicClaim(registration.claim, now, registration.evidenceRoot) : null,
     verifierLock: Object.freeze({
       status: verifierLock.status,
       ...(verifierLock.ownerRunId ? { ownerRunId: verifierLock.ownerRunId } : {}),
@@ -2047,14 +2070,34 @@ function assertSafeClaimWorktreeDirectory(worktreePath) {
   if ((stat.mode & 0o022) !== 0) throw fail('UNSAFE_PERMISSIONS');
 }
 
-function publicClaim(claim, now) {
+function publicClaim(claim, now, evidenceRoot) {
+  // Advisory only: how long since the holder last claimed, restamped, deployed,
+  // attested or reused its claim. Nothing takes a claim because of it.
+  const heartbeatAt = claimHeartbeatAt(claim, evidenceRoot);
   return Object.freeze({
     holderId: `holder-${createHash('sha256')
       .update(`${claim.hostFingerprint}\0${claim.canonicalWorktreePath}`)
       .digest('hex').slice(0, 16)}`,
     leaseAgeMs: Math.max(0, now - Date.parse(claim.claimedAt)),
     expiresAt: claim.expiresAt,
+    heartbeatAt,
+    silentMs: claimSilentMs(heartbeatAt, now),
   });
+}
+
+/** Record that the claim's holder is active. Advisory: it never extends, renews or transfers the lease. */
+function writeClaimHeartbeat(registration, claim, now) {
+  atomicJsonWrite(claimHeartbeatPath(registration.evidenceRoot), {
+    schemaVersion: CLAIM_HEARTBEAT_SCHEMA,
+    target: claim.target,
+    leaseNonce: claim.leaseNonce,
+    heartbeatAt: new Date(now).toISOString(),
+  });
+}
+
+/** Deploys and attestations heartbeat on the way; a failed advisory write never fails them. */
+function tryClaimHeartbeat(registration, claim, now) {
+  try { writeClaimHeartbeat(registration, claim, now); } catch { /* advisory */ }
 }
 
 export function assertSafeEvidenceRoot(evidenceRoot, options = {}) {

@@ -113,12 +113,13 @@ export function createRegressionPlan({ mode = 'changed', areas = [], files = [],
   npm('verify:hygiene', mode === 'release' ? undefined : ['--working-tree']);
   const hasChecks = fullTests || requestedTests.length > 0;
   if (hasChecks) {
+    // Typecheck starts no server, port or database, so it runs right after
+    // hygiene, before the runner takes the host reservation for the build.
+    // The full suite typechecks beside its tests instead.
+    if (!fullTests) npm('typecheck');
     npm('build');
     if (fullTests) npm('test');
-    else {
-      npm('typecheck');
-      steps.push({ kind: 'tests', files: requestedTests });
-    }
+    else steps.push({ kind: 'tests', files: requestedTests });
   }
   const broad = mode !== 'changed' || noSelection || fullTests;
   const includes = (...values) => values.some((area) => selected.has(area));

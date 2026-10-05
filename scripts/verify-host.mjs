@@ -4,7 +4,7 @@ import { waitForHostChecks } from './lib/verification-host-wait.mjs';
 
 const args = process.argv.slice(2);
 if (!args.length || args[0] === '--help') {
-  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\nReserve one host slot for a serial full-suite/build/workerd group. Bounded waiting is opt-in; no shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130.');
+  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130.');
 } else {
   const controller = new AbortController();
   const cancel = () => controller.abort();

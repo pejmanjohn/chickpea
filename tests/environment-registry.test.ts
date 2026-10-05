@@ -1788,10 +1788,17 @@ test('a deploy receipt is refused for install-contract drift and accepted with a
     setupFlowUnprovenSince: f.claim.claimedRevision,
   }), f.recordOptions), rejectsCode('INVALID_DEPLOY_RECEIPT'));
 
+  assert.equal(readEnvironmentStatus({ ...f.options, target: 'amber' }).targets[0].claim.heartbeatAt, f.claim.claimedAt);
+  const deployedAt = NOW + 50 * 60_000;
   recordEnvironmentDeployment('amber', f.receipt({
     setupFlowDigest: SETUP_OTHER_FLOW_DIGEST,
     setupFlowUnprovenSince: f.claim.claimedRevision,
-  }), f.recordOptions);
+  }), { ...f.recordOptions, now: () => deployedAt });
+  // A deploy is the holder's heartbeat; the claim itself is unchanged.
+  const beat = readEnvironmentStatus({ ...f.options, target: 'amber', now: () => deployedAt + 60_000 }).targets[0].claim;
+  assert.equal(beat.heartbeatAt, new Date(deployedAt).toISOString());
+  assert.equal(beat.silentMs, 60_000);
+  assert.equal(readEnvironmentRegistry(f.options).targets.amber.claim.leaseNonce, f.claim.leaseNonce);
   const registry = readEnvironmentRegistry(f.options);
   assert.equal(registry.targets.amber.setupFlowUnprovenSince, f.claim.claimedRevision);
   const status = readEnvironmentStatus({ ...f.options, target: 'amber' });

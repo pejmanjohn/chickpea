@@ -157,7 +157,10 @@ independent cases and record the rest as blocked.
    use the typed `finish` command with real readbacks. Register exact owned resources and fixture
    before-values immediately. Follow [recovery.md](recovery.md) for an ambiguous
    action, stalled reply, lost tab, or tool failure.
-   Share the [host check reservation](host-checks.md) with other repair worktrees.
+   Builds, workerd smokes, boot checks and the full suite share the
+   [host check reservation](host-checks.md) with other repair worktrees;
+   typecheck, plain unit tests and mutation passes that start no server, port
+   or test database run without it.
 5. Start diagnosis promptly and use [recovery.md](recovery.md) to separate urgent
    repairs from isolated failures that can queue while independent checks continue.
    Delegate eligible repair work below. Integrate compatible reviewed repairs at
@@ -182,6 +185,9 @@ expensive-check host wait commands. No user recheck is needed when the existing
 owner releases normally. A deadline, unsafe ownership, stale source, orphan marker,
 unavailable account, or unreconciled action needs its specific recovery; waiting
 longer does not resolve it. Continue independent work and preserve the blocker.
+A host reservation held over 15 minutes, or a lane claim whose holder has been
+silent for 30, gets a warning. It is a reason to ask its owner or the
+maintainer once, never to take the slot or the claim.
 
 ## Delegation and live ownership
 

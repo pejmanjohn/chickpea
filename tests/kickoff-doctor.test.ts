@@ -118,6 +118,33 @@ test('lane problems are sorted into blockers and things only a person can do', (
     .some((c: any) => c.level === 'warn' && /could not be checked: LaneBrowserError/.test(c.text)));
 });
 
+test('a long host hold and a silent lane holder warn, block nothing new, and are never taken', () => {
+  const at = (minutesBefore: number) => new Date(Date.parse('2026-10-01T00:00:00.000Z') - minutesBefore * 60_000).toISOString();
+  const held = (minutes: number) => kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: at(minutes), alive: true } }));
+  assert.equal(held(14).host[2].level, 'info', 'under fifteen minutes a hold is ordinary');
+  const long = held(16);
+  assert.equal(long.host[2].level, 'warn');
+  assert.match(long.host[2].text, /for 16 min .*over the 15-minute warning/);
+  assert.match(long.host[2].fix, /Never steal, stop or remove the reservation/);
+  assert.equal(long.ok, true, 'a long hold only warns; a guarded deploy still waits for it');
+  assert.deepEqual(long.needs, []);
+
+  const claimed = (minutes: number) => kickoffReport(facts({ lanes: [
+    lane({ claim: { ownWorktree: false, branch: 'other-task', expiresAt: 'later', heartbeatAt: at(minutes) } }),
+    lane({ target: 'cobalt' }),
+  ] }));
+  const silentLine = (report: any) => report.lanes[0].checks.find((c: any) => /silent/.test(c.text));
+  assert.equal(silentLine(claimed(29)), undefined, 'under thirty minutes a holder is not reported silent');
+  const silent = claimed(45);
+  assert.equal(silentLine(silent).level, 'warn');
+  assert.match(silentLine(silent).text, /silent for 45 min/);
+  assert.match(silentLine(silent).fix, /never taken automatically.*ask the maintainer once/);
+  assert.deepEqual(silent.ready, ['cobalt'], 'the silent lane stays held; another lane is chosen');
+  assert.deepEqual(silent.needs, [], 'silence is advisory, not a person-only blocker');
+  const own = kickoffReport(facts({ lanes: [lane({ claim: { ownWorktree: true, branch: 'mine', expiresAt: 'later', heartbeatAt: at(300) } })] }));
+  assert.equal(own.lanes[0].checks.some((c: any) => /silent/.test(c.text)), false, 'only another holder is reported');
+});
+
 test('a telemetry receipt counts only when it covers the serving version, and the newest decides', (context) => {
   const dir = mkdtempSync(join(tmpdir(), 'kickoff-receipts-'));
   context.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -185,6 +212,7 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   assert.equal(gathered.lanes[0].telemetryReceipt, 'passed');
   assert.equal(gathered.lanes[1].telemetryReceipt, null);
   assert.deepEqual(gathered.lanes[0].providerKeys, ['OPENAI_API_KEY']);
+  assert.equal(gathered.lanes[1].claim.heartbeatAt, null, 'a claim without a readable claim time has no heartbeat');
   const report = kickoffReport(gathered);
   assert.deepEqual(report.ready, ['amber']);
   assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'block' && /WRANGLER_UNAVAILABLE/.test(c.text)));

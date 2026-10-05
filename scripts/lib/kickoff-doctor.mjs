@@ -11,8 +11,10 @@
 import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
+import { CLAIM_SILENT_WARN_MS, claimHeartbeatAt, claimSilentMs } from './environment-claim-heartbeat.mjs';
 import { laneCredentialsDirectory } from './lane-secrets.mjs';
 import { QA_LANES } from './qa-lanes.mjs';
+import { HOST_CHECKS_HOLD_WARN_MS, hostChecksHeldMs } from './verification-host.mjs';
 
 export const KICKOFF_SCHEMA = 'chickpea-kickoff-doctor/v1';
 
@@ -39,7 +41,10 @@ export function kickoffReport(facts) {
   } else host.push(check('ok', 'node_modules matches package-lock.json'));
 
   const owner = facts.hostReservation;
+  const heldMs = owner ? hostChecksHeldMs(owner, Date.parse(facts.generatedAt)) : null;
   if (!owner) host.push(check('ok', 'Host reservation is free'));
+  // A long hold warns and never blocks: the owner may be a legitimately long build, and the slot is never taken.
+  else if (owner.alive === true && heldMs !== null && heldMs >= HOST_CHECKS_HOLD_WARN_MS) host.push(check('warn', `Host checks have been reserved by PID ${owner.pid} in ${owner.cwd} for ${minutes(heldMs)} min (since ${owner.startedAt}), over the ${minutes(HOST_CHECKS_HOLD_WARN_MS)}-minute warning; a guarded deploy waits for it with --wait-ms`, 'Ask its owner whether a check is hung. Never steal, stop or remove the reservation (host-checks.md).'));
   else if (owner.alive === true) host.push(check('info', `Host checks are reserved by PID ${owner.pid} in ${owner.cwd} since ${owner.startedAt}; a guarded deploy waits for it with --wait-ms`));
   else if (owner.alive === 'unknown') host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which this user cannot inspect; verify:host refuses it`, 'Ask the maintainer who owns that process.'));
   else host.push(check('human', `Host reservation names PID ${owner.pid} in ${owner.cwd}, which is no longer running; verify:host refuses it`, 'Ask the maintainer before removing the stale reservation; never remove another task\'s lock on your own.'));
@@ -78,7 +83,12 @@ function laneVerdict(lane, facts) {
 
   if (!lane.claim) checks.push(check('ok', 'Free'));
   else if (lane.claim.ownWorktree) checks.push(check('ok', `Claimed by this worktree (${lane.claim.branch ?? 'branch unknown'}) until ${lane.claim.expiresAt}`));
-  else checks.push(check('block', `Held by another worktree${lane.claim.branch ? ` on ${lane.claim.branch}` : ''} until ${lane.claim.expiresAt}`, 'Use npm run env -- wait-claim <lane> or choose another lane; never take it.'));
+  else {
+    checks.push(check('block', `Held by another worktree${lane.claim.branch ? ` on ${lane.claim.branch}` : ''} until ${lane.claim.expiresAt}`, 'Use npm run env -- wait-claim <lane> or choose another lane; never take it.'));
+    // Advisory: a silent holder may have stopped, but only an operator decides about its claim.
+    const silentMs = claimSilentMs(lane.claim.heartbeatAt, Date.parse(facts.generatedAt));
+    if (silentMs !== null && silentMs >= CLAIM_SILENT_WARN_MS) checks.push(check('warn', `Its holder has been silent for ${minutes(silentMs)} min (no claim, restamp, deploy or wait-claim since ${lane.claim.heartbeatAt}); it may have stopped`, 'Lane claims are never taken automatically. Choose another lane; if this one is needed, ask the maintainer once whether to release or adopt it (environments.md).'));
+  }
 
   if (!facts.localSchema || !lane.schemaGeneration) checks.push(check('warn', `Schema generation unknown (lane ${lane.schemaGeneration ?? '?'}, candidate ${facts.localSchema ?? '?'})`));
   else if (lane.schemaGeneration === facts.localSchema) checks.push(check('ok', `Schema ${lane.schemaGeneration} matches the candidate`));
@@ -122,6 +132,8 @@ function laneVerdict(lane, facts) {
   const ready = !checks.some((c) => c.level === 'block' || c.level === 'human');
   return { target: lane.target, ready, checks };
 }
+
+function minutes(ms) { return Math.floor(ms / 60_000); }
 
 const MARK = { ok: '✔', info: '·', warn: '!', human: '?', block: '✖' };
 export function renderKickoff(report) {
@@ -222,7 +234,7 @@ export async function gatherKickoffFacts({
       providerKeys: row.secrets ? Object.entries(row.secrets).filter(([, present]) => present).map(([name]) => name) : null,
       versionMatchesRegistry: row.versionMatchesRegistry ?? null,
       missingActorAliases: row.missingActorAliases ?? [], setupFlowUnprovenSince: row.setupFlowUnprovenSince ?? null,
-      claim: claim ? { ownWorktree, branch: claim.branch, expiresAt: claim.expiresAt } : null,
+      claim: claim ? { ownWorktree, branch: claim.branch, expiresAt: claim.expiresAt, heartbeatAt: claimHeartbeatAt(claim, registration.evidenceRoot) } : null,
       telemetryReceipt: servingVersion ? telemetryReceiptFor(registration.evidenceRoot, servingVersion) : null,
       browser: browser ? await checkBrowser(readers.browser ?? probeLaneBrowser, { lane: row.target, registration, env, start: startBrowsers }) : null,
       readback: await (readers.readback ?? checkReadback)({ lane: row.target, registration, entries: secretEntries }),

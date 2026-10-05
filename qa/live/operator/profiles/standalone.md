@@ -23,13 +23,15 @@ the sections below say why each step exists and what to do when one refuses.
 6. Resolve the spec's contexts and capabilities against the deployed lane, then
    `record init` and `record preflight`.
 7. `npm run verify:regression -- --record <run>/run.json` for the offline
-   checks; it takes the host reservation itself.
+   checks; it runs hygiene and typecheck first, then takes the host
+   reservation itself.
 8. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
    background command, when the run needs Worker logs.
 9. For each case: `record begin`, act once through the lane browser, `record
    resource` for every run-owned ID and fixture before-value, save the
    readbacks, then `record finish`. Use `record blocked` for a case that
-   cannot run.
+   cannot run. Between case groups, rerun step 4's `wait-claim`: on your own
+   lane it returns at once and refreshes the claim's heartbeat.
 10. After a fix commit or rebase: `npm run env -- restamp <lane>`, redeploy, and
     `record refresh`.
 11. Clean every run-owned resource and record `cleanup` with its readback.
@@ -79,8 +81,9 @@ Missing credentials, occupied lanes and unresolved restoration remain blockers.
 1. Run `npm run verify:live:kickoff` (add `--lane <alias>` to check one). In
    one pass that changes nothing but starting any stopped lane browser, it
    checks host Node and `node_modules`, the host
-   reservation, source freshness against remote main, and for each lane its
-   health, claim, deploy profile and exact deploy command, schema generation
+   reservation (warning on a hold over 15 minutes), source freshness against
+   remote main, and for each lane its health, claim (warning when its holder
+   has been silent for 30 minutes), deploy profile and exact deploy command, schema generation
    against the candidate, models, Worker secrets, actors, telemetry receipt,
    and whether its browser daemon is signed in to Admin and Slack. It ends
    with what needs a person and the ready lanes. Fix its blockers before
