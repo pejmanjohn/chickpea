@@ -137,6 +137,16 @@ export async function runWithHostReservation(steps, run, acquire) {
   return results;
 }
 
+/**
+ * Releases the reservation after the run. An interrupted step may have left
+ * children running, so its reservation stays for inspection. A run whose
+ * host-free prefix stopped never took one and has nothing to keep or report.
+ */
+export function settleHostLease(lease, interrupted, warn = console.error) {
+  if (!interrupted) lease?.release();
+  else if (lease) warn('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
+}
+
 /** Runs one step to completion; piped output is collected into `output`. */
 function spawnStep(command, args, options, timeoutMs) {
   return new Promise((done) => {
@@ -188,6 +198,12 @@ export async function main(argv) {
         throw new Error('An offline attempt is still open. Inspect the owning process and log; record offline_interrupted only after its processes have stopped.');
       }
     }
+    const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
+    let env = {
+      ...regressionEnvironment(),
+      npm_config_cache: path.join(scratch, 'npm-cache'),
+      WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
+    };
     const acquireHost = async () => {
       const waitingSource = options.waitMs ? sourceInputs(ROOT) : null;
       const controller = new AbortController();
@@ -203,12 +219,6 @@ export async function main(argv) {
       }
       if (options.waitMs) console.error(JSON.stringify({ status: 'host_acquired', waitedMs: lease.waitedMs }));
       env = { ...env, ...lease.env };
-    };
-    const scratch = mkdtempSync(path.join(tmpdir(), 'chickpea-regression-'));
-    let env = {
-      ...regressionEnvironment(),
-      npm_config_cache: path.join(scratch, 'npm-cache'),
-      WRANGLER_LOG_PATH: path.join(scratch, 'wrangler.log'),
     };
     if (expensive) {
       const probe = spawnSync(process.execPath, ['--input-type=module', '-e',
@@ -278,8 +288,7 @@ export async function main(argv) {
     console.error(error instanceof Error ? error.message : String(error));
     return error.code === 'HOST_CHECKS_TIMEOUT' ? 3 : error.code === 'HOST_CHECKS_CANCELLED' ? 130 : 2;
   } finally {
-    if (!interrupted) lease?.release();
-    else console.error('Interrupted check: host reservation retained. Inspect the owner and child processes before releasing it.');
+    settleHostLease(lease, interrupted);
   }
 }
 

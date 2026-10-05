@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +26,7 @@ const {
   claimEnvironment,
   heartbeatEnvironmentClaim,
   readEnvironmentRegistry,
+  reclaimEnvironment,
   readEnvironmentStatus,
   releaseEnvironment,
 } = environmentRegistryModule;
@@ -315,9 +318,29 @@ test('a claim heartbeats on claim and reuse, reports silence, and is never taken
   assert.equal(seen().silentMs, 0);
   assert.equal(readEnvironmentRegistry(options(f.root, f.first)).revision, revision);
 
-  // A heartbeat left by an earlier lease never vouches for the next one.
+  // Restamping its own claim is a heartbeat too.
+  clock += 5 * 60_000;
+  reclaimEnvironment('amber', { ...at(f.first), requireSameWorktree: true });
+  assert.deepEqual([seen().heartbeatAt, seen().silentMs], [new Date(clock).toISOString(), 0]);
+
+  // Release removes the heartbeat with the claim.
+  const beatFile = join(readEnvironmentRegistry(options(f.root, f.first)).targets.amber.evidenceRoot, 'claim-heartbeat.json');
+  const earlierBeat = readFileSync(beatFile, 'utf8');
   releaseEnvironment('amber', { ...at(f.first), ownerHeadMayMove: true });
-  clock = start + 10 * 60_000;
+  assert.equal(existsSync(beatFile), false, 'release leaves no heartbeat behind');
+  clock = start + 50 * 60_000;
   const next = claimEnvironment('amber', at(f.third));
   assert.equal(seen().heartbeatAt, next.claimedAt);
+
+  // A claim with no heartbeat for its lease, as from an older checkout that
+  // never writes one, shows its claim time only and is never called silent.
+  // A heartbeat left by an earlier lease never vouches for it.
+  unlinkSync(beatFile);
+  clock = start + 200 * 60_000;
+  const older = seen();
+  assert.equal(older.heartbeatAt, null);
+  assert.equal(older.silentMs, null);
+  assert.equal(older.leaseAgeMs, 150 * 60_000);
+  writeFileSync(beatFile, earlierBeat, { mode: 0o600 });
+  assert.equal(seen().heartbeatAt, null, 'an earlier lease\'s heartbeat does not vouch for it');
 });

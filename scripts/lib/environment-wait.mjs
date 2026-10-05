@@ -84,8 +84,8 @@ export async function waitForEnvironmentClaim(selector, options = {}) {
         });
       }
       const existing = assertLiveEnvironmentClaim(status.selectedTarget, registryOptions).claim;
-      // Reusing its own claim is the holder's heartbeat. It is advisory, so a
-      // failed write never fails the wait.
+      // Reusing its own claim is the holder's heartbeat; a failed write never
+      // fails the wait.
       let heartbeatAt = null;
       try { heartbeatAt = heartbeatEnvironmentClaim(status.selectedTarget, registryOptions).heartbeatAt; } catch { /* advisory */ }
       return acquiredResult(existing, selector, startedAt, monotonicNow(), true, heartbeatAt);

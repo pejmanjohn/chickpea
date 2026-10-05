@@ -7,7 +7,7 @@ function error(code, message) { return Object.assign(new Error(`${code}: ${messa
 /**
  * Caller-side bounded polling. The underlying reservation remains fail-fast.
  * A status prints when the owner changes, plus one warning per owner once its
- * hold passes HOST_CHECKS_HOLD_WARN_MS. The warning never takes the slot.
+ * hold passes HOST_CHECKS_HOLD_WARN_MS.
  */
 export async function waitForHostChecks({ waitMs = 0, pollMs = 1000, signal, onWait, now = Date.now, ...options } = {}) {
   if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 7_200_000

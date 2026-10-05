@@ -29,12 +29,10 @@ import { basename, resolve, relative } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
-import { PER_TEST_TIMEOUT_MS } from './lib/test-timeout.mjs';
+import { runnerTestTimeoutMs } from './lib/test-timeout.mjs';
 
 const CONCURRENCY = 8;
 const MAX_RETRIED_FILES = CONCURRENCY;
-// The fixture override lets tests/run-tests.test.ts exercise a hung test quickly.
-const TEST_TIMEOUT_MS = Number(process.env.RUN_TESTS_FIXTURE_TIMEOUT_MS) || PER_TEST_TIMEOUT_MS;
 // Files measured at 5 s or more inside the 8-way pass, slowest first. Split
 // parts (`name-2`) share their base name's position. A stale entry only costs
 // scheduling time, never coverage.
@@ -106,7 +104,7 @@ async function runFiles(list, concurrency, signal) {
   // files here as already-running test children, reporting nothing. Clear it
   // so the runner also works when a test launches it.
   delete process.env.NODE_TEST_CONTEXT;
-  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], timeout: TEST_TIMEOUT_MS, forceExit: true, ...(signal ? { signal } : {}) });
+  const stream = run({ files: list, concurrency, execArgv: ['--import', 'tsx'], timeout: runnerTestTimeoutMs(list), forceExit: true, ...(signal ? { signal } : {}) });
   // Every failure event names its file, including a file whose process exited
   // non-zero before reporting (a killed worker or a crash at load).
   stream.on('test:fail', (event) => {

@@ -47,7 +47,7 @@ function fixture(t: TestContext) {
   return { directory, evidence, spec, file, run, append, finish };
 }
 
-function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: string[], options: { node?: string; mode?: string; inputs?: ReturnType<typeof source>; config?: string } = {}) {
+function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: string[], options: { node?: string; mode?: string; inputs?: ReturnType<typeof source>; config?: string; summary?: false } = {}) {
   const node = options.node ?? 'v24.20.0', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
   const steps = scripts.map((script) => ({ kind: 'npm', script }));
   const executionFingerprint = digest({ node, config: options.config ?? 'synthetic-config' });
@@ -60,6 +60,7 @@ function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: 
     offlineEvent(f.run, { type: 'offline_finish', planId: plan.id, attemptId: started.id, label, node, fingerprint, result, durationMs: 1, evidence });
   }
   const pass = results.length === scripts.length && results.every((r) => r === 'pass');
+  if (options.summary === false) return plan;
   offlineEvent(f.run, { type: 'offline_summary', planId: plan.id, result: pass ? 'pass' : 'fail' });
   if (pass && mode === 'release') offlineEvent(f.run, { type: 'checkpoint', planId: plan.id, result: 'pass', source: inputs, node, fingerprint, evidence });
   return plan;
@@ -356,6 +357,32 @@ test('independent offline plans cannot hide failed required coverage and a relev
   offlinePlan(f, ['verify:durability'], ['pass']);
   assert.equal(status(f.run, source(), NOW).complete, true);
   assert.ok(f.run.events.some((e: any) => e.planId === failed.id && e.type === 'offline_finish' && e.result === 'fail'));
+});
+
+test('a host wait that ends after the unreserved prefix leaves the run incomplete, never partial evidence', (t) => {
+  // verify:regression records its plan, passes hygiene and typecheck without
+  // the reservation, then times out waiting for it: no build, test or summary.
+  const scripts = ['verify:hygiene', 'typecheck', 'build', 'verify:durability'];
+  for (const mode of ['changed', 'release']) {
+    const f = fixture(t);
+    if (mode === 'release') {
+      f.run.spec.mode = 'release'; f.run.spec.contexts.local.grade = 'deployed';
+      f.run.spec.capabilities.owner.scope = contextScope('local', f.run.spec.contexts.local);
+    }
+    const live = f.append({ type: 'begin', caseId: 'schedule' }); f.append(f.finish(live.id));
+    offlinePlan(f, scripts, ['pass', 'pass'], { mode, summary: false });
+    const view = status(f.run, source(), NOW);
+    assert.equal(view.complete, false, mode);
+    assert.equal(view.offlinePlans[0].result, 'not_run', mode);
+    assert.deepEqual(view.offlineObligations.map((o: any) => [o.id, o.result]), [
+      ['npm:verify:hygiene', 'pass'], ['npm:typecheck', 'pass'], ['npm:build', 'not_run'], ['npm:verify:durability', 'not_run']], mode);
+    assert.ok(view.incompleteReasons.includes('required offline checks on v24.20.0 are not_run'), mode);
+    assert.deepEqual(view.openOffline, [], 'nothing is left open');
+    if (mode === 'release') assert.equal(view.releasePending, true, 'no checkpoint without the full plan');
+    // A rerun that completes the plan completes the run.
+    offlinePlan(f, scripts, scripts.map(() => 'pass'), { mode });
+    assert.equal(status(f.run, source(), NOW).complete, true, mode);
+  }
 });
 
 test('old Node 22 receipts stay historical and cannot satisfy or block Node 24 acceptance', (t) => {

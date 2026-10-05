@@ -23,8 +23,9 @@ the sections below say why each step exists and what to do when one refuses.
 6. Resolve the spec's contexts and capabilities against the deployed lane, then
    `record init` and `record preflight`.
 7. `npm run verify:regression -- --record <run>/run.json` for the offline
-   checks; it runs hygiene and typecheck first, then takes the host
-   reservation itself.
+   checks; it runs `verify:hygiene` and, when the plan has a separate one,
+   `typecheck` first without the reservation, then reserves the host for the
+   rest of the group itself.
 8. `npm run lane:tail -- <lane> --out <private file> --minutes <N>` as one
    background command, when the run needs Worker logs.
 9. For each case: `record begin`, act once through the lane browser, `record

@@ -330,6 +330,7 @@ export function claimEnvironment(target, options = {}) {
     preflightClaimMarker(markerPath);
     writeClaimMarker(markerPath, claim, options);
     writeRegistryRevision(root, next, options);
+    tryClaimHeartbeat(registration, claim, now);
     return Object.freeze({ ...claim });
   }, options);
 }
@@ -379,6 +380,7 @@ export function reclaimEnvironment(target, options = {}) {
     preflightClaimMarker(markerPath, sameWorktree ? previous : undefined);
     writeClaimMarker(markerPath, claim, options);
     writeRegistryRevision(root, next, options);
+    tryClaimHeartbeat(registry.targets[target], claim, now);
     return Object.freeze({ ...claim });
   }, options);
 }
@@ -403,6 +405,7 @@ export function releaseEnvironment(target, options = {}) {
     trimAudit(next.audit);
     validateRegistry(next, options.allowLegacyRegistryRecovery === true);
     writeRegistryRevision(root, next, options);
+    tryRemoveClaimHeartbeat(registry.targets[target]);
     optionsHook(options.beforeMarkerUnlink);
     const markerPath = environmentMarkerPath(worktree.path);
     const marker = readMarker(markerPath);
@@ -548,8 +551,7 @@ export function assertLiveEnvironmentClaim(target, options = {}) {
 /**
  * The holder says it is still working. Only the claim's own worktree, at the
  * claimed HEAD, with a live lease may heartbeat. It writes no registry
- * revision and changes no lease: `env status` and the kickoff doctor report
- * the silence, and an operator, never this code, decides about a silent claim.
+ * revision and changes no lease (environment-claim-heartbeat.mjs).
  */
 export function heartbeatEnvironmentClaim(target, options = {}) {
   assertActiveTarget(target);
@@ -2071,8 +2073,7 @@ function assertSafeClaimWorktreeDirectory(worktreePath) {
 }
 
 function publicClaim(claim, now, evidenceRoot) {
-  // Advisory only: how long since the holder last claimed, restamped, deployed,
-  // attested or reused its claim. Nothing takes a claim because of it.
+  // Null for a claim without a heartbeat, such as one from an older checkout.
   const heartbeatAt = claimHeartbeatAt(claim, evidenceRoot);
   return Object.freeze({
     holderId: `holder-${createHash('sha256')
@@ -2085,7 +2086,7 @@ function publicClaim(claim, now, evidenceRoot) {
   });
 }
 
-/** Record that the claim's holder is active. Advisory: it never extends, renews or transfers the lease. */
+/** Record that the claim's holder is active. */
 function writeClaimHeartbeat(registration, claim, now) {
   atomicJsonWrite(claimHeartbeatPath(registration.evidenceRoot), {
     schemaVersion: CLAIM_HEARTBEAT_SCHEMA,
@@ -2095,9 +2096,14 @@ function writeClaimHeartbeat(registration, claim, now) {
   });
 }
 
-/** Deploys and attestations heartbeat on the way; a failed advisory write never fails them. */
+/** Claims, deploys and attestations heartbeat on the way; a failed advisory write never fails them. */
 function tryClaimHeartbeat(registration, claim, now) {
   try { writeClaimHeartbeat(registration, claim, now); } catch { /* advisory */ }
+}
+
+/** A released claim's heartbeat goes with it. A leftover is harmless: it names the old lease. */
+function tryRemoveClaimHeartbeat(registration) {
+  try { unlinkSync(claimHeartbeatPath(registration.evidenceRoot)); } catch { /* advisory */ }
 }
 
 export function assertSafeEvidenceRoot(evidenceRoot, options = {}) {
