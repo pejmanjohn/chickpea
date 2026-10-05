@@ -64,7 +64,7 @@ export type InstallationCensusObject = InstallationObject & { readonly firstSeen
 
 export interface InstallationRestorePreparation {
   readonly timestamp: number;
-  /** In plan order, with the fence and target apply must present for each. */
+  /** In plan order, with the fence, content digest and target apply must present for each. */
   readonly prepared: ReadonlyArray<{ readonly object: InstallationObject; readonly bookmarks: ObjectRestoreBookmarks }>;
   /** Recorded after T, so without storage at T: neither restored nor erased. */
   readonly skipped: ReadonlyArray<{

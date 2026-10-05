@@ -28,6 +28,9 @@ declare module 'cloudflare:workers' {
 
   interface SqlStorageCursor {
     toArray(): SqlRow[];
+    /** Each row as its values in column order, stepping the statement one row at a time. */
+    raw(): IterableIterator<Array<SqlRow[string]>>;
+    readonly columnNames: string[];
     /** Exactly one row or it throws — use only for queries that guarantee it. */
     one(): SqlRow;
     /**
@@ -43,6 +46,8 @@ declare module 'cloudflare:workers' {
   interface SqlStorage {
     /** Synchronous inside a DO; bindings use `?` placeholders. */
     exec(query: string, ...bindings: unknown[]): SqlStorageCursor;
+    /** The database's size in bytes: tables, indexes, key-value storage and free pages. */
+    readonly databaseSize: number;
   }
 
   interface DurableObjectStorage {
@@ -63,6 +68,10 @@ declare module 'cloudflare:workers' {
     deleteAlarm(): Promise<void>;
     /** Key-value entries in key order; `startAfter` resumes after one key. */
     list(options?: { startAfter?: string; limit?: number }): Promise<Map<string, unknown>>;
+    /** One key-value entry, or undefined. */
+    get(key: string): Promise<unknown>;
+    /** Write one key-value entry. */
+    put(key: string, value: unknown): Promise<void>;
     /**
      * Delete every SQL table and key-value entry, and (at compatibility date
      * 2026-02-24 or later) the alarm.

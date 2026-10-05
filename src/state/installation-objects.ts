@@ -116,7 +116,13 @@ export async function exportInstallationObject(
   return objectStub(env, scope, object).chickpeaHostExportPage({ installationId: scope.installationId, ...options });
 }
 
-/** restore_prepare: read one object's current fence and its bookmark for T while suspended. */
+/**
+ * restore_prepare: read one object's current fence, its bookmark for T and
+ * the digest of its name and storage while suspended. Refused with
+ * `restore_object_busy` while the object has work it resumes on waking, and
+ * with `restore_object_too_large` over the digest's bound
+ * (`OBJECT_DIGEST_BUDGET`).
+ */
 export async function readInstallationObjectRestoreBookmarks(
   env: Record<string, unknown>,
   object: InstallationObject,
@@ -129,18 +135,25 @@ export async function readInstallationObjectRestoreBookmarks(
 /**
  * restore_apply, first phase: schedule one object's restore against its
  * prepared fence and return the receipt, the object's undo bookmark included.
- * The object keeps running until `restartInstallationObject`. A repeated call
- * reaching the same session returns the same receipt.
+ * Refused with `restore_content_moved` once the object's storage differs from
+ * the prepared `expectedContentDigest`, or that digest is another object's;
+ * an object that was only evicted and woken since preparation schedules. The
+ * object keeps running until `restartInstallationObject`. A repeated call
+ * reaching the same session with the same fence, digest and target returns
+ * the same receipt.
  */
 export async function scheduleInstallationObjectRestore(
   env: Record<string, unknown>,
   object: InstallationObject,
-  options: Pick<ObjectRestoreRequest, 'expectedCurrentBookmark' | 'targetBookmark'> & { confirmInstallationId: string },
+  options: Pick<ObjectRestoreRequest, 'expectedCurrentBookmark' | 'expectedContentDigest' | 'targetBookmark'> & {
+    confirmInstallationId: string;
+  },
 ): Promise<ObjectRestoreReceipt> {
   const scope = confirmedRestoreScope(env, options.confirmInstallationId);
   return objectStub(env, scope, object).chickpeaHostRestore({
     installationId: scope.installationId,
     expectedCurrentBookmark: options.expectedCurrentBookmark,
+    expectedContentDigest: options.expectedContentDigest,
     targetBookmark: options.targetBookmark,
   });
 }
@@ -155,8 +168,12 @@ const RESTART_ATTEMPTS = 3;
  * the session, so its RPC fails; the next call, over a fresh stub, reaches
  * the next session, where the restore has applied, and returns. An object
  * evicted since scheduling answers the first call the same way. A return
- * proves the bookmark left the fence; an object that still holds it refuses
- * with `restore_not_scheduled`. An error thrown over RPC loses its class, so
+ * proves the bookmark left the fence, which every new session does, and
+ * that the restore mark its scheduling wrote is gone, so given the receipt
+ * the restore applied; its `contentDigest` is a record and decides nothing.
+ * An object that still holds the fence refuses with `restore_not_scheduled`,
+ * and one that restarted still holding the mark with `restore_not_applied`
+ * (the restore did not apply). An error thrown over RPC loses its class, so
  * every failed call is retried, up to `RESTART_ATTEMPTS` calls; the last
  * failure is thrown.
  */

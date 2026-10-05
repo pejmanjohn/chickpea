@@ -50,7 +50,12 @@ import {
 } from './run-presentations.ts';
 import { repairSlackInteractionProgress, runTurn, sanitizeError } from './run-turn.ts';
 import { SlackStatusRegistry, type SlackRunFactsView } from './status-registry.ts';
-import { ThreadRunnerJobStore, type ThreadRunnerJob, type ThreadRunnerStatus } from './thread-runner-jobs.ts';
+import {
+  quiesceThreadRunnerForRestore,
+  ThreadRunnerJobStore,
+  type ThreadRunnerJob,
+  type ThreadRunnerStatus,
+} from './thread-runner-jobs.ts';
 import {
   runnerLoopScheduler,
   createRunnerSupersedeState,
@@ -353,6 +358,8 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         const { settled, running } = this.store().cancelOpen(now);
         return { runnerJobs: settled, runnerJobsRunning: running };
       },
+      // What its constructor resumes on waking would move the storage before a restore is scheduled.
+      quiesce: async () => quiesceThreadRunnerForRestore(this.store()),
     });
   }
 

@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 import type { DurableObjectStorage } from 'cloudflare:workers';
@@ -16,7 +17,7 @@ import { containerStopRecorded, sandboxHostFunctions } from '../../src/sandbox/s
 import { sandboxObjectEnv } from '../../src/sandbox/sandbox-object.ts';
 import { SandboxWorkspaceState } from '../../src/sandbox/workspace-lifecycle.ts';
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../../src/slack/bounded-agent-observation.ts';
-import { ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
+import { quiesceThreadRunnerForRestore, ThreadRunnerJobStore } from '../../src/slack/thread-runner-jobs.ts';
 import { DoSqlStateDb } from '../../src/state/do-state-db.ts';
 import { objectHostFunctions, type HostObjectRestoreContext } from '../../src/state/object-host.ts';
 import type { AgentStopTarget } from '../../src/state/pending-work.ts';
@@ -41,6 +42,8 @@ export class FakeObjectStorage {
   scheduledRestoreBookmark: string | undefined;
   /** The bookmark the last restart restored. */
   restoredBookmark: string | undefined;
+  /** Key-value entries when the restore was scheduled: the storage at its target unless `onRestore` says otherwise. */
+  private kvAtSchedule: Map<string, unknown> | undefined;
   readonly bookmarkCalls: Array<{ method: string; timestamp?: number | Date; bookmark?: string }> = [];
   /** The current session's context; a restart replaces it, as the runtime constructs the object again. */
   restoreContext: FakeObjectRestoreContext = new FakeObjectRestoreContext(this);
@@ -48,21 +51,47 @@ export class FakeObjectStorage {
   sessions = 1;
   /** What the object's next session does on waking, after the restart applied any restore. */
   onRestart: (() => void) | undefined;
+  /**
+   * Makes the storage what it held at the target, when a restart applies a
+   * restore. A restore first discards every key-value write since it was
+   * scheduled, the restore mark included; unset, it leaves the rest as it
+   * was, as though nothing changed between the target and scheduling.
+   */
+  onRestore: (() => void) | undefined;
   private depth = 0;
+  private readonly unnamedId = randomBytes(32).toString('hex');
 
-  constructor() {
+  /** `name`: the name the object is addressed by, which a session woken by name reads as `ctx.id.name`. */
+  constructor(public name?: string) {
     this.database.exec('PRAGMA foreign_keys = ON;');
   }
 
-  readonly sql = {
+  /**
+   * The object's ID, as every session's `ctx.id.toString()` reads it: derived
+   * from its name, as `idFromName` does, or its own when it has none.
+   */
+  get objectId(): string {
+    return this.name === undefined ? this.unnamedId : createHash('sha256').update(`object\n${this.name}`).digest('hex');
+  }
+
+  readonly sql = ((database: DatabaseSync) => ({
+    /** As `SqlStorage.databaseSize`: every page of the database. */
+    get databaseSize(): number {
+      const { page_count: pages } = database.prepare('PRAGMA page_count').get() as { page_count: number };
+      const { page_size: size } = database.prepare('PRAGMA page_size').get() as { page_size: number };
+      return pages * size;
+    },
     exec: (query: string, ...bindings: unknown[]) => {
       const statement = this.database.prepare(query);
       const values = bindings as SQLInputValue[];
-      const rows = statement.columns().length > 0
+      const columnNames = statement.columns().map((column) => column.name);
+      const rows = columnNames.length > 0
         ? statement.all(...values).map((row) => ({ ...row }) as Record<string, unknown>)
         : (statement.run(...values), []);
       return {
         toArray: () => rows,
+        raw: () => rows.map((row) => columnNames.map((column) => row[column]))[Symbol.iterator](),
+        columnNames,
         one: () => {
           if (rows.length !== 1) throw new Error(`Expected exactly one row, got ${rows.length}`);
           return rows[0]!;
@@ -71,7 +100,7 @@ export class FakeObjectStorage {
         rowsWritten: 0,
       };
     },
-  };
+  }))(this.database);
 
   transactionSync<T>(fn: () => T): T {
     const savepoint = `chickpea_tx_${this.depth}`;
@@ -130,18 +159,31 @@ export class FakeObjectStorage {
   async onNextSessionRestoreBookmark(bookmark: string): Promise<string> {
     this.bookmarkCalls.push({ method: 'onNextSessionRestoreBookmark', bookmark });
     this.scheduledRestoreBookmark = bookmark;
+    this.kvAtSchedule = new Map([...this.kv].map(([key, value]) => [key, structuredClone(value)]));
     return 'bookmark_before_restore';
   }
 
-  /** A new session: it applies any scheduled restore, which moves the current bookmark, with a new context. */
-  restart(): void {
+  /**
+   * A new session, after a restart or an eviction: it applies any scheduled
+   * restore, with a new context. As on Cloudflare, every session starts a new
+   * current bookmark, whether or not anything was restored or written.
+   * `byId`: woken by ID, as a Sandbox's egress handler wakes it, so the
+   * session has no name.
+   */
+  restart(options: { byId?: boolean } = {}): void {
     this.sessions += 1;
     if (this.scheduledRestoreBookmark !== undefined) {
       this.restoredBookmark = this.scheduledRestoreBookmark;
       this.scheduledRestoreBookmark = undefined;
       this.currentBookmark = `restored:${this.restoredBookmark}`;
+      this.kv.clear();
+      for (const [key, value] of this.kvAtSchedule ?? []) this.kv.set(key, value);
+      this.kvAtSchedule = undefined;
+      this.onRestore?.();
+    } else {
+      this.currentBookmark = `session${this.sessions}:${this.currentBookmark}`;
     }
-    this.restoreContext = new FakeObjectRestoreContext(this, this.restoreContext.id);
+    this.restoreContext = new FakeObjectRestoreContext(this, undefined, options);
     this.onRestart?.();
   }
 
@@ -180,7 +222,23 @@ export class FakeObjectRestoreContext implements HostObjectRestoreContext {
   callbackRejections = 0;
   aborts = 0;
 
-  constructor(readonly storage: FakeObjectStorage, readonly id: { name?: string } = {}) {}
+  private readonly byId: boolean;
+
+  /**
+   * `id.name`, when given, names the storage's object: a class constructed
+   * over this context. `byId`: a session woken by ID, which has no name.
+   */
+  constructor(readonly storage: FakeObjectStorage, id?: { name?: string }, options: { byId?: boolean } = {}) {
+    if (id?.name !== undefined) storage.name = id.name;
+    this.byId = options.byId === true;
+  }
+
+  /** The object's ID, the same in every session, and its name in a session woken by name. */
+  get id(): { name?: string; toString(): string } {
+    const objectId = this.storage.objectId;
+    const name = this.byId ? undefined : this.storage.name;
+    return { ...(name === undefined ? {} : { name }), toString: () => objectId };
+  }
 
   async blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
     this.gates += 1;
@@ -286,6 +344,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
     if (binding === 'TAG_STATE') {
       const installation = scope ? installations.get(scope.installationId) : undefined;
       if (!installation) throw new Error(`No installation serves ${name}.`);
+      installation.storage.name ??= name;
       let stores: TagStateStores | undefined = installation.stores;
       object = {
         binding, name, storage: installation.storage, env,
@@ -303,7 +362,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
       };
     } else if (binding === 'SANDBOX') {
       // As the Sandbox class: its env from its own name, its checkpoint bucket the installation's view.
-      const storage = new FakeObjectStorage();
+      const storage = new FakeObjectStorage(name);
       const sandboxEnv = sandboxObjectEnv({
         id: { name },
         storage: { kv: { get: (key: string) => storage.kv.get(key), put: (key: string, value: unknown) => { storage.kv.set(key, value); } } },
@@ -342,13 +401,21 @@ export function hostedDeployment(installationIds: readonly string[], options: {
               });
             },
             currentCheckpoint: () => sandboxWorkspaceState(storage).currentCheckpoint(),
-            // As the SDK's getState: a status never recorded reads as stopped.
-            containerState: async () => (storage.kv.get(CONTAINER_STATE_KEY) ?? { status: 'stopped' }) as { status: string },
+            // As the SDK's getState: a status never recorded reads as stopped, and
+            // that first read records it (a one-time write). A restore's quiesce
+            // makes that read before the fence and digest, in the same gate, so
+            // the write lands before both; a later session finds it and writes nothing.
+            containerState: async () => {
+              if (!storage.kv.has(CONTAINER_STATE_KEY)) {
+                storage.kv.set(CONTAINER_STATE_KEY, { status: 'stopped', lastChange: Date.now() });
+              }
+              return storage.kv.get(CONTAINER_STATE_KEY) as { status: string };
+            },
           }) as unknown as DeploymentObject['host'];
         },
       };
     } else {
-      const storage = new FakeObjectStorage();
+      const storage = new FakeObjectStorage(name);
       object = {
         binding, name, storage, env,
         get host() {
@@ -360,6 +427,7 @@ export function hostedDeployment(installationIds: readonly string[], options: {
                     const { settled, running } = runnerJobs(storage).cancelOpen(now);
                     return { runnerJobs: settled, runnerJobsRunning: running };
                   },
+                  quiesce: async () => quiesceThreadRunnerForRestore(runnerJobs(storage)),
                 }
               : {}),
           }) as unknown as DeploymentObject['host'];

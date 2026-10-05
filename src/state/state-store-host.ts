@@ -9,6 +9,7 @@ import {
   eraseObjectStorage,
   exportObjectPage,
   objectRestoreHostFunctions,
+  ObjectRestoreError,
   type HostObjectStorage,
   type HostObjectRestoreContext,
   type InstallationObjectHostRpc,
@@ -98,6 +99,7 @@ export function stateStoreHostFunctions(store: {
     ...objectRestoreHostFunctions({
       ...store,
       assertOwner: ({ installationId }) => assertBinding(installationId),
+      quiesce: async () => quiesceStateStoreForRestore(store.stores()),
     }),
     async chickpeaHostInventory(request) {
       return stores(request).objectInventory.list(request);
@@ -151,4 +153,36 @@ export function stateStoreHostFunctions(store: {
       };
     },
   };
+}
+
+/**
+ * Before a restore reads the state store's fence and digest: refuse while
+ * its alarm still owes work, which it runs now or a new instance arms it
+ * for at once (TagStateStore's `resumeAfterRestart`): an alarm turn whose
+ * Flue dispatch was in flight, a gateway delivery in flight, or a hand-off
+ * to a thread runner not yet confirmed (armed for after a deploy, and
+ * re-admitted by the alarm's next run). Any of them would move the storage
+ * before scheduling. A delivery is in flight whichever instance leased it:
+ * this instance's alarm writes when it completes the delivery, as an
+ * earlier one's lease is reclaimed by the next drain. `cancel_pending`
+ * parks the turns; a delivery leaves flight once its alarm completes it or
+ * reclaims its lease.
+ */
+export function quiesceStateStoreForRestore(
+  stores: {
+    readonly turnJobs: Pick<TagStateStores['turnJobs'], 'hasInterruptedAlarmDispatch' | 'hasHandoffs'>;
+    readonly gatewayInbox: Pick<TagStateStores['gatewayInbox'], 'hasInFlight'>;
+  },
+): void {
+  const owed = [
+    stores.turnJobs.hasInterruptedAlarmDispatch() ? 'an alarm turn dispatched' : undefined,
+    stores.gatewayInbox.hasInFlight() ? 'a gateway delivery in flight' : undefined,
+    stores.turnJobs.hasHandoffs() ? 'a runner hand-off unconfirmed' : undefined,
+  ].filter((reason) => reason !== undefined);
+  if (owed.length > 0) {
+    throw new ObjectRestoreError(
+      'restore_object_busy',
+      `The state store has work its alarm resumes (${owed.join(', ')}); run cancel_pending, then retry once its alarm has settled what remains.`,
+    );
+  }
 }
