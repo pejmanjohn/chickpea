@@ -56,7 +56,6 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       ['@cf/zai-org/glm-4.7-flash', 60_000, 400_000, null],
     ],
   );
-  // Anthropic reports cache reads and writes, so its current price prices both.
   assert.deepEqual(
     RELEASE_PRICE_CATALOGS
       .filter((version) => version.providerId === 'anthropic')

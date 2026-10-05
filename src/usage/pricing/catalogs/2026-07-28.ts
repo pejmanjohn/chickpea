@@ -250,9 +250,9 @@ export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
       basis: 'standard_input_output',
     }],
   }),
-  // Anthropic reports cache reads and writes on almost every turn, and a
-  // measurement with a cache dimension the rate lacks stays unpriced. Writes
-  // use the 5-minute rate: the runtime requests the default cache duration.
+  // Writes use the 5-minute rate: the runtime requests the default cache
+  // duration (PI_CACHE_RETENTION unset). One-hour writes cost more and are
+  // not priced separately.
   version({
     id: 'anthropic-cache_2026-10-04',
     providerId: 'anthropic',
