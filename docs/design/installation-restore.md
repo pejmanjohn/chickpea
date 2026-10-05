@@ -321,9 +321,13 @@ The host serving many installations must implement these jobs:
      `restartInstallationObject` for each in plan order with its receipt's
      fence. Its answer, `applied: true` given the receipt, means the restore
      applied. `restore_not_applied` means the object restarted still holding
-     the restore mark, so the restore did not apply: stop for review. It is
-     final for that receipt: restarting again answers the same, since only
-     a restore removes the mark. Recover as from `restore_content_moved`:
+     the restore mark, so the restore did not apply yet: stop for review.
+     It is not final. On staging the restore stayed pending after the abort
+     and applied on the object's next wake after eviction, about twenty
+     minutes later (Staging proof, below). Until restart is fixed, an object
+     that answered it still holds its restore. Recover as from
+     `restore_content_moved`, but only after reading the object again past
+     an eviction:
      review, prepare the object again (its digest now covers the mark),
      schedule it to the same target, which writes the mark again with the
      new fence, and restart it with the new receipt. The first prepared
@@ -400,6 +404,30 @@ start until the release, including the time since T.
 
 Cloudflare's PITR APIs require a deployed SQLite object and are unavailable
 in local development. Unit fakes cover the contract, not actual recovery.
+
+**Results so far (2026-10-05).** The second staging rehearsal found that
+restart does not apply a restore. Each restart through `ctx.abort()`, a call
+into the session that had scheduled the restore, came back with the mark
+still there (`restore_not_applied`), and that restore applied about twenty
+minutes later, on the object's first wake after eviction. Objects whose
+scheduling session was evicted before restart answered `applied`. In a
+separate test, an abort in the same request as `onNextSessionRestoreBookmark`
+did apply. Hosts do not offer apply until restart makes the restore apply
+and staging shows it.
+
+The rehearsal also established the following:
+- An idle object keeps its content digest across eviction (a state store, a
+  thread runner and a Flue agent).
+- The next session's current bookmark differs from the fence.
+- The restore discards the mark.
+- `getBookmarkForTime` throws a generic error for a time before an object's
+  first write.
+- The undo bookmark most likely keeps the mark.
+
+Measured on the platform, the digest is slower than locally. A warm
+benchmark put 500,000 key-value entries at about 15 s and 500,000 rows of 30
+columns at about 10 s, both over the 10 s this bound allows, so
+`OBJECT_DIGEST_BUDGET` must come down before apply is enabled.
 Prove on staging, on disposable objects:
 
 - Schedule, restart and the next session's answer restore SQL and key-value
