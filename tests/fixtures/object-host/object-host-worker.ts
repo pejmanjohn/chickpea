@@ -90,14 +90,14 @@ export class ProbeObject extends DurableObject {
     // The size check reads nothing: count the statements and listings a refusal makes.
     const databaseSize = this.ctx.storage.sql.databaseSize;
     let execs = 0;
-    const counting = {
+    const counting: Pick<HostObjectStorage, 'sql' | 'list' | 'getAlarm'> = {
       sql: {
         databaseSize,
-        exec: (...args: Parameters<HostObjectStorage['sql']['exec']>) => { execs += 1; return storage.sql.exec(...args); },
+        exec: (...args) => { execs += 1; return storage.sql.exec(...args); },
       },
-      list: async (options?: { startAfter?: string; limit?: number }) => { execs += 1; return storage.list(options); },
+      list: async (options) => { execs += 1; return storage.list(options); },
       getAlarm: async () => { execs += 1; return storage.getAlarm(); },
-    } as unknown as HostObjectStorage;
+    };
     let refusedBySize = '';
     try {
       await objectStorageDigest(counting, id, { ...unbounded, databaseBytes: databaseSize - 1 });

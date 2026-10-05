@@ -363,6 +363,30 @@ test('a repeated schedule in the same session returns the same receipt without s
   assert.equal(ctx.aborts, 0);
 });
 
+test('a repeated schedule writes the restore mark its first call failed to, so restart still refuses a restore that never applied', async (t) => {
+  const { storage, ctx, session } = genericHost();
+  t.after(() => storage.database.close());
+  await seed(storage);
+  const request = await preparedRequest(storage);
+  const failure = new Error('storage write failed');
+  t.mock.method(storage, 'put').mock.mockImplementationOnce(async () => { throw failure; });
+  // Scheduled, then the mark write failed: the host sees an error, not a receipt.
+  await assert.rejects(session().chickpeaHostRestore(request), (error) => error === failure);
+  assert.equal(storage.scheduledRestoreBookmark, 'bookmark_target');
+  assert.equal(storage.kv.has(OBJECT_RESTORE_MARK_KEY), false);
+  assert.equal(ctx.callbackRejections, 0);
+  // Asked again with the same request, as for a lost answer.
+  const receipt = await session().chickpeaHostRestore(request);
+  assert.equal(storage.kv.get(OBJECT_RESTORE_MARK_KEY), request.expectedCurrentBookmark);
+  assert.equal(storage.bookmarkCalls.filter(({ method }) => method === 'onNextSessionRestoreBookmark').length, 1);
+  // A next session that did not apply the restore: restart refuses.
+  storage.scheduledRestoreBookmark = undefined;
+  storage.restart();
+  await assert.rejects(session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), { name: 'ObjectRestoreError', code: 'restore_not_applied' });
+});
+
 test('a session with a restore scheduled refuses another restore or a new preparation', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
   const { host, storage, ctx } = genericHost();
@@ -542,6 +566,36 @@ test('a schedule whose answer was lost is asked again: never inferred from a mov
   storage.restart();
   await assert.rejects(session().chickpeaHostRestore(request), { code: 'restore_content_moved' });
   assert.equal(storage.scheduledRestoreBookmark, undefined);
+});
+
+test('a schedule asked again in a later session whose restore never applied is refused by the mark alone', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const { storage, session } = genericHost();
+  t.after(() => storage.database.close());
+  await seed(storage);
+  const prepared = await session().chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T });
+  const request = {
+    installationId: A,
+    expectedCurrentBookmark: prepared.currentBookmark,
+    expectedContentDigest: prepared.contentDigest,
+    targetBookmark: prepared.targetBookmark,
+  };
+  await session().chickpeaHostRestore(request);
+  // Its answer was lost, and the next session did not apply the restore; nothing else wrote.
+  storage.scheduledRestoreBookmark = undefined;
+  storage.restart();
+  await assert.rejects(session().chickpeaHostRestore(request), { name: 'ObjectRestoreError', code: 'restore_content_moved' });
+  assert.equal(storage.scheduledRestoreBookmark, undefined);
+  // Without the mark, the storage is the prepared one.
+  const mark = storage.kv.get(OBJECT_RESTORE_MARK_KEY);
+  assert.equal(mark, prepared.currentBookmark);
+  storage.kv.delete(OBJECT_RESTORE_MARK_KEY);
+  assert.equal(await digestOf(storage), prepared.contentDigest);
+  await storage.put(OBJECT_RESTORE_MARK_KEY, mark);
+  // Restart with the original fence tells this case from an applied restore.
+  await assert.rejects(session().chickpeaHostRestoreRestart({ installationId: A, expectedCurrentBookmark: prepared.currentBookmark }), {
+    code: 'restore_not_applied',
+  });
 });
 
 const WRITES: ReadonlyArray<readonly [string, (storage: FakeObjectStorage) => unknown]> = [
@@ -1208,31 +1262,51 @@ test('wide rows reach the values bound before the records bound', async (t) => {
   assert.match(await objectStorageDigest(storage, storage.objectId, { ...budget, cells: 2_000 }), /^sha256:/);
 });
 
-test('a database over its size bound is refused before anything is read', async (t) => {
+test('a database over its size bound is refused before the input gate, quiesce or anything is read', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
-  const { storage, ctx, session } = genericHost(undefined, {
-    digestBudget: { ...OBJECT_DIGEST_BUDGET, databaseBytes: 64 * 1024 },
-  });
+  const storage = new FakeObjectStorage(PROBE);
   t.after(() => storage.database.close());
+  const ctx = storage.restoreContext;
   storage.sql.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
   storage.sql.exec('INSERT INTO notes (id, body) VALUES (1, ?)', 'x'.repeat(256 * 1024));
   assert.ok(storage.sql.databaseSize > 64 * 1024);
+  let quiesced = 0;
+  const host = (databaseBytes: number) => objectHostFunctions({
+    env: scopeInstallationEnv(HOSTED, { installationId: A }), storage, restoreContext: storage.restoreContext,
+    quiesce: async () => { quiesced += 1; },
+    digestBudget: { ...OBJECT_DIGEST_BUDGET, databaseBytes },
+  });
   const exec = t.mock.method(storage.sql, 'exec');
   const list = t.mock.method(storage, 'list');
-  await assert.rejects(session().chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), {
+  await assert.rejects(host(64 * 1024).chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), {
     name: 'ObjectRestoreError', code: 'restore_object_too_large',
+  });
+  await assert.rejects(host(64 * 1024).chickpeaHostRestore(restoreRequest()), { code: 'restore_object_too_large' });
+  assert.equal(quiesced, 0, 'refused before quiesce, which deletes a Sandbox\'s alarm');
+  assert.equal(ctx.gates, 0);
+  assert.deepEqual(storage.bookmarkCalls, []);
+  // The digest itself refuses the same way, as restart reads it.
+  await assert.rejects(objectStorageDigest(storage, storage.objectId, { ...UNBOUNDED, databaseBytes: 64 * 1024 }), {
+    code: 'restore_object_too_large',
   });
   assert.equal(exec.mock.callCount(), 0, 'no table, schema entry or row was read');
   assert.equal(list.mock.callCount(), 0);
-  assert.equal(ctx.callbackRejections, 0);
   // At the bound it reads as usual.
   exec.mock.restore();
   list.mock.restore();
-  const host = objectHostFunctions({
-    env: scopeInstallationEnv(HOSTED, { installationId: A }), storage, restoreContext: storage.restoreContext,
-    digestBudget: { ...OBJECT_DIGEST_BUDGET, databaseBytes: storage.sql.databaseSize },
-  });
-  assert.match((await host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T })).contentDigest, /^sha256:/);
+  const atBound = host(storage.sql.databaseSize);
+  const prepared = await atBound.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T });
+  assert.match(prepared.contentDigest, /^sha256:/);
+  const request = {
+    installationId: A,
+    expectedCurrentBookmark: prepared.currentBookmark,
+    expectedContentDigest: prepared.contentDigest,
+    targetBookmark: prepared.targetBookmark,
+  };
+  const receipt = await atBound.chickpeaHostRestore(request);
+  assert.equal(quiesced, 2);
+  // The session holding the restore answers a repeated schedule with its receipt over any bound.
+  assert.deepEqual(await host(64 * 1024).chickpeaHostRestore(request), receipt);
 });
 
 test('an object over the digest budget refuses preparation outside the input gate, before reading the rest', async (t) => {

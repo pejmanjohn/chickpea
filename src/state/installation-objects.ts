@@ -173,9 +173,9 @@ const RESTART_ATTEMPTS = 3;
  * the restore applied; its `contentDigest` is a record and decides nothing.
  * An object that still holds the fence refuses with `restore_not_scheduled`,
  * and one that restarted still holding the mark with `restore_not_applied`
- * (the restore did not apply). An error thrown over
- * RPC loses its class, so every failed call is retried, up to
- * `RESTART_ATTEMPTS` calls; the last failure is thrown.
+ * (the restore did not apply). An error thrown over RPC loses its class, so
+ * every failed call is retried, up to `RESTART_ATTEMPTS` calls; the last
+ * failure is thrown.
  */
 export async function restartInstallationObject(
   env: Record<string, unknown>,

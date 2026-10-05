@@ -83,8 +83,13 @@ preparation would only be refused at scheduling. `cancel_pending` parks the
 state store's turns but leaves a delivery in flight, a running job and an
 owed stop: run it, then retry once each object's alarm has settled what
 remains. A delivery leaves flight once its alarm completes it or reclaims
-its lease; with the alarm cleared, the object's next instance arms it. A
-running job settles as its run ends, its submission aborted and its model
+its lease; with the alarm cleared, the object's next instance arms it. The
+state store cannot be left out (below), and only an eviction gives it a
+next instance: while a delivery stays in flight, stop calling the state
+store for two to three minutes, so that Cloudflare evicts it, then retry
+preparation. The call wakes a new instance, which arms the alarm that
+reclaims the delivery; preparation passes once that alarm has settled it.
+A running job settles as its run ends, its submission aborted and its model
 calls refused while the installation is suspended. Work that never settles,
 such as a job whose run never ends, follows the path of an object over the
 digest's bound (below).
@@ -100,6 +105,30 @@ foreign names, unknown kinds and duplicate entries. It cannot establish
 whether the inventory is complete. `prepareInstallationRestore(env, census,
 T)` reads every planned object's bookmarks and reports each object as
 prepared, skipped or failed instead of stopping at the first failure.
+
+An error thrown over RPC loses its class and `code`; only its message
+arrives, so the host maps each refusal by its message. The messages, with
+`…` for a part that varies:
+
+| Code | Message |
+| --- | --- |
+| `restore_time_invalid` | Restore time must be within the past 30 days and before now. |
+| `restore_bookmark_invalid` | Restore requires current and target bookmarks. |
+| `restore_bookmark_invalid` | Restart requires the fence the restore was scheduled against. |
+| `restore_digest_invalid` | Restore requires the content digest read with its fence. |
+| `restore_content_moved` | The storage no longer matches the prepared digest, or the digest is another object's; prepare it again. |
+| `restore_object_too_large` | This object holds more than a restore can check: over … |
+| `restore_object_busy` | Stop the Sandbox container before restoring it. |
+| `restore_object_busy` | The Sandbox container stop or schedules have not settled; retry once its alarm has completed them. |
+| `restore_object_busy` | The thread runner has a job running or a stop owed; retry once its alarm has settled them. |
+| `restore_object_busy` | The state store has work its alarm resumes (…); run cancel_pending, then retry once its alarm has settled what remains. |
+| `restore_already_scheduled` | A restore is already scheduled; restart the object first. |
+| `restore_already_scheduled` | A restore against another fence is scheduled. |
+| `restore_not_scheduled` | No restore is scheduled or applied: the object still holds the fence. |
+| `restore_not_applied` | The object restarted still holding what was written after its restore was scheduled: the restore did not apply. |
+| `restore_restarting` | The object is restarting to apply its restore; call again. |
+| `restore_unavailable` | This object has no SQLite restore context. |
+| `restore_unavailable` | This object has no ID to bind its content digest to. |
 
 ## The fence is the storage, not the bookmark
 
@@ -148,10 +177,13 @@ rule the host checks is that answer, given the receipt. The post-restart
 prepared digest is expected of an object that held at T what it held at
 preparation, and a Sandbox's wake changes it either way.
 
-The mark stays in the undo bookmark the receipt returns, which is
-"immediately before the restore", so a back-out to it brings the first
-restore's mark back; the back-out's own fence does not match it. The
-prepared fence, read before the mark, does not hold it.
+Whether the undo bookmark the receipt returns, "immediately before the
+restore", keeps the mark is undocumented; staging checks it (see Staging
+proof). Either outcome is safe. If it keeps the mark, a back-out to it
+brings the first restore's mark back, which the back-out's own fence does
+not match. If not, a back-out brings back no mark, and its restart answers
+`applied: true` all the same. The prepared fence, read before the mark,
+does not hold it.
 
 ## The digest's bound
 
@@ -162,20 +194,24 @@ preparation, and could never be restored. So the digest reads each table
 one row at a time and stops at 500,000 records (rows, key-value entries and
 schema entries), 16,000,000 column values (500,000 rows of 32 columns) or
 512 MiB serialized, whichever comes first, refusing with
-`restore_object_too_large`. Before reading anything it refuses an object
-whose SQLite database (`databaseSize`) is over 2 GiB. That size counts
-indexes, key-value storage and free pages, so its bound is four times the
+`restore_object_too_large`. Preparation and scheduling refuse an object
+whose SQLite database (`databaseSize`) is over 2 GiB first, before the
+input gate: nothing is read, and a Sandbox keeps its SDK alarm. That size
+counts indexes, key-value storage and free pages, so its bound is four times the
 serialized one and refuses only an object far over the others.
 
-On local workerd SQLite, a digest at that bound took at most 1.1 s: 500,000
-rows of 30 columns. Rows of the widest Chickpea table (52 columns, 307,000
-of them at the values bound) took 1.0 s, rows of 100 columns (159,000) 0.9
-s, 490,000 key-value entries 0.9 s and 512 MiB of transcript chunks 0.3 s;
-a refusal came within 0.9 s. Run to run, timings on that machine varied by
-up to 1.7x. With that variance and a production CPU assumed twice as slow,
-the worst case is 1.1 s x 1.7 x 2, about 3.7 s: a margin of about 8x under
-the gate's 30 s and the 30 s of CPU a request gets. Without the values
-bound, 500,000 rows of 100 columns took 2.85 s, about 9.7 s with the same
+On local workerd SQLite, a digest at that bound took at most 1.1 s: 490,000
+rows of 31 columns took 1.06-1.08 s. Column counts here include the key.
+Rows of the widest Chickpea table (52 columns, 307,000 of them at the values
+bound) took 1.0 s, rows of 100 columns (159,000) 0.9 s, 490,000 key-value
+entries 0.9 s and 512 MiB of transcript chunks 0.3 s; a refusal came within
+1 s. Repeats in that run varied by under 5%, but an earlier bench, of a
+digest since replaced, read 1,000,000 audit rows in 2.9 s in one run and
+1.7 s in another, so the allowance for run-to-run variance is 1.7x. With
+that and a production CPU assumed twice as slow, the worst case is 1.1 s x
+1.7 x 2, about 3.7 s: a margin of about 8x under the gate's 30 s and the
+30 s of CPU a request gets. Without the values bound, 490,000 rows of 100
+columns took 2.79-2.82 s in the same run, about 9.6 s with the same
 allowances: a margin of only 3x, which is why wide rows have their own
 bound. Reading pages a deployed object has not cached is not measured
 locally, so a staging measurement of the largest real object gates apply
@@ -285,10 +321,17 @@ The host serving many installations must implement these jobs:
      `restartInstallationObject` for each in plan order with its receipt's
      fence. Its answer, `applied: true` given the receipt, means the restore
      applied. `restore_not_applied` means the object restarted still holding
-     the restore mark, so the restore did not apply: stop for review. Keep
-     the answer's `contentDigest` with the receipt as a record; it decides
-     nothing. Keep progress and partial-failure evidence outside the
-     installation.
+     the restore mark, so the restore did not apply: stop for review. It is
+     final for that receipt: restarting again answers the same, since only
+     a restore removes the mark. Recover as from `restore_content_moved`:
+     review, prepare the object again (its digest now covers the mark),
+     schedule it to the same target, which writes the mark again with the
+     new fence, and restart it with the new receipt. The first prepared
+     fence stays the undo point. Restart an object only with its latest
+     receipt: with an earlier one, restart answers for what the storage now
+     holds, not for the restore that receipt scheduled. Keep the answer's
+     `contentDigest` with the receipt as a record; it decides nothing. Keep
+     progress and partial-failure evidence outside the installation.
    - A back-out's preparation reads restored objects, which may hold the
      work they held at T: a running job, an interrupted dispatch. They
      refuse with `restore_object_busy` until it settles, so run
@@ -370,8 +413,8 @@ Prove on staging, on disposable objects:
 - That an idle object of each kind evicted and woken again keeps its content
   digest, so nothing it runs on waking writes.
 - That a write after `onNextSessionRestoreBookmark` in the same session,
-  such as the restore mark, is discarded by the restore and kept by the
-  undo bookmark it returned.
+  such as the restore mark, is discarded by the restore, and whether the
+  undo bookmark it returned keeps it (either is safe; see above).
 - A gate before apply is enabled: time preparation's digest on the largest
   real objects on staging (the largest state store and transcript agent by
   `databaseSize`), cold, as the first call after an eviction, and warm.

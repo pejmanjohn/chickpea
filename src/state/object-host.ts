@@ -139,9 +139,9 @@ export const OBJECT_RESTORE_ABORT_REASON = 'Installation point-in-time restore';
  * restore is scheduled. Every write since the target is discarded by the
  * restore, this one included, so a later session that still holds it
  * restarted without restoring. The fence did not exist at T, so storage at T
- * never holds this restore's mark. A back-out to the receipt's undo bookmark
- * brings back the first restore's mark, which the back-out's own fence does
- * not match.
+ * never holds this restore's mark. Whether the receipt's undo bookmark keeps
+ * it is for staging to show; a back-out to it brings back at most the first
+ * restore's mark, which the back-out's own fence does not match.
  */
 export const OBJECT_RESTORE_MARK_KEY = 'chickpea.restore.scheduled.v1';
 
@@ -214,12 +214,21 @@ export function objectRestoreHostFunctions(object: {
     if (!ctx) throw new ObjectRestoreError('restore_unavailable', 'This object has no SQLite restore context.');
     // Not the name: a session woken by ID has none, and a digest that bound
     // it only where present would differ between two sessions of one object.
-    const objectId = ctx.id.toString === Object.prototype.toString ? '' : String(ctx.id.toString());
+    const objectId = ctx.id.toString === Object.prototype.toString ? '' : ctx.id.toString();
     if (!objectId) throw new ObjectRestoreError('restore_unavailable', 'This object has no ID to bind its content digest to.');
     return { ctx, objectId };
   };
-  const digest = (objectId: string): Promise<string> =>
-    objectStorageDigest(object.storage, objectId, object.digestBudget ?? OBJECT_DIGEST_BUDGET);
+  const budget = object.digestBudget ?? OBJECT_DIGEST_BUDGET;
+  const digest = (objectId: string): Promise<string> => objectStorageDigest(object.storage, objectId, budget);
+  /**
+   * Before the input gate, `quiesce` and any PITR read: `databaseSize` reads
+   * no storage, so an object over it is refused at no cost, a Sandbox's
+   * alarm untouched. A session holding a restore skips it and answers within
+   * the gate, so a repeated schedule still gets its receipt.
+   */
+  const refuseOverSize = (ctx: HostObjectRestoreContext): void => {
+    if (!scheduledRestores.has(ctx) && object.storage.sql.databaseSize > budget.databaseBytes) throw digestTooLarge(budget);
+  };
   return {
     async chickpeaHostRestoreBookmarks(request) {
       const scope = assertObjectHostCall(object.env, request);
@@ -229,6 +238,7 @@ export function objectRestoreHostFunctions(object: {
         throw new ObjectRestoreError('restore_time_invalid', 'Restore time must be within the past 30 days and before now.');
       }
       const { ctx, objectId } = context();
+      refuseOverSize(ctx);
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
         if (scheduledRestores.has(ctx)) throw alreadyScheduled();
@@ -250,6 +260,7 @@ export function objectRestoreHostFunctions(object: {
         throw new ObjectRestoreError('restore_digest_invalid', 'Restore requires the content digest read with its fence.');
       }
       const { ctx, objectId } = context();
+      refuseOverSize(ctx);
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
         // The session holding a restore answers a repeated call, whose first
@@ -260,6 +271,9 @@ export function objectRestoreHostFunctions(object: {
         if (scheduled) {
           if (scheduled.expectedCurrentBookmark === expectedCurrentBookmark &&
               scheduled.expectedContentDigest === expectedContentDigest && scheduled.targetBookmark === targetBookmark) {
+            // The first call's mark write may have failed after its restore was
+            // scheduled. The same key and value: storage holding it is unchanged.
+            await object.storage.put(OBJECT_RESTORE_MARK_KEY, expectedCurrentBookmark);
             return scheduled;
           }
           throw alreadyScheduled();
@@ -616,21 +630,20 @@ export interface ObjectDigestBudget {
 /**
  * The bound on one content digest: 500,000 records, 16,000,000 column values
  * (500,000 rows of 32 columns) or 512 MiB serialized, whichever comes first,
- * and refused before reading anything when the database is over 2 GiB. The
+ * and refused before anything else when the database is over 2 GiB. The
  * digest runs inside `blockConcurrencyWhile`, after whose 30 seconds
  * Cloudflare resets the object, so an object too large to digest in time
  * would be reset by every preparation and could never be restored.
  * Measured on local workerd SQLite inside the gate, a digest at this bound
- * takes at most 1.1 s (500,000 rows of 30 columns; 1.0 s for rows of the
- * widest Chickpea table's 52 columns, 0.9 s for 100 columns or 490,000
- * key-value entries, 0.3 s for 512 MiB of transcript chunks), and a refusal
- * stops within 0.9 s. Allowing for run-to-run variance of up to 1.7x and a
+ * took at most 1.1 s (490,000 rows of 31 columns, the key included), and a
+ * refusal stopped within 1 s. Allowing 1.7x for run-to-run variance and a
  * production CPU twice as slow, that is about 3.7 s, an eighth of the gate's
  * 30 s and of the 30 s of CPU a request gets. The values bound is what keeps
- * wide rows there: 500,000 rows of 100 columns took 2.85 s, about 9.7 s
- * with the same allowances, a margin of only 3x. Reading pages a deployed
- * object has not cached is not measured; staging times the largest real
- * object before apply is enabled (docs/design/installation-restore.md).
+ * wide rows there: unbounded, 490,000 rows of 100 columns took 2.8 s, about
+ * 9.6 s with the same allowances, a margin of only 3x. The figures and their
+ * sources are in docs/design/installation-restore.md. Reading pages a
+ * deployed object has not cached is not measured; staging times the largest
+ * real object before apply is enabled.
  * The database size counts indexes, key-value storage and free pages, so
  * its bound is four times the serialized one: it refuses only an object far
  * over the others. Reading a row at a time keeps memory to one row (at most
@@ -667,16 +680,11 @@ const DIGEST_KV_BATCH = 16;
  * `restore_object_too_large`; over its database size, before reading.
  */
 export async function objectStorageDigest(
-  storage: HostObjectStorage,
+  storage: Pick<HostObjectStorage, 'sql' | 'list' | 'getAlarm'>,
   objectId: string,
   budget: ObjectDigestBudget = OBJECT_DIGEST_BUDGET,
 ): Promise<string> {
-  const tooLarge = (): ObjectRestoreError => new ObjectRestoreError(
-    'restore_object_too_large',
-    `This object holds more than a restore can check: over ${budget.rows} records, ${budget.cells} values, `
-      + `${budget.bytes} bytes or a ${budget.databaseBytes}-byte database.`,
-  );
-  if (storage.sql.databaseSize > budget.databaseBytes) throw tooLarge();
+  if (storage.sql.databaseSize > budget.databaseBytes) throw digestTooLarge(budget);
   const hash = createHash('sha256');
   let rows = 0;
   let cells = 0;
@@ -685,7 +693,7 @@ export async function objectStorageDigest(
     const line = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
     rows += 1;
     bytes += line.byteLength;
-    if (rows > budget.rows || cells > budget.cells || bytes > budget.bytes) throw tooLarge();
+    if (rows > budget.rows || cells > budget.cells || bytes > budget.bytes) throw digestTooLarge(budget);
     hash.update(line);
   };
   add(['object', objectId]);
@@ -715,6 +723,14 @@ export async function objectStorageDigest(
   }
   add(['alarm', await storage.getAlarm()]);
   return `sha256:${hash.digest('hex')}`;
+}
+
+function digestTooLarge(budget: ObjectDigestBudget): ObjectRestoreError {
+  return new ObjectRestoreError(
+    'restore_object_too_large',
+    `This object holds more than a restore can check: over ${budget.rows} records, ${budget.cells} values, `
+      + `${budget.bytes} bytes or a ${budget.databaseBytes}-byte database.`,
+  );
 }
 
 interface ExportCursor {
@@ -749,7 +765,7 @@ interface ExportedTable {
 const OWN_SCHEMA_ENTRY = "name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'";
 
 /** The object's own tables, by name. */
-function listTables(storage: HostObjectStorage): ExportedTable[] {
+function listTables(storage: Pick<HostObjectStorage, 'sql'>): ExportedTable[] {
   return storage.sql.exec(
     `SELECT name, sql FROM sqlite_master WHERE type = 'table' AND ${OWN_SCHEMA_ENTRY} ORDER BY name`,
   ).toArray().map((row) => {
