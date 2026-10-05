@@ -14,8 +14,10 @@ import { sandboxHostFunctions } from '../src/sandbox/sandbox-host.ts';
 import { sandboxObjectName } from '../src/sandbox/sandbox-object.ts';
 import { agentObjectBindingName, CHICKPEA_SLACK_AGENT_BINDING } from '../src/slack/bounded-agent-observation.ts';
 import {
+  backfillInstallationObjects,
   installationStateStoreObject,
   exportInstallationObject,
+  listInstallationObjects,
   readInstallationObjectRestoreBookmarks,
   restartInstallationObject,
   scheduleInstallationObjectRestore,
@@ -32,7 +34,9 @@ import {
   objectHostFunctions,
   type InstallationObjectRestoreRpc,
   type ObjectRestoreRequest,
+  type ObjectRestoreRestartRequest,
 } from '../src/state/object-host.ts';
+import { BACKFILLED_FIRST_SEEN_AT } from '../src/state/object-inventory.ts';
 import { stateStoreHostFunctions } from '../src/state/state-store-host.ts';
 import {
   CODING_WORKER_BINDING,
@@ -74,6 +78,11 @@ function inventory(installationId: string): InstallationObject[] {
 
 function restoreRequest(installationId = A): ObjectRestoreRequest {
   return { installationId, expectedCurrentBookmark: 'bookmark_current', targetBookmark: 'bookmark_target' };
+}
+
+/** A restart presenting the fence `restoreRequest` schedules against. */
+function restartRequest(installationId = A): ObjectRestoreRestartRequest {
+  return { installationId, expectedCurrentBookmark: 'bookmark_current' };
 }
 
 /** A generic object's host functions over its current session, built per call as the classes build them. */
@@ -240,28 +249,74 @@ test('a session with a restore scheduled refuses another restore or a new prepar
   assert.equal(ctx.callbackRejections, 0);
 });
 
-test('restart aborts with the named reason only when its session has a restore scheduled; the next session confirms', async (t) => {
+test('restart aborts with the named reason only when its session has the restore scheduled; the next session proves it applied', async (t) => {
   const { storage, ctx, session } = genericHost();
   t.after(() => storage.database.close());
-  // Nothing scheduled: a read, no restart.
-  assert.deepEqual(await session().chickpeaHostRestoreRestart({ installationId: A }), {
-    restorePending: false, currentBookmark: 'bookmark_current',
+  // Nothing scheduled: the object still holds the fence, so it neither restarts nor claims a restore.
+  await assert.rejects(session().chickpeaHostRestoreRestart(restartRequest()), {
+    name: 'ObjectRestoreError', code: 'restore_not_scheduled',
   });
   assert.equal(ctx.aborts, 0);
+  assert.equal(ctx.callbackRejections, 0);
   const receipt = await session().chickpeaHostRestore(restoreRequest());
   const abort = t.mock.method(ctx, 'abort');
-  await assert.rejects(session().chickpeaHostRestoreRestart({ installationId: A }), (error) =>
+  await assert.rejects(session().chickpeaHostRestoreRestart(restartRequest()), (error) =>
     error instanceof FakeObjectAbort && error.message === OBJECT_RESTORE_ABORT_REASON);
   assert.deepEqual(abort.mock.calls.map((call) => call.arguments), [['Installation point-in-time restore']]);
   assert.equal(ctx.callbackRejections, 0);
   assert.equal(storage.sessions, 2);
   assert.equal(storage.restoredBookmark, 'bookmark_target');
-  // The next session has nothing scheduled: it answers, and its bookmark is no longer the prepared fence.
-  const next = await session().chickpeaHostRestoreRestart({ installationId: A });
-  assert.equal(next.restorePending, false);
-  assert.notEqual(next.currentBookmark, receipt.expectedCurrentBookmark);
+  // The next session has nothing scheduled and its bookmark left the fence: the restore applied.
+  assert.deepEqual(await session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), { applied: true, currentBookmark: 'restored:bookmark_target' });
   assert.equal(storage.restoreContext.aborts, 0);
   assert.equal(storage.sessions, 2);
+});
+
+test('restart refuses a missing fence before PITR, and one other than the scheduled restore\'s without aborting', async (t) => {
+  const { storage, ctx, session } = genericHost();
+  t.after(() => storage.database.close());
+  for (const invalid of ['', ' ', undefined, 42]) {
+    await assert.rejects(session().chickpeaHostRestoreRestart({ installationId: A, expectedCurrentBookmark: invalid as string }), {
+      name: 'ObjectRestoreError', code: 'restore_bookmark_invalid',
+    });
+  }
+  assert.deepEqual(storage.bookmarkCalls, []);
+  assert.equal(ctx.gates, 0);
+  await session().chickpeaHostRestore(restoreRequest());
+  await assert.rejects(session().chickpeaHostRestoreRestart({ installationId: A, expectedCurrentBookmark: 'other_fence' }), {
+    name: 'ObjectRestoreError', code: 'restore_already_scheduled',
+  });
+  assert.equal(ctx.aborts, 0);
+  assert.equal(ctx.callbackRejections, 0);
+  assert.equal(storage.scheduledRestoreBookmark, 'bookmark_target');
+  assert.equal(storage.sessions, 1);
+});
+
+test('an object evicted between scheduling and restart answers the first restart call: the restore applied', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const deployment = hostedDeployment([A]);
+  t.after(() => closeAll(deployment, [A]));
+  const env = deployment.installation(A).env;
+  const object = inventory(A).find(({ kind }) => kind === 'thread_runner')!;
+  const target = deployment.object(BINDINGS.thread_runner, object.name);
+  const bookmarks = await readInstallationObjectRestoreBookmarks(env, object, T);
+  const receipt = await scheduleInstallationObjectRestore(env, object, {
+    confirmInstallationId: A, expectedCurrentBookmark: bookmarks.currentBookmark, targetBookmark: bookmarks.targetBookmark,
+  });
+  const scheduledIn = target.storage.restoreContext;
+  // Evicted and woken again, with no abort: the new session applies the restore.
+  target.storage.restart();
+  const reads = target.storage.bookmarkCalls.length;
+  assert.deepEqual(await restartInstallationObject(env, object, {
+    confirmInstallationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), { applied: true, currentBookmark: 'restored:bookmark_target' });
+  assert.equal(target.storage.restoredBookmark, 'bookmark_target');
+  assert.equal(target.storage.scheduledRestoreBookmark, undefined);
+  assert.equal(target.storage.sessions, 2);
+  assert.equal(scheduledIn.aborts + target.storage.restoreContext.aborts, 0, 'nothing was left to restart');
+  assert.deepEqual(target.storage.bookmarkCalls.slice(reads), [{ method: 'getCurrentBookmark' }], 'one call answered');
 });
 
 test('a session that keeps running after abort does not report that no restore is pending', async (t) => {
@@ -269,7 +324,7 @@ test('a session that keeps running after abort does not report that no restore i
   t.after(() => storage.database.close());
   await session().chickpeaHostRestore(restoreRequest());
   t.mock.method(ctx, 'abort', () => undefined);
-  await assert.rejects(session().chickpeaHostRestoreRestart({ installationId: A }), {
+  await assert.rejects(session().chickpeaHostRestoreRestart(restartRequest()), {
     name: 'ObjectRestoreError', code: 'restore_restarting',
   });
   assert.equal(ctx.callbackRejections, 0);
@@ -286,9 +341,12 @@ test('a moved bookmark refuses scheduling and does not reset the object', async 
   assert.equal(storage.scheduledRestoreBookmark, undefined);
   assert.equal(ctx.aborts, 0);
   assert.equal(ctx.callbackRejections, 0, 'a rejected gate callback would reset a real object');
-  // Nothing was scheduled, so a restart does not abort.
-  assert.equal((await host.chickpeaHostRestoreRestart({ installationId: A })).restorePending, false);
+  // Nothing was scheduled, so a restart neither aborts nor claims a restore.
+  await assert.rejects(host.chickpeaHostRestoreRestart({ installationId: A, expectedCurrentBookmark: 'bookmark_changed' }), {
+    code: 'restore_not_scheduled',
+  });
   assert.equal(ctx.aborts, 0);
+  assert.equal(ctx.callbackRejections, 0);
 });
 
 test('invalid or missing bookmarks are refused without scheduling or aborting', async (t) => {
@@ -314,7 +372,7 @@ test('PITR lookup and scheduling errors propagate without recording a restore, a
   await assert.rejects(host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), (error) => error === failure);
   t.mock.method(storage, 'onNextSessionRestoreBookmark', async () => { throw failure; });
   await assert.rejects(host.chickpeaHostRestore(restoreRequest()), (error) => error === failure);
-  assert.equal((await host.chickpeaHostRestoreRestart({ installationId: A })).restorePending, false);
+  await assert.rejects(host.chickpeaHostRestoreRestart(restartRequest()), { code: 'restore_not_scheduled' });
   assert.equal(ctx.aborts, 0);
   assert.equal(ctx.callbackRejections, 0);
   assert.equal(storage.scheduledRestoreBookmark, undefined);
@@ -329,7 +387,7 @@ test('host functions without a SQLite restore context fail closed', async (t) =>
     name: 'ObjectRestoreError', code: 'restore_unavailable',
   });
   await assert.rejects(host.chickpeaHostRestore(restoreRequest()), ObjectRestoreError);
-  await assert.rejects(host.chickpeaHostRestoreRestart({ installationId: A }), { code: 'restore_unavailable' });
+  await assert.rejects(host.chickpeaHostRestoreRestart(restartRequest()), { code: 'restore_unavailable' });
   assert.deepEqual(storage.bookmarkCalls, []);
 });
 
@@ -349,7 +407,7 @@ test('generic, state-store and Sandbox host functions refuse standalone and unsc
     for (const host of hosts) {
       await assert.rejects(host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), InstallationContextError);
       await assert.rejects(host.chickpeaHostRestore(restoreRequest()), InstallationContextError);
-      await assert.rejects(host.chickpeaHostRestoreRestart({ installationId: A }), InstallationContextError);
+      await assert.rejects(host.chickpeaHostRestoreRestart(restartRequest()), InstallationContextError);
     }
     assert.deepEqual(storage.bookmarkCalls, []);
     assert.equal(storage.restoreContext.aborts, 0);
@@ -367,7 +425,7 @@ for (const kind of Object.keys(BINDINGS) as InstallationObject['kind'][]) {
     const host = target.host as unknown as InstallationObjectRestoreRpc;
     await assert.rejects(host.chickpeaHostRestoreBookmarks({ installationId: B, timestamp: T }), InstallationContextError);
     await assert.rejects(host.chickpeaHostRestore(restoreRequest(B)), InstallationContextError);
-    await assert.rejects(host.chickpeaHostRestoreRestart({ installationId: B }), InstallationContextError);
+    await assert.rejects(host.chickpeaHostRestoreRestart(restartRequest(B)), InstallationContextError);
     assert.deepEqual(target.storage.bookmarkCalls, []);
     const bookmarks = await readInstallationObjectRestoreBookmarks(env, object, T);
     assert.deepEqual(bookmarks, { timestamp: T, currentBookmark: 'bookmark_current', targetBookmark: 'bookmark_target' });
@@ -380,8 +438,13 @@ for (const kind of Object.keys(BINDINGS) as InstallationObject['kind'][]) {
     assert.equal(receipt.undoBookmark, 'bookmark_before_restore');
     assert.equal(target.storage.scheduledRestoreBookmark, 'bookmark_target');
     assert.equal(target.storage.sessions, 1, 'scheduling does not restart');
-    const session = await restartInstallationObject(env, object, { confirmInstallationId: A });
-    assert.deepEqual(session, { restorePending: false, currentBookmark: 'restored:bookmark_target' });
+    await assert.rejects(restartInstallationObject(env, object, { confirmInstallationId: A, expectedCurrentBookmark: 'bookmark_moved' }),
+      { code: 'restore_already_scheduled' });
+    assert.equal(target.storage.sessions, 1, 'a restart presenting another fence does not restart');
+    const applied = await restartInstallationObject(env, object, {
+      confirmInstallationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+    });
+    assert.deepEqual(applied, { applied: true, currentBookmark: 'restored:bookmark_target' });
     assert.equal(target.storage.restoredBookmark, 'bookmark_target');
     assert.equal(target.storage.sessions, 2);
     assert.equal(deployment.installation(B).storage.scheduledRestoreBookmark, undefined);
@@ -417,7 +480,9 @@ test('applying a prepared plan schedules and restarts only its installation, lea
       confirmInstallationId: A, expectedCurrentBookmark: bookmarks.currentBookmark, targetBookmark: bookmarks.targetBookmark,
     });
   }
-  for (const { object } of preparation.prepared) await restartInstallationObject(env, object, { confirmInstallationId: A });
+  for (const { object, bookmarks } of preparation.prepared) {
+    await restartInstallationObject(env, object, { confirmInstallationId: A, expectedCurrentBookmark: bookmarks.currentBookmark });
+  }
   for (const object of planA) {
     assert.equal(deployment.object(BINDINGS[object.kind], object.name).storage.restoredBookmark,
       `target:${object.kind}:${object.name}`);
@@ -460,7 +525,11 @@ test('restored objects that write to each other on waking do not move a fence st
     }));
   }
   assert.equal(receipts.length, plan.length);
-  for (const { object } of preparation.prepared) await restartInstallationObject(env, object, { confirmInstallationId: A });
+  for (const [index, { object }] of preparation.prepared.entries()) {
+    await restartInstallationObject(env, object, {
+      confirmInstallationId: A, expectedCurrentBookmark: receipts[index]!.expectedCurrentBookmark,
+    });
+  }
   for (const object of plan) {
     assert.equal(deployment.object(BINDINGS[object.kind], object.name).storage.restoredBookmark, `T:${object.kind}`);
   }
@@ -546,10 +615,13 @@ test('a Sandbox with a container schedule pending refuses without touching its a
 test('a restart never settles a Sandbox: one restored inside a turn keeps the alarm that records its stop', async (t) => {
   const storage = new FakeObjectStorage();
   t.after(() => storage.database.close());
+  await sandboxHost(storage, { running: false, status: 'stopped' }).chickpeaHostRestore(restoreRequest());
+  storage.restart();
+  // Its restored status reads running, and its SDK alarm is armed to record the stop.
   await storage.setAlarm(NOW + 1_000);
   const host = sandboxHost(storage, { running: false, status: 'running' });
-  assert.deepEqual(await host.chickpeaHostRestoreRestart({ installationId: A }), {
-    restorePending: false, currentBookmark: 'bookmark_current',
+  assert.deepEqual(await host.chickpeaHostRestoreRestart(restartRequest()), {
+    applied: true, currentBookmark: 'restored:bookmark_target',
   });
   assert.equal(storage.alarm, NOW + 1_000);
 });
@@ -589,6 +661,49 @@ test('preparing a census skips objects recorded after T, reports failures per ob
   await assert.rejects(prepareInstallationRestore({ CHICKPEA_TENANCY: 'standalone' }, census, T), InstallationContextError);
 });
 
+test('names the backfill recovers predate the inventory, so prepare restores them however late the backfill ran', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const deployment = hostedDeployment([A]);
+  t.after(() => closeAll(deployment, [A]));
+  const installation = deployment.installation(A);
+  const scope = { installationId: A };
+  const thread = 'T_RESTORE:C_RESTORE:1700000000.000100';
+  // Rows a release before the inventory wrote: a thread's route, now on its
+  // second owner, and a Slack agent's binding. Nothing recorded their names.
+  installation.db.exec('PRAGMA foreign_keys = OFF');
+  installation.db.run(
+    `INSERT INTO config_agent_thread_routes (workspace_id, channel_id, thread_ts, agent_id, agent_generation,
+       owner_incarnation, revision, updated_at) VALUES ('T_RESTORE', 'C_RESTORE', '1700000000.000100', 'agent_legacy', 1, 2, 1, ?)`,
+    NOW,
+  );
+  installation.db.run(
+    "INSERT INTO slack_agent_bindings (continuity_key, instance_id, uid, updated_at) VALUES ('legacy', ?, 'uid_legacy', ?)",
+    scopedObjectName(scope, 'agent_legacy'), T - 1_000,
+  );
+  installation.db.exec('PRAGMA foreign_keys = ON');
+  // The second owner's runner took its first turn after T, which recorded it.
+  installation.stores.objectInventory.recordThreadRunner(`${thread}:owner-i2`);
+  // The backfill runs after T, as a host may run it at any time.
+  assert.deepEqual((await backfillInstallationObjects(installation.env)).recovered,
+    { coding_worker: 0, routine_agent: 0, sandbox: 0, slack_agent: 1, thread_runner: 2 });
+  const legacyAgent = { kind: 'slack_agent' as const, name: scopedObjectName(scope, 'agent_legacy') };
+  const legacyRunner = { kind: 'thread_runner' as const, name: scopedObjectName(scope, `${thread}:owner-i1`) };
+  const liveRunner = { kind: 'thread_runner' as const, name: scopedObjectName(scope, `${thread}:owner-i2`) };
+  const census = (await listInstallationObjects(installation.env)).objects;
+  assert.equal(BACKFILLED_FIRST_SEEN_AT, 0);
+  assert.deepEqual(census, [
+    { ...legacyAgent, firstSeenAt: BACKFILLED_FIRST_SEEN_AT },
+    { ...legacyRunner, firstSeenAt: BACKFILLED_FIRST_SEEN_AT },
+    // Already recorded: the backfill keeps its time.
+    { ...liveRunner, firstSeenAt: NOW },
+  ]);
+  const preparation = await prepareInstallationRestore(installation.env, census, T);
+  assert.deepEqual(preparation.prepared.map(({ object }) => object),
+    [installationStateStoreObject(installation.env), legacyRunner, legacyAgent]);
+  assert.deepEqual(preparation.skipped, [{ object: liveRunner, reason: 'younger_than_target', firstSeenAt: NOW }]);
+  assert.deepEqual(preparation.failed, []);
+});
+
 test('wrappers refuse standalone, foreign objects and incorrect confirmation before resolving stubs', async () => {
   let addressed = 0;
   const namespace = {
@@ -599,20 +714,24 @@ test('wrappers refuse standalone, foreign objects and incorrect confirmation bef
   const bindings = Object.fromEntries(Object.values(BINDINGS).map((name) => [name, namespace]));
   const env = scopeInstallationEnv({ ...HOSTED, ...bindings }, { installationId: A });
   const apply = { expectedCurrentBookmark: 'bookmark_current', targetBookmark: 'bookmark_target' };
+  const restartFence = { expectedCurrentBookmark: 'bookmark_current' };
   for (const object of buildInstallationRestorePlan(B, inventory(B))) {
     await assert.rejects(readInstallationObjectRestoreBookmarks(env, object, T), InstallationContextError);
     await assert.rejects(scheduleInstallationObjectRestore(env, object, { ...apply, confirmInstallationId: A }),
       InstallationContextError);
-    await assert.rejects(restartInstallationObject(env, object, { confirmInstallationId: A }), InstallationContextError);
+    await assert.rejects(restartInstallationObject(env, object, { ...restartFence, confirmInstallationId: A }),
+      InstallationContextError);
   }
   const store = installationStateStoreObject(env);
   await assert.rejects(scheduleInstallationObjectRestore(env, store, { ...apply, confirmInstallationId: B }),
     InstallationContextError);
-  await assert.rejects(restartInstallationObject(env, store, { confirmInstallationId: B }), InstallationContextError);
+  await assert.rejects(restartInstallationObject(env, store, { ...restartFence, confirmInstallationId: B }),
+    InstallationContextError);
   await assert.rejects(readInstallationObjectRestoreBookmarks(bindings, store, T), InstallationContextError);
   await assert.rejects(scheduleInstallationObjectRestore(bindings, store, { ...apply, confirmInstallationId: A }),
     InstallationContextError);
-  await assert.rejects(restartInstallationObject(bindings, store, { confirmInstallationId: A }), InstallationContextError);
+  await assert.rejects(restartInstallationObject(bindings, store, { ...restartFence, confirmInstallationId: A }),
+    InstallationContextError);
   assert.equal(addressed, 0);
 });
 
@@ -623,14 +742,21 @@ test('a restart retries over a fresh stub and gives up after three failed calls'
     ...HOSTED,
     SLACK_THREAD_RUNNER: {
       getByName: () => {
-        const stub = { chickpeaHostRestoreRestart: async () => { calls += 1; throw new Error('Durable Object reset'); } };
+        const stub = {
+          chickpeaHostRestoreRestart: async (request: ObjectRestoreRestartRequest) => {
+            calls += 1;
+            assert.deepEqual(request, { installationId: A, expectedCurrentBookmark: 'fence' });
+            throw new Error('Durable Object reset');
+          },
+        };
         stubs.push(stub);
         return stub;
       },
     },
   }, { installationId: A });
   const runner = inventory(A).find(({ kind }) => kind === 'thread_runner')!;
-  await assert.rejects(restartInstallationObject(env, runner, { confirmInstallationId: A }), /Durable Object reset/);
+  await assert.rejects(restartInstallationObject(env, runner, { confirmInstallationId: A, expectedCurrentBookmark: 'fence' }),
+    /Durable Object reset/);
   assert.equal(calls, 3);
   assert.equal(new Set(stubs).size, 3);
 });
@@ -645,8 +771,9 @@ test('the state store refuses a foreign persisted binding without touching PITR'
   const apply = { ...restoreRequest(), confirmInstallationId: A };
   await assert.rejects(readInstallationObjectRestoreBookmarks(installation.env, store, T), InstallationContextError);
   await assert.rejects(scheduleInstallationObjectRestore(installation.env, store, apply), InstallationContextError);
-  await assert.rejects(restartInstallationObject(installation.env, store, { confirmInstallationId: A }),
-    InstallationContextError);
+  await assert.rejects(restartInstallationObject(installation.env, store, {
+    confirmInstallationId: A, expectedCurrentBookmark: 'bookmark_current',
+  }), InstallationContextError);
   assert.deepEqual(installation.storage.bookmarkCalls, []);
   assert.equal(installation.storage.restoreContext.callbackRejections, 0);
 });
@@ -687,19 +814,19 @@ test('the Flue class extension exposes the restore RPCs and derives ownership fr
     const agent = new Agent(ctx, env);
     await assert.rejects(agent.chickpeaHostRestoreBookmarks({ installationId: B, timestamp: T }), InstallationContextError);
     await assert.rejects(agent.chickpeaHostRestore(restoreRequest(B)), InstallationContextError);
-    await assert.rejects(agent.chickpeaHostRestoreRestart({ installationId: B }), InstallationContextError);
+    await assert.rejects(agent.chickpeaHostRestoreRestart(restartRequest(B)), InstallationContextError);
     if (allowed) {
       assert.equal((await agent.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T })).targetBookmark,
         'bookmark_target');
       assert.equal((await agent.chickpeaHostRestore(restoreRequest())).undoBookmark, 'bookmark_before_restore');
       assert.equal(ctx.aborts, 0);
-      await assert.rejects(agent.chickpeaHostRestoreRestart({ installationId: A }), FakeObjectAbort);
+      await assert.rejects(agent.chickpeaHostRestoreRestart(restartRequest()), FakeObjectAbort);
       assert.equal(ctx.aborts, 1);
       assert.equal(storage.restoredBookmark, 'bookmark_target');
     } else {
       await assert.rejects(agent.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), InstallationContextError);
       await assert.rejects(agent.chickpeaHostRestore(restoreRequest()), InstallationContextError);
-      await assert.rejects(agent.chickpeaHostRestoreRestart({ installationId: A }), InstallationContextError);
+      await assert.rejects(agent.chickpeaHostRestoreRestart(restartRequest()), InstallationContextError);
       assert.deepEqual(storage.bookmarkCalls, []);
     }
   }

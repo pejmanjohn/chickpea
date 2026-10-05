@@ -51,12 +51,18 @@ export interface ObjectRestoreReceipt {
   readonly undoBookmark: string;
 }
 
+export interface ObjectRestoreRestartRequest extends ObjectHostRequest {
+  /** The fence the restore was scheduled against: its receipt's `expectedCurrentBookmark`. */
+  readonly expectedCurrentBookmark: string;
+}
+
 /**
- * Returned only by a session with no restore scheduled in it. After a receipt,
- * that means the scheduled restore has applied: it applies on the next session.
+ * Returned only by a session with no restore scheduled in it whose current
+ * bookmark is no longer the fence: the restore scheduled against that fence
+ * has applied, as it does on the object's next session.
  */
-export interface ObjectRestoreSession {
-  readonly restorePending: false;
+export interface ObjectRestoreApplied {
+  readonly applied: true;
   readonly currentBookmark: string;
 }
 
@@ -68,10 +74,12 @@ export interface InstallationObjectRestoreRpc {
    */
   chickpeaHostRestore(request: ObjectRestoreRequest): Promise<ObjectRestoreReceipt>;
   /**
-   * Restarts the object when this session has a restore scheduled, which
-   * interrupts the call; otherwise returns, proving no restore is pending.
+   * Restarts the object when this session has the restore scheduled, which
+   * interrupts the call. Otherwise returns only once the bookmark has left
+   * the fence, proving the restore applied, and refuses with
+   * `restore_not_scheduled` while the object still holds the fence.
    */
-  chickpeaHostRestoreRestart(request: ObjectHostRequest): Promise<ObjectRestoreSession>;
+  chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest): Promise<ObjectRestoreApplied>;
 }
 
 /** The SQLite PITR and lifecycle APIs from DurableObjectState, without a runtime import. */
@@ -97,6 +105,7 @@ export type ObjectRestoreErrorCode =
   | 'restore_unavailable'
   | 'restore_object_busy'
   | 'restore_already_scheduled'
+  | 'restore_not_scheduled'
   | 'restore_restarting';
 
 export class ObjectRestoreError extends Error {
@@ -108,7 +117,8 @@ export class ObjectRestoreError extends Error {
 
 /**
  * The restore each object session has scheduled, by its context. A restart
- * gives the object a new context, which has none: the restore has applied.
+ * or an eviction gives the object a new context, which has none: the restore
+ * has applied.
  */
 const scheduledRestores = new WeakMap<HostObjectRestoreContext, ObjectRestoreReceipt>();
 
@@ -186,15 +196,28 @@ export function objectRestoreHostFunctions(object: {
     },
     async chickpeaHostRestoreRestart(request) {
       const scope = assertObjectHostCall(object.env, request);
+      const { expectedCurrentBookmark } = request;
+      if (typeof expectedCurrentBookmark !== 'string' || !expectedCurrentBookmark.trim()) {
+        throw new ObjectRestoreError('restore_bookmark_invalid', 'Restart requires the fence the restore was scheduled against.');
+      }
       const ctx = context();
       return restoreExclusive(ctx, async () => {
         object.assertOwner?.(scope);
-        if (scheduledRestores.has(ctx)) {
+        const scheduled = scheduledRestores.get(ctx);
+        if (scheduled) {
+          if (scheduled.expectedCurrentBookmark !== expectedCurrentBookmark) {
+            throw new ObjectRestoreError('restore_already_scheduled', 'A restore against another fence is scheduled.');
+          }
           ctx.abort(OBJECT_RESTORE_ABORT_REASON);
-          // Not reached once the reset takes effect; a session that runs on must not report no pending restore.
+          // Not reached once the reset takes effect; a session that runs on must not report the restore applied.
           throw new ObjectRestoreError('restore_restarting', 'The object is restarting to apply its restore; call again.');
         }
-        return { restorePending: false as const, currentBookmark: await ctx.storage.getCurrentBookmark() };
+        // A new session: any restore scheduled before it has applied, and moved the bookmark off the fence.
+        const currentBookmark = await ctx.storage.getCurrentBookmark();
+        if (currentBookmark === expectedCurrentBookmark) {
+          throw new ObjectRestoreError('restore_not_scheduled', 'No restore is scheduled or applied: the object still holds the fence.');
+        }
+        return { applied: true as const, currentBookmark };
       });
     },
   };

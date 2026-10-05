@@ -82,10 +82,12 @@ export interface InstallationRestorePreparation {
  * stop at the first. An object whose name the inventory first recorded after
  * T is skipped with `younger_than_target`: Core records a name before
  * anything addresses the object, so the object had no storage at T and
- * `getBookmarkForTime(T)` has no documented answer for it. Names a backfill
- * recorded carry the backfill's time instead, so a backfill after T marks
- * older objects as younger too; review the skipped list before apply. The
- * state store is never skipped.
+ * `getBookmarkForTime(T)` has no documented answer for it. A name the
+ * backfill recorded is stamped 0 (`BACKFILLED_FIRST_SEEN_AT`), so it is never
+ * skipped. An object older than its record is skipped all the same: one
+ * created before the inventory that a turn recorded before the backfill ran,
+ * or a name a backfill by an earlier Core stamped with the time it ran.
+ * Review the skipped list before apply. The state store is never skipped.
  */
 export async function prepareInstallationRestore(
   env: Record<string, unknown>,

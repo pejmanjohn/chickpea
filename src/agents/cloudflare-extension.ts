@@ -8,6 +8,7 @@ import {
   type ObjectHostRequest,
   type ObjectRestoreBookmarksRequest,
   type ObjectRestoreRequest,
+  type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
 
 /**
@@ -57,7 +58,7 @@ export function installationAgentObject(Base: AgentObjectClass): AgentObjectClas
       return agentHost(this).chickpeaHostRestore(request);
     }
 
-    async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+    async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
       return agentHost(this).chickpeaHostRestoreRestart(request);
     }
 

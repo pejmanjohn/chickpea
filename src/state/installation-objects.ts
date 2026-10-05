@@ -56,10 +56,11 @@ import type {
   ObjectExportMode,
   ObjectExportPage,
   ObjectPendingWorkCancellation,
+  ObjectRestoreApplied,
   ObjectRestoreBookmarks,
   ObjectRestoreReceipt,
   ObjectRestoreRequest,
-  ObjectRestoreSession,
+  ObjectRestoreRestartRequest,
 } from './object-host.ts';
 import type {
   InstallationObjectBackfill,
@@ -148,26 +149,32 @@ export async function scheduleInstallationObjectRestore(
 const RESTART_ATTEMPTS = 3;
 
 /**
- * restore_apply, second phase: restart one object so its scheduled restore
- * applies, and confirm it. A call reaching a session with a restore scheduled
- * aborts that session, so its RPC fails; the next call, over a fresh stub,
- * reaches the next session, where the restore has applied, and returns. So a
- * return proves no restore is pending, and after a receipt that the restore
- * applied. An error thrown over RPC loses its class, so every failed call is
- * retried, up to `RESTART_ATTEMPTS` calls; the last failure is thrown.
+ * restore_apply, second phase: restart one object so the restore scheduled
+ * against `expectedCurrentBookmark` (its receipt's fence) applies, and
+ * confirm it. A call reaching the session with that restore scheduled aborts
+ * the session, so its RPC fails; the next call, over a fresh stub, reaches
+ * the next session, where the restore has applied, and returns. An object
+ * evicted since scheduling answers the first call the same way. A return
+ * proves the bookmark left the fence; an object that still holds it refuses
+ * with `restore_not_scheduled`. An error thrown over RPC loses its class, so
+ * every failed call is retried, up to `RESTART_ATTEMPTS` calls; the last
+ * failure is thrown.
  */
 export async function restartInstallationObject(
   env: Record<string, unknown>,
   object: InstallationObject,
-  options: { confirmInstallationId: string },
-): Promise<ObjectRestoreSession> {
+  options: Pick<ObjectRestoreRestartRequest, 'expectedCurrentBookmark'> & { confirmInstallationId: string },
+): Promise<ObjectRestoreApplied> {
   const scope = confirmedRestoreScope(env, options.confirmInstallationId);
   let failure: unknown;
   for (let attempt = 0; attempt < RESTART_ATTEMPTS; attempt += 1) {
     // Resolved per call: a reset object's stub is broken. Addressing refusals throw here, at once.
     const stub = objectStub(env, scope, object);
     try {
-      return await stub.chickpeaHostRestoreRestart({ installationId: scope.installationId });
+      return await stub.chickpeaHostRestoreRestart({
+        installationId: scope.installationId,
+        expectedCurrentBookmark: options.expectedCurrentBookmark,
+      });
     } catch (error) {
       failure = error;
     }

@@ -250,6 +250,7 @@ import type {
   ObjectHostRequest,
   ObjectRestoreBookmarksRequest,
   ObjectRestoreRequest,
+  ObjectRestoreRestartRequest,
 } from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
@@ -637,7 +638,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     return this.host().chickpeaHostRestore(request);
   }
 
-  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+  async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
     return this.host().chickpeaHostRestoreRestart(request);
   }
 
@@ -1050,7 +1051,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.host().chickpeaHostRestore(request);
   }
 
-  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+  async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
     return this.host().chickpeaHostRestoreRestart(request);
   }
 

@@ -29,6 +29,7 @@ import {
   type ObjectHostRequest,
   type ObjectRestoreBookmarksRequest,
   type ObjectRestoreRequest,
+  type ObjectRestoreRestartRequest,
 } from '../state/object-host.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import {
@@ -315,7 +316,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     return this.host().chickpeaHostRestore(request);
   }
 
-  async chickpeaHostRestoreRestart(request: ObjectHostRequest) {
+  async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
     return this.host().chickpeaHostRestoreRestart(request);
   }
 

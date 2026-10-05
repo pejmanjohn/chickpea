@@ -32,7 +32,7 @@ import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import { promisify } from '../src/state/async-facade.ts';
-import { InstallationObjectInventoryLogic } from '../src/state/object-inventory.ts';
+import { BACKFILLED_FIRST_SEEN_AT, InstallationObjectInventoryLogic } from '../src/state/object-inventory.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { attachStateDb } from '../src/state/schema-lifecycle.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -315,6 +315,10 @@ test('the backfill recovers the names that survive from before the inventory, an
   const root = slackWorkload()[1]!;
   assert.ok(names.has(`thread_runner:${installationObjectName(installation.env, slackAgentThreadKey(root.turn, root.assignment))}`));
   assert.ok(names.has(`thread_runner:${installationObjectName(installation.env, `${TEAM}:${CHANNEL}:1700000000.000100:owner-i2`)}`));
+  // Their objects predate the inventory: stamped older than any restore target.
+  const recorded = installation.stores.objectInventory.list({ limit: 1_000 }).objects;
+  assert.equal(recorded.length, 5);
+  assert.deepEqual(recorded.filter(({ firstSeenAt }) => firstSeenAt !== BACKFILLED_FIRST_SEEN_AT), []);
   assert.deepEqual(installation.stores.objectInventory.backfill(), backfill, 'a repeat changes nothing');
 });
 

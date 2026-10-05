@@ -174,7 +174,9 @@ export function sandboxHostFunctions(sandbox: {
  * deletes itself. Each of those is a write after the fence was read. With
  * the stop recorded and no schedule, deleting itself is all it would do, so
  * the deletion lands before the read instead. Refused otherwise: the alarm
- * still has lifecycle work to do, and a retry once it has run succeeds.
+ * still has lifecycle work to do. A retry succeeds only once that work is
+ * done; while `onStop` keeps failing it is not, and once the SDK alarm's
+ * retries run out it waits for the Sandbox's next wake to re-arm the alarm.
  */
 async function quiesceSandboxForRestore(sandbox: {
   readonly storage: HostObjectStorage;
@@ -187,7 +189,7 @@ async function quiesceSandboxForRestore(sandbox: {
   if ((await sandbox.containerState()).status !== 'stopped' || containerSchedules(sandbox.storage) > 0) {
     throw new ObjectRestoreError(
       'restore_object_busy',
-      'The Sandbox container stop is still settling; retry in a few seconds.',
+      'The Sandbox container stop or schedules have not settled; retry once its alarm has completed them.',
     );
   }
   if (await sandbox.storage.getAlarm() !== null) await sandbox.storage.deleteAlarm();
