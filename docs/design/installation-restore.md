@@ -14,14 +14,20 @@ customer UI or change to standalone routing, storage, or startup.
   epoch milliseconds within the past 30 days and strictly before now on the
   object's clock. The host's and the object's clocks differ, so choose a T
   well in the past, never the current time. `contentDigest` is a SHA-256
-  over the object's name and everything the restore replaces: each schema
+  over the object's ID and everything the restore replaces: each schema
   entry, every row of every table in key order, every key-value entry and
-  the alarm. The name makes it this object's: two objects holding the same
+  the alarm. The ID makes it this object's: two objects holding the same
   storage, such as two that hold only their schema, have different digests.
-  It compares values as JavaScript reads them, so it does not tell apart an
-  INTEGER from an equal REAL or integers beyond 2^53 that read alike, and it
+  Every session has the ID (`ctx.id.toString()`), including one woken by ID,
+  as a Sandbox's egress handler and lease sweep wake it, which has no name;
+  a named object's ID is derived from its name. The name is not hashed: a
+  named and an unnamed session of one object would then disagree. The digest
+  compares values as JavaScript reads them, so it does not tell apart an
+  INTEGER from an equal REAL or integers beyond 2^53 that read alike. It
   leaves out SQLite's own tables, `sqlite_sequence` (AUTOINCREMENT counters)
-  among them.
+  among them, and the rowid of a table without an INTEGER PRIMARY KEY, which
+  `SELECT *` does not return: its rows are read in rowid order, so rows
+  renumbered in the same order digest alike.
 - `chickpeaHostRestore({ installationId, expectedCurrentBookmark,
   expectedContentDigest, targetBookmark })` refuses with
   `restore_content_moved` when the object's storage no longer matches the
@@ -30,29 +36,28 @@ customer UI or change to standalone routing, storage, or startup.
   receipt `{ expectedCurrentBookmark, expectedContentDigest, targetBookmark,
   undoBookmark }`. A missing bookmark is refused with
   `restore_bookmark_invalid`, a missing digest with `restore_digest_invalid`.
-  It does not restart the object. The object remembers the receipt for the
-  rest of its session: a repeated call returns it only when it presents the
-  same fence, digest and target, and anything else, a new preparation
-  included, is refused in that session with `restore_already_scheduled`.
+  It does not restart the object. Once the restore is scheduled, it writes
+  the restore mark, a key-value entry holding the fence
+  (`chickpea.restore.scheduled.v1`), in the same input gate. The object
+  remembers the receipt for the rest of its session: a repeated call returns
+  it only when it presents the same fence, digest and target, and anything
+  else, a new preparation included, is refused in that session with
+  `restore_already_scheduled`.
 - `chickpeaHostRestoreRestart({ installationId, expectedCurrentBookmark })`
   takes the receipt's fence. The session holding that restore calls
   `ctx.abort('Installation point-in-time restore')`, which interrupts the
   call; it refuses another fence with `restore_already_scheduled`. Any other
-  session returns `{ applied: true, currentBookmark, contentDigest }` only
-  once its bookmark has left the fence, and refuses with
-  `restore_not_scheduled` while the object still holds it. `applied: true`
-  means only that this is a later session than the one that scheduled:
-  every new session starts a new bookmark, so without a receipt it proves
-  nothing. A scheduled restore applies on the object's next session, so
-  after a receipt it means the restore applied, also when an eviction
-  applied it before the restart. `contentDigest` is the digest of the
-  storage that session holds, read in the same input gate, or null when it
-  is over the digest's bound (below). The host compares it with the
-  prepared digest: equal means the restore did not apply, unless the object
-  held at T exactly what it held at preparation; then the restore changed
-  nothing. Different shows that the storage changed, not that the restore
-  changed it: a Sandbox's wake arms its container runtime's alarm, so its
-  digest can differ either way.
+  session refuses with `restore_not_scheduled` while the object still holds
+  the fence, and with `restore_not_applied` while it still holds this
+  restore's mark; otherwise it returns `{ applied: true, currentBookmark,
+  contentDigest }`. Given the receipt, that answer means the restore
+  applied, also when an eviction applied it before the restart: the restore
+  discards every write since T, the mark included, and Core removes the mark
+  nowhere else. Without a receipt it proves nothing: every new session
+  starts a new bookmark, and no mark was written. `contentDigest` is the
+  digest of the storage that session holds, read in the same input gate, or
+  null when it is over the digest's bound (below): a record for the
+  operator, which decides nothing (see below).
 
 Each call runs in one input gate. Refusals are thrown outside it and leave
 the object running. Cloudflare validates the opaque bookmark's retained
@@ -65,18 +70,24 @@ So a Sandbox evicted since preparation schedules unless its wake wrote more
 than that alarm.
 
 The state store and thread runners refuse preparation and scheduling with
-`restore_object_busy` while their alarm still owes work that a new
-instance arms it for at once: for the state store an alarm turn whose Flue
-dispatch was in flight, a gateway delivery leased by an earlier instance,
+`restore_object_busy` while their alarm still owes work, which it is
+running now or a new instance arms it for at once: for the state store an
+alarm turn whose Flue dispatch was in flight, a gateway delivery in flight,
 or a hand-off to a runner not yet confirmed (armed for after a deploy, and
 re-admitted by the alarm's next run); for a runner a job marked running or
-a stop that still owes its abort or coding cascade. A wake would write that
-alarm, and its run would write more, so a preparation would only be
-refused at scheduling. `cancel_pending` parks the state store's turns but
-leaves a leased delivery, a running job and an owed stop: run it, then
-retry once each object's alarm has settled what remains. A running job
-settles as its run ends, its submission aborted and its model calls
-refused while the installation is suspended.
+a stop that still owes its abort or coding cascade. A delivery is in
+flight whichever instance leased it: the current alarm writes when it
+completes its own, and the next drain reclaims an earlier instance's. A
+wake would write that alarm, and its run would write more, so a
+preparation would only be refused at scheduling. `cancel_pending` parks the
+state store's turns but leaves a delivery in flight, a running job and an
+owed stop: run it, then retry once each object's alarm has settled what
+remains. A delivery leaves flight once its alarm completes it or reclaims
+its lease; with the alarm cleared, the object's next instance arms it. A
+running job settles as its run ends, its submission aborted and its model
+calls refused while the installation is suspended. Work that never settles,
+such as a job whose run never ends, follows the path of an object over the
+digest's bound (below).
 
 The host wrappers in `src/state/installation-objects.ts` validate ownership
 before resolving a stub. `scheduleInstallationObjectRestore` and
@@ -116,6 +127,32 @@ restart.
 The prepared current bookmark stays the object's undo point: restoring to
 it brings back exactly the storage the digest describes.
 
+## Telling an applied restore from one that never applied
+
+Restart's answer, not the digest, decides whether a restore applied. The
+digest cannot: the host cannot read an object's storage at T, since
+Cloudflare offers no read at a bookmark short of restoring to it, so it
+cannot know whether the storage changed between T and preparation. An
+object idle since T digests the same whether or not the restore applied,
+and a state store need not move either: an idle installation, whose
+maintenance found nothing to purge, writes nothing to it.
+
+So scheduling writes the restore mark, holding the fence, right after it
+schedules the restore. The fence did not exist at T, so storage at T never
+holds this mark, and a restore discards every write since T, the mark
+among them. A later session that still holds the mark restarted without
+restoring, and restart refuses there with `restore_not_applied`: stop for
+review. Restart answers `applied: true` only once the mark is gone, so the
+rule the host checks is that answer, given the receipt. The post-restart
+`contentDigest` is evidence for the operator record only: equal to the
+prepared digest is expected of an object that held at T what it held at
+preparation, and a Sandbox's wake changes it either way.
+
+The mark stays in the undo bookmark the receipt returns, which is
+"immediately before the restore", so a back-out to it brings the first
+restore's mark back; the back-out's own fence does not match it. The
+prepared fence, read before the mark, does not hold it.
+
 ## The digest's bound
 
 The digest is read inside `blockConcurrencyWhile`, at preparation and again
@@ -123,18 +160,32 @@ at scheduling, and Cloudflare resets an object whose callback runs past 30
 seconds. An object too large to digest in time would be reset by every
 preparation, and could never be restored. So the digest reads each table
 one row at a time and stops at 500,000 records (rows, key-value entries and
-schema entries) or 512 MiB serialized, whichever comes first, refusing with
-`restore_object_too_large`. On local workerd SQLite, a digest at that bound
-took at most 1.1 s for rows of up to 30 columns, for 512 MiB of transcript
-chunks and for 490,000 key-value entries, and 2.9 s for rows of the
-platform's widest table (100 columns); a refusal came within 0.4 s. With a
-production CPU twice as slow that is a tenth of the gate's 30 s, and of the
-30 s of CPU a request gets, or a fifth for the widest rows. Reading a row
-at a time keeps memory to one row (at most 2 MB) and 16 key-value entries,
-far under an isolate's 128 MB. The count is deterministic: storage that
-passes at preparation passes at scheduling unless it grew, and an object
-that grows over the bound since preparation refuses scheduling as it would
-for any write.
+schema entries), 16,000,000 column values (500,000 rows of 32 columns) or
+512 MiB serialized, whichever comes first, refusing with
+`restore_object_too_large`. Before reading anything it refuses an object
+whose SQLite database (`databaseSize`) is over 2 GiB. That size counts
+indexes, key-value storage and free pages, so its bound is four times the
+serialized one and refuses only an object far over the others.
+
+On local workerd SQLite, a digest at that bound took at most 1.1 s: 500,000
+rows of 30 columns. Rows of the widest Chickpea table (52 columns, 307,000
+of them at the values bound) took 1.0 s, rows of 100 columns (159,000) 0.9
+s, 490,000 key-value entries 0.9 s and 512 MiB of transcript chunks 0.3 s;
+a refusal came within 0.9 s. Run to run, timings on that machine varied by
+up to 1.7x. With that variance and a production CPU assumed twice as slow,
+the worst case is 1.1 s x 1.7 x 2, about 3.7 s: a margin of about 8x under
+the gate's 30 s and the 30 s of CPU a request gets. Without the values
+bound, 500,000 rows of 100 columns took 2.85 s, about 9.7 s with the same
+allowances: a margin of only 3x, which is why wide rows have their own
+bound. Reading pages a deployed object has not cached is not measured
+locally, so a staging measurement of the largest real object gates apply
+(see Staging proof).
+
+Reading a row at a time keeps memory to one row (at most 2 MB) and 16
+key-value entries, far under an isolate's 128 MB. The count is
+deterministic: storage that passes at preparation passes at scheduling
+unless it grew, and an object that grows over the bound since preparation
+refuses scheduling as it would for any write.
 
 Durable Object SQLite offers no hash function to checksum a table in SQL,
 and its 2 MB value limit refuses `quote()` of a large BLOB, so the digest is
@@ -153,6 +204,12 @@ cannot be left out; nor can an object whose current storage the restored
 installation must not see. Then the installation is not restored: resume it
 or keep it suspended, and record the object and its size for a Core change
 to the bound.
+
+An object that stays busy takes the same path: a runner whose running job
+never settles, because its run never ends, refuses preparation with
+`restore_object_busy` for as long as it runs. Leave it out as above,
+recording the job, or do not restore the installation. There is no force:
+a forced preparation would fence storage its own alarm is about to change.
 
 ## Order: schedule everything, then restart callee first
 
@@ -227,10 +284,11 @@ The host serving many installations must implement these jobs:
    - Restart: only once every prepared object has a receipt, call
      `restartInstallationObject` for each in plan order with its receipt's
      fence. Its answer, `applied: true` given the receipt, means the restore
-     applied. Keep its `contentDigest` with the receipt: one equal to the
-     prepared digest, for an object whose storage changed between T and
-     preparation, means the restore did not apply; stop for review. Keep
-     progress and partial-failure evidence outside the installation.
+     applied. `restore_not_applied` means the object restarted still holding
+     the restore mark, so the restore did not apply: stop for review. Keep
+     the answer's `contentDigest` with the receipt as a record; it decides
+     nothing. Keep progress and partial-failure evidence outside the
+     installation.
    - A back-out's preparation reads restored objects, which may hold the
      work they held at T: a running job, an interrupted dispatch. They
      refuse with `restore_object_busy` until it settles, so run
@@ -248,9 +306,12 @@ The host serving many installations must implement these jobs:
    new session moves it, applied or not. If the call is refused with
    `restore_content_moved`, the restore applied or something wrote, and
    nothing tells them apart; review, then prepare it again and schedule it
-   to the same target. Either way the first prepared fence remains the undo
-   point. The runtime logs the abort as
-   `Installation point-in-time restore`; a caller may see only a reset error.
+   to the same target. One write restart does tell apart: when the first
+   call scheduled a restore that never applied, its mark remains, and
+   restart with the original fence answers `restore_not_applied`. Either
+   way the first prepared fence remains the undo point. The runtime logs
+   the abort as `Installation point-in-time restore`; a caller may see only
+   a reset error.
 6. Census after restore and run `cancel_pending` while still suspended, after
    every restart has returned, over the union of saved pre-restore objects
    and the new inventory, state store last. Restored objects resume their
@@ -308,8 +369,14 @@ Prove on staging, on disposable objects:
   sessions without a restore: an idle object woken again has a new bookmark.
 - That an idle object of each kind evicted and woken again keeps its content
   digest, so nothing it runs on waking writes.
-- How long a digest takes on a large deployed object, against the local
-  figures that set its bound.
+- That a write after `onNextSessionRestoreBookmark` in the same session,
+  such as the restore mark, is discarded by the restore and kept by the
+  undo bookmark it returned.
+- A gate before apply is enabled: time preparation's digest on the largest
+  real objects on staging (the largest state store and transcript agent by
+  `databaseSize`), cold, as the first call after an eviction, and warm.
+  Each must stay under 10 s, a third of the gate's 30 s; otherwise lower the
+  bound before enabling apply.
 - What `getBookmarkForTime(T)` does for T before an object's first write: an
   error, the empty database or the first write. Check that prepare's
   `younger_than_target` skips agree with it.

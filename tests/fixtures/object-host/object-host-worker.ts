@@ -11,6 +11,7 @@ import {
   objectStorageDigest,
   type HostObjectStorage,
   type InstallationObjectHostRpc,
+  type ObjectDigestBudget,
 } from '../../../src/state/object-host.ts';
 
 interface Env {
@@ -38,10 +39,8 @@ export class ProbeObject extends DurableObject {
       sql.exec('INSERT INTO transcript (body, image) VALUES (?, ?)', `${'x'.repeat(200)} ${index}`, new Uint8Array([index, 255]));
       sql.exec('INSERT INTO keyed (a, b, v) VALUES (?, ?, ?)', `k${index % 3}`, index, `v${index}`);
     }
-    // The application's minimal ambient storage type omits `put`.
-    const storage = this.ctx.storage as typeof this.ctx.storage & { put(key: string, value: unknown): Promise<void> };
-    await storage.put('flue:wake', { at: new Date(1_800_000_000_000), seen: new Map([['a', 1]]) });
-    await storage.put('plain', 'value');
+    await this.ctx.storage.put('flue:wake', { at: new Date(1_800_000_000_000), seen: new Map([['a', 1]]) });
+    await this.ctx.storage.put('plain', 'value');
     await this.setAlarmAgain();
   }
 
@@ -63,27 +62,53 @@ export class ProbeObject extends DurableObject {
   }
 
   /**
-   * The content digest read twice, after a row written and deleted again,
-   * after a row changed, under another name, and over a budget of 10 records.
+   * The object's ID, and the content digest read twice, after a row written
+   * and deleted again, under another ID, over a budget of 10 records, of 50
+   * column values, and of a database smaller than this one, which refuses
+   * before reading.
    */
-  async digests(): Promise<Record<string, string>> {
+  async digests(): Promise<Record<string, string | number>> {
     const storage = this.ctx.storage as unknown as HostObjectStorage;
-    const name = this.ctx.id.name!;
-    const digest = (as = name, budget?: { rows: number; bytes: number }) => objectStorageDigest(storage, as, budget);
+    const id = this.ctx.id.toString();
+    const unbounded = { rows: 1_000_000, cells: 1_000_000, bytes: 64 * 1024 * 1024, databaseBytes: 1024 * 1024 * 1024 };
+    const digest = (as = id, budget?: Partial<ObjectDigestBudget>) =>
+      objectStorageDigest(storage, as, budget ? { ...unbounded, ...budget } : undefined);
     const first = await digest();
     const again = await digest();
     this.ctx.storage.sql.exec("INSERT INTO keyed (a, b, v) VALUES ('later', 1, 'x')");
     const written = await digest();
     this.ctx.storage.sql.exec("DELETE FROM keyed WHERE a = 'later'");
     const reverted = await digest();
-    const otherName = await digest(`${name}-other`);
-    let refused = '';
+    const otherId = await digest(`${id}-other`);
+    const refusal = async (budget: Partial<ObjectDigestBudget>): Promise<string> => {
+      try {
+        return await digest(id, budget);
+      } catch (error) {
+        return (error as { code?: string }).code ?? String(error);
+      }
+    };
+    // The size check reads nothing: count the statements and listings a refusal makes.
+    const databaseSize = this.ctx.storage.sql.databaseSize;
+    let execs = 0;
+    const counting = {
+      sql: {
+        databaseSize,
+        exec: (...args: Parameters<HostObjectStorage['sql']['exec']>) => { execs += 1; return storage.sql.exec(...args); },
+      },
+      list: async (options?: { startAfter?: string; limit?: number }) => { execs += 1; return storage.list(options); },
+      getAlarm: async () => { execs += 1; return storage.getAlarm(); },
+    } as unknown as HostObjectStorage;
+    let refusedBySize = '';
     try {
-      await digest(name, { rows: 10, bytes: 1024 * 1024 });
+      await objectStorageDigest(counting, id, { ...unbounded, databaseBytes: databaseSize - 1 });
     } catch (error) {
-      refused = (error as { code?: string }).code ?? String(error);
+      refusedBySize = `${(error as { code?: string }).code ?? String(error)} after ${execs} statements`;
     }
-    return { first, again, written, reverted, otherName, refused };
+    return {
+      id, first, again, written, reverted, otherId, databaseSize, refusedBySize,
+      refused: await refusal({ rows: 10 }),
+      refusedByCells: await refusal({ cells: 50 }),
+    };
   }
 
   async erase(installationId: string): Promise<{ erased: true }> {

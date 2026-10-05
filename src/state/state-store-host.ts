@@ -157,23 +157,26 @@ export function stateStoreHostFunctions(store: {
 
 /**
  * Before a restore reads the state store's fence and digest: refuse while
- * its alarm still owes work that a new instance arms it for at once
- * (TagStateStore's `resumeAfterRestart`): an alarm turn whose Flue dispatch
- * was in flight, a gateway delivery leased by an earlier instance, or a
- * hand-off to a thread runner not yet confirmed (armed for after a deploy,
- * and re-admitted by the alarm's next run). Any of them would move the
- * storage before scheduling. `cancel_pending` parks the turns; a leased
- * delivery returns to the inbox once the alarm reclaims it.
+ * its alarm still owes work, which it runs now or a new instance arms it
+ * for at once (TagStateStore's `resumeAfterRestart`): an alarm turn whose
+ * Flue dispatch was in flight, a gateway delivery in flight, or a hand-off
+ * to a thread runner not yet confirmed (armed for after a deploy, and
+ * re-admitted by the alarm's next run). Any of them would move the storage
+ * before scheduling. A delivery is in flight whichever instance leased it:
+ * this instance's alarm writes when it completes the delivery, as an
+ * earlier one's lease is reclaimed by the next drain. `cancel_pending`
+ * parks the turns; a delivery leaves flight once its alarm completes it or
+ * reclaims its lease.
  */
 export function quiesceStateStoreForRestore(
   stores: {
     readonly turnJobs: Pick<TagStateStores['turnJobs'], 'hasInterruptedAlarmDispatch' | 'hasHandoffs'>;
-    readonly gatewayInbox: Pick<TagStateStores['gatewayInbox'], 'hasOrphanedLease'>;
+    readonly gatewayInbox: Pick<TagStateStores['gatewayInbox'], 'hasInFlight'>;
   },
 ): void {
   const owed = [
     stores.turnJobs.hasInterruptedAlarmDispatch() ? 'an alarm turn dispatched' : undefined,
-    stores.gatewayInbox.hasOrphanedLease() ? 'a gateway delivery leased by an earlier instance' : undefined,
+    stores.gatewayInbox.hasInFlight() ? 'a gateway delivery in flight' : undefined,
     stores.turnJobs.hasHandoffs() ? 'a runner hand-off unconfirmed' : undefined,
   ].filter((reason) => reason !== undefined);
   if (owed.length > 0) {

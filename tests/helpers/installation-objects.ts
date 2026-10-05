@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 import type { DurableObjectStorage } from 'cloudflare:workers';
@@ -41,6 +42,8 @@ export class FakeObjectStorage {
   scheduledRestoreBookmark: string | undefined;
   /** The bookmark the last restart restored. */
   restoredBookmark: string | undefined;
+  /** Key-value entries when the restore was scheduled: the storage at its target unless `onRestore` says otherwise. */
+  private kvAtSchedule: Map<string, unknown> | undefined;
   readonly bookmarkCalls: Array<{ method: string; timestamp?: number | Date; bookmark?: string }> = [];
   /** The current session's context; a restart replaces it, as the runtime constructs the object again. */
   restoreContext: FakeObjectRestoreContext = new FakeObjectRestoreContext(this);
@@ -50,18 +53,34 @@ export class FakeObjectStorage {
   onRestart: (() => void) | undefined;
   /**
    * Makes the storage what it held at the target, when a restart applies a
-   * restore. Unset, a restore leaves the storage as it was, as though nothing
-   * changed between the target and now.
+   * restore. A restore first discards every key-value write since it was
+   * scheduled, the restore mark included; unset, it leaves the rest as it
+   * was, as though nothing changed between the target and scheduling.
    */
   onRestore: (() => void) | undefined;
   private depth = 0;
+  private readonly unnamedId = randomBytes(32).toString('hex');
 
-  /** `name`: the name the object is addressed by, which every session's `ctx.id.name` reads. */
+  /** `name`: the name the object is addressed by, which a session woken by name reads as `ctx.id.name`. */
   constructor(public name?: string) {
     this.database.exec('PRAGMA foreign_keys = ON;');
   }
 
-  readonly sql = {
+  /**
+   * The object's ID, as every session's `ctx.id.toString()` reads it: derived
+   * from its name, as `idFromName` does, or its own when it has none.
+   */
+  get objectId(): string {
+    return this.name === undefined ? this.unnamedId : createHash('sha256').update(`object\n${this.name}`).digest('hex');
+  }
+
+  readonly sql = ((database: DatabaseSync) => ({
+    /** As `SqlStorage.databaseSize`: every page of the database. */
+    get databaseSize(): number {
+      const { page_count: pages } = database.prepare('PRAGMA page_count').get() as { page_count: number };
+      const { page_size: size } = database.prepare('PRAGMA page_size').get() as { page_size: number };
+      return pages * size;
+    },
     exec: (query: string, ...bindings: unknown[]) => {
       const statement = this.database.prepare(query);
       const values = bindings as SQLInputValue[];
@@ -81,7 +100,7 @@ export class FakeObjectStorage {
         rowsWritten: 0,
       };
     },
-  };
+  }))(this.database);
 
   transactionSync<T>(fn: () => T): T {
     const savepoint = `chickpea_tx_${this.depth}`;
@@ -140,6 +159,7 @@ export class FakeObjectStorage {
   async onNextSessionRestoreBookmark(bookmark: string): Promise<string> {
     this.bookmarkCalls.push({ method: 'onNextSessionRestoreBookmark', bookmark });
     this.scheduledRestoreBookmark = bookmark;
+    this.kvAtSchedule = new Map([...this.kv].map(([key, value]) => [key, structuredClone(value)]));
     return 'bookmark_before_restore';
   }
 
@@ -147,18 +167,23 @@ export class FakeObjectStorage {
    * A new session, after a restart or an eviction: it applies any scheduled
    * restore, with a new context. As on Cloudflare, every session starts a new
    * current bookmark, whether or not anything was restored or written.
+   * `byId`: woken by ID, as a Sandbox's egress handler wakes it, so the
+   * session has no name.
    */
-  restart(): void {
+  restart(options: { byId?: boolean } = {}): void {
     this.sessions += 1;
     if (this.scheduledRestoreBookmark !== undefined) {
       this.restoredBookmark = this.scheduledRestoreBookmark;
       this.scheduledRestoreBookmark = undefined;
       this.currentBookmark = `restored:${this.restoredBookmark}`;
+      this.kv.clear();
+      for (const [key, value] of this.kvAtSchedule ?? []) this.kv.set(key, value);
+      this.kvAtSchedule = undefined;
       this.onRestore?.();
     } else {
       this.currentBookmark = `session${this.sessions}:${this.currentBookmark}`;
     }
-    this.restoreContext = new FakeObjectRestoreContext(this);
+    this.restoreContext = new FakeObjectRestoreContext(this, undefined, options);
     this.onRestart?.();
   }
 
@@ -197,14 +222,22 @@ export class FakeObjectRestoreContext implements HostObjectRestoreContext {
   callbackRejections = 0;
   aborts = 0;
 
-  /** `id.name`, when given, names the storage's object: a class constructed over this context. */
-  constructor(readonly storage: FakeObjectStorage, id?: { name?: string }) {
+  private readonly byId: boolean;
+
+  /**
+   * `id.name`, when given, names the storage's object: a class constructed
+   * over this context. `byId`: a session woken by ID, which has no name.
+   */
+  constructor(readonly storage: FakeObjectStorage, id?: { name?: string }, options: { byId?: boolean } = {}) {
     if (id?.name !== undefined) storage.name = id.name;
+    this.byId = options.byId === true;
   }
 
-  /** The object's name, the same in every session. */
-  get id(): { name?: string } {
-    return this.storage.name === undefined ? {} : { name: this.storage.name };
+  /** The object's ID, the same in every session, and its name in a session woken by name. */
+  get id(): { name?: string; toString(): string } {
+    const objectId = this.storage.objectId;
+    const name = this.byId ? undefined : this.storage.name;
+    return { ...(name === undefined ? {} : { name }), toString: () => objectId };
   }
 
   async blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {

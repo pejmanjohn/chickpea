@@ -18,7 +18,8 @@ interface Probe {
   seeded: ObjectState;
   paged: { text: string; pages: number };
   whole: { text: string; pages: number };
-  digests: Record<'first' | 'again' | 'written' | 'reverted' | 'otherName' | 'refused', string>;
+  digests: Record<'id' | 'first' | 'again' | 'written' | 'reverted' | 'otherId' | 'refused' | 'refusedByCells' | 'refusedBySize', string>
+    & { databaseSize: number };
   refused: string;
   afterRefusal: ObjectState;
   cancelled: { alarmCleared: boolean };
@@ -92,8 +93,12 @@ test('host functions export, refuse, quiet and erase a real Durable Object\'s st
     assert.equal(digests.again, digests.first, 'unchanged storage, unchanged digest');
     assert.notEqual(digests.written, digests.first, 'a row written moves it');
     assert.equal(digests.reverted, digests.first, 'deleted again, the storage and its digest are as before');
-    assert.notEqual(digests.otherName, digests.first, 'the digest binds the object\'s name');
+    assert.match(digests.id, /^[0-9a-f]{64}$/, 'every session has the object\'s ID');
+    assert.notEqual(digests.otherId, digests.first, 'the digest binds the object\'s ID');
     assert.equal(digests.refused, 'restore_object_too_large');
+    assert.equal(digests.refusedByCells, 'restore_object_too_large');
+    assert.ok(digests.databaseSize > 0);
+    assert.equal(digests.refusedBySize, 'restore_object_too_large after 0 statements', 'a database over its bound is refused unread');
 
     assert.match(probe.refused, /another installation/);
     assert.deepEqual(probe.afterRefusal, probe.seeded);

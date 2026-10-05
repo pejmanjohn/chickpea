@@ -31,6 +31,7 @@ import {
 import {
   OBJECT_DIGEST_BUDGET,
   OBJECT_RESTORE_ABORT_REASON,
+  OBJECT_RESTORE_MARK_KEY,
   ObjectRestoreError,
   objectHostFunctions,
   objectStorageDigest,
@@ -88,10 +89,15 @@ function restoreRequest(installationId = A, expectedContentDigest = 'digest_prep
 /** A generic object's name in installation A. */
 const PROBE = scopedObjectName({ installationId: A }, 'object_probe');
 
-/** The digest of an object's storage as it stands, bound to the name the storage's object is addressed by. */
+/** The digest of an object's storage as it stands, bound to the object's ID. */
 function digestOf(storage: FakeObjectStorage): Promise<string> {
-  return objectStorageDigest(storage, storage.name!);
+  return objectStorageDigest(storage, storage.objectId);
 }
+
+/** A digest budget nothing in these tests reaches. */
+const UNBOUNDED: ObjectDigestBudget = Object.freeze({
+  rows: Number.MAX_SAFE_INTEGER, cells: Number.MAX_SAFE_INTEGER, bytes: Number.MAX_SAFE_INTEGER, databaseBytes: Number.MAX_SAFE_INTEGER,
+});
 
 /** The request scheduling presents for an object prepared now: the digest of its storage as it stands. */
 async function preparedRequest(storage: FakeObjectStorage, installationId = A): Promise<ObjectRestoreRequest> {
@@ -215,7 +221,7 @@ test('preparation reads T, the current fence and the storage digest within the i
   assert.equal(await digestOf(storage), digest, 'preparation wrote nothing');
 });
 
-test('the storage digest covers the object\'s name and everything stored, in key order, and nothing else', async (t) => {
+test('the storage digest covers the object\'s ID and everything stored, in key order, and nothing else', async (t) => {
   const left = new FakeObjectStorage(PROBE);
   const right = new FakeObjectStorage(PROBE);
   t.after(() => { left.database.close(); right.database.close(); });
@@ -234,7 +240,7 @@ test('the storage digest covers the object\'s name and everything stored, in key
   assert.notEqual(left.currentBookmark, right.currentBookmark);
   assert.equal(await digestOf(right), await digestOf(left));
   // The same storage in another object is another digest.
-  assert.notEqual(await objectStorageDigest(right, scopedObjectName({ installationId: A }, 'object_other')), await digestOf(left));
+  assert.notEqual(await objectStorageDigest(right, 'f'.repeat(64)), await digestOf(left));
   // A different value in any one place is different storage.
   right.sql.exec("UPDATE notes SET data = x'00fe' WHERE id = 1");
   assert.notEqual(await digestOf(right), await digestOf(left));
@@ -252,7 +258,15 @@ test('the storage digest reads what it does not distinguish as documented', asyn
   right.sql.exec('UPDATE counted SET value = 1.0');
   right.sql.exec('INSERT INTO counted (value) VALUES (2)');
   right.sql.exec('DELETE FROM counted WHERE id = 2');
+  // So do the rowids of a table without an INTEGER PRIMARY KEY, renumbered in the same order.
+  left.sql.exec('CREATE TABLE plain (value TEXT)');
+  left.sql.exec("INSERT INTO plain (rowid, value) VALUES (1, 'a'), (2, 'b')");
+  right.sql.exec('CREATE TABLE plain (value TEXT)');
+  right.sql.exec("INSERT INTO plain (rowid, value) VALUES (5, 'a'), (9, 'b')");
   assert.equal(await digestOf(right), await digestOf(left));
+  // Their order still counts.
+  right.sql.exec("UPDATE plain SET rowid = 1 WHERE value = 'b'");
+  assert.notEqual(await digestOf(right), await digestOf(left));
 });
 
 for (const [label, timestamp] of [
@@ -312,6 +326,12 @@ test('scheduling checks the storage against preparation and awaits scheduling in
     calls.push('scheduled');
     return 'undo_bookmark';
   });
+  const put = storage.put.bind(storage);
+  t.mock.method(storage, 'put', async (key: string, value: unknown) => {
+    assert.equal(ctx.inGate, true);
+    calls.push(`put ${key}`);
+    await put(key, value);
+  });
   const result = host.chickpeaHostRestore(request);
   await scheduling;
   assert.deepEqual(calls, ['digest', 'schedule']);
@@ -322,7 +342,9 @@ test('scheduling checks the storage against preparation and awaits scheduling in
     targetBookmark: 'bookmark_target',
     undoBookmark: 'undo_bookmark',
   });
-  assert.deepEqual(calls, ['digest', 'schedule', 'scheduled']);
+  // The restore mark, holding the fence, is written only once the restore is scheduled.
+  assert.deepEqual(calls, ['digest', 'schedule', 'scheduled', `put ${OBJECT_RESTORE_MARK_KEY}`]);
+  assert.equal(storage.kv.get(OBJECT_RESTORE_MARK_KEY), 'bookmark_current');
   assert.equal(ctx.gates, 1);
   assert.equal(ctx.aborts, 0);
 });
@@ -696,7 +718,7 @@ for (const kind of Object.keys(BINDINGS) as InstallationObject['kind'][]) {
     const bookmarks = await readInstallationObjectRestoreBookmarks(env, object, T);
     assert.deepEqual(bookmarks, {
       timestamp: T, currentBookmark: 'bookmark_current', targetBookmark: 'bookmark_target',
-      contentDigest: await objectStorageDigest(target.storage, object.name),
+      contentDigest: await objectStorageDigest(target.storage, target.storage.objectId),
     });
     const apply = {
       confirmInstallationId: A,
@@ -1143,32 +1165,79 @@ test('the Flue class extension exposes the restore RPCs and derives ownership fr
     InstallationContextError);
 });
 
-test('the digest budget is 500,000 records or 512 MiB, and counts every record it reads', async (t) => {
+test('the digest budget is 500,000 records, 16,000,000 values, 512 MiB or a 2 GiB database, and counts every record it reads', async (t) => {
   // Spelled out so a changed budget fails here, beside the design note's figures.
-  assert.deepEqual(OBJECT_DIGEST_BUDGET, { rows: 500_000, bytes: 512 * 1024 * 1024 });
+  assert.deepEqual(OBJECT_DIGEST_BUDGET, {
+    rows: 500_000, cells: 16_000_000, bytes: 512 * 1024 * 1024, databaseBytes: 2 * 1024 * 1024 * 1024,
+  });
   const storage = new FakeObjectStorage(PROBE);
   t.after(() => storage.database.close());
+  const id = storage.objectId;
   storage.sql.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
-  for (let id = 1; id <= 300; id += 1) storage.sql.exec('INSERT INTO notes (id, body) VALUES (?, ?)', id, `note ${id}`);
-  const huge = { rows: Number.MAX_SAFE_INTEGER, bytes: Number.MAX_SAFE_INTEGER };
-  const digest = await objectStorageDigest(storage, PROBE, huge);
-  // The name, one schema entry, the table's header, its 300 rows and the alarm.
-  assert.equal(await objectStorageDigest(storage, PROBE, { ...huge, rows: 304 }), digest);
-  await assert.rejects(objectStorageDigest(storage, PROBE, { ...huge, rows: 303 }), {
+  for (let note = 1; note <= 300; note += 1) storage.sql.exec('INSERT INTO notes (id, body) VALUES (?, ?)', note, `note ${note}`);
+  const digest = await objectStorageDigest(storage, id, UNBOUNDED);
+  // The ID, one schema entry, the table's header, its 300 rows and the alarm.
+  assert.equal(await objectStorageDigest(storage, id, { ...UNBOUNDED, rows: 304 }), digest);
+  await assert.rejects(objectStorageDigest(storage, id, { ...UNBOUNDED, rows: 303 }), {
     name: 'ObjectRestoreError', code: 'restore_object_too_large',
   });
+  // Every value of every row: 300 rows of two columns.
+  assert.equal(await objectStorageDigest(storage, id, { ...UNBOUNDED, cells: 600 }), digest);
+  await assert.rejects(objectStorageDigest(storage, id, { ...UNBOUNDED, cells: 599 }), { code: 'restore_object_too_large' });
   // Bytes are counted as serialized: one row of 20,000 characters alone is over 16,384 bytes.
   storage.sql.exec('INSERT INTO notes (id, body) VALUES (301, ?)', 'x'.repeat(20_000));
-  await assert.rejects(objectStorageDigest(storage, PROBE, { ...huge, bytes: 16_384 }), { code: 'restore_object_too_large' });
-  assert.match(await objectStorageDigest(storage, PROBE, { ...huge, bytes: 64 * 1024 }), /^sha256:/);
+  await assert.rejects(objectStorageDigest(storage, id, { ...UNBOUNDED, bytes: 16_384 }), { code: 'restore_object_too_large' });
+  assert.match(await objectStorageDigest(storage, id, { ...UNBOUNDED, bytes: 64 * 1024 }), /^sha256:/);
   // Key-value entries count as records too.
   for (let index = 0; index < 40; index += 1) await storage.put(`entry_${String(index).padStart(2, '0')}`, index);
-  await assert.rejects(objectStorageDigest(storage, PROBE, { ...huge, rows: 320 }), { code: 'restore_object_too_large' });
+  await assert.rejects(objectStorageDigest(storage, id, { ...UNBOUNDED, rows: 320 }), { code: 'restore_object_too_large' });
+});
+
+test('wide rows reach the values bound before the records bound', async (t) => {
+  const storage = new FakeObjectStorage(PROBE);
+  t.after(() => storage.database.close());
+  const columns = Array.from({ length: 99 }, (_, index) => `c${index}`);
+  storage.sql.exec(`CREATE TABLE wide (id INTEGER PRIMARY KEY, ${columns.join(', ')})`);
+  for (let row = 1; row <= 20; row += 1) {
+    storage.sql.exec(`INSERT INTO wide (id, ${columns.join(', ')}) VALUES (?, ${columns.map(() => '?').join(', ')})`,
+      row, ...columns.map((_, index) => row * index));
+  }
+  // Twenty rows of 100 columns against 32 values a row, the default bound's ratio: refused far under the records bound.
+  const budget = { ...UNBOUNDED, rows: 1_000, cells: 32 * 20 };
+  await assert.rejects(objectStorageDigest(storage, storage.objectId, budget), { code: 'restore_object_too_large' });
+  assert.match(await objectStorageDigest(storage, storage.objectId, { ...budget, cells: 2_000 }), /^sha256:/);
+});
+
+test('a database over its size bound is refused before anything is read', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const { storage, ctx, session } = genericHost(undefined, {
+    digestBudget: { ...OBJECT_DIGEST_BUDGET, databaseBytes: 64 * 1024 },
+  });
+  t.after(() => storage.database.close());
+  storage.sql.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
+  storage.sql.exec('INSERT INTO notes (id, body) VALUES (1, ?)', 'x'.repeat(256 * 1024));
+  assert.ok(storage.sql.databaseSize > 64 * 1024);
+  const exec = t.mock.method(storage.sql, 'exec');
+  const list = t.mock.method(storage, 'list');
+  await assert.rejects(session().chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), {
+    name: 'ObjectRestoreError', code: 'restore_object_too_large',
+  });
+  assert.equal(exec.mock.callCount(), 0, 'no table, schema entry or row was read');
+  assert.equal(list.mock.callCount(), 0);
+  assert.equal(ctx.callbackRejections, 0);
+  // At the bound it reads as usual.
+  exec.mock.restore();
+  list.mock.restore();
+  const host = objectHostFunctions({
+    env: scopeInstallationEnv(HOSTED, { installationId: A }), storage, restoreContext: storage.restoreContext,
+    digestBudget: { ...OBJECT_DIGEST_BUDGET, databaseBytes: storage.sql.databaseSize },
+  });
+  assert.match((await host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T })).contentDigest, /^sha256:/);
 });
 
 test('an object over the digest budget refuses preparation outside the input gate, before reading the rest', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
-  const budget = { rows: 100, bytes: 1024 * 1024 };
+  const budget = { ...UNBOUNDED, rows: 100, bytes: 1024 * 1024 };
   const { storage, ctx, session } = genericHost(undefined, { digestBudget: budget });
   t.after(() => storage.database.close());
   storage.sql.exec('CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)');
@@ -1197,7 +1266,7 @@ test('an object over the digest budget refuses preparation outside the input gat
 });
 
 test('a restart over the digest budget still answers, without a digest', async (t) => {
-  const { storage, session } = genericHost(undefined, { digestBudget: { rows: 100, bytes: 1024 * 1024 } });
+  const { storage, session } = genericHost(undefined, { digestBudget: { ...UNBOUNDED, rows: 100, bytes: 1024 * 1024 } });
   t.after(() => storage.database.close());
   const receipt = await session().chickpeaHostRestore(await preparedRequest(storage));
   // At T the object held more than the budget.
@@ -1224,18 +1293,50 @@ test('a restart whose storage cannot be read fails rather than answering without
   assert.equal(storage.restoreContext.callbackRejections, 0);
 });
 
-test('a restart whose digest is still the prepared one shows a restore that never applied, though the bookmark moved', async (t) => {
+test('a restart still holding what its scheduling wrote refuses: the restore never applied, though the bookmark moved', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const { storage, session } = genericHost();
+  t.after(() => storage.database.close());
+  await seed(storage);
+  const receipt = await session().chickpeaHostRestore(await preparedRequest(storage));
+  // A new session that did not apply the scheduled restore keeps every write, the mark included.
+  storage.scheduledRestoreBookmark = undefined;
+  storage.restart();
+  assert.notEqual(storage.currentBookmark, receipt.expectedCurrentBookmark, 'every new session leaves the fence');
+  await assert.rejects(session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), { name: 'ObjectRestoreError', code: 'restore_not_applied' });
+  assert.equal(storage.restoreContext.callbackRejections, 0);
+  assert.equal(storage.restoreContext.aborts, 0);
+  assert.equal(storage.restoredBookmark, undefined);
+  // Another restore's mark, such as the one a back-out to the undo bookmark brings back, is not this one's.
+  await storage.put(OBJECT_RESTORE_MARK_KEY, 'an_earlier_fence');
+  assert.equal((await session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  })).applied, true);
+});
+
+test('an object that held at T what it held at preparation restarts with the prepared digest: the restore applied all the same', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
   const { storage, session } = genericHost();
   t.after(() => storage.database.close());
   await seed(storage);
   const prepared = await session().chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T });
-  // The schedule never landed; the object was evicted and woken again.
-  storage.restart();
-  const answer = await session().chickpeaHostRestoreRestart({ installationId: A, expectedCurrentBookmark: prepared.currentBookmark });
-  assert.equal(answer.applied, true, 'every new session leaves the fence');
-  assert.equal(answer.contentDigest, prepared.contentDigest, 'the storage is still the prepared one');
-  assert.equal(storage.restoredBookmark, undefined);
+  const receipt = await session().chickpeaHostRestore({
+    installationId: A,
+    expectedCurrentBookmark: prepared.currentBookmark,
+    expectedContentDigest: prepared.contentDigest,
+    targetBookmark: prepared.targetBookmark,
+  });
+  assert.notEqual(await digestOf(storage), prepared.contentDigest, 'the mark is written after the digest was checked');
+  await assert.rejects(session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), FakeObjectAbort);
+  // The restore discarded the mark with every other write since T: the digest is the prepared one, and decides nothing.
+  assert.deepEqual(await session().chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
+  }), { applied: true, currentBookmark: 'restored:bookmark_target', contentDigest: prepared.contentDigest });
+  assert.equal(storage.kv.has(OBJECT_RESTORE_MARK_KEY), false);
 });
 
 test('a digest prepared for one object is refused by another holding the same storage', async (t) => {
@@ -1269,13 +1370,49 @@ test('a digest prepared for one object is refused by another holding the same st
   assert.equal(target.scheduledRestoreBookmark, 'bookmark_target');
 });
 
-test('an object without a name fails closed: its digest has nothing to bind', async (t) => {
+test('a session woken by ID, without a name, prepares, schedules and restarts: the digest binds the object\'s ID', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
-  const storage = new FakeObjectStorage();
+  const storage = new FakeObjectStorage(SANDBOX);
   t.after(() => storage.database.close());
-  const host = objectHostFunctions({
-    env: scopeInstallationEnv(HOSTED, { installationId: A }), storage, restoreContext: storage.restoreContext,
+  const container = { running: false, status: 'stopped' };
+  await storage.put('workspace', { checkpoint: 'c1' });
+  // An egress handler or the lease sweep woke it by ID: this session has no name.
+  storage.restart({ byId: true });
+  assert.equal((storage.restoreContext.id as { name?: string }).name, undefined);
+  const prepared = await sandboxHost(storage, container).chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T });
+  assert.equal(prepared.contentDigest, await digestOf(storage));
+  // Evicted and woken by name for scheduling: the same object, the same digest.
+  storage.restart();
+  assert.equal((storage.restoreContext.id as { name?: string }).name, SANDBOX);
+  const request = {
+    installationId: A,
+    expectedCurrentBookmark: prepared.currentBookmark,
+    expectedContentDigest: prepared.contentDigest,
+    targetBookmark: prepared.targetBookmark,
+  };
+  const receipt = await sandboxHost(storage, container).chickpeaHostRestore(request);
+  assert.equal(storage.scheduledRestoreBookmark, 'bookmark_target');
+  // Woken by ID again: the restore applies, and restart answers without a name.
+  storage.restart({ byId: true });
+  const answer = await sandboxHost(storage, container).chickpeaHostRestoreRestart({
+    installationId: A, expectedCurrentBookmark: receipt.expectedCurrentBookmark,
   });
+  assert.equal(answer.applied, true);
+  assert.equal(answer.contentDigest, prepared.contentDigest);
+  // Another object holding the same storage, named or not, has another digest.
+  const other = new FakeObjectStorage();
+  t.after(() => other.database.close());
+  await other.put('workspace', { checkpoint: 'c1' });
+  assert.notEqual(await digestOf(other), prepared.contentDigest);
+});
+
+test('an object whose context has no ID of its own fails closed: its digest has nothing to bind', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const storage = new FakeObjectStorage(PROBE);
+  t.after(() => storage.database.close());
+  const ctx = storage.restoreContext;
+  const restoreContext = { ...ctx, id: {}, blockConcurrencyWhile: ctx.blockConcurrencyWhile.bind(ctx), abort: ctx.abort.bind(ctx) };
+  const host = objectHostFunctions({ env: scopeInstallationEnv(HOSTED, { installationId: A }), storage, restoreContext });
   await assert.rejects(host.chickpeaHostRestoreBookmarks({ installationId: A, timestamp: T }), { code: 'restore_unavailable' });
   await assert.rejects(host.chickpeaHostRestore(restoreRequest()), { code: 'restore_unavailable' });
   await assert.rejects(host.chickpeaHostRestoreRestart(restartRequest()), { code: 'restore_unavailable' });
@@ -1284,20 +1421,29 @@ test('an object without a name fails closed: its digest has nothing to bind', as
 
 for (const [signal, stores] of [
   ['an alarm turn whose dispatch was in flight', { alarmTurn: true }],
-  ['a gateway delivery leased by an earlier instance', { inbox: true }],
+  ['a gateway delivery in flight', { inbox: true }],
   ['a runner hand-off not yet confirmed', { handoffs: true }],
 ] as const) {
   test(`a state store owing ${signal} is busy for a restore`, () => {
     const state = { alarmTurn: false, inbox: false, handoffs: false, ...stores };
     const owing = {
       turnJobs: { hasInterruptedAlarmDispatch: () => state.alarmTurn, hasHandoffs: () => state.handoffs },
-      gatewayInbox: { hasOrphanedLease: () => state.inbox },
+      gatewayInbox: { hasInFlight: () => state.inbox },
     };
     assert.throws(() => quiesceStateStoreForRestore(owing), { name: 'ObjectRestoreError', code: 'restore_object_busy' });
     Object.assign(state, { alarmTurn: false, inbox: false, handoffs: false });
     quiesceStateStoreForRestore(owing);
   });
 }
+
+/** A gateway delivery the state store admits. */
+const RESTORE_DELIVERY = {
+  protocolVersion: 1, kind: 'event.deliver', deliveryId: 'delivery:Ev_RESTORE', bindingId: 'binding_test',
+  workspaceId: 'T_RESTORE', envelope: {
+    workspaceId: 'T_RESTORE', eventId: 'Ev_RESTORE', eventTime: NOW,
+    event: { type: 'app_mention', channel: 'C_RESTORE', user: 'U_RESTORE', ts: '1.1', event_ts: '1.1', text: 'hi' },
+  },
+} as never;
 
 test('a state store with work its alarm resumes refuses preparation without touching PITR, and prepares once it settles', async (t) => {
   t.mock.method(Date, 'now', () => NOW);
@@ -1307,13 +1453,7 @@ test('a state store with work its alarm resumes refuses preparation without touc
   const store = installationStateStoreObject(installation.env);
   // A delivery an earlier instance leased and never finished: a new instance arms its alarm for it at once.
   const earlier = new GatewayInboxStoreLogic(installation.db, () => NOW, {}, { leaseOwner: 'instance-before' });
-  assert.equal(earlier.admit({
-    protocolVersion: 1, kind: 'event.deliver', deliveryId: 'delivery:Ev_RESTORE', bindingId: 'binding_test',
-    workspaceId: 'T_RESTORE', envelope: {
-      workspaceId: 'T_RESTORE', eventId: 'Ev_RESTORE', eventTime: NOW,
-      event: { type: 'app_mention', channel: 'C_RESTORE', user: 'U_RESTORE', ts: '1.1', event_ts: '1.1', text: 'hi' },
-    },
-  } as never), 'accepted');
+  assert.equal(earlier.admit(RESTORE_DELIVERY), 'accepted');
   assert.equal(earlier.claimPending(1).length, 1);
   await assert.rejects(readInstallationObjectRestoreBookmarks(installation.env, store, T), {
     name: 'ObjectRestoreError', code: 'restore_object_busy',
@@ -1321,6 +1461,29 @@ test('a state store with work its alarm resumes refuses preparation without touc
   assert.deepEqual(installation.storage.bookmarkCalls, []);
   assert.equal(installation.storage.restoreContext.callbackRejections, 0);
   earlier.complete('delivery:Ev_RESTORE');
+  assert.equal((await readInstallationObjectRestoreBookmarks(installation.env, store, T)).targetBookmark, 'bookmark_target');
+});
+
+test('a gateway delivery this instance\'s own alarm has in flight is busy too: completing it writes', async (t) => {
+  t.mock.method(Date, 'now', () => NOW);
+  const deployment = hostedDeployment([A]);
+  t.after(() => closeAll(deployment, [A]));
+  const installation = deployment.installation(A);
+  const store = installationStateStoreObject(installation.env);
+  // The drainer the state store's host functions read: this instance's own.
+  const inbox = installation.stores.gatewayInbox;
+  assert.equal(inbox.admit(RESTORE_DELIVERY), 'accepted');
+  assert.equal(inbox.claimPending(1).length, 1);
+  assert.equal(inbox.hasOrphanedLease(), false, 'its own lease, which no new instance would resume');
+  await assert.rejects(readInstallationObjectRestoreBookmarks(installation.env, store, T), {
+    name: 'ObjectRestoreError', code: 'restore_object_busy',
+  });
+  assert.deepEqual(installation.storage.bookmarkCalls, []);
+  assert.equal(installation.storage.restoreContext.callbackRejections, 0);
+  // Prepared once delivered; the completion would otherwise have moved the storage after preparation.
+  const before = await digestOf(installation.storage);
+  inbox.complete('delivery:Ev_RESTORE');
+  assert.notEqual(await digestOf(installation.storage), before);
   assert.equal((await readInstallationObjectRestoreBookmarks(installation.env, store, T)).targetBookmark, 'bookmark_target');
 });
 

@@ -480,6 +480,17 @@ export class GatewayInboxStoreLogic {
   }
 
   /**
+   * Any in-flight delivery, whichever drainer leased it: this instance's
+   * alarm writes when it completes the delivery, and an earlier instance's
+   * lease is reclaimed by the next drain.
+   */
+  hasInFlight(): boolean {
+    return this.db.get(
+      "SELECT 1 AS present FROM gateway_inbox WHERE status = 'in_flight' LIMIT 1",
+    ) !== undefined;
+  }
+
+  /**
    * Work to do now: an in-flight row, or a pending row whose retry backoff
    * (if any) has elapsed. A row still backing off is not "pending now"; its
    * due time is {@link nextPendingDueAt}, so a drain arms its wake for then
