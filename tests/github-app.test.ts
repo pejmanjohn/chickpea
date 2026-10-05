@@ -463,6 +463,44 @@ test('skill resolve route does not mint a token for anonymous rate limits', asyn
   }
 });
 
+test('standalone skill resolve keeps an anonymous rate limit even with a GitHub App that could read the repository', async () => {
+  const { pkcs8 } = rsaKeys();
+  const store = new SqliteConfigStore(':memory:', { agents: [agent()] });
+  const settings = new SqliteSettingsStore(':memory:');
+  await settings.setSetting('github.app.id', '12345');
+  await settings.setSetting('github.app.private_key', pkcs8);
+  const requests: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith('/repos/acme/private-skills/installation')) {
+      return Response.json({ id: 42, account: { login: 'acme', type: 'Organization' } });
+    }
+    if (url.endsWith('/app/installations/42/access_tokens')) {
+      return Response.json({ token: 'private-installation-token', expires_at: '2026-07-26T00:00:00Z' });
+    }
+    return new Response('', { status: 429 });
+  };
+
+  try {
+    const response = await withFetch(fetchImpl, async () =>
+      await (await adminApp(store, settings)).request('/admin/api/skills/resolve', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ source: 'acme/private-skills' }),
+      }));
+    assert.equal(response.status, 429);
+    assert.deepEqual(await response.json(), {
+      error: 'github_rate_limited',
+      message: 'GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.',
+    });
+    assert.deepEqual(requests, ['https://api.github.com/repos/acme/private-skills']);
+  } finally {
+    store.close();
+    settings.close();
+  }
+});
+
 test('skill resolve route classifies App lookup and token-mint primary rate limits', async () => {
   const { pkcs8 } = rsaKeys();
   for (const rateLimitedStep of ['lookup', 'token'] as const) {
