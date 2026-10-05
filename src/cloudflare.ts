@@ -181,6 +181,12 @@ import {
   restoreWorkspaceCheckpoint,
   workspaceCheckpointsAvailable,
 } from './sandbox/workspace-checkpoints.ts';
+import {
+  clearWarmWindow,
+  holdWarmWindow,
+  stopPastWarmWindow,
+  type WarmWindowStorage,
+} from './sandbox/warm-window.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
 import {
   SlackPresentationStateError,
@@ -431,6 +437,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
   }): Promise<{ state: WorkspaceTurnState; reservationId: string; restorable: boolean }> {
     // A suspended or ended installation opens no workspace turn.
     await requireWorkspaceTurnAdmitted(this.env);
+    await clearWarmWindow(this.warmWindowStorage());
     const decision = await this.workspaceState().beginTurn({
       ...input,
       containerRunning: this.containerRunning(),
@@ -494,6 +501,21 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     // installation's start destroys itself.
     const refusal = refuseUnadmittedContainerStart(this.env, () => this.destroy());
     if (refusal) this.waitUntil(refusal);
+  }
+
+  /**
+   * The SDK's alarm stops an idle container at a deadline it keeps in
+   * memory, which every restart of this object pushes a full window out.
+   * The window a turn's end stored is the one that counts.
+   */
+  override async alarm(alarmProps?: Parameters<CloudflareSandbox['alarm']>[0]): Promise<void> {
+    await stopPastWarmWindow({
+      storage: this.warmWindowStorage(),
+      running: this.containerRunning(),
+      now: Date.now(),
+      stop: () => this.onActivityExpired(),
+    });
+    await super.alarm(alarmProps);
   }
 
   override async onStop(params?: Parameters<CloudflareSandbox['onStop']>[0]): Promise<void> {
@@ -561,6 +583,7 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
         localBucket: true,
       }),
     });
+    if (this.containerRunning()) await holdWarmWindow(this.warmWindowStorage(), Date.now());
     await this.settleContainerLease();
   }
 
@@ -663,6 +686,10 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
 
   private workspaceState(): SandboxWorkspaceState {
     return new SandboxWorkspaceState(this.policyStorage());
+  }
+
+  private warmWindowStorage(): WarmWindowStorage {
+    return this.ctx.storage as unknown as WarmWindowStorage;
   }
 
   async getEgressPolicy(): Promise<SandboxEgressPolicy> {
