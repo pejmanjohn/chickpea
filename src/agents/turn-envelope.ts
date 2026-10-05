@@ -1,6 +1,14 @@
 import { OPENAI_AUTH_METHOD_SETTING_KEY } from '../config/openai-auth.ts';
 import { SANDBOX_SETTING_KEYS } from '../config/sandbox-settings.ts';
-import type { SettingsPatch, SettingsStore } from '../config/settings-store.ts';
+import {
+  isModelCredentialStore,
+  type ModelCredentialRecord,
+  type ModelCredentialStore,
+  type PublishModelCredentialInput,
+  type RewrapModelCredentialInput,
+  type SettingsPatch,
+  type SettingsStore,
+} from '../config/settings-store.ts';
 import type { AgentKind, CustomAgentConfig, RepositoryGrant } from '../config/types.ts';
 import { MODEL_CATALOG_SETTING_KEYS } from '../model-catalog/store.ts';
 
@@ -159,9 +167,11 @@ export function parseTurnEnvelope(value: unknown): TurnEnvelopeV1 {
  * Settings as tool code sees them for one turn: frozen keys come from the
  * envelope, every other key (all secrets) is read live, and every write goes
  * to the live store. A write to a frozen key drops it from the view so this
- * turn reads its own write back live.
+ * turn reads its own write back live. Saved model keys are secrets too: the
+ * model credential methods go to the live store, which an installation of a
+ * deployment serving many reads its keys through.
  */
-export class TurnSettingsView implements SettingsStore {
+export class TurnSettingsView implements SettingsStore, ModelCredentialStore {
   private readonly frozen: Map<string, string | null>;
 
   constructor(
@@ -204,6 +214,25 @@ export class TurnSettingsView implements SettingsStore {
     this.frozen.delete(key);
     return this.live.mergeSettingStringSet(key, values);
   }
+
+  async readModelCredential(providerId: string): Promise<ModelCredentialRecord | undefined> {
+    return liveModelCredentials(this.live).readModelCredential(providerId);
+  }
+
+  async publishModelCredential(input: PublishModelCredentialInput): Promise<boolean> {
+    return liveModelCredentials(this.live).publishModelCredential(input);
+  }
+
+  async rewrapModelCredential(input: RewrapModelCredentialInput): Promise<boolean> {
+    return liveModelCredentials(this.live).rewrapModelCredential(input);
+  }
+}
+
+function liveModelCredentials(live: SettingsStore): ModelCredentialStore {
+  if (!isModelCredentialStore(live)) {
+    throw new Error('This settings store cannot hold encrypted model credentials.');
+  }
+  return live;
 }
 
 /** Resolved envelopes by TurnJob id. Immutable once frozen, so safe to share in an isolate. */

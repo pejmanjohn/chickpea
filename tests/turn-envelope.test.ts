@@ -17,15 +17,21 @@ import {
   type TurnEnvelopeV1,
 } from '../src/agents/turn-envelope.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
 import { SANDBOX_SETTING_KEYS } from '../src/config/sandbox-settings.ts';
 import type { SettingsPatch, SettingsStore } from '../src/config/settings-store.ts';
-import { getSettingsStore, getSlackStateStore } from '../src/config/state-backend.ts';
+import { getSettingsStore, getSlackStateStore, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig, RepositoryGrant, ResolvedAssignment } from '../src/config/types.ts';
+import { resolveImageProvider } from '../src/images/provider.ts';
 import { MODEL_CATALOG_SETTING_KEYS } from '../src/model-catalog/store.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { buildTurnEnvelope } from '../src/slack/turn-envelope-builder.ts';
 import { TurnJobStoreLogic } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
+import { withEnv } from './helpers/env.ts';
 
 const NOW = 1_940_000_000_000;
 const AGENT_ID = 'agent_envelope';
@@ -139,6 +145,44 @@ test('the settings view serves frozen keys, reads everything else live, and neve
   await view.setSetting(SANDBOX_SETTING_KEYS.enabled, 'false');
   assert.deepEqual(live.writes, [SANDBOX_SETTING_KEYS.enabled]);
   assert.equal(await view.getSetting(SANDBOX_SETTING_KEYS.enabled), 'false');
+});
+
+test('on a deployment serving many, an image turn reads and saves the installation model key through the settings view', async (t) => {
+  await withEnv({
+    CHICKPEA_TENANCY: undefined,
+    ANTHROPIC_API_KEY: undefined,
+    OPENAI_API_KEY: undefined,
+    OPENROUTER_API_KEY: undefined,
+    SLACK_STATE_DB_PATH: ':memory:',
+  }, async () => {
+    useDeploymentKeyring(t);
+    const env = scopeInstallationEnv(
+      { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>,
+      { installationId: 'inst_turn_envelope' },
+    ) as PlatformEnv;
+    // The installation's settings store, which the image client's access also resolves through.
+    const live = getSettingsStore(env);
+    const usage = new SqliteUsageStore(':memory:');
+    t.after(() => usage.close());
+    // The installation's own key, saved encrypted as setup saves it.
+    await rotateInstallationModelCredential(
+      'openai',
+      { kind: 'save', apiKey: 'sk-turn-envelope-image-test-key' },
+      { env, settings: live, usage },
+    );
+    // The image tool resolves the frozen image role on this turn's view.
+    const view = new TurnSettingsView(live, envelopeFor({}));
+    const resolved = await resolveImageProvider('openai/gpt-image-2.5-flare', env, view);
+    assert.equal(resolved.ok, true, JSON.stringify(resolved));
+
+    // A key saved through the view reaches the live store.
+    await rotateInstallationModelCredential(
+      'openai',
+      { kind: 'save', apiKey: 'sk-turn-envelope-image-test-key-2' },
+      { env, settings: view, usage },
+    );
+    assert.equal((await live.readModelCredential('openai'))?.version, 2);
+  });
 });
 
 test('a stale frozen fact gets one live re-resolution, and a live failure still fails', async () => {

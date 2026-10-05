@@ -3284,8 +3284,7 @@ function localGatewayAppStores(stores: TagStateStores): AppStores {
  * This state store's settings for the work it runs itself: management, the
  * alarm's turns and ledger runs. An installation of a deployment serving many
  * reads and writes its saved model keys only through a store's model
- * credential methods, so this port carries them; without them every such
- * read here (listing the workspace, a turn's credential) fails.
+ * credential methods, so this port carries them.
  */
 function localSettingsStore(stores: TagStateStores): SettingsStore & ModelCredentialStore {
   return {

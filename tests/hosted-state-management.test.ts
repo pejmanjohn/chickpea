@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import ts from 'typescript';
 
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
-import { promiseBackedStatePort } from '../src/config/local-state-port.ts';
 import {
   resolveModelCredentialAttribution,
   rotateInstallationModelCredential,
@@ -18,12 +17,17 @@ import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
-import type { WorkspaceManagementToolResult } from '../src/management/tool-adapter.ts';
+import type {
+  WorkspaceManagementToolArguments,
+  WorkspaceManagementToolName,
+  WorkspaceManagementToolResult,
+} from '../src/management/tool-adapter.ts';
 import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { resolveSlackPublicUrl } from '../src/slack/credentials.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -41,10 +45,10 @@ const NO_DEPLOYMENT_KEYS = {
 };
 
 interface StateProbe {
-  workspaceManagementInvoke(request: {
+  workspaceManagementInvoke<TName extends WorkspaceManagementToolName>(request: {
     signal: SlackManagementSignal;
-    name: 'inspect_workspace';
-    args: Record<string, never>;
+    name: TName;
+    args: WorkspaceManagementToolArguments[TName];
   }): Promise<WorkspaceManagementToolResult>;
 }
 
@@ -113,7 +117,7 @@ function productionStateManagement(input: {
   return { probe, localSettingsStore: () => localSettingsStore(stores) };
 }
 
-test('on a deployment serving many, the state store lists the workspace Agents for an installation with a saved model key', async (t) => {
+test('on a deployment serving many, the state store lists the workspace Agents for an installation with a saved model key, then removes the key', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     useDeploymentKeyring(t);
     const f = await createManagementAdapterFixture('hosted-state-management');
@@ -125,28 +129,6 @@ test('on a deployment serving many, the state store lists the workspace Agents f
       usage.close();
       work.close();
     });
-    // The installation's own key, saved encrypted in its state store as setup saves it.
-    await rotateInstallationModelCredential(
-      'openai',
-      { kind: 'save', apiKey: 'sk-hosted-state-management-test-key' },
-      { env: HOSTED_ENV, settings: promiseBackedStatePort(settings) as unknown as SettingsStore, usage },
-    );
-    for (const [id, name] of [['agent_first_desk', 'First Desk'], ['agent_second_desk', 'Second Desk']]) {
-      await f.config.createAgent({
-        id: id!,
-        name: name!,
-        instructions: 'Answer the team.',
-        enabled: true,
-        kind: 'user',
-        lifecycle: 'active',
-        creatorMembershipId: f.owner.membership.id,
-        configurationGeneration: 1,
-        skills: [],
-        mcpServers: [],
-        apiConnections: [],
-        repositories: [],
-      });
-    }
     const { probe, localSettingsStore } = productionStateManagement({
       env: HOSTED_ENV,
       settings,
@@ -160,35 +142,59 @@ test('on a deployment serving many, the state store lists the workspace Agents f
         work,
       },
     });
-
-    // The installing owner asks the built-in agent in a DM to list the Agents.
-    const listed = await probe.workspaceManagementInvoke({
-      signal: {
-        agentId: 'agent_chickpea',
-        workspaceId: f.owner.user.slackTeamId,
-        channelId: 'D_HOSTED_STATE',
-        threadTs: '500.1',
-        conversationKind: 'im',
-        slackUserId: f.owner.binding.slackUserId,
-        eventId: 'Ev_HOSTED_STATE',
-        messageTs: '500.1',
-        turnJobId: 'turn_HOSTED_STATE',
-        requesterText: 'List the names of the Agents.',
-      },
-      name: 'inspect_workspace',
-      args: {},
+    // The installation's own key, saved encrypted through the state store's own settings port.
+    await rotateInstallationModelCredential(
+      'openai',
+      { kind: 'save', apiKey: 'sk-hosted-state-management-test-key' },
+      { env: HOSTED_ENV, settings: localSettingsStore(), usage },
+    );
+    for (const [id, name] of [['agent_first_desk', 'First Desk'], ['agent_second_desk', 'Second Desk']] as const) {
+      await f.config.createAgent({
+        id,
+        name,
+        instructions: 'Answer the team.',
+        enabled: true,
+        kind: 'user',
+        lifecycle: 'active',
+        creatorMembershipId: f.owner.membership.id,
+        configurationGeneration: 1,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      });
+    }
+    // The installing owner's messages to the built-in agent in one DM.
+    const fromOwner = (messageTs: string, requesterText: string): SlackManagementSignal => ({
+      agentId: 'agent_chickpea',
+      workspaceId: f.owner.user.slackTeamId,
+      channelId: 'D_HOSTED_STATE',
+      threadTs: '500.1',
+      conversationKind: 'im',
+      slackUserId: f.owner.binding.slackUserId,
+      eventId: `Ev_HOSTED_STATE_${messageTs}`,
+      messageTs,
+      turnJobId: `turn_HOSTED_STATE_${messageTs}`,
+      requesterText,
     });
-    assert.equal(listed.ok, true, JSON.stringify(listed));
-    const snapshot = (listed as Extract<WorkspaceManagementToolResult, { ok: true }>).result as {
+    const succeeded = (result: WorkspaceManagementToolResult) => {
+      assert.equal(result.ok, true, JSON.stringify(result));
+      return (result as Extract<WorkspaceManagementToolResult, { ok: true }>).result;
+    };
+    const inspect = async (signal: SlackManagementSignal) => succeeded(
+      await probe.workspaceManagementInvoke({ signal, name: 'inspect_workspace', args: {} }),
+    ) as {
       agents: Array<{ name: string }>;
       providers: Array<{ id: string; source: string }>;
     };
-    assert.deepEqual(snapshot.agents.map(({ name }) => name).sort(), ['First Desk', 'Second Desk']);
+    const providerSources = (snapshot: Awaited<ReturnType<typeof inspect>>) =>
+      Object.fromEntries(snapshot.providers.map(({ id, source }) => [id, source]));
+
+    // The owner asks to list the Agents.
+    const listed = await inspect(fromOwner('500.1', 'List the names of the Agents.'));
+    assert.deepEqual(listed.agents.map(({ name }) => name).sort(), ['First Desk', 'Second Desk']);
     // The listing reads the installation's saved key, not a deployment's.
-    assert.deepEqual(
-      Object.fromEntries(snapshot.providers.map(({ id, source }) => [id, source])),
-      { anthropic: 'missing', openai: 'stored', openrouter: 'missing' },
-    );
+    assert.deepEqual(providerSources(listed), { anthropic: 'missing', openai: 'stored', openrouter: 'missing' });
 
     // A turn the state store runs itself attributes the same saved key.
     const attribution = await resolveModelCredentialAttribution(
@@ -200,5 +206,25 @@ test('on a deployment serving many, the state store lists the workspace Agents f
     );
     assert.equal(attribution?.providerId, 'openai');
     assert.equal(attribution?.sourceKind, 'stored');
+
+    // The owner asks to remove the key, and approves the proposal in a later message.
+    const proposed = succeeded(await probe.workspaceManagementInvoke({
+      signal: fromOwner('500.2', 'Remove the OpenAI key.'),
+      name: 'propose_workspace_changes',
+      args: {
+        ...authoringProposalMetadata('hosted-state-remove-openai'),
+        operations: [{ itemId: 'remove_openai', kind: 'remove_provider_credential', providerId: 'openai' }],
+      },
+    })) as { proposalId: string };
+    const confirmed = succeeded(await probe.workspaceManagementInvoke({
+      signal: fromOwner('500.3', 'Approve.'),
+      name: 'confirm_workspace_change',
+      args: { proposalId: proposed.proposalId },
+    })) as { status: string; outcomes: Array<{ disposition: string }> };
+    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed));
+    assert.deepEqual(confirmed.outcomes.map(({ disposition }) => disposition), ['applied']);
+    // The removal reached the installation's saved key.
+    assert.equal(providerSources(await inspect(fromOwner('500.4', 'List the providers.'))).openai, 'missing');
+    assert.equal((await settings.readModelCredential('openai'))?.active, false);
   });
 });
