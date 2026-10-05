@@ -734,10 +734,11 @@ test('a discarded checkpoint whose objects cannot be deleted is still forgotten;
 test('the Sandbox and the state store answer through these host functions, and maintenance sweeps by prefix', () => {
   const source = readFileSync(new URL('../src/cloudflare.ts', import.meta.url), 'utf8');
   const sandbox = source.slice(source.indexOf('export class Sandbox extends CloudflareSandbox'), source.indexOf('Sandbox.outboundByHost ='));
-  for (const method of ['chickpeaHostExportPage', 'chickpeaHostErase', 'chickpeaHostCancelPendingWork', 'chickpeaHostStopContainer']) {
+  for (const method of ['chickpeaHostExportPage', 'chickpeaHostErase', 'chickpeaHostCancelPendingWork', 'chickpeaHostStopContainer',
+    'chickpeaHostRestoreBookmarks', 'chickpeaHostRestore']) {
     assert.match(sandbox, new RegExp(`async ${method}\\(request: Object\\w+\\) \\{\\s*return this\\.host\\(\\)\\.${method}\\(request\\);`), method);
   }
-  assert.match(sandbox, /sandboxHostFunctions\(\{\s*env: this\.env,\s*storage: this\.ctx\.storage as unknown as HostObjectStorage,\s*running: \(\) => this\.containerRunning\(\),\s*destroy: \(\) => this\.destroy\(\),\s*stopRecorded: \(\) => containerStopRecorded\(\(\) => this\.getState\(\)\),\s*releaseLease: \(\) => this\.releaseContainerLease\(\),\s*currentCheckpoint: \(\) => this\.workspaceState\(\)\.currentCheckpoint\(\),/);
+  assert.match(sandbox, /sandboxHostFunctions\(\{\s*env: this\.env,\s*storage: this\.ctx\.storage as unknown as HostObjectStorage,\s*restoreContext: this\.ctx,\s*running: \(\) => this\.containerRunning\(\),\s*destroy: \(\) => this\.destroy\(\),\s*stopRecorded: \(\) => containerStopRecorded\(\(\) => this\.getState\(\)\),\s*releaseLease: \(\) => this\.releaseContainerLease\(\),\s*currentCheckpoint: \(\) => this\.workspaceState\(\)\.currentCheckpoint\(\),/);
   // The erasure's release is the stop's own.
   assert.match(sandbox, /override async onStop\([^)]*\): Promise<void> \{\s*await super\.onStop\(params\);\s*await this\.releaseContainerLease\(\);\s*\}/);
   // A discard deletes its checkpoint's objects before it destroys the container.

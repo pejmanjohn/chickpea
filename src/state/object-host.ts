@@ -9,8 +9,8 @@ import { RETIRED_SETTING_KEYS } from '../config/retired-settings.ts';
 /**
  * What a host serving many installations may ask of each Durable Object an
  * installation owns (its state store, thread runners and Flue instances),
- * from an operator job: export its storage a page at a time, erase it, and
- * stop the work it would start on its own. Every call names the installation
+ * from an operator job: export its storage, restore it, erase it, and stop
+ * the work it would start on its own. Every call names the installation
  * the caller acts for; an object refuses unless its own name scopes it to
  * that installation, and refuses outright on a standalone deployment.
  *
@@ -21,6 +21,225 @@ import { RETIRED_SETTING_KEYS } from '../config/retired-settings.ts';
 export interface ObjectHostRequest {
   /** The installation the host acts for; must be the one the object's name scopes. */
   readonly installationId: string;
+}
+
+export interface ObjectRestoreBookmarksRequest extends ObjectHostRequest {
+  /**
+   * Point in time T, in Unix epoch milliseconds: within the last 30 days and
+   * strictly before now on the object's own clock.
+   */
+  readonly timestamp: number;
+}
+
+export interface ObjectRestoreBookmarks {
+  readonly timestamp: number;
+  /** The fence scheduling must present, from this same object; also its undo point. */
+  readonly currentBookmark: string;
+  readonly targetBookmark: string;
+}
+
+export interface ObjectRestoreRequest extends ObjectHostRequest {
+  readonly expectedCurrentBookmark: string;
+  readonly targetBookmark: string;
+}
+
+/** A scheduled restore: the object's storage becomes `targetBookmark` when it next restarts. */
+export interface ObjectRestoreReceipt {
+  readonly expectedCurrentBookmark: string;
+  readonly targetBookmark: string;
+  /** Cloudflare's bookmark for just before the restore; restoring to it undoes the restore. */
+  readonly undoBookmark: string;
+}
+
+export interface ObjectRestoreRestartRequest extends ObjectHostRequest {
+  /** The fence the restore was scheduled against: its receipt's `expectedCurrentBookmark`. */
+  readonly expectedCurrentBookmark: string;
+}
+
+/**
+ * Returned only by a session with no restore scheduled in it whose current
+ * bookmark is no longer the fence: the restore scheduled against that fence
+ * has applied, as it does on the object's next session.
+ */
+export interface ObjectRestoreApplied {
+  readonly applied: true;
+  readonly currentBookmark: string;
+}
+
+export interface InstallationObjectRestoreRpc {
+  chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest): Promise<ObjectRestoreBookmarks>;
+  /**
+   * Schedules the restore for the object's next session and returns the receipt.
+   * Does not restart the object: `chickpeaHostRestoreRestart` does.
+   */
+  chickpeaHostRestore(request: ObjectRestoreRequest): Promise<ObjectRestoreReceipt>;
+  /**
+   * Restarts the object when this session has the restore scheduled, which
+   * interrupts the call. Otherwise returns only once the bookmark has left
+   * the fence, proving the restore applied, and refuses with
+   * `restore_not_scheduled` while the object still holds the fence.
+   */
+  chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest): Promise<ObjectRestoreApplied>;
+}
+
+/** The SQLite PITR and lifecycle APIs from DurableObjectState, without a runtime import. */
+export interface HostObjectRestoreContext {
+  readonly storage: {
+    getCurrentBookmark(): Promise<string>;
+    getBookmarkForTime(timestamp: number | Date): Promise<string>;
+    onNextSessionRestoreBookmark(bookmark: string): Promise<string>;
+  };
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+  abort(reason?: string): void;
+}
+
+/** The reason a restart passes to `ctx.abort`; the runtime logs it with the reset. */
+export const OBJECT_RESTORE_ABORT_REASON = 'Installation point-in-time restore';
+
+const OBJECT_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
+export type ObjectRestoreErrorCode =
+  | 'restore_time_invalid'
+  | 'restore_bookmark_invalid'
+  | 'restore_bookmark_moved'
+  | 'restore_unavailable'
+  | 'restore_object_busy'
+  | 'restore_already_scheduled'
+  | 'restore_not_scheduled'
+  | 'restore_restarting';
+
+export class ObjectRestoreError extends Error {
+  constructor(readonly code: ObjectRestoreErrorCode, message: string) {
+    super(message);
+    this.name = 'ObjectRestoreError';
+  }
+}
+
+/**
+ * The restore each object session has scheduled, by its context. A restart
+ * or an eviction gives the object a new context, which has none: the restore
+ * has applied.
+ */
+const scheduledRestores = new WeakMap<HostObjectRestoreContext, ObjectRestoreReceipt>();
+
+/**
+ * Read an object's bookmarks, schedule its restore and restart it, while the
+ * host keeps its installation suspended. Scheduling and restarting are
+ * separate calls so the host can schedule every object of an installation,
+ * each against its own fence, before any of them restarts into restored
+ * state and writes to another (see docs/design/installation-restore.md).
+ * Cloudflare validates the opaque target bookmark and its retained history.
+ */
+export function objectRestoreHostFunctions(object: {
+  readonly env: Record<string, unknown> | undefined;
+  readonly restoreContext?: HostObjectRestoreContext;
+  /** Ownership checks beyond the object's name, within the input gate of every restore call. */
+  readonly assertOwner?: (scope: InstallationScope) => void;
+  /**
+   * Within the input gate, before a fence is read for preparing or scheduling:
+   * refuse an object that is not quiet, and settle the writes it would
+   * otherwise make right after the read. Never on restart.
+   */
+  readonly quiesce?: () => Promise<void>;
+}): InstallationObjectRestoreRpc {
+  const context = (): HostObjectRestoreContext => {
+    if (!object.restoreContext) {
+      throw new ObjectRestoreError('restore_unavailable', 'This object has no SQLite restore context.');
+    }
+    return object.restoreContext;
+  };
+  return {
+    async chickpeaHostRestoreBookmarks(request) {
+      const scope = assertObjectHostCall(object.env, request);
+      const { timestamp } = request;
+      const now = Date.now();
+      if (!Number.isSafeInteger(timestamp) || timestamp < now - OBJECT_RESTORE_WINDOW_MS || timestamp >= now) {
+        throw new ObjectRestoreError('restore_time_invalid', 'Restore time must be within the past 30 days and before now.');
+      }
+      const ctx = context();
+      return restoreExclusive(ctx, async () => {
+        object.assertOwner?.(scope);
+        if (scheduledRestores.has(ctx)) throw alreadyScheduled();
+        await object.quiesce?.();
+        const targetBookmark = await ctx.storage.getBookmarkForTime(timestamp);
+        const currentBookmark = await ctx.storage.getCurrentBookmark();
+        return { timestamp, currentBookmark, targetBookmark };
+      });
+    },
+    async chickpeaHostRestore(request) {
+      const scope = assertObjectHostCall(object.env, request);
+      const { expectedCurrentBookmark, targetBookmark } = request;
+      if (typeof expectedCurrentBookmark !== 'string' || !expectedCurrentBookmark.trim() ||
+          typeof targetBookmark !== 'string' || !targetBookmark.trim()) {
+        throw new ObjectRestoreError('restore_bookmark_invalid', 'Restore requires current and target bookmarks.');
+      }
+      const ctx = context();
+      return restoreExclusive(ctx, async () => {
+        object.assertOwner?.(scope);
+        // A repeated call, whose first answer was lost, gets the same receipt.
+        const scheduled = scheduledRestores.get(ctx);
+        if (scheduled) {
+          if (scheduled.expectedCurrentBookmark === expectedCurrentBookmark && scheduled.targetBookmark === targetBookmark) {
+            return scheduled;
+          }
+          throw alreadyScheduled();
+        }
+        await object.quiesce?.();
+        if (await ctx.storage.getCurrentBookmark() !== expectedCurrentBookmark) {
+          throw new ObjectRestoreError('restore_bookmark_moved', 'The current bookmark moved; prepare the restore again.');
+        }
+        const undoBookmark = await ctx.storage.onNextSessionRestoreBookmark(targetBookmark);
+        const receipt: ObjectRestoreReceipt = { expectedCurrentBookmark, targetBookmark, undoBookmark };
+        scheduledRestores.set(ctx, receipt);
+        return receipt;
+      });
+    },
+    async chickpeaHostRestoreRestart(request) {
+      const scope = assertObjectHostCall(object.env, request);
+      const { expectedCurrentBookmark } = request;
+      if (typeof expectedCurrentBookmark !== 'string' || !expectedCurrentBookmark.trim()) {
+        throw new ObjectRestoreError('restore_bookmark_invalid', 'Restart requires the fence the restore was scheduled against.');
+      }
+      const ctx = context();
+      return restoreExclusive(ctx, async () => {
+        object.assertOwner?.(scope);
+        const scheduled = scheduledRestores.get(ctx);
+        if (scheduled) {
+          if (scheduled.expectedCurrentBookmark !== expectedCurrentBookmark) {
+            throw new ObjectRestoreError('restore_already_scheduled', 'A restore against another fence is scheduled.');
+          }
+          ctx.abort(OBJECT_RESTORE_ABORT_REASON);
+          // Not reached once the reset takes effect; a session that runs on must not report the restore applied.
+          throw new ObjectRestoreError('restore_restarting', 'The object is restarting to apply its restore; call again.');
+        }
+        // A new session: any restore scheduled before it has applied, and moved the bookmark off the fence.
+        const currentBookmark = await ctx.storage.getCurrentBookmark();
+        if (currentBookmark === expectedCurrentBookmark) {
+          throw new ObjectRestoreError('restore_not_scheduled', 'No restore is scheduled or applied: the object still holds the fence.');
+        }
+        return { applied: true as const, currentBookmark };
+      });
+    },
+  };
+}
+
+function alreadyScheduled(): ObjectRestoreError {
+  return new ObjectRestoreError('restore_already_scheduled', 'A restore is already scheduled; restart the object first.');
+}
+
+/** Keep each restore call's checks, fence and scheduling in one input gate. A refusal must not reset the object. */
+async function restoreExclusive<T>(ctx: HostObjectRestoreContext, operation: () => Promise<T>): Promise<T> {
+  const result = await ctx.blockConcurrencyWhile(async () => {
+    try {
+      return { ok: true as const, value: await operation() };
+    } catch (error) {
+      // A rejected blockConcurrencyWhile callback resets the object. Throw
+      // outside it so an invalid request or a moved fence leaves it alone.
+      return { ok: false as const, error };
+    }
+  });
+  if (!result.ok) throw result.error;
+  return result.value;
 }
 
 /**
@@ -93,7 +312,7 @@ export interface ObjectPendingWorkCancellation {
 }
 
 /** The host functions every installation object answers; each class delegates to `objectHostFunctions`. */
-export interface InstallationObjectHostRpc {
+export interface InstallationObjectHostRpc extends InstallationObjectRestoreRpc {
   chickpeaHostExportPage(request: ObjectExportRequest): Promise<ObjectExportPage>;
   chickpeaHostErase(request: ObjectHostRequest): Promise<ObjectEraseResult>;
   chickpeaHostCancelPendingWork(request: ObjectHostRequest): Promise<ObjectPendingWorkCancellation>;
@@ -128,10 +347,12 @@ export interface HostObjectStorage {
 export function objectHostFunctions(object: {
   readonly env: Record<string, unknown> | undefined;
   readonly storage: HostObjectStorage;
+  readonly restoreContext?: HostObjectRestoreContext;
   readonly onErased?: () => void;
   readonly cancel?: (now: number) => Omit<ObjectPendingWorkCancellation, 'alarmCleared'>;
 }): InstallationObjectHostRpc {
   return {
+    ...objectRestoreHostFunctions(object),
     async chickpeaHostExportPage(request) {
       assertObjectHostCall(object.env, request);
       return exportObjectPage(object.storage, request);

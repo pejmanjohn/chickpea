@@ -1,6 +1,6 @@
 /**
  * What a host serving many installations calls, from an operator job, to
- * enumerate, export, erase and quiet the Durable Objects one installation
+ * enumerate, export, restore, erase and quiet the Durable Objects one installation
  * owns. Each function takes that installation's scoped env
  * (`scopeInstallationEnv`), addresses only objects its name scopes to it, and
  * passes the installation along so the object checks it against its own
@@ -56,6 +56,11 @@ import type {
   ObjectExportMode,
   ObjectExportPage,
   ObjectPendingWorkCancellation,
+  ObjectRestoreApplied,
+  ObjectRestoreBookmarks,
+  ObjectRestoreReceipt,
+  ObjectRestoreRequest,
+  ObjectRestoreRestartRequest,
 } from './object-host.ts';
 import type {
   InstallationObjectBackfill,
@@ -109,6 +114,83 @@ export async function exportInstallationObject(
 ): Promise<ObjectExportPage> {
   const scope = hostScope(env);
   return objectStub(env, scope, object).chickpeaHostExportPage({ installationId: scope.installationId, ...options });
+}
+
+/** restore_prepare: read one object's current fence and its bookmark for T while suspended. */
+export async function readInstallationObjectRestoreBookmarks(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  timestamp: number,
+): Promise<ObjectRestoreBookmarks> {
+  const scope = hostScope(env);
+  return objectStub(env, scope, object).chickpeaHostRestoreBookmarks({ installationId: scope.installationId, timestamp });
+}
+
+/**
+ * restore_apply, first phase: schedule one object's restore against its
+ * prepared fence and return the receipt, the object's undo bookmark included.
+ * The object keeps running until `restartInstallationObject`. A repeated call
+ * reaching the same session returns the same receipt.
+ */
+export async function scheduleInstallationObjectRestore(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  options: Pick<ObjectRestoreRequest, 'expectedCurrentBookmark' | 'targetBookmark'> & { confirmInstallationId: string },
+): Promise<ObjectRestoreReceipt> {
+  const scope = confirmedRestoreScope(env, options.confirmInstallationId);
+  return objectStub(env, scope, object).chickpeaHostRestore({
+    installationId: scope.installationId,
+    expectedCurrentBookmark: options.expectedCurrentBookmark,
+    targetBookmark: options.targetBookmark,
+  });
+}
+
+/** How many calls a restart makes: the one the abort interrupts, the one that confirms, one spare. */
+const RESTART_ATTEMPTS = 3;
+
+/**
+ * restore_apply, second phase: restart one object so the restore scheduled
+ * against `expectedCurrentBookmark` (its receipt's fence) applies, and
+ * confirm it. A call reaching the session with that restore scheduled aborts
+ * the session, so its RPC fails; the next call, over a fresh stub, reaches
+ * the next session, where the restore has applied, and returns. An object
+ * evicted since scheduling answers the first call the same way. A return
+ * proves the bookmark left the fence; an object that still holds it refuses
+ * with `restore_not_scheduled`. An error thrown over RPC loses its class, so
+ * every failed call is retried, up to `RESTART_ATTEMPTS` calls; the last
+ * failure is thrown.
+ */
+export async function restartInstallationObject(
+  env: Record<string, unknown>,
+  object: InstallationObject,
+  options: Pick<ObjectRestoreRestartRequest, 'expectedCurrentBookmark'> & { confirmInstallationId: string },
+): Promise<ObjectRestoreApplied> {
+  const scope = confirmedRestoreScope(env, options.confirmInstallationId);
+  let failure: unknown;
+  for (let attempt = 0; attempt < RESTART_ATTEMPTS; attempt += 1) {
+    // Resolved per call: a reset object's stub is broken. Addressing refusals throw here, at once.
+    const stub = objectStub(env, scope, object);
+    try {
+      return await stub.chickpeaHostRestoreRestart({
+        installationId: scope.installationId,
+        expectedCurrentBookmark: options.expectedCurrentBookmark,
+      });
+    } catch (error) {
+      failure = error;
+    }
+  }
+  throw failure;
+}
+
+function confirmedRestoreScope(env: Record<string, unknown>, confirmInstallationId: string): InstallationScope {
+  const scope = hostScope(env);
+  if (confirmInstallationId !== scope.installationId) {
+    throw new InstallationContextError(
+      'installation_context_mismatch',
+      'Restore must be confirmed with the installation it restores.',
+    );
+  }
+  return scope;
 }
 
 /**

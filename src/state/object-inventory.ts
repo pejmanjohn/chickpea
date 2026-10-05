@@ -48,8 +48,20 @@ export type InstallationWorkspaceObjectKind = 'coding_worker' | 'sandbox';
 export interface InstallationObjectRecord {
   readonly kind: InstallationObjectKind;
   readonly name: string;
+  /**
+   * When the name was recorded, before anything addressed the object; or
+   * `BACKFILLED_FIRST_SEEN_AT` (0) for a name the backfill recorded, whose
+   * object predates the inventory.
+   */
   readonly firstSeenAt: number;
 }
+
+/**
+ * The `first_seen_at` of a name the backfill records. Its object predates
+ * the inventory, at a time nothing kept, so it is stamped as older than any
+ * point a restore can target: preparing a restore never skips it as younger.
+ */
+export const BACKFILLED_FIRST_SEEN_AT = 0;
 
 export interface InstallationObjectInventoryPage {
   readonly objects: readonly InstallationObjectRecord[];
@@ -185,6 +197,8 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
    * aged out of all of them is counted from the Work ledger, which keeps an
    * opaque reference to every Flue instance that ran but cannot name one.
    * That count is a lower bound: a thread runner leaves no such reference.
+   * A name it records gets `BACKFILLED_FIRST_SEEN_AT`; one already recorded
+   * keeps its time.
    */
   backfill(): InstallationObjectBackfill {
     this.requireEnabled();
@@ -233,9 +247,11 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     }
 
     this.db.transaction(() => {
-      for (const key of runners) this.recordThreadRunner(key);
+      for (const key of runners) {
+        this.insert('thread_runner', scopedObjectName(this.scope!, key), BACKFILLED_FIRST_SEEN_AT);
+      }
       for (const kind of ['routine_agent', 'slack_agent'] as const) {
-        for (const name of agents[kind]) this.insert(kind, name);
+        for (const name of agents[kind]) this.insert(kind, name, BACKFILLED_FIRST_SEEN_AT);
       }
     });
     recovered.thread_runner = runners.size;
@@ -266,11 +282,12 @@ export class InstallationObjectInventoryLogic implements InstallationObjectRecor
     return residue;
   }
 
-  private insert(kind: InstallationObjectKind, name: string): void {
+  /** Record a name once: a name already recorded keeps its first time. */
+  private insert(kind: InstallationObjectKind, name: string, firstSeenAt = this.now()): void {
     this.db.run(
       `INSERT INTO installation_object_inventory (kind, name, first_seen_at)
        VALUES (?, ?, ?) ON CONFLICT (kind, name) DO NOTHING`,
-      kind, name, this.now(),
+      kind, name, firstSeenAt,
     );
   }
 

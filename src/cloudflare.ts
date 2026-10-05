@@ -244,7 +244,14 @@ import {
 import type { TurnSteeringDecision } from './slack/turn-job-types.ts';
 import { DoSqlStateDb } from './state/do-state-db.ts';
 import { buildTagStateStores, type TagStateStores } from './state/tag-state-stores.ts';
-import type { HostObjectStorage, ObjectExportRequest, ObjectHostRequest } from './state/object-host.ts';
+import type {
+  HostObjectStorage,
+  ObjectExportRequest,
+  ObjectHostRequest,
+  ObjectRestoreBookmarksRequest,
+  ObjectRestoreRequest,
+  ObjectRestoreRestartRequest,
+} from './state/object-host.ts';
 import type { InstallationWorkspaceObject } from './state/object-inventory.ts';
 import { stateStoreHostFunctions, type StateStoreHostRpc } from './state/state-store-host.ts';
 import { StateSchemaMarker, stateSchemaFingerprint } from './state/schema-lifecycle.ts';
@@ -623,15 +630,29 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
     return this.host().chickpeaHostStopContainer(request);
   }
 
+  async chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest) {
+    return this.host().chickpeaHostRestoreBookmarks(request);
+  }
+
+  async chickpeaHostRestore(request: ObjectRestoreRequest) {
+    return this.host().chickpeaHostRestore(request);
+  }
+
+  async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
+    return this.host().chickpeaHostRestoreRestart(request);
+  }
+
   private host(): SandboxHostRpc {
     return sandboxHostFunctions({
       env: this.env,
       storage: this.ctx.storage as unknown as HostObjectStorage,
+      restoreContext: this.ctx,
       running: () => this.containerRunning(),
       destroy: () => this.destroy(),
       stopRecorded: () => containerStopRecorded(() => this.getState()),
       releaseLease: () => this.releaseContainerLease(),
       currentCheckpoint: () => this.workspaceState().currentCheckpoint(),
+      containerState: () => this.getState(),
     });
   }
 
@@ -1022,6 +1043,18 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.host().chickpeaHostInventory(request);
   }
 
+  async chickpeaHostRestoreBookmarks(request: ObjectRestoreBookmarksRequest) {
+    return this.host().chickpeaHostRestoreBookmarks(request);
+  }
+
+  async chickpeaHostRestore(request: ObjectRestoreRequest) {
+    return this.host().chickpeaHostRestore(request);
+  }
+
+  async chickpeaHostRestoreRestart(request: ObjectRestoreRestartRequest) {
+    return this.host().chickpeaHostRestoreRestart(request);
+  }
+
   async chickpeaHostInventoryBackfill(request: ObjectHostRequest) {
     return this.host().chickpeaHostInventoryBackfill(request);
   }
@@ -1046,6 +1079,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return stateStoreHostFunctions({
       env: this.env as PlatformEnv,
       storage: this.ctx.storage,
+      restoreContext: this.ctx,
       stores: () => {
         this.stores ??= this.tryInit();
         if (!this.stores) throw new Error(`state store unavailable: init failed (${this.initError ?? 'unknown'})`);

@@ -68,6 +68,10 @@ declare module 'cloudflare:workers' {
      * 2026-02-24 or later) the alarm.
      */
     deleteAll(): Promise<void>;
+    /** SQLite PITR APIs, checked against @cloudflare/workers-types 5.20260820.1. */
+    getCurrentBookmark(): Promise<string>;
+    getBookmarkForTime(timestamp: number | Date): Promise<string>;
+    onNextSessionRestoreBookmark(bookmark: string): Promise<string>;
   }
 
   interface DurableObjectState {
@@ -76,6 +80,8 @@ declare module 'cloudflare:workers' {
     id: { toString(): string; readonly name?: string };
     /** Runs `fn` before the object handles any other event. */
     blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
+    /** Reset this object immediately, applying any scheduled restore on its next session. */
+    abort(reason?: string): void;
   }
 
   /** Metadata the platform passes to `alarm()` about the current invocation. */
