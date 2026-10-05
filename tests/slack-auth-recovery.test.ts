@@ -204,6 +204,77 @@ test('Slack\'s URL check signed with the staged secret is the Events proof a wai
   } finally { fixture.close(); }
 });
 
+test('a URL check Slack made before the recovery began is not its Events proof', async () => {
+  const fixture = await recoveryFixture({ serviceKeyring: generateCredentialKeyring('key_v2') });
+  try {
+    // Retry on Slack's Events page in normal mode; a minute later the key root is lost.
+    await fixture.recordChallenge('old-signing-secret', NOW - 60_000);
+    const control = await fixture.identity.ensureAuthControl({ healthGate: 'recovery_only' });
+    if (control.healthGate !== 'recovery_only') {
+      await fixture.identity.updateAuthControl({ expectedRevision: control.revision, healthGate: 'recovery_only' });
+    }
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    // Recovered with the same signing secret, so that earlier check is signed as the staged one.
+    await fixture.service.stageAppCredentials({
+      ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
+      clientSecret: 'old-client-secret', signingSecret: 'old-signing-secret',
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'same-secret-code' });
+    await assert.rejects(
+      () => fixture.service.finalize(authority),
+      (error: unknown) => error instanceof SlackCredentialRecoveryError && error.code === 'events_unverified',
+    );
+    // Slack checking again while the recovery waits is its proof.
+    assert.deepEqual(await recordSlackRecoveryEventsProof({
+      identity: fixture.identity, settings: fixture.settings, keyring: fixture.credentials.keyring, now: () => NOW,
+    }, fixture.signedChallenge('old-signing-secret')), { challenge: 'recovery-proof' });
+    assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
+  } finally { fixture.close(); }
+});
+
+test('a URL check with a malformed signature or a stale timestamp is refused before any state read', async () => {
+  const fixture = await recoveryFixture();
+  try {
+    const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
+    await fixture.service.stageAppCredentials({
+      ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456',
+      clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret',
+      manifest: buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN }),
+    });
+    const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
+    await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: 'cheap-code' });
+    let reads = 0;
+    const identity = {
+      getWaitingSlackRecoverySession: () => {
+        reads += 1;
+        return fixture.identity.getWaitingSlackRecoverySession();
+      },
+    } as unknown as typeof fixture.identity;
+    const proof = (request: ReturnType<typeof fixture.signedChallenge>) => recordSlackRecoveryEventsProof({
+      identity, settings: fixture.settings, keyring: fixture.credentials.keyring, now: () => NOW,
+    }, request);
+    const signed = fixture.signedChallenge('replacement-signing-secret');
+    for (const request of [
+      { ...signed, signature: '' },
+      { ...signed, signature: 'v0=not-a-signature' },
+      { ...signed, signature: signed.signature.replace('v0=', 'v1=') },
+      { ...signed, timestamp: 'now' },
+      fixture.signedChallenge('replacement-signing-secret', NOW - 6 * 60_000),
+      fixture.signedChallenge('replacement-signing-secret', NOW + 6 * 60_000),
+    ]) {
+      assert.equal(await proof(request), undefined);
+    }
+    assert.equal(reads, 0);
+    // A well-formed, fresh check is worth the read, and is the proof when signed with the staged secret.
+    assert.equal(await proof(fixture.signedChallenge('old-signing-secret')), undefined);
+    assert.equal(reads, 1);
+    assert.deepEqual(await proof(signed), { challenge: 'recovery-proof' });
+    assert.equal(reads, 2);
+  } finally { fixture.close(); }
+});
+
 test('a recovery waiting on Events proof past its 15 minutes takes none', async () => {
   const fixture = await recoveryFixture();
   try {
@@ -494,8 +565,8 @@ async function recoveryFixture(options: {
         signature: `v0=${createHmac('sha256', signingSecret).update(`v0:${timestamp}:${rawBody}`).digest('hex')}`,
       };
     },
-    async recordChallenge(signingSecret: string) {
-      await recordPendingSlackChallenge(settings, this.signedChallenge(signingSecret), { now: NOW });
+    async recordChallenge(signingSecret: string, at = NOW) {
+      await recordPendingSlackChallenge(settings, this.signedChallenge(signingSecret, at), { now: at });
     },
     close() { identity.close(); config.close(); settings.close(); },
   };

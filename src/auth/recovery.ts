@@ -22,6 +22,7 @@ import {
 import {
   purgePendingSlackChallenge,
   recordPendingSlackChallenge,
+  slackRequestHeadersFresh,
   slackRequestSignedWith,
   verifyPendingSlackChallenge,
 } from '../slack/installation-handshake.ts';
@@ -403,7 +404,12 @@ export class SlackCredentialRecoveryService {
     const verification = await verifyPendingSlackChallenge(
       this.dependencies.settings,
       appSecrets.signingSecret,
-      { now: this.now(), expectedAppId: session.expectedAppId, expectedTeamId: session.expectedTeamId },
+      {
+        now: this.now(),
+        expectedAppId: session.expectedAppId,
+        expectedTeamId: session.expectedTeamId,
+        receivedSince: session.createdAt,
+      },
     );
     if (!verification.verified) throw new SlackCredentialRecoveryError('events_unverified');
     const control = await this.dependencies.identity.getSlackCredentialControl();
@@ -506,8 +512,10 @@ export class SlackCredentialRecoveryService {
  * Slack's URL verification, kept as the Events proof that a recovery waiting
  * on one finalizes with, when it is signed with the signing secret that
  * recovery staged. The active bundle cannot check it: its key root may be
- * lost, and its signing secret may be the one being replaced. Returns the
- * challenge to answer, or undefined for a request that proves nothing.
+ * lost, and its signing secret may be the one being replaced. A request
+ * with a malformed signature or a stale timestamp is refused before the state
+ * read and decryption. Returns the challenge to answer, or undefined for a
+ * request that proves nothing.
  */
 export async function recordSlackRecoveryEventsProof(
   dependencies: {
@@ -518,6 +526,8 @@ export async function recordSlackRecoveryEventsProof(
   },
   request: { rawBody: string; signature: string; timestamp: string },
 ): Promise<{ challenge: string } | undefined> {
+  const now = (dependencies.now ?? Date.now)();
+  if (!slackRequestHeadersFresh(request, now)) return undefined;
   const session = await dependencies.identity.getWaitingSlackRecoverySession();
   if (!session) return undefined;
   let signingSecret: string;
@@ -527,9 +537,7 @@ export async function recordSlackRecoveryEventsProof(
     return undefined;
   }
   if (!slackRequestSignedWith(signingSecret, request)) return undefined;
-  const recorded = await recordPendingSlackChallenge(dependencies.settings, request, {
-    now: (dependencies.now ?? Date.now)(),
-  });
+  const recorded = await recordPendingSlackChallenge(dependencies.settings, request, { now });
   return recorded.accepted ? { challenge: recorded.challenge } : undefined;
 }
 
