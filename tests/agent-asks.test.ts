@@ -5,7 +5,8 @@ import {
   processGatewaySlackEnvelope,
   processSlackAgentAsks,
 } from '../src/channels/slack.ts';
-import { agentTeammateInstructions } from '../src/config/effective-config.ts';
+import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import { agentTeammateHandles, agentTeammateInstructions } from '../src/config/effective-config.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
@@ -26,6 +27,7 @@ import {
   slackAgentThreadKey,
 } from '../src/slack/thread-key.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
+import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { assembleSlackPrompt } from '../src/slack/web-client-context.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
@@ -35,6 +37,7 @@ import {
   streamableSlackMarkdownPrefix,
 } from '../src/slack/message-format.ts';
 import { renderSlackReplyPart } from '../src/slack/reply-continuations.ts';
+import { channelThreadMessage } from './helpers/slack-fixtures.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const allowUserAgent = async () => ({
@@ -88,7 +91,7 @@ test('an ask exchange is bounded by the person message it started from', () => {
 });
 
 test('the collector hands over handle-bearing replies once, after delivery, and only from Channel threads', async () => {
-  const assignment = { agentId: 'agent_support', runtimeContract: 'chickpea-v1' } as ResolvedAssignment;
+  const assignment = { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' } } as ResolvedAssignment;
   const requests: SlackAgentAskRequest[] = [];
   const collector = createAgentAskCollector({
     turn: turn({ requesterTimezone: 'America/New_York' }),
@@ -140,7 +143,7 @@ test('a guest in a chain the thread\'s own Agent started hands its answer back; 
     fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
     originMessageTs: '100.1', threadOwnerAgentId: 'agent_support',
   };
-  const guest = { agentId: 'agent_finance', runtimeContract: 'chickpea-v1', threadGuest: true } as ResolvedAssignment;
+  const guest = { agentId: 'agent_finance', runtimeContract: 'chickpea-v1', threadGuest: true, agent: { kind: 'user' } } as ResolvedAssignment;
   const collect = async (
     askTurn: NormalizedSlackTurn,
     assignment: ResolvedAssignment,
@@ -167,7 +170,7 @@ test('a guest in a chain the thread\'s own Agent started hands its answer back; 
   assert.deepEqual(await collect(turn({ agentAsk: guestAsk }), guest), []);
   assert.deepEqual(await collect(turn(), guest), []);
   assert.deepEqual(
-    await collect(turn({ agentAsk: ownerAsk }), { agentId: 'agent_support', runtimeContract: 'chickpea-v1' } as ResolvedAssignment),
+    await collect(turn({ agentAsk: ownerAsk }), { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' } } as ResolvedAssignment),
     [],
   );
 });
@@ -236,8 +239,9 @@ test('an ask’s trigger is the asking Agent’s message, and the prompt says wh
 });
 
 test('teammate instructions name whom an Agent can ask and how', () => {
-  assert.equal(agentTeammateInstructions({}), undefined);
+  assert.equal(agentTeammateInstructions({ agent: { kind: 'user' } }), undefined);
   const text = agentTeammateInstructions({
+    agent: { kind: 'user' },
     channelTeammates: [
       { name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' },
       { name: 'Legal', handle: 'legal', userGroupId: 'SLEGAL' },
@@ -255,6 +259,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
   assert.match(text!, /Teammates here: "Finance" \(@finance\), "Legal" \(@legal\)\./);
   // A guest gets the answer only when it asks to be mentioned.
   const guest = agentTeammateInstructions({
+    agent: { kind: 'user' },
     threadGuest: true,
     channelTeammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
   });
@@ -851,4 +856,68 @@ test('every streamed prefix of a reply with live mentions is a prefix of its fin
     const prefix = streamableSlackMarkdownPrefix(answer.slice(0, end), live);
     assert.ok(final.startsWith(prefix), `prefix at ${end}: ${JSON.stringify(prefix)}`);
   }
+});
+
+/** A person's @Chickpea request and a person's @finance mention, routed as Slack admits them. */
+async function chickpeaAndFinanceRoutes() {
+  const { store } = await routingFixture();
+  await store.materializeChickpeaAgent();
+  const route = async (patch: Partial<NormalizedSlackTurn>) => {
+    const routed = await resolveAgentRoute({
+      turn: turn(patch), surface: 'channel', actor: { channelMember: true, fullMember: true },
+      config: store, authorizeUserAgent: allowUserAgent,
+    });
+    assert.equal(routed.kind, 'routed');
+    return (routed as Extract<typeof routed, { kind: 'routed' }>).assignment;
+  };
+  return {
+    chickpea: await route({ source: 'app_mention', text: '<@UBOT> list my Agents', messageTs: '300.1', threadTs: '300.1' }),
+    finance: await route({ source: 'agent_mention', text: '<!subteam^SFINANCE|@finance> what is Q3?', messageTs: '400.1', threadTs: '400.1' }),
+  };
+}
+
+const AGENT_LISTING = '1. **Finance** (@finance): Active.\n2. **Support** (<!subteam^SSUPPORT|@support>): Active.';
+
+test('the built-in Chickpea lists Agents by handle without mentioning them live', async () => {
+  const { chickpea, finance } = await chickpeaAndFinanceRoutes();
+  assert.equal(chickpea.agentId, CHICKPEA_AGENT_ID);
+  // Routing still names the Channel's Agents; Chickpea's prompt and reply do not.
+  assert.deepEqual(chickpea.channelTeammates?.map(({ handle }) => handle), ['finance', 'support']);
+  assert.equal(agentTeammateInstructions(chickpea), undefined);
+  assert.equal(
+    canonicalSlackMarkdownText(AGENT_LISTING, agentTeammateHandles(chickpea)),
+    '1. **Finance** (@finance): Active.\n2. **Support** (@\u2060support): Active.',
+  );
+  // A user Agent still mentions its teammates live.
+  assert.match(agentTeammateInstructions(finance)!, /Teammates here: "Support" \(@support\)\./);
+  assert.equal(
+    canonicalSlackMarkdownText(AGENT_LISTING, agentTeammateHandles(finance)),
+    '1. **Finance** (@finance): Active.\n2. **Support** (<!subteam^SSUPPORT|@support>): Active.',
+  );
+});
+
+test('a reply the built-in Chickpea posts asks no Agent it names; a person\'s mention and an Agent\'s reply still do', async () => {
+  const { chickpea, finance } = await chickpeaAndFinanceRoutes();
+  // Slack never turns the bot's own post into a turn.
+  assert.deepEqual(
+    normalizeSlackTurn(channelThreadMessage({ event: { user: 'UBOT', bot_id: 'BBOT', text: AGENT_LISTING } }), { botUserId: 'UBOT' }),
+    { status: 'ignored', reason: 'bot_message' },
+  );
+  const delivered = async (assignment: ResolvedAssignment) => {
+    const requests: SlackAgentAskRequest[] = [];
+    const collector = createAgentAskCollector({
+      turn: turn({ messageTs: '300.1', threadTs: '300.1' }),
+      assignment,
+      dispatch: async (request) => { requests.push(request); },
+    });
+    collector.note({ messageTs: '300.2', text: canonicalSlackMarkdownText(AGENT_LISTING, agentTeammateHandles(assignment)) });
+    await collector.flush('succeeded');
+    return requests;
+  };
+  assert.deepEqual(await delivered(chickpea), []);
+  // A person's mention of @finance routed to Finance, and Finance's reply naming Support asks it.
+  assert.equal(finance.agentId, 'agent_finance');
+  const [ask] = await delivered(finance);
+  assert.equal(ask?.fromAgentId, 'agent_finance');
+  assert.deepEqual(ask?.deliveries.flatMap(({ text }) => mentionedHandleWords(text)), ['finance', 'support']);
 });
