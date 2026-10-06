@@ -1,7 +1,7 @@
 {
   "sourceVersion": 1,
-  "revision": 2,
-  "generatedAt": "2026-09-22T00:00:00.000Z",
+  "revision": 3,
+  "generatedAt": "2026-10-06T00:00:00.000Z",
   "entries": [
     {
       "canonical": "openai/gpt-6-astra",
@@ -177,6 +177,23 @@
       "provenance": {
         "sourceRefs": ["npm:@earendil-works/pi-ai@0.87.1"],
         "reviewedAt": "2026-09-22"
+      },
+      "laneStatus": {
+        "apiKey": { "state": "backfill" }
+      }
+    },
+    {
+      "canonical": "anthropic/claude-sonnet-5-5",
+      "displayName": "Claude Sonnet 5.5",
+      "lanes": {
+        "apiKey": "anthropic-messages-opus-tier@1"
+      },
+      "provenance": {
+        "sourceRefs": [
+          "npm:@earendil-works/pi-ai@1.0.4",
+          "https://platform.claude.com/docs/en/models/sonnet-5-5/overview"
+        ],
+        "reviewedAt": "2026-10-06"
       },
       "laneStatus": {
         "apiKey": { "state": "backfill" }

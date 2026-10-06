@@ -45,6 +45,7 @@ const REVIEWED_OPENAI_MODELS = new Set([
 const REVIEWED_ANTHROPIC_MODELS = new Set([
   'claude-fable-5-1',
   'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
 ]);

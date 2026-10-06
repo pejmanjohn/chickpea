@@ -35,6 +35,7 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
     suggestions: [
       'anthropic/claude-fable-5-1',
       'anthropic/claude-opus-5-5',
+      'anthropic/claude-sonnet-5-5',
       'anthropic/claude-fable-5',
       'anthropic/claude-opus-5',
       'anthropic/claude-sonnet-5',
