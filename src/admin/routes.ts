@@ -7943,24 +7943,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         error.code === 'document_not_found' ? 404 : error.code === 'github_error' ? 502 : 400);
     };
     try {
+      let probeFailure: SkillImportError;
       try {
         const resolution = await resolveSkillSource(source, fetch);
         return c.json({ resolution });
       } catch (error) {
         if (!(error instanceof SkillImportError)) throw error;
-        if (error.code !== 'access_candidate') return skillImportFailure(error);
+        probeFailure = error;
       }
+      // Serving many installations, the anonymous probe leaves from shared
+      // egress, so its rate limit says nothing about the repository: ask the
+      // installation's own binding instead, and keep the probe's answer when
+      // no binding grants the repository.
+      const appCandidate = probeFailure.code === 'access_candidate' || (probeFailure.code === 'rate_limited' &&
+        deploymentServesManyInstallations(c.env as PlatformEnv | undefined));
+      if (!appCandidate) return skillImportFailure(probeFailure);
 
       // Public imports are available to Agent authors. Private repository
       // access still requires authority over the shared GitHub App connection.
       const principal = principalByContext.get(c);
       if (!principal || !permissionForRole(principal.role).has('admin.configure')) {
-        return repositoryUnavailable();
+        return skillImportFailure(probeFailure);
       }
 
       const connection = await getGithubConnection(settings(c), c.env as PlatformEnv | undefined);
       if (connection.mode !== 'app') {
-        return repositoryUnavailable();
+        return skillImportFailure(probeFailure);
       }
 
       let installation;
@@ -7973,7 +7981,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return githubAccessUnavailable();
       }
       if (!installation) {
-        return repositoryUnavailable();
+        return skillImportFailure(probeFailure);
       }
 
       let token: string;
@@ -7992,7 +8000,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           return githubRateLimited();
         }
         if (status === 403 || status === 404 || status === 422) {
-          return repositoryUnavailable();
+          return skillImportFailure(probeFailure);
         }
         return githubAccessUnavailable();
       }

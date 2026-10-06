@@ -148,8 +148,18 @@ function platform(t: TestContext, options: { app?: unknown; admitted?: (id: stri
 
 interface Fetched { method: string; url: string; body?: string }
 
-/** GitHub as each test sees it: every request recorded; tokens, repository lists and repository installations answered. */
-function github(t: TestContext, options: { repositoryInstallation?: Record<string, number>; mintStatus?: number } = {}): Fetched[] {
+const SKILL_COMMIT = '5'.repeat(40);
+
+/**
+ * GitHub as each test sees it: every request recorded; tokens, repository
+ * lists and repository installations answered, and an installation token
+ * reads a private repository holding one skill. `anonymous` is how GitHub
+ * answers the Worker's anonymous repository probe.
+ */
+function github(
+  t: TestContext,
+  options: { repositoryInstallation?: Record<string, number>; mintStatus?: number; anonymous?: ResponseInit } = {},
+): Fetched[] {
   const fetched: Fetched[] = [];
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
@@ -173,7 +183,13 @@ function github(t: TestContext, options: { repositoryInstallation?: Record<strin
     }
     if (url.hostname === 'api.github.com' && /^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) {
       // Anonymous metadata: a private repository is not found.
-      return new Response('{}', { status: 404 });
+      if (!request.headers.has('authorization')) return new Response('{}', options.anonymous ?? { status: 404 });
+      return Response.json({ default_branch: 'main', private: true });
+    }
+    if (url.pathname.endsWith('/commits/main')) return new Response(SKILL_COMMIT);
+    if (url.pathname.endsWith(`/git/trees/${SKILL_COMMIT}`)) return Response.json({ tree: [{ path: 'SKILL.md', type: 'blob' }] });
+    if (url.pathname.endsWith('/contents/SKILL.md')) {
+      return new Response('---\nname: bound-skill\ndescription: Bound instructions.\n---\n# Body');
     }
     return new Response('{}', { status: 200 });
   }) as typeof fetch;
@@ -643,6 +659,40 @@ test('X5 skill import: a private repository resolves only through the installati
   assert.deepEqual(mints(fetched), [GITHUB_A]);
   const token = fetched.find(({ url }) => url.endsWith('/access_tokens'))!;
   assert.deepEqual(JSON.parse(token.body!), { repositories: ['skills'], permissions: { contents: 'read' } });
+});
+
+test('X5 skill import: a rate-limited anonymous probe still imports through the binding that grants the repository, and otherwise stays rate-limited', async (t) => {
+  platform(t);
+  const { request } = hostedAdmin(t);
+  const resolve = (env: Record<string, unknown>, source: string) =>
+    request(env, '/admin/api/skills/resolve', { method: 'POST', body: JSON.stringify({ source }) });
+  const rateLimited = {
+    error: 'github_rate_limited',
+    message: 'GitHub rate limit reached. For a public skill, try a direct link to its folder or SKILL.md file, or retry after the limit resets.',
+  };
+  for (const anonymous of [{ status: 429 }, { status: 403, headers: { 'retry-after': '60' } }]) {
+    const label = String(anonymous.status);
+    let fetched = github(t, { anonymous });
+    const own = await resolve(ENV_A, 'acme-a/skills');
+    assert.equal(own.status, 200, label);
+    const { resolution } = await own.json() as { resolution: { source: unknown; skills: Array<{ name: string }> } };
+    assert.deepEqual(resolution.source, { visibility: 'private', access: 'github_app' }, label);
+    assert.deepEqual(resolution.skills.map(({ name }) => name), ['bound-skill'], label);
+    assert.deepEqual(mints(fetched), [GITHUB_A], label);
+
+    // B holds no binding for A's account: still the rate limit, with no App lookup and no mint.
+    fetched = github(t, { anonymous });
+    const foreign = await resolve(ENV_B, 'acme-a/skills');
+    assert.equal(foreign.status, 429, label);
+    assert.deepEqual(await foreign.json(), rateLimited, label);
+    assert.deepEqual(fetched.filter(({ url }) => url.endsWith('/installation') || url.endsWith('/access_tokens')), [], label);
+
+    // A's binding does not select the repository, so GitHub refuses its token.
+    github(t, { anonymous, mintStatus: 422 });
+    const unselected = await resolve(ENV_A, 'acme-a/unselected');
+    assert.equal(unselected.status, 429, label);
+    assert.deepEqual(await unselected.json(), rateLimited, label);
+  }
 });
 
 test('X5 lookup: getRepositoryInstallation answers only the binding for the owner, and only while GitHub agrees', async (t) => {
