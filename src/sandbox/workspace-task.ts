@@ -44,6 +44,7 @@ import {
   workspaceSessionCapMessage,
   WORKSPACE_TASK_TOOL_NAME,
   WORKSPACE_UNAVAILABLE_MESSAGE,
+  withRestoreNotice,
   type WorkspaceResolver,
 } from './workspace-tools.ts';
 
@@ -248,7 +249,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
       state.running.set(session.id, running + 1);
       const milestones = createMilestoneRecorder(toolCallId, options.onMilestone);
       try {
-        return { output: await runTask(session, data.task) };
+        return { output: withRestoreNotice(session, await runTask(session, data.task)) };
       } finally {
         // A throw (or an abandoned call) leaves its step failed and later
         // steps not run, so the indicator never shows work still going.

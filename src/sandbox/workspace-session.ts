@@ -156,6 +156,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
   private opened: Promise<{ stub: TStub; state: WorkspaceOpenState }> | undefined;
   private flueSandbox: Promise<Sandbox> | undefined;
   private touched = false;
+  private restoreFailed = false;
 
   constructor(private readonly options: WorkspaceSessionOptions<TStub>) {
     this.id = options.id;
@@ -200,6 +201,16 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     return this.flueSandbox;
   }
 
+  /**
+   * Whether this request's checkpoint restore did not complete, reported
+   * once: the workspace that `open` called restored started empty.
+   */
+  takeRestoreFailure(): boolean {
+    const failed = this.restoreFailed;
+    this.restoreFailed = false;
+    return failed;
+  }
+
   /** DO records only: running state and checkpoint presence. Starts nothing. */
   async describe(): Promise<WorkspaceDescription> {
     return this.reconnecting().describeWorkspace(this.fingerprint);
@@ -213,6 +224,7 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
     await this.reconnecting().discardWorkspace();
     this.opened = undefined;
     this.flueSandbox = undefined;
+    this.restoreFailed = false;
   }
 
   /**
@@ -288,7 +300,9 @@ export class WorkspaceSession<TStub extends WorkspaceSandboxStub = WorkspaceSand
       }
       // A cold follow-up resumes from the thread's checkpoint. The restore
       // starts the container, so it happens only once the turn needs it.
-      if (restorable) await stub.restoreWorkspace(this.fingerprint);
+      if (restorable && (await stub.restoreWorkspace(this.fingerprint)) === 'unavailable') {
+        this.restoreFailed = true;
+      }
       // Commits carry the installation's identity, never one the model
       // invents. A failure leaves Git unconfigured but the workspace usable.
       await stub.applyGitIdentity().catch(() => {
