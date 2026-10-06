@@ -108,6 +108,15 @@ test('the host preserves request wording and provides identity without classifyi
   }
 });
 
+test('the trusted app context tells the model that the bot mention addresses it', () => {
+  const turn = threadTurn({ text: '<@UBOT> what does a canary release check?', source: 'app_mention' });
+  const prompt = assembleSlackPrompt(turn, currentMessageOnlyContext(turn), {
+    slackApp: { botUserId: 'UBOT', displayName: 'Chickpea' },
+  });
+  assert.ok(prompt.includes('<@UBOT> is your own Slack mention: a message that mentions it is addressed to you.'));
+  assert.ok(prompt.indexOf('<@UBOT> is your own') < prompt.indexOf('<@UBOT> what does'));
+});
+
 test('candidate classification recovers a retained correction beyond its two-page scan', async () => {
   const store = new SqliteConfigStore(':memory:');
   const turn = threadTurn({ messageTs: '1100.000000', text: 'Please use the correction for the report.' });
