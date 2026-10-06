@@ -147,7 +147,38 @@ test('Anthropic cache prices apply only from their review date, and outlast the 
     observedAt: july.staleAfter,
   }));
   assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
-  assert.equal(afterJulyStale.priceVersionId, 'anthropic-cache_2026-10-04');
+  assert.equal(afterJulyStale.priceVersionId, 'anthropic-haiku-4-5_2026-10-06');
+});
+
+test('claude-sonnet-5 and claude-sonnet-5-5 are priced from their review date, with cache reads and writes', () => {
+  const cached = { cacheReadTokens: 10_000, cacheWriteTokens: 2_000, totalTokens: 13_200 };
+  for (const model of ['claude-sonnet-5', 'claude-sonnet-5-5']) {
+    // 1,000 × $2 + 200 × $10 + 10,000 × $0.20 + 2,000 × $2.50 per million tokens.
+    assert.deepEqual(estimateUsage(measurement('anthropic', model, 1_000, 200, {
+      ...cached,
+      observedAt: Date.UTC(2026, 9, 6, 17),
+    })), {
+      estimateCompleteness: 'complete',
+      estimateAmountMicros: 11_000,
+      estimateCurrency: 'USD',
+      priceVersionId: `anthropic-${model.replace('claude-', '')}_2026-10-06`,
+      priceUnknownReason: null,
+    });
+    assert.equal(estimateUsage(measurement('anthropic', model, 1_000, 200, {
+      ...cached,
+      observedAt: Date.UTC(2026, 9, 5, 23),
+    })).priceUnknownReason, 'price_unknown');
+  }
+});
+
+test('the re-reviewed OpenAI and OpenRouter prices stay fresh past the July staleness date', () => {
+  const observedAt = Date.UTC(2026, 9, 26);
+  for (const [provider, model, version] of [
+    ['openai', 'gpt-4.1-mini', 'openai_2026-10-06'],
+    ['openrouter', 'openai/gpt-4.1', 'openrouter_2026-10-06'],
+  ] as const) {
+    assert.equal(estimateUsage(measurement(provider, model, 1_000, 200, { observedAt })).priceVersionId, version);
+  }
 });
 
 test('one-hour cache writes leave an estimate partial, whatever the catalog holds', () => {
@@ -248,7 +279,7 @@ test('missing billable dimensions, effective dates, and catalog staleness never 
     })).priceUnknownReason,
     'price_unknown',
   );
-  const openai = RELEASE_PRICE_CATALOGS.find((version) => version.providerId === 'openai')!;
+  const openai = RELEASE_PRICE_CATALOGS.filter((version) => version.providerId === 'openai').at(-1)!;
   assert.equal(
     estimateUsage(measurement('openai', 'gpt-4.1-mini', 10, 5, {
       observedAt: openai.staleAfter,

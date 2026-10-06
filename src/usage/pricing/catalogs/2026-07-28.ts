@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
-
-import type { UsagePriceRate, UsagePriceVersion } from '../types.ts';
+import type { UsagePriceVersion } from '../types.ts';
+import { version } from './version.ts';
 
 const REVIEWED_AT = Date.UTC(2026, 6, 28);
 const STALE_AFTER = REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
@@ -16,16 +15,6 @@ const GLM_4_7_STALE_AFTER = GLM_4_7_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 const ANTHROPIC_CACHE_REVIEWED_AT = Date.UTC(2026, 9, 4);
 const ANTHROPIC_CACHE_STALE_AFTER = ANTHROPIC_CACHE_REVIEWED_AT + 90 * 24 * 60 * 60 * 1_000;
 
-function version(
-  input: Omit<UsagePriceVersion, 'contentHash' | 'rates'> & {
-    rates: Array<Omit<UsagePriceRate, 'priceVersionId'>>;
-  },
-): UsagePriceVersion {
-  const rates = input.rates.map((rate) => ({ ...rate, priceVersionId: input.id }));
-  const contentHash = createHash('sha256').update(JSON.stringify({ ...input, rates })).digest('hex');
-  return { ...input, contentHash, rates };
-}
-
 /**
  * Release-pinned list-price snapshots for only the U0 fixture-proven routes.
  * Workers AI cached input and Anthropic cache reads and writes are modeled
@@ -33,7 +22,7 @@ function version(
  * negotiated pricing, credits, taxes, and routing-specific adjustments are
  * deliberately not modeled.
  */
-export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
+export const PRICE_CATALOGS_2026_07_28: UsagePriceVersion[] = [
   version({
     id: 'anthropic_2026-07-28',
     providerId: 'anthropic',
