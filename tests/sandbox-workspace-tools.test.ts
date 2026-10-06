@@ -44,6 +44,7 @@ import {
 } from '../src/sandbox/coding-worker-binding.ts';
 import {
   MAX_WORKSPACE_EXEC_OUTPUT_BYTES,
+  WORKSPACE_RESTORE_FAILED_NOTICE,
   WORKSPACE_TOOL_NAMES,
   createWorkspaceTools,
   workspaceDirectoryPath,
@@ -74,6 +75,7 @@ function fakeStub(
     state?: 'warm' | 'fresh' | 'retired';
     turnId?: string;
     gitIdentityFails?: boolean;
+    restoreResult?: 'restored' | 'unavailable';
   } = {},
 ): WorkspaceSandboxStub {
   return {
@@ -100,7 +102,7 @@ function fakeStub(
     },
     async restoreWorkspace() {
       log.calls.push('restoreWorkspace');
-      return 'restored';
+      return options.restoreResult ?? 'restored';
     },
     async exists() {
       log.calls.push('exists');
@@ -251,6 +253,19 @@ test('the first operation reserves the session and restores the checkpoint once,
   assert.equal(log.calls.filter((call) => call === 'beginWorkspaceTurn').length, 1);
   assert.equal(log.calls.filter((call) => call === 'reserveSession').length, 1);
   assert.equal(log.calls.filter((call) => call === 'restoreWorkspace').length, 1);
+});
+
+test('a checkpoint restore that did not complete is reported once, on the first result after it', async () => {
+  const restored = session({ calls: [] }, { stub: { restorable: true } });
+  assert.equal((await run(toolsFor(restored).workspace_exec!, { command: 'ls' })).notice, undefined);
+
+  const target = session({ calls: [] }, { stub: { restorable: true, restoreResult: 'unavailable' } });
+  const tools = toolsFor(target);
+  assert.equal((await run(tools.workspace_open!, {})).state, 'restored');
+  const first = await run(tools.workspace_exec!, { command: 'ls' });
+  assert.equal(first.ok, true);
+  assert.equal(first.notice, WORKSPACE_RESTORE_FAILED_NOTICE);
+  assert.equal((await run(tools.workspace_exec!, { command: 'ls' })).notice, undefined);
 });
 
 test('activation presets the Git identity after the checkpoint restore, before the first operation', async () => {

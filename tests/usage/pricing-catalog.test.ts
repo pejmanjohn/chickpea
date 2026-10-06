@@ -24,6 +24,11 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       'cloudflare',
       'cloudflare-workers-ai',
       'anthropic',
+      'anthropic',
+      'anthropic',
+      'anthropic',
+      'openai',
+      'openrouter',
     ],
   );
   for (const version of RELEASE_PRICE_CATALOGS) {
@@ -71,6 +76,26 @@ test('release catalog contains only fixture-proven priced routes with immutable 
     [
       ['anthropic_2026-07-28', Date.UTC(2026, 6, 28), 'claude-haiku-4-5', 1_000_000, 5_000_000, null, null],
       ['anthropic-cache_2026-10-04', Date.UTC(2026, 9, 4), 'claude-haiku-4-5', 1_000_000, 5_000_000, 100_000, 1_250_000],
+      ['anthropic-sonnet-5-5_2026-10-06', Date.UTC(2026, 9, 6), 'claude-sonnet-5-5', 2_000_000, 10_000_000, 200_000, 2_500_000],
+      ['anthropic-sonnet-5_2026-10-06', Date.UTC(2026, 9, 6), 'claude-sonnet-5', 2_000_000, 10_000_000, 200_000, 2_500_000],
+      ['anthropic-haiku-4-5_2026-10-06', Date.UTC(2026, 9, 6), 'claude-haiku-4-5', 1_000_000, 5_000_000, 100_000, 1_250_000],
+    ],
+  );
+  assert.deepEqual(
+    RELEASE_PRICE_CATALOGS
+      .filter((version) => ['openai', 'openrouter'].includes(version.providerId))
+      .map((version) => [
+        version.id,
+        version.staleAfter,
+        version.rates[0]?.modelId,
+        version.rates[0]?.inputMicrosPerUnit,
+        version.rates[0]?.outputMicrosPerUnit,
+      ]),
+    [
+      ['openai_2026-07-28', Date.UTC(2026, 9, 26), 'gpt-4.1-mini', 400_000, 1_600_000],
+      ['openrouter_2026-07-28', Date.UTC(2026, 9, 26), 'openai/gpt-4.1', 2_000_000, 8_000_000],
+      ['openai_2026-10-06', Date.UTC(2027, 0, 4), 'gpt-4.1-mini', 400_000, 1_600_000],
+      ['openrouter_2026-10-06', Date.UTC(2027, 0, 4), 'openai/gpt-4.1', 2_000_000, 8_000_000],
     ],
   );
 });

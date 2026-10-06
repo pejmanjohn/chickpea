@@ -127,6 +127,14 @@ export const WORKSPACE_SESSION_CAP_MESSAGE =
 export const HOSTED_WORKSPACE_SESSION_CAP_MESSAGE =
   'The coding workspace monthly session limit has been reached. Say so. Do not retry.';
 
+export const WORKSPACE_RESTORE_FAILED_NOTICE =
+  'The checkpoint for this workspace could not be restored, so it started empty. Clone the repository again; do not assume earlier files exist.';
+
+/** Add the restore-failure notice to the first result after a failed checkpoint restore. */
+export function withRestoreNotice<T extends object>(target: WorkspaceSession, output: T): T {
+  return target.takeRestoreFailure() ? { ...output, notice: WORKSPACE_RESTORE_FAILED_NOTICE } : output;
+}
+
 /** What the model is told when a monthly cap refuses the workspace. */
 export function workspaceSessionCapMessage(error: SandboxSessionCapError): string {
   return error.hosted ? HOSTED_WORKSPACE_SESSION_CAP_MESSAGE : WORKSPACE_SESSION_CAP_MESSAGE;
@@ -154,7 +162,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
 
   // Every tool body runs under `guard`, so path normalization inside it
   // surfaces as an `invalid_path` result like any other expected refusal.
-  const withWorkspace = async <T>(
+  const withWorkspace = async <T extends object>(
     name: string | undefined,
     work: (target: WorkspaceSession, name: string) => Promise<T>,
     signal: AbortSignal | undefined,
@@ -165,7 +173,7 @@ export function createWorkspaceTools(options: WorkspaceToolsOptions) {
     return guard(async () => {
       const normalized = normalizeWorkspaceName(name);
       const target = await session(normalized, access);
-      return 'ok' in target ? target : work(target, normalized);
+      return 'ok' in target ? target : withRestoreNotice(target, await work(target, normalized));
     }, signal);
   };
 

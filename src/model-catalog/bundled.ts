@@ -33,6 +33,14 @@ export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
     displayName: 'Claude Opus 5.5',
     lanes: { anthropic_api_key: 'anthropic-messages-opus-tier@1' },
   },
+  // claude-sonnet-5-5 takes the claude-opus-5-5 request shape: adaptive
+  // thinking and no temperature, which it refuses. Usage pricing does not
+  // read profile costs.
+  {
+    id: 'anthropic/claude-sonnet-5-5',
+    displayName: 'Claude Sonnet 5.5',
+    lanes: { anthropic_api_key: 'anthropic-messages-opus-tier@1' },
+  },
   {
     id: 'anthropic/claude-opus-5',
     displayName: 'Claude Opus 5',

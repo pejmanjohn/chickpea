@@ -1570,12 +1570,14 @@ export class WorkspaceManagementService {
     }));
     const visibleRoutines = visible.filter((entry): entry is NonNullable<typeof entry> =>
       entry !== undefined);
+    const routineStore = this.stores.routines;
     return {
       routines: await Promise.all(visibleRoutines.map(async ({ routine, reference }) => {
         const contentAccess = routine.destination.kind === 'direct_thread'
           ? 'private' as const
           : await routineContentAccess(this.stores.work, routine);
         const readable = contentAccess === 'public' || routine.destination.kind === 'direct_thread';
+        const [lastRun] = await routineStore.listRuns({ routineId: routine.id, limit: 1 });
         return {
           id: routine.id,
           workspaceId: routine.workspaceId,
@@ -1596,6 +1598,9 @@ export class WorkspaceManagementService {
           contentAccess,
           owningAgentId: reference.agentId,
           requiredConnectionAccountIds: reference.requiredConnectionAccountIds,
+          lastRun: lastRun
+            ? { status: lastRun.status, publicError: lastRun.publicError, finishedAt: lastRun.finishedAt }
+            : null,
         };
       })),
     };

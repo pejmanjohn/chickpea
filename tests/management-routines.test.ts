@@ -286,11 +286,39 @@ test('a routed Agent manages and inspects only its own routines', async () => {
       name: 'inspect_routines',
       args: { workspaceId, channelId: 'C_SELF_ROUTINE' },
     });
-    const routines = (inspected as { ok: true; result: {
-      routines: Array<{ id: string; name: string | null; contentAccess: string; nextRunAt: number; nextRunTime: { isoUtc: string } }>;
-    } }).result.routines;
+    type InspectedRoutine = {
+      id: string; name: string | null; contentAccess: string; nextRunAt: number; nextRunTime: { isoUtc: string };
+      lastRun: { status: string; publicError: string | null; finishedAt: number | null } | null;
+    };
+    const routines = (inspected as { ok: true; result: { routines: InspectedRoutine[] } }).result.routines;
     assert.equal(routines.length, 1);
     assert.equal(routines[0]!.nextRunTime.isoUtc, new Date(routines[0]!.nextRunAt).toISOString());
+    assert.equal(routines[0]!.lastRun, null);
+
+    // The listing reports how the latest occurrence ended, not only the routine state.
+    const saved = (await f.routines.getRoutine(routines[0]!.id))!;
+    const occurrence = await f.routines.createOccurrence({
+      runId: 'rrun_self_routine_last', idempotencyKey: 'self-routine:last-run', routineId: saved.id,
+      routineVersion: saved.version, scheduledFor: NOW, triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+    });
+    await f.routines.startAdmissionAttempt({
+      occurrenceId: occurrence.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+    });
+    await f.routines.transitionRun({
+      occurrenceId: occurrence.id, from: ['admitting'], to: 'failed', at: NOW,
+      failureClass: 'deadline_exceeded', publicError: 'The routine occurrence expired before execution began.',
+    });
+    const reinspected = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal, eventId: `Ev_SELF_ROUTINE_${++sequence}` },
+      identity: f.identity,
+      service: f.service,
+      name: 'inspect_routines',
+      args: { workspaceId, channelId: 'C_SELF_ROUTINE' },
+    });
+    assert.deepEqual(
+      (reinspected as { ok: true; result: { routines: InspectedRoutine[] } }).result.routines[0]?.lastRun,
+      { status: 'failed', publicError: 'The routine occurrence expired before execution began.', finishedAt: NOW },
+    );
     assert.equal(
       (await f.config.getAgentScheduleReference(routines[0]!.id))?.agentId,
       support.id,

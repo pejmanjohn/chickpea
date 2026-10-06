@@ -13294,7 +13294,7 @@ test('onboarding skips channel publication, validates a provider, requires a mod
       { id: 'workers-ai', status: 'env', modelCount: null, enabled: true },
     ],
     modelProviders: [
-      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'] },
+      { id: 'anthropic', configured: false, source: 'missing', suggestions: ['anthropic/claude-sonnet-5-5', 'anthropic/claude-sonnet-5', 'anthropic/claude-opus-5'] },
       { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
       { id: 'openrouter', configured: false, source: 'missing', suggestions: ['openrouter/anthropic/claude-sonnet-5'] },
       { id: 'cloudflare', configured: true, source: 'Workers AI binding', suggestions: ['cloudflare/@cf/zai-org/glm-5.2'] },
@@ -13348,19 +13348,19 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.match(harness.app.innerHTML, /class="ic onboarding-model-select-icon"/);
   // The step opens on the suggested model with a one-line reason, so the
   // common case is a single click; every other model stays in the select.
-  assert.match(harness.app.innerHTML, /<option value="anthropic\/claude-sonnet-5" selected>claude-sonnet-5 · recommended<\/option>/);
-  assert.match(harness.app.innerHTML, /onboarding-model-note-badge">Recommended<\/span><span><strong>Claude Sonnet 5<\/strong>/);
+  assert.match(harness.app.innerHTML, /<option value="anthropic\/claude-sonnet-5-5" selected>claude-sonnet-5-5 · recommended<\/option>/);
+  assert.match(harness.app.innerHTML, /onboarding-model-note-badge">Recommended<\/span><span><strong>Claude Sonnet 5\.5<\/strong>/);
   assert.match(harness.app.innerHTML, /data-action="onboarding-model-continue">Select Model<\/button>/);
 
   harness.listeners.change?.({
-    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5'),
+    target: inputTarget({ 'data-action': 'onboarding-model-select' }, 'anthropic/claude-sonnet-5-5'),
   });
   harness.listeners.click?.({
     target: actionTarget({ 'data-action': 'onboarding-model-continue' }),
   });
   await flushAsync();
 
-  assert.equal(harness.onboardingTryPosts.at(-1)?.modelId, 'anthropic/claude-sonnet-5');
+  assert.equal(harness.onboardingTryPosts.at(-1)?.modelId, 'anthropic/claude-sonnet-5-5');
   assert.equal(harness.onboardingTryPosts.at(-1)?.expectedDefaultRevision, 2);
   assert.match(harness.app.innerHTML, /Try Chickpea/);
   assert.match(harness.app.innerHTML, /https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN/);
@@ -19082,7 +19082,7 @@ const hostedOnboardingProviders = {
     { id: 'workers-ai', status: 'missing', modelCount: null },
   ],
   modelProviders: [
-    { id: 'anthropic', configured: true, source: 'stored', suggestions: ['anthropic/claude-sonnet-5'] },
+    { id: 'anthropic', configured: true, source: 'stored', suggestions: ['anthropic/claude-sonnet-5-5', 'anthropic/claude-sonnet-5'] },
     { id: 'openai', configured: false, source: 'missing', suggestions: ['openai/gpt-5.6-terra'] },
     { id: 'openrouter', configured: false, source: 'missing', suggestions: [] },
   ],

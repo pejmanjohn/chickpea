@@ -904,3 +904,67 @@ test('private DM product acceptance matrix stays linked to executable evidence',
     }
   }
 });
+
+test('a one-time job first claimed after its admission grace fails and posts the failure notice', async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-routine-missed-once-'));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  let now = new Date().setUTCMinutes(59, 0, 0);
+  const store = new SqliteRoutineStore(join(directory, 'state.sqlite'), () => now);
+  try {
+    const dueAt = now;
+    const routine = await store.save({
+      actorId: 'U_CREATOR', actorClass: 'member', workspaceId: 'T_ACCEPT', channelId: 'C_ACCEPT',
+      draft: {
+        action: 'create', routineId: 'routine_missed_once',
+        definition: {
+          name: 'Canary post', description: '', taskText: 'Post the canary check.',
+          triggerKind: 'once', scheduleInput: 'In one minute',
+          scheduleJson: JSON.stringify({ version: 1, kind: 'once', at: dueAt }),
+          timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1',
+        },
+        nextRunAt: dueAt, projectedDailyStarts: 0, reservations: [{ windowStart: dueAt, count: 1 }],
+      },
+      idempotencyKey: 'missed-once:create',
+    });
+    const posts: Array<Record<string, unknown>> = [];
+    const client = { chat: { postMessage: async (input: Record<string, unknown>) => {
+      posts.push(input);
+      return { ok: true, channel: 'C_ACCEPT', ts: '1785100062.000100' };
+    } } };
+    let dispatches = 0;
+    const agent = handle();
+    agent.dispatch = async () => { dispatches += 1; throw new Error('a missed job dispatches nothing'); };
+    const scheduler = new RoutineScheduler(store, new RoutineAdmissionController(store, {
+      execute: (run, attempt) => executeRoutineOccurrence({
+        env: {}, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, {
+        ...executionDependencies(() => now),
+        resolveAccess: async (run, saved) => ({
+          ...(await executionDependencies(() => now).resolveAccess(run, saved)), client: client as never,
+        }),
+        loadCatalog: async () => ({ status: 'bundled' as const, revision: 0 }),
+        handle: agent,
+      }),
+    }));
+
+    // The first tick comes hours after the job was due.
+    now += 4 * 60 * 60_000;
+    await scheduler.heartbeat(now, 'heartbeat-late');
+    const [missed] = await store.listRuns({ routineId: routine.id });
+    assert.equal(missed?.status, 'failed');
+    assert.equal(missed?.failureClass, 'deadline_exceeded');
+    assert.equal(missed?.publicError, 'The routine occurrence expired before execution began.');
+    assert.equal(dispatches, 0);
+    assert.equal(posts.length, 1);
+    assert.match(String(posts[0]?.text), /Routine needs attention/);
+    assert.match(String(posts[0]?.text), /The routine occurrence expired before execution began\./);
+    assert.equal((await store.getRoutine(routine.id))?.state, 'completed');
+
+    now += 60_000;
+    await scheduler.heartbeat(now, 'heartbeat-after');
+    assert.equal((await store.listRuns({ routineId: routine.id })).length, 1);
+    assert.equal(posts.length, 1);
+  } finally {
+    store.close();
+  }
+});

@@ -1,10 +1,14 @@
 import type { StateDb } from '../../state/state-db.ts';
 import { addColumnIfMissing } from '../../state/schema-links.ts';
 import { UsageStateError } from '../store-error.ts';
-import { RELEASE_PRICE_CATALOGS } from './catalogs/2026-07-28.ts';
+import { PRICE_CATALOGS_2026_07_28 } from './catalogs/2026-07-28.ts';
+import { PRICE_CATALOGS_2026_10_06 } from './catalogs/2026-10-06.ts';
 import type { UsagePriceRate, UsagePriceVersion } from './types.ts';
 
-export { RELEASE_PRICE_CATALOGS } from './catalogs/2026-07-28.ts';
+export const RELEASE_PRICE_CATALOGS: UsagePriceVersion[] = [
+  ...PRICE_CATALOGS_2026_07_28,
+  ...PRICE_CATALOGS_2026_10_06,
+];
 
 export function installReleasePriceCatalogs(db: StateDb): UsagePriceVersion[] {
   db.exec(

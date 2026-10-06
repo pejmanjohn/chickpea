@@ -70,7 +70,7 @@ test('hosted Admin saves, lists and deletes only this installation\'s own encryp
         body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.anthropic }),
       });
       assert.equal(saved.status, 200);
-      assert.deepEqual((await saved.json() as { provider: unknown }).provider, { id: 'anthropic', status: 'stored', modelCount: 6 });
+      assert.deepEqual((await saved.json() as { provider: unknown }).provider, { id: 'anthropic', status: 'stored', modelCount: 7 });
       assert.equal(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS.anthropic), undefined, 'never saved in the clear');
       assert.equal((await settings.getEncryptedCredentialRevision('model_provider.anthropic'))?.revision, 'v1');
 
@@ -83,7 +83,7 @@ test('hosted Admin saves, lists and deletes only this installation\'s own encryp
       const listing = await request('/admin/api/providers');
       assert.deepEqual(await listing.json(), {
         providers: [
-          { id: 'anthropic', status: 'stored', modelCount: 6 },
+          { id: 'anthropic', status: 'stored', modelCount: 7 },
           { id: 'openai', status: 'missing', modelCount: null, activeAuthMethod: 'api_key', subscriptionAvailable: false },
           { id: 'openrouter', status: 'missing', modelCount: null },
         ],

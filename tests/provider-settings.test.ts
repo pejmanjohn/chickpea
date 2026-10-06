@@ -549,7 +549,7 @@ test('provider key POST validates, stores, primes model cache, and rejects bad k
           assert.equal(saved.status, 200);
           assert.deepEqual(await saved.json(), {
             ok: true,
-            provider: { id: 'anthropic', status: 'stored', modelCount: 6 },
+            provider: { id: 'anthropic', status: 'stored', modelCount: 7 },
             models: [
               { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
               { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' },
@@ -561,6 +561,11 @@ test('provider key POST validates, stores, primes model cache, and rejects bad k
               {
                 id: 'claude-opus-5-5',
                 display_name: 'Claude Opus 5.5',
+                context_length: 1_000_000,
+              },
+              {
+                id: 'claude-sonnet-5-5',
+                display_name: 'Claude Sonnet 5.5',
                 context_length: 1_000_000,
               },
               {

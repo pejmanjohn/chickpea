@@ -189,6 +189,7 @@ test('models newer than the pinned Pi release route through reviewed profiles on
     ['openai/gpt-6-sol', 'openai_subscription'],
     ['openai/gpt-6-luna', 'openai_subscription'],
     ['anthropic/claude-opus-5-5', 'anthropic_api_key'],
+    ['anthropic/claude-sonnet-5-5', 'anthropic_api_key'],
     ['anthropic/claude-fable-5-1', 'anthropic_api_key'],
   ] as const;
   const published = parseModelCatalogBytes(await readFile(new URL('../catalog/current.json', import.meta.url)));
@@ -207,6 +208,11 @@ test('models newer than the pinned Pi release route through reviewed profiles on
         assert.equal(resolveModel(route.modelSpecifier).id, route.model.id);
       }
     }
+    // claude-sonnet-5-5 refuses a temperature, which its profile never sends.
+    const sonnet = resolveActiveCatalogRoute('anthropic/claude-sonnet-5-5', 'anthropic_api_key')
+      ?.model as Model<'anthropic-messages'> | undefined;
+    assert.equal(sonnet?.compat?.supportsTemperature, false);
+    assert.equal(sonnet?.compat?.forceAdaptiveThinking, true);
     // Astra's API-key profile omits the `none` effort Astra rejects. It is
     // bundled only: installs that predate the profile would reject a hosted
     // revision naming it.

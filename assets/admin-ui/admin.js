@@ -2450,7 +2450,7 @@
   var ONBOARDING_MODEL_RECOMMENDATIONS = {
     openai: { model: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
     openrouter: { model: "openrouter/openai/gpt-5.6-terra", label: "GPT-5.6 Terra", note: "Our pick: fast, inexpensive, and dependable in Slack." },
-    anthropic: { model: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", note: "A strong default. Opus 5 costs more; Haiku 4.5 costs less." },
+    anthropic: { model: "anthropic/claude-sonnet-5-5", label: "Claude Sonnet 5.5", note: "A strong default. Opus 5 costs more; Haiku 4.5 costs less." },
     cloudflare: { model: "cloudflare/@cf/zai-org/glm-4.7-flash", label: "GLM 4.7 Flash", caveat: true, note: "Free with no API key and fine for a first try. For everyday use, connect OpenAI and pick GPT-5.6 Terra." }
   };
 

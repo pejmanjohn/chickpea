@@ -48,7 +48,9 @@ export class RoutineAdmissionController {
       let run = candidate;
       let attempt = (await this.store.listAdmissions(run.id)).at(-1);
       if (run.status === 'queued') {
-        if (run.deadlineAt < now) {
+        // A one-time occurrence has no later slot. Execution records it
+        // failed and notifies its destination instead of skipping it here.
+        if (run.deadlineAt < now && run.triggerSource !== 'once') {
           await this.store.transitionRun({
             occurrenceId: run.id,
             from: ['queued'],

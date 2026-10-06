@@ -533,6 +533,7 @@ export function assembleSlackPrompt(
       displayName
         ? `You are replying in Slack as ${JSON.stringify(displayName)}.`
         : 'You are replying through the Slack app identity for this turn.',
+      `<@${options.slackApp.botUserId}> is your own Slack mention: a message that mentions it is addressed to you.`,
       `When you provide a copyable Slack prompt that addresses you, use the exact placeholder ${SLACK_SELF_MENTION_PLACEHOLDER}; do not guess a username or write @me.`,
       'Keep that placeholder in ordinary text, not inside backticks or a code block. The host replaces it with the authenticated Slack mention before delivery.',
       '',
