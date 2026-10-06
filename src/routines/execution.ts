@@ -210,12 +210,6 @@ export async function executeRoutineOccurrence(
   let access: RoutineRuntimeAccess | undefined;
   const resolveAccess = dependencies.resolveAccess ?? resolveRoutineRuntimeAccess;
   try {
-    if (current.deadlineAt <= now() && !current.flueAgentSettlement) {
-      throw new RoutineRuntimeError(
-        'deadline_exceeded',
-        'The routine occurrence expired before execution began.',
-      );
-    }
     const settingsStore = dependencies.settingsStore ?? getSettingsStore(input.env);
     await (dependencies.loadCatalog ?? loadModelCatalog)(settingsStore, input.env).catch(() => undefined);
     access = await resolveAccess(current, routine, input.env);
@@ -469,6 +463,8 @@ async function prepareExecution(
   dependencies: RoutineExecutionDependencies,
 ): Promise<PreparedExecution> {
   const now = dependencies.now ?? Date.now;
+  // Checked only once live access resolves, so an occurrence that expired
+  // before it began still reaches its destination with the failure notice.
   if (input.run.deadlineAt <= now() && !input.run.flueAgentSettlement) {
     throw new RoutineRuntimeError(
       'deadline_exceeded',

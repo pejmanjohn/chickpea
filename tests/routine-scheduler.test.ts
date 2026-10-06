@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { RoutineAdmissionController } from '../src/routines/admission.ts';
 import { hashRoutineValue } from '../src/routines/ids.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import { RoutineStateError, type RoutineDefinitionContent } from '../src/routines/types.ts';
@@ -335,14 +336,23 @@ test('pause cancels queued scheduled work, while disable fences an already submi
   }
 });
 
-test('a one-time job outside admission grace is recorded once as missed and completed', async () => {
+test('a one-time job outside admission grace is queued once, expired, for execution to fail', async () => {
   const store = new SqliteRoutineStore(':memory:', () => START);
   try {
     await createOneTimeRoutine(store, 'routine_once_missed', START - HOUR);
     const batch = await store.claimDueSchedules({ now: START, owner: 'once-missed', limit: 25 });
-    assert.equal(batch.runs[0]?.status, 'skipped');
-    assert.equal(batch.runs[0]?.skipReason, 'missed_one_time');
-    assert.equal((await store.getRoutine('routine_once_missed'))?.state, 'completed');
+    const [missed] = batch.runs;
+    assert.equal(missed?.status, 'queued');
+    assert.equal(missed?.skipReason, null);
+    assert.ok(missed!.deadlineAt < START);
+    // Neither maintenance nor admission settles it silently before execution.
+    await store.cleanupRetention();
+    assert.equal((await store.getRun(missed!.id))?.status, 'queued');
+    const executed: string[] = [];
+    await new RoutineAdmissionController(store, {
+      execute: async (run) => { executed.push(run.id); return 'completed'; },
+    }).process(START, 'once-missed');
+    assert.deepEqual(executed, [missed!.id]);
     assert.equal((await store.listRuns({ routineId: 'routine_once_missed' })).length, 1);
   } finally {
     store.close();

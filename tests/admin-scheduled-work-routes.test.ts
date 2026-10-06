@@ -264,7 +264,17 @@ test('Scheduled Work list pages completed one-time definitions and filters by re
       seedCompletedOneTimeRoutine(routines, 'routine_completed_1'),
       seedCompletedOneTimeRoutine(routines, 'routine_completed_2'),
     ]);
-    await routines.claimDueSchedules({ now: NOW, owner: 'admin-pagination', limit: 25 });
+    // Missed one-time occurrences are claimed expired and fail at execution.
+    const claimed = await routines.claimDueSchedules({ now: NOW, owner: 'admin-pagination', limit: 25 });
+    for (const run of claimed.runs) {
+      await routines.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'admin-pagination', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+      });
+      await routines.transitionRun({
+        occurrenceId: run.id, from: ['admitting'], to: 'failed', at: NOW,
+        failureClass: 'deadline_exceeded', publicError: 'The routine occurrence expired before execution began.',
+      });
+    }
     const api = createRoutineAdminApi({ store: () => routines, work: () => work, now: () => NOW });
 
     const first = await api.request('/audit/scheduled_work/routines?state=completed&limit=2');
@@ -280,7 +290,7 @@ test('Scheduled Work list pages completed one-time definitions and filters by re
     assert.equal(secondBody.routines.length, 1);
     assert.equal(secondBody.nextCursor, null);
 
-    const byStatus = await api.request('/audit/scheduled_work/routines?state=completed&status=skipped&limit=10');
+    const byStatus = await api.request('/audit/scheduled_work/routines?state=completed&status=failed&limit=10');
     const byStatusBody = await byStatus.json() as Record<string, any>;
     assert.equal(byStatusBody.routines.length, 3);
     const detail = await api.request(

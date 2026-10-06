@@ -13,6 +13,7 @@ import type {
 import type {
   RoutineDefinition,
   RoutineOutputPolicy,
+  RoutineRun,
   RoutineState,
 } from '../routines/types.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
@@ -906,6 +907,8 @@ export interface ManagementRoutineSnapshot {
     contentAccess: 'public' | 'private' | 'authorization_unknown';
     owningAgentId: string;
     requiredConnectionAccountIds: string[];
+    /** The latest occurrence's outcome; null before the first one. */
+    lastRun: Pick<RoutineRun, 'status' | 'publicError' | 'finishedAt'> | null;
   }>;
 }
 

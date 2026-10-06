@@ -1225,10 +1225,11 @@ export class RoutineStoreLogic {
     }
 
     let deadlineRunsReconciled = 0;
+    // Admission settles an expired queued one-time occurrence instead.
     const expiredRuns = this.db.all(
       `SELECT id, status FROM routine_runs
        WHERE (
-         status = 'queued' AND deadline_at < ?
+         status = 'queued' AND deadline_at < ? AND trigger_source != 'once'
        ) OR (
          status = 'admitting' AND deadline_at + ? < ?
            AND (admission_lease_until IS NULL OR admission_lease_until <= ?)
@@ -1750,8 +1751,10 @@ export class RoutineStoreLogic {
         let skipReason: string | undefined;
         if (due.count > 1) skipReason = 'missed_schedule';
         else if (activeForRoutine) skipReason = 'overlap';
-        else if (age > ROUTINE_LIMITS.admissionGraceMs) {
-          skipReason = routine.triggerKind === 'once' ? 'missed_one_time' : 'admission_grace_expired';
+        // A missed one-time occurrence is queued with its expired deadline, so
+        // execution records it failed and posts the failure notice.
+        else if (age > ROUTINE_LIMITS.admissionGraceMs && routine.triggerKind !== 'once') {
+          skipReason = 'admission_grace_expired';
         }
         else if (activeCount >= ROUTINE_LIMITS.concurrentDeploymentRuns) {
           deferredCount += 1;
