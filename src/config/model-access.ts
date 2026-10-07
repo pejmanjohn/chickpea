@@ -33,11 +33,7 @@ import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runti
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
-import {
-  chargePlatformRequest,
-  platformPriceMultiplier,
-  requirePlatformFundingAdmitted,
-} from './platform-funding.ts';
+import { chargePlatformRequest, requirePlatformFundingAdmitted } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -506,8 +502,7 @@ function sendRequest<TModel extends Model<Api>>(
  * A platform-funded request's model, once it has a current list price to be
  * charged at and the installation's credits admit it. OpenRouter may serve a
  * model through several providers at different prices, so its request names
- * the most it may cost: the list price times the host's multiplier, the
- * price it is charged.
+ * the most it may cost: the catalog price, which is the model maker's own.
  */
 async function platformFundedModel<TModel extends Model<Api>>(
   grant: ModelAccessGrant,
@@ -519,10 +514,9 @@ async function platformFundedModel<TModel extends Model<Api>>(
   if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
   await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
-  const multiplier = await platformPriceMultiplier(grant);
   // A long prompt is charged at the long-context rates, so the cap allows them.
   const perMillionTokens = (standard: number, longContext = 0) =>
-    Math.ceil(Math.max(standard, longContext) * multiplier) / price.rate.unitScale;
+    Math.max(standard, longContext) / price.rate.unitScale;
   const { rate } = price;
   return {
     ...model,

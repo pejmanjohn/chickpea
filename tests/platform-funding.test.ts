@@ -530,8 +530,9 @@ test('a platform-funded request without a current list price is refused before s
   assert.equal(stale.sentModels.length, 0);
 });
 
-test('a platform-funded OpenRouter request names its charged price as the most it may cost', async (t) => {
+test('a platform-funded OpenRouter request names the maker\'s price as the most it may cost', async (t) => {
   const { env } = hostedProxy(t);
+  t.mock.timers.setTime(Date.UTC(2026, 9, 7, 16));
   const calls = fakePort();
   const { model, sentModels } = scriptedProvider('openrouter', KIMI, 'openai-completions',
     [completes(), completes()], { openRouterRouting: { sort: 'price' } });
@@ -539,19 +540,11 @@ test('a platform-funded OpenRouter request names its charged price as the most i
   await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, () => modelCall(model));
   await withModelAccess(grant('inst_credits', 'customer', 'openrouter'), env, () => modelCall(model));
 
-  const price = priceCatalogFor('standard_input_output', 'openrouter', KIMI, NOW);
-  assert.ok(price);
   assert.deepEqual(sentModels[0]!.compat, {
-    openRouterRouting: {
-      sort: 'price',
-      max_price: {
-        prompt: (price.rate.inputMicrosPerUnit * 1.5) / price.rate.unitScale,
-        completion: (price.rate.outputMicrosPerUnit * 1.5) / price.rate.unitScale,
-      },
-    },
-  });
+    openRouterRouting: { sort: 'price', max_price: { prompt: 3, completion: 15 } },
+  }, 'the maker\'s own price in USD per million tokens');
   assert.deepEqual(sentModels[1]!.compat, { openRouterRouting: { sort: 'price' } }, 'a customer request is not capped');
-  assert.equal(calls.priceMultiplier, 1);
+  assert.equal(calls.priceMultiplier, 0, 'the cap asks the host for no multiplier');
   assert.deepEqual(calls.admit.map(({ model: admitted }) => admitted), [{ provider: 'openrouter', model: KIMI }]);
 });
 
@@ -572,22 +565,8 @@ test('a platform-funded request past the long-context threshold is charged at th
     [price.version.id, Math.round((long.fromPromptTokens * long.inputMicrosPerUnit + 1_000 * long.outputMicrosPerUnit) /
       price.rate.unitScale), null],
   );
-  assert.deepEqual(sentModels[0]!.compat, { openRouterRouting: {
-    max_price: {
-      prompt: (long.inputMicrosPerUnit * 1.5) / price.rate.unitScale,
-      completion: (long.outputMicrosPerUnit * 1.5) / price.rate.unitScale,
-    },
-  } });
-});
-
-test('a platform-funded OpenRouter request is refused without a usable multiplier', async (t) => {
-  const { env } = hostedProxy(t);
-  fakePort({ priceMultiplier: async () => Number.NaN });
-  const priced = scriptedProvider('openrouter', KIMI, 'openai-completions', []);
-  const refusedMultiplier = await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env,
-    () => modelCall(priced.model));
-  assert.match(refusedMultiplier.errorMessage ?? '', /\(credits_unavailable\)/);
-  assert.equal(priced.sentModels.length, 0);
+  assert.deepEqual(sentModels[0]!.compat, { openRouterRouting: { max_price: { prompt: 4, completion: 18 } } },
+    'the long-context list rates in USD per million tokens');
 });
 
 test('a Slack turn refused for credits ends with the credits reply, its own kind, and no retry', { timeout: 20_000 }, async (t) => {
