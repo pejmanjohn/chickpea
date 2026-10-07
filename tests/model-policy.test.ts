@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
 import { registerCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
 import { ModelResolutionError } from '../src/config/errors.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
 import {
   imageCapabilityForResolution,
   resolveAgentModelForRole,
@@ -10,9 +12,13 @@ import {
   resolveAgentModelRoleFromStore,
   resolveCodingModelForPlan,
 } from '../src/config/model-policy.ts';
-import { PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
+import { invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { PlatformEnv } from '../src/config/state-backend.ts';
 import type { CustomAgentConfig, WorkspaceModelDefault } from '../src/config/types.ts';
+import { SqliteUsageStore } from '../src/usage/store.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID } from '../src/model-catalog/image-profiles.ts';
 
@@ -491,6 +497,91 @@ test('the provider credential seam cannot enable subscription images on Cloudfla
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else Reflect.deleteProperty(globalThis, 'navigator');
   }
+});
+
+const NOW = Date.UTC(2026, 9, 7, 12);
+const AFTER_IMAGE_PRICES_STALE = Date.UTC(2027, 6, 1);
+const NO_DEPLOYMENT_KEYS = {
+  CHICKPEA_TENANCY: undefined,
+  ANTHROPIC_API_KEY: undefined,
+  OPENAI_API_KEY: undefined,
+  OPENROUTER_API_KEY: undefined,
+  OPENAI_BASE_URL: undefined,
+};
+const FLARE_FROM_WORKSPACE = {
+  modelId: 'openai/gpt-image-2.5-flare',
+  providerId: 'openai',
+  source: 'workspace_default' as const,
+};
+
+/** One installation of a deployment serving many, with the host's funding answer and no saved key. */
+function hostedInstallation(t: TestContext, funding: () => Promise<'platform' | 'customer'>) {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
+  t.mock.method(console, 'warn', () => {});
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usage.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  configurePlatformFunding({
+    funding,
+    admit: async () => 'admitted',
+    charge: async () => {},
+    priceMultiplier: async () => 1,
+  });
+  const env = scopeInstallationEnv(
+    { CHICKPEA_TENANCY: 'installation' },
+    { installationId: 'inst_credits' },
+  ) as PlatformEnv;
+  const imageRole = () => resolveAgentModelForRole({
+    role: 'image',
+    agent: agent(),
+    workspaceRole: imageWorkspaceRole,
+    env,
+    settings,
+  });
+  return { env, settings, usage, imageRole };
+}
+
+test('Chickpea credits fill the image role of a platform-funded installation that saved no key', async (t) => {
+  const { imageRole } = hostedInstallation(t, async () => 'platform');
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    assert.deepEqual(await imageRole(), FLARE_FROM_WORKSPACE);
+    t.mock.timers.setTime(AFTER_IMAGE_PRICES_STALE);
+    assert.deepEqual(
+      await imageRole(),
+      { unset: true, reason: 'credential_missing' },
+      'credits serve only a model with a current price',
+    );
+  });
+});
+
+test('a customer-funded installation that saved no key still resolves the image role to credential_missing', async (t) => {
+  const { imageRole } = hostedInstallation(t, async () => 'customer');
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    assert.deepEqual(await imageRole(), { unset: true, reason: 'credential_missing' });
+  });
+});
+
+test('a funding read that fails leaves the image role on the installation\'s own key', async (t) => {
+  const keyring = useDeploymentKeyring(t);
+  const { env, settings, usage, imageRole } = hostedInstallation(t, async () => {
+    throw new Error('billing registry unreachable');
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    assert.deepEqual(await imageRole(), { unset: true, reason: 'credential_missing' });
+    await rotateInstallationModelCredential(
+      'openai',
+      { kind: 'save', apiKey: 'sk-saved-openai-key' },
+      { env, settings, usage, keyring },
+    );
+    assert.deepEqual(await imageRole(), FLARE_FROM_WORKSPACE);
+  });
 });
 
 function codingReader(workspaceModel?: string, agentModel?: string) {

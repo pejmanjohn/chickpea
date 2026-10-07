@@ -11,7 +11,9 @@ import {
 } from '@earendil-works/pi-ai';
 import { init, instrument, useModel } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
+import { Hono } from 'hono';
 
+import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
   compileRuntimePlanV2,
   frozenModelCredential,
@@ -51,6 +53,7 @@ import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
@@ -59,6 +62,7 @@ import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -633,4 +637,62 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
+});
+
+const ADMIN_TOKEN = 'platform-funding-admin-token';
+const AFTER_SONNET_PRICE_STALE = Date.UTC(2027, 6, 1);
+const PROVIDER_UNAVAILABLE = {
+  status: 'repair_required',
+  providerId: 'anthropic',
+  code: 'provider_unavailable',
+  repairPath: '/admin/settings/providers',
+};
+
+test('Admin reads a credits installation\'s Workspace default as ready with no saved key, and a customer-funded one as repair_required', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => {
+    config.close();
+    settings.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  const app = new Hono();
+  app.route('/', createAdminRoutes({ store: config, settings, ...testAdminAuthority(ADMIN_TOKEN) }));
+  const base = await config.createAgent({
+    id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true, lifecycle: 'active',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const installation = await config.ensureWorkspaceInstallation({
+    workspaceId: 'T_CREDITS', transportMode: 'direct', runtimeContract: 'legacy', defaultAgentId: base.id,
+  });
+  await config.putWorkspaceModelDefault({
+    workspaceId: installation.workspaceId,
+    modelId: `anthropic/${SONNET}`,
+    provenance: 'admin_selected',
+    lastChangedByMembershipId: 'membership_test_owner',
+  }, 1);
+  await config.updateWorkspaceInstallation(installation.workspaceId, { runtimeContract: 'chickpea-v1' }, installation.revision);
+  const health = async () => {
+    const response = await app.request(
+      '/admin/api/workspace-model-default',
+      { headers: testAdminHeaders(ADMIN_TOKEN) },
+      hostedEnv('inst_credits'),
+    );
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { workspaceDefault: { health: unknown } }).workspaceDefault.health;
+  };
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    assert.deepEqual(await health(), { status: 'ready', providerId: 'anthropic' });
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'credits serve only a model with a current price');
+    t.mock.timers.setTime(NOW);
+    fakePort({ funding: async () => 'customer' });
+    assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'a customer-funded installation still needs its own key');
+  });
 });
