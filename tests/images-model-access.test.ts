@@ -56,6 +56,8 @@ const USAGE = {
 /** $5, $8 and $30 per million text input, image input and image output tokens. */
 const USAGE_PRICE_MICROS = 40 * 5 + 10 * 8 + 1_000 * 30;
 const FLARE_PRICE_VERSION = 'openai-image-gpt-image-2.5-flare_2026-10-07';
+/** After the 2026-10-07 image prices go stale. */
+const PAST_FLARE_PRICE = Date.UTC(2027, 6, 1);
 
 interface Sent {
   url: string;
@@ -168,6 +170,22 @@ test('a customer-funded image generation returns its images as before and writes
   });
 });
 
+test('an image request goes to the endpoint its access names over the catalog endpoint', async (t) => {
+  proxy(t, 'sk-gateway-images');
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-gateway-images', baseUrl: 'https://gateway.invalid/v1/' }) });
+  const { sent, fetchImpl } = provider();
+  const grant: ModelAccessGrant = {
+    installationId: 'chickpea', providerId: 'openai', credentialRefId: 'cred_openai', credentialVersion: 1,
+    runId: 'image-generation', fundingSource: 'customer',
+  };
+  await sendImageRequest({ grant, env: undefined, model: FLARE.model, baseUrl: BASE_URL, fetchImpl }, async (send, endpoint) => {
+    assert.equal(endpoint, 'https://gateway.invalid/v1');
+    await send('/images/generations', { headers: {}, body: '{}', signal: new AbortController().signal });
+    return { ok: false, reason: 'unreachable', detail: 'probe' };
+  });
+  assert.deepEqual(sent.map(({ url }) => url), ['https://gateway.invalid/v1/images/generations']);
+});
+
 test('an image request inside a run is recorded against that run', async (t) => {
   const { settings, recorded } = proxy(t, 'sk-run-images');
   await withEnv({ ...NO_DEPLOYMENT_KEYS, OPENAI_API_KEY: 'sk-run-images' }, async () => {
@@ -262,9 +280,16 @@ test('a platform-funded image request for a model with no current price is refus
       runId: 'image-generation', fundingSource: 'platform',
     };
     const call = async (): Promise<ImageCallResult> => ({ ok: false, reason: 'unreachable', detail: 'not_called' });
+    const refusedUnpriced = (error: unknown) => error instanceof ModelAccessError && error.code === 'funding_not_offered';
     await assert.rejects(
       sendImageRequest({ grant, env, model: 'gpt-image-unpriced', baseUrl: BASE_URL, fetchImpl }, call),
-      (error: unknown) => error instanceof ModelAccessError && error.code === 'funding_not_offered',
+      refusedUnpriced,
+    );
+    t.mock.timers.setTime(PAST_FLARE_PRICE);
+    await assert.rejects(
+      sendImageRequest({ grant, env, model: 'gpt-image-2.5-flare', baseUrl: BASE_URL, fetchImpl }, call),
+      refusedUnpriced,
+      'a stale price is no price',
     );
     assert.deepEqual(port.admit, []);
     assert.equal(sent.length, 0);
@@ -276,6 +301,8 @@ test('an installation on credits is offered the priced image models without a sa
   const { env } = creditsInstallation(t);
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     assert.equal(await imageModelProfileReady(FLARE, env, settings), true);
+    t.mock.timers.setTime(PAST_FLARE_PRICE);
+    assert.equal(await imageModelProfileReady(FLARE, env, settings), false, 'a stale price is not offered');
     configurePlatformFunding(undefined);
     assert.equal(await imageModelProfileReady(FLARE, env, settings), false, 'without credits a missing key hides it');
   });
@@ -305,7 +332,7 @@ test('image usage the image rates cannot price records its tokens with no price'
   }
   assert.equal(imageRequestRecord({ ...end, model: 'gpt-image-unpriced', result: completed(USAGE) }).priceUnknownReason,
     'price_unknown');
-  assert.equal(imageRequestRecord({ ...end, finishedAt: Date.UTC(2027, 6, 1), result: completed(USAGE) }).priceUnknownReason,
+  assert.equal(imageRequestRecord({ ...end, finishedAt: PAST_FLARE_PRICE, result: completed(USAGE) }).priceUnknownReason,
     'price_stale');
   assert.equal(imageRequestRecord({ ...end, result: { ok: false, reason: 'timeout', detail: 'aborted' } }).outcome,
     'stopped');
@@ -330,9 +357,13 @@ test('an image the provider billed is charged even when Chickpea cannot use the 
 
     const lost = provider(() => { throw new TypeError('socket closed'); });
     assert.equal((await (await imageClient(env, settings, lost.fetchImpl)).generate(generation)).ok, false);
-    assert.equal(port.charge.length, 3);
-    assert.equal(port.charge[2]!.listPriceUsdMicros, null, 'a request sent with no answer read is never priced at zero');
-    assert.equal(port.charge[2]!.priceUnknownReason, 'pricing_dimension_unknown');
+    const oversized = provider(() => new Response('{}', { headers: { 'content-length': String(64 * 1024 * 1024) } }));
+    assert.equal((await (await imageClient(env, settings, oversized.fetchImpl)).generate(generation)).ok, false);
+    assert.equal(port.charge.length, 4);
+    for (const unread of port.charge.slice(2)) {
+      assert.equal(unread.listPriceUsdMicros, null, 'a request sent with no answer read is never priced at zero');
+      assert.equal(unread.priceUnknownReason, 'pricing_dimension_unknown');
+    }
     assert.deepEqual(port.charge, recorded);
   });
 });
