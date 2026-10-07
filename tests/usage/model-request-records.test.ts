@@ -9,7 +9,8 @@ import {
   type Model,
   type Usage,
 } from '@earendil-works/pi-ai';
-import type { FlueExecutionContext } from '@flue/runtime';
+import { init, instrument, useAgentStart, useModel, useTool, type FlueExecutionContext } from '@flue/runtime';
+import { start } from '@flue/runtime/node';
 
 import {
   configureInstallationAdmission,
@@ -28,6 +29,11 @@ import {
 import { registerPiProvider, registeredPiProvider } from '../../src/config/pi-provider-registry.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../../src/model-catalog/provider-alias.ts';
+import { createCloudflareBindingProvider } from '../../src/cloudflare-provider.ts';
+import { createChickpeaPiProvider } from '../../src/config/pi-provider.ts';
+import { runStatelessVisionCall } from '../../src/images/inspect-output.ts';
+import { promptSlackThreadAgent } from '../../src/slack/flue-dispatch.ts';
+import type { FlueDispatchEnvelopeV1 } from '../../src/slack/turn-job-types.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { USAGE_RAW_RETENTION_DAYS } from '../../src/usage/retention.ts';
 import { SqliteUsageStore, UsageStateError } from '../../src/usage/store.ts';
@@ -407,4 +413,164 @@ test('the record is in the store when the caller reads the request result', asyn
     await modelCall(model);
     assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
   });
+});
+
+/** The model-access interceptor instrumented into real Flue, binding every attempt to a deployment lane for `agentId`. */
+function instrumentedLane(agentId: string) {
+  const interceptor = createModelAccessInterceptor({
+    lookup: async () => ({ env: undefined, deploymentLane: true, agentId }),
+    installationGrants: async () => [],
+  });
+  const dispose = instrument({ key: Symbol(agentId), interceptor, observe() {}, dispose() {} });
+  return { dispose };
+}
+
+function workersAiResponse(content: string, input = 10, tool = false): Response {
+  return new Response(`data: ${JSON.stringify({
+    choices: [{ index: 0, delta: tool ? { tool_calls: [{ index: 0, id: 'call_read', type: 'function',
+      function: { name: 'read_fixture', arguments: '{}' } }] } : { content }, finish_reason: tool ? 'tool_calls' : 'stop' }],
+    usage: { prompt_tokens: input, completion_tokens: 3, total_tokens: input + 3 },
+  })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+}
+
+test('a real Flue overflow compaction writes one record per provider call, the compaction included', { timeout: 20_000 }, async (t) => {
+  const { store, written } = recordingAccess(t);
+  const lane = instrumentedLane('agent_compact');
+  t.after(lane.dispose);
+  const modelId = '@cf/zai-org/glm-5.3-flash';
+  function CompactionProbe() {
+    useModel(`cloudflare/${modelId}`);
+    useTool({ name: 'read_fixture', description: 'Read the synthetic fixture.', run: () => 'synthetic fixture' });
+    return 'Follow the scripted synthetic fixture.';
+  }
+  let calls = 0;
+  const provider = createCloudflareBindingProvider({ run: async () => {
+    calls++;
+    if (calls === 1) return workersAiResponse('First answer.');
+    if (calls === 2) return workersAiResponse('', 10, true);
+    if (calls === 3) return workersAiResponse('Partial answer.', 40_000);
+    if (calls === 4) return workersAiResponse('Compacted synthetic context.', 20);
+    if (calls === 5) return workersAiResponse('Recovered answer.');
+    throw new Error('Unexpected additional model call.');
+  } });
+  const catalog = provider.getModels();
+  provider.getModels = () => catalog.map((model) => ({ ...model, contextWindow: 32_768 }));
+  registerPiProvider(provider);
+  const runtime = await start({
+    agents: [{ agent: CompactionProbe, name: 'records-compaction-probe' }],
+    providers: [registeredPiProvider(provider.id)!],
+  });
+  try {
+    const agent = init(CompactionProbe, { id: 'records-compaction' });
+    await agent.read(await agent.dispatch('First synthetic context. '.repeat(5000)));
+    const receipt = await agent.dispatch('Second synthetic context. '.repeat(2000));
+    const reply = await promptSlackThreadAgent({
+      handle: agent, message: 'unused saved dispatch', turnId: 'records-compaction',
+      conversationKey: 'T_FIXTURE:C_FIXTURE:1',
+      requestedModel: `cloudflare/${modelId}`,
+      state: {
+        dispatchEnvelope: { instanceId: 'records-compaction' } as FlueDispatchEnvelopeV1,
+        dispatchReceipt: receipt,
+        prepare: () => { throw new Error('Must reuse saved dispatch'); },
+        reconcileExistingInstance: () => { throw new Error('Must reuse saved instance'); },
+        recordReceipt: (value) => value,
+        recordSettlement: (value) => value,
+        markRecoveryRequired: () => {},
+      },
+    });
+    assert.equal(reply.text, 'Recovered answer.');
+  } finally {
+    await runtime.stop();
+  }
+
+  assert.equal(calls, 5);
+  const records = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
+  assert.deepEqual(
+    records.map((record) => [record!.outcome, record!.inputTokens, record!.provider, record!.model, record!.agentId]),
+    [
+      ['completed', 10, 'cloudflare', modelId, 'agent_compact'],
+      ['completed', 10, 'cloudflare', modelId, 'agent_compact'],
+      ['error', 40_000, 'cloudflare', modelId, 'agent_compact'],
+      ['completed', 20, 'cloudflare', modelId, 'agent_compact'],
+      ['completed', 10, 'cloudflare', modelId, 'agent_compact'],
+    ],
+  );
+  assert.equal(records[3]!.attemptId, records[2]!.attemptId, 'the compaction runs in the overflowing attempt');
+  assert.equal(new Set(records.map((record) => record!.requestId)).size, 5);
+});
+
+test('an attachment analysis prompt from agent start records under the same attempt and Agent as the reply', { timeout: 20_000 }, async (t) => {
+  const { store, written } = recordingAccess(t);
+  const lane = instrumentedLane('agent_attachments');
+  t.after(lane.dispose);
+  const replies = [
+    reply('stop', { input: 300, output: 30 }),
+    reply('stop', { input: 120, output: 12 }),
+  ];
+  const provider = createProvider({
+    id: 'records-attachment-lane',
+    auth: { apiKey: { name: 'probe', resolve: async () => ({ auth: {} }) } },
+    models: [{
+      id: 'probe', name: 'Probe', api: 'anthropic-messages', provider: 'records-attachment-lane',
+      baseUrl: 'https://provider.invalid', reasoning: false, input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 1_024,
+    } as Model<'anthropic-messages'>],
+    api: {
+      stream: () => { const output = createAssistantMessageEventStream(); queueMicrotask(() => completes(replies.shift()!)(output)); return output; },
+      streamSimple: () => { const output = createAssistantMessageEventStream(); queueMicrotask(() => completes(replies.shift()!)(output)); return output; },
+    },
+  });
+  registerPiProvider(provider);
+  let analysis = '';
+  function AttachmentProbe() {
+    useModel('records-attachment-lane/probe');
+    useAgentStart(async ({ harness }) => {
+      analysis = (await harness.prompt('Describe the attached file.')).text;
+    });
+    return 'Answer with the attachment in mind.';
+  }
+  const runtime = await start({
+    agents: [{ agent: AttachmentProbe, name: 'records-attachment-probe' }],
+    providers: [registeredPiProvider(provider.id)!],
+  });
+  try {
+    const agent = init(AttachmentProbe, { id: 'records-attachment' });
+    await agent.read(await agent.dispatch('What is in the file?'));
+  } finally {
+    await runtime.stop();
+  }
+
+  assert.equal(analysis, 'ok');
+  const [analyzed, answered] = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
+  assert.equal(written.length, 2);
+  assert.deepEqual([analyzed!.inputTokens, answered!.inputTokens], [300, 120]);
+  assert.equal(analyzed!.attemptId, answered!.attemptId);
+  assert.equal(analyzed!.runId, answered!.runId);
+  assert.deepEqual([analyzed!.agentId, answered!.agentId], ['agent_attachments', 'agent_attachments']);
+});
+
+test('a stateless vision check inside an attempt records one request under that attempt', async (t) => {
+  const { store, written } = recordingAccess(t);
+  const model: Model<string> = { id: 'vision', name: 'Vision', provider: 'records-vision-lane', api: 'records-vision-lane',
+    input: ['text', 'image'], reasoning: false, baseUrl: 'https://provider.invalid', contextWindow: 32_000, maxTokens: 2_048,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  const stream = () => {
+    const output = createAssistantMessageEventStream();
+    queueMicrotask(() => completes({ ...reply('stop', { input: 900, output: 4 }), provider: model.provider, model: model.id })(output));
+    return output;
+  };
+  registerPiProvider(createChickpeaPiProvider({ id: model.provider, apiKey: 'synthetic-test-key', models: [model],
+    api: { stream, streamSimple: stream } }));
+  const interceptor = interceptorFor({ env: undefined, deploymentLane: true, agentId: 'agent_vision' });
+
+  const text = await interceptor(AGENT_OPERATION, attempt('vision'), () =>
+    runStatelessVisionCall(`${model.provider}/${model.id}`, { systemPrompt: 'Look.', content: 'Is it blue?' }));
+
+  assert.equal(text, 'ok');
+  assert.equal(written.length, 1);
+  const record = await store.getModelRequest(written[0]!.record.requestId);
+  assert.deepEqual(
+    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens, record!.runId, record!.agentId, record!.outcome],
+    ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed'],
+  );
 });
