@@ -28,15 +28,12 @@ export type ImageProviderResolution =
   | { ok: false; reason: 'unsupported' | 'unknown-model' | 'misconfigured'; detail: string };
 
 export interface ImageProviderOptions {
-  /** Test seam; production callers take the environment base and global fetch. */
+  /** Test seam; production callers take the catalog endpoint and global fetch. */
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
-/**
- * Read-only readiness for one concrete profile; it never decrypts a bearer.
- * An installation on credits is offered the image models that have a price.
- */
+/** Read-only readiness for one concrete profile; it never decrypts a bearer. */
 export async function imageModelProfileReady(
   profile: ImageModelProfile,
   env?: PlatformEnv,
@@ -120,7 +117,7 @@ export async function resolveImageProvider(
     grant,
     env,
     model: profile.model,
-    baseUrl: options.baseUrl ?? profile.baseUrl,
+    defaultBaseUrl: options.baseUrl ?? profile.baseUrl,
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   };
   const send: ImageRequestSender = async (call) => {
@@ -135,7 +132,6 @@ export async function resolveImageProvider(
   return { ok: true, profile, client: createOpenAiImagesClient({ profile, send }) };
 }
 
-/** A refusal from model access or the proxy, as the image result the tool reports; nothing was sent. */
 function refusal(err: unknown): Extract<ImageCallResult, { ok: false }> | undefined {
   if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
   if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };

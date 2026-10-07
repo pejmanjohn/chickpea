@@ -120,11 +120,7 @@ function client(stub: string, route = '') {
     const target = new URL(String(input));
     const outgoing = new URL(stub);
     outgoing.pathname = `${outgoing.pathname.replace(/\/+$/, '')}${route || target.pathname}`;
-    // Re-wrapped so `response.url` is empty and the off-host guard, which
-    // this rewrite would otherwise trip, stays out of the probe's way.
-    const response = await fetch(outgoing.toString(), init);
-    const body = await response.arrayBuffer();
-    return new Response(body, { status: response.status, headers: response.headers });
+    return withoutFinalUrl(await fetch(outgoing.toString(), init));
   };
   const grant = {
     installationId: 'chickpea', providerId: 'openai', credentialRefId: 'cred_probe', credentialVersion: 1,
@@ -132,8 +128,12 @@ function client(stub: string, route = '') {
   } as const;
   return createOpenAiImagesClient({
     profile,
-    send: (call) => sendImageRequest({ grant, env: undefined, model: profile.model, baseUrl: BASE, fetchImpl }, call),
+    send: (call) => sendImageRequest({ grant, env: undefined, model: profile.model, defaultBaseUrl: BASE, fetchImpl }, call),
   });
+}
+
+async function withoutFinalUrl(response: Response): Promise<Response> {
+  return new Response(await response.arrayBuffer(), { status: response.status, headers: response.headers });
 }
 
 function summarize(result: ImageCallResult): unknown {

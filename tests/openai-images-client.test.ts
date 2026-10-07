@@ -22,7 +22,6 @@ const TEST_GRANT: ModelAccessGrant = {
   runId: 'image-generation', fundingSource: 'customer',
 };
 
-// As the runtime bootstrap installs it, except that the test grant resolves to a fixed key.
 configureModelAccessResolver({
   resolve: async (grant, env) => grant.credentialRefId === TEST_GRANT.credentialRefId
     ? { apiKey: 'sk-test' }
@@ -61,11 +60,10 @@ function jsonResponse(body: unknown, status = 200, url = `${BASE_URL}/images/gen
   return response;
 }
 
-/** A client whose every request goes through the model-access proxy, as `resolveImageProvider` builds it. */
-function client(fetchImpl: typeof fetch, profile: ImageModelProfile = PROFILE, baseUrl = BASE_URL) {
+function client(fetchImpl: typeof fetch, profile: ImageModelProfile = PROFILE, defaultBaseUrl = BASE_URL) {
   return createOpenAiImagesClient({
     profile,
-    send: (call) => sendImageRequest({ grant: TEST_GRANT, env: undefined, model: profile.model, baseUrl, fetchImpl }, call),
+    send: (call) => sendImageRequest({ grant: TEST_GRANT, env: undefined, model: profile.model, defaultBaseUrl, fetchImpl }, call),
   });
 }
 
@@ -232,12 +230,12 @@ test('a list with one undecodable image is one invalid response, not a partial s
     jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: 'not base64!' }] }),
   );
   const result = await client(fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000, count: 2 });
-  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response', usageUnavailable: true });
+  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response', billed: 'unknown' });
 
   const empty = recordingFetch(() => jsonResponse({ data: [], usage: { input_tokens: 3, output_tokens: 7 } }));
   assert.deepEqual(
     await client(empty.fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000 }),
-    { ok: false, reason: 'unreachable', detail: 'invalid_response', usage: { input_tokens: 3, output_tokens: 7 } },
+    { ok: false, reason: 'unreachable', detail: 'invalid_response', billed: { input_tokens: 3, output_tokens: 7 } },
     'the usage the provider reported survives a response Chickpea cannot use',
   );
 });
@@ -336,7 +334,7 @@ test('a response slower than the deadline times out and aborts the request', asy
     deadlineMs: 10,
   });
 
-  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded', usageUnavailable: true });
+  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded', billed: 'unknown' });
   assert.equal(observed?.aborted, true);
 });
 

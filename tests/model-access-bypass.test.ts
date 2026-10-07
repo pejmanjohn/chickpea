@@ -6,20 +6,15 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-/**
- * A model key source: a call that resolves model access, the resolver, a
- * credential reader, a saved-key setting, or a deployment key variable.
- */
-const READS_MODEL_KEY = new RegExp([
-  String.raw`\bresolve\w*ModelAccess\w*\(`,
-  String.raw`\b(?:resolveProviderApiKey|readHostedModelCredential|readStoredModelCredentials|readStoredProviderKeys)\b`,
-  String.raw`\b(?:resolveOpenAiSubscriptionCredentials|modelCredentialSettingKeys|PROVIDER_KEY_SETTING_KEYS)\b`,
-  String.raw`\.resolve\(grant\b`,
-  String.raw`\[\s*(?:PROVIDER_KEY_ENV_VARS|ENV_KEY_NAMES)\s*\[`,
-  String.raw`process\.env(?:\.|\[\s*['"\x60])(?:ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN)\b`,
-].join('|'));
+const KEY_SOURCES = {
+  callResolvingModelAccess: String.raw`\bresolve\w*ModelAccess\w*\(`,
+  resolverCall: String.raw`\.resolve\(grant\b`,
+  credentialReader: String.raw`\b(?:resolveProviderApiKey|readHostedModelCredential|readStoredModelCredentials|readStoredProviderKeys|resolveOpenAiSubscriptionCredentials)\b`,
+  savedKeySetting: String.raw`\b(?:modelCredentialSettingKeys|PROVIDER_KEY_SETTING_KEYS)\b`,
+  deploymentKeyVariable: String.raw`\[\s*(?:PROVIDER_KEY_ENV_VARS|ENV_KEY_NAMES)\s*\[|process\.env(?:\.|\[\s*['"\x60])(?:ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN)\b`,
+};
+const READS_MODEL_KEY = new RegExp(Object.values(KEY_SOURCES).join('|'));
 
-/** A model provider's API host. */
 const NAMES_PROVIDER_HOST =
   /\b(?:api\.openai\.com|api\.anthropic\.com|openrouter\.ai\/api|chatgpt\.com\/backend-api|api\.cloudflare\.com\/client\/v4)\b/;
 
@@ -29,12 +24,6 @@ const SUBSCRIPTION_LANE =
 const CHATGPT_PLAN_LANE =
   'ChatGPT plan lane: signs in with ChatGPT and lists its models with that session, not a model key.';
 
-/**
- * Every module of the app that reads a model key or names a model provider's
- * API host, and why it is not a model call around the proxy. Model calls go
- * through `src/config/model-access.ts`, which admits, records and charges
- * them; a module joins this list only with a reason it cannot.
- */
 const ALLOWED = new Map<string, string>([
   ['src/config/model-access.ts',
     'The proxy: resolves each grant to its key and sends image requests with it.'],
@@ -73,7 +62,6 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-/** Each module under `src/` that reads a model key or names a provider host, with the first line that does. */
 function modulesReachingModels(root: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const path of sourceFiles(join(root, 'src'))) {

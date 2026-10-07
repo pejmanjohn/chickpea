@@ -76,10 +76,8 @@ export type ImageCallResult =
       ok: false;
       reason: ImageCallFailureReason;
       detail: string;
-      /** What the provider reported it used, when its answer said; it is billed whatever failed afterwards. */
-      usage?: ImageCallUsage;
-      /** Sent, but no answer was read, so what the provider billed is unknown. */
-      usageUnavailable?: true;
+      /** The usage the provider reported, or `unknown` when no answer was read; absent when nothing was billed. */
+      billed?: ImageCallUsage | 'unknown';
     };
 
 export interface OpenAiImagesClient {
@@ -88,10 +86,6 @@ export interface OpenAiImagesClient {
   edit(request: ImageEditRequest): Promise<ImageCallResult>;
 }
 
-/**
- * Runs one call through the model-access proxy (`sendImageRequest`), which
- * holds the key and the endpoint, admits, records and charges the request.
- */
 export type ImageRequestSender = (
   call: (fetch: ImageEndpointFetch, endpoint: string) => Promise<ImageCallResult>,
 ) => Promise<ImageCallResult>;
@@ -130,15 +124,14 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
     request: ImageGenerateRequest,
   ): Promise<ImageCallResult> {
     return send(async (fetcher, endpoint) => {
-      const base = imagesBaseUrl(endpoint);
-      if (!base) return { ok: false, reason: 'misconfigured', detail: 'invalid_base_url' };
+      const { host } = new URL(endpoint);
       const prepared = build();
       try {
         return await withImageDeadline(
           request.deadlineMs,
           async (signal) => {
             const response = await fetcher(path, { headers: prepared.headers, body: prepared.body, signal });
-            const offHost = rejectOffHostResponse(response, base.host);
+            const offHost = rejectOffHostResponse(response, host);
             if (offHost) {
               await response.body?.cancel().catch(() => {});
               return offHost;
@@ -149,11 +142,9 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
         );
       } catch (err) {
         if (err instanceof ImageDeadlineError) {
-          return { ok: false, reason: 'timeout', detail: err.message, usageUnavailable: true };
+          return { ok: false, reason: 'timeout', detail: err.message, billed: 'unknown' };
         }
-        // Transport failures carry URLs and socket detail, never request content,
-        // but the message is dropped anyway so nothing can leak through it.
-        return { ok: false, reason: 'unreachable', detail: 'network_error', usageUnavailable: true };
+        return { ok: false, reason: 'unreachable', detail: 'network_error', billed: 'unknown' };
       }
     });
   }
@@ -304,21 +295,19 @@ async function readImageResponse(
   const declared = response.headers.get('content-length');
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_CHARACTERS)) {
     await response.body?.cancel().catch(() => {});
-    return { ok: false, reason: 'unreachable', detail: 'response_too_large', usageUnavailable: true };
+    return { ok: false, reason: 'unreachable', detail: 'response_too_large', billed: 'unknown' };
   }
   const text = await response.text();
   if (text.length > MAX_RESPONSE_CHARACTERS) {
-    return { ok: false, reason: 'unreachable', detail: 'response_too_large', usageUnavailable: true };
+    return { ok: false, reason: 'unreachable', detail: 'response_too_large', billed: 'unknown' };
   }
   const payload = parseJsonRecord(text);
   const usage = projectUsage(payload?.usage);
-  // A refusal that reports no usage cost nothing; an accepted request that
-  // reports none may still have been billed.
-  const billed = usage ? { usage } : response.ok ? { usageUnavailable: true as const } : {};
+  const billed: ImageCallUsage | 'unknown' | undefined = usage ?? (response.ok ? 'unknown' : undefined);
   if (!response.ok) {
-    return { ...mapErrorResponse(response.status, payload, prompt), ...billed };
+    return { ...mapErrorResponse(response.status, payload, prompt), ...(billed ? { billed } : {}) };
   }
-  const invalid = { ok: false, reason: 'unreachable', detail: 'invalid_response', ...billed } as const;
+  const invalid = { ok: false, reason: 'unreachable', detail: 'invalid_response', ...(billed ? { billed } : {}) } as const;
   if (!payload) return invalid;
   const entries = Array.isArray(payload.data) ? payload.data : [];
   const first = isRecord(entries[0]) ? entries[0] : undefined;
@@ -462,20 +451,6 @@ async function withImageDeadline<T>(
     callerSignal?.removeEventListener('abort', forwardAbort);
     controller.signal.removeEventListener('abort', rejectOnAbort);
   }
-}
-
-/** The key travels only over https to a bare origin and path. */
-function imagesBaseUrl(value: string): URL | undefined {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return undefined;
-  }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-    return undefined;
-  }
-  return url;
 }
 
 function extensionFor(mimeType: string): string {

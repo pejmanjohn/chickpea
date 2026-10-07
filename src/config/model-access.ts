@@ -15,8 +15,7 @@
  * stateless call), so a suspended or ended installation starts no attempt and
  * sends no further request (see installation-admission.ts). A grant Chickpea
  * pays for is also admitted against the installation's credits before each
- * request and charged once when it finishes (see platform-funding.ts). Image
- * generation takes the same steps through `sendImageRequest`.
+ * request and charged once when it finishes (see platform-funding.ts).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -55,7 +54,7 @@ import {
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
-import { currentImagePrice, imageRequestRecord } from '../images/request-record.ts';
+import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
 /**
  * Providers whose key comes from the run's installation. `local-stub` is the
@@ -268,7 +267,6 @@ export async function withDeploymentLane<T>(
   return cells.run(await resolveCell([], env, false, undefined, runId, null), fn);
 }
 
-/** One request under an image model's endpoint, sent with the proxy's key. */
 export type ImageEndpointFetch = (
   path: string,
   init: { readonly headers: Readonly<Record<string, string>>; readonly body: BodyInit; readonly signal: AbortSignal },
@@ -277,20 +275,15 @@ export type ImageEndpointFetch = (
 export interface ImageModelRequest {
   readonly grant: ModelAccessGrant;
   readonly env: PlatformEnv | undefined;
-  /** The wire model the request is priced, admitted and recorded as. */
   readonly model: string;
-  /** The model's endpoint, unless the grant's access names another. */
-  readonly baseUrl: string;
+  readonly defaultBaseUrl: string;
   readonly fetchImpl?: typeof fetch;
 }
 
 /**
- * One image request, sent as the proxy sends a language-model request: once
- * the installation is admitted and, when Chickpea pays, once the model has a
- * current price and the installation's credits admit it; with the key the
- * grant resolves to, which `call` never sees; recorded once with its image
- * token usage and price, and charged once. A call that never fetches sent
- * nothing, so nothing is recorded or charged. A refusal throws before `call`.
+ * Refusals throw before `call` runs. Once `call` fetches, the request is
+ * recorded and, when Chickpea pays, charged once; a `call` that never
+ * fetches is neither recorded nor charged.
  */
 export async function sendImageRequest(
   request: ImageModelRequest,
@@ -305,7 +298,8 @@ export async function sendImageRequest(
     await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model });
   }
   const access = await requireResolver().resolve(grant, env);
-  const endpoint = (access.baseUrl ?? request.baseUrl).replace(/\/+$/, '');
+  const endpoint = (access.baseUrl ?? request.defaultBaseUrl).replace(/\/+$/, '');
+  if (!keySafeEndpoint(endpoint)) return { ok: false, reason: 'misconfigured', detail: 'invalid_base_url' };
   const fetchImpl = request.fetchImpl ?? fetch;
   let sent = false;
   const result = await call((path, init) => {
@@ -327,11 +321,21 @@ export async function sendImageRequest(
   const attribution = cells.getStore()?.attribution ?? {
     installationId: usageInstallationId(env), runId: grant.runId, attemptId: crypto.randomUUID(), agentId: null,
   };
-  await settleRecord(env, sentRequest, platformGrant, () => imageRequestRecord({
+  await settleRecord(env, sentRequest, platformGrant, () => sentImageRequestRecord({
     requestId: sentRequest.requestId, attribution, provider: grant.providerId, model,
     fundingSource: grant.fundingSource, result, finishedAt: Date.now(),
   }));
   return result;
+}
+
+function keySafeEndpoint(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
 }
 
 async function resolveCell(
@@ -513,7 +517,6 @@ function settleRequest(
   }));
 }
 
-/** Writes a finished request's record and charges it, waiting at most the record budget. */
 async function settleRecord(
   env: PlatformEnv | undefined,
   request: SentRequest,
@@ -533,8 +536,6 @@ async function settleRecord(
   const budget = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, RECORD_BUDGET_MS);
   });
-  // The caller waits on promises that cannot reject, so neither a write nor
-  // its failure log can keep the result from it.
   await Promise.race([Promise.all(settled), budget]);
   clearTimeout(timer);
 }
