@@ -46,7 +46,7 @@ const OWNER_VIEW: BillingView = {
     ],
     topUps: [{ key: 'top_up_10', priceCents: 1_000, credits: 10_000, validMonths: 12 }],
   },
-  ownKeySaved: true,
+  ownKey: { ready: true, agentsWithoutKey: [] },
 };
 
 const OWN_KEY_VIEW: BillingView = { funding: 'own_key', manage: true };
@@ -216,7 +216,8 @@ test('an Owner on credits with a saved key switches back to it only after confir
   const page = await harness({ path: '/admin/plan', billingOffered: true, billing: OWNER_VIEW });
   assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/);
   await page.click({ 'data-action': 'billing-use-own-key' });
-  assert.match(page.html(), /Switch to your own key\? Replies will use your saved API key\. Unused credits stay on your balance until they expire\./);
+  assert.match(page.html(), /Switch to your own key\? Replies will use your saved API key\. Unused credits stay on your balance until they expire\.<\/span>/);
+  assert.doesNotMatch(page.html(), /will stop replying/, 'no Agent is named when every pinned model has a key');
   await page.click({ 'data-action': 'billing-funding-cancel' });
   assert.doesNotMatch(page.html(), /Switch to your own key\?/);
   assert.deepEqual(billingWrites(page.requests), [], 'nothing switches before the Owner confirms');
@@ -230,6 +231,16 @@ test('an Owner on credits with a saved key switches back to it only after confir
   assert.doesNotMatch(page.html(), /Switch to Chickpea credits\?/, 'the own-key view does not open on a confirmation');
 });
 
+test('the confirmation names each Agent whose pinned model has no saved key', async () => {
+  const page = await harness({
+    path: '/admin/plan', billingOffered: true,
+    billing: { ...OWNER_VIEW, ownKey: { ready: true, agentsWithoutKey: ['Research', 'Ops <Desk>'] } },
+  });
+  assert.doesNotMatch(page.html(), /will stop replying/, 'only the confirmation warns');
+  await page.click({ 'data-action': 'billing-use-own-key' });
+  assert.match(page.html(), /Unused credits stay on your balance until they expire\. These Agents will stop replying until a key is added for their model&rsquo;s provider: Research, Ops &lt;Desk&gt;\.<\/span>/);
+});
+
 test('a switch back the host refuses shows its error beside the open confirmation', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, billing: OWNER_VIEW, switchFails: true });
   await page.click({ 'data-action': 'billing-use-own-key' });
@@ -241,8 +252,14 @@ test('a switch back the host refuses shows its error beside the open confirmatio
   assert.ok(error > confirm, 'the error follows the confirmation, not the Stripe buttons');
 });
 
+test('an Owner on credits whose default model has no key is told which key to add', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { ...OWNER_VIEW, ownKey: { ready: false, provider: 'anthropic' } } });
+  assert.match(page.html(), /data-action="open-settings" data-section="providers">Use your own key instead<\/button><\/div><p class="hint">Your default model needs an Anthropic API key\. Add one in Settings first\.<\/p>/);
+  assert.doesNotMatch(page.html(), /billing-use-own-key/);
+});
+
 test('an Owner on credits with no saved key is sent to Model providers to add one first', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { ...OWNER_VIEW, ownKeySaved: false } });
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { ...OWNER_VIEW, ownKey: { ready: false, provider: null } } });
   assert.match(page.html(), /data-action="open-settings" data-section="providers">Use your own key instead<\/button><\/div><p class="hint">Add a provider API key in Settings first\.<\/p>/);
   assert.doesNotMatch(page.html(), /billing-use-own-key/);
   await page.click({ 'data-action': 'open-settings', 'data-section': 'providers' });

@@ -472,7 +472,7 @@ test('the Owner\'s credits-or-own-key choice is the host\'s to record and the jo
   assert.equal((await choose('credits')).status, 404, 'no port, no choice');
 });
 
-test('a credits installation switches back to its own key from the Plan and credits page only once it has saved one', async (t) => {
+test('a credits installation switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {
   await withProviders(async () => {
     let funding: BillingFunding = 'credits';
     const chosen: BillingFunding[] = [];
@@ -493,19 +493,37 @@ test('a credits installation switches back to its own key from the Plan and cred
     const signup = await signUp(t);
     await signup.claim();
     const admin = signup.admin(await signup.ownerPrincipal());
+    const current = (await signup.config.getWorkspaceModelDefault(TEAM))!;
+    await signup.config.putWorkspaceModelDefault({
+      workspaceId: TEAM, modelId: 'anthropic/claude-sonnet-5-5', provenance: 'admin_selected',
+    }, current.revision);
+    const agent = (id: string, model: string, enabled = true) => signup.config.createAgent({
+      id, kind: 'user', name: id.replace('agent_', ''), instructions: 'Help.', enabled, lifecycle: 'active',
+      model, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await agent('agent_Research', 'openai/gpt-5.6-terra');
+    await agent('agent_Writer', 'openrouter/openai/gpt-5.6-terra');
+    await agent('agent_Paused', 'openai/gpt-5.6-terra', false);
+    const saveKey = async (provider: 'anthropic' | 'openrouter') => {
+      const saved = await admin(`/admin/api/providers/${provider}/key`, {
+        method: 'POST', body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS[provider] }),
+      });
+      assert.equal(saved.status, 200, await saved.clone().text());
+    };
+    const ownKey = async () => (await json(admin('/admin/api/billing'))).ownKey;
     const switchToOwnKey = () => admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'own_key' }) });
 
-    assert.equal((await json(admin('/admin/api/billing'))).ownKeySaved, false);
-    const keyless = await switchToOwnKey();
-    assert.equal(keyless.status, 409);
-    assert.deepEqual(await keyless.json(), { error: 'own_key_missing' });
-    assert.deepEqual(chosen, [], 'a workspace with no key stays on credits');
+    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' });
+    await saveKey('openrouter');
+    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' }, 'a key for another provider is not enough');
+    const refused = await switchToOwnKey();
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: 'own_key_missing', provider: 'anthropic' });
+    assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on credits');
 
-    const saved = await admin('/admin/api/providers/anthropic/key', {
-      method: 'POST', body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.anthropic }),
-    });
-    assert.equal(saved.status, 200, await saved.clone().text());
-    assert.equal((await json(admin('/admin/api/billing'))).ownKeySaved, true);
+    await saveKey('anthropic');
+    assert.deepEqual(await ownKey(), { ready: true, agentsWithoutKey: ['Research'] },
+      'only an active, enabled Agent pinned to a provider with no key would stop');
     for (let attempt = 0; attempt < 2; attempt += 1) {
       assert.deepEqual(await json(switchToOwnKey()), { funding: 'own_key', manage: true });
     }

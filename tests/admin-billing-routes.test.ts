@@ -135,7 +135,7 @@ test('switching to your own key with no key saved, or a malformed switch, is ref
   const request = admin(t, { port });
   const keyless = await request('/admin/api/billing/funding', post({ funding: 'own_key' }));
   assert.equal(keyless.status, 409);
-  assert.deepEqual(await keyless.json(), { error: 'own_key_missing' });
+  assert.deepEqual(await keyless.json(), { error: 'own_key_missing', provider: null });
   for (const body of [{}, { funding: 'byok' }, { funding: 'credits', installationId: 'inst_other' }]) {
     assert.equal((await request('/admin/api/billing/funding', post(body))).status, 400, JSON.stringify(body));
   }
@@ -158,7 +158,7 @@ test('an Owner reads the balance, plan, period and named use; unnamed use folds 
       byPerson: [{ name: 'Maya Chen', credits: 31 }, { name: null, credits: 6 }],
     },
     offers: CREDITS.offers,
-    ownKeySaved: false,
+    ownKey: { ready: false, provider: null },
   });
   assert.deepEqual(calls, [['summary', INSTALLATION]]);
 });

@@ -9,6 +9,7 @@ import {
   type CreditUse,
   type PlatformBillingPort,
 } from '../config/platform-billing.ts';
+import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { invalidRequest, readJson } from './api-support.ts';
 
@@ -23,9 +24,27 @@ interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
   /** Display names keyed by Chickpea membership ID. */
   personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
-  /** Whether the installation has a provider key saved, which paying with its own key needs. */
-  ownKeySaved: (c: Context) => Promise<boolean>;
+  ownKeyFacts: (c: Context) => Promise<OwnKeyFacts>;
 }
+
+/** What paying with the installation's own key would rely on. */
+interface OwnKeyFacts {
+  readonly savedKeys: ReadonlySet<ProviderKeyId>;
+  /** The workspace default chat model, while one is chosen. */
+  readonly defaultModel: string | undefined;
+  /** Active, enabled Agents, each with the model it pins, if any. */
+  readonly agents: readonly { readonly name: string; readonly model?: string }[];
+}
+
+/**
+ * Whether an installation on credits can switch to its own key: not without
+ * a key for the default model's provider, which `provider` names (null when
+ * no default model is chosen and no key is saved). Agents pinned to a
+ * provider with no saved key would stop replying.
+ */
+export type OwnKeyReadiness =
+  | { ready: true; agentsWithoutKey: string[] }
+  | { ready: false; provider: ProviderKeyId | null };
 
 /** One row of credit use; a null name gathers use with no Agent or person, or one with no name. */
 interface NamedCreditUse {
@@ -48,7 +67,7 @@ export type BillingView =
     period: { start: string; end: string };
     use: { byAgent: NamedCreditUse[]; byPerson: NamedCreditUse[] };
     offers: CreditsBillingSummary['offers'];
-    ownKeySaved: boolean;
+    ownKey: OwnKeyReadiness;
   };
 
 /**
@@ -65,8 +84,8 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     const summary = await port.summary(installationId);
     if (summary.funding === 'own_key') return { funding: 'own_key', manage: isOwner(c) };
     if (!isOwner(c)) return { funding: 'credits', manage: false, balance: summary.balance };
-    const [agentNames, personNames, ownKeySaved] = await Promise.all([
-      options.agentNames(c), options.personNames(c), options.ownKeySaved(c),
+    const [agentNames, personNames, ownKeyFacts] = await Promise.all([
+      options.agentNames(c), options.personNames(c), options.ownKeyFacts(c),
     ]);
     return {
       funding: 'credits',
@@ -79,7 +98,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
         byPerson: namedUse(summary.use.byPerson, personNames),
       },
       offers: summary.offers,
-      ownKeySaved,
+      ownKey: ownKeyReadiness(ownKeyFacts),
     };
   };
 
@@ -89,8 +108,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/funding', (c) => withOwnerBilling(c, async (port, installationId) => {
     const parsed = v.safeParse(fundingSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
-    if (parsed.output.funding === 'own_key' && !await options.ownKeySaved(c)) {
-      return c.json({ error: 'own_key_missing' }, 409);
+    if (parsed.output.funding === 'own_key') {
+      const readiness = ownKeyReadiness(await options.ownKeyFacts(c));
+      if (!readiness.ready) return c.json({ error: 'own_key_missing', provider: readiness.provider }, 409);
     }
     await port.chooseFunding(installationId, parsed.output.funding);
     return c.json(await view(c, port, installationId));
@@ -106,6 +126,25 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     redirect(c, await port.portal(installationId, PLAN_AND_CREDITS_PATH))));
 
   return app;
+}
+
+function ownKeyReadiness(facts: OwnKeyFacts): OwnKeyReadiness {
+  const provider = keyProvider(facts.defaultModel);
+  const keyed = provider ? facts.savedKeys.has(provider) : facts.savedKeys.size > 0;
+  if (!keyed) return { ready: false, provider: provider ?? null };
+  return {
+    ready: true,
+    agentsWithoutKey: facts.agents.flatMap((agent) => {
+      const pinned = keyProvider(agent.model);
+      return pinned && !facts.savedKeys.has(pinned) ? [agent.name] : [];
+    }),
+  };
+}
+
+/** The key provider serving a `provider/model` value; undefined for one that takes no key. */
+function keyProvider(model: string | undefined): ProviderKeyId | undefined {
+  const provider = model ? /^([^/]+)\//.exec(model)?.[1] : undefined;
+  return provider && isProviderKeyId(provider) ? provider : undefined;
 }
 
 /** Whether the request is an Owner's own session: only Owners buy credits. */

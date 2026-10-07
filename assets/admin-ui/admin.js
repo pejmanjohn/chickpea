@@ -2562,14 +2562,18 @@
     return head + body + notice;
   }
 
-  // Paying with the workspace's own key needs a saved provider key, so with
-  // none the way back starts in Settings.
+  // Paying with the workspace's own key needs a key for the default model's
+  // provider, so without one the way back starts in Settings.
   function billingUseOwnKeyHtml(billing, notice) {
-    var body = !billing.ownKeySaved
+    var ownKey = billing.ownKey;
+    var stranded = ownKey.ready && ownKey.agentsWithoutKey.length
+      ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + ownKey.agentsWithoutKey.map(esc).join(", ") + '.'
+      : '';
+    var body = !ownKey.ready
       ? '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
-        '<p class="hint">Add a provider API key in Settings first.</p>'
+        '<p class="hint">' + (ownKey.provider ? 'Your default model needs an ' + esc(providerMeta(ownKey.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>'
       : state.billingFundingConfirm
-      ? billingFundingConfirmHtml('Switch to your own key? Replies will use your saved API key. Unused credits stay on your balance until they expire.', 'Switch to your own key') + notice
+      ? billingFundingConfirmHtml('Switch to your own key? Replies will use your saved API key. Unused credits stay on your balance until they expire.' + stranded, 'Switch to your own key') + notice
       : '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
     return '<section class="usage-section">' + body + '</section>';
   }

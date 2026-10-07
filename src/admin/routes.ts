@@ -6255,8 +6255,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return name ? [[membership.id, name] as const] : [];
       }));
     },
-    ownKeySaved: async (c) => Object.values(await describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c)))
-      .some((source) => source !== 'missing'),
+    ownKeyFacts: async (c) => {
+      const configStore = store(c);
+      const [sources, installation, agents] = await Promise.all([
+        describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c)),
+        modelDefaultInstallation(configStore),
+        configStore.listUserAgents(),
+      ]);
+      return {
+        savedKeys: new Set(PROVIDER_KEY_IDS.filter((id) => sources[id] !== 'missing')),
+        defaultModel: installation && (await configStore.getWorkspaceModelDefault(installation.workspaceId))?.modelId,
+        agents: agents.filter((agent) => agent.lifecycle === 'active' && agent.enabled),
+      };
+    },
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
