@@ -1,6 +1,12 @@
-import { resolveInstallationModelAccess, RuntimeModelReadinessError } from '../config/installation-model-access.ts';
-import { ModelAccessError } from '../config/model-access.ts';
+import { InstallationNotAdmittedError } from '../config/installation-admission.ts';
+import { installationModelAccessGrant, RuntimeModelReadinessError } from '../config/installation-model-access.ts';
+import { ModelAccessError, sendImageRequest, type ModelAccessGrant } from '../config/model-access.ts';
 import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts';
+import {
+  CreditsExhaustedError,
+  installationFunding,
+  PlatformFundingUnavailableError,
+} from '../config/platform-funding.ts';
 import { describeProviderKeySources } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -11,16 +17,18 @@ import { OpenAiSubscriptionError } from '../openai-subscription/errors.ts';
 import { createOpenAiSubscriptionImagesClient } from '../openai-subscription/images-client.ts';
 import {
   createOpenAiImagesClient,
-  OpenAiImagesConfigError,
+  type ImageCallResult,
+  type ImageRequestSender,
   type OpenAiImagesClient,
 } from './openai-images-client.ts';
+import { currentImagePrice } from './request-record.ts';
 
 export type ImageProviderResolution =
   | { ok: true; profile: ImageModelProfile; client: OpenAiImagesClient }
   | { ok: false; reason: 'unsupported' | 'unknown-model' | 'misconfigured'; detail: string };
 
 export interface ImageProviderOptions {
-  /** Test seam; production callers take the environment base and global fetch. */
+  /** Test seam; production callers take the catalog endpoint and global fetch. */
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }
@@ -34,6 +42,9 @@ export async function imageModelProfileReady(
   if (profile.authMethod === 'subscription') {
     if (!openAiSubscriptionAvailable() || !store) return false;
     return (await getOpenAiSubscriptionAuthorizationStatus(store)).state === 'connected';
+  }
+  if (await installationFunding(env) === 'platform') {
+    return currentImagePrice(profile.provider, profile.model, Date.now()) !== null;
   }
   return (await describeProviderKeySources(env, store))[profile.provider] !== 'missing';
 }
@@ -89,32 +100,46 @@ export async function resolveImageProvider(
     }
   }
 
-  let apiKey: string | undefined;
+  let grant: ModelAccessGrant | undefined;
   try {
-    apiKey = (await resolveInstallationModelAccess('openai', env, 'image-generation', store))?.apiKey;
+    grant = await installationModelAccessGrant('openai', env, 'image-generation', store);
   } catch (err) {
-    if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
-    if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
-    if (err instanceof RuntimeModelReadinessError) return { ok: false, reason: 'misconfigured', detail: 'missing_api_key' };
+    const refused = refusal(err);
+    if (refused) return { ok: false, reason: 'misconfigured', detail: refused.detail };
     throw err;
   }
-  if (!apiKey) {
+  if (!grant) {
     // No credential, no request: the role resolves as unset upstream and the
     // honesty instruction applies instead of a provider auth failure.
     return { ok: false, reason: 'misconfigured', detail: 'missing_api_key' };
   }
-  try {
-    const client = createOpenAiImagesClient({
-      profile,
-      apiKey,
-      ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-    });
-    return { ok: true, profile, client };
-  } catch (err) {
-    if (err instanceof OpenAiImagesConfigError) {
-      return { ok: false, reason: 'misconfigured', detail: err.message };
+  const request = {
+    grant,
+    env,
+    model: profile.model,
+    defaultBaseUrl: options.baseUrl ?? profile.baseUrl,
+    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+  };
+  const send: ImageRequestSender = async (call) => {
+    try {
+      return await sendImageRequest(request, call);
+    } catch (err) {
+      const refused = refusal(err);
+      if (refused) return refused;
+      throw err;
     }
-    throw err;
-  }
+  };
+  return { ok: true, profile, client: createOpenAiImagesClient({ profile, send }) };
+}
+
+function refusal(err: unknown): Extract<ImageCallResult, { ok: false }> | undefined {
+  if (err instanceof ModelAccessError) return { ok: false, reason: 'misconfigured', detail: err.code };
+  if (err instanceof ModelCredentialRevisionError) return { ok: false, reason: 'misconfigured', detail: 'credential_changed' };
+  if (err instanceof RuntimeModelReadinessError) return { ok: false, reason: 'misconfigured', detail: 'missing_api_key' };
+  if (
+    err instanceof CreditsExhaustedError ||
+    err instanceof PlatformFundingUnavailableError ||
+    err instanceof InstallationNotAdmittedError
+  ) return { ok: false, reason: 'unreachable', detail: err.code };
+  return undefined;
 }

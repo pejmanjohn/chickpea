@@ -24,12 +24,10 @@ import {
 import {
   frozenModelAccessGrant,
   installationModelAccessGrant,
-  resolveInstallationModelAccess,
   RuntimeModelReadinessError,
 } from '../src/config/installation-model-access.ts';
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
-  ModelAccessError,
   configureModelAccessResolver,
   configureModelRequestRecorder,
   createModelAccessInterceptor,
@@ -277,9 +275,6 @@ test('a credits installation with no saved key passes readiness and freezes plat
       installationId: 'inst_no_key', providerId: 'anthropic', credentialRefId: 'platform:anthropic',
       credentialVersion: 1, runId: 'run_live', fundingSource: 'platform',
     });
-    await assert.rejects(resolveInstallationModelAccess('openai', env, 'image-generation', settings), (error: unknown) =>
-      error instanceof ModelAccessError && error.code === 'funding_not_offered',
-    'a model client outside the proxy is never handed platform funding');
   });
 });
 

@@ -17,13 +17,11 @@ import {
   isModelAccessProviderId,
   modelAccessProviderId,
   providerPrefix,
-  resolveModelAccessGrant,
   withDeploymentLane,
   withModelAccess,
   type ModelAccessGrant,
   type ModelAccessProviderId,
   type ModelAccessResolver,
-  type ResolvedModelAccess,
 } from './model-access.ts';
 import {
   ModelCredentialRevisionError,
@@ -232,24 +230,6 @@ export async function withStatelessModelAccess<T>(
   const grant = await installationModelAccessGrant(providerId, input.env, input.runId, input.settings);
   if (!grant) throw providerSetupRequired(providerId);
   return withModelAccess(grant, input.env, fn);
-}
-
-/**
- * The installation's current access for a model client outside Pi (image
- * generation). Its requests skip the proxy's credit gate and charge, so it is
- * refused platform-funded access.
- */
-export async function resolveInstallationModelAccess(
-  providerId: ModelAccessProviderId,
-  env: PlatformEnv | undefined,
-  runId: string,
-  settings?: SettingsStore,
-): Promise<ResolvedModelAccess | undefined> {
-  const grant = await installationModelAccessGrant(providerId, env, runId, settings);
-  if (grant?.fundingSource === 'platform') {
-    throw new ModelAccessError('funding_not_offered', 'A model client outside the provider proxy cannot use platform funding.');
-  }
-  return grant ? resolveModelAccessGrant(grant, env) : undefined;
 }
 
 /**

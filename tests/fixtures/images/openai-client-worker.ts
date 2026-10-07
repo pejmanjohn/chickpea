@@ -1,15 +1,18 @@
+import { configureModelAccessResolver, sendImageRequest } from '../../../src/config/model-access.ts';
 import {
   createOpenAiImagesClient,
   type ImageCallResult,
 } from '../../../src/images/openai-images-client.ts';
 import { findImageModel } from '../../../src/model-catalog/image-profiles.ts';
 
+configureModelAccessResolver({ resolve: async () => ({ apiKey: 'probe-key' }) });
+
 /**
  * Exercises the images client and the workerd fetch primitives it depends on
  * against a loopback stub. Only the scheme and host are rewritten on the way
  * out: the method, headers, body (JSON or multipart FormData), `redirect`
- * mode, and `signal` reach workerd's own `fetch` exactly as the client built
- * them, so this probes the runtime and not a mock.
+ * mode, and `signal` reach workerd's own `fetch` exactly as the client and
+ * the model-access proxy built them, so this probes the runtime and not a mock.
  */
 const BASE = 'https://images.probe.test/v1';
 
@@ -113,21 +116,24 @@ const PROBES: Record<string, (stub: string) => Promise<unknown>> = {
 function client(stub: string, route = '') {
   const profile = findImageModel('openai/gpt-image-2.5-flare');
   if (!profile) throw new Error('image profile missing');
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const target = new URL(String(input));
+    const outgoing = new URL(stub);
+    outgoing.pathname = `${outgoing.pathname.replace(/\/+$/, '')}${route || target.pathname}`;
+    return withoutFinalUrl(await fetch(outgoing.toString(), init));
+  };
+  const grant = {
+    installationId: 'chickpea', providerId: 'openai', credentialRefId: 'cred_probe', credentialVersion: 1,
+    runId: 'image-generation', fundingSource: 'customer',
+  } as const;
   return createOpenAiImagesClient({
     profile,
-    apiKey: 'probe-key',
-    baseUrl: BASE,
-    fetchImpl: async (input, init) => {
-      const target = new URL(String(input));
-      const outgoing = new URL(stub);
-      outgoing.pathname = `${outgoing.pathname.replace(/\/+$/, '')}${route || target.pathname}`;
-      // Re-wrapped so `response.url` is empty and the off-host guard, which
-      // this rewrite would otherwise trip, stays out of the probe's way.
-      const response = await fetch(outgoing.toString(), init);
-      const body = await response.arrayBuffer();
-      return new Response(body, { status: response.status, headers: response.headers });
-    },
+    send: (call) => sendImageRequest({ grant, env: undefined, model: profile.model, defaultBaseUrl: BASE, fetchImpl }, call),
   });
+}
+
+async function withoutFinalUrl(response: Response): Promise<Response> {
+  return new Response(await response.arrayBuffer(), { status: response.status, headers: response.headers });
 }
 
 function summarize(result: ImageCallResult): unknown {

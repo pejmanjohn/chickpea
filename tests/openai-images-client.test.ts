@@ -11,10 +11,22 @@ import {
 } from '../src/images/openai-images-client.ts';
 import { resolveImageProvider } from '../src/images/provider.ts';
 import { installationModelAccessResolver } from '../src/config/installation-model-access.ts';
-import { configureModelAccessResolver } from '../src/config/model-access.ts';
+import {
+  configureModelAccessResolver,
+  sendImageRequest,
+  type ModelAccessGrant,
+} from '../src/config/model-access.ts';
 
-// As the runtime bootstrap installs it: image generation reads its key through the resolver.
-configureModelAccessResolver(installationModelAccessResolver);
+const TEST_GRANT: ModelAccessGrant = {
+  installationId: 'chickpea', providerId: 'openai', credentialRefId: 'cred_images_test', credentialVersion: 1,
+  runId: 'image-generation', fundingSource: 'customer',
+};
+
+configureModelAccessResolver({
+  resolve: async (grant, env) => grant.credentialRefId === TEST_GRANT.credentialRefId
+    ? { apiKey: 'sk-test' }
+    : installationModelAccessResolver.resolve(grant, env),
+});
 
 const BASE_URL = 'https://images.openai.invalid/v1';
 const PROFILE = findImageModel('openai/gpt-image-2.5-sunburst') as ImageModelProfile;
@@ -48,8 +60,11 @@ function jsonResponse(body: unknown, status = 200, url = `${BASE_URL}/images/gen
   return response;
 }
 
-function client(fetchImpl: typeof fetch, profile: ImageModelProfile = PROFILE) {
-  return createOpenAiImagesClient({ profile, apiKey: 'sk-test', baseUrl: BASE_URL, fetchImpl });
+function client(fetchImpl: typeof fetch, profile: ImageModelProfile = PROFILE, defaultBaseUrl = BASE_URL) {
+  return createOpenAiImagesClient({
+    profile,
+    send: (call) => sendImageRequest({ grant: TEST_GRANT, env: undefined, model: profile.model, defaultBaseUrl, fetchImpl }, call),
+  });
 }
 
 function imageInput(byte: number): ImageInput {
@@ -99,6 +114,8 @@ test('a generation request carries the wire model, prompt, and format policy (AE
   // workerd refuses `redirect: 'error'` at the init, so the request would
   // never leave the Worker; `manual` plus the status check is portable.
   assert.equal(calls[0]?.init.redirect, 'manual');
+  assert.equal((calls[0]?.init.headers as Record<string, string>).authorization, 'Bearer sk-test',
+    'the proxy adds the key the grant resolves to');
   const body = JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>;
   assert.deepEqual(body, {
     model: 'gpt-image-2.5-sunburst',
@@ -213,12 +230,13 @@ test('a list with one undecodable image is one invalid response, not a partial s
     jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: 'not base64!' }] }),
   );
   const result = await client(fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000, count: 2 });
-  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response' });
+  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response', billed: 'unknown' });
 
-  const empty = recordingFetch(() => jsonResponse({ data: [] }));
+  const empty = recordingFetch(() => jsonResponse({ data: [], usage: { input_tokens: 3, output_tokens: 7 } }));
   assert.deepEqual(
     await client(empty.fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000 }),
-    { ok: false, reason: 'unreachable', detail: 'invalid_response' },
+    { ok: false, reason: 'unreachable', detail: 'invalid_response', billed: { input_tokens: 3, output_tokens: 7 } },
+    'the usage the provider reported survives a response Chickpea cannot use',
   );
 });
 
@@ -316,7 +334,7 @@ test('a response slower than the deadline times out and aborts the request', asy
     deadlineMs: 10,
   });
 
-  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded' });
+  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded', billed: 'unknown' });
   assert.equal(observed?.aborted, true);
 });
 
@@ -419,23 +437,21 @@ test('a provider error code reaches the outcome only as a bounded identifier', a
   }
 });
 
-test('a base URL that is not https or carries credentials is refused at construction', () => {
-  const { fetchImpl } = recordingFetch(() => jsonResponse({}));
+test('an endpoint that is not https or carries credentials is refused before the key is sent', async () => {
+  const { calls, fetchImpl } = recordingFetch(() => jsonResponse({}));
   for (const baseUrl of [
     'http://api.openai.com/v1',
     'https://user:secret@api.openai.com/v1',
     'https://api.openai.com/v1?key=secret',
     'not-a-url',
   ]) {
-    assert.throws(
-      () => createOpenAiImagesClient({ profile: PROFILE, apiKey: 'sk-test', baseUrl, fetchImpl }),
-      OpenAiImagesConfigError,
+    assert.deepEqual(
+      await client(fetchImpl, PROFILE, baseUrl).generate({ prompt: 'a probe', format: PNG_POLICY, deadlineMs: 1_000 }),
+      { ok: false, reason: 'misconfigured', detail: 'invalid_base_url' },
+      baseUrl,
     );
   }
-  assert.throws(
-    () => createOpenAiImagesClient({ profile: PROFILE, apiKey: '  ', baseUrl: BASE_URL, fetchImpl }),
-    OpenAiImagesConfigError,
-  );
+  assert.equal(calls.length, 0);
 });
 
 test('the API-key client refuses the subscription catalog profile', () => {
@@ -443,9 +459,7 @@ test('the API-key client refuses the subscription catalog profile', () => {
   assert.throws(
     () => createOpenAiImagesClient({
       profile: subscription,
-      apiKey: 'sk-would-be-the-wrong-lane',
-      baseUrl: BASE_URL,
-      fetchImpl: (async () => { throw new Error('not called'); }) as typeof fetch,
+      send: async () => { throw new Error('not called'); },
     }),
     (error: unknown) => error instanceof OpenAiImagesConfigError &&
       error.message === 'unsupported_auth_method',
