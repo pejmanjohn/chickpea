@@ -303,7 +303,9 @@ async function readImageResponse(
   }
   const payload = parseJsonRecord(text);
   const usage = projectUsage(payload?.usage);
-  const billed: ImageCallUsage | 'unknown' | undefined = usage ?? (response.ok ? 'unknown' : undefined);
+  // A server error may come after the provider did paid work; a client error is a refusal.
+  const billed: ImageCallUsage | 'unknown' | undefined =
+    usage ?? (response.ok || response.status >= 500 ? 'unknown' : undefined);
   if (!response.ok) {
     return { ...mapErrorResponse(response.status, payload, prompt), ...(billed ? { billed } : {}) };
   }

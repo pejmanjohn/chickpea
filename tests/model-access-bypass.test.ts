@@ -11,7 +11,7 @@ const KEY_SOURCES = {
   resolverCall: String.raw`\.resolve\(grant\b`,
   credentialReader: String.raw`\b(?:resolveProviderApiKey|readHostedModelCredential|readStoredModelCredentials|readStoredProviderKeys|resolveOpenAiSubscriptionCredentials)\b`,
   savedKeySetting: String.raw`\b(?:modelCredentialSettingKeys|PROVIDER_KEY_SETTING_KEYS)\b`,
-  deploymentKeyVariable: String.raw`\[\s*(?:PROVIDER_KEY_ENV_VARS|ENV_KEY_NAMES)\s*\[|process\.env(?:\.|\[\s*['"\x60])(?:ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN)\b`,
+  deploymentKeyVariable: String.raw`\[\s*(?:PROVIDER_KEY_ENV_VARS|ENV_KEY_NAMES)\s*\[|(?:\.|\w\[\s*['"\x60])(?:ANTHROPIC_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|CLOUDFLARE_API_TOKEN)\b`,
 };
 const READS_MODEL_KEY = new RegExp(Object.values(KEY_SOURCES).join('|'));
 
@@ -89,6 +89,7 @@ test('the scan finds a key source and a provider host wherever they appear', () 
     'const key = process.env[PROVIDER_KEY_ENV_VARS[providerId]];',
     'const key = process.env.OPENAI_API_KEY;',
     "const key = process.env['ANTHROPIC_API_KEY'];",
+    'const key = platformEnv.OPENROUTER_API_KEY;',
   ]) assert.match(line, READS_MODEL_KEY, line);
   for (const line of [
     "fetch('https://api.openai.com/v1/images/generations')",

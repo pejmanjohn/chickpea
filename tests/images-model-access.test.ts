@@ -373,11 +373,13 @@ test('an image the provider billed is charged even when Chickpea cannot use the 
 
     const lost = provider(() => { throw new TypeError('socket closed'); });
     assert.equal((await (await imageClient(env, settings, lost.fetchImpl)).generate(generation)).ok, false);
+    const gateway = provider(() => imagesResponse(502, { error: { message: 'bad gateway' } }));
+    assert.equal((await (await imageClient(env, settings, gateway.fetchImpl)).generate(generation)).ok, false);
     const oversized = provider(() => new Response('{}', { headers: { 'content-length': String(64 * 1024 * 1024) } }));
     assert.equal((await (await imageClient(env, settings, oversized.fetchImpl)).generate(generation)).ok, false);
-    assert.equal(fundingCalls.charge.length, 4);
+    assert.equal(fundingCalls.charge.length, 5);
     for (const unread of fundingCalls.charge.slice(2)) {
-      assert.equal(unread.listPriceUsdMicros, null, 'a request sent with no answer read is never priced at zero');
+      assert.equal(unread.listPriceUsdMicros, null, 'a sent request whose cost is unknown is never priced at zero');
       assert.equal(unread.priceUnknownReason, 'pricing_dimension_unknown');
     }
     assert.deepEqual(fundingCalls.charge, recorded);
