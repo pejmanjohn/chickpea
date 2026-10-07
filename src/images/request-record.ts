@@ -49,6 +49,8 @@ export function sentImageRequestRecord(end: ImageRequestEnd): ModelRequestRecord
     priceVersionId: 'amount' in price ? price.priceVersionId : null,
     listPriceUsdMicros: 'amount' in price ? price.amount : null,
     priceUnknownReason: 'amount' in price ? null : price.unknown,
+    providerCostUsdMicros: null,
+    providerResponseId: null,
     finishedAt: end.finishedAt,
   };
 }

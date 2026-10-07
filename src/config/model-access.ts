@@ -46,11 +46,13 @@ import {
 } from '../model-catalog/provider-alias.ts';
 import {
   modelRequestRecord,
+  openRouterCostReader,
   usageInstallationId,
   type ModelRequestAttribution,
   type ModelRequestEnd,
   type ModelRequestFundingSource,
   type ModelRequestRecord,
+  type ReportedCostReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
@@ -415,8 +417,9 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
+  const reader = providerId === 'openrouter' ? openRouterCostReader(options?.fetch) : undefined;
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, bound?.grant, start);
+    sendRequest(cell, sent, request, bound?.grant, reader, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -425,6 +428,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...options,
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
+      ...(reader ? { fetch: reader.fetch } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -436,11 +440,12 @@ function sendRequest<TModel extends Model<Api>>(
   model: TModel,
   request: SentRequest,
   grant: ModelAccessGrant | undefined,
+  reader: ReportedCostReader | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
   const platformGrant = grant?.fundingSource === 'platform' ? grant : undefined;
-  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant) : undefined;
+  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
     if (!settle) return source;
@@ -511,17 +516,20 @@ function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
+  reader: ReportedCostReader | undefined,
 ): (final: AssistantMessage) => Promise<void> {
-  return (final) => settleRecord(cell.env, request, platformGrant, () => modelRequestRecord({
-    ...request, attribution: cell.attribution, message: final, finishedAt: Date.now(),
-  }));
+  return (final) => settleRecord(cell.env, request, platformGrant, async () => {
+    const finishedAt = Date.now();
+    const providerCostUsdMicros = await reader?.lastReportedCostUsdMicros() ?? null;
+    return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, providerCostUsdMicros, finishedAt });
+  });
 }
 
 async function settleRecord(
   env: PlatformEnv | undefined,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
-  build: () => ModelRequestRecord,
+  build: () => ModelRequestRecord | Promise<ModelRequestRecord>,
 ): Promise<void> {
   const writeRecord = recorder;
   if (!writeRecord && !platformGrant) return;
