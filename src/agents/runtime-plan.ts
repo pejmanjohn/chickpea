@@ -5,6 +5,7 @@ import {
   type ApiConnectionConfig,
   type McpConnectionConfig,
   type ManagedBindingResourceConstraints,
+  type ModelCredentialAttribution,
   type RepositoryGrant,
   type ResolvedAssignment,
   type SkillConfig,
@@ -18,6 +19,7 @@ import {
   splitInstallationObjectName,
   type InstallationOwnership,
 } from '../config/installation-scope.ts';
+import { credentialFundingSource } from '../config/platform-funding.ts';
 import { BROWSER_TOOL_ACTIVITY } from '../browser/tools.ts';
 import {
   ATTACH_FILE_TO_CONNECTION_TOOL_NAME,
@@ -177,6 +179,11 @@ export interface RuntimePlanModelCredentialV3 {
   credentialRefId: string;
   version: number;
   providerId: string;
+  /**
+   * Absent is customer funding, so every customer plan, and every plan frozen
+   * before platform funding, keeps its instance identity.
+   */
+  fundingSource?: 'platform';
 }
 
 export interface RuntimePlanV2 {
@@ -512,13 +519,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     ...(websiteLogins.length > 0 ? { websiteLogins } : {}),
     modelAttribution: frozenModelAttribution(input.assignment),
     ...(input.assignment.modelCredential
-      ? {
-          modelCredential: {
-            credentialRefId: input.assignment.modelCredential.credentialRefId,
-            version: input.assignment.modelCredential.version,
-            providerId: input.assignment.modelCredential.providerId,
-          },
-        }
+      ? { modelCredential: frozenModelCredential(input.assignment.modelCredential) }
       : {}),
     instructions: input.instructions,
     memoryEpoch: input.memoryEpoch,
@@ -1700,18 +1701,37 @@ function parseModelAttribution(value: unknown): AgentModelAttribution {
   };
 }
 
+export function frozenModelCredential(
+  credential: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'>,
+): RuntimePlanModelCredentialV3 {
+  return {
+    credentialRefId: credential.credentialRefId,
+    version: credential.version,
+    providerId: credential.providerId,
+    ...(credentialFundingSource(credential) === 'platform' ? { fundingSource: 'platform' as const } : {}),
+  };
+}
+
 /** A frozen credential epoch: reference, version and provider, never a value. */
 export function parseRuntimePlanModelCredential(value: unknown): RuntimePlanModelCredentialV3 {
   const record = exactRecord(value, 'modelCredential', [
     'credentialRefId',
     'version',
     'providerId',
-  ]);
-  return {
+    'fundingSource',
+  ], ['fundingSource']);
+  const credential = frozenModelCredential({
     credentialRefId: boundedString(record.credentialRefId, 'modelCredential.credentialRefId', 1, 256),
     version: positiveInteger(record.version, 'modelCredential.version'),
     providerId: boundedString(record.providerId, 'modelCredential.providerId', 1, 128),
-  };
+  });
+  const fundingSource = record.fundingSource === undefined
+    ? 'customer'
+    : oneOf(record.fundingSource, 'modelCredential.fundingSource', ['customer', 'platform'] as const);
+  if (fundingSource !== (credential.fundingSource ?? 'customer')) {
+    throw new Error('Runtime plan modelCredential.fundingSource does not match its credential reference.');
+  }
+  return credential;
 }
 
 function parseFrozenRuntimeModelRoute(value: unknown): FrozenRuntimeModelRoute {

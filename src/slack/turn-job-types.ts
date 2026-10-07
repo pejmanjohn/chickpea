@@ -126,6 +126,7 @@ export type FlueSettlementCheckpointV1 =
         | 'openai-subscription-reconnect'
         | 'openai-subscription-quota'
         | 'openai-subscription-policy'
+        | 'credits-exhausted'
         | 'sandbox'
         | 'sandbox-session-cap';
     };

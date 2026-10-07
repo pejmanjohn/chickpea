@@ -35,7 +35,7 @@ const MAX_LABEL_BYTES = 160;
 const MAX_MODEL_BYTES = 320;
 const MAX_REQUEST_TEXT_BYTES = 256;
 const MODEL_REQUEST_OUTCOMES = ['completed', 'stopped', 'error'] as const satisfies readonly ModelRequestOutcome[];
-const MODEL_REQUEST_FUNDING_SOURCES = ['customer'] as const satisfies readonly ModelRequestFundingSource[];
+const MODEL_REQUEST_FUNDING_SOURCES = ['customer', 'platform'] as const satisfies readonly ModelRequestFundingSource[];
 
 export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): AdmitUsageOperationInput {
   const operationKind = enumValue(input.operationKind, USAGE_OPERATION_KINDS, 'operation kind');

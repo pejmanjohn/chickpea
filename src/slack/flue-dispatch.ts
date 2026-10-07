@@ -41,6 +41,7 @@ import {
   createCloudflareBoundedAgentReplyReader,
   type BoundedReplyReader,
 } from './bounded-agent-observation.ts';
+import { CREDITS_EXHAUSTED_CODE } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import {
@@ -78,6 +79,7 @@ import {
 } from './agent-creation-terminal.ts';
 import {
   AGENT_FAILURE_TEXT,
+  CREDITS_EXHAUSTED_TEXT,
   OPENAI_SUBSCRIPTION_POLICY_TEXT,
   OPENAI_SUBSCRIPTION_QUOTA_TEXT,
   OPENAI_SUBSCRIPTION_RECONNECT_TEXT,
@@ -90,7 +92,8 @@ type AgentPromptFailureKind =
   | 'invalid-output'
   | 'openai-subscription-reconnect'
   | 'openai-subscription-quota'
-  | 'openai-subscription-policy';
+  | 'openai-subscription-policy'
+  | 'credits-exhausted';
 
 type AgentUsageCompleteness = 'complete' | 'partial' | 'not_reported';
 
@@ -198,6 +201,7 @@ export function agentFailureText(error: unknown): string {
   if (error.kind === 'openai-subscription-reconnect') return OPENAI_SUBSCRIPTION_RECONNECT_TEXT;
   if (error.kind === 'openai-subscription-quota') return OPENAI_SUBSCRIPTION_QUOTA_TEXT;
   if (error.kind === 'openai-subscription-policy') return OPENAI_SUBSCRIPTION_POLICY_TEXT;
+  if (error.kind === 'credits-exhausted') return CREDITS_EXHAUSTED_TEXT;
   return AGENT_FAILURE_TEXT;
 }
 
@@ -1137,6 +1141,7 @@ function classifyFailureText(typeValue: string, messageValue: string): AgentProm
   const type = typeValue.toLowerCase();
   const message = messageValue.toLowerCase();
   const searchable = `${type} ${message}`;
+  if (message.includes(`(${CREDITS_EXHAUSTED_CODE})`)) return 'credits-exhausted';
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||
     message.includes('openai subscription operation failed (authorization_missing)') ||

@@ -8,7 +8,8 @@ import type { UsageEstimateResult } from './pricing/types.ts';
 
 export type ModelRequestOutcome = 'completed' | 'stopped' | 'error';
 
-export type ModelRequestFundingSource = 'customer';
+/** Who pays the provider: the installation's own key, or Chickpea's, drawn from the installation's credits. */
+export type ModelRequestFundingSource = 'customer' | 'platform';
 
 export interface ModelRequestAttribution {
   readonly installationId: string;
@@ -81,6 +82,7 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     cacheWriteTokens: usage.cacheWrite,
     cacheWrite1hTokens: usage.cacheWrite1h ?? null,
     totalTokens: usage.totalTokens,
+    singleRequest: true,
   });
   const priced = price.estimateCompleteness === 'complete';
   return {
