@@ -139,7 +139,12 @@ async function planModelAccess(
   // The plan, its instance and this env name the same installation (standalone: none).
   assertRuntimePlanInstallation(plan, instanceId);
   return runModelAccess(
-    { installation: plan.installation, runtimeModel: plan.runtimeModel ?? plan.model, credential: plan.modelCredential },
+    {
+      installation: plan.installation,
+      runtimeModel: plan.runtimeModel ?? plan.model,
+      credential: plan.modelCredential,
+      agentId: plan.agentId,
+    },
     runId,
     env,
   );
@@ -171,6 +176,7 @@ async function codingWorkerModelAccess(
       installation: binding.installation,
       runtimeModel: binding.codingModel.runtimeModel,
       credential: binding.modelCredential,
+      agentId: binding.agentId,
     },
     runId,
     env,
@@ -182,13 +188,14 @@ async function runModelAccess(
     installation: InstallationOwnership | undefined;
     runtimeModel: string;
     credential: RuntimePlanModelCredentialV3 | undefined;
+    agentId: string;
   },
   runId: string,
   env: PlatformEnv | undefined,
 ): Promise<AttemptModelAccess> {
   assertInstallationOwnership(run.installation, env);
   const providerId = modelAccessProviderId(providerPrefix(run.runtimeModel));
-  if (!providerId) return { env, deploymentLane: true };
+  if (!providerId) return { env, deploymentLane: true, agentId: run.agentId };
   const credential = run.credential;
   if (credential && credential.providerId !== providerId) {
     throw new ModelAccessError(
@@ -200,7 +207,7 @@ async function runModelAccess(
     ? frozenModelAccessGrant(credential, modelAccessInstallationId(env), runId)
     : await installationModelAccessGrant(providerId, env, runId);
   if (!grant) throw providerSetupRequired(providerId);
-  return { env, grant };
+  return { env, grant, agentId: run.agentId };
 }
 
 /** The plan the host staged for this attempt's TurnJob, as the turn's render reads it. */

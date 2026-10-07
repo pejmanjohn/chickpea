@@ -15,7 +15,8 @@
  * stateless call), so a suspended or ended installation starts no attempt and
  * sends no further request (see installation-admission.ts). Image generation
  * is the exception: its client calls the provider outside the proxy, from a
- * tool call inside an attempt whose start was admitted.
+ * tool call inside an attempt whose start was admitted. Each request the
+ * proxy sends records its usage once, when it ends (usage/model-requests.ts).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -23,6 +24,7 @@ import {
   createAssistantMessageEventStream,
   type Api,
   type AssistantMessage,
+  type AssistantMessageEvent,
   type AssistantMessageEventStream,
   type Model,
   type StreamOptions,
@@ -37,6 +39,13 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
   isRevisionedAlias,
 } from '../model-catalog/provider-alias.ts';
+import {
+  modelRequestRecord,
+  usageInstallationId,
+  type ModelRequestAttribution,
+  type ModelRequestEnd,
+  type ModelRequestRecord,
+} from '../usage/model-requests.ts';
 
 /**
  * Providers whose key comes from the run's installation. `local-stub` is the
@@ -108,10 +117,18 @@ interface ModelAccessCell {
   readonly hosted: boolean;
   readonly installationId: string | undefined;
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
+  readonly env: PlatformEnv | undefined;
+  readonly attribution: ModelRequestAttribution;
 }
+
+/** Writes one request's record to the usage database of `env`'s installation. */
+export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
+
+const RECORD_BUDGET_MS = 2_000;
 
 const cells = new AsyncLocalStorage<ModelAccessCell>();
 let resolver: ModelAccessResolver | undefined;
+let recorder: ModelRequestRecorder | undefined;
 
 /** The composition seam: the deployment's resolver, installed before any model call. */
 export function configureModelAccessResolver(next: ModelAccessResolver): void {
@@ -120,6 +137,15 @@ export function configureModelAccessResolver(next: ModelAccessResolver): void {
 
 export function modelAccessResolverConfigured(): boolean {
   return resolver !== undefined;
+}
+
+/** The composition seam for request records; with none, requests are sent unrecorded. */
+export function configureModelRequestRecorder(next: ModelRequestRecorder): void {
+  recorder = next;
+}
+
+export function modelRequestRecorderConfigured(): boolean {
+  return recorder !== undefined;
 }
 
 function requireResolver(): ModelAccessResolver {
@@ -156,14 +182,14 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/** What the trusted host knows about one attempt before its first model call. */
+/** What the trusted host knows about one attempt before its first model call, and the Agent it runs for. */
 export type AttemptModelAccess =
   /** The grant persisted with the attempt's run. */
-  | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant }
+  | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
-  | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true }
+  | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true; readonly agentId?: string }
   /** An agent with no persisted run of its own (the coding worker). */
-  | { readonly env: PlatformEnv | undefined };
+  | { readonly env: PlatformEnv | undefined; readonly agentId?: string };
 
 export interface ModelAccessInterceptorOptions {
   /** The attempt's run, from trusted persisted state; never from model-visible input. */
@@ -200,13 +226,15 @@ export function createModelAccessInterceptor(
     // A new, retried or resumed attempt, before anything is decrypted.
     const installationId = hosted ? installationScopeOf(attempt.env)?.installationId : undefined;
     if (installationId) await requireInstallationAdmitted(installationId);
+    const runId = context.submissionId ?? context.instanceId ?? 'attempt';
     let grants: readonly ModelAccessGrant[] = [];
     if ('grant' in attempt) {
       grants = [attempt.grant];
     } else if (!('deploymentLane' in attempt) && !hosted) {
-      grants = await options.installationGrants(attempt.env, context.submissionId ?? context.instanceId ?? 'attempt');
+      grants = await options.installationGrants(attempt.env, runId);
     }
-    return cells.run(await resolveCell(grants, attempt.env, hosted, context.instanceId), next);
+    const cell = await resolveCell(grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null);
+    return cells.run(cell, next);
   };
 }
 
@@ -216,16 +244,21 @@ export async function withModelAccess<T>(
   env: PlatformEnv | undefined,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return cells.run(await resolveCell([grant], env, deploymentServesManyInstallations(env), undefined), fn);
+  const hosted = deploymentServesManyInstallations(env);
+  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null), fn);
 }
 
 /**
  * A stateless call on a lane that brings its own deployment credential
  * (Workers AI, a subscription): offered only on standalone.
  */
-export async function withDeploymentLane<T>(env: PlatformEnv | undefined, fn: () => Promise<T>): Promise<T> {
+export async function withDeploymentLane<T>(
+  env: PlatformEnv | undefined,
+  runId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   if (deploymentServesManyInstallations(env)) throw providerNotOffered('this provider');
-  return cells.run(await resolveCell([], env, false, undefined), fn);
+  return cells.run(await resolveCell([], env, false, undefined, runId, null), fn);
 }
 
 /** The access for one grant, for a model client outside the provider proxy (image generation). */
@@ -241,6 +274,8 @@ async function resolveCell(
   env: PlatformEnv | undefined,
   hosted: boolean,
   instanceId: string | undefined,
+  runId: string,
+  agentId: string | null,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -248,7 +283,13 @@ async function resolveCell(
     bound.set(grant.providerId, Object.freeze({ grant, access }));
   }
   const installationId = hosted ? installationScopeOf(env)?.installationId : undefined;
-  return Object.freeze({ instanceId, hosted, installationId, bound });
+  const attribution = Object.freeze({
+    installationId: usageInstallationId(env),
+    runId,
+    attemptId: crypto.randomUUID(),
+    agentId,
+  });
+  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
@@ -266,10 +307,14 @@ interface ModelAccessRequest<TModel, TOptions> {
   /**
    * Sends the request once the cell's installation is admitted (cached for
    * 30 seconds). Refused, nothing is sent and the stream ends in an error, as
-   * a provider failure would; a cell with no installation sends at once.
+   * a provider failure would; a cell with no installation sends at once. A
+   * sent request's record is written before its stream reports the end.
    */
-  admit(send: () => AssistantMessageEventStream): AssistantMessageEventStream;
+  send(start: () => AssistantMessageEventStream): AssistantMessageEventStream;
 }
+
+/** What a request's record names besides its attribution and final message. */
+type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'provider' | 'model' | 'fundingSource'>;
 
 /**
  * The request the proxy of registered provider `registeredId` sends: the
@@ -285,19 +330,22 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const cell = cells.getStore();
   if (!cell) throw new ModelAccessError('scope_missing', `No model access is in scope for provider ${registeredId}.`);
   const providerId = modelAccessProviderId(registeredId);
-  const admit = (send: () => AssistantMessageEventStream) =>
-    cell.installationId ? admittedStream(cell.installationId, model, send) : send();
-  if (!providerId) {
-    if (cell.hosted) throw providerNotOffered(registeredId);
-    return { model, options, redact: (stream) => stream, admit };
-  }
-  const bound = cell.bound.get(providerId);
-  if (!bound) {
+  if (!providerId && cell.hosted) throw providerNotOffered(registeredId);
+  const bound = providerId ? cell.bound.get(providerId) : undefined;
+  if (providerId && !bound) {
     throw new ModelAccessError(
       cell.bound.size ? 'provider_mismatch' : 'scope_missing',
       `No model access is in scope for provider ${providerId}.`,
     );
   }
+  const request: SentRequest = {
+    requestId: crypto.randomUUID(),
+    provider: providerId ?? registeredId,
+    model: model.id,
+    fundingSource: bound?.grant.fundingSource ?? 'customer',
+  };
+  const send = (start: () => AssistantMessageEventStream) => sendRequest(cell, model, request, start);
+  if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
     model: access.baseUrl ? { ...model, baseUrl: access.baseUrl } : model,
@@ -307,31 +355,94 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
-    admit,
+    send,
   };
 }
 
-/** The request's stream once the installation is admitted; refused, an error with nothing sent. */
-function admittedStream(
-  installationId: string,
+/**
+ * The request's stream: on a cell with an installation, sent once it is
+ * admitted (refused, an error with nothing sent and nothing recorded); with a
+ * recorder, its record written before its end reaches the caller.
+ */
+function sendRequest(
+  cell: ModelAccessCell,
   model: Model<Api>,
-  send: () => AssistantMessageEventStream,
+  request: SentRequest,
+  start: () => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
+  const settle = recorder ? recordRequest(cell, request, recorder) : undefined;
+  const { installationId } = cell;
+  if (!installationId) {
+    const source = start();
+    if (!settle) return source;
+    const target = createAssistantMessageEventStream();
+    void forwardStream(source, target, undefined, settle);
+    return target;
+  }
   const target = createAssistantMessageEventStream();
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
       await requireInstallationAdmitted(installationId);
-      source = send();
+      source = start();
     } catch (error) {
       const failed = errorMessageFor(model, error instanceof Error ? error.message : String(error));
       target.push({ type: 'error', reason: 'error', error: failed });
       target.end(failed);
       return;
     }
-    await forwardStream(source, target);
+    await forwardStream(source, target, undefined, settle);
   })();
   return target;
+}
+
+/**
+ * Writes the request's record, waiting at most the budget so a slow store
+ * never holds a model call; past it the write continues unawaited. A failed
+ * write is logged without content and leaves the model result as it is.
+ */
+function recordRequest(
+  cell: ModelAccessCell,
+  request: SentRequest,
+  record: ModelRequestRecorder,
+): (final: AssistantMessage) => Promise<void> {
+  return async (final) => {
+    const write = (async () => {
+      const end = { ...request, attribution: cell.attribution, message: final, finishedAt: Date.now() };
+      await record(modelRequestRecord(end), cell.env);
+    })().catch((error: unknown) => logRecordFailure(request, error));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, RECORD_BUDGET_MS);
+    });
+    try {
+      await Promise.race([write, budget]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+function logRecordFailure(request: SentRequest, error: unknown): void {
+  try {
+    console.warn('[chickpea] model request record failed', {
+      provider: request.provider,
+      model: request.model,
+      requestId: request.requestId,
+      error: errorKind(error),
+    });
+  } catch {
+    // Logging must not change the model result.
+  }
+}
+
+function errorKind(error: unknown): string {
+  if (error && typeof error === 'object') {
+    const { code, name } = error as { code?: unknown; name?: unknown };
+    if (typeof code === 'string') return code;
+    if (typeof name === 'string') return name;
+  }
+  return typeof error;
 }
 
 function errorMessageFor(model: Model<Api>, errorMessage: string): AssistantMessage {
@@ -364,20 +475,31 @@ function withoutKeyInErrors(source: AssistantMessageEventStream, apiKey: string)
  * Forward a provider stream into another, passing each error and the final
  * result through `map` when one is given; without it every event passes as
  * it is. As Pi forwards a stream, the final result is read last, since it
- * may arrive without an event.
+ * may arrive without an event. With `settle`, the terminal event is held until
+ * it has run on the final result: pushing that event resolves the caller's
+ * `result()`, after which the caller may finish and the isolate may go.
  */
 async function forwardStream(
   source: AssistantMessageEventStream,
   target: AssistantMessageEventStream,
   map?: (message: AssistantMessage) => AssistantMessage,
+  settle?: (final: AssistantMessage) => Promise<void>,
 ): Promise<void> {
+  let terminal: AssistantMessageEvent | undefined;
   for await (const event of source) {
-    target.push(map && event.type === 'error' ? { ...event, error: map(event.error) } : event);
+    const forwarded = map && event.type === 'error' ? { ...event, error: map(event.error) } : event;
+    if (settle && (event.type === 'done' || event.type === 'error')) terminal = forwarded;
+    else target.push(forwarded);
   }
   const result = await source.result();
+  if (settle) {
+    await settle(result);
+    if (terminal) target.push(terminal);
+  }
   target.end(map ? map(result) : result);
 }
 
 export function resetModelAccessForTests(): void {
   resolver = undefined;
+  recorder = undefined;
 }
