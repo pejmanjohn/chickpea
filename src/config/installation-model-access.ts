@@ -227,7 +227,7 @@ export async function withStatelessModelAccess<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const providerId = modelAccessProviderId(providerPrefix(runtimeModel));
-  if (!providerId) return withDeploymentLane(input.env, fn);
+  if (!providerId) return withDeploymentLane(input.env, input.runId, fn);
   const grant = await installationModelAccessGrant(providerId, input.env, input.runId, input.settings);
   if (!grant) throw providerSetupRequired(providerId);
   return withModelAccess(grant, input.env, fn);

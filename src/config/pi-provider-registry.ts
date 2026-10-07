@@ -207,13 +207,13 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
   // members rely on their own `this`.
   const stream: Provider['stream'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
-    return request.admit(() => request.redact(
+    return request.send(() => request.redact(
       provider.stream(request.model, restoreForRequest(request.model, context), request.options),
     ));
   };
   const streamSimple: Provider['streamSimple'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
-    return request.admit(() => request.redact(
+    return request.send(() => request.redact(
       provider.streamSimple(request.model, restoreForRequest(request.model, context), request.options),
     ));
   };

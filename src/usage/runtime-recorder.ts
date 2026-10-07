@@ -3,7 +3,7 @@ import type { CodingWorkerUsageRecord } from '../slack/coding-worker-run.ts';
 import { slackTimestampMs } from '../slack/timestamp.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
-import { installationScopeOf } from '../config/installation-scope.ts';
+import { usageInstallationId } from './model-requests.ts';
 import type { AgentModelAttribution, ResolvedAssignment } from '../config/types.ts';
 import type {
   AdmitUsageOperationInput,
@@ -72,7 +72,7 @@ export class InteractiveUsageRecorder {
       sourceId: options.operationId,
       ...(options.runId ? { runId: options.runId } : {}),
       startedAt: slackTimestampMs(options.turn.messageTs) ?? this.now(),
-      installationId: installationId(options.platformEnv, options.processEnv),
+      installationId: usageInstallationId(options.platformEnv, options.processEnv),
       workspaceId: options.turn.workspaceId,
       agentId: options.assignment.agentId,
       agentLabel: options.assignment.agent.name,
@@ -446,7 +446,7 @@ export class InteractionUsageRecorder {
       sourceId: options.operationId,
       ...(options.runId ? { runId: options.runId } : {}),
       startedAt: options.startedAt,
-      installationId: installationId(options.platformEnv, options.processEnv),
+      installationId: usageInstallationId(options.platformEnv, options.processEnv),
       workspaceId: options.workspaceId,
       agentId: options.agentId,
       agentLabel: options.agentLabel,
@@ -572,7 +572,7 @@ export class RoutineUsageRecorder {
       sourceId: options.operationId,
       ...(options.runId ? { runId: options.runId } : {}),
       startedAt: options.startedAt,
-      installationId: installationId(options.platformEnv, options.processEnv),
+      installationId: usageInstallationId(options.platformEnv, options.processEnv),
       workspaceId: options.workspaceId,
       agentId: options.agentId,
       agentLabel: options.agentLabel,
@@ -768,19 +768,6 @@ function modelPolicyUsage(attribution: AgentModelAttribution | undefined): Pick<
     workspaceDefaultRevision: attribution?.workspaceDefaultRevision ?? null,
     catalogRevision: attribution?.catalogRevision ?? null,
   };
-}
-
-function installationId(
-  platformEnv: PlatformEnv | undefined,
-  processEnv: NodeJS.ProcessEnv = process.env,
-): string {
-  const scope = installationScopeOf(platformEnv);
-  if (scope) return scope.installationId;
-  const configured = platformEnv?.CHICKPEA_INSTALLATION_ID ?? processEnv.CHICKPEA_INSTALLATION_ID;
-  if (typeof configured === 'string' && /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/.test(configured)) {
-    return configured;
-  }
-  return 'chickpea';
 }
 
 function boundedBudget(value: number | undefined): number {

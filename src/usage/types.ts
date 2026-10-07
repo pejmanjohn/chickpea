@@ -11,6 +11,7 @@ import type {
 
 export type { ConnectorUsageRecord, ConnectorUsageSummary, ConnectorUsageSummaryQuery, RecordConnectorUsageInput, ReserveConnectorQuotaInput, ReleaseConnectorQuotaInput, ConnectorQuotaReservation, } from "./connectors/types.ts";
 import type { AgentModelSource } from '../config/types.ts';
+import type { ModelRequestRecord } from './model-requests.ts';
 
 export const USAGE_TELEMETRY_SCHEMA_VERSION = 2;
 
@@ -273,6 +274,7 @@ export interface UsageRetentionResult extends UsageRetentionStatus {
   connectorAttemptsDeleted: number;
   connectorAggregateDaysDeleted: number;
   connectorQuotaReservationsDeleted: number;
+  modelRequestsDeleted: number;
 }
 
 export const MODEL_CREDENTIAL_SOURCE_KINDS = [
@@ -302,6 +304,8 @@ export type UsageRpcRequest =
   | { kind: 'admit_operation'; input: AdmitUsageOperationInput }
   | { kind: 'record_terminal'; input: RecordUsageTerminalInput }
   | { kind: 'record_connector_usage'; input: RecordConnectorUsageInput }
+  | { kind: 'record_model_request'; record: ModelRequestRecord }
+  | { kind: 'get_model_request'; requestId: string }
   | { kind: 'reserve_connector_quota'; input: ReserveConnectorQuotaInput }
   | { kind: 'release_connector_quota'; input: ReleaseConnectorQuotaInput }
   | { kind: 'summarize_connector_usage'; query: ConnectorUsageSummaryQuery }
@@ -319,6 +323,7 @@ export type UsageRpcRequest =
 export type UsageRpcResponse =
   | { kind: 'operation'; operation: UsageOperation }
   | { kind: 'connector_usage'; usage: ConnectorUsageRecord }
+  | { kind: 'model_request'; record: ModelRequestRecord | null }
   | { kind: 'connector_quota'; reservation: ConnectorQuotaReservation }
   | { kind: 'connector_quota_released'; released: boolean }
   | { kind: 'connector_usage_summary'; summary: ConnectorUsageSummary }
@@ -335,6 +340,8 @@ export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
   recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail>;
   recordConnectorUsage(input: RecordConnectorUsageInput): Promise<ConnectorUsageRecord>;
+  recordModelRequest(record: ModelRequestRecord): Promise<ModelRequestRecord>;
+  getModelRequest(requestId: string): Promise<ModelRequestRecord | undefined>;
   reserveConnectorQuota(input: ReserveConnectorQuotaInput): Promise<ConnectorQuotaReservation>;
   releaseConnectorQuota(input: ReleaseConnectorQuotaInput): Promise<boolean>;
   summarizeConnectorUsage(query: ConnectorUsageSummaryQuery): Promise<ConnectorUsageSummary>;

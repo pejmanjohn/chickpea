@@ -6,7 +6,13 @@ import {
   setWorkersAiRestPiProvider,
 } from './config/pi-provider.ts';
 import { installationModelAccessResolver } from './config/installation-model-access.ts';
-import { configureModelAccessResolver, modelAccessResolverConfigured } from './config/model-access.ts';
+import {
+  configureModelAccessResolver,
+  configureModelRequestRecorder,
+  modelAccessResolverConfigured,
+  modelRequestRecorderConfigured,
+} from './config/model-access.ts';
+import { getUsageStore } from './config/state-backend.ts';
 import { PROVIDER_KEY_IDS } from './config/provider-keys.ts';
 import { recordRegisteredProvider } from './config/providers.ts';
 import { openAiSubscriptionAvailable } from './openai-subscription/availability.ts';
@@ -30,6 +36,9 @@ export function bootstrapRuntimeProviders(): void {
   bootstrapped = true;
 
   if (!modelAccessResolverConfigured()) configureModelAccessResolver(installationModelAccessResolver);
+  if (!modelRequestRecorderConfigured()) {
+    configureModelRequestRecorder((record, env) => getUsageStore(env).recordModelRequest(record));
+  }
 
   // Deployment-funded lane: a deployment serving many installations refuses it.
   const workersAiBaseUrl =

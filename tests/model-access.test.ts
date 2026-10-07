@@ -344,7 +344,7 @@ test('a deployment serving many installations refuses calls without scope, deplo
       assert.throws(() => registeredPiProvider('local-stub')!.streamSimple(localStub, { messages: [] }, {}),
         (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_mismatch');
     });
-    await assert.rejects(withDeploymentLane(envA, async () => undefined),
+    await assert.rejects(withDeploymentLane(envA, 'lane', async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
     await assert.rejects(withStatelessModelAccess('cloudflare-workers-ai/@cf/model', { env: envA, runId: 'classifier' }, async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
