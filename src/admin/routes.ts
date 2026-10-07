@@ -315,6 +315,8 @@ import {
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
+  modelProviderUnavailable,
+  pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
   type ModelResolvableAgent,
@@ -12656,7 +12658,7 @@ interface WorkspaceModelDefaultProjection {
   health: {
     status: 'ready' | 'selection_required' | 'repair_required';
     providerId: string | null;
-    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable';
+    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable' | 'funding_not_offered';
     repairPath?: '/admin/settings/providers';
   };
 }
@@ -12700,24 +12702,32 @@ async function codingModelChoiceError(input: {
   ]);
   const incompatible = await activeCatalogCompatibilityError(input.modelId, openAiAuthMethod, input.settingsStore, input.platformEnv);
   if (incompatible) return incompatible;
-  const notReady = `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
-  // A key-lane provider is ready when the turn's own key lookup finds a key,
-  // so Admin never calls ready what a turn would silently replace.
-  if (isProviderKeyId(providerId) &&
-      !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
-    const source = (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId];
-    return source === 'missing' ? notReady : undefined;
-  }
-  return chatModelProviderReady(providerId, {
-    runtimeProviders: input.runtimeProviders,
-    platformEnv: input.platformEnv,
-    openAiAuthMethod,
-    workersAiEnabled,
-    openAiSubscription,
-  })
-    ? undefined
-    : notReady;
+  const unavailable = await modelProviderUnavailable(
+    pricedModelRoute(input.modelId, 'standard_input_output'),
+    input.platformEnv,
+    async () => {
+      // A key-lane provider is ready when the turn's own key lookup finds a key,
+      // so Admin never calls ready what a turn would silently replace.
+      if (isProviderKeyId(providerId) &&
+          !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
+        return (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId] !== 'missing';
+      }
+      return chatModelProviderReady(providerId, {
+        runtimeProviders: input.runtimeProviders,
+        platformEnv: input.platformEnv,
+        openAiAuthMethod,
+        workersAiEnabled,
+        openAiSubscription,
+      });
+    },
+  );
+  if (!unavailable) return undefined;
+  return unavailable === 'funding_not_offered'
+    ? CREDITS_NOT_OFFERED_TEXT
+    : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
+
+const CREDITS_NOT_OFFERED_TEXT = 'Not offered with Chickpea credits. Choose another model.';
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');
@@ -12763,20 +12773,26 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    health = chatModelProviderReady(providerId, {
-      runtimeProviders: input.runtimeProviders,
-      platformEnv: input.platformEnv,
-      openAiAuthMethod,
-      workersAiEnabled,
-      openAiSubscription,
-    })
-      ? { status: 'ready', providerId }
-      : {
+    const unavailable = await modelProviderUnavailable(
+      pricedModelRoute(modelId, 'standard_input_output'),
+      input.platformEnv,
+      () => chatModelProviderReady(providerId, {
+        runtimeProviders: input.runtimeProviders,
+        platformEnv: input.platformEnv,
+        openAiAuthMethod,
+        workersAiEnabled,
+        openAiSubscription,
+      }),
+    );
+    health = unavailable
+      ? {
           status: 'repair_required',
           providerId,
-          code: 'provider_unavailable',
+          // A platform-funded installation never uses a saved key, so only another model repairs it.
+          code: unavailable === 'funding_not_offered' ? 'funding_not_offered' : 'provider_unavailable',
           repairPath: '/admin/settings/providers',
-        };
+        }
+      : { status: 'ready', providerId };
   }
   return {
     workspaceId: input.installation.workspaceId,

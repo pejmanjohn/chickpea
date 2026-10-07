@@ -10141,9 +10141,11 @@
       : health.status === "selection_required"
         ? '<span class="badge badge-off"><span class="dot"></span>Choose a model</span>'
         : '<span class="badge badge-off"><span class="dot"></span>Repair required</span>';
-    var repair = health.status === "repair_required"
-      ? '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>'
-      : "";
+    var repair = health.status !== "repair_required"
+      ? ""
+      : health.code === "funding_not_offered"
+        ? '<p class="hint">Not offered with Chickpea credits. Choose another model.</p>'
+        : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
     var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
     var status = state.workspaceDefaultError
