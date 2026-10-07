@@ -43,6 +43,13 @@ import {
   stageSlackCredentialBundle,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
+import {
+  CREDITS_ASK_ADMIN_ACTION,
+  CREDITS_ASK_ADMIN_BLOCK,
+  CREDITS_ASK_CONFIRMATION_TEXT,
+  creditsAskOwnerDmText,
+  creditsExhaustedComponents,
+} from '../src/slack/credits-ask.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import {
@@ -421,6 +428,37 @@ test('every runtime Slack path of a hosted installation acts as its own bot', as
     assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN], JSON.stringify(h.calls.map(({ method }) => method)));
     assert.deepEqual(failures.filter((line) => /installation|standalone|credential/i.test(line)), [],
       'no path asked for another slot');
+  });
+});
+
+test('a hosted Ask an admin click DMs the Owner through the installation\'s own bot', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const components = await creditsExhaustedComponents({
+      env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2',
+    });
+    assert.ok(components);
+    const replyTs = '1800000002.000100';
+    const response = await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U2' },
+      trigger_id: 'trigger1', channel: { id: 'C1' },
+      container: { type: 'message', channel_id: 'C1', message_ts: replyTs },
+      message: { ts: replyTs, text: 'Out of credits.', blocks: [{ type: 'rich_text', elements: [] }, ...components.blocks] },
+      actions: [{
+        action_id: CREDITS_ASK_ADMIN_ACTION, block_id: CREDITS_ASK_ADMIN_BLOCK, type: 'button',
+        value: TEAM, action_ts: '1800000003.000100',
+      }],
+    });
+    assert.equal(response.status, 200);
+    await h.settle(() => h.calls.some(({ method }) => method === 'chat.update'));
+    const of = (method: string) => h.calls.filter((call) => call.method === method).map(({ body }) => body);
+    assert.deepEqual(of('conversations.open').map((body) => body.get('users')), ['U1']);
+    assert.deepEqual(of('chat.postMessage').map((body) => [body.get('channel'), body.get('text')]),
+      [['DHOME', creditsAskOwnerDmText('U2', 'C1')]]);
+    const update = of('chat.update')[0]!;
+    assert.equal(update.get('ts'), replyTs);
+    assert.ok(update.get('blocks')?.includes(CREDITS_ASK_CONFIRMATION_TEXT));
+    assert.equal(update.get('blocks')?.includes(CREDITS_ASK_ADMIN_ACTION), false);
+    assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN]);
   });
 });
 
