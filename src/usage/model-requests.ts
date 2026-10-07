@@ -6,7 +6,7 @@ import { isRecord } from '../security/content-validation.ts';
 import { canonicalPriceProviderId } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
 import type { UsageEstimateResult } from './pricing/types.ts';
-import { isRequestText } from './validation.ts';
+import { isStorableRequestText } from './validation.ts';
 
 export type ModelRequestOutcome = 'completed' | 'stopped' | 'error';
 
@@ -108,8 +108,7 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     listPriceUsdMicros: priced ? price.estimateAmountMicros : null,
     priceUnknownReason: priced ? null : price.priceUnknownReason,
     providerCostUsdMicros: end.providerCostUsdMicros,
-    // A provider ID the store would refuse is dropped, never the whole record.
-    providerResponseId: isRequestText(end.message.responseId) ? end.message.responseId : null,
+    providerResponseId: isStorableRequestText(end.message.responseId) ? end.message.responseId : null,
     finishedAt: end.finishedAt,
   };
 }
@@ -117,10 +116,8 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
 const REPORTED_COST_WAIT_MS = 1_000;
 
 export interface ReportedCostReader {
-  /** Pass to the library as `options.fetch`. */
   readonly fetch: typeof fetch;
-  /** The cost the last response reported, once its copy is read (bounded wait), or null. */
-  costUsdMicros(): Promise<number | null>;
+  lastReportedCostUsdMicros(): Promise<number | null>;
 }
 
 type CostBodyReader = (copy: Response, found: (parsed: unknown) => void) => Promise<void>;
@@ -132,8 +129,7 @@ const COST_BODY_READERS = new Map<string, CostBodyReader>([
 
 /**
  * The library recomputes cost from its own price table, so the cost
- * OpenRouter reports is read here, from a copy of each response body. The
- * library receives the response object it fetched, untouched.
+ * OpenRouter reports is read here, from a copy of each response body.
  */
 export function openRouterCostReader(base: typeof fetch | undefined): ReportedCostReader {
   let cost: number | null = null;
@@ -145,10 +141,10 @@ export function openRouterCostReader(base: typeof fetch | undefined): ReportedCo
     fetch: async (input, init) => {
       const response = await (base ?? globalThis.fetch)(input, init);
       const read = response.ok && response.body ? COST_BODY_READERS.get(mediaType(response.headers)) : undefined;
-      if (read) reads.push(readCopy(response, read, found));
+      if (read) reads.push(readCopy(response.clone(), read, found));
       return response;
     },
-    async costUsdMicros() {
+    async lastReportedCostUsdMicros() {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waited = new Promise<void>((resolve) => {
         timer = setTimeout(resolve, REPORTED_COST_WAIT_MS);
@@ -160,16 +156,12 @@ export function openRouterCostReader(base: typeof fetch | undefined): ReportedCo
   };
 }
 
-// Clones before its first await, so before the library can start reading.
-async function readCopy(response: Response, read: CostBodyReader, found: (parsed: unknown) => void): Promise<void> {
+async function readCopy(copy: Response, read: CostBodyReader, found: (parsed: unknown) => void): Promise<void> {
   try {
-    await read(response.clone(), found);
-  } catch {
-    // An unreadable copy leaves the cost as it was; the request is unaffected.
-  }
+    await read(copy, found);
+  } catch {}
 }
 
-/** Holds only the current line and event, never the body. */
 async function readEventStreamCost(copy: Response, found: (parsed: unknown) => void): Promise<void> {
   const reader = copy.body?.getReader();
   if (!reader) return;
@@ -181,9 +173,7 @@ async function readEventStreamCost(copy: Response, found: (parsed: unknown) => v
     if (payload === '[DONE]' || !payload.includes('"usage"')) return;
     try {
       found(JSON.parse(payload));
-    } catch {
-      // A malformed event leaves the cost as it was.
-    }
+    } catch {}
   };
   const take = (raw: string) => {
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;

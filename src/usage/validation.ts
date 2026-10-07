@@ -427,8 +427,7 @@ function tokenPart(value: unknown, total: number, label: string): number | null 
   return part;
 }
 
-/** Text a model request record may hold: 1 to 256 bytes, no control characters. */
-export function isRequestText(value: unknown): value is string {
+export function isStorableRequestText(value: unknown): value is string {
   return typeof value === 'string' &&
     value.length > 0 &&
     byteLength(value) <= MAX_REQUEST_TEXT_BYTES &&
@@ -436,7 +435,7 @@ export function isRequestText(value: unknown): value is string {
 }
 
 function requestText(value: unknown, label: string): string {
-  if (!isRequestText(value)) invalid(`${label} is invalid.`);
+  if (!isStorableRequestText(value)) invalid(`${label} is invalid.`);
   return value;
 }
 

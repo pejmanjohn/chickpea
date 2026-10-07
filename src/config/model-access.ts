@@ -520,7 +520,7 @@ function settleRequest(
 ): (final: AssistantMessage) => Promise<void> {
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
-    const providerCostUsdMicros = await reader?.costUsdMicros() ?? null;
+    const providerCostUsdMicros = await reader?.lastReportedCostUsdMicros() ?? null;
     return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, providerCostUsdMicros, finishedAt });
   });
 }

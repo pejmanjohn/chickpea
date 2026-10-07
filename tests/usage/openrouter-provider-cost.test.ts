@@ -24,10 +24,8 @@ import { openRouterCostReader, type ModelRequestRecord } from '../../src/usage/m
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
 
-// Recorded from OpenRouter for deepseek/deepseek-v4.1-flash; only the response IDs are synthetic.
-// OpenRouter reports `usage.cost` in credits, and one credit is one US dollar
-// (https://openrouter.ai/docs/faq: "OpenRouter uses a credit system where the
-// base currency is US dollars"), so 0.000007765 is 8 micro-USD and 0.0000126 is 13.
+// One OpenRouter credit is one US dollar: https://openrouter.ai/docs/faq ("OpenRouter
+// uses a credit system where the base currency is US dollars").
 const RECORDED_STREAM = `data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1791383960,"model":"deepseek/deepseek-v4.1-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"The","reasoning_details":[{"type":"reasoning.text","text":"The","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
 
 data: {"id":"gen-fixture-stream","object":"chat.completion.chunk","created":1791383960,"model":"deepseek/deepseek-v4.1-flash","provider":"InferenceNet","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" user wants","reasoning_details":[{"type":"reasoning.text","text":" user wants","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
@@ -71,7 +69,6 @@ function call(model: Model<'openai-completions'>, options: { fetch?: typeof fetc
   return registeredPiProvider('openrouter')!.streamSimple(model, CONTEXT, options).result();
 }
 
-/** The built-in OpenRouter provider behind the proxy, each request's record kept in a store. */
 function proxiedOpenRouter(t: TestContext) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   resetModelAccessForTests();
@@ -236,7 +233,7 @@ test('the reader returns the fetched response itself, byte for byte, and reads t
 
     assert.strictEqual(returned, fetched, label);
     assert.deepEqual(new Uint8Array(await returned.arrayBuffer()), bytes, label);
-    assert.equal(await reader.costUsdMicros(), expected, label);
+    assert.equal(await reader.lastReportedCostUsdMicros(), expected, label);
   }
 });
 
@@ -249,12 +246,12 @@ test('a response that is not streamed gives the cost in its JSON body', async (t
 
   assert.strictEqual(returned, fetched);
   assert.equal(await returned.text(), RECORDED_JSON);
-  assert.equal(await reader.costUsdMicros(), 13);
+  assert.equal(await reader.lastReportedCostUsdMicros(), 13);
 
-  // 0.0001245 * 1e6 is 124.49999999999999 in binary floating point.
+  assert.equal(0.0001245 * 1_000_000, 124.49999999999999, 'binary floating point lands below the half micro-USD');
   const halfMicro = openRouterCostReader(async () => recordedResponse('{"usage":{"cost":0.0001245}}', 'application/json'));
   await (await halfMicro.fetch(ENDPOINT)).text();
-  assert.equal(await halfMicro.costUsdMicros(), 125, 'half a micro-USD rounds up');
+  assert.equal(await halfMicro.lastReportedCostUsdMicros(), 125, 'half a micro-USD rounds up');
 });
 
 test('a missing or unusable cost gives null and the response as fetched', async () => {
@@ -275,7 +272,7 @@ test('a missing or unusable cost gives null and the response as fetched', async 
 
       assert.strictEqual(await reader.fetch(ENDPOINT), fetched, label);
       assert.equal(await fetched.text(), text, label);
-      assert.equal(await reader.costUsdMicros(), null, `${label} (${contentType})`);
+      assert.equal(await reader.lastReportedCostUsdMicros(), null, `${label} (${contentType})`);
     }
   }
 });
@@ -289,7 +286,7 @@ test('an error status or another content type is never copied, whatever its body
     const reader = openRouterCostReader(async () => fetched);
 
     assert.strictEqual(await reader.fetch(ENDPOINT), fetched);
-    assert.equal(await reader.costUsdMicros(), null);
+    assert.equal(await reader.lastReportedCostUsdMicros(), null);
     assert.equal(await fetched.text(), RECORDED_JSON);
   }
   assert.equal(clone.mock.callCount(), 0);
@@ -305,7 +302,7 @@ test('a body that fails part way gives null, and the caller sees the failure as 
 
   assert.strictEqual(returned, fetched);
   await assert.rejects(returned.text(), (error: unknown) => error === failure);
-  assert.equal(await reader.costUsdMicros(), null);
+  assert.equal(await reader.lastReportedCostUsdMicros(), null);
 });
 
 test('a copy that never ends gives null after the bounded wait', { timeout: 5_000 }, async () => {
@@ -316,7 +313,7 @@ test('a copy that never ends gives null after the bounded wait', { timeout: 5_00
   await reader.fetch(ENDPOINT);
   const started = performance.now();
 
-  assert.equal(await reader.costUsdMicros(), null);
+  assert.equal(await reader.lastReportedCostUsdMicros(), null);
 
   const waited = performance.now() - started;
   assert.ok(waited >= 900 && waited < 2_000, `waited ${waited} ms`);
