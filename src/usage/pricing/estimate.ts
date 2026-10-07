@@ -25,7 +25,7 @@ interface UsageEstimateInput extends Pick<
 > {
   cacheReadTokens?: number | null;
   cacheWriteTokens?: number | null;
-  /** The part of `cacheWriteTokens` written for one hour, which no catalog prices. */
+  /** The part of `cacheWriteTokens` written for one hour. */
   cacheWrite1hTokens?: number | null;
   totalTokens?: number | null;
 }
@@ -38,33 +38,50 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   ) {
     return unknown('pricing_dimension_unknown', input.usageCompleteness === 'partial' ? 'partial' : 'unknown');
   }
-  // Decided before the catalog lookup: the store keeps no one-hour count, so
-  // this measurement must never read as `price_unknown` or `price_stale`,
-  // which a later release's backfill would price as complete.
-  if (input.cacheWrite1hTokens) return unknown('pricing_dimension_unknown', 'partial');
+  const oneHourWrites = input.cacheWrite1hTokens ?? 0;
   const provider = input.returnedProvider ?? input.providerRoute ?? input.requestedProvider;
   const model = input.returnedModel ?? input.requestedModel;
+  const matched = provider && model
+    ? priceCatalogFor('standard_input_output', provider, model, input.observedAt)
+    : null;
+  // Decided before any other outcome: the store keeps no one-hour count, so
+  // this measurement must never read as `price_unknown` or `price_stale`,
+  // which a later release's backfill would price at the 5-minute rate.
+  if (
+    oneHourWrites > 0 &&
+    (!matched ||
+      input.observedAt >= matched.version.staleAfter ||
+      matched.rate.cacheWrite1hMicrosPerUnit === undefined)
+  ) return unknown('pricing_dimension_unknown', 'partial');
   if (!provider || !model) return unknown('pricing_dimension_unknown');
-  const matched = priceCatalogFor(provider, model, input.observedAt);
   if (!matched) return unknown('price_unknown');
   if (input.observedAt >= matched.version.staleAfter) return unknown('price_stale');
+  const { rate } = matched;
   const cache = cacheUsage(input);
-  if (!cache) return unknown('pricing_dimension_unknown', 'partial');
+  if (!cache || oneHourWrites > cache.write) return unknown('pricing_dimension_unknown', 'partial');
+  const fiveMinuteWrites = cache.write - oneHourWrites;
+  // A measurement can total several requests, so a total past the threshold
+  // does not show that any one request crossed it.
   if (
-    (cache.read > 0 && matched.rate.cacheReadMicrosPerUnit === undefined) ||
-    (cache.write > 0 && matched.rate.cacheWriteMicrosPerUnit === undefined)
+    rate.longContext &&
+    input.inputTokens + cache.read + cache.write >= rate.longContext.fromPromptTokens
+  ) return unknown('pricing_dimension_unknown', 'partial');
+  if (
+    (cache.read > 0 && rate.cacheReadMicrosPerUnit === undefined) ||
+    (fiveMinuteWrites > 0 && rate.cacheWriteMicrosPerUnit === undefined)
   ) return unknown('pricing_dimension_unknown', 'partial');
   const amount = Math.round(
-    (input.inputTokens * matched.rate.inputMicrosPerUnit +
-      input.outputTokens * matched.rate.outputMicrosPerUnit +
-      cache.read * (matched.rate.cacheReadMicrosPerUnit ?? 0) +
-      cache.write * (matched.rate.cacheWriteMicrosPerUnit ?? 0)) /
-      matched.rate.unitScale,
+    (input.inputTokens * rate.inputMicrosPerUnit +
+      input.outputTokens * rate.outputMicrosPerUnit +
+      cache.read * (rate.cacheReadMicrosPerUnit ?? 0) +
+      fiveMinuteWrites * (rate.cacheWriteMicrosPerUnit ?? 0) +
+      oneHourWrites * (rate.cacheWrite1hMicrosPerUnit ?? 0)) /
+      rate.unitScale,
   );
   return {
     estimateCompleteness: 'complete',
     estimateAmountMicros: amount,
-    estimateCurrency: matched.rate.currency,
+    estimateCurrency: rate.currency,
     priceVersionId: matched.version.id,
     priceUnknownReason: null,
   };

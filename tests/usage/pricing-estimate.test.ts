@@ -147,7 +147,7 @@ test('Anthropic cache prices apply only from their review date, and outlast the 
     observedAt: july.staleAfter,
   }));
   assert.equal(afterJulyStale.estimateAmountMicros, 2_000);
-  assert.equal(afterJulyStale.priceVersionId, 'anthropic-haiku-4-5_2026-10-06');
+  assert.equal(afterJulyStale.priceVersionId, 'anthropic-haiku-4-5_2026-10-07');
 });
 
 test('claude-sonnet-5 and claude-sonnet-5-5 are priced from their review date, with cache reads and writes', () => {
@@ -181,7 +181,7 @@ test('the re-reviewed OpenAI and OpenRouter prices stay fresh past the July stal
   }
 });
 
-test('one-hour cache writes leave an estimate partial, whatever the catalog holds', () => {
+test('one-hour cache writes stay partial unless the matched price has a one-hour rate', () => {
   const partial = {
     estimateCompleteness: 'partial',
     estimateAmountMicros: null,
