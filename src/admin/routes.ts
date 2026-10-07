@@ -50,6 +50,9 @@ import {
 } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
+import { createBillingAdminApi, PLAN_AND_CREDITS_PATH } from './billing-api.ts';
+import { platformBilling } from '../config/platform-billing.ts';
+import { installationFunding } from '../config/platform-funding.ts';
 import {
   BROWSER_ENV_VARS,
   clearBrowserSettings,
@@ -6103,6 +6106,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
       browserOffered: standalone,
       selfHosted: standalone,
+      billingOffered: !standalone && platformBilling() !== undefined,
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
@@ -6229,6 +6233,20 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     work,
     channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
       channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
+  }));
+  app.route('/admin/api', createBillingAdminApi({
+    agentNames: async (c) => new Map([
+      [CHICKPEA_AGENT_ID, 'Chickpea'],
+      ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
+    ]),
+    personNames: async (c) => {
+      const memberships = await identity(c).listMemberships();
+      const users = await Promise.all(memberships.map((membership) => identity(c).getUser(membership.userId)));
+      return new Map(memberships.flatMap((membership, index) => {
+        const name = users[index]?.displayName;
+        return name ? [[membership.id, name] as const] : [];
+      }));
+    },
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
@@ -9895,6 +9913,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     if (!isProviderKeyId(providerId)) return false;
     const env = c.env as PlatformEnv | undefined;
+    // Credits pay for the request with Chickpea's own key.
+    if (await installationFunding(env) === 'platform') return true;
     if (providerId === 'openai') {
       const settingsStore = settings(c);
       const method = await resolveOpenAiAuthMethod(settingsStore);
@@ -11921,6 +11941,8 @@ function permissionForAdminPage(path: string): Permission {
   // Settings → MCP reads only GET /admin/api/mcp-clients, which every
   // signed-in person may read.
   if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
+  // Everyone sees the balance; only an Owner's page offers to buy credits.
+  if (path === PLAN_AND_CREDITS_PATH) return 'account.view';
   return 'admin.configure';
 }
 
@@ -11950,6 +11972,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     return 'agent.create';
   }
   if (c.req.method === 'GET' && c.req.path === '/admin/api/team') return 'team.view';
+  if (c.req.method === 'GET' && c.req.path === '/admin/api/billing') return 'account.view';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
   if (c.req.path === '/admin/api/connections/managed/recover') return 'auth.recover';
   if (

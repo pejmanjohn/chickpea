@@ -20,6 +20,7 @@ import {
   selectOnboardingProvider,
   startOnboardingTry,
 } from '../src/config/onboarding-state.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SettingsStoreLogic, SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
@@ -389,6 +390,32 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: 'onboarding_provider_not_configured' });
   assert.equal((await signup.journey())!.revision, revision);
+});
+
+test('an installation on credits chooses a provider with no key; one on its own key still needs one', async (t) => {
+  let funding: 'platform' | 'customer' = 'customer';
+  configurePlatformFunding({
+    funding: async () => funding,
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    priceMultiplier: async () => 1.5,
+  });
+  t.after(() => resetPlatformFundingForTests());
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const choose = async () => admin('/admin/api/onboarding/provider', {
+    method: 'POST',
+    body: JSON.stringify({ expectedRevision: (await signup.journey())!.revision, providerId: 'anthropic' }),
+  });
+  const refused = await choose();
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: 'onboarding_provider_not_configured' });
+  funding = 'platform';
+  const chosen = await json(choose());
+  assert.equal(chosen.stage, 'choose_model');
+  assert.equal(chosen.providerId, 'anthropic');
+  assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
 });
 
 test('the journey starts with the first Owner claim or not at all, and once', async (t) => {
