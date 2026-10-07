@@ -1,3 +1,5 @@
+import { hostedSandboxPolicy } from '../config/hosted-sandbox-policy.ts';
+import { installationScopeOf } from '../config/installation-scope.ts';
 import { SandboxPolicyState, type SandboxPolicyStorage } from './cloudflare-policy.ts';
 import { readStoredCodingTasks } from './coding-task-record.ts';
 import { WORKSPACE_WARM_WINDOW_MS } from './lifecycle.ts';
@@ -17,9 +19,21 @@ export interface WarmWindowStorage extends SandboxPolicyStorage {
   delete(key: string): Promise<boolean>;
 }
 
+/**
+ * The workspace's warm window: Core's 30 minutes, or, on a deployment serving
+ * many installations, the shorter one the host's policy gives the env's
+ * installation. The alarm acts on it within the SDK's loop, at most three
+ * minutes late.
+ */
+export async function workspaceWarmWindowMs(env: Record<string, unknown> | undefined): Promise<number> {
+  const scope = installationScopeOf(env);
+  const minutes = scope ? (await hostedSandboxPolicy(scope.installationId)).warmWindowMinutes : undefined;
+  return minutes === undefined ? WORKSPACE_WARM_WINDOW_MS : minutes * 60_000;
+}
+
 /** At a turn's end, with the container running: warm for one window from now. */
-export async function holdWarmWindow(storage: WarmWindowStorage, now: number): Promise<void> {
-  await storage.put(SANDBOX_WARM_UNTIL_STORAGE_KEY, now + WORKSPACE_WARM_WINDOW_MS);
+export async function holdWarmWindow(storage: WarmWindowStorage, now: number, windowMs: number): Promise<void> {
+  await storage.put(SANDBOX_WARM_UNTIL_STORAGE_KEY, now + windowMs);
 }
 
 /** At a turn's start: the turn is using the workspace. */

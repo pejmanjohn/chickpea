@@ -63,6 +63,8 @@ import {
   requireWorkspaceTurnAdmitted,
 } from '../src/sandbox/hosted-limits.ts';
 import { reserveMonthlySandboxSession } from '../src/sandbox/session-cap.ts';
+import { WORKSPACE_WARM_WINDOW_MS } from '../src/sandbox/lifecycle.ts';
+import { workspaceWarmWindowMs } from '../src/sandbox/warm-window.ts';
 import { WorkspaceSession, type WorkspaceSandboxStub } from '../src/sandbox/workspace-session.ts';
 import {
   HOSTED_WORKSPACE_SESSION_CAP_MESSAGE,
@@ -168,6 +170,8 @@ test('without a valid host policy an installation has no coding sandbox', async 
     undefined, null, 'on', { ...STAGING_POLICY, enabled: 'true' },
     { ...STAGING_POLICY, monthlySessionCap: 0 }, { ...STAGING_POLICY, monthlyContainerHours: 0 },
     { ...STAGING_POLICY, maxRunningContainers: 1.5 }, { ...STAGING_POLICY, allowedHosts: 'pypi.org' },
+    { ...STAGING_POLICY, warmWindowMinutes: 0 }, { ...STAGING_POLICY, warmWindowMinutes: 31 }, { ...STAGING_POLICY, warmWindowMinutes: -3 },
+    { ...STAGING_POLICY, warmWindowMinutes: 2.5 }, { ...STAGING_POLICY, warmWindowMinutes: '3' },
     { enabled: true },
   ]) {
     hostPolicy(t, () => invalid);
@@ -177,6 +181,20 @@ test('without a valid host policy an installation has no coding sandbox', async 
   hostPolicy(t, () => STAGING_POLICY);
   await assert.rejects(resolveSandboxSettings(tenant, HOSTED as Record<string, unknown>),
     (error: unknown) => error instanceof InstallationContextError);
+});
+
+test('a host may shorten an installation\'s warm window, never past Core\'s 30 minutes; standalone keeps 30', async (t) => {
+  hostPolicy(t, (installationId) => (installationId === INSTALLATION_A ? { ...STAGING_POLICY, warmWindowMinutes: 3 }
+    : { ...STAGING_POLICY, warmWindowMinutes: null }));
+  assert.equal(await workspaceWarmWindowMs(hostedEnv(INSTALLATION_A)), 3 * MINUTE);
+  // A null window is no window: a host serializing an unset column keeps Core's, and the sandbox on.
+  assert.equal(await workspaceWarmWindowMs(hostedEnv(INSTALLATION_B)), WORKSPACE_WARM_WINDOW_MS);
+  assert.equal((await resolveSandboxSettings(settingsStore(t), hostedEnv(INSTALLATION_B))).enabled, true);
+  assert.equal(await workspaceWarmWindowMs(undefined), WORKSPACE_WARM_WINDOW_MS);
+  assert.equal(await workspaceWarmWindowMs({}), WORKSPACE_WARM_WINDOW_MS);
+  // The window is no setting of the tenant's: Admin's settings and limits are as without it.
+  const settings = await resolveSandboxSettings(settingsStore(t), hostedEnv(INSTALLATION_A));
+  assert.deepEqual(settings.containerLimits, LIMITS);
 });
 
 test('a host policy is kept 30 seconds per installation; a failing reader keeps the last answer ten minutes, then closes', async (t) => {

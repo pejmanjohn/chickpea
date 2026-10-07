@@ -47,7 +47,7 @@ function sandboxObject(storage: MemoryStorage, container: { running: boolean; st
   return {
     beginTurn: () => clearWarmWindow(storage),
     async endTurn(now: number) {
-      if (container.running) await holdWarmWindow(storage, now);
+      if (container.running) await holdWarmWindow(storage, now, WORKSPACE_WARM_WINDOW_MS);
     },
     alarm: (now: number) => stopPastWarmWindow({
       storage,
@@ -82,6 +82,17 @@ test('a restart after a turn\'s end still stops the container a window after the
   container.running = true;
   await sandboxObject(storage, container).alarm(NOW + 10 * WORKSPACE_WARM_WINDOW_MS);
   assert.deepEqual(container, { running: true, stops: 1 });
+});
+
+test('a shorter window stops the container that much sooner', async () => {
+  const storage = new MemoryStorage();
+  const container = { running: true, stops: 0 };
+  await holdWarmWindow(storage, NOW, 3 * MINUTE);
+  const object = sandboxObject(storage, container);
+  await object.alarm(NOW + 3 * MINUTE - 1);
+  assert.equal(container.running, true);
+  await object.alarm(NOW + 3 * MINUTE);
+  assert.deepEqual(container, { running: false, stops: 1 });
 });
 
 test('a turn\'s start clears the stored window', async () => {
@@ -132,7 +143,7 @@ test('with no stored window the alarm stops nothing, and with no container it re
   // A stopped container's alarm, which restore relies on writing nothing,
   // does not touch storage.
   const stopped = new MemoryStorage();
-  await holdWarmWindow(stopped, NOW);
+  await holdWarmWindow(stopped, NOW, WORKSPACE_WARM_WINDOW_MS);
   const idle = { running: false, stops: 0 };
   await sandboxObject(stopped, idle).alarm(NOW + 10 * WORKSPACE_WARM_WINDOW_MS);
   assert.equal(stopped.reads, 0);
@@ -151,7 +162,7 @@ test('the Sandbox stores the window at a turn\'s end, clears it at a turn\'s sta
   assert.match(method('beginWorkspaceTurn'),
     /await requireWorkspaceTurnAdmitted\(this\.env\);\s*await clearWarmWindow\(this\.warmWindowStorage\(\)\);/);
   assert.match(method('endTurn'),
-    /localBucket: true,\s*\}\),\s*\}\);\s*if \(this\.containerRunning\(\)\) await holdWarmWindow\(this\.warmWindowStorage\(\), Date\.now\(\)\);\s*await this\.settleContainerLease\(\);\s*$/);
+    /localBucket: true,\s*\}\),\s*\}\);\s*if \(this\.containerRunning\(\)\) \{\s*const windowMs = await workspaceWarmWindowMs\(this\.env\);\s*await holdWarmWindow\(this\.warmWindowStorage\(\), Date\.now\(\), windowMs\);\s*\}\s*await this\.settleContainerLease\(\);\s*$/);
   // The SDK's own idle stop, then the SDK's alarm unchanged.
   assert.match(method('alarm'),
     /\{\s*await stopPastWarmWindow\(\{\s*storage: this\.warmWindowStorage\(\),\s*running: this\.containerRunning\(\),\s*now: Date\.now\(\),\s*stop: \(\) => this\.onActivityExpired\(\),\s*\}\);\s*await super\.alarm\(alarmProps\);\s*$/);

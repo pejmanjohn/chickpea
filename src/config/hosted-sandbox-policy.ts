@@ -23,11 +23,20 @@ export interface HostedSandboxPolicy {
   monthlyContainerHours: number;
   /** Containers running at once; at least 1. */
   maxRunningContainers: number;
+  /**
+   * How long an idle workspace stays warm after a turn, in minutes: 1 to 30.
+   * Absent or null, Core's 30 (src/sandbox/lifecycle.ts). A host shortens it only
+   * where waiting out the idle stop costs more than a follow-up's cold start,
+   * such as a staging deployment's live verification.
+   */
+  warmWindowMinutes?: number;
 }
 
 /** The host's policy for one installation, from its registry. */
 export type HostedSandboxPolicyReader = (installationId: string) => Promise<unknown> | unknown;
 
+/** A host's warm window is at most Core's own, the Sandbox SDK's `sleepAfter`. */
+const MAX_WARM_WINDOW_MINUTES = 30;
 /** How long one answer serves an installation in this isolate. */
 export const HOSTED_SANDBOX_POLICY_TTL_MS = 30_000;
 /** How long a last known answer stands while the reader fails. */
@@ -97,18 +106,21 @@ export async function hostedSandboxPolicy(installationId: string): Promise<Hoste
 export function parseHostedSandboxPolicy(value: unknown): HostedSandboxPolicy | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
   const candidate = value as Record<string, unknown>;
-  const { enabled, allowedHosts, monthlySessionCap, monthlyContainerHours, maxRunningContainers } = candidate;
+  const { enabled, allowedHosts, monthlySessionCap, monthlyContainerHours, maxRunningContainers, warmWindowMinutes } = candidate;
   if (typeof enabled !== 'boolean') return undefined;
   if (!Array.isArray(allowedHosts) || !allowedHosts.every((host) => typeof host === 'string')) return undefined;
   if (!positiveInteger(monthlySessionCap) || !positiveInteger(maxRunningContainers)) return undefined;
   if (typeof monthlyContainerHours !== 'number' || !Number.isFinite(monthlyContainerHours) ||
     monthlyContainerHours <= 0) return undefined;
+  const warmWindowGiven = warmWindowMinutes !== undefined && warmWindowMinutes !== null;
+  if (warmWindowGiven && (!positiveInteger(warmWindowMinutes) || warmWindowMinutes > MAX_WARM_WINDOW_MINUTES)) return undefined;
   return Object.freeze({
     enabled,
     allowedHosts: Object.freeze([...allowedHosts]),
     monthlySessionCap,
     monthlyContainerHours,
     maxRunningContainers,
+    ...(warmWindowGiven ? { warmWindowMinutes } : {}),
   });
 }
 

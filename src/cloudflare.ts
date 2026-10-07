@@ -186,6 +186,7 @@ import {
   holdWarmWindow,
   stopPastWarmWindow,
   type WarmWindowStorage,
+  workspaceWarmWindowMs,
 } from './sandbox/warm-window.ts';
 import type { SlackCanonicalAdmissionInput } from './slack/claim-store.ts';
 import {
@@ -583,7 +584,10 @@ export class Sandbox extends CloudflareSandbox<PlatformEnv> {
         localBucket: true,
       }),
     });
-    if (this.containerRunning()) await holdWarmWindow(this.warmWindowStorage(), Date.now());
+    if (this.containerRunning()) {
+      const windowMs = await workspaceWarmWindowMs(this.env);
+      await holdWarmWindow(this.warmWindowStorage(), Date.now(), windowMs);
+    }
     await this.settleContainerLease();
   }
 
