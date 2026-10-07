@@ -183,6 +183,10 @@ export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelReq
     priceVersionId: optionalId(input.priceVersionId, 'price version ID'),
     listPriceUsdMicros: optionalMoney(input.listPriceUsdMicros),
     priceUnknownReason: optionalEnum(input.priceUnknownReason, PRICE_UNKNOWN_REASONS, 'price unknown reason'),
+    providerCostUsdMicros: optionalMoney(input.providerCostUsdMicros),
+    providerResponseId: input.providerResponseId === null || input.providerResponseId === undefined
+      ? null
+      : requestText(input.providerResponseId, 'provider response ID'),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
   };
   const priced = normalized.priceVersionId !== null;
@@ -423,16 +427,17 @@ function tokenPart(value: unknown, total: number, label: string): number | null 
   return part;
 }
 
+/** Text a model request record may hold: 1 to 256 bytes, no control characters. */
+export function isRequestText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    byteLength(value) <= MAX_REQUEST_TEXT_BYTES &&
+    !hasDisallowedControlCharacter(value);
+}
+
 function requestText(value: unknown, label: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    byteLength(value) > MAX_REQUEST_TEXT_BYTES ||
-    hasDisallowedControlCharacter(value)
-  ) {
-    invalid(`${label} is invalid.`);
-  }
-  return value as string;
+  if (!isRequestText(value)) invalid(`${label} is invalid.`);
+  return value;
 }
 
 function optionalTokenCount(value: unknown, label: string): number | null {

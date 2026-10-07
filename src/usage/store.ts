@@ -188,6 +188,8 @@ interface ModelRequestRow {
   price_version_id: string | null;
   list_price_usd_micros: number | null;
   price_unknown_reason: ModelRequestRecord['priceUnknownReason'];
+  provider_cost_usd_micros: number | null;
+  provider_response_id: string | null;
   finished_at: number;
 }
 
@@ -195,7 +197,8 @@ const MODEL_REQUEST_COLUMNS = `
   request_id, installation_id, run_id, attempt_id, agent_id, provider, model,
   funding_source, outcome, input_tokens, output_tokens, output_tokens_reasoning,
   cache_read_tokens, cache_write_tokens, cache_write_tokens_one_hour, price_version_id,
-  list_price_usd_micros, price_unknown_reason, finished_at`;
+  list_price_usd_micros, price_unknown_reason, provider_cost_usd_micros, provider_response_id,
+  finished_at`;
 
 const OPERATION_COLUMNS = `
   operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
@@ -453,7 +456,7 @@ export class UsageStoreLogic {
     const record = normalizeModelRequestRecord(raw);
     this.db.run(
       `INSERT INTO usage_model_requests (${MODEL_REQUEST_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(request_id) DO NOTHING`,
       record.requestId,
       record.installationId,
@@ -473,6 +476,8 @@ export class UsageStoreLogic {
       record.priceVersionId,
       record.listPriceUsdMicros,
       record.priceUnknownReason,
+      record.providerCostUsdMicros,
+      record.providerResponseId,
       record.finishedAt,
     );
     return this.getModelRequest(record.requestId)!;
@@ -1399,6 +1404,8 @@ export class UsageStoreLogic {
         price_version_id TEXT,
         list_price_usd_micros INTEGER,
         price_unknown_reason TEXT,
+        provider_cost_usd_micros INTEGER,
+        provider_response_id TEXT,
         finished_at INTEGER NOT NULL
       )`,
     );
@@ -1444,6 +1451,8 @@ export class UsageStoreLogic {
       addColumnIfMissing(this.db, 'usage_daily_rollups', name, definition);
     }
     addColumnIfMissing(this.db, 'usage_connector_attempts', 'result_bytes', 'INTEGER');
+    addColumnIfMissing(this.db, 'usage_model_requests', 'provider_cost_usd_micros', 'INTEGER');
+    addColumnIfMissing(this.db, 'usage_model_requests', 'provider_response_id', 'TEXT');
     addColumnIfMissing(
       this.db,
       'usage_connector_daily_rollups',
@@ -1581,6 +1590,8 @@ function mapModelRequest(row: ModelRequestRow): ModelRequestRecord {
     priceVersionId: row.price_version_id,
     listPriceUsdMicros: nullableNumber(row.list_price_usd_micros),
     priceUnknownReason: row.price_unknown_reason,
+    providerCostUsdMicros: nullableNumber(row.provider_cost_usd_micros),
+    providerResponseId: row.provider_response_id,
     finishedAt: Number(row.finished_at),
   };
 }

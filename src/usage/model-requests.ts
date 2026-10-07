@@ -5,6 +5,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import { canonicalPriceProviderId } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
 import type { UsageEstimateResult } from './pricing/types.ts';
+import { isRequestText } from './validation.ts';
 
 export type ModelRequestOutcome = 'completed' | 'stopped' | 'error';
 
@@ -42,6 +43,8 @@ export interface ModelRequestRecord extends ModelRequestAttribution {
   readonly priceVersionId: string | null;
   readonly listPriceUsdMicros: number | null;
   readonly priceUnknownReason: UsageEstimateResult['priceUnknownReason'];
+  readonly providerCostUsdMicros: number | null;
+  readonly providerResponseId: string | null;
   readonly finishedAt: number;
 }
 
@@ -53,6 +56,7 @@ export interface ModelRequestEnd {
   readonly model: string;
   readonly fundingSource: ModelRequestFundingSource;
   readonly message: AssistantMessage;
+  readonly providerCostUsdMicros: number | null;
   readonly finishedAt: number;
 }
 
@@ -102,6 +106,9 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     priceVersionId: priced ? price.priceVersionId : null,
     listPriceUsdMicros: priced ? price.estimateAmountMicros : null,
     priceUnknownReason: priced ? null : price.priceUnknownReason,
+    providerCostUsdMicros: end.providerCostUsdMicros,
+    // A provider ID the store would refuse is dropped, never the whole record.
+    providerResponseId: isRequestText(end.message.responseId) ? end.message.responseId : null,
     finishedAt: end.finishedAt,
   };
 }

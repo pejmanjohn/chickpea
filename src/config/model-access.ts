@@ -513,7 +513,7 @@ function settleRequest(
   platformGrant: ModelAccessGrant | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   return (final) => settleRecord(cell.env, request, platformGrant, () => modelRequestRecord({
-    ...request, attribution: cell.attribution, message: final, finishedAt: Date.now(),
+    ...request, attribution: cell.attribution, message: final, providerCostUsdMicros: null, finishedAt: Date.now(),
   }));
 }
 
