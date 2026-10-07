@@ -37,7 +37,10 @@ import {
   withModelAccess,
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
-import { resolveModelCredentialAttribution } from '../src/config/model-credential-refs.ts';
+import {
+  resolveModelCredentialAttribution,
+  rotateInstallationModelCredential,
+} from '../src/config/model-credential-refs.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   configurePlatformFunding,
@@ -58,6 +61,7 @@ import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
@@ -279,6 +283,42 @@ test('a credits installation with no saved key passes readiness and freezes plat
   });
 });
 
+test('a port that cannot say an installation\'s funding leaves it on its own key, never on platform funding', async (t) => {
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const keyring = useDeploymentKeyring(t);
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const byok = hostedEnv('inst_byok');
+    const keyless = hostedEnv('inst_keyless');
+    await rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-byok-installation-key' },
+      { env: byok, settings, usage: usageStore, keyring });
+    const keylessSettings = new SqliteSettingsStore(':memory:');
+    t.after(() => keylessSettings.close());
+    fakePort({ funding: async () => { throw new Error('billing registry unreachable'); } });
+
+    assert.ok((await resolveRuntimeModel('agent', `anthropic/${SONNET}`, { settings, env: byok })).model);
+    const own = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, byok, settings, usageStore);
+    assert.equal(own?.sourceKind, 'stored');
+    assert.equal((await installationModelAccessGrant('anthropic', byok, 'run_byok', settings))?.fundingSource, 'customer');
+
+    await assert.rejects(resolveRuntimeModel('agent', `anthropic/${SONNET}`, { settings: keylessSettings, env: keyless }),
+      (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required');
+    assert.equal(await installationModelAccessGrant('anthropic', keyless, 'run_keyless', keylessSettings), undefined);
+    assert.deepEqual(warnings, [[JSON.stringify({ component: 'platform_funding', event: 'funding_unavailable' })]],
+      'one content-free line a minute');
+  });
+});
+
 test('a plan credential without a funding field parses as customer, and a funding field must match its reference', () => {
   const customer = parseRuntimePlanModelCredential({ credentialRefId: 'cred_anthropic', version: 3, providerId: 'anthropic' });
   assert.deepEqual(customer, { credentialRefId: 'cred_anthropic', version: 3, providerId: 'anthropic' });
@@ -338,6 +378,28 @@ test('the credit gate refuses when the port throws or none is installed, unlike 
   const portless = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model));
   assert.match(portless.errorMessage ?? '', /\(credits_unavailable\)/);
   assert.equal(sentModels.length, 0);
+});
+
+test('a refusal answered while an earlier admission is in flight is not overwritten by it', async (t) => {
+  const { env } = hostedProxy(t);
+  const answers: Array<(admission: 'admitted' | 'credits_exhausted') => void> = [];
+  const calls = fakePort({ admit: () => new Promise((resolve) => { answers.push(resolve); }) });
+  const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const platform = grant('inst_credits', 'platform');
+
+  const early = withModelAccess(platform, env, () => modelCall(model));
+  const late = withModelAccess(platform, env, () => modelCall(model));
+  while (answers.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  answers[1]!('credits_exhausted');
+  assert.match((await late).errorMessage ?? '', /\(credits_exhausted\)/);
+  answers[0]!('admitted');
+  assert.equal((await early).stopReason, 'stop', 'the earlier request was admitted when it was asked');
+
+  const next = withModelAccess(platform, env, () => modelCall(model));
+  while (answers.length < 3) await new Promise((resolve) => setImmediate(resolve));
+  answers[2]!('credits_exhausted');
+  assert.match((await next).errorMessage ?? '', /\(credits_exhausted\)/, 'the next request asked the port again');
+  assert.deepEqual([calls.admit.length, sentModels.length], [3, 1]);
 });
 
 test('a positive answer serves an installation for at most 30 seconds, and only that installation', async (t) => {
@@ -445,14 +507,15 @@ test('a platform-funded request without a current list price is refused before s
   const calls = fakePort();
   const unpricedAnthropic = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, 'claude-unpriced-test', 'anthropic-messages',
     [completes()]);
-  const unpricedOpenRouter = scriptedProvider('openrouter', 'acme/unpriced-model', 'openai-completions', []);
+  const unpricedOpenRouter = scriptedProvider('openrouter', 'acme/unpriced-503', 'openai-completions', []);
 
   for (const [model, providerId] of [
     [unpricedAnthropic.model, 'anthropic'],
     [unpricedOpenRouter.model, 'openrouter'],
   ] as const) {
     const refused = await withModelAccess(grant('inst_credits', 'platform', providerId), env, () => modelCall(model));
-    assert.match(refused.errorMessage ?? '', /no current list price/, providerId);
+    assert.match(refused.errorMessage ?? '', /no current price in Chickpea credits/, providerId);
+    assert.ok(!refused.errorMessage?.includes(model.id), 'the refusal names no model, whose ID may hold a status code');
   }
   assert.deepEqual([unpricedAnthropic.sentModels.length, unpricedOpenRouter.sentModels.length], [0, 0]);
   assert.equal(calls.admit.length, 0, 'an unpriced model never reaches the ledger');
@@ -464,7 +527,7 @@ test('a platform-funded request without a current list price is refused before s
   t.mock.timers.setTime(priced.version.staleAfter);
   const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
   const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(stale.model));
-  assert.match(refusedStale.errorMessage ?? '', /no current list price/, 'a stale price is not current');
+  assert.match(refusedStale.errorMessage ?? '', /no current price in Chickpea credits/, 'a stale price is not current');
   assert.equal(stale.sentModels.length, 0);
 });
 
@@ -491,6 +554,31 @@ test('a platform-funded OpenRouter request names its charged price as the most i
   assert.deepEqual(sentModels[1]!.compat, { openRouterRouting: { sort: 'price' } }, 'a customer request is not capped');
   assert.equal(calls.priceMultiplier, 1);
   assert.deepEqual(calls.admit.map(({ model: admitted }) => admitted), [{ provider: 'openrouter', model: KIMI }]);
+});
+
+test('a platform-funded request past the long-context threshold is charged at the long-context rates, and capped at them', async (t) => {
+  const { env } = hostedProxy(t);
+  const calls = fakePort();
+  const TERRA = 'openai/gpt-5.6-terra';
+  const price = priceCatalogFor('standard_input_output', 'openrouter', TERRA, NOW);
+  assert.ok(price?.rate.longContext);
+  const long = price.rate.longContext;
+  const { model, sentModels } = scriptedProvider('openrouter', TERRA, 'openai-completions',
+    [completes({ input: long.fromPromptTokens, output: 1_000 })]);
+
+  await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, () => modelCall(model));
+
+  assert.deepEqual(
+    [calls.charge[0]?.priceVersionId, calls.charge[0]?.listPriceUsdMicros, calls.charge[0]?.priceUnknownReason],
+    [price.version.id, Math.round((long.fromPromptTokens * long.inputMicrosPerUnit + 1_000 * long.outputMicrosPerUnit) /
+      price.rate.unitScale), null],
+  );
+  assert.deepEqual(sentModels[0]!.compat, { openRouterRouting: {
+    max_price: {
+      prompt: (long.inputMicrosPerUnit * 1.5) / price.rate.unitScale,
+      completion: (long.outputMicrosPerUnit * 1.5) / price.rate.unitScale,
+    },
+  } });
 });
 
 test('a platform-funded OpenRouter request is refused without a usable multiplier', async (t) => {

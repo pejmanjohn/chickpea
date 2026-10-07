@@ -1227,13 +1227,13 @@ function runtimeFailure(
   if (error instanceof RoutineSupersededError) {
     return { failureClass: 'internal_error', publicError: 'The routine occurrence was superseded.' };
   }
-  if (isCreditsExhausted(error)) return { failureClass: 'spend_limited', publicError: CREDITS_EXHAUSTED_TEXT };
   if (externalOutcomeMayBeUnknown) {
     return {
       failureClass: 'unknown_external_outcome',
       publicError: 'The routine stopped after a tool call with an outcome that may require inspection.',
     };
   }
+  if (isCreditsExhausted(error)) return { failureClass: 'spend_limited', publicError: CREDITS_EXHAUSTED_TEXT };
   if (error instanceof RoutineRuntimeError) {
     return { failureClass: error.failureClass, publicError: error.publicError };
   }

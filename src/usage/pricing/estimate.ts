@@ -28,6 +28,8 @@ interface UsageEstimateInput extends Pick<
   /** The part of `cacheWriteTokens` written for one hour. */
   cacheWrite1hTokens?: number | null;
   totalTokens?: number | null;
+  /** The usage of exactly one request, whose prompt alone decides a long-context tier. */
+  singleRequest?: boolean;
 }
 
 export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
@@ -56,16 +58,21 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   if (!provider || !model) return unknown('pricing_dimension_unknown');
   if (!matched) return unknown('price_unknown');
   if (input.observedAt >= matched.version.staleAfter) return unknown('price_stale');
-  const { rate } = matched;
+  let { rate } = matched;
   const cache = cacheUsage(input);
   if (!cache || oneHourWrites > cache.write) return unknown('pricing_dimension_unknown', 'partial');
   const fiveMinuteWrites = cache.write - oneHourWrites;
-  // A measurement can total several requests, so a total past the threshold
-  // does not show that any one request crossed it.
-  if (
-    rate.longContext &&
-    input.inputTokens + cache.read + cache.write >= rate.longContext.fromPromptTokens
-  ) return unknown('pricing_dimension_unknown', 'partial');
+  if (rate.longContext && input.inputTokens + cache.read + cache.write >= rate.longContext.fromPromptTokens) {
+    // A measurement can total several requests, so a total past the threshold
+    // does not show that any one request crossed it.
+    if (!input.singleRequest || oneHourWrites > 0) return unknown('pricing_dimension_unknown', 'partial');
+    const { fromPromptTokens: _from, ...longContext } = rate.longContext;
+    const {
+      cacheReadMicrosPerUnit: _read, cacheWriteMicrosPerUnit: _write, cacheWrite1hMicrosPerUnit: _oneHour,
+      longContext: _tier, ...identity
+    } = rate;
+    rate = { ...identity, ...longContext };
+  }
   if (
     (cache.read > 0 && rate.cacheReadMicrosPerUnit === undefined) ||
     (fiveMinuteWrites > 0 && rate.cacheWriteMicrosPerUnit === undefined)

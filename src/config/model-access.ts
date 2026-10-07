@@ -418,12 +418,16 @@ async function platformFundedModel<TModel extends Model<Api>>(
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
   if (!price || Date.now() >= price.version.staleAfter) {
-    throw new ModelAccessError('funding_not_offered', `Model ${request.model} has no current list price to charge credits at.`);
+    // No model ID in the text: Flue retries an error whose text holds a status code such as 503.
+    throw new ModelAccessError('funding_not_offered', 'This model has no current price in Chickpea credits (funding_not_offered).');
   }
   await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   const multiplier = await platformPriceMultiplier(grant);
-  const perMillionTokens = (microsPerUnit: number) => Math.ceil(microsPerUnit * multiplier) / price.rate.unitScale;
+  // A long prompt is charged at the long-context rates, so the cap allows them.
+  const perMillionTokens = (standard: number, longContext = 0) =>
+    Math.ceil(Math.max(standard, longContext) * multiplier) / price.rate.unitScale;
+  const { rate } = price;
   return {
     ...model,
     compat: {
@@ -431,8 +435,8 @@ async function platformFundedModel<TModel extends Model<Api>>(
       openRouterRouting: {
         ...(model.compat as OpenAICompletionsCompat | undefined)?.openRouterRouting,
         max_price: {
-          prompt: perMillionTokens(price.rate.inputMicrosPerUnit),
-          completion: perMillionTokens(price.rate.outputMicrosPerUnit),
+          prompt: perMillionTokens(rate.inputMicrosPerUnit, rate.longContext?.inputMicrosPerUnit),
+          completion: perMillionTokens(rate.outputMicrosPerUnit, rate.longContext?.outputMicrosPerUnit),
         },
       },
     },

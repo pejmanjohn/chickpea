@@ -82,6 +82,7 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     cacheWriteTokens: usage.cacheWrite,
     cacheWrite1hTokens: usage.cacheWrite1h ?? null,
     totalTokens: usage.totalTokens,
+    singleRequest: true,
   });
   const priced = price.estimateCompleteness === 'complete';
   return {

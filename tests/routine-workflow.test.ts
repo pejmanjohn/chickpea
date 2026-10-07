@@ -439,6 +439,30 @@ test('a scheduled run refused for credits is recorded as failed with the credits
   } finally { store.close(); }
 });
 
+test('a scheduled run refused for credits after a tool call still pauses for its unknown outcome', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'credits_after_tool');
+    const refused = new AgentRunError({
+      outcome: 'failed',
+      submissionId: 'submission_test',
+      cause: { type: 'operation_failed', message: 'dispatch(submission_test) failed: This installation is out of Chickpea credits (credits_exhausted).' },
+    });
+    const handle: AgentInstanceHandle = {
+      ...fakeHandle({}),
+      async read(_receipt, options) {
+        options?.onEvent?.({ type: 'tool-input', toolName: 'post_message', toolCallId: 'call_post' } as never);
+        throw refused;
+      },
+    };
+    await executeRoutineOccurrence({ env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+      { ...dependencies([]), handle });
+    const failed = await store.getRun(fixture.run.id);
+    assert.deepEqual([failed?.status, failed?.failureClass], ['failed', 'unknown_external_outcome']);
+    assert.equal((await store.getRoutine(fixture.run.routineId))?.state, 'paused');
+  } finally { store.close(); }
+});
+
 test('a routine settlement keeps one-hour cache writes, so its Usage estimate stays partial', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   const usage = new SqliteUsageStore(':memory:');
