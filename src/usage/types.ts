@@ -340,9 +340,7 @@ export interface UsageStore {
   admitOperation(input: AdmitUsageOperationInput): Promise<UsageOperation>;
   recordTerminal(input: RecordUsageTerminalInput): Promise<UsageOperationDetail>;
   recordConnectorUsage(input: RecordConnectorUsageInput): Promise<ConnectorUsageRecord>;
-  /** Writes a request's record once; a record already stored under its request ID wins. */
   recordModelRequest(record: ModelRequestRecord): Promise<ModelRequestRecord>;
-  /** The stored record of one provider request, or undefined when none was written. */
   getModelRequest(requestId: string): Promise<ModelRequestRecord | undefined>;
   reserveConnectorQuota(input: ReserveConnectorQuotaInput): Promise<ConnectorQuotaReservation>;
   releaseConnectorQuota(input: ReleaseConnectorQuotaInput): Promise<boolean>;

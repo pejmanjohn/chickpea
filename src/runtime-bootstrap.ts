@@ -29,8 +29,7 @@ let bootstrapped = false;
  *
  * The key-backed providers are registered without credentials: each request
  * carries its run's model access (config/model-access.ts), resolved by Core's
- * resolver unless the composing host installed its own first, and records its
- * usage in the installation's usage database.
+ * resolver unless the composing host installed its own first.
  */
 export function bootstrapRuntimeProviders(): void {
   if (bootstrapped) return;

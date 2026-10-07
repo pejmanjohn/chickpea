@@ -15,8 +15,7 @@
  * stateless call), so a suspended or ended installation starts no attempt and
  * sends no further request (see installation-admission.ts). Image generation
  * is the exception: its client calls the provider outside the proxy, from a
- * tool call inside an attempt whose start was admitted. Each request the
- * proxy sends records its usage once, when it ends (usage/model-requests.ts).
+ * tool call inside an attempt whose start was admitted.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -121,7 +120,6 @@ interface ModelAccessCell {
   readonly attribution: ModelRequestAttribution;
 }
 
-/** Writes one request's record to the usage database of `env`'s installation. */
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
 
 const RECORD_BUDGET_MS = 2_000;
@@ -139,7 +137,6 @@ export function modelAccessResolverConfigured(): boolean {
   return resolver !== undefined;
 }
 
-/** The composition seam for request records; with none, requests are sent unrecorded. */
 export function configureModelRequestRecorder(next: ModelRequestRecorder): void {
   recorder = next;
 }
@@ -182,7 +179,7 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/** What the trusted host knows about one attempt before its first model call, and the Agent it runs for. */
+/** What the trusted host knows about one attempt before its first model call. */
 export type AttemptModelAccess =
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
@@ -307,14 +304,12 @@ interface ModelAccessRequest<TModel, TOptions> {
   /**
    * Sends the request once the cell's installation is admitted (cached for
    * 30 seconds). Refused, nothing is sent and the stream ends in an error, as
-   * a provider failure would; a cell with no installation sends at once. A
-   * sent request's record is written before its stream reports the end.
+   * a provider failure would; a cell with no installation sends at once.
    */
   send(start: () => AssistantMessageEventStream): AssistantMessageEventStream;
 }
 
-/** What a request's record names besides its attribution and final message. */
-type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'provider' | 'model' | 'fundingSource'>;
+type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
 /**
  * The request the proxy of registered provider `registeredId` sends: the
@@ -340,7 +335,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   }
   const request: SentRequest = {
     requestId: crypto.randomUUID(),
-    provider: providerId ?? registeredId,
+    route: registeredId,
     model: model.id,
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
@@ -359,18 +354,13 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   };
 }
 
-/**
- * The request's stream: on a cell with an installation, sent once it is
- * admitted (refused, an error with nothing sent and nothing recorded); with a
- * recorder, its record written before its end reaches the caller.
- */
 function sendRequest(
   cell: ModelAccessCell,
   model: Model<Api>,
   request: SentRequest,
   start: () => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
-  const settle = recorder ? recordRequest(cell, request, recorder) : undefined;
+  const settle = recorder ? settleWithRecord(cell, request, recorder) : undefined;
   const { installationId } = cell;
   if (!installationId) {
     const source = start();
@@ -396,44 +386,35 @@ function sendRequest(
   return target;
 }
 
-/**
- * Writes the request's record, waiting at most the budget so a slow store
- * never holds a model call; past it the write continues unawaited. A failed
- * write is logged without content and leaves the model result as it is.
- */
-function recordRequest(
+function settleWithRecord(
   cell: ModelAccessCell,
   request: SentRequest,
-  record: ModelRequestRecorder,
+  writeRecord: ModelRequestRecorder,
 ): (final: AssistantMessage) => Promise<void> {
   return async (final) => {
-    const write = (async () => {
-      const end = { ...request, attribution: cell.attribution, message: final, finishedAt: Date.now() };
-      await record(modelRequestRecord(end), cell.env);
-    })().catch((error: unknown) => logRecordFailure(request, error));
+    const written = Promise.resolve().then(() => writeRecord(
+      modelRequestRecord({ ...request, attribution: cell.attribution, message: final, finishedAt: Date.now() }),
+      cell.env,
+    ));
+    written.catch((error: unknown) => logRecordFailure(request, error));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, RECORD_BUDGET_MS);
     });
-    try {
-      await Promise.race([write, budget]);
-    } finally {
-      clearTimeout(timer);
-    }
+    // The stream waits on a promise that cannot reject, so neither the write
+    // nor its failure log can keep the held terminal event from the caller.
+    await Promise.race([written.then(() => undefined, () => undefined), budget]);
+    clearTimeout(timer);
   };
 }
 
 function logRecordFailure(request: SentRequest, error: unknown): void {
-  try {
-    console.warn('[chickpea] model request record failed', {
-      provider: request.provider,
-      model: request.model,
-      requestId: request.requestId,
-      error: errorKind(error),
-    });
-  } catch {
-    // Logging must not change the model result.
-  }
+  console.warn('[chickpea] model request record failed', {
+    route: request.route,
+    model: request.model,
+    requestId: request.requestId,
+    error: errorKind(error),
+  });
 }
 
 function errorKind(error: unknown): string {

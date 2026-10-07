@@ -158,6 +158,8 @@ export function normalizeRecordUsageTerminal(
 }
 
 export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelRequestRecord {
+  const outputTokens = tokenCount(input.outputTokens?.total, 'output tokens');
+  const cacheWriteTokens = tokenCount(input.cacheWriteTokens?.total, 'cache write tokens');
   const normalized: ModelRequestRecord = {
     requestId: requestText(input.requestId, 'request ID'),
     installationId: requestText(input.installationId, 'installation ID'),
@@ -169,11 +171,15 @@ export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelReq
     fundingSource: enumValue(input.fundingSource, MODEL_REQUEST_FUNDING_SOURCES, 'funding source'),
     outcome: enumValue(input.outcome, MODEL_REQUEST_OUTCOMES, 'request outcome'),
     inputTokens: tokenCount(input.inputTokens, 'input tokens'),
-    outputTokens: tokenCount(input.outputTokens, 'output tokens'),
+    outputTokens: {
+      total: outputTokens,
+      reasoning: tokenPart(input.outputTokens.reasoning, outputTokens, 'reasoning tokens'),
+    },
     cacheReadTokens: tokenCount(input.cacheReadTokens, 'cache read tokens'),
-    cacheWriteTokens: tokenCount(input.cacheWriteTokens, 'cache write tokens'),
-    cacheWrite1hTokens: optionalTokenCount(input.cacheWrite1hTokens, 'one-hour cache write tokens'),
-    reasoningTokens: optionalTokenCount(input.reasoningTokens, 'reasoning tokens'),
+    cacheWriteTokens: {
+      total: cacheWriteTokens,
+      oneHour: tokenPart(input.cacheWriteTokens.oneHour, cacheWriteTokens, 'one-hour cache write tokens'),
+    },
     priceVersionId: optionalId(input.priceVersionId, 'price version ID'),
     listPriceUsdMicros: optionalMoney(input.listPriceUsdMicros),
     priceUnknownReason: optionalEnum(input.priceUnknownReason, PRICE_UNKNOWN_REASONS, 'price unknown reason'),
@@ -409,6 +415,12 @@ function tokenCount(value: unknown, label: string): number {
   const normalized = optionalTokenCount(value, label);
   if (normalized === null) invalid(`${label} is required.`);
   return normalized;
+}
+
+function tokenPart(value: unknown, total: number, label: string): number | null {
+  const part = optionalTokenCount(value, label);
+  if (part !== null && part > total) invalid(`${label} exceed their total.`);
+  return part;
 }
 
 function requestText(value: unknown, label: string): string {

@@ -54,11 +54,9 @@ function storedRecord(overrides: Partial<ModelRequestRecord> = {}): ModelRequest
     fundingSource: 'customer',
     outcome: 'completed',
     inputTokens: 1_000,
-    outputTokens: 500,
+    outputTokens: { total: 500, reasoning: 120 },
     cacheReadTokens: 2_000,
-    cacheWriteTokens: 400,
-    cacheWrite1hTokens: null,
-    reasoningTokens: 120,
+    cacheWriteTokens: { total: 400, oneHour: null },
     priceVersionId: 'anthropic-sonnet-5-5_2026-10-06',
     listPriceUsdMicros: 8_400,
     priceUnknownReason: null,
@@ -87,7 +85,10 @@ test('a request record is validated where the store receives it', async () => {
   try {
     for (const invalid of [
       storedRecord({ inputTokens: -1 }),
-      storedRecord({ outputTokens: 1.5 }),
+      storedRecord({ outputTokens: { total: 1.5, reasoning: null } }),
+      storedRecord({ outputTokens: { total: 5, reasoning: 6 } }),
+      storedRecord({ cacheWriteTokens: { total: 400, oneHour: 401 } }),
+      storedRecord({ outputTokens: 5 as unknown as ModelRequestRecord['outputTokens'] }),
       storedRecord({ requestId: '' }),
       storedRecord({ outcome: 'cancelled' as ModelRequestRecord['outcome'] }),
       storedRecord({ fundingSource: 'platform' as ModelRequestRecord['fundingSource'] }),
@@ -182,7 +183,6 @@ const fails = (message: AssistantMessage): Script => (output) => {
   output.end();
 };
 
-/** An Anthropic route under its bundled alias id, registered through the production seam, that plays one script per request. */
 function scriptedAnthropic(scripts: Script[]): { model: Model<'anthropic-messages'>; sent: () => number } {
   const model = {
     id: SONNET, name: 'Sonnet', api: 'anthropic-messages', provider: ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -221,7 +221,6 @@ function grant(runId: string, installationId = 'chickpea'): ModelAccessGrant {
   };
 }
 
-/** Model access with a fixed key, and request records captured as written to an in-memory usage store. */
 function recordingAccess(t: TestContext, write?: (record: ModelRequestRecord) => Promise<unknown>) {
   resetModelAccessForTests();
   const store = new SqliteUsageStore(':memory:');
@@ -287,11 +286,9 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     fundingSource: 'customer',
     outcome: 'completed',
     inputTokens: 1_000,
-    outputTokens: 500,
+    outputTokens: { total: 500, reasoning: 120 },
     cacheReadTokens: 2_000,
-    cacheWriteTokens: 400,
-    cacheWrite1hTokens: null,
-    reasoningTokens: 120,
+    cacheWriteTokens: { total: 400, oneHour: null },
     priceVersionId: sonnet.version.id,
     listPriceUsdMicros: Math.round((1_000 * rate.inputMicrosPerUnit + 500 * rate.outputMicrosPerUnit +
       2_000 * rate.cacheReadMicrosPerUnit! + 400 * rate.cacheWriteMicrosPerUnit!) / rate.unitScale),
@@ -303,8 +300,8 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     { ...oneHour, requestId: undefined },
     {
       ...priced, requestId: undefined,
-      inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 400, cacheWrite1hTokens: 300,
-      reasoningTokens: null,
+      inputTokens: 10, outputTokens: { total: 5, reasoning: null }, cacheReadTokens: 0,
+      cacheWriteTokens: { total: 400, oneHour: 300 },
       listPriceUsdMicros: Math.round((10 * rate.inputMicrosPerUnit + 5 * rate.outputMicrosPerUnit +
         100 * rate.cacheWriteMicrosPerUnit! + 300 * rate.cacheWrite1hMicrosPerUnit!) / rate.unitScale),
     },
@@ -331,10 +328,10 @@ test('a provider retry in one attempt writes a record per request; one failed be
   assert.equal(failed!.attemptId, retried!.attemptId, 'a retry stays in its attempt');
   assert.notEqual(resumed!.attemptId, retried!.attemptId, 'a new binding is a new attempt');
   assert.deepEqual(
-    [failed!.outcome, failed!.inputTokens, failed!.outputTokens, failed!.cacheReadTokens, failed!.cacheWriteTokens],
+    [failed!.outcome, failed!.inputTokens, failed!.outputTokens.total, failed!.cacheReadTokens, failed!.cacheWriteTokens.total],
     ['error', 0, 0, 0, 0],
   );
-  assert.deepEqual([retried!.outcome, retried!.inputTokens, retried!.outputTokens], ['completed', 40, 8]);
+  assert.deepEqual([retried!.outcome, retried!.inputTokens, retried!.outputTokens.total], ['completed', 40, 8]);
   assert.deepEqual([failed!.runId, failed!.agentId, failed!.installationId], ['sub_retry', 'agent_retry', 'chickpea']);
 });
 
@@ -351,7 +348,7 @@ test('a stream stopped part way records its partial usage as stopped', async (t)
   assert.deepEqual(result, partial);
   const record = await store.getModelRequest(written[0]!.record.requestId);
   assert.deepEqual(
-    [record!.outcome, record!.inputTokens, record!.outputTokens, record!.runId, record!.agentId],
+    [record!.outcome, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId],
     ['stopped', 800, 37, 'stateless_stop', null],
   );
 });
@@ -387,7 +384,7 @@ test('a failing record write leaves the model result unchanged and logs one cont
   assert.deepEqual(results, [first, second]);
   assert.deepEqual(warn.mock.calls.map((call) => call.arguments), written.map(({ record }, index) => [
     '[chickpea] model request record failed',
-    { provider: 'anthropic', model: SONNET, requestId: record.requestId, error: ['usage_invalid_input', 'TypeError'][index] },
+    { route: ANTHROPIC_COMPAT_PROVIDER_ID, model: SONNET, requestId: record.requestId, error: ['usage_invalid_input', 'TypeError'][index] },
   ]));
 });
 
@@ -419,7 +416,6 @@ test('the record is in the store when the caller reads the request result', asyn
   });
 });
 
-/** The model-access interceptor instrumented into real Flue, binding every attempt to a deployment lane for `agentId`. */
 function instrumentedLane(agentId: string) {
   const interceptor = createModelAccessInterceptor({
     lookup: async () => ({ env: undefined, deploymentLane: true, agentId }),
@@ -574,7 +570,7 @@ test('a stateless vision check inside an attempt records one request under that 
   assert.equal(written.length, 1);
   const record = await store.getModelRequest(written[0]!.record.requestId);
   assert.deepEqual(
-    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens, record!.runId, record!.agentId, record!.outcome],
+    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId, record!.outcome],
     ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed'],
   );
 });

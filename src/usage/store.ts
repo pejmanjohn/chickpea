@@ -181,10 +181,10 @@ interface ModelRequestRow {
   outcome: ModelRequestRecord['outcome'];
   input_tokens: number;
   output_tokens: number;
+  output_tokens_reasoning: number | null;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  cache_write_1h_tokens: number | null;
-  reasoning_tokens: number | null;
+  cache_write_tokens_one_hour: number | null;
   price_version_id: string | null;
   list_price_usd_micros: number | null;
   price_unknown_reason: ModelRequestRecord['priceUnknownReason'];
@@ -193,8 +193,8 @@ interface ModelRequestRow {
 
 const MODEL_REQUEST_COLUMNS = `
   request_id, installation_id, run_id, attempt_id, agent_id, provider, model,
-  funding_source, outcome, input_tokens, output_tokens, cache_read_tokens,
-  cache_write_tokens, cache_write_1h_tokens, reasoning_tokens, price_version_id,
+  funding_source, outcome, input_tokens, output_tokens, output_tokens_reasoning,
+  cache_read_tokens, cache_write_tokens, cache_write_tokens_one_hour, price_version_id,
   list_price_usd_micros, price_unknown_reason, finished_at`;
 
 const OPERATION_COLUMNS = `
@@ -465,11 +465,11 @@ export class UsageStoreLogic {
       record.fundingSource,
       record.outcome,
       record.inputTokens,
-      record.outputTokens,
+      record.outputTokens.total,
+      record.outputTokens.reasoning,
       record.cacheReadTokens,
-      record.cacheWriteTokens,
-      record.cacheWrite1hTokens,
-      record.reasoningTokens,
+      record.cacheWriteTokens.total,
+      record.cacheWriteTokens.oneHour,
       record.priceVersionId,
       record.listPriceUsdMicros,
       record.priceUnknownReason,
@@ -478,7 +478,6 @@ export class UsageStoreLogic {
     return this.getModelRequest(record.requestId)!;
   }
 
-  /** The stored usage record of one provider request, or undefined when none was written. */
   getModelRequest(requestId: string): ModelRequestRecord | undefined {
     const row = this.db.get(
       `SELECT ${MODEL_REQUEST_COLUMNS} FROM usage_model_requests WHERE request_id = ?`,
@@ -1393,10 +1392,10 @@ export class UsageStoreLogic {
         outcome TEXT NOT NULL,
         input_tokens INTEGER NOT NULL,
         output_tokens INTEGER NOT NULL,
+        output_tokens_reasoning INTEGER,
         cache_read_tokens INTEGER NOT NULL,
         cache_write_tokens INTEGER NOT NULL,
-        cache_write_1h_tokens INTEGER,
-        reasoning_tokens INTEGER,
+        cache_write_tokens_one_hour INTEGER,
         price_version_id TEXT,
         list_price_usd_micros INTEGER,
         price_unknown_reason TEXT,
@@ -1570,11 +1569,15 @@ function mapModelRequest(row: ModelRequestRow): ModelRequestRecord {
     fundingSource: row.funding_source,
     outcome: row.outcome,
     inputTokens: Number(row.input_tokens),
-    outputTokens: Number(row.output_tokens),
+    outputTokens: {
+      total: Number(row.output_tokens),
+      reasoning: nullableNumber(row.output_tokens_reasoning),
+    },
     cacheReadTokens: Number(row.cache_read_tokens),
-    cacheWriteTokens: Number(row.cache_write_tokens),
-    cacheWrite1hTokens: nullableNumber(row.cache_write_1h_tokens),
-    reasoningTokens: nullableNumber(row.reasoning_tokens),
+    cacheWriteTokens: {
+      total: Number(row.cache_write_tokens),
+      oneHour: nullableNumber(row.cache_write_tokens_one_hour),
+    },
     priceVersionId: row.price_version_id,
     listPriceUsdMicros: nullableNumber(row.list_price_usd_micros),
     priceUnknownReason: row.price_unknown_reason,
