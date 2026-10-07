@@ -184,9 +184,9 @@ export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelReq
     listPriceUsdMicros: optionalMoney(input.listPriceUsdMicros),
     priceUnknownReason: optionalEnum(input.priceUnknownReason, PRICE_UNKNOWN_REASONS, 'price unknown reason'),
     providerCostUsdMicros: optionalMoney(input.providerCostUsdMicros),
-    providerResponseId: input.providerResponseId === null || input.providerResponseId === undefined
-      ? null
-      : requestText(input.providerResponseId, 'provider response ID'),
+    providerResponseId: optionalRequestText(input.providerResponseId, 'provider response ID'),
+    providerServiceTier: optionalRequestText(input.providerServiceTier, 'provider service tier'),
+    providerInferenceGeo: optionalRequestText(input.providerInferenceGeo, 'provider inference region'),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
   };
   const priced = normalized.priceVersionId !== null;
@@ -437,6 +437,10 @@ export function isStorableRequestText(value: unknown): value is string {
 function requestText(value: unknown, label: string): string {
   if (!isStorableRequestText(value)) invalid(`${label} is invalid.`);
   return value;
+}
+
+function optionalRequestText(value: unknown, label: string): string | null {
+  return value === null || value === undefined ? null : requestText(value, label);
 }
 
 function optionalTokenCount(value: unknown, label: string): number | null {

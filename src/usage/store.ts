@@ -190,6 +190,8 @@ interface ModelRequestRow {
   price_unknown_reason: ModelRequestRecord['priceUnknownReason'];
   provider_cost_usd_micros: number | null;
   provider_response_id: string | null;
+  provider_service_tier: string | null;
+  provider_inference_geo: string | null;
   finished_at: number;
 }
 
@@ -198,7 +200,7 @@ const MODEL_REQUEST_COLUMNS = `
   funding_source, outcome, input_tokens, output_tokens, output_tokens_reasoning,
   cache_read_tokens, cache_write_tokens, cache_write_tokens_one_hour, price_version_id,
   list_price_usd_micros, price_unknown_reason, provider_cost_usd_micros, provider_response_id,
-  finished_at`;
+  provider_service_tier, provider_inference_geo, finished_at`;
 
 const OPERATION_COLUMNS = `
   operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
@@ -456,7 +458,7 @@ export class UsageStoreLogic {
     const record = normalizeModelRequestRecord(raw);
     this.db.run(
       `INSERT INTO usage_model_requests (${MODEL_REQUEST_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(request_id) DO NOTHING`,
       record.requestId,
       record.installationId,
@@ -478,6 +480,8 @@ export class UsageStoreLogic {
       record.priceUnknownReason,
       record.providerCostUsdMicros,
       record.providerResponseId,
+      record.providerServiceTier,
+      record.providerInferenceGeo,
       record.finishedAt,
     );
     return this.getModelRequest(record.requestId)!;
@@ -1406,6 +1410,8 @@ export class UsageStoreLogic {
         price_unknown_reason TEXT,
         provider_cost_usd_micros INTEGER,
         provider_response_id TEXT,
+        provider_service_tier TEXT,
+        provider_inference_geo TEXT,
         finished_at INTEGER NOT NULL
       )`,
     );
@@ -1453,6 +1459,8 @@ export class UsageStoreLogic {
     addColumnIfMissing(this.db, 'usage_connector_attempts', 'result_bytes', 'INTEGER');
     addColumnIfMissing(this.db, 'usage_model_requests', 'provider_cost_usd_micros', 'INTEGER');
     addColumnIfMissing(this.db, 'usage_model_requests', 'provider_response_id', 'TEXT');
+    addColumnIfMissing(this.db, 'usage_model_requests', 'provider_service_tier', 'TEXT');
+    addColumnIfMissing(this.db, 'usage_model_requests', 'provider_inference_geo', 'TEXT');
     addColumnIfMissing(
       this.db,
       'usage_connector_daily_rollups',
@@ -1592,6 +1600,8 @@ function mapModelRequest(row: ModelRequestRow): ModelRequestRecord {
     priceUnknownReason: row.price_unknown_reason,
     providerCostUsdMicros: nullableNumber(row.provider_cost_usd_micros),
     providerResponseId: row.provider_response_id,
+    providerServiceTier: row.provider_service_tier,
+    providerInferenceGeo: row.provider_inference_geo,
     finishedAt: Number(row.finished_at),
   };
 }

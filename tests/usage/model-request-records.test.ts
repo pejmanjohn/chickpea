@@ -64,6 +64,8 @@ function storedRecord(overrides: Partial<ModelRequestRecord> = {}): ModelRequest
     priceUnknownReason: null,
     providerCostUsdMicros: null,
     providerResponseId: null,
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: NOW,
     ...overrides,
   };
@@ -120,10 +122,13 @@ test('a request record is validated where the store receives it', async () => {
   }
 });
 
-test('a request record keeps its provider-billed cost and response ID, and refuses unusable ones', async () => {
+test('a request record keeps what its provider reported, and refuses unusable values', async () => {
   const store = new SqliteUsageStore(':memory:', () => NOW);
   try {
-    const billed = storedRecord({ requestId: 'request-billed', providerCostUsdMicros: 8, providerResponseId: 'gen-fixture-0001' });
+    const billed = storedRecord({
+      requestId: 'request-billed', providerCostUsdMicros: 8, providerResponseId: 'gen-fixture-0001',
+      providerServiceTier: 'standard', providerInferenceGeo: 'global',
+    });
     assert.deepEqual(await store.recordModelRequest(billed), billed);
     assert.deepEqual(await store.getModelRequest('request-billed'), billed);
     for (const invalid of [
@@ -132,24 +137,30 @@ test('a request record keeps its provider-billed cost and response ID, and refus
       storedRecord({ providerResponseId: '' }),
       storedRecord({ providerResponseId: 'gen-\u0007' }),
       storedRecord({ providerResponseId: 'g'.repeat(257) }),
+      storedRecord({ providerServiceTier: 1 as unknown as string }),
+      storedRecord({ providerServiceTier: 'standard\u0007' }),
+      storedRecord({ providerInferenceGeo: ['us'] as unknown as string }),
+      storedRecord({ providerInferenceGeo: 'u\u0000s' }),
     ]) {
       await assert.rejects(
         store.recordModelRequest(invalid),
         (error: unknown) => error instanceof UsageStateError && error.code === 'usage_invalid_input',
       );
     }
-    const { providerCostUsdMicros: _cost, providerResponseId: _id, ...older } = storedRecord({ requestId: 'request-older' });
+    const {
+      providerCostUsdMicros: _cost, providerResponseId: _id, providerServiceTier: _tier, providerInferenceGeo: _geo, ...older
+    } = storedRecord({ requestId: 'request-older' });
     assert.deepEqual(
       await store.recordModelRequest(older as ModelRequestRecord),
       storedRecord({ requestId: 'request-older' }),
-      'a record from a caller that predates both fields writes them as null',
+      'a record from a caller that predates these fields writes them as null',
     );
   } finally {
     store.close();
   }
 });
 
-test('a request table from before provider costs gains both columns, and its rows read back with nulls', () => {
+test('a request table from before provider reports gains their columns, and its rows read back with nulls', () => {
   const db = openStateDb(':memory:');
   db.exec(
     `CREATE TABLE usage_model_requests (
@@ -186,9 +197,14 @@ test('a request table from before provider costs gains both columns, and its row
   const store = new UsageStoreLogic(db, () => NOW);
 
   const columns = db.all('PRAGMA table_info(usage_model_requests)').map((row) => row.name);
-  assert.ok(columns.includes('provider_cost_usd_micros') && columns.includes('provider_response_id'), String(columns));
+  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo']) {
+    assert.ok(columns.includes(column), `${column} in ${String(columns)}`);
+  }
   assert.deepEqual(store.getModelRequest('request-old'), old);
-  const billed = storedRecord({ requestId: 'request-new', providerCostUsdMicros: 13, providerResponseId: 'gen-fixture-0002' });
+  const billed = storedRecord({
+    requestId: 'request-new', providerCostUsdMicros: 13, providerResponseId: 'gen-fixture-0002',
+    providerServiceTier: 'default', providerInferenceGeo: null,
+  });
   assert.deepEqual(store.recordModelRequest(billed), billed);
 });
 
@@ -387,6 +403,8 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     priceUnknownReason: null,
     providerCostUsdMicros: null,
     providerResponseId: null,
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: NOW,
   });
   assert.notEqual(oneHour!.requestId, priced!.requestId);

@@ -33,26 +33,24 @@ import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runti
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
-import {
-  chargePlatformRequest,
-  platformPriceMultiplier,
-  requirePlatformFundingAdmitted,
-} from './platform-funding.ts';
+import { chargePlatformRequest, requirePlatformFundingAdmitted } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
   isRevisionedAlias,
 } from '../model-catalog/provider-alias.ts';
+import { isRecord } from '../security/content-validation.ts';
 import {
   modelRequestRecord,
-  openRouterCostReader,
+  NO_PROVIDER_REPORT,
+  providerReportReader,
   usageInstallationId,
   type ModelRequestAttribution,
   type ModelRequestEnd,
   type ModelRequestFundingSource,
   type ModelRequestRecord,
-  type ReportedCostReader,
+  type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
@@ -388,6 +386,33 @@ interface ModelAccessRequest<TModel, TOptions> {
 
 type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
+interface ListPriceMode {
+  pin(payload: Record<string, unknown>): Record<string, unknown>;
+  readonly listPricedServiceTiers: readonly string[];
+  readonly listPricedInferenceGeos: readonly string[];
+}
+
+const LIST_PRICE_MODES = {
+  anthropic: {
+    pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
+    listPricedServiceTiers: ['standard'],
+    // Older models serve without a region and report `not_available`.
+    listPricedInferenceGeos: ['global', 'not_available'],
+  },
+  openai: {
+    // The default, `auto`, takes the project's tier, which can be a priced one.
+    pin: (payload) => ({ ...payload, service_tier: 'default' }),
+    listPricedServiceTiers: ['default'],
+    listPricedInferenceGeos: [],
+  },
+} satisfies Record<string, ListPriceMode>;
+
+type ListPricedProvider = keyof typeof LIST_PRICE_MODES;
+
+function listPricedProvider(providerId: string): ListPricedProvider | undefined {
+  return Object.hasOwn(LIST_PRICE_MODES, providerId) ? providerId as ListPricedProvider : undefined;
+}
+
 /**
  * The request the proxy of registered provider `registeredId` sends: the
  * cell's key, endpoint and headers injected over whatever the caller passed,
@@ -417,9 +442,12 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
-  const reader = providerId === 'openrouter' ? openRouterCostReader(options?.fetch) : undefined;
+  const platformGrant = bound?.grant.fundingSource === 'platform' ? bound.grant : undefined;
+  const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
+  const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
+  const reader = reporting && providerReportReader(reporting, options?.fetch);
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, bound?.grant, reader, start);
+    sendRequest(cell, sent, request, platformGrant, reader, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -429,6 +457,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
+      ...(listPriced ? { onPayload: listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced]) } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -439,12 +468,11 @@ function sendRequest<TModel extends Model<Api>>(
   cell: ModelAccessCell,
   model: TModel,
   request: SentRequest,
-  grant: ModelAccessGrant | undefined,
-  reader: ReportedCostReader | undefined,
+  platformGrant: ModelAccessGrant | undefined,
+  reader: ProviderReportReader | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
-  const platformGrant = grant?.fundingSource === 'platform' ? grant : undefined;
   const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
@@ -474,8 +502,7 @@ function sendRequest<TModel extends Model<Api>>(
  * A platform-funded request's model, once it has a current list price to be
  * charged at and the installation's credits admit it. OpenRouter may serve a
  * model through several providers at different prices, so its request names
- * the most it may cost: the list price times the host's multiplier, the
- * price it is charged.
+ * the most it may cost: the catalog price, which is the model maker's own.
  */
 async function platformFundedModel<TModel extends Model<Api>>(
   grant: ModelAccessGrant,
@@ -487,10 +514,9 @@ async function platformFundedModel<TModel extends Model<Api>>(
   if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
   await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
-  const multiplier = await platformPriceMultiplier(grant);
   // A long prompt is charged at the long-context rates, so the cap allows them.
   const perMillionTokens = (standard: number, longContext = 0) =>
-    Math.ceil(Math.max(standard, longContext) * multiplier) / price.rate.unitScale;
+    Math.max(standard, longContext) / price.rate.unitScale;
   const { rate } = price;
   return {
     ...model,
@@ -516,13 +542,44 @@ function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
-  reader: ReportedCostReader | undefined,
+  reader: ProviderReportReader | undefined,
 ): (final: AssistantMessage) => Promise<void> {
+  const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
+  const mode = listPriced && LIST_PRICE_MODES[listPriced];
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
-    const providerCostUsdMicros = await reader?.lastReportedCostUsdMicros() ?? null;
-    return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, providerCostUsdMicros, finishedAt });
+    const report = await reader?.report() ?? NO_PROVIDER_REPORT;
+    const record = modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
+    const offListPrice = mode &&
+      (offList(record.providerServiceTier, mode.listPricedServiceTiers) ||
+        offList(record.providerInferenceGeo, mode.listPricedInferenceGeos));
+    if (offListPrice) {
+      console.warn('[chickpea] platform-funded model request served off list price', {
+        route: request.route,
+        model: request.model,
+        requestId: request.requestId,
+        serviceTier: record.providerServiceTier,
+        inferenceGeo: record.providerInferenceGeo,
+      });
+    }
+    return record;
   });
+}
+
+function offList(reported: string | null, listPriced: readonly string[]): boolean {
+  return reported !== null && !listPriced.includes(reported);
+}
+
+function listPricedPayload(
+  callerHook: StreamOptions['onPayload'],
+  mode: ListPriceMode,
+): NonNullable<StreamOptions['onPayload']> {
+  return async (payload, model) => {
+    const returned = await callerHook?.(payload, model);
+    const composed = returned === undefined ? payload : returned;
+    if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
+    return mode.pin(composed);
+  };
 }
 
 async function settleRecord(
