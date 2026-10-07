@@ -1,3 +1,4 @@
+import type { ImageEndpointFetch } from '../config/model-access.ts';
 import type { ImageModelProfile } from '../model-catalog/image-profiles.ts';
 import { isRecord } from '../security/content-validation.ts';
 import { IMAGE_QUALITIES, validImageSize, type ImageQuality } from './output-controls.ts';
@@ -79,12 +80,17 @@ export interface OpenAiImagesClient {
   edit(request: ImageEditRequest): Promise<ImageCallResult>;
 }
 
+/**
+ * Runs one call through the model-access proxy (`sendImageRequest`), which
+ * holds the key and the endpoint, admits, records and charges the request.
+ */
+export type ImageRequestSender = (
+  call: (fetch: ImageEndpointFetch, endpoint: string) => Promise<ImageCallResult>,
+) => Promise<ImageCallResult>;
+
 export interface OpenAiImagesClientOptions {
   profile: ImageModelProfile;
-  apiKey: string;
-  /** Defaults to the OpenAI API base, mirroring `openAiApiBase()`. */
-  baseUrl?: string;
-  fetchImpl?: typeof fetch;
+  send: ImageRequestSender;
 }
 
 /** Raised at construction only; call-time problems are returned, never thrown. */
@@ -104,68 +110,44 @@ const CONTROL_CHARACTERS = /[\p{Cc}]/gu;
 
 class ImageDeadlineError extends Error {}
 
-/**
- * Mirrors `openAiApiBase()` in `src/config/provider-models.ts`, which is not
- * exported. Both read `OPENAI_API_URL` and fall back to the public base.
- */
-export function openAiImagesApiBase(): string {
-  return (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
-}
-
 export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): OpenAiImagesClient {
   if (options.profile.authMethod !== 'api_key') {
     throw new OpenAiImagesConfigError('unsupported_auth_method');
   }
-  const apiKey = options.apiKey.trim();
-  if (!apiKey) {
-    throw new OpenAiImagesConfigError('missing_api_key');
-  }
-  const base = assertImagesBaseUrl(options.baseUrl ?? openAiImagesApiBase());
-  const fetcher = options.fetchImpl ?? fetch;
-  const profile = options.profile;
+  const { profile, send } = options;
 
-  async function call(
+  function call(
     path: string,
     build: () => { body: BodyInit; headers: Record<string, string> },
     request: ImageGenerateRequest,
   ): Promise<ImageCallResult> {
-    const url = `${base.href.replace(/\/+$/, '')}${path}`;
-    const prepared = build();
-    try {
-      return await withImageDeadline(
-        request.deadlineMs,
-        async (signal) => {
-          const response = await fetcher(url, {
-            method: 'POST',
-            headers: { authorization: `Bearer ${apiKey}`, ...prepared.headers },
-            body: prepared.body,
-            // workerd refuses `redirect: 'error'` outright ("won't be
-            // implemented since it does not make sense at the edge; use
-            // 'manual' and check the response status code"), and the throw
-            // happens before the request leaves, so on Cloudflare every image
-            // call failed as `unreachable` without ever reaching the provider.
-            // `manual` is what the direct Slack upload already uses; the
-            // off-host guard below refuses the redirect by status instead.
-            redirect: 'manual',
-            signal,
-          });
-          const offHost = rejectOffHostResponse(response, base.host);
-          if (offHost) {
-            await response.body?.cancel().catch(() => {});
-            return offHost;
-          }
-          return await readImageResponse(response, profile, request.format, request.prompt);
-        },
-        request.signal,
-      );
-    } catch (err) {
-      if (err instanceof ImageDeadlineError) {
-        return { ok: false, reason: 'timeout', detail: err.message };
+    return send(async (fetcher, endpoint) => {
+      const base = imagesBaseUrl(endpoint);
+      if (!base) return { ok: false, reason: 'misconfigured', detail: 'invalid_base_url' };
+      const prepared = build();
+      try {
+        return await withImageDeadline(
+          request.deadlineMs,
+          async (signal) => {
+            const response = await fetcher(path, { headers: prepared.headers, body: prepared.body, signal });
+            const offHost = rejectOffHostResponse(response, base.host);
+            if (offHost) {
+              await response.body?.cancel().catch(() => {});
+              return offHost;
+            }
+            return await readImageResponse(response, profile, request.format, request.prompt);
+          },
+          request.signal,
+        );
+      } catch (err) {
+        if (err instanceof ImageDeadlineError) {
+          return { ok: false, reason: 'timeout', detail: err.message };
+        }
+        // Transport failures carry URLs and socket detail, never request content,
+        // but the message is dropped anyway so nothing can leak through it.
+        return { ok: false, reason: 'unreachable', detail: 'network_error' };
       }
-      // Transport failures carry URLs and socket detail, never request content,
-      // but the message is dropped anyway so nothing can leak through it.
-      return { ok: false, reason: 'unreachable', detail: 'network_error' };
-    }
+    });
   }
 
   return {
@@ -474,15 +456,16 @@ async function withImageDeadline<T>(
   }
 }
 
-function assertImagesBaseUrl(value: string): URL {
+/** The key travels only over https to a bare origin and path. */
+function imagesBaseUrl(value: string): URL | undefined {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new OpenAiImagesConfigError('invalid_base_url');
+    return undefined;
   }
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-    throw new OpenAiImagesConfigError('invalid_base_url');
+    return undefined;
   }
   return url;
 }

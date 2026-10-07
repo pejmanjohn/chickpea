@@ -16,9 +16,7 @@
  * sends no further request (see installation-admission.ts). A grant Chickpea
  * pays for is also admitted against the installation's credits before each
  * request and charged once when it finishes (see platform-funding.ts). Image
- * generation is the exception: its client calls the provider outside the
- * proxy, from a tool call inside an attempt whose start was admitted, and is
- * refused platform funding.
+ * generation takes the same steps through `sendImageRequest`.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -56,6 +54,8 @@ import {
   type ModelRequestRecord,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
+import type { ImageCallResult } from '../images/openai-images-client.ts';
+import { currentImagePrice, imageRequestRecord } from '../images/request-record.ts';
 
 /**
  * Providers whose key comes from the run's installation. `local-stub` is the
@@ -268,12 +268,70 @@ export async function withDeploymentLane<T>(
   return cells.run(await resolveCell([], env, false, undefined, runId, null), fn);
 }
 
-/** The access for one grant, for a model client outside the provider proxy (image generation). */
-export function resolveModelAccessGrant(
-  grant: ModelAccessGrant,
-  env: PlatformEnv | undefined,
-): Promise<ResolvedModelAccess> {
-  return requireResolver().resolve(grant, env);
+/** One request under an image model's endpoint, sent with the proxy's key. */
+export type ImageEndpointFetch = (
+  path: string,
+  init: { readonly headers: Readonly<Record<string, string>>; readonly body: BodyInit; readonly signal: AbortSignal },
+) => Promise<Response>;
+
+export interface ImageModelRequest {
+  readonly grant: ModelAccessGrant;
+  readonly env: PlatformEnv | undefined;
+  /** The wire model the request is priced, admitted and recorded as. */
+  readonly model: string;
+  /** The model's endpoint, unless the grant's access names another. */
+  readonly baseUrl: string;
+  readonly fetchImpl?: typeof fetch;
+}
+
+/**
+ * One image request, sent as the proxy sends a language-model request: once
+ * the installation is admitted and, when Chickpea pays, once the model has a
+ * current price and the installation's credits admit it; with the key the
+ * grant resolves to, which `call` never sees; recorded once with its image
+ * token usage and price, and charged once. A call that never fetches sent
+ * nothing, so nothing is recorded or charged. A refusal throws before `call`.
+ */
+export async function sendImageRequest(
+  request: ImageModelRequest,
+  call: (fetch: ImageEndpointFetch, endpoint: string) => Promise<ImageCallResult>,
+): Promise<ImageCallResult> {
+  const { grant, env, model } = request;
+  const installationId = deploymentServesManyInstallations(env) ? installationScopeOf(env)?.installationId : undefined;
+  if (installationId) await requireInstallationAdmitted(installationId);
+  const platformGrant = grant.fundingSource === 'platform' ? grant : undefined;
+  if (platformGrant) {
+    if (!currentImagePrice(grant.providerId, model, Date.now())) throw unpricedModel();
+    await requirePlatformFundingAdmitted(platformGrant, { provider: grant.providerId, model });
+  }
+  const access = await requireResolver().resolve(grant, env);
+  const endpoint = (access.baseUrl ?? request.baseUrl).replace(/\/+$/, '');
+  const fetchImpl = request.fetchImpl ?? fetch;
+  let sent = false;
+  const result = await call((path, init) => {
+    sent = true;
+    return fetchImpl(`${endpoint}${path}`, {
+      method: 'POST',
+      headers: { ...init.headers, ...access.headers, authorization: `Bearer ${access.apiKey}` },
+      body: init.body,
+      // workerd refuses `redirect: 'error'` before the request leaves; the
+      // caller refuses a redirect by its status instead.
+      redirect: 'manual',
+      signal: init.signal,
+    });
+  }, endpoint);
+  if (!sent) return result;
+  const sentRequest: SentRequest = {
+    requestId: crypto.randomUUID(), route: grant.providerId, model, fundingSource: grant.fundingSource,
+  };
+  const attribution = cells.getStore()?.attribution ?? {
+    installationId: usageInstallationId(env), runId: grant.runId, attemptId: crypto.randomUUID(), agentId: null,
+  };
+  await settleRecord(env, sentRequest, platformGrant, () => imageRequestRecord({
+    requestId: sentRequest.requestId, attribution, provider: grant.providerId, model,
+    fundingSource: grant.fundingSource, result, finishedAt: Date.now(),
+  }));
+  return result;
 }
 
 async function resolveCell(
@@ -417,10 +475,7 @@ async function platformFundedModel<TModel extends Model<Api>>(
 ): Promise<TModel> {
   const provider = canonicalPriceProviderId(request.route);
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
-  if (!price || Date.now() >= price.version.staleAfter) {
-    // No model ID in the text: Flue retries an error whose text holds a status code such as 503.
-    throw new ModelAccessError('funding_not_offered', 'This model has no current price in Chickpea credits (funding_not_offered).');
-  }
+  if (!price || Date.now() >= price.version.staleAfter) throw unpricedModel();
   await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
   if (provider !== 'openrouter') return model;
   const multiplier = await platformPriceMultiplier(grant);
@@ -443,31 +498,45 @@ async function platformFundedModel<TModel extends Model<Api>>(
   };
 }
 
+function unpricedModel(): ModelAccessError {
+  // No model ID in the text: Flue retries an error whose text holds a status code such as 503.
+  return new ModelAccessError('funding_not_offered', 'This model has no current price in Chickpea credits (funding_not_offered).');
+}
+
 function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
 ): (final: AssistantMessage) => Promise<void> {
+  return (final) => settleRecord(cell.env, request, platformGrant, () => modelRequestRecord({
+    ...request, attribution: cell.attribution, message: final, finishedAt: Date.now(),
+  }));
+}
+
+/** Writes a finished request's record and charges it, waiting at most the record budget. */
+async function settleRecord(
+  env: PlatformEnv | undefined,
+  request: SentRequest,
+  platformGrant: ModelAccessGrant | undefined,
+  build: () => ModelRequestRecord,
+): Promise<void> {
   const writeRecord = recorder;
-  return async (final) => {
-    const record = Promise.resolve().then(() => modelRequestRecord({
-      ...request, attribution: cell.attribution, message: final, finishedAt: Date.now(),
-    }));
-    const settled = [
-      writeRecord && record.then((built) => writeRecord(built, cell.env))
-        .catch((error: unknown) => logSettleFailure('record', request, error)),
-      platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built))
-        .catch((error: unknown) => logSettleFailure('charge', request, error)),
-    ];
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const budget = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, RECORD_BUDGET_MS);
-    });
-    // The stream waits on promises that cannot reject, so neither a write nor
-    // its failure log can keep the held terminal event from the caller.
-    await Promise.race([Promise.all(settled), budget]);
-    clearTimeout(timer);
-  };
+  if (!writeRecord && !platformGrant) return;
+  const record = Promise.resolve().then(build);
+  const settled = [
+    writeRecord && record.then((built) => writeRecord(built, env))
+      .catch((error: unknown) => logSettleFailure('record', request, error)),
+    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built))
+      .catch((error: unknown) => logSettleFailure('charge', request, error)),
+  ];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, RECORD_BUDGET_MS);
+  });
+  // The caller waits on promises that cannot reject, so neither a write nor
+  // its failure log can keep the result from it.
+  await Promise.race([Promise.all(settled), budget]);
+  clearTimeout(timer);
 }
 
 function logSettleFailure(step: 'record' | 'charge', request: SentRequest, error: unknown): void {
