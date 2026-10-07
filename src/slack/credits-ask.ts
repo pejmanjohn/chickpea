@@ -107,7 +107,10 @@ export function parseCreditsAskAction(payload: unknown): CreditsAskAction | unde
 }
 
 export async function askOwnersForCredits(action: CreditsAskAction, deps: CreditsAskDeps): Promise<CreditsAskOutcome> {
-  const outcome = await ask(action, deps);
+  const outcome = await ask(action, deps).catch((): CreditsAskOutcome => {
+    console.warn('[chickpea] A credits request could not be checked');
+    return 'unreachable';
+  });
   await present(action, OUTCOME_PRESENTATION[outcome], deps.client);
   return outcome;
 }

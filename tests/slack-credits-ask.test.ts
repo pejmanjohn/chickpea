@@ -199,7 +199,6 @@ async function outOfCreditsTurn(
 
 type Block = Record<string, unknown>;
 
-/** Every block the reply wrote to Slack. */
 function writtenBlocks(calls: Array<{ input: Record<string, unknown> }>): Block[] {
   return calls.flatMap(({ input }) => Array.isArray(input.blocks) ? input.blocks as Block[] : []);
 }
@@ -466,6 +465,19 @@ test('with no reachable Owner the clicker is told, and a later click can still a
   const reachable = slack();
   assert.equal(await askOwnersForCredits(await click(), { identity, claims, client: reachable.client }), 'asked');
   assert.deepEqual(reachable.of('chat.postMessage').map(({ channel }) => channel), ['DOWNER1']);
+});
+
+test('a click whose identity read fails tells the clicker and sends nothing', async (t) => {
+  const claims = new SqliteSlackStateStore(':memory:');
+  t.after(() => claims.close());
+  const down = async () => { throw new Error('identity_unavailable'); };
+  const { client, calls } = slack();
+  const identity = { resolveSlackIdentity: down, listMemberships: down, listExternalIdentities: down };
+  assert.equal(await askOwnersForCredits(await click(), { identity, claims, client }), 'unreachable');
+  assert.deepEqual(calls, [{
+    method: 'chat.postEphemeral',
+    input: { channel: CHANNEL, user: 'UMEMBER1', text: CREDITS_ASK_UNREACHABLE_TEXT, thread_ts: THREAD_TS },
+  }]);
 });
 
 test('a reply whose echoed blocks lack its text gets the confirmation privately instead', async (t) => {
