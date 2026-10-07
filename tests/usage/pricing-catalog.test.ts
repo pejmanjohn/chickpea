@@ -7,10 +7,20 @@ import {
   installReleasePriceCatalogs,
   RELEASE_PRICE_CATALOGS,
 } from '../../src/usage/pricing/catalog.ts';
+import { PRICE_CATALOGS_2026_10_07 } from '../../src/usage/pricing/catalogs/2026-10-07.ts';
+import type { TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
+
+const EARLIER_RELEASES = RELEASE_PRICE_CATALOGS.filter((version) => !PRICE_CATALOGS_2026_10_07.includes(version));
+
+function tokenRate(version: UsagePriceVersion): TokenPriceRate {
+  const rate = version.rates[0];
+  assert.equal(rate?.basis, 'standard_input_output', version.id);
+  return rate as TokenPriceRate;
+}
 
 test('release catalog contains only fixture-proven priced routes with immutable provenance', () => {
   assert.deepEqual(
-    RELEASE_PRICE_CATALOGS.map((version) => version.providerId),
+    EARLIER_RELEASES.map((version) => version.providerId),
     [
       'anthropic',
       'openai',
@@ -37,11 +47,11 @@ test('release catalog contains only fixture-proven priced routes with immutable 
     assert.equal(version.currency, 'USD');
     assert.ok(version.staleAfter > version.reviewedAt);
     assert.equal(version.rates.length, 1);
-    assert.equal(version.rates[0]?.basis, 'standard_input_output');
   }
-  const workersPrices = RELEASE_PRICE_CATALOGS
+  for (const version of EARLIER_RELEASES) tokenRate(version);
+  const workersPrices = EARLIER_RELEASES
     .filter((version) => ['cloudflare-workers-ai', 'cloudflare'].includes(version.providerId))
-    .map((version) => version.rates[0]);
+    .map(tokenRate);
   assert.equal(workersPrices.length, 8);
   assert.deepEqual(
     workersPrices.map((rate) => [
@@ -62,16 +72,16 @@ test('release catalog contains only fixture-proven priced routes with immutable 
     ],
   );
   assert.deepEqual(
-    RELEASE_PRICE_CATALOGS
+    EARLIER_RELEASES
       .filter((version) => version.providerId === 'anthropic')
       .map((version) => [
         version.id,
         version.effectiveFrom,
-        version.rates[0]?.modelId,
-        version.rates[0]?.inputMicrosPerUnit,
-        version.rates[0]?.outputMicrosPerUnit,
-        version.rates[0]?.cacheReadMicrosPerUnit ?? null,
-        version.rates[0]?.cacheWriteMicrosPerUnit ?? null,
+        tokenRate(version).modelId,
+        tokenRate(version).inputMicrosPerUnit,
+        tokenRate(version).outputMicrosPerUnit,
+        tokenRate(version).cacheReadMicrosPerUnit ?? null,
+        tokenRate(version).cacheWriteMicrosPerUnit ?? null,
       ]),
     [
       ['anthropic_2026-07-28', Date.UTC(2026, 6, 28), 'claude-haiku-4-5', 1_000_000, 5_000_000, null, null],
@@ -82,14 +92,14 @@ test('release catalog contains only fixture-proven priced routes with immutable 
     ],
   );
   assert.deepEqual(
-    RELEASE_PRICE_CATALOGS
+    EARLIER_RELEASES
       .filter((version) => ['openai', 'openrouter'].includes(version.providerId))
       .map((version) => [
         version.id,
         version.staleAfter,
-        version.rates[0]?.modelId,
-        version.rates[0]?.inputMicrosPerUnit,
-        version.rates[0]?.outputMicrosPerUnit,
+        tokenRate(version).modelId,
+        tokenRate(version).inputMicrosPerUnit,
+        tokenRate(version).outputMicrosPerUnit,
       ]),
     [
       ['openai_2026-07-28', Date.UTC(2026, 9, 26), 'gpt-4.1-mini', 400_000, 1_600_000],
@@ -98,6 +108,77 @@ test('release catalog contains only fixture-proven priced routes with immutable 
       ['openrouter_2026-10-06', Date.UTC(2027, 0, 4), 'openai/gpt-4.1', 2_000_000, 8_000_000],
     ],
   );
+});
+
+test('the 2026-10-07 catalog copies each page\'s list price, cache rates, and long-context tier', () => {
+  const anthropic = 'https://platform.claude.com/docs/en/about-claude/pricing';
+  const openaiModel = (id: string) => `https://developers.openai.com/api/docs/models/${id}`;
+  const tokenPrices = PRICE_CATALOGS_2026_10_07
+    .filter((version) => version.rates[0]?.basis === 'standard_input_output')
+    .map((version) => {
+      const rate = tokenRate(version);
+      return [
+        version.id,
+        version.sourceUrl,
+        rate.modelAliases.join(' '),
+        rate.inputMicrosPerUnit,
+        rate.outputMicrosPerUnit,
+        rate.cacheReadMicrosPerUnit ?? null,
+        rate.cacheWriteMicrosPerUnit ?? null,
+        rate.cacheWrite1hMicrosPerUnit ?? null,
+        rate.longContext
+          ? [
+            rate.longContext.fromPromptTokens,
+            rate.longContext.inputMicrosPerUnit,
+            rate.longContext.outputMicrosPerUnit,
+            rate.longContext.cacheReadMicrosPerUnit,
+            rate.longContext.cacheWriteMicrosPerUnit,
+          ]
+          : null,
+      ];
+    });
+  assert.deepEqual(tokenPrices, [
+    ['anthropic-fable-5-1_2026-10-07', anthropic, 'claude-fable-5-1', 10_000_000, 50_000_000, 250_000, 12_500_000, 20_000_000, null],
+    ['anthropic-fable-5_2026-10-07', anthropic, 'claude-fable-5', 10_000_000, 50_000_000, 1_000_000, 12_500_000, 20_000_000, null],
+    ['anthropic-opus-5-5_2026-10-07', anthropic, 'claude-opus-5-5', 4_000_000, 20_000_000, 200_000, 5_000_000, 8_000_000, null],
+    ['anthropic-opus-5_2026-10-07', anthropic, 'claude-opus-5', 5_000_000, 25_000_000, 500_000, 6_250_000, 10_000_000, null],
+    ['anthropic-sonnet-5-5_2026-10-07', anthropic, 'claude-sonnet-5-5', 2_000_000, 10_000_000, 200_000, 2_500_000, 4_000_000, null],
+    ['anthropic-sonnet-5_2026-10-07', anthropic, 'claude-sonnet-5', 2_000_000, 10_000_000, 200_000, 2_500_000, 4_000_000, null],
+    ['anthropic-haiku-4-5_2026-10-07', anthropic, 'claude-haiku-4-5 claude-haiku-4-5-20251001', 1_000_000, 5_000_000, 100_000, 1_250_000, 2_000_000, null],
+    ['openai-gpt-6-astra_2026-10-07', openaiModel('gpt-6-astra'), 'gpt-6-astra', 10_000_000, 50_000_000, 1_000_000, 12_500_000, null, [272_001, 20_000_000, 75_000_000, 2_000_000, 25_000_000]],
+    ['openai-gpt-6-sol_2026-10-07', openaiModel('gpt-6-sol'), 'gpt-6-sol', 2_000_000, 10_000_000, 200_000, 2_500_000, null, [272_001, 4_000_000, 15_000_000, 400_000, 5_000_000]],
+    ['openai-gpt-6-luna_2026-10-07', openaiModel('gpt-6-luna'), 'gpt-6-luna', 100_000, 500_000, 10_000, 125_000, null, [272_001, 200_000, 750_000, 20_000, 250_000]],
+    ['openai-gpt-5.6-sol_2026-10-07', openaiModel('gpt-5.6-sol'), 'gpt-5.6-sol', 4_000_000, 20_000_000, 400_000, 5_000_000, null, [272_001, 8_000_000, 30_000_000, 800_000, 10_000_000]],
+    ['openai-gpt-5.6-terra_2026-10-07', openaiModel('gpt-5.6-terra'), 'gpt-5.6-terra', 2_000_000, 12_000_000, 200_000, 2_500_000, null, [272_001, 4_000_000, 18_000_000, 400_000, 5_000_000]],
+    ['openai-gpt-5.6-luna_2026-10-07', openaiModel('gpt-5.6-luna'), 'gpt-5.6-luna', 200_000, 1_200_000, 20_000, 250_000, null, [272_001, 400_000, 1_800_000, 40_000, 500_000]],
+    ['openrouter-claude-sonnet-5_2026-10-07', 'https://openrouter.ai/anthropic/claude-sonnet-5', 'anthropic/claude-sonnet-5 anthropic/claude-sonnet-5-20260630', 2_000_000, 10_000_000, 200_000, 2_500_000, 4_000_000, null],
+    ['openrouter-gpt-5.6-terra_2026-10-07', 'https://openrouter.ai/openai/gpt-5.6-terra', 'openai/gpt-5.6-terra openai/gpt-5.6-terra-20260709', 2_000_000, 12_000_000, 200_000, 2_500_000, null, [272_000, 4_000_000, 18_000_000, 400_000, 5_000_000]],
+    ['openrouter-deepseek-v4.1-flash_2026-10-07', 'https://openrouter.ai/deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash deepseek/deepseek-v4.1-flash-20260910', 50_000, 1_200_000, 20_000, null, null, null],
+    ['openrouter-glm-5.3-flash_2026-10-07', 'https://openrouter.ai/z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash z-ai/glm-5.3-flash-20260826', 36_000, 500_000, 36_000, null, null, null],
+    ['openrouter-kimi-k3_2026-10-07', 'https://openrouter.ai/moonshotai/kimi-k3', 'moonshotai/kimi-k3 moonshotai/kimi-k3-20260715', 615_000, 13_000_000, 450_000, null, null, null],
+  ]);
+  assert.deepEqual(
+    PRICE_CATALOGS_2026_10_07.flatMap((version) => {
+      const rate = version.rates[0];
+      return rate?.basis === 'image_tokens'
+        ? [[version.id, version.sourceUrl, rate.modelId, rate.textInputMicrosPerUnit, rate.imageInputMicrosPerUnit, rate.imageOutputMicrosPerUnit]]
+        : [];
+    }),
+    [
+      ['openai-image-gpt-image-2.5-flare_2026-10-07', openaiModel('gpt-image-2.5-flare'), 'gpt-image-2.5-flare', 5_000_000, 8_000_000, 30_000_000],
+      ['openai-image-gpt-image-2.5-sunburst_2026-10-07', openaiModel('gpt-image-2.5-sunburst'), 'gpt-image-2.5-sunburst', 5_000_000, 8_000_000, 30_000_000],
+    ],
+  );
+  const reviewedAt = Date.UTC(2026, 9, 7);
+  for (const version of PRICE_CATALOGS_2026_10_07) {
+    assert.equal(version.effectiveFrom, reviewedAt, version.id);
+    assert.equal(version.reviewedAt, reviewedAt, version.id);
+    assert.equal(
+      version.staleAfter,
+      version.id === 'openai-gpt-5.6-sol_2026-10-07' ? Date.UTC(2026, 10, 22) : Date.UTC(2027, 0, 5),
+      version.id,
+    );
+  }
 });
 
 test('catalog tables install transactionally and repeated install cannot duplicate rates', () => {
