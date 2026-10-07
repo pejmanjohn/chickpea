@@ -651,7 +651,7 @@ const PROVIDER_UNAVAILABLE = {
 };
 const NOT_OFFERED = { ...PROVIDER_UNAVAILABLE, code: 'funding_not_offered' };
 
-test('Admin reads a credits installation\'s Workspace default as ready with no saved key, and a customer-funded one as repair_required', async (t) => {
+async function creditsAdmin(t: TestContext) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   resetPlatformFundingForTests();
   invalidateProviderKeyCache();
@@ -679,12 +679,17 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
     lastChangedByMembershipId: 'membership_test_owner',
   }, 1);
   await config.updateWorkspaceInstallation(installation.workspaceId, { runtimeContract: 'chickpea-v1' }, installation.revision);
+  const request = (path: string, init: RequestInit = {}) => app.request(path, {
+    ...init,
+    headers: { ...testAdminHeaders(ADMIN_TOKEN), 'content-type': 'application/json', ...init.headers },
+  }, hostedEnv('inst_credits'));
+  return { config, installation, request };
+}
+
+test('Admin reads a credits installation\'s Workspace default as ready with no saved key, and a customer-funded one as repair_required', async (t) => {
+  const { config, installation, request } = await creditsAdmin(t);
   const health = async () => {
-    const response = await app.request(
-      '/admin/api/workspace-model-default',
-      { headers: testAdminHeaders(ADMIN_TOKEN) },
-      hostedEnv('inst_credits'),
-    );
+    const response = await request('/admin/api/workspace-model-default');
     assert.equal(response.status, 200);
     return ((await response.json()) as { workspaceDefault: { health: unknown } }).workspaceDefault.health;
   };
@@ -709,6 +714,40 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
       await health(),
       { ...NOT_OFFERED, providerId: 'cloudflare' },
       'credits serve only a provider the deployment offers',
+    );
+  });
+});
+
+test('a credits installation with no saved key can choose a priced coding model, and only a priced one', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const choose = (modelId: string) => request('/admin/api/workspace-model-roles/coding', {
+    method: 'PUT',
+    body: JSON.stringify({ modelId, expectedRevision: 0 }),
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort({ funding: async () => 'customer' });
+    const keyless = await choose(`anthropic/${SONNET}`);
+    assert.equal(keyless.status, 400);
+    assert.deepEqual(await keyless.json(), {
+      error: 'invalid_request',
+      message: `Set up anthropic in Model providers before choosing anthropic/${SONNET}.`,
+    });
+
+    fakePort();
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    const unpriced = await choose(`anthropic/${SONNET}`);
+    assert.equal(unpriced.status, 400);
+    assert.deepEqual(await unpriced.json(), {
+      error: 'invalid_request',
+      message: 'Not offered with Chickpea credits. Choose another model.',
+    });
+
+    t.mock.timers.setTime(NOW);
+    const chosen = await choose(`anthropic/${SONNET}`);
+    assert.equal(chosen.status, 200);
+    assert.equal(
+      ((await chosen.json()) as { workspaceModelRole: { modelId: string | null } }).workspaceModelRole.modelId,
+      `anthropic/${SONNET}`,
     );
   });
 });

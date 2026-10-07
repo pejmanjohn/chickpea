@@ -2,9 +2,9 @@ import { InstallationNotAdmittedError } from '../config/installation-admission.t
 import { installationModelAccessGrant, RuntimeModelReadinessError } from '../config/installation-model-access.ts';
 import { ModelAccessError, sendImageRequest, type ModelAccessGrant } from '../config/model-access.ts';
 import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts';
+import { modelProviderUnavailable, pricedModelRoute } from '../config/model-policy.ts';
 import {
   CreditsExhaustedError,
-  installationFunding,
   PlatformFundingUnavailableError,
 } from '../config/platform-funding.ts';
 import { describeProviderKeySources } from '../config/provider-keys.ts';
@@ -21,7 +21,6 @@ import {
   type ImageRequestSender,
   type OpenAiImagesClient,
 } from './openai-images-client.ts';
-import { currentImagePrice } from './request-record.ts';
 
 export type ImageProviderResolution =
   | { ok: true; profile: ImageModelProfile; client: OpenAiImagesClient }
@@ -43,10 +42,12 @@ export async function imageModelProfileReady(
     if (!openAiSubscriptionAvailable() || !store) return false;
     return (await getOpenAiSubscriptionAuthorizationStatus(store)).state === 'connected';
   }
-  if (await installationFunding(env) === 'platform') {
-    return currentImagePrice(profile.provider, profile.model, Date.now()) !== null;
-  }
-  return (await describeProviderKeySources(env, store))[profile.provider] !== 'missing';
+  const unavailable = await modelProviderUnavailable(
+    pricedModelRoute(profile.id, 'image_tokens'),
+    env,
+    async () => (await describeProviderKeySources(env, store))[profile.provider] !== 'missing',
+  );
+  return unavailable === undefined;
 }
 
 /**

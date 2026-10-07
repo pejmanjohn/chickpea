@@ -12646,24 +12646,32 @@ async function codingModelChoiceError(input: {
   ]);
   const incompatible = await activeCatalogCompatibilityError(input.modelId, openAiAuthMethod, input.settingsStore, input.platformEnv);
   if (incompatible) return incompatible;
-  const notReady = `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
-  // A key-lane provider is ready when the turn's own key lookup finds a key,
-  // so Admin never calls ready what a turn would silently replace.
-  if (isProviderKeyId(providerId) &&
-      !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
-    const source = (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId];
-    return source === 'missing' ? notReady : undefined;
-  }
-  return chatModelProviderReady(providerId, {
-    runtimeProviders: input.runtimeProviders,
-    platformEnv: input.platformEnv,
-    openAiAuthMethod,
-    workersAiEnabled,
-    openAiSubscription,
-  })
-    ? undefined
-    : notReady;
+  const unavailable = await modelProviderUnavailable(
+    pricedModelRoute(input.modelId, 'standard_input_output'),
+    input.platformEnv,
+    async () => {
+      // A key-lane provider is ready when the turn's own key lookup finds a key,
+      // so Admin never calls ready what a turn would silently replace.
+      if (isProviderKeyId(providerId) &&
+          !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
+        return (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId] !== 'missing';
+      }
+      return chatModelProviderReady(providerId, {
+        runtimeProviders: input.runtimeProviders,
+        platformEnv: input.platformEnv,
+        openAiAuthMethod,
+        workersAiEnabled,
+        openAiSubscription,
+      });
+    },
+  );
+  if (!unavailable) return undefined;
+  return unavailable === 'funding_not_offered'
+    ? CREDITS_NOT_OFFERED_TEXT
+    : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
+
+const CREDITS_NOT_OFFERED_TEXT = 'Not offered with Chickpea credits. Choose another model.';
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');
