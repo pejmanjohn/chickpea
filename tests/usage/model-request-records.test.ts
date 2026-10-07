@@ -35,6 +35,7 @@ import { runStatelessVisionCall } from '../../src/images/inspect-output.ts';
 import { promptSlackThreadAgent } from '../../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1 } from '../../src/slack/turn-job-types.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
+import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { USAGE_RAW_RETENTION_DAYS } from '../../src/usage/retention.ts';
 import { SqliteUsageStore, UsageStateError } from '../../src/usage/store.ts';
 
@@ -253,6 +254,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test('a completed request writes one record with its attempt, Agent, canonical provider and list price', async (t) => {
   const { store, written } = recordingAccess(t);
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   configureInstallationAdmission(async () => 'admitted');
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_records' });
   const { model } = scriptedAnthropic([
@@ -260,19 +262,20 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     completes(reply('stop', { input: 10, output: 5, cacheWrite: 400, cacheWrite1h: 300 })),
   ]);
   const interceptor = interceptorFor({ env, grant: grant('sub_records', 'inst_records'), agentId: 'agent_records' });
-  const before = Date.now();
 
   await interceptor(AGENT_OPERATION, attempt('records'), async () => {
     await modelCall(model, 'streamSimple');
     await modelCall(model, 'stream');
   });
 
+  const sonnet = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
+  assert.ok(sonnet?.rate.cacheReadMicrosPerUnit && sonnet.rate.cacheWriteMicrosPerUnit && sonnet.rate.cacheWrite1hMicrosPerUnit);
+  const { rate } = sonnet;
   assert.equal(written.length, 2);
   assert.equal(written[0]!.env, env, 'the record is written through the attempt env');
   const [priced, oneHour] = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
   assert.match(priced!.requestId, UUID);
   assert.match(priced!.attemptId, UUID);
-  assert.ok(priced!.finishedAt >= before && priced!.finishedAt <= Date.now());
   assert.deepEqual(priced, {
     requestId: priced!.requestId,
     installationId: 'inst_records',
@@ -289,20 +292,21 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     cacheWriteTokens: 400,
     cacheWrite1hTokens: null,
     reasoningTokens: 120,
-    priceVersionId: 'anthropic-sonnet-5-5_2026-10-06',
-    // 1,000 x 2 + 500 x 10 + 2,000 x 0.2 + 400 x 2.5 micros
-    listPriceUsdMicros: 8_400,
+    priceVersionId: sonnet.version.id,
+    listPriceUsdMicros: Math.round((1_000 * rate.inputMicrosPerUnit + 500 * rate.outputMicrosPerUnit +
+      2_000 * rate.cacheReadMicrosPerUnit! + 400 * rate.cacheWriteMicrosPerUnit!) / rate.unitScale),
     priceUnknownReason: null,
-    finishedAt: priced!.finishedAt,
+    finishedAt: NOW,
   });
   assert.notEqual(oneHour!.requestId, priced!.requestId);
   assert.deepEqual(
-    { ...oneHour, requestId: undefined, finishedAt: undefined },
+    { ...oneHour, requestId: undefined },
     {
-      ...priced, requestId: undefined, finishedAt: undefined,
+      ...priced, requestId: undefined,
       inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 400, cacheWrite1hTokens: 300,
-      reasoningTokens: null, priceVersionId: null, listPriceUsdMicros: null,
-      priceUnknownReason: 'pricing_dimension_unknown',
+      reasoningTokens: null,
+      listPriceUsdMicros: Math.round((10 * rate.inputMicrosPerUnit + 5 * rate.outputMicrosPerUnit +
+        100 * rate.cacheWriteMicrosPerUnit! + 300 * rate.cacheWrite1hMicrosPerUnit!) / rate.unitScale),
     },
   );
 });
