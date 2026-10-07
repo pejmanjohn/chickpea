@@ -206,10 +206,10 @@ function scriptedAnthropic(scripts: Script[]): { model: Model<'anthropic-message
   return { model, sent: () => sent };
 }
 
-function modelCall(model: Model<string>, text = 'hello'): Promise<AssistantMessage> {
-  return registeredPiProvider(model.provider)!.streamSimple(model, {
+function modelCall(model: Model<string>, method: 'stream' | 'streamSimple' = 'streamSimple'): Promise<AssistantMessage> {
+  return registeredPiProvider(model.provider)![method](model, {
     systemPrompt: 'probe',
-    messages: [{ role: 'user', content: text, timestamp: 1 }],
+    messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
   }, {}).result();
 }
 
@@ -263,8 +263,8 @@ test('a completed request writes one record with its attempt, Agent, canonical p
   const before = Date.now();
 
   await interceptor(AGENT_OPERATION, attempt('records'), async () => {
-    await modelCall(model);
-    await modelCall(model);
+    await modelCall(model, 'streamSimple');
+    await modelCall(model, 'stream');
   });
 
   assert.equal(written.length, 2);
