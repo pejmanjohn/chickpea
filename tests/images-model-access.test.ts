@@ -186,6 +186,24 @@ test('an image request goes to the endpoint its access names over the catalog en
   assert.deepEqual(sent.map(({ url }) => url), ['https://gateway.invalid/v1/images/generations']);
 });
 
+test('an admitted image call that never fetches is neither recorded nor charged', async (t) => {
+  const { recorded } = proxy(t, 'sk-platform-images');
+  const { env, port } = creditsInstallation(t);
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const grant: ModelAccessGrant = {
+      installationId: 'inst_credits', providerId: 'openai', credentialRefId: 'platform:openai', credentialVersion: 1,
+      runId: 'image-generation', fundingSource: 'platform',
+    };
+    const { fetchImpl } = provider();
+    const result = await sendImageRequest({ grant, env, model: FLARE.model, baseUrl: 'http://insecure.invalid', fetchImpl },
+      async () => ({ ok: false, reason: 'misconfigured', detail: 'invalid_base_url' }));
+    assert.equal(result.ok, false);
+    assert.equal(port.admit.length, 1);
+    assert.deepEqual(recorded, []);
+    assert.deepEqual(port.charge, []);
+  });
+});
+
 test('an image request inside a run is recorded against that run', async (t) => {
   const { settings, recorded } = proxy(t, 'sk-run-images');
   await withEnv({ ...NO_DEPLOYMENT_KEYS, OPENAI_API_KEY: 'sk-run-images' }, async () => {
