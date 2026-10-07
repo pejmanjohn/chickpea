@@ -12602,7 +12602,7 @@ interface WorkspaceModelDefaultProjection {
   health: {
     status: 'ready' | 'selection_required' | 'repair_required';
     providerId: string | null;
-    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable';
+    code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable' | 'funding_not_offered';
     repairPath?: '/admin/settings/providers';
   };
 }
@@ -12724,7 +12724,8 @@ async function workspaceModelDefaultProjection(input: {
       ? {
           status: 'repair_required',
           providerId,
-          code: 'provider_unavailable',
+          // A platform-funded installation never uses a saved key, so only another model repairs it.
+          code: unavailable === 'funding_not_offered' ? 'funding_not_offered' : 'provider_unavailable',
           repairPath: '/admin/settings/providers',
         }
       : { status: 'ready', providerId };

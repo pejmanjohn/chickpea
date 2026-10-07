@@ -640,13 +640,16 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
 });
 
 const ADMIN_TOKEN = 'platform-funding-admin-token';
-const AFTER_SONNET_PRICE_STALE = Date.UTC(2027, 6, 1);
+const SONNET_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
+assert.ok(SONNET_PRICE, 'the Admin test model is priced at NOW');
+const AFTER_SONNET_PRICE_STALE = SONNET_PRICE.version.staleAfter;
 const PROVIDER_UNAVAILABLE = {
   status: 'repair_required',
   providerId: 'anthropic',
   code: 'provider_unavailable',
   repairPath: '/admin/settings/providers',
 };
+const NOT_OFFERED = { ...PROVIDER_UNAVAILABLE, code: 'funding_not_offered' };
 
 test('Admin reads a credits installation\'s Workspace default as ready with no saved key, and a customer-funded one as repair_required', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
@@ -690,7 +693,7 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
     fakePort();
     assert.deepEqual(await health(), { status: 'ready', providerId: 'anthropic' });
     t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
-    assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'credits serve only a model with a current price');
+    assert.deepEqual(await health(), NOT_OFFERED, 'credits serve only a model with a current price');
     t.mock.timers.setTime(NOW);
     fakePort({ funding: async () => 'customer' });
     assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'a customer-funded installation still needs its own key');
@@ -704,7 +707,7 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
     fakePort();
     assert.deepEqual(
       await health(),
-      { ...PROVIDER_UNAVAILABLE, providerId: 'cloudflare' },
+      { ...NOT_OFFERED, providerId: 'cloudflare' },
       'credits serve only a provider the deployment offers',
     );
   });

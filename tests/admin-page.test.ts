@@ -13890,6 +13890,33 @@ test('Settings distinguishes pending activation and static provider repair', asy
   assert.match(html, /href="\/admin\/settings\/providers">Review anthropic provider settings<\/a>/);
 });
 
+test('Settings tells a credits workspace to choose another model when its default is not offered', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: {
+      workspaceId: 'T_CREDITS',
+      modelId: 'anthropic/claude-sonnet-5',
+      revision: 1,
+      provenance: 'admin_selected',
+      runtimeContract: 'chickpea-v1',
+      live: true,
+      inheritingAgentCount: 0,
+      health: {
+        status: 'repair_required',
+        providerId: 'anthropic',
+        code: 'funding_not_offered',
+        repairPath: '/admin/settings/providers',
+      },
+    },
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.match(html, /Repair required/);
+  assert.match(html, /<p class="hint">Not offered with Chickpea credits\. Choose another model\.<\/p>/);
+  assert.doesNotMatch(html, /Review anthropic provider settings/);
+});
+
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
   const harness = runAdminPageHarness({ usageAdminUi: true });
   await flushAsync();
