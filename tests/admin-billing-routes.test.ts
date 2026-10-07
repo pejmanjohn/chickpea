@@ -130,10 +130,13 @@ test('an Owner switches an own-key installation to credits, and switching again 
   assert.deepEqual(calls, [['chooseFunding', INSTALLATION, 'credits'], ['chooseFunding', INSTALLATION, 'credits']]);
 });
 
-test('switching back to your own key, or a malformed switch, is refused before the port is asked', async (t) => {
+test('switching to your own key with no key saved, or a malformed switch, is refused before the port is asked', async (t) => {
   const { port, calls } = fakePort(CREDITS);
   const request = admin(t, { port });
-  for (const body of [{ funding: 'own_key' }, {}, { funding: 'credits', installationId: 'inst_other' }]) {
+  const keyless = await request('/admin/api/billing/funding', post({ funding: 'own_key' }));
+  assert.equal(keyless.status, 409);
+  assert.deepEqual(await keyless.json(), { error: 'own_key_missing' });
+  for (const body of [{}, { funding: 'byok' }, { funding: 'credits', installationId: 'inst_other' }]) {
     assert.equal((await request('/admin/api/billing/funding', post(body))).status, 400, JSON.stringify(body));
   }
   assert.deepEqual(calls, []);
@@ -155,6 +158,7 @@ test('an Owner reads the balance, plan, period and named use; unnamed use folds 
       byPerson: [{ name: 'Maya Chen', credits: 31 }, { name: null, credits: 6 }],
     },
     offers: CREDITS.offers,
+    ownKeySaved: false,
   });
   assert.deepEqual(calls, [['summary', INSTALLATION]]);
 });
@@ -204,6 +208,7 @@ for (const role of ['member', 'admin'] as const) {
     assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 403);
     assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
     assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
+    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 403);
     assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
   });
 }
@@ -214,5 +219,6 @@ test('an Owner\'s personal token is not an Owner\'s own session: no use, no purc
   assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'credits', manage: false, balance: 48_210 });
   assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
   assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 403);
   assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
 });

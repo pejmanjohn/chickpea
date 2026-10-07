@@ -46,7 +46,10 @@ const OWNER_VIEW: BillingView = {
     ],
     topUps: [{ key: 'top_up_10', priceCents: 1_000, credits: 10_000, validMonths: 12 }],
   },
+  ownKeySaved: true,
 };
+
+const OWN_KEY_VIEW: BillingView = { funding: 'own_key', manage: true };
 
 const CHOOSE_PROVIDER = {
   stage: 'choose_provider', revision: 'revision_1', agentId: null, redirectTo: null,
@@ -108,7 +111,8 @@ async function harness(options: {
     if (path === '/admin/api/billing/checkout') return response({ url: `https://checkout.stripe.com/c/pay/${body.key}` });
     if (path === '/admin/api/billing/portal') return response({ url: 'https://billing.stripe.com/p/session/portal' });
     if (path === '/admin/api/billing/funding') {
-      return options.switchFails ? response({ error: 'billing_unavailable' }, 503) : response(OWNER_VIEW);
+      if (options.switchFails) return response({ error: 'billing_unavailable' }, 503);
+      return response(body.funding === 'own_key' ? OWN_KEY_VIEW : OWNER_VIEW);
     }
     if (path === '/admin/api/onboarding/funding') {
       onboarding = { ...onboarding, funding: body.funding, revision: 'revision_2' };
@@ -205,6 +209,45 @@ test('a Member sees the balance and that an Owner adds credits, with no buy butt
   assert.match(html, /An Owner can add credits or change the plan\./);
   assert.match(html, /data-action="open-billing"[^>]*>Plan and credits<\/button>/);
   assert.doesNotMatch(html, /billing-top-up|billing-change-plan|billing-manage|Used this period|<th>Person<\/th>/);
+  assert.doesNotMatch(html, /Use your own key instead|billing-use-own-key/);
+});
+
+test('an Owner on credits with a saved key switches back to it only after confirming that credits stay', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: OWNER_VIEW });
+  assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/);
+  await page.click({ 'data-action': 'billing-use-own-key' });
+  assert.match(page.html(), /Switch to your own key\? Replies will use your saved API key\. Unused credits stay on your balance until they expire\./);
+  await page.click({ 'data-action': 'billing-funding-cancel' });
+  assert.doesNotMatch(page.html(), /Switch to your own key\?/);
+  assert.deepEqual(billingWrites(page.requests), [], 'nothing switches before the Owner confirms');
+
+  await page.click({ 'data-action': 'billing-use-own-key' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  assert.deepEqual(billingWrites(page.requests).map((request) => [request.method, request.path, (request as { body?: unknown }).body]),
+    [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
+  assert.match(page.html(), /Your workspace pays for models with its own API key\./, 'the page turns into the own-key view');
+  assert.match(page.html(), /data-action="billing-use-credits">Use Chickpea credits<\/button>/);
+  assert.doesNotMatch(page.html(), /Switch to Chickpea credits\?/, 'the own-key view does not open on a confirmation');
+});
+
+test('a switch back the host refuses shows its error beside the open confirmation', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: OWNER_VIEW, switchFails: true });
+  await page.click({ 'data-action': 'billing-use-own-key' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  const html = page.html();
+  const confirm = html.indexOf('data-action="billing-funding-confirm">Switch to your own key</button>');
+  const error = html.indexOf('Could not switch to your own key. Try again.');
+  assert.ok(confirm >= 0, 'the confirmation stays open and can be retried');
+  assert.ok(error > confirm, 'the error follows the confirmation, not the Stripe buttons');
+});
+
+test('an Owner on credits with no saved key is sent to Model providers to add one first', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { ...OWNER_VIEW, ownKeySaved: false } });
+  assert.match(page.html(), /data-action="open-settings" data-section="providers">Use your own key instead<\/button><\/div><p class="hint">Add a provider API key in Settings first\.<\/p>/);
+  assert.doesNotMatch(page.html(), /billing-use-own-key/);
+  await page.click({ 'data-action': 'open-settings', 'data-section': 'providers' });
+  assert.equal(page.location.pathname, '/admin/settings/providers');
+  assert.deepEqual(billingWrites(page.requests), []);
 });
 
 test('standalone shows nothing new: no billing request, no page, and onboarding goes straight to providers', async () => {
@@ -219,13 +262,13 @@ test('standalone shows nothing new: no billing request, no page, and onboarding 
 });
 
 test('an Owner on their own key finds the page and switches to credits only after confirming', async () => {
-  const home = await harness({ path: '/admin/agents', billingOffered: true, billing: { funding: 'own_key', manage: true } });
+  const home = await harness({ path: '/admin/agents', billingOffered: true, billing: OWN_KEY_VIEW });
   assert.match(home.html(), /data-action="open-billing"[^>]*>Plan and credits<\/button>/, 'the nav entry is there on your own key');
   assert.equal(home.requests.some((request) => request.path.startsWith('/admin/api/billing')), false, 'no billing read until the page opens');
   await home.click({ 'data-action': 'open-billing' });
   assert.equal(home.location.pathname, '/admin/plan');
 
-  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { funding: 'own_key', manage: true } });
+  const page = await harness({ path: '/admin/plan', billingOffered: true, billing: OWN_KEY_VIEW });
   assert.equal(page.location.pathname, '/admin/plan');
   assert.match(page.html(), /<h1 class="page-title">Plan and credits<\/h1>/);
   assert.match(page.html(), /Your workspace pays for models with its own API key\./);

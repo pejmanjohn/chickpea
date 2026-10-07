@@ -102,7 +102,7 @@
     teamLoading: false,
     // Plan and credits: the host's answer once read, and what an Owner is
     // waiting on ("top_up", "plan" or "portal" for a Stripe page, "funding"
-    // for the switch to credits).
+    // for a switch between credits and the workspace's own key).
     billing: null,
     billingError: "",
     billingBusy: "",
@@ -2457,16 +2457,18 @@
     loadBilling();
   }
 
-  function switchToCredits() {
+  // The page offers one switch: away from how the workspace pays now.
+  function switchFunding() {
     if (state.billingBusy) return;
+    var next = state.billing.funding === "credits" ? "own_key" : "credits";
     state.billingBusy = "funding";
     state.billingError = "";
     render();
-    postJson("/admin/api/billing/funding", "POST", { funding: "credits" }).then(function (body) {
+    postJson("/admin/api/billing/funding", "POST", { funding: next }).then(function (body) {
       state.billing = body;
       state.billingFundingConfirm = false;
     }).catch(function () {
-      state.billingError = "Could not switch to Chickpea credits. Try again.";
+      state.billingError = next === "credits" ? "Could not switch to Chickpea credits. Try again." : "Could not switch to your own key. Try again.";
     }).then(function () {
       state.billingBusy = "";
       render();
@@ -2543,17 +2545,33 @@
       }).join("") + '</section>';
   }
 
+  function billingFundingConfirmHtml(question, confirmLabel) {
+    var busy = state.billingBusy === "funding";
+    return '<div class="callout"><span>' + question + '</span></div>' +
+      '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : confirmLabel) + '</button></div>';
+  }
+
   function billingOwnKeyHtml(head, billing) {
     if (!billing.manage) return head + '<div class="usage-contract"><p>An Owner can switch to Chickpea credits.</p></div>';
-    var busy = state.billingBusy === "funding";
     var notice = state.billingError ? '<p class="field-error" role="alert">' + esc(state.billingError) + '</p>' : '';
     var body = state.billingFundingConfirm
-      ? '<div class="callout"><span>Switch to Chickpea credits? Replies will stop using your own key.</span></div>' +
-        '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
-        '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : 'Switch to credits') + '</button></div>'
+      ? billingFundingConfirmHtml('Switch to Chickpea credits? Replies will stop using your own key.', 'Switch to credits')
       : '<div class="usage-contract"><p>With Chickpea credits, no API key is needed. Each reply draws credits from your workspace&rsquo;s balance.</p></div>' +
         '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-credits">Use Chickpea credits</button></div>';
     return head + body + notice;
+  }
+
+  // Paying with the workspace's own key needs a saved provider key, so with
+  // none the way back starts in Settings.
+  function billingUseOwnKeyHtml(billing, notice) {
+    var body = !billing.ownKeySaved
+      ? '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
+        '<p class="hint">Add a provider API key in Settings first.</p>'
+      : state.billingFundingConfirm
+      ? billingFundingConfirmHtml('Switch to your own key? Replies will use your saved API key. Unused credits stay on your balance until they expire.', 'Switch to your own key') + notice
+      : '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
+    return '<section class="usage-section">' + body + '</section>';
   }
 
   function billingMainHtml() {
@@ -2591,9 +2609,11 @@
       buttonHtml("billing-change-plan", "Change plan", "", "plan", "btn-soft") +
       buttonHtml("billing-manage", "Manage billing", "", "portal", "btn-ghost") + '</div>' +
       (topUp ? '<p class="hint">Top up adds ' + billingCredits(topUp.credits) + ' for ' + billingDollars(topUp.priceCents) + '. They last ' + topUp.validMonths + ' months.</p>' : '');
-    return head + cards + actions + notice + billingPlansHtml(billing) +
+    // An open confirmation is the switch's, so its error shows beside it.
+    return head + cards + actions + (state.billingFundingConfirm ? '' : notice) + billingPlansHtml(billing) +
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Credits used this period</h2><p class="hint">Since ' + billingDate(billing.period.start) + '.</p></div></div>' +
-      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent) + billingUseTableHtml("Person", billing.use.byPerson) + '</div></section>';
+      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent) + billingUseTableHtml("Person", billing.use.byPerson) + '</div></section>' +
+      billingUseOwnKeyHtml(billing, notice);
   }
 
   function isOnboardingSlackConnection() {
@@ -13661,9 +13681,9 @@
     if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
     if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan");
     if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal");
-    if (action === "billing-use-credits") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
+    if (action === "billing-use-credits" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
     if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = ""; render(); }
-    if (action === "billing-funding-confirm") switchToCredits();
+    if (action === "billing-funding-confirm") switchFunding();
     if (action === "onboarding-funding" && !state.onboardingFundingBusy) { chooseOnboardingFunding(target.getAttribute("data-funding") || ""); }
     if (action === "onboarding-funding-change" && !state.onboardingBusy) {
       state.onboardingFundingChanging = true;

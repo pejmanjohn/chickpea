@@ -17,14 +17,14 @@ export const PLAN_AND_CREDITS_PATH = '/admin/plan';
 const MAX_BILLING_BODY_BYTES = 512;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'top_up']), key: rateCardKey });
-// Switching back to the installation's own key needs a saved key, so it is
-// not offered here.
-const fundingSchema = v.strictObject({ funding: v.literal('credits') });
+const fundingSchema = v.strictObject({ funding: v.picklist(['credits', 'own_key']) });
 
 interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
   /** Display names keyed by Chickpea membership ID. */
   personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
+  /** Whether the installation has a provider key saved, which paying with its own key needs. */
+  ownKeySaved: (c: Context) => Promise<boolean>;
 }
 
 /** One row of credit use; a null name gathers use with no Agent or person, or one with no name. */
@@ -35,7 +35,7 @@ interface NamedCreditUse {
 
 /**
  * What the Plan and credits page shows. Only an Owner can buy credits, change
- * the plan, or switch to credits, so everyone else sees the balance alone.
+ * the plan, or switch funding, so everyone else sees the balance alone.
  */
 export type BillingView =
   | { funding: 'own_key'; manage: boolean }
@@ -48,6 +48,7 @@ export type BillingView =
     period: { start: string; end: string };
     use: { byAgent: NamedCreditUse[]; byPerson: NamedCreditUse[] };
     offers: CreditsBillingSummary['offers'];
+    ownKeySaved: boolean;
   };
 
 /**
@@ -64,7 +65,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
     const summary = await port.summary(installationId);
     if (summary.funding === 'own_key') return { funding: 'own_key', manage: isOwner(c) };
     if (!isOwner(c)) return { funding: 'credits', manage: false, balance: summary.balance };
-    const [agentNames, personNames] = await Promise.all([options.agentNames(c), options.personNames(c)]);
+    const [agentNames, personNames, ownKeySaved] = await Promise.all([
+      options.agentNames(c), options.personNames(c), options.ownKeySaved(c),
+    ]);
     return {
       funding: 'credits',
       manage: true,
@@ -76,6 +79,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
         byPerson: namedUse(summary.use.byPerson, personNames),
       },
       offers: summary.offers,
+      ownKeySaved,
     };
   };
 
@@ -85,6 +89,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/funding', (c) => withOwnerBilling(c, async (port, installationId) => {
     const parsed = v.safeParse(fundingSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
     if (!parsed.success) return invalidRequest(c);
+    if (parsed.output.funding === 'own_key' && !await options.ownKeySaved(c)) {
+      return c.json({ error: 'own_key_missing' }, 409);
+    }
     await port.chooseFunding(installationId, parsed.output.funding);
     return c.json(await view(c, port, installationId));
   }));

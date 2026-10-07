@@ -6255,6 +6255,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return name ? [[membership.id, name] as const] : [];
       }));
     },
+    ownKeySaved: async (c) => Object.values(await describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c)))
+      .some((source) => source !== 'missing'),
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
@@ -10136,7 +10138,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   // Where the host sells credits, the Owner's first onboarding choice: the
   // host records it, and the journey keeps it. Once onboarding ends, the Plan
-  // and credits page switches an installation to credits.
+  // and credits page switches an installation's funding.
   app.post('/admin/api/onboarding/funding', async (c) => {
     const parsed = v.safeParse(onboardingFundingSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);

@@ -472,6 +472,47 @@ test('the Owner\'s credits-or-own-key choice is the host\'s to record and the jo
   assert.equal((await choose('credits')).status, 404, 'no port, no choice');
 });
 
+test('a credits installation switches back to its own key from the Plan and credits page only once it has saved one', async (t) => {
+  await withProviders(async () => {
+    let funding: BillingFunding = 'credits';
+    const chosen: BillingFunding[] = [];
+    configurePlatformBilling({
+      summary: async () => (funding === 'own_key' ? { funding } : {
+        funding,
+        balance: 900,
+        plan: null,
+        period: { start: new Date('2026-10-07T00:00:00Z'), end: new Date('2026-11-07T00:00:00Z') },
+        use: { byAgent: [], byPerson: [] },
+        offers: { plans: [], topUps: [] },
+      }),
+      checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
+      portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
+      chooseFunding: async (_installationId, next) => { chosen.push(next); funding = next; },
+    });
+    t.after(() => configurePlatformBilling(undefined));
+    const signup = await signUp(t);
+    await signup.claim();
+    const admin = signup.admin(await signup.ownerPrincipal());
+    const switchToOwnKey = () => admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'own_key' }) });
+
+    assert.equal((await json(admin('/admin/api/billing'))).ownKeySaved, false);
+    const keyless = await switchToOwnKey();
+    assert.equal(keyless.status, 409);
+    assert.deepEqual(await keyless.json(), { error: 'own_key_missing' });
+    assert.deepEqual(chosen, [], 'a workspace with no key stays on credits');
+
+    const saved = await admin('/admin/api/providers/anthropic/key', {
+      method: 'POST', body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS.anthropic }),
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+    assert.equal((await json(admin('/admin/api/billing'))).ownKeySaved, true);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.deepEqual(await json(switchToOwnKey()), { funding: 'own_key', manage: true });
+    }
+    assert.deepEqual(chosen, ['own_key', 'own_key'], 'switching again asks the host for the same funding');
+  });
+});
+
 test('the journey starts with the first Owner claim or not at all, and once', async (t) => {
   const db = new DoSqlStateDb(new FakeObjectStorage().asDurableObjectStorage());
   const settings = new SettingsStoreLogic(db);
