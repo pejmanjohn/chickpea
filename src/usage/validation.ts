@@ -22,12 +22,20 @@ import {
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
 import type { AgentModelSource } from '../config/types.ts';
+import type {
+  ModelRequestFundingSource,
+  ModelRequestOutcome,
+  ModelRequestRecord,
+} from './model-requests.ts';
 
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/;
 const MAX_QUERY_RANGE_MS = 366 * 24 * 60 * 60 * 1_000;
 const MAX_FILTER_VALUES = 10;
 const MAX_LABEL_BYTES = 160;
 const MAX_MODEL_BYTES = 320;
+const MAX_REQUEST_TEXT_BYTES = 256;
+const MODEL_REQUEST_OUTCOMES = ['completed', 'stopped', 'error'] as const satisfies readonly ModelRequestOutcome[];
+const MODEL_REQUEST_FUNDING_SOURCES = ['customer'] as const satisfies readonly ModelRequestFundingSource[];
 
 export function normalizeAdmitUsageOperation(input: AdmitUsageOperationInput): AdmitUsageOperationInput {
   const operationKind = enumValue(input.operationKind, USAGE_OPERATION_KINDS, 'operation kind');
@@ -146,6 +154,38 @@ export function normalizeRecordUsageTerminal(
   validateCredentialPair(normalized.credentialRefId, normalized.credentialVersion);
   validateUsage(normalized);
   validateEstimate(normalized);
+  return normalized;
+}
+
+export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelRequestRecord {
+  const normalized: ModelRequestRecord = {
+    requestId: requestText(input.requestId, 'request ID'),
+    installationId: requestText(input.installationId, 'installation ID'),
+    runId: requestText(input.runId, 'Run ID'),
+    attemptId: requestText(input.attemptId, 'attempt ID'),
+    agentId: input.agentId === null ? null : requestText(input.agentId, 'Agent ID'),
+    provider: requestText(input.provider, 'provider'),
+    model: model(input.model, 'model'),
+    fundingSource: enumValue(input.fundingSource, MODEL_REQUEST_FUNDING_SOURCES, 'funding source'),
+    outcome: enumValue(input.outcome, MODEL_REQUEST_OUTCOMES, 'request outcome'),
+    inputTokens: tokenCount(input.inputTokens, 'input tokens'),
+    outputTokens: tokenCount(input.outputTokens, 'output tokens'),
+    cacheReadTokens: tokenCount(input.cacheReadTokens, 'cache read tokens'),
+    cacheWriteTokens: tokenCount(input.cacheWriteTokens, 'cache write tokens'),
+    cacheWrite1hTokens: optionalTokenCount(input.cacheWrite1hTokens, 'one-hour cache write tokens'),
+    reasoningTokens: optionalTokenCount(input.reasoningTokens, 'reasoning tokens'),
+    priceVersionId: optionalId(input.priceVersionId, 'price version ID'),
+    listPriceUsdMicros: optionalMoney(input.listPriceUsdMicros),
+    priceUnknownReason: optionalEnum(input.priceUnknownReason, PRICE_UNKNOWN_REASONS, 'price unknown reason'),
+    finishedAt: timestamp(input.finishedAt, 'finished time'),
+  };
+  const priced = normalized.priceVersionId !== null;
+  if (
+    priced !== (normalized.listPriceUsdMicros !== null) ||
+    priced !== (normalized.priceUnknownReason === null)
+  ) {
+    invalid('A priced request requires a price version and amount; an unpriced one requires only a reason.');
+  }
   return normalized;
 }
 
@@ -363,6 +403,24 @@ function positiveInteger(value: unknown, label: string): number {
   const normalized = optionalPositiveInteger(value, label);
   if (normalized === null) invalid(`${label} is required.`);
   return normalized;
+}
+
+function tokenCount(value: unknown, label: string): number {
+  const normalized = optionalTokenCount(value, label);
+  if (normalized === null) invalid(`${label} is required.`);
+  return normalized;
+}
+
+function requestText(value: unknown, label: string): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    byteLength(value) > MAX_REQUEST_TEXT_BYTES ||
+    hasDisallowedControlCharacter(value)
+  ) {
+    invalid(`${label} is invalid.`);
+  }
+  return value as string;
 }
 
 function optionalTokenCount(value: unknown, label: string): number | null {

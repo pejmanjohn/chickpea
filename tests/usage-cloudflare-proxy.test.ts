@@ -3,7 +3,10 @@ import { test } from 'node:test';
 
 import { CfUsageStore } from '../src/config/cf-state-proxies.ts';
 import type { StateRpcResult, TagStateRpc } from '../src/config/state-rpc.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
 import { UsageStateError, type UsageRpcRequest, type UsageRpcResponse } from '../src/usage/index.ts';
+import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
+import { UsageStoreLogic } from '../src/usage/store.ts';
 
 test('Cloudflare usage proxy preserves clone-safe requests and typed domain failures', async () => {
   const requests: UsageRpcRequest[] = [];
@@ -52,4 +55,29 @@ test('Cloudflare usage proxy preserves clone-safe requests and typed domain fail
       error.code === 'usage_operation_conflict' &&
       error.details.operationId === 'op_conflict',
   );
+});
+
+test('Cloudflare usage proxy records and reads a model request record through its RPC', async () => {
+  const logic = new UsageStoreLogic(openStateDb(':memory:'));
+  const kinds: string[] = [];
+  const stub = {
+    async usageExecute(request: UsageRpcRequest): Promise<StateRpcResult<UsageRpcResponse>> {
+      kinds.push(request.kind);
+      return { ok: true, value: structuredClone(logic.execute(structuredClone(request))) };
+    },
+  } as unknown as TagStateRpc;
+  const store = new CfUsageStore(stub);
+  const record: ModelRequestRecord = {
+    requestId: 'request-cf', installationId: 'installation', runId: 'run-cf', attemptId: 'attempt-cf',
+    agentId: null, provider: 'openai', model: 'gpt-4.1-mini', fundingSource: 'customer', outcome: 'stopped',
+    inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: null,
+    reasoningTokens: 1, priceVersionId: null, listPriceUsdMicros: null, priceUnknownReason: 'price_unknown',
+    finishedAt: 1_000,
+  };
+
+  assert.equal(await store.getModelRequest('request-cf'), undefined);
+  assert.deepEqual(await store.recordModelRequest(record), record);
+  assert.deepEqual(await store.recordModelRequest({ ...record, inputTokens: 99 }), record);
+  assert.deepEqual(await store.getModelRequest('request-cf'), record);
+  assert.deepEqual(kinds, ['get_model_request', 'record_model_request', 'record_model_request', 'get_model_request']);
 });

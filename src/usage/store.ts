@@ -11,6 +11,7 @@ import {
   usageWhere,
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
+import type { ModelRequestRecord } from './model-requests.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
 import type {
@@ -56,6 +57,7 @@ import {
   normalizeAdmitUsageOperation,
   normalizeCredentialRetirement,
   normalizeModelCredential,
+  normalizeModelRequestRecord,
   normalizeRecordUsageTerminal,
   normalizeUsageQuery,
 } from './validation.ts';
@@ -166,6 +168,34 @@ interface ConnectorUsageRow {
   estimate_currency: 'USD' | null;
   recorded_at: number;
 }
+
+interface ModelRequestRow {
+  request_id: string;
+  installation_id: string;
+  run_id: string;
+  attempt_id: string;
+  agent_id: string | null;
+  provider: string;
+  model: string;
+  funding_source: ModelRequestRecord['fundingSource'];
+  outcome: ModelRequestRecord['outcome'];
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cache_write_1h_tokens: number | null;
+  reasoning_tokens: number | null;
+  price_version_id: string | null;
+  list_price_usd_micros: number | null;
+  price_unknown_reason: ModelRequestRecord['priceUnknownReason'];
+  finished_at: number;
+}
+
+const MODEL_REQUEST_COLUMNS = `
+  request_id, installation_id, run_id, attempt_id, agent_id, provider, model,
+  funding_source, outcome, input_tokens, output_tokens, cache_read_tokens,
+  cache_write_tokens, cache_write_1h_tokens, reasoning_tokens, price_version_id,
+  list_price_usd_micros, price_unknown_reason, finished_at`;
 
 const OPERATION_COLUMNS = `
   operation_id, operation_kind, source_id, run_id, status, started_at, finished_at,
@@ -417,6 +447,44 @@ export class UsageStoreLogic {
       );
       return mapConnectorUsage(this.getConnectorUsageRow(input.attemptId)!);
     });
+  }
+
+  recordModelRequest(raw: ModelRequestRecord): ModelRequestRecord {
+    const record = normalizeModelRequestRecord(raw);
+    this.db.run(
+      `INSERT INTO usage_model_requests (${MODEL_REQUEST_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(request_id) DO NOTHING`,
+      record.requestId,
+      record.installationId,
+      record.runId,
+      record.attemptId,
+      record.agentId,
+      record.provider,
+      record.model,
+      record.fundingSource,
+      record.outcome,
+      record.inputTokens,
+      record.outputTokens,
+      record.cacheReadTokens,
+      record.cacheWriteTokens,
+      record.cacheWrite1hTokens,
+      record.reasoningTokens,
+      record.priceVersionId,
+      record.listPriceUsdMicros,
+      record.priceUnknownReason,
+      record.finishedAt,
+    );
+    return this.getModelRequest(record.requestId)!;
+  }
+
+  /** The stored usage record of one provider request, or undefined when none was written. */
+  getModelRequest(requestId: string): ModelRequestRecord | undefined {
+    const row = this.db.get(
+      `SELECT ${MODEL_REQUEST_COLUMNS} FROM usage_model_requests WHERE request_id = ?`,
+      requestId,
+    ) as unknown as ModelRequestRow | undefined;
+    return row ? mapModelRequest(row) : undefined;
   }
 
   summarizeConnectorUsage(raw: ConnectorUsageSummaryQuery): ConnectorUsageSummary {
@@ -912,6 +980,10 @@ export class UsageStoreLogic {
         'DELETE FROM usage_connector_quota_reservations WHERE period_end <= ?',
         at,
       ).changes;
+      const modelRequestsDeleted = this.db.run(
+        'DELETE FROM usage_model_requests WHERE finished_at < ?',
+        cutoffs.rawBefore,
+      ).changes;
       this.db.run(
         `INSERT INTO usage_retention_state (
           singleton, last_run_at, raw_retained_from, aggregate_retained_from
@@ -926,7 +998,7 @@ export class UsageStoreLogic {
       );
       if (operationsDeleted > 0 || aggregateDaysDeleted > 0 ||
           connectorAttemptsDeleted > 0 || connectorAggregateDaysDeleted > 0 ||
-          connectorQuotaReservationsDeleted > 0) {
+          connectorQuotaReservationsDeleted > 0 || modelRequestsDeleted > 0) {
         this.appendUsageAudit({
           eventId: `usage:retention:${at}`,
           eventType: 'usage.retention_applied',
@@ -940,6 +1012,7 @@ export class UsageStoreLogic {
             connectorAttemptsDeleted,
             connectorAggregateDaysDeleted,
             connectorQuotaReservationsDeleted,
+            modelRequestsDeleted,
           },
         });
       }
@@ -951,6 +1024,7 @@ export class UsageStoreLogic {
         connectorAttemptsDeleted,
         connectorAggregateDaysDeleted,
         connectorQuotaReservationsDeleted,
+        modelRequestsDeleted,
       };
     });
   }
@@ -981,6 +1055,10 @@ export class UsageStoreLogic {
         return { kind: 'detail', detail: this.recordTerminal(request.input) };
       case 'record_connector_usage':
         return { kind: 'connector_usage', usage: this.recordConnectorUsage(request.input) };
+      case 'record_model_request':
+        return { kind: 'model_request', record: this.recordModelRequest(request.record) };
+      case 'get_model_request':
+        return { kind: 'model_request', record: this.getModelRequest(request.requestId) ?? null };
       case 'reserve_connector_quota':
         return {
           kind: 'connector_quota',
@@ -1302,6 +1380,29 @@ export class UsageStoreLogic {
         aggregate_retained_from INTEGER NOT NULL
       )`,
     );
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS usage_model_requests (
+        request_id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        agent_id TEXT,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        funding_source TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cache_read_tokens INTEGER NOT NULL,
+        cache_write_tokens INTEGER NOT NULL,
+        cache_write_1h_tokens INTEGER,
+        reasoning_tokens INTEGER,
+        price_version_id TEXT,
+        list_price_usd_micros INTEGER,
+        price_unknown_reason TEXT,
+        finished_at INTEGER NOT NULL
+      )`,
+    );
     for (const sql of [
       'CREATE INDEX IF NOT EXISTS usage_operations_time_idx ON usage_operations (started_at DESC, operation_id DESC)',
       'CREATE INDEX IF NOT EXISTS usage_operations_workspace_idx ON usage_operations (workspace_id, started_at DESC)',
@@ -1320,6 +1421,7 @@ export class UsageStoreLogic {
       'CREATE INDEX IF NOT EXISTS usage_connector_attempts_toolkit_idx ON usage_connector_attempts (toolkit, capability, finished_at DESC)',
       'CREATE INDEX IF NOT EXISTS usage_connector_attempts_operation_idx ON usage_connector_attempts (operation_id, run_id, run_execution_id)',
       'CREATE INDEX IF NOT EXISTS usage_connector_quota_period_idx ON usage_connector_quota_reservations (adapter_id, toolkit, bucket, period_start)',
+      'CREATE INDEX IF NOT EXISTS usage_model_requests_finished_idx ON usage_model_requests (finished_at)',
     ]) this.db.exec(sql);
     for (const [name, definition] of [
       ['cache_read_tokens', 'INTEGER'],
@@ -1454,6 +1556,30 @@ export class SqliteUsageStore {
     });
     return _conforms as unknown as SqliteUsageStore;
   }
+}
+
+function mapModelRequest(row: ModelRequestRow): ModelRequestRecord {
+  return {
+    requestId: row.request_id,
+    installationId: row.installation_id,
+    runId: row.run_id,
+    attemptId: row.attempt_id,
+    agentId: row.agent_id,
+    provider: row.provider,
+    model: row.model,
+    fundingSource: row.funding_source,
+    outcome: row.outcome,
+    inputTokens: Number(row.input_tokens),
+    outputTokens: Number(row.output_tokens),
+    cacheReadTokens: Number(row.cache_read_tokens),
+    cacheWriteTokens: Number(row.cache_write_tokens),
+    cacheWrite1hTokens: nullableNumber(row.cache_write_1h_tokens),
+    reasoningTokens: nullableNumber(row.reasoning_tokens),
+    priceVersionId: row.price_version_id,
+    listPriceUsdMicros: nullableNumber(row.list_price_usd_micros),
+    priceUnknownReason: row.price_unknown_reason,
+    finishedAt: Number(row.finished_at),
+  };
 }
 
 function mapOperation(row: OperationRow): UsageOperation {
