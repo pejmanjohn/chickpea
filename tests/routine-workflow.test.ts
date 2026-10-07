@@ -6,7 +6,7 @@ import { test, type TestContext } from 'node:test';
 
 import * as v from 'valibot';
 
-import type { AgentInstanceHandle, AgentReply, DispatchReceipt } from '@flue/runtime';
+import { AgentRunError, type AgentInstanceHandle, type AgentReply, type DispatchReceipt } from '@flue/runtime';
 import { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
@@ -44,6 +44,7 @@ import {
   ROUTINE_RESULT_DATA_NAME,
 } from '../src/agents/routine-execution.ts';
 import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
+import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
@@ -415,6 +416,26 @@ test('routine settlement persists measured cached tokens in the occurrence row',
     assert.equal(completed?.outputTokens, 45);
     assert.equal(completed?.cacheReadTokens, 4482);
     assert.equal(completed?.cacheWriteTokens, 10);
+  } finally { store.close(); }
+});
+
+test('a scheduled run refused for credits is recorded as failed with the credits reason, once', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'credits_exhausted');
+    const events: string[] = [];
+    // A Flue submission's failure reaches Core as records whose messages carry the refusal's text.
+    const refused = new AgentRunError({
+      outcome: 'failed',
+      submissionId: 'submission_test',
+      cause: { type: 'operation_failed', message: 'dispatch(submission_test) failed: This installation is out of Chickpea credits (credits_exhausted).' },
+    });
+    await executeRoutineOccurrence({ env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+      { ...dependencies(events), handle: fakeHandle({ events, readError: refused }) });
+    const failed = await store.getRun(fixture.run.id);
+    assert.deepEqual([failed?.status, failed?.failureClass, failed?.publicError],
+      ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]);
+    assert.equal(events.filter((event) => event === 'dispatch').length, 1);
   } finally { store.close(); }
 });
 

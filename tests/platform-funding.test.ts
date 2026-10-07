@@ -183,6 +183,7 @@ function grant(
 
 /** A hosted installation whose admission passes; each request's record is kept in a store. */
 function hostedProxy(t: TestContext, installationId = 'inst_credits') {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   resetModelAccessForTests();
   resetPlatformFundingForTests();
   configureInstallationAdmission(async () => 'admitted');
@@ -317,6 +318,8 @@ test('an installation out of credits is refused before any provider call, and th
 
   await withModelAccess(platform, env, () => modelCall(model));
   assert.equal(calls.admit.length, 2, 'a refusal is asked again, so added credits apply at once');
+  await withModelAccess(platform, undefined, () => modelCall(model));
+  assert.equal(calls.admit.length, 3, 'a platform grant is gated even on a cell that names no installation');
   assert.equal(sentModels.length, 0);
 });
 
@@ -397,28 +400,76 @@ test('each finished platform-funded request is charged once with its record, a s
   assert.equal(new Set(calls.charge.map((record) => record.requestId)).size, 2);
 });
 
-test('a failed charge is logged once without content and never retried; the model result is unchanged', async (t) => {
+test('a failed charge is tried once more under the same request ID, and a charge that succeeds then logs nothing', async (t) => {
+  const { env, recorded } = hostedProxy(t);
+  let failures = 1;
+  const calls = fakePort({
+    charge: async () => {
+      if (failures-- > 0) throw new Error('ledger write timed out');
+    },
+  });
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+
+  assert.equal((await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model))).stopReason, 'stop');
+
+  assert.deepEqual(calls.charge, [recorded[0], recorded[0]], 'the retry carries the same record and request ID');
+  assert.deepEqual(warnings, []);
+});
+
+test('a charge that fails twice is logged once without content, and the installation\'s next request asks the port again', async (t) => {
   const { env, recorded } = hostedProxy(t);
   const calls = fakePort({
     charge: async () => { throw Object.assign(new Error('ledger write failed'), { code: 'ledger_down' }); },
   });
   const warnings: unknown[][] = [];
   t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
-  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes(), completes()]);
+  const platform = grant('inst_credits', 'platform');
 
-  const result = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model));
+  const result = await withModelAccess(platform, env, () => modelCall(model));
 
-  assert.equal(result.stopReason, 'stop');
-  assert.equal(calls.charge.length, 1);
+  assert.equal(result.stopReason, 'stop', 'the model result is unchanged');
+  assert.equal(calls.charge.length, 2);
   assert.equal(recorded.length, 1, 'the record is still written');
   assert.deepEqual(warnings, [['[chickpea] model request charge failed', {
     route: ANTHROPIC_COMPAT_PROVIDER_ID, model: SONNET, requestId: recorded[0]!.requestId, error: 'ledger_down',
   }]]);
+  await withModelAccess(platform, env, () => modelCall(model));
+  assert.equal(calls.admit.length, 2, 'the failed charge dropped the cached admission');
+});
+
+test('a platform-funded request without a current list price is refused before send, whatever its provider', async (t) => {
+  const { env } = hostedProxy(t);
+  const calls = fakePort();
+  const unpricedAnthropic = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, 'claude-unpriced-test', 'anthropic-messages',
+    [completes()]);
+  const unpricedOpenRouter = scriptedProvider('openrouter', 'acme/unpriced-model', 'openai-completions', []);
+
+  for (const [model, providerId] of [
+    [unpricedAnthropic.model, 'anthropic'],
+    [unpricedOpenRouter.model, 'openrouter'],
+  ] as const) {
+    const refused = await withModelAccess(grant('inst_credits', 'platform', providerId), env, () => modelCall(model));
+    assert.match(refused.errorMessage ?? '', /no current list price/, providerId);
+  }
+  assert.deepEqual([unpricedAnthropic.sentModels.length, unpricedOpenRouter.sentModels.length], [0, 0]);
+  assert.equal(calls.admit.length, 0, 'an unpriced model never reaches the ledger');
+  const customer = await withModelAccess(grant('inst_credits', 'customer'), env, () => modelCall(unpricedAnthropic.model));
+  assert.equal(customer.stopReason, 'stop', 'a customer-funded request needs no price');
+
+  const priced = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
+  assert.ok(priced);
+  t.mock.timers.setTime(priced.version.staleAfter);
+  const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
+  const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(stale.model));
+  assert.match(refusedStale.errorMessage ?? '', /no current list price/, 'a stale price is not current');
+  assert.equal(stale.sentModels.length, 0);
 });
 
 test('a platform-funded OpenRouter request names its charged price as the most it may cost', async (t) => {
   const { env } = hostedProxy(t);
-  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   const calls = fakePort();
   const { model, sentModels } = scriptedProvider('openrouter', KIMI, 'openai-completions',
     [completes(), completes()], { openRouterRouting: { sort: 'price' } });
@@ -442,16 +493,9 @@ test('a platform-funded OpenRouter request names its charged price as the most i
   assert.deepEqual(calls.admit.map(({ model: admitted }) => admitted), [{ provider: 'openrouter', model: KIMI }]);
 });
 
-test('a platform-funded OpenRouter request is refused without a list price or a usable multiplier', async (t) => {
+test('a platform-funded OpenRouter request is refused without a usable multiplier', async (t) => {
   const { env } = hostedProxy(t);
-  t.mock.timers.enable({ apis: ['Date'], now: NOW });
   fakePort({ priceMultiplier: async () => Number.NaN });
-  const unpriced = scriptedProvider('openrouter', 'acme/unpriced-model', 'openai-completions', []);
-  const refusedUnpriced = await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env,
-    () => modelCall(unpriced.model));
-  assert.match(refusedUnpriced.errorMessage ?? '', /no current list price/);
-  assert.equal(unpriced.sentModels.length, 0);
-
   const priced = scriptedProvider('openrouter', KIMI, 'openai-completions', []);
   const refusedMultiplier = await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env,
     () => modelCall(priced.model));

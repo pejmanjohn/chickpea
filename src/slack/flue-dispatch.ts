@@ -1141,7 +1141,6 @@ function classifyFailureText(typeValue: string, messageValue: string): AgentProm
   const type = typeValue.toLowerCase();
   const message = messageValue.toLowerCase();
   const searchable = `${type} ${message}`;
-  // Before the provider match: the refusal names the model it refused.
   if (message.includes(`(${CREDITS_EXHAUSTED_CODE})`)) return 'credits-exhausted';
   if (
     message.includes('openai subscription operation failed (auth_reconnect_required)') ||

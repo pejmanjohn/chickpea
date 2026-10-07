@@ -764,7 +764,6 @@ function modelProviderKeyContext(
   };
 }
 
-/** Chickpea's own key for the provider, paid from the installation's credits. */
 function platformRegistration(id: ProviderKeyId): CredentialRegistration {
   return {
     credentialRefId: platformCredentialRefId(id),

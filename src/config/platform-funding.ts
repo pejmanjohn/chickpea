@@ -13,14 +13,14 @@
  * 30 seconds; a refusal is never reused, so added credits apply at once.
  */
 import { errorChainIncludes } from './error-chain.ts';
-import { deploymentServesManyInstallations, requireInstallationScope } from './installation-scope.ts';
+import { requireInstallationScope } from './installation-scope.ts';
 import type { ModelAccessGrant } from './model-access.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
 
 export type PlatformFundingAdmission = 'admitted' | 'credits_exhausted';
 
-/** A platform-funded request's model, as its request record and the price catalog name it. */
+/** `provider` is the price catalog's id for the request's route, as the request's record names it. */
 export interface PlatformFundedModel {
   readonly provider: string;
   readonly model: string;
@@ -29,7 +29,11 @@ export interface PlatformFundedModel {
 export interface PlatformFundingPort {
   /** Whether the installation's model requests are paid from its credits. */
   funding(installationId: string): Promise<ModelRequestFundingSource>;
-  /** Before each platform-funded request: `credits_exhausted` unless the balance is above zero. */
+  /**
+   * Before a platform-funded request, unless one of the installation's was
+   * admitted in the last 30 seconds: `credits_exhausted` unless the balance
+   * is above zero.
+   */
   admit(grant: ModelAccessGrant, model: PlatformFundedModel): Promise<PlatformFundingAdmission>;
   /** Once per finished platform-funded request; `record.requestId` is the idempotency key. */
   charge(record: ModelRequestRecord): Promise<void>;
@@ -57,7 +61,6 @@ export class PlatformFundingUnavailableError extends Error {
   }
 }
 
-/** How long one positive answer serves an installation in this isolate. */
 export const PLATFORM_ADMISSION_TTL_MS = 30_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 
@@ -89,13 +92,11 @@ export function credentialFundingSource(
 /** The funding an installation's runs freeze: customer unless the host's port says platform. */
 export async function installationFunding(env: PlatformEnv | undefined): Promise<ModelRequestFundingSource> {
   const current = port;
-  if (!current || !deploymentServesManyInstallations(env)) return 'customer';
-  const installationId = requireInstallationScope(env)?.installationId;
-  if (!installationId) return 'customer';
+  const installationId = current ? requireInstallationScope(env)?.installationId : undefined;
+  if (!current || !installationId) return 'customer';
   return await current.funding(installationId) === 'platform' ? 'platform' : 'customer';
 }
 
-/** Throws unless the host admits a platform-funded request now. */
 export async function requirePlatformFundingAdmitted(
   grant: ModelAccessGrant,
   model: PlatformFundedModel,
@@ -138,9 +139,23 @@ export async function platformPriceMultiplier(grant: ModelAccessGrant): Promise<
   return multiplier;
 }
 
-export async function chargePlatformRequest(record: ModelRequestRecord): Promise<void> {
-  if (!port) throw new Error('No platform funding port is configured.');
-  await port.charge(record);
+/**
+ * Charges one finished request, trying once more when the first charge fails;
+ * the port takes `record.requestId` as its idempotency key, so a retry never
+ * charges twice. A charge that still fails is lost (an undercharge), and the
+ * installation's next request asks the port again instead of a cached answer.
+ */
+export async function chargePlatformRequest(grant: ModelAccessGrant, record: ModelRequestRecord): Promise<void> {
+  const charge = async () => {
+    if (!port) throw new Error('No platform funding port is configured.');
+    await port.charge(record);
+  };
+  try {
+    await charge().catch(charge);
+  } catch (error) {
+    admittedAt.delete(grant.installationId);
+    throw error;
+  }
 }
 
 /** Whether an error is a credits refusal, however it travelled (a Flue failure carries only its text). */

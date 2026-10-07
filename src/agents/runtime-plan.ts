@@ -180,9 +180,8 @@ export interface RuntimePlanModelCredentialV3 {
   version: number;
   providerId: string;
   /**
-   * Written only for Chickpea's own key, paid from the installation's credits
-   * (`credentialRefId` is `platform:<providerId>`). Absent is customer funding,
-   * as on every plan frozen before platform funding, so their identity holds.
+   * Absent is customer funding, so every customer plan, and every plan frozen
+   * before platform funding, keeps its instance identity.
    */
   fundingSource?: 'platform';
 }
@@ -1702,7 +1701,6 @@ function parseModelAttribution(value: unknown): AgentModelAttribution {
   };
 }
 
-/** A credential's frozen epoch: reference, version, provider and funding, never a value. */
 export function frozenModelCredential(
   credential: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'>,
 ): RuntimePlanModelCredentialV3 {

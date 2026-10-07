@@ -73,7 +73,6 @@ export interface ModelAccessGrant {
   readonly credentialVersion: number;
   /** The submission or stateless call this grant was bound for. */
   readonly runId: string;
-  /** Platform-funded access is admitted against the installation's credits and charged to them. */
   readonly fundingSource: ModelRequestFundingSource;
 }
 
@@ -377,9 +376,9 @@ function sendRequest<TModel extends Model<Api>>(
   grant: ModelAccessGrant | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
-  const settle = recorder || request.fundingSource === 'platform' ? settleRequest(cell, request) : undefined;
   const { installationId } = cell;
   const platformGrant = grant?.fundingSource === 'platform' ? grant : undefined;
+  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
     if (!settle) return source;
@@ -405,10 +404,11 @@ function sendRequest<TModel extends Model<Api>>(
 }
 
 /**
- * A platform-funded request's model once the installation's credits admit
- * it. OpenRouter may serve a model through several providers at different
- * prices, so the request names the most it may cost: the catalog's list
- * price times the host's multiplier, the price it is charged.
+ * A platform-funded request's model, once it has a current list price to be
+ * charged at and the installation's credits admit it. OpenRouter may serve a
+ * model through several providers at different prices, so its request names
+ * the most it may cost: the list price times the host's multiplier, the
+ * price it is charged.
  */
 async function platformFundedModel<TModel extends Model<Api>>(
   grant: ModelAccessGrant,
@@ -416,12 +416,12 @@ async function platformFundedModel<TModel extends Model<Api>>(
   request: SentRequest,
 ): Promise<TModel> {
   const provider = canonicalPriceProviderId(request.route);
-  await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
-  if (provider !== 'openrouter') return model;
   const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
   if (!price || Date.now() >= price.version.staleAfter) {
     throw new ModelAccessError('funding_not_offered', `Model ${request.model} has no current list price to charge credits at.`);
   }
+  await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
+  if (provider !== 'openrouter') return model;
   const multiplier = await platformPriceMultiplier(grant);
   const perMillionTokens = (microsPerUnit: number) => Math.ceil(microsPerUnit * multiplier) / price.rate.unitScale;
   return {
@@ -439,14 +439,10 @@ async function platformFundedModel<TModel extends Model<Api>>(
   };
 }
 
-/**
- * Writes the finished request's record and, when Chickpea paid the provider,
- * charges it once. Neither is retried: a failure is logged, and the request
- * ID lets the host refuse a charge it already took.
- */
 function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
+  platformGrant: ModelAccessGrant | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   const writeRecord = recorder;
   return async (final) => {
@@ -456,7 +452,7 @@ function settleRequest(
     const settled = [
       writeRecord && record.then((built) => writeRecord(built, cell.env))
         .catch((error: unknown) => logSettleFailure('record', request, error)),
-      request.fundingSource === 'platform' && record.then(chargePlatformRequest)
+      platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built))
         .catch((error: unknown) => logSettleFailure('charge', request, error)),
     ];
     let timer: ReturnType<typeof setTimeout> | undefined;
