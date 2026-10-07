@@ -5,8 +5,8 @@ import { WebClient } from '@slack/web-api';
 import {
   compileRuntimePlanV2,
   deriveRuntimePlanInstanceId,
+  frozenModelCredential,
   type RuntimePlanCodingModelV1,
-  type RuntimePlanModelCredentialV3,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
 import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
@@ -2481,6 +2481,7 @@ function agentFailureSafeCode(error: unknown): string {
     case 'openai-subscription-reconnect': return 'subscription_reconnect';
     case 'openai-subscription-quota': return 'subscription_quota';
     case 'openai-subscription-policy': return 'subscription_policy';
+    case 'credits-exhausted': return 'credits_exhausted';
     default: return 'agent_failed';
   }
 }
@@ -2765,7 +2766,7 @@ async function withHostedCodingCredential(
   coding: RuntimePlanCodingModelV1,
   input: Parameters<typeof freezeCodingModelForTurn>[0],
 ): Promise<RuntimePlanCodingModelV1> {
-  const agentCredential = input.agentCredential ? frozenCredential(input.agentCredential) : undefined;
+  const agentCredential = input.agentCredential ? frozenModelCredential(input.agentCredential) : undefined;
   if (coding.model === input.agentRoute.model) {
     return agentCredential ? { ...coding, modelCredential: agentCredential } : coding;
   }
@@ -2778,20 +2779,10 @@ async function withHostedCodingCredential(
     undefined,
     { registerUsage: false },
   );
-  if (credential) return { ...coding, modelCredential: frozenCredential(credential) };
+  if (credential) return { ...coding, modelCredential: frozenModelCredential(credential) };
   return {
     ...codingOnAgentModel(input.agentRoute, true),
     ...(agentCredential ? { modelCredential: agentCredential } : {}),
-  };
-}
-
-function frozenCredential(
-  credential: Pick<ModelCredentialAttribution, 'credentialRefId' | 'version' | 'providerId'>,
-): RuntimePlanModelCredentialV3 {
-  return {
-    credentialRefId: credential.credentialRefId,
-    version: credential.version,
-    providerId: credential.providerId,
   };
 }
 

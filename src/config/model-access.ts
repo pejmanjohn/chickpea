@@ -13,9 +13,12 @@
  * installations the host's admission check is asked when an attempt starts
  * and before every request the proxy sends (each step, retry, compaction and
  * stateless call), so a suspended or ended installation starts no attempt and
- * sends no further request (see installation-admission.ts). Image generation
- * is the exception: its client calls the provider outside the proxy, from a
- * tool call inside an attempt whose start was admitted.
+ * sends no further request (see installation-admission.ts). A grant Chickpea
+ * pays for is also admitted against the installation's credits before each
+ * request and charged once when it finishes (see platform-funding.ts). Image
+ * generation is the exception: its client calls the provider outside the
+ * proxy, from a tool call inside an attempt whose start was admitted, and is
+ * refused platform funding.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -26,12 +29,18 @@ import {
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
   type Model,
+  type OpenAICompletionsCompat,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runtime';
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
+import {
+  chargePlatformRequest,
+  platformPriceMultiplier,
+  requirePlatformFundingAdmitted,
+} from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -43,8 +52,10 @@ import {
   usageInstallationId,
   type ModelRequestAttribution,
   type ModelRequestEnd,
+  type ModelRequestFundingSource,
   type ModelRequestRecord,
 } from '../usage/model-requests.ts';
+import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 
 /**
  * Providers whose key comes from the run's installation. `local-stub` is the
@@ -62,8 +73,8 @@ export interface ModelAccessGrant {
   readonly credentialVersion: number;
   /** The submission or stateless call this grant was bound for. */
   readonly runId: string;
-  /** Platform-funded access arrives with included usage; no binding implies it. */
-  readonly fundingSource: 'customer';
+  /** Platform-funded access is admitted against the installation's credits and charged to them. */
+  readonly fundingSource: ModelRequestFundingSource;
 }
 
 /** Ephemeral call configuration. Never persisted, logged, or exposed to tools. */
@@ -303,10 +314,13 @@ interface ModelAccessRequest<TModel, TOptions> {
   redact(stream: AssistantMessageEventStream): AssistantMessageEventStream;
   /**
    * Sends the request once the cell's installation is admitted (cached for
-   * 30 seconds). Refused, nothing is sent and the stream ends in an error, as
-   * a provider failure would; a cell with no installation sends at once.
+   * 30 seconds) and, when Chickpea pays the provider, once the installation's
+   * credits admit it. `start` receives the model to send: a platform-funded
+   * OpenRouter model is capped at the price the request is charged. Refused,
+   * nothing is sent and the stream ends in an error, as a provider failure
+   * would; a customer-funded request of a cell with no installation sends at once.
    */
-  send(start: () => AssistantMessageEventStream): AssistantMessageEventStream;
+  send(start: (model: TModel) => AssistantMessageEventStream): AssistantMessageEventStream;
 }
 
 type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
@@ -339,11 +353,13 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     model: model.id,
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
-  const send = (start: () => AssistantMessageEventStream) => sendRequest(cell, model, request, start);
+  const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
+  const send = (start: (model: TModel) => AssistantMessageEventStream) =>
+    sendRequest(cell, sent, request, bound?.grant, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
-    model: access.baseUrl ? { ...model, baseUrl: access.baseUrl } : model,
+    model: sent,
     options: {
       ...options,
       apiKey: access.apiKey,
@@ -354,16 +370,18 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   };
 }
 
-function sendRequest(
+function sendRequest<TModel extends Model<Api>>(
   cell: ModelAccessCell,
-  model: Model<Api>,
+  model: TModel,
   request: SentRequest,
-  start: () => AssistantMessageEventStream,
+  grant: ModelAccessGrant | undefined,
+  start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
-  const settle = recorder ? settleWithRecord(cell, request, recorder) : undefined;
+  const settle = recorder || request.fundingSource === 'platform' ? settleRequest(cell, request) : undefined;
   const { installationId } = cell;
-  if (!installationId) {
-    const source = start();
+  const platformGrant = grant?.fundingSource === 'platform' ? grant : undefined;
+  if (!installationId && !platformGrant) {
+    const source = start(model);
     if (!settle) return source;
     const target = createAssistantMessageEventStream();
     void forwardStream(source, target, undefined, settle);
@@ -373,8 +391,8 @@ function sendRequest(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
-      await requireInstallationAdmitted(installationId);
-      source = start();
+      if (installationId) await requireInstallationAdmitted(installationId);
+      source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
     } catch (error) {
       const failed = errorMessageFor(model, error instanceof Error ? error.message : String(error));
       target.push({ type: 'error', reason: 'error', error: failed });
@@ -386,30 +404,74 @@ function sendRequest(
   return target;
 }
 
-function settleWithRecord(
+/**
+ * A platform-funded request's model once the installation's credits admit
+ * it. OpenRouter may serve a model through several providers at different
+ * prices, so the request names the most it may cost: the catalog's list
+ * price times the host's multiplier, the price it is charged.
+ */
+async function platformFundedModel<TModel extends Model<Api>>(
+  grant: ModelAccessGrant,
+  model: TModel,
+  request: SentRequest,
+): Promise<TModel> {
+  const provider = canonicalPriceProviderId(request.route);
+  await requirePlatformFundingAdmitted(grant, { provider, model: request.model });
+  if (provider !== 'openrouter') return model;
+  const price = priceCatalogFor('standard_input_output', provider, request.model, Date.now());
+  if (!price || Date.now() >= price.version.staleAfter) {
+    throw new ModelAccessError('funding_not_offered', `Model ${request.model} has no current list price to charge credits at.`);
+  }
+  const multiplier = await platformPriceMultiplier(grant);
+  const perMillionTokens = (microsPerUnit: number) => Math.ceil(microsPerUnit * multiplier) / price.rate.unitScale;
+  return {
+    ...model,
+    compat: {
+      ...model.compat,
+      openRouterRouting: {
+        ...(model.compat as OpenAICompletionsCompat | undefined)?.openRouterRouting,
+        max_price: {
+          prompt: perMillionTokens(price.rate.inputMicrosPerUnit),
+          completion: perMillionTokens(price.rate.outputMicrosPerUnit),
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Writes the finished request's record and, when Chickpea paid the provider,
+ * charges it once. Neither is retried: a failure is logged, and the request
+ * ID lets the host refuse a charge it already took.
+ */
+function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
-  writeRecord: ModelRequestRecorder,
 ): (final: AssistantMessage) => Promise<void> {
+  const writeRecord = recorder;
   return async (final) => {
-    const written = Promise.resolve().then(() => writeRecord(
-      modelRequestRecord({ ...request, attribution: cell.attribution, message: final, finishedAt: Date.now() }),
-      cell.env,
-    ));
-    written.catch((error: unknown) => logRecordFailure(request, error));
+    const record = Promise.resolve().then(() => modelRequestRecord({
+      ...request, attribution: cell.attribution, message: final, finishedAt: Date.now(),
+    }));
+    const settled = [
+      writeRecord && record.then((built) => writeRecord(built, cell.env))
+        .catch((error: unknown) => logSettleFailure('record', request, error)),
+      request.fundingSource === 'platform' && record.then(chargePlatformRequest)
+        .catch((error: unknown) => logSettleFailure('charge', request, error)),
+    ];
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, RECORD_BUDGET_MS);
     });
-    // The stream waits on a promise that cannot reject, so neither the write
-    // nor its failure log can keep the held terminal event from the caller.
-    await Promise.race([written.then(() => undefined, () => undefined), budget]);
+    // The stream waits on promises that cannot reject, so neither a write nor
+    // its failure log can keep the held terminal event from the caller.
+    await Promise.race([Promise.all(settled), budget]);
     clearTimeout(timer);
   };
 }
 
-function logRecordFailure(request: SentRequest, error: unknown): void {
-  console.warn('[chickpea] model request record failed', {
+function logSettleFailure(step: 'record' | 'charge', request: SentRequest, error: unknown): void {
+  console.warn(`[chickpea] model request ${step} failed`, {
     route: request.route,
     model: request.model,
     requestId: request.requestId,

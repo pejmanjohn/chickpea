@@ -35,6 +35,7 @@ import {
 } from '../config/installation-admission.ts';
 import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
+import { isCreditsExhausted } from '../config/platform-funding.ts';
 import {
   imageCapabilityForResolution,
   resolveAgentModelRoleFromStore,
@@ -85,7 +86,7 @@ import {
   deliverRoutineResult,
   routineDeliveryFailure,
 } from './delivery.ts';
-import { SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-presenter.ts';
+import { CREDITS_EXHAUSTED_TEXT, SANDBOX_UNAVAILABLE_FALLBACK_NOTICE } from '../slack/web-client-presenter.ts';
 import {
   normalizeRoutineModelResult,
   prepareRoutinePrompt,
@@ -1226,6 +1227,7 @@ function runtimeFailure(
   if (error instanceof RoutineSupersededError) {
     return { failureClass: 'internal_error', publicError: 'The routine occurrence was superseded.' };
   }
+  if (isCreditsExhausted(error)) return { failureClass: 'spend_limited', publicError: CREDITS_EXHAUSTED_TEXT };
   if (externalOutcomeMayBeUnknown) {
     return {
       failureClass: 'unknown_external_outcome',

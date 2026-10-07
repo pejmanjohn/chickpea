@@ -91,7 +91,7 @@ test('a request record is validated where the store receives it', async () => {
       storedRecord({ outputTokens: 5 as unknown as ModelRequestRecord['outputTokens'] }),
       storedRecord({ requestId: '' }),
       storedRecord({ outcome: 'cancelled' as ModelRequestRecord['outcome'] }),
-      storedRecord({ fundingSource: 'platform' as ModelRequestRecord['fundingSource'] }),
+      storedRecord({ fundingSource: 'sponsor' as ModelRequestRecord['fundingSource'] }),
       storedRecord({ listPriceUsdMicros: null }),
       storedRecord({ priceUnknownReason: 'price_unknown' }),
       storedRecord({ priceVersionId: null, listPriceUsdMicros: null }),
@@ -102,6 +102,8 @@ test('a request record is validated where the store receives it', async () => {
         (error: unknown) => error instanceof UsageStateError && error.code === 'usage_invalid_input',
       );
     }
+    const platform = storedRecord({ requestId: 'request-platform', fundingSource: 'platform' });
+    assert.deepEqual(await store.recordModelRequest(platform), platform);
     const unpriced = storedRecord({
       requestId: 'request-unpriced',
       priceVersionId: null,

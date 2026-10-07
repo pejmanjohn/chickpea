@@ -11,6 +11,7 @@ import {
 } from './installation-model-access.ts';
 import { deploymentServesManyInstallations } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
+import { installationFunding } from './platform-funding.ts';
 import {
   isProviderKeyId,
   resolveProviderApiKey,
@@ -423,6 +424,8 @@ async function requireProviderKey(
   providerId: ProviderKeyId,
   dependencies: RuntimeModelDependencies,
 ): Promise<void> {
+  // Chickpea's own key serves a platform-funded installation's requests.
+  if (await installationFunding(dependencies.env) === 'platform') return;
   if (dependencies.requireProviderKey) {
     await dependencies.requireProviderKey(providerId, dependencies.env, dependencies.settings);
     return;

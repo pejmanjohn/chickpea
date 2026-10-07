@@ -282,6 +282,7 @@ export const MODEL_CREDENTIAL_SOURCE_KINDS = [
   'environment',
   'cloudflare_binding',
   'custom',
+  'platform',
 ] as const;
 type ModelCredentialSourceKind = (typeof MODEL_CREDENTIAL_SOURCE_KINDS)[number];
 

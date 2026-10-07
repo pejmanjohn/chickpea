@@ -2909,6 +2909,7 @@ const FLUE_FAILURE_KINDS = [
   'openai-subscription-reconnect',
   'openai-subscription-quota',
   'openai-subscription-policy',
+  'credits-exhausted',
   'sandbox',
   'sandbox-session-cap',
 ] as const;

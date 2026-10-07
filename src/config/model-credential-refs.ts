@@ -7,6 +7,7 @@ import {
 } from './installation-scope.ts';
 import { providerPrefix } from './model-access.ts';
 import { modelCredentialSettingKeys } from './model-credential-settings.ts';
+import { installationFunding, platformCredentialRefId } from './platform-funding.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import {
   isModelCredentialStore,
@@ -161,6 +162,7 @@ export async function resolveModelCredentialAttribution(
       });
     }
     if (hosted) {
+      if (await installationFunding(platformEnv) === 'platform') return registerCredential(platformRegistration(id));
       // Only a key saved encrypted and readable with the deployment keyring counts; nothing is decrypted.
       const record = await hostedModelCredentialStore(settings).readModelCredential(id);
       const current = savedHostedCredential(record, hasEnvelope(record) ? deploymentModelKeyring(platformEnv) : undefined);
@@ -759,6 +761,20 @@ function modelProviderKeyContext(
     providerId,
     credentialRefId: credential.credentialRefId,
     credentialVersion: credential.version,
+  };
+}
+
+/** Chickpea's own key for the provider, paid from the installation's credits. */
+function platformRegistration(id: ProviderKeyId): CredentialRegistration {
+  return {
+    credentialRefId: platformCredentialRefId(id),
+    version: 1,
+    providerId: id,
+    sourceKind: 'platform',
+    label: 'Chickpea credits',
+    scopeLabel: null,
+    unknownRotation: false,
+    activeFrom: 0,
   };
 }
 

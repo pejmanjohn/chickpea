@@ -77,6 +77,10 @@ export const OPENAI_SUBSCRIPTION_RECONNECT_TEXT =
 export const OPENAI_SUBSCRIPTION_QUOTA_TEXT =
   'The ChatGPT subscription quota could not serve this request. I did not switch to OpenAI API-key billing.';
 
+/** Customer copy: a workspace on Chickpea credits has none left. */
+export const CREDITS_EXHAUSTED_TEXT =
+  "This workspace is out of Chickpea credits, so I can't continue. An admin can add credits in Chickpea.";
+
 export const OPENAI_SUBSCRIPTION_POLICY_TEXT =
   'The connected ChatGPT subscription did not authorize this request. An administrator can review the Subscription status in Settings; I did not switch to OpenAI API-key billing.';
 

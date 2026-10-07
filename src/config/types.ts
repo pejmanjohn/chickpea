@@ -789,7 +789,7 @@ export interface ModelCredentialAttribution {
   credentialRefId: string;
   version: number;
   providerId: string;
-  sourceKind: 'stored' | 'environment' | 'cloudflare_binding' | 'custom';
+  sourceKind: 'stored' | 'environment' | 'cloudflare_binding' | 'custom' | 'platform';
   label: string;
   scopeLabel: string | null;
   unknownRotation: boolean;
