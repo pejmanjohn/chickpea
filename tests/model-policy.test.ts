@@ -514,7 +514,6 @@ const FLARE_FROM_WORKSPACE = {
   source: 'workspace_default' as const,
 };
 
-/** One installation of a deployment serving many, with the host's funding answer and no saved key. */
 function hostedInstallation(t: TestContext, funding: () => Promise<'platform' | 'customer'>) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   t.mock.method(console, 'warn', () => {});
@@ -538,10 +537,10 @@ function hostedInstallation(t: TestContext, funding: () => Promise<'platform' | 
     { CHICKPEA_TENANCY: 'installation' },
     { installationId: 'inst_credits' },
   ) as PlatformEnv;
-  const imageRole = () => resolveAgentModelForRole({
+  const imageRole = (workspaceRole = imageWorkspaceRole) => resolveAgentModelForRole({
     role: 'image',
     agent: agent(),
-    workspaceRole: imageWorkspaceRole,
+    workspaceRole,
     env,
     settings,
   });
@@ -552,10 +551,15 @@ test('Chickpea credits fill the image role of a platform-funded installation tha
   const { imageRole } = hostedInstallation(t, async () => 'platform');
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     assert.deepEqual(await imageRole(), FLARE_FROM_WORKSPACE);
+    assert.deepEqual(
+      await imageRole({ modelId: 'workers-ai/@cf/black-forest-labs/flux-2-schnell' }),
+      { unset: true, reason: 'funding_not_offered' },
+      'credits serve only a provider the deployment offers',
+    );
     t.mock.timers.setTime(AFTER_IMAGE_PRICES_STALE);
     assert.deepEqual(
       await imageRole(),
-      { unset: true, reason: 'credential_missing' },
+      { unset: true, reason: 'funding_not_offered' },
       'credits serve only a model with a current price',
     );
   });

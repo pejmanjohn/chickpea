@@ -311,7 +311,7 @@ import {
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
-  modelProviderAvailable,
+  modelProviderUnavailable,
   pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
@@ -12709,7 +12709,7 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    const ready = await modelProviderAvailable(
+    const unavailable = await modelProviderUnavailable(
       pricedModelRoute(modelId, 'standard_input_output'),
       input.platformEnv,
       () => chatModelProviderReady(providerId, {
@@ -12720,14 +12720,14 @@ async function workspaceModelDefaultProjection(input: {
         openAiSubscription,
       }),
     );
-    health = ready
-      ? { status: 'ready', providerId }
-      : {
+    health = unavailable
+      ? {
           status: 'repair_required',
           providerId,
           code: 'provider_unavailable',
           repairPath: '/admin/settings/providers',
-        };
+        }
+      : { status: 'ready', providerId };
   }
   return {
     workspaceId: input.installation.workspaceId,

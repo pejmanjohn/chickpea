@@ -695,7 +695,6 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
     fakePort({ funding: async () => 'customer' });
     assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'a customer-funded installation still needs its own key');
 
-    // Priced, but not a provider a deployment serving many installations offers.
     await config.putWorkspaceModelDefault({
       workspaceId: installation.workspaceId,
       modelId: 'cloudflare/@cf/zai-org/glm-5.2',

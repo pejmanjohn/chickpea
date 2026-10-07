@@ -11,7 +11,7 @@ import type {
   WorkspaceModelRole,
   WorkspaceRuntimeContract,
 } from './types.ts';
-import { describeProviderKeySources, isProviderKeyId } from './provider-keys.ts';
+import { describeProviderKeySources, isProviderKeyId, type ProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
@@ -198,7 +198,7 @@ function catalogRevisionForModel(
  * Agent rejects a pin exactly as it does for chat.
  * ---------------------------------------------------------------------- */
 
-export type ModelRoleUnsetReason = 'role_unset' | 'credential_missing';
+export type ModelRoleUnsetReason = 'role_unset' | 'credential_missing' | 'funding_not_offered';
 
 export type ModelRoleResolution =
   | { modelId: string; providerId: string; source: 'pinned' | 'workspace_default' }
@@ -244,24 +244,26 @@ export async function resolveAgentModelForRole(
       : undefined;
   if (!resolved) return { unset: true, reason: 'role_unset' };
   const providerId = providerPrefix(resolved.modelId);
-  // A model whose provider cannot serve it resolves to unset on purpose: the
-  // Agent then states the limit instead of failing inside the adapter.
-  if (!(await roleProviderAvailable(input, resolved.modelId))) {
-    return { unset: true, reason: 'credential_missing' };
-  }
+  const unavailable = await roleProviderUnavailable(input, resolved.modelId);
+  if (unavailable) return { unset: true, reason: unavailable };
   return { modelId: resolved.modelId, providerId, source: resolved.source };
 }
 
-async function roleProviderAvailable(input: ResolveAgentModelForRoleInput, modelId: string): Promise<boolean> {
+async function roleProviderUnavailable(
+  input: ResolveAgentModelForRoleInput,
+  modelId: string,
+): Promise<ModelProviderUnavailableReason | undefined> {
   const imageProfile = input.role === 'image' ? findImageModel(modelId) : undefined;
   if (imageProfile?.authMethod === 'subscription') {
     // The provider-wide seam cannot make a Node-only subscription lane appear
     // on Cloudflare or bypass its own connection status.
-    return imageModelProfileReady(imageProfile, input.env, input.settings);
+    return (await imageModelProfileReady(imageProfile, input.env, input.settings)) ? undefined : 'credential_missing';
   }
   const providerId = providerPrefix(modelId);
-  if (input.hasProviderCredential) return input.hasProviderCredential(providerId);
-  return modelProviderAvailable(
+  if (input.hasProviderCredential) {
+    return (await input.hasProviderCredential(providerId)) ? undefined : 'credential_missing';
+  }
+  return modelProviderUnavailable(
     pricedModelRoute(modelId, input.role === 'image' ? 'image_tokens' : 'standard_input_output'),
     input.env,
     () => defaultProviderCredentialCheck(providerId, input.env, input.settings),
@@ -379,7 +381,7 @@ export async function resolveCodingModelForPlan(input: {
     // not block the turn: coding runs on the Agent's model.
     return agentModel(true);
   }
-  if ('unset' in resolution) return agentModel(resolution.reason === 'credential_missing');
+  if ('unset' in resolution) return agentModel(resolution.reason !== 'role_unset');
   const attribution = {
     role: 'coding' as const,
     source: resolution.source,
@@ -404,43 +406,40 @@ export async function resolveCodingModelForPlan(input: {
   }
 }
 
-/** A model as the price catalog names it: the provider id and the wire model id, on the basis its requests are priced. */
 export interface PricedModelRoute {
-  readonly providerId: string;
+  readonly providerId: ProviderKeyId;
   readonly model: string;
   readonly priceBasis: UsagePriceRate['basis'];
 }
 
-export function pricedModelRoute(canonicalModel: string, priceBasis: UsagePriceRate['basis']): PricedModelRoute {
+export function pricedModelRoute(
+  canonicalModel: string,
+  priceBasis: UsagePriceRate['basis'],
+): PricedModelRoute | undefined {
   const providerId = providerPrefix(canonicalModel);
+  if (!isProviderKeyId(providerId)) return undefined;
   return { providerId, model: canonicalModel.slice(providerId.length + 1), priceBasis };
 }
 
-/**
- * Whether a provider can serve one model for this installation now, by the
- * funding the proxy applies to its requests. Chickpea credits serve a
- * platform-funded installation's model only while it has a current price,
- * and the proxy refuses the request otherwise, so a saved key changes nothing
- * there. A customer-funded installation, which a funding read that fails also
- * leaves it as, needs `customerFunded`: its own key, as each surface checks it.
- */
-export async function modelProviderAvailable(
-  route: PricedModelRoute,
+export type ModelProviderUnavailableReason = Exclude<ModelRoleUnsetReason, 'role_unset'>;
+
+export async function modelProviderUnavailable(
+  route: PricedModelRoute | undefined,
   env: PlatformEnv | undefined,
   customerFunded: () => Promise<boolean> | boolean,
-): Promise<boolean> {
-  if (await installationFunding(env) !== 'platform') return customerFunded();
-  if (!isProviderKeyId(route.providerId)) return false;
+): Promise<ModelProviderUnavailableReason | undefined> {
+  if (await installationFunding(env) !== 'platform') {
+    return (await customerFunded()) ? undefined : 'credential_missing';
+  }
   const now = Date.now();
-  const price = priceCatalogFor(route.priceBasis, route.providerId, route.model, now);
-  return price !== null && now < price.version.staleAfter;
+  const price = route && priceCatalogFor(route.priceBasis, route.providerId, route.model, now);
+  return price && now < price.version.staleAfter ? undefined : 'funding_not_offered';
 }
 
-// The customer-funded check. Only a provider with a first-class key lane can
-// serve an image role today. Anything else (a binding provider, or a stale row
-// naming a provider this build does not know) reads as "no credential", so the
-// role falls back to the honesty instruction instead of reaching an adapter
-// that cannot authenticate.
+// Only a provider with a first-class key lane can serve an image role today.
+// Anything else (a binding provider, or a stale row naming a provider this
+// build does not know) reads as "no credential", so the role falls back to the
+// honesty instruction instead of reaching an adapter that cannot authenticate.
 async function defaultProviderCredentialCheck(
   providerId: string,
   env?: PlatformEnv,
