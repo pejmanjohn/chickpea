@@ -532,6 +532,8 @@ test('an Anthropic or OpenAI request records no provider cost and its usable res
 
   assert.deepEqual([...anthropic.received, ...openai.received].map((options) => options?.fetch),
     [callerFetch, callerFetch, callerFetch]);
+  assert.deepEqual(written.map(({ record }) => record.providerCostUsdMicros), [null, null, null],
+    'the recorder and a charge receive null, not a missing cost');
   const records = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
   assert.deepEqual(
     records.map((record) => [record?.provider, record?.inputTokens, record?.providerCostUsdMicros, record?.providerResponseId]),
