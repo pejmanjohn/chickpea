@@ -60,6 +60,9 @@ const BUILTIN_ENV_PROVIDERS: readonly ProviderCatalogEntry[] = [
     suggestions: [
       'openrouter/anthropic/claude-sonnet-5',
       'openrouter/openai/gpt-5.6-terra',
+      'openrouter/deepseek/deepseek-v4.1-flash',
+      'openrouter/z-ai/glm-5.3-flash',
+      'openrouter/moonshotai/kimi-k3',
     ],
   },
   {
