@@ -11,7 +11,9 @@ import {
 } from '@earendil-works/pi-ai';
 import { init, instrument, useModel } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
+import { Hono } from 'hono';
 
+import { createAdminRoutes } from '../src/admin/routes.ts';
 import {
   compileRuntimePlanV2,
   frozenModelCredential,
@@ -51,6 +53,7 @@ import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
@@ -59,6 +62,7 @@ import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 
@@ -633,4 +637,117 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
+});
+
+const ADMIN_TOKEN = 'platform-funding-admin-token';
+const SONNET_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
+assert.ok(SONNET_PRICE, 'the Admin test model is priced at NOW');
+const AFTER_SONNET_PRICE_STALE = SONNET_PRICE.version.staleAfter;
+const PROVIDER_UNAVAILABLE = {
+  status: 'repair_required',
+  providerId: 'anthropic',
+  code: 'provider_unavailable',
+  repairPath: '/admin/settings/providers',
+};
+const NOT_OFFERED = { ...PROVIDER_UNAVAILABLE, code: 'funding_not_offered' };
+
+async function creditsAdmin(t: TestContext) {
+  t.mock.timers.enable({ apis: ['Date'], now: NOW });
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => {
+    config.close();
+    settings.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  const app = new Hono();
+  app.route('/', createAdminRoutes({ store: config, settings, ...testAdminAuthority(ADMIN_TOKEN) }));
+  const base = await config.createAgent({
+    id: 'agent_base', name: 'Base', instructions: 'Start.', enabled: true, lifecycle: 'active',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const installation = await config.ensureWorkspaceInstallation({
+    workspaceId: 'T_CREDITS', transportMode: 'direct', runtimeContract: 'legacy', defaultAgentId: base.id,
+  });
+  await config.putWorkspaceModelDefault({
+    workspaceId: installation.workspaceId,
+    modelId: `anthropic/${SONNET}`,
+    provenance: 'admin_selected',
+    lastChangedByMembershipId: 'membership_test_owner',
+  }, 1);
+  await config.updateWorkspaceInstallation(installation.workspaceId, { runtimeContract: 'chickpea-v1' }, installation.revision);
+  const request = (path: string, init: RequestInit = {}) => app.request(path, {
+    ...init,
+    headers: { ...testAdminHeaders(ADMIN_TOKEN), 'content-type': 'application/json', ...init.headers },
+  }, hostedEnv('inst_credits'));
+  return { config, installation, request };
+}
+
+test('Admin reads a credits installation\'s Workspace default as ready with no saved key, and a customer-funded one as repair_required', async (t) => {
+  const { config, installation, request } = await creditsAdmin(t);
+  const health = async () => {
+    const response = await request('/admin/api/workspace-model-default');
+    assert.equal(response.status, 200);
+    return ((await response.json()) as { workspaceDefault: { health: unknown } }).workspaceDefault.health;
+  };
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    assert.deepEqual(await health(), { status: 'ready', providerId: 'anthropic' });
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.deepEqual(await health(), NOT_OFFERED, 'credits serve only a model with a current price');
+    t.mock.timers.setTime(NOW);
+    fakePort({ funding: async () => 'customer' });
+    assert.deepEqual(await health(), PROVIDER_UNAVAILABLE, 'a customer-funded installation still needs its own key');
+
+    await config.putWorkspaceModelDefault({
+      workspaceId: installation.workspaceId,
+      modelId: 'cloudflare/@cf/zai-org/glm-5.2',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: 'membership_test_owner',
+    }, 2);
+    fakePort();
+    assert.deepEqual(
+      await health(),
+      { ...NOT_OFFERED, providerId: 'cloudflare' },
+      'credits serve only a provider the deployment offers',
+    );
+  });
+});
+
+test('a credits installation with no saved key can choose a priced coding model, and only a priced one', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const choose = (modelId: string) => request('/admin/api/workspace-model-roles/coding', {
+    method: 'PUT',
+    body: JSON.stringify({ modelId, expectedRevision: 0 }),
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort({ funding: async () => 'customer' });
+    const keyless = await choose(`anthropic/${SONNET}`);
+    assert.equal(keyless.status, 400);
+    assert.deepEqual(await keyless.json(), {
+      error: 'invalid_request',
+      message: `Set up anthropic in Model providers before choosing anthropic/${SONNET}.`,
+    });
+
+    fakePort();
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    const unpriced = await choose(`anthropic/${SONNET}`);
+    assert.equal(unpriced.status, 400);
+    assert.deepEqual(await unpriced.json(), {
+      error: 'invalid_request',
+      message: 'Not offered with Chickpea credits. Choose another model.',
+    });
+
+    t.mock.timers.setTime(NOW);
+    const chosen = await choose(`anthropic/${SONNET}`);
+    assert.equal(chosen.status, 200);
+    assert.equal(
+      ((await chosen.json()) as { workspaceModelRole: { modelId: string | null } }).workspaceModelRole.modelId,
+      `anthropic/${SONNET}`,
+    );
+  });
 });

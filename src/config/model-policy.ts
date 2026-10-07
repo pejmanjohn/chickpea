@@ -11,7 +11,7 @@ import type {
   WorkspaceModelRole,
   WorkspaceRuntimeContract,
 } from './types.ts';
-import { describeProviderKeySources, isProviderKeyId } from './provider-keys.ts';
+import { describeProviderKeySources, isProviderKeyId, type ProviderKeyId } from './provider-keys.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { resolveActiveCatalogRoute } from '../model-catalog/index.ts';
@@ -23,6 +23,9 @@ import type {
 } from '../agents/runtime-plan.ts';
 import type { FrozenRuntimeModelRoute } from './runtime-model.ts';
 import { providerPrefix } from './model-access.ts';
+import { installationFunding } from './platform-funding.ts';
+import { priceCatalogFor } from '../usage/pricing/catalog.ts';
+import type { UsagePriceRate } from '../usage/pricing/types.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
 // (where null means "clear the pin") can be checked without re-shaping.
@@ -195,7 +198,7 @@ function catalogRevisionForModel(
  * Agent rejects a pin exactly as it does for chat.
  * ---------------------------------------------------------------------- */
 
-export type ModelRoleUnsetReason = 'role_unset' | 'credential_missing';
+export type ModelRoleUnsetReason = 'role_unset' | 'credential_missing' | 'funding_not_offered';
 
 export type ModelRoleResolution =
   | { modelId: string; providerId: string; source: 'pinned' | 'workspace_default' }
@@ -241,17 +244,30 @@ export async function resolveAgentModelForRole(
       : undefined;
   if (!resolved) return { unset: true, reason: 'role_unset' };
   const providerId = providerPrefix(resolved.modelId);
-  const imageProfile = input.role === 'image' ? findImageModel(resolved.modelId) : undefined;
-  const hasCredential = imageProfile?.authMethod === 'subscription'
+  const unavailable = await roleProviderUnavailable(input, resolved.modelId);
+  if (unavailable) return { unset: true, reason: unavailable };
+  return { modelId: resolved.modelId, providerId, source: resolved.source };
+}
+
+async function roleProviderUnavailable(
+  input: ResolveAgentModelForRoleInput,
+  modelId: string,
+): Promise<ModelProviderUnavailableReason | undefined> {
+  const imageProfile = input.role === 'image' ? findImageModel(modelId) : undefined;
+  if (imageProfile?.authMethod === 'subscription') {
     // The provider-wide seam cannot make a Node-only subscription lane appear
     // on Cloudflare or bypass its own connection status.
-    ? await imageModelProfileReady(imageProfile, input.env, input.settings)
-    : await (input.hasProviderCredential ??
-      ((id: string) => defaultProviderCredentialCheck(id, input.env, input.settings)))(providerId);
-  // A model whose provider has no credential resolves to unset on purpose: the
-  // Agent then states the limit instead of failing inside the adapter.
-  if (!hasCredential) return { unset: true, reason: 'credential_missing' };
-  return { modelId: resolved.modelId, providerId, source: resolved.source };
+    return (await imageModelProfileReady(imageProfile, input.env, input.settings)) ? undefined : 'credential_missing';
+  }
+  const providerId = providerPrefix(modelId);
+  if (input.hasProviderCredential) {
+    return (await input.hasProviderCredential(providerId)) ? undefined : 'credential_missing';
+  }
+  return modelProviderUnavailable(
+    pricedModelRoute(modelId, input.role === 'image' ? 'image_tokens' : 'standard_input_output'),
+    input.env,
+    () => defaultProviderCredentialCheck(providerId, input.env, input.settings),
+  );
 }
 
 /** Read both role rows, then resolve. The store is the only role authority. */
@@ -365,7 +381,7 @@ export async function resolveCodingModelForPlan(input: {
     // not block the turn: coding runs on the Agent's model.
     return agentModel(true);
   }
-  if ('unset' in resolution) return agentModel(resolution.reason === 'credential_missing');
+  if ('unset' in resolution) return agentModel(resolution.reason !== 'role_unset');
   const attribution = {
     role: 'coding' as const,
     source: resolution.source,
@@ -388,6 +404,36 @@ export async function resolveCodingModelForPlan(input: {
     // serves: fall back silently rather than disabling coding.
     return agentModel(true);
   }
+}
+
+export interface PricedModelRoute {
+  readonly providerId: ProviderKeyId;
+  readonly model: string;
+  readonly priceBasis: UsagePriceRate['basis'];
+}
+
+export function pricedModelRoute(
+  canonicalModel: string,
+  priceBasis: UsagePriceRate['basis'],
+): PricedModelRoute | undefined {
+  const providerId = providerPrefix(canonicalModel);
+  if (!isProviderKeyId(providerId)) return undefined;
+  return { providerId, model: canonicalModel.slice(providerId.length + 1), priceBasis };
+}
+
+export type ModelProviderUnavailableReason = Exclude<ModelRoleUnsetReason, 'role_unset'>;
+
+export async function modelProviderUnavailable(
+  route: PricedModelRoute | undefined,
+  env: PlatformEnv | undefined,
+  customerFunded: () => Promise<boolean> | boolean,
+): Promise<ModelProviderUnavailableReason | undefined> {
+  if (await installationFunding(env) !== 'platform') {
+    return (await customerFunded()) ? undefined : 'credential_missing';
+  }
+  const now = Date.now();
+  const price = route && priceCatalogFor(route.priceBasis, route.providerId, route.model, now);
+  return price && now < price.version.staleAfter ? undefined : 'funding_not_offered';
 }
 
 // Only a provider with a first-class key lane can serve an image role today.
