@@ -617,6 +617,11 @@ button, input, textarea, select { font: inherit; }
 .onboarding-provider-tab-status { align-items: center; color: var(--ok); display: inline-flex; font-size: .75rem; font-weight: 700; gap: 5px; }
 .onboarding-provider-tab-sub { color: var(--text-3); font-size: .75rem; font-weight: 600; }
 .onboarding-provider-config-empty { min-height: 0; }
+.onboarding-funding-options { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 28px; }
+.onboarding-funding-option { align-content: start; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 13px; color: var(--text-2); cursor: pointer; display: grid; font: inherit; font-size: .875rem; gap: 6px; padding: 18px; text-align: left; }
+.onboarding-funding-option:hover { background: #fff9e9; border-color: rgba(138, 100, 16, .35); }
+.onboarding-funding-option strong { color: var(--text); font-size: 1rem; }
+@media (max-width: 720px) { .onboarding-funding-options { grid-template-columns: 1fr; } }
 .onboarding-provider-tab-status::before, .onboarding-model-provider-status::before { background: var(--ok-solid); border-radius: 50%; content: ""; height: 7px; width: 7px; }
 .onboarding-provider-config { border-top: 1px solid var(--line); display: grid; gap: 8px; margin-top: 32px; padding-top: 28px; }
 .onboarding-provider-config h2 { font-family: var(--display); font-size: 1.625rem; line-height: 1.1; margin: 0 0 2px; }
@@ -3118,6 +3123,19 @@ button.capability-pill { cursor: pointer; }
 @media (max-width: 720px) {
   .usage-grid { grid-template-columns: 1fr; }
   .usage-contract { align-items: flex-start; flex-direction: column; }
+}
+
+/* ---- plan and credits -------------------------------------------------- */
+.billing-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.billing-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.billing-actions + .hint { margin: -12px 0 0; }
+.billing-plans { border: 1.5px solid var(--line); border-radius: 14px; display: flex; flex-direction: column; padding: 4px 16px; }
+.billing-plans .section-title { margin: 12px 0 4px; }
+.billing-plan { align-items: center; border-top: 1px solid var(--line); display: flex; gap: 12px; justify-content: space-between; padding: 12px 0; }
+.billing-plan .hint { margin: 2px 0 0; }
+.billing-use { align-items: start; display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 720px) {
+  .billing-grid, .billing-use { grid-template-columns: 1fr; }
 }
 
 /* ---- team access ------------------------------------------------------- */
