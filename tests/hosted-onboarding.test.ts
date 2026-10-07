@@ -419,7 +419,7 @@ test('an installation on credits chooses a provider with no key; one on its own 
   assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
 });
 
-test('the Owner\'s credits-or-own-key choice is the host\'s to record and the journey\'s to keep, only while onboarding is active', async (t) => {
+test('the Owner\'s credits-or-own-key choice is the host\'s to record and the journey\'s to keep; after onboarding, the Plan and credits page switches', async (t) => {
   const chosen: BillingFunding[] = [];
   configurePlatformBilling({
     summary: async () => ({ funding: 'own_key' }),
@@ -461,7 +461,10 @@ test('the Owner\'s credits-or-own-key choice is the host\'s to record and the jo
   const refused = await choose('own_key');
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: 'onboarding_complete' });
-  assert.deepEqual(chosen, ['own_key', 'credits'], 'after onboarding the host is never asked');
+  assert.deepEqual(chosen, ['own_key', 'credits'], 'onboarding\'s own route is closed once it is complete');
+  const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'credits' }) });
+  assert.equal(switched.status, 200, 'the Plan and credits page still switches after onboarding');
+  assert.deepEqual(chosen, ['own_key', 'credits', 'credits']);
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });

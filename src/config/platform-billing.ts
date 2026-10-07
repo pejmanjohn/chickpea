@@ -72,7 +72,7 @@ export interface PlatformBillingPort {
   checkout(installationId: string, request: CheckoutRequest, returnPath: string): Promise<BillingRedirect>;
   /** The Stripe customer portal: cards, invoices, and plan changes. */
   portal(installationId: string, returnPath: string): Promise<BillingRedirect>;
-  /** Onboarding's choice, asked only while onboarding is active. Choosing the same funding again changes nothing. */
+  /** An Owner's choice, in onboarding or later on the Plan and credits page. Choosing the same funding again changes nothing. */
   chooseFunding(installationId: string, funding: BillingFunding): Promise<void>;
 }
 

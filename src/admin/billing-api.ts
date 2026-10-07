@@ -17,6 +17,9 @@ export const PLAN_AND_CREDITS_PATH = '/admin/plan';
 const MAX_BILLING_BODY_BYTES = 512;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'top_up']), key: rateCardKey });
+// Switching back to the installation's own key needs a saved key, so it is
+// not offered here.
+const fundingSchema = v.strictObject({ funding: v.literal('credits') });
 
 interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
@@ -31,11 +34,11 @@ interface NamedCreditUse {
 }
 
 /**
- * What the Plan and credits page shows. Only an Owner can buy credits or
- * change the plan, so everyone else sees the balance alone.
+ * What the Plan and credits page shows. Only an Owner can buy credits, change
+ * the plan, or switch to credits, so everyone else sees the balance alone.
  */
 export type BillingView =
-  | { funding: 'own_key' }
+  | { funding: 'own_key'; manage: boolean }
   | { funding: 'credits'; manage: false; balance: number }
   | {
     funding: 'credits';
@@ -57,12 +60,12 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.use('/billing', noStore);
   app.use('/billing/*', noStore);
 
-  app.get('/billing', (c) => withBilling(c, async (port, installationId) => {
+  const view = async (c: Context, port: PlatformBillingPort, installationId: string): Promise<BillingView> => {
     const summary = await port.summary(installationId);
-    if (summary.funding === 'own_key') return c.json({ funding: 'own_key' } satisfies BillingView);
-    if (!isOwner(c)) return c.json({ funding: 'credits', manage: false, balance: summary.balance } satisfies BillingView);
+    if (summary.funding === 'own_key') return { funding: 'own_key', manage: isOwner(c) };
+    if (!isOwner(c)) return { funding: 'credits', manage: false, balance: summary.balance };
     const [agentNames, personNames] = await Promise.all([options.agentNames(c), options.personNames(c)]);
-    return c.json({
+    return {
       funding: 'credits',
       manage: true,
       balance: summary.balance,
@@ -73,7 +76,17 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
         byPerson: namedUse(summary.use.byPerson, personNames),
       },
       offers: summary.offers,
-    } satisfies BillingView);
+    };
+  };
+
+  app.get('/billing', (c) => withBilling(c, async (port, installationId) =>
+    c.json(await view(c, port, installationId))));
+
+  app.post('/billing/funding', (c) => withOwnerBilling(c, async (port, installationId) => {
+    const parsed = v.safeParse(fundingSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
+    if (!parsed.success) return invalidRequest(c);
+    await port.chooseFunding(installationId, parsed.output.funding);
+    return c.json(await view(c, port, installationId));
   }));
 
   app.post('/billing/checkout', (c) => withOwnerBilling(c, async (port, installationId) => {

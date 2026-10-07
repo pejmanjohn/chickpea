@@ -90,6 +90,7 @@ test('standalone has no billing: the API is not found and the page offers nothin
   const request = admin(t, { port, env: {} });
   assert.equal((await request('/admin/api/billing')).status, 404);
   assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 404);
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 404);
   assert.match(await (await request('/admin')).text(), /"billingOffered":false/);
   assert.deepEqual(calls, []);
 });
@@ -101,11 +102,41 @@ test('a hosted installation whose host installed no port has no billing', async 
   assert.match(await (await request('/admin')).text(), /"billingOffered":false/);
 });
 
-test('an installation on its own key reads only that it is on its own key', async (t) => {
+test('an installation on its own key reads only that, and whether the reader may switch it', async (t) => {
   const { port } = fakePort({ funding: 'own_key' });
   const request = admin(t, { port });
-  assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'own_key' });
+  assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'own_key', manage: true });
   assert.match(await (await request('/admin')).text(), /"billingOffered":true/);
+  const member = admin(t, { port, role: 'member' });
+  assert.deepEqual(await (await member('/admin/api/billing')).json(), { funding: 'own_key', manage: false });
+});
+
+test('an Owner switches an own-key installation to credits, and switching again changes nothing', async (t) => {
+  let funding: 'own_key' | 'credits' = 'own_key';
+  const { port, calls } = fakePort(CREDITS, {
+    summary: async () => (funding === 'credits' ? CREDITS : { funding: 'own_key' }),
+    chooseFunding: async (installationId, next) => { calls.push(['chooseFunding', installationId, next]); funding = next; },
+  });
+  const request = admin(t, { port });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const switched = await request('/admin/api/billing/funding', post({ funding: 'credits' }));
+    assert.equal(switched.status, 200);
+    assert.equal(switched.headers.get('cache-control'), 'no-store');
+    const view = await switched.json() as Record<string, unknown>;
+    assert.equal(view.funding, 'credits');
+    assert.equal(view.manage, true);
+    assert.equal(view.balance, 48_210);
+  }
+  assert.deepEqual(calls, [['chooseFunding', INSTALLATION, 'credits'], ['chooseFunding', INSTALLATION, 'credits']]);
+});
+
+test('switching back to your own key, or a malformed switch, is refused before the port is asked', async (t) => {
+  const { port, calls } = fakePort(CREDITS);
+  const request = admin(t, { port });
+  for (const body of [{ funding: 'own_key' }, {}, { funding: 'credits', installationId: 'inst_other' }]) {
+    assert.equal((await request('/admin/api/billing/funding', post(body))).status, 400, JSON.stringify(body));
+  }
+  assert.deepEqual(calls, []);
 });
 
 test('an Owner reads the balance, plan, period and named use; unnamed use folds into one last row', async (t) => {
@@ -172,6 +203,7 @@ for (const role of ['member', 'admin'] as const) {
     assert.equal((await request('/admin/plan')).status, 200);
     assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 403);
     assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
+    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
     assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
   });
 }
@@ -181,5 +213,6 @@ test('an Owner\'s personal token is not an Owner\'s own session: no use, no purc
   const request = admin(t, { port, machine: true });
   assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'credits', manage: false, balance: 48_210 });
   assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
   assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
 });

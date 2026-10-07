@@ -49,7 +49,7 @@ export function adminUiConfig(input: {
    * secret bindings.
    */
   selfHosted?: boolean;
-  /** True where the host sells Chickpea credits: Admin may offer them and, on credits, show the Plan and credits page. */
+  /** True where the host sells Chickpea credits: Admin has the Plan and credits page and onboarding offers credits. */
   billingOffered?: boolean;
   targetChip: string;
 }): Record<string, unknown> {

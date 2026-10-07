@@ -20,8 +20,8 @@
   // installations is run by its host, so that guidance and those steps are
   // left out there, without replacement copy.
   var SELF_HOSTED = CONFIG.selfHosted !== false;
-  // The host sells Chickpea credits: onboarding offers them, and an
-  // installation on credits gets the Plan and credits page.
+  // The host sells Chickpea credits: Admin has the Plan and credits page,
+  // and onboarding offers credits.
   var BILLING_OFFERED = CONFIG.billingOffered === true;
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
@@ -100,13 +100,14 @@
     // ordinary members; Owners manage the durable roster here.
     team: null,
     teamLoading: false,
-    // Plan and credits: the host's answer once read, and the Stripe page an
-    // Owner is being sent to ("top_up", "plan", or "portal").
+    // Plan and credits: the host's answer once read, and what an Owner is
+    // waiting on ("top_up", "plan" or "portal" for a Stripe page, "funding"
+    // for the switch to credits).
     billing: null,
-    billingLoading: false,
     billingError: "",
     billingBusy: "",
     billingPlansOpen: false,
+    billingFundingConfirm: false,
     // The onboarding journey keeps how the Owner chose to pay for models;
     // "Change how you pay" shows the choice again until they answer.
     onboardingFundingChanging: false,
@@ -1704,10 +1705,10 @@
         { id: "team", label: "Team", action: "open-team" }
       );
       if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
-      if (creditsBilling()) sections.push(BILLING_SECTION);
+      if (BILLING_OFFERED) sections.push(BILLING_SECTION);
       sections.push({ id: "settings", label: "Settings", action: "open-settings" });
     } else {
-      if (creditsBilling()) sections.push(BILLING_SECTION);
+      if (BILLING_OFFERED) sections.push(BILLING_SECTION);
       // A member has no Settings destination; Coding agents is its own entry.
       sections.push({ id: "settings", label: "MCP", action: "open-coding-agents" });
     }
@@ -2428,28 +2429,19 @@
 
   // ---- Plan and credits ----------------------------------------------------
   // The host keeps the balance and sells credits through Stripe. Admin shows
-  // its answer and sends an Owner to the Stripe page it returns. The page
-  // exists only for an installation on credits.
+  // its answer and sends an Owner to the Stripe page it returns.
   var BILLING_SECTION = { id: "billing", label: "Plan and credits", action: "open-billing" };
   var billingRequest = null;
 
-  function creditsBilling() {
-    return !!(state.billing && state.billing.funding === "credits");
-  }
-
   function loadBilling() {
-    if (!BILLING_OFFERED) return Promise.resolve();
     if (billingRequest) return billingRequest;
-    state.billingLoading = true;
     state.billingError = "";
     billingRequest = api("/admin/api/billing", { cache: "no-store" }).then(function (body) {
       state.billing = body;
     }).catch(function () {
       state.billingError = "Your plan and credits could not be loaded.";
     }).then(function () {
-      state.billingLoading = false;
       billingRequest = null;
-      if (state.view === "billing" && state.billing && !creditsBilling()) { openHome(); return; }
       render();
     });
     return billingRequest;
@@ -2460,8 +2452,25 @@
     state.profileScreen = "list";
     state.disableConfirm = false;
     state.billingPlansOpen = false;
+    state.billingFundingConfirm = false;
     render();
     loadBilling();
+  }
+
+  function switchToCredits() {
+    if (state.billingBusy) return;
+    state.billingBusy = "funding";
+    state.billingError = "";
+    render();
+    postJson("/admin/api/billing/funding", "POST", { funding: "credits" }).then(function (body) {
+      state.billing = body;
+      state.billingFundingConfirm = false;
+    }).catch(function () {
+      state.billingError = "Could not switch to Chickpea credits. Try again.";
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+    });
   }
 
   function openStripe(path, body, busy) {
@@ -2497,15 +2506,20 @@
   }
 
   function billingTopbarHtml() {
-    if (!creditsBilling()) return "";
+    if (!BILLING_OFFERED) return "";
     return '<button type="button" class="btn btn-soft' + (primarySection() === "billing" ? " nav-active" : "") + '" data-action="open-billing" data-section-switcher="true">' + BILLING_SECTION.label + '</button>';
   }
 
   function billingRailHtml() {
     return '<nav class="rail primary-shell-sidebar" aria-label="Plan and credits">' + primaryShellBrandHtml() + '<div class="rail-context">' +
       '<div class="rail-head"><span class="section-eyebrow">Plan and credits</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' + (state.billing && state.billing.manage ? "Balance and use" : "Balance") + '</span></button>' +
+      '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' + billingRailMeta() + '</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function billingRailMeta() {
+    if (state.billing && state.billing.funding === "own_key") return "Own API key";
+    return state.billing && state.billing.manage ? "Balance and use" : "Balance";
   }
 
   function billingUseTableHtml(heading, rows) {
@@ -2529,10 +2543,26 @@
       }).join("") + '</section>';
   }
 
+  function billingOwnKeyHtml(head, billing) {
+    if (!billing.manage) return head + '<div class="usage-contract"><p>An Owner can switch to Chickpea credits.</p></div>';
+    var busy = state.billingBusy === "funding";
+    var notice = state.billingError ? '<p class="field-error" role="alert">' + esc(state.billingError) + '</p>' : '';
+    var body = state.billingFundingConfirm
+      ? '<div class="callout"><span>Switch to Chickpea credits? Replies will stop using your own key.</span></div>' +
+        '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+        '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : 'Switch to credits') + '</button></div>'
+      : '<div class="usage-contract"><p>With Chickpea credits, no API key is needed. Each reply draws credits from your workspace&rsquo;s balance.</p></div>' +
+        '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-credits">Use Chickpea credits</button></div>';
+    return head + body + notice;
+  }
+
   function billingMainHtml() {
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan and credits</h1><p class="hint">Credits pay for the models your Agents use.</p></div></div>';
     var billing = state.billing;
-    if (!creditsBilling()) {
+    var ownKey = !!(billing && billing.funding === "own_key");
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan and credits</h1><p class="hint">' +
+      (ownKey ? 'Your workspace pays for models with its own API key.' : 'Credits pay for the models your Agents use.') + '</p></div></div>';
+    if (ownKey) return billingOwnKeyHtml(head, billing);
+    if (!billing) {
       if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
       return head + '<div class="empty"><p class="hint">Loading your plan and credits&hellip;</p></div>';
     }
@@ -2683,7 +2713,6 @@
       state.onboardingProviderKey = "";
       state.billing = null;
       render();
-      loadBilling();
     }).catch(function () {
       state.onboardingFundingBusy = false;
       state.onboardingError = "Could not save your choice. Try again.";
@@ -13632,6 +13661,9 @@
     if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
     if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan");
     if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal");
+    if (action === "billing-use-credits") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
+    if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = ""; render(); }
+    if (action === "billing-funding-confirm") switchToCredits();
     if (action === "onboarding-funding" && !state.onboardingFundingBusy) { chooseOnboardingFunding(target.getAttribute("data-funding") || ""); }
     if (action === "onboarding-funding-change" && !state.onboardingBusy) {
       state.onboardingFundingChanging = true;
@@ -17547,7 +17579,6 @@
     // connector handoff until that catalog and availability flag are known.
     var routed = applyRoute(initialRoute);
     startBootAuxiliaryRequests();
-    loadBilling();
     await routed;
     if (connectorSetup && state.profileDraft && state.profileScreen === "edit") {
       state.profileTab = "connections";
