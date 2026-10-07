@@ -44,6 +44,7 @@ import {
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
   isRevisionedAlias,
 } from '../model-catalog/provider-alias.ts';
+import { isRecord } from '../security/content-validation.ts';
 import {
   modelRequestRecord,
   NO_PROVIDER_REPORT,
@@ -390,6 +391,32 @@ interface ModelAccessRequest<TModel, TOptions> {
 type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
 /**
+ * What a platform-funded request sends so its provider bills it at list
+ * price, the price it is charged, and what a response may report at that
+ * price. An unreported (null) value counts as list price.
+ */
+interface ListPriceMode {
+  pin(payload: Record<string, unknown>): Record<string, unknown>;
+  readonly serviceTiers: readonly string[];
+  readonly inferenceGeos: readonly string[];
+}
+
+const LIST_PRICE_MODES: Partial<Record<ModelAccessProviderId, ListPriceMode>> = {
+  anthropic: {
+    pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
+    serviceTiers: ['standard'],
+    // Older models serve without a region and report `not_available`.
+    inferenceGeos: ['global', 'not_available'],
+  },
+  openai: {
+    // The default, `auto`, takes the project's tier, which can be a priced one.
+    pin: (payload) => ({ ...payload, service_tier: 'default' }),
+    serviceTiers: ['default'],
+    inferenceGeos: [],
+  },
+};
+
+/**
  * The request the proxy of registered provider `registeredId` sends: the
  * cell's key, endpoint and headers injected over whatever the caller passed,
  * or a refusal before egress. Every request needs a cell; one on a lane that
@@ -418,9 +445,18 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
-  const reader = providerId === 'openrouter' ? providerReportReader('openrouter', options?.fetch) : undefined;
+  const platformGrant = bound?.grant.fundingSource === 'platform' ? bound.grant : undefined;
+  const listPriceMode = platformGrant && LIST_PRICE_MODES[platformGrant.providerId];
+  // Every OpenRouter request has its reported cost read. An Anthropic or OpenAI
+  // request has its served mode read only when Chickpea pays for it, so a
+  // customer's own request is sent as it always was.
+  const reporting =
+    providerId === 'openrouter' || (listPriceMode && (providerId === 'anthropic' || providerId === 'openai'))
+      ? providerId
+      : undefined;
+  const reader = reporting && providerReportReader(reporting, options?.fetch);
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, bound?.grant, reader, start);
+    sendRequest(cell, sent, request, platformGrant, reader, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -430,6 +466,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
+      ...(listPriceMode ? { onPayload: listPricedPayload(options?.onPayload, listPriceMode) } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -440,12 +477,11 @@ function sendRequest<TModel extends Model<Api>>(
   cell: ModelAccessCell,
   model: TModel,
   request: SentRequest,
-  grant: ModelAccessGrant | undefined,
+  platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
-  const platformGrant = grant?.fundingSource === 'platform' ? grant : undefined;
   const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
@@ -519,11 +555,46 @@ function settleRequest(
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
 ): (final: AssistantMessage) => Promise<void> {
+  const mode = platformGrant && LIST_PRICE_MODES[platformGrant.providerId];
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
-    return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
+    const record = modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
+    // The record is priced from the catalog's standard rates whatever mode served it, so an off-list mode is only logged.
+    const offListPrice = mode &&
+      (offList(record.providerServiceTier, mode.serviceTiers) || offList(record.providerInferenceGeo, mode.inferenceGeos));
+    if (offListPrice) {
+      console.warn('[chickpea] platform-funded model request served off list price', {
+        route: request.route,
+        model: request.model,
+        requestId: request.requestId,
+        serviceTier: record.providerServiceTier,
+        inferenceGeo: record.providerInferenceGeo,
+      });
+    }
+    return record;
   });
+}
+
+function offList(reported: string | null, listPriced: readonly string[]): boolean {
+  return reported !== null && !listPriced.includes(reported);
+}
+
+/**
+ * The caller's payload hook runs first and the pin last, so nothing the
+ * caller sets moves the request off list price. A payload the pin cannot
+ * read fails the request before it is sent.
+ */
+function listPricedPayload(
+  callerHook: StreamOptions['onPayload'],
+  mode: ListPriceMode,
+): NonNullable<StreamOptions['onPayload']> {
+  return async (payload, model) => {
+    const returned = await callerHook?.(payload, model);
+    const composed = returned === undefined ? payload : returned;
+    if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
+    return mode.pin(composed);
+  };
 }
 
 async function settleRecord(
