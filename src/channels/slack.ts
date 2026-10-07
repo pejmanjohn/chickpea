@@ -210,6 +210,7 @@ import {
   privateChannelSetupUnavailableText,
   type PrivateChannelSetupAction,
 } from '../slack/private-channel-setup.ts';
+import { askOwnersForCredits, parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
 import { DEFAULT_EGRESS_POLICY } from '../config/egress.ts';
@@ -748,6 +749,15 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
         setupAction, payload.api_app_id, c.env as PlatformEnv | undefined,
       ).catch((error) => {
         console.error('[chickpea] private Channel setup action failed:', sanitizeError(error));
+      }));
+      return;
+    }
+    const creditsAsk = parseCreditsAskAction(payload);
+    if (creditsAsk) {
+      detach(c, processDirectCreditsAsk(
+        creditsAsk, payload.api_app_id ?? '', c.env as PlatformEnv | undefined,
+      ).catch((error) => {
+        console.error('[chickpea] Ask an admin click failed:', sanitizeError(error));
       }));
       return;
     }
@@ -1892,6 +1902,20 @@ async function processDirectSlackUiAction(
 ): Promise<void> {
   const context = await directSlackUiContext(action.workspaceId, appId, platformEnv);
   if (context) await handleSlackUiAction({ ...context, action });
+}
+
+async function processDirectCreditsAsk(
+  action: CreditsAskAction,
+  appId: string,
+  platformEnv: PlatformEnv | undefined,
+): Promise<void> {
+  const context = await directSlackUiContext(action.workspaceId, appId, platformEnv);
+  if (!context) return;
+  await askOwnersForCredits(action, {
+    identity: context.stores.identity,
+    claims: context.stores.slackState,
+    client: context.client,
+  });
 }
 
 /** The bound direct installation for a verified interaction, with its bot client. */

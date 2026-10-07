@@ -94,6 +94,7 @@ import { activityStatus, initialActivityStatus } from '../activity/status.ts';
 import { abandonTerminalSlackPresentationBestEffort } from './presentation-repair.ts';
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
+import { creditsExhaustedComponents } from './credits-ask.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
@@ -1957,8 +1958,19 @@ async function runTurnAttempt(
           await finishDelivery();
           return;
         }
+        const components = err instanceof AgentPromptFailure && err.kind === 'credits-exhausted'
+          ? await creditsExhaustedComponents({
+              env: platformEnv,
+              identity: options.appStores?.identity ?? getIdentityStore(platformEnv),
+              workspaceId: turnWorkspaceId,
+              userId: turn.userId,
+            })
+          : undefined;
         await statusTurn.prepareFinal();
-        await presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error');
+        // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
+        await (components
+          ? presenter.deliverFinal(agentFailureText(err), 'markdown', 'error', { components })
+          : presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error'));
         await finishStatus('failure');
         await finishDelivery('failed');
         return;
