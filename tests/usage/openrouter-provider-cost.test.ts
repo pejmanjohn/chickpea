@@ -20,7 +20,11 @@ import { registerBuiltinPiProvider } from '../../src/config/pi-provider.ts';
 import { registeredPiProvider } from '../../src/config/pi-provider-registry.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../../src/config/platform-funding.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
-import { openRouterCostReader, type ModelRequestRecord } from '../../src/usage/model-requests.ts';
+import {
+  providerReportReader,
+  type ModelRequestRecord,
+  type ProviderReportReader,
+} from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
 
@@ -132,6 +136,8 @@ test('a streamed OpenRouter request records the cost OpenRouter reported, its re
     priceUnknownReason: null,
     providerCostUsdMicros: 8,
     providerResponseId: 'gen-fixture-stream',
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: NOW,
   });
 });
@@ -189,6 +195,10 @@ test('the library returns the same message through the proxy as it does called d
   assert.deepEqual({ ...proxied, timestamp: 0 }, { ...direct, timestamp: 0 });
 });
 
+async function reportedCost(reader: ProviderReportReader): Promise<number | null> {
+  return (await reader.report()).providerCostUsdMicros;
+}
+
 const encoder = new TextEncoder();
 
 function streamedResponse(chunks: readonly Uint8Array[], failure?: Error): Response {
@@ -227,31 +237,31 @@ test('the reader returns the fetched response itself, byte for byte, and reads t
     const chunks = chunksOf(bytes, 7);
     assert.ok(chunks.some((chunk) => (chunk[0]! & 0xc0) === 0x80), 'a chunk starts inside a multibyte character');
     const fetched = streamedResponse(chunks);
-    const reader = openRouterCostReader(async () => fetched);
+    const reader = providerReportReader('openrouter', async () => fetched);
 
     const returned = await reader.fetch(ENDPOINT, { method: 'POST' });
 
     assert.strictEqual(returned, fetched, label);
     assert.deepEqual(new Uint8Array(await returned.arrayBuffer()), bytes, label);
-    assert.equal(await reader.lastReportedCostUsdMicros(), expected, label);
+    assert.equal(await reportedCost(reader), expected, label);
   }
 });
 
 test('a response that is not streamed gives the cost in its JSON body', async (t) => {
   const fetched = recordedResponse(RECORDED_JSON, 'application/json');
-  const reader = openRouterCostReader(undefined);
+  const reader = providerReportReader('openrouter', undefined);
   t.mock.method(globalThis, 'fetch', async () => fetched);
 
   const returned = await reader.fetch(ENDPOINT);
 
   assert.strictEqual(returned, fetched);
   assert.equal(await returned.text(), RECORDED_JSON);
-  assert.equal(await reader.lastReportedCostUsdMicros(), 13);
+  assert.equal(await reportedCost(reader), 13);
 
   assert.equal(0.0001245 * 1_000_000, 124.49999999999999, 'binary floating point lands below the half micro-USD');
-  const halfMicro = openRouterCostReader(async () => recordedResponse('{"usage":{"cost":0.0001245}}', 'application/json'));
+  const halfMicro = providerReportReader('openrouter', async () => recordedResponse('{"usage":{"cost":0.0001245}}', 'application/json'));
   await (await halfMicro.fetch(ENDPOINT)).text();
-  assert.equal(await halfMicro.lastReportedCostUsdMicros(), 125, 'half a micro-USD rounds up');
+  assert.equal(await reportedCost(halfMicro), 125, 'half a micro-USD rounds up');
 });
 
 test('a missing or unusable cost gives null and the response as fetched', async () => {
@@ -268,11 +278,11 @@ test('a missing or unusable cost gives null and the response as fetched', async 
       ['text/event-stream', `data: ${body}\n\ndata: [DONE]\n\n`],
     ] as const) {
       const fetched = recordedResponse(text, contentType);
-      const reader = openRouterCostReader(async () => fetched);
+      const reader = providerReportReader('openrouter', async () => fetched);
 
       assert.strictEqual(await reader.fetch(ENDPOINT), fetched, label);
       assert.equal(await fetched.text(), text, label);
-      assert.equal(await reader.lastReportedCostUsdMicros(), null, `${label} (${contentType})`);
+      assert.equal(await reportedCost(reader), null, `${label} (${contentType})`);
     }
   }
 });
@@ -283,10 +293,10 @@ test('an error status or another content type is never copied, whatever its body
     new Response(RECORDED_JSON, { status: 429, headers: { 'content-type': 'application/json' } }),
     recordedResponse(RECORDED_JSON, 'text/plain'),
   ]) {
-    const reader = openRouterCostReader(async () => fetched);
+    const reader = providerReportReader('openrouter', async () => fetched);
 
     assert.strictEqual(await reader.fetch(ENDPOINT), fetched);
-    assert.equal(await reader.lastReportedCostUsdMicros(), null);
+    assert.equal(await reportedCost(reader), null);
     assert.equal(await fetched.text(), RECORDED_JSON);
   }
   assert.equal(clone.mock.callCount(), 0);
@@ -296,24 +306,24 @@ test('a body that fails part way gives null, and the caller sees the failure as 
   const failure = new Error('connection reset');
   const bytes = encoder.encode(RECORDED_STREAM);
   const fetched = streamedResponse([bytes.slice(0, RECORDED_STREAM.indexOf('"usage"'))], failure);
-  const reader = openRouterCostReader(async () => fetched);
+  const reader = providerReportReader('openrouter', async () => fetched);
 
   const returned = await reader.fetch(ENDPOINT);
 
   assert.strictEqual(returned, fetched);
   await assert.rejects(returned.text(), (error: unknown) => error === failure);
-  assert.equal(await reader.lastReportedCostUsdMicros(), null);
+  assert.equal(await reportedCost(reader), null);
 });
 
 test('a copy that never ends gives null after the bounded wait', { timeout: 5_000 }, async () => {
   const fetched = new Response(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) }), {
     headers: { 'content-type': 'text/event-stream' },
   });
-  const reader = openRouterCostReader(async () => fetched);
+  const reader = providerReportReader('openrouter', async () => fetched);
   await reader.fetch(ENDPOINT);
   const started = performance.now();
 
-  assert.equal(await reader.lastReportedCostUsdMicros(), null);
+  assert.equal(await reportedCost(reader), null);
 
   const waited = performance.now() - started;
   assert.ok(waited >= 900 && waited < 2_000, `waited ${waited} ms`);

@@ -46,13 +46,14 @@ import {
 } from '../model-catalog/provider-alias.ts';
 import {
   modelRequestRecord,
-  openRouterCostReader,
+  NO_PROVIDER_REPORT,
+  providerReportReader,
   usageInstallationId,
   type ModelRequestAttribution,
   type ModelRequestEnd,
   type ModelRequestFundingSource,
   type ModelRequestRecord,
-  type ReportedCostReader,
+  type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
@@ -417,7 +418,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     fundingSource: bound?.grant.fundingSource ?? 'customer',
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
-  const reader = providerId === 'openrouter' ? openRouterCostReader(options?.fetch) : undefined;
+  const reader = providerId === 'openrouter' ? providerReportReader('openrouter', options?.fetch) : undefined;
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, bound?.grant, reader, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
@@ -440,7 +441,7 @@ function sendRequest<TModel extends Model<Api>>(
   model: TModel,
   request: SentRequest,
   grant: ModelAccessGrant | undefined,
-  reader: ReportedCostReader | undefined,
+  reader: ProviderReportReader | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
@@ -516,12 +517,12 @@ function settleRequest(
   cell: ModelAccessCell,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
-  reader: ReportedCostReader | undefined,
+  reader: ProviderReportReader | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
-    const providerCostUsdMicros = await reader?.lastReportedCostUsdMicros() ?? null;
-    return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, providerCostUsdMicros, finishedAt });
+    const report = await reader?.report() ?? NO_PROVIDER_REPORT;
+    return modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
   });
 }
 

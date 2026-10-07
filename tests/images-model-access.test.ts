@@ -170,6 +170,8 @@ test('a customer-funded image generation returns its images as before and writes
       priceUnknownReason: null,
       providerCostUsdMicros: null,
       providerResponseId: null,
+      providerServiceTier: null,
+      providerInferenceGeo: null,
       finishedAt: NOW,
     });
   });

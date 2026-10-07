@@ -51,6 +51,8 @@ export function sentImageRequestRecord(end: ImageRequestEnd): ModelRequestRecord
     priceUnknownReason: 'amount' in price ? null : price.unknown,
     providerCostUsdMicros: null,
     providerResponseId: null,
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: end.finishedAt,
   };
 }
