@@ -20,6 +20,7 @@ import {
   selectOnboardingProvider,
   startOnboardingTry,
 } from '../src/config/onboarding-state.ts';
+import { configurePlatformBilling, type BillingFunding } from '../src/config/platform-billing.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
@@ -416,6 +417,56 @@ test('an installation on credits chooses a provider with no key; one on its own 
   assert.equal(chosen.stage, 'choose_model');
   assert.equal(chosen.providerId, 'anthropic');
   assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
+});
+
+test('the Owner\'s credits-or-own-key choice is the host\'s to record and the journey\'s to keep, only while onboarding is active', async (t) => {
+  const chosen: BillingFunding[] = [];
+  configurePlatformBilling({
+    summary: async () => ({ funding: 'own_key' }),
+    checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
+    portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
+    chooseFunding: async (_installationId, funding) => { chosen.push(funding); },
+  });
+  t.after(() => configurePlatformBilling(undefined));
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const choose = async (funding: BillingFunding, expectedRevision?: string, as = admin) => as('/admin/api/onboarding/funding', {
+    method: 'POST',
+    body: JSON.stringify({ expectedRevision: expectedRevision ?? (await signup.journey())!.revision, funding }),
+  });
+  assert.equal((await json(admin('/admin/api/onboarding'))).funding, undefined, 'nothing chosen yet');
+
+  const ownKey = await json(choose('own_key'));
+  assert.equal(ownKey.funding, 'own_key');
+  assert.equal(ownKey.stage, 'choose_provider');
+  assert.equal((await json(admin('/admin/api/onboarding'))).funding, 'own_key', 'a reload continues from the choice');
+  assert.equal((await signup.journey())!.journey.selectedFunding, 'own_key');
+
+  assert.equal((await choose('credits', ownKey.revision as string)).status, 200);
+  assert.equal((await choose('own_key', ownKey.revision as string)).status, 409, 'a stale revision changes nothing');
+  assert.equal((await choose('credits', undefined, signup.admin(principalFor('admin')))).status, 403);
+  assert.equal((await choose('credits', undefined, signup.admin(principalFor('member')))).status, 403);
+  assert.deepEqual(chosen, ['own_key', 'credits']);
+
+  const credits = (await signup.journey())!;
+  const provider = await selectOnboardingProvider(signup.settings, {
+    expectedRevision: credits.revision, workspaceId: TEAM, providerId: 'anthropic',
+  });
+  assert.equal(provider.journey.selectedFunding, 'credits', 'choosing a provider keeps the choice');
+  const trying = await startOnboardingTry(signup.settings, {
+    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER,
+  });
+  await completeOnboardingJourney(signup.settings, trying.revision);
+  const refused = await choose('own_key');
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: 'onboarding_complete' });
+  assert.deepEqual(chosen, ['own_key', 'credits'], 'after onboarding the host is never asked');
+
+  configurePlatformBilling(undefined);
+  await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
+  await beginOnboardingJourney(signup.settings);
+  assert.equal((await choose('credits')).status, 404, 'no port, no choice');
 });
 
 test('the journey starts with the first Owner claim or not at all, and once', async (t) => {

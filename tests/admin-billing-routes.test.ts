@@ -83,14 +83,13 @@ function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?
   }, options.env ?? HOSTED);
 }
 
-const post = (body: unknown, method = 'POST'): RequestInit => ({ method, body: JSON.stringify(body) });
+const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
 
 test('standalone has no billing: the API is not found and the page offers nothing, even with a port installed', async (t) => {
   const { port, calls } = fakePort(CREDITS);
   const request = admin(t, { port, env: {} });
   assert.equal((await request('/admin/api/billing')).status, 404);
   assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 404);
-  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }, 'PUT'))).status, 404);
   assert.match(await (await request('/admin')).text(), /"billingOffered":false/);
   assert.deepEqual(calls, []);
 });
@@ -138,13 +137,10 @@ test('Top up, Change plan and Manage billing each call the port and return its S
     { url: 'https://checkout.stripe.com/c/pay/cs_test_billing' });
   assert.deepEqual(await (await request('/admin/api/billing/portal', post({}))).json(),
     { url: 'https://billing.stripe.com/p/session/test_billing' });
-  assert.deepEqual(await (await request('/admin/api/billing/funding', post({ funding: 'credits' }, 'PUT'))).json(),
-    { funding: 'credits' });
   assert.deepEqual(calls, [
     ['checkout', INSTALLATION, { kind: 'top_up', key: 'top_up_10' }, '/admin/plan'],
     ['checkout', INSTALLATION, { kind: 'plan', key: 'team' }, '/admin/plan'],
     ['portal', INSTALLATION, '/admin/plan'],
-    ['chooseFunding', INSTALLATION, 'credits'],
   ]);
 });
 
@@ -154,7 +150,6 @@ test('a malformed purchase is refused before the port is asked', async (t) => {
   for (const body of [{ kind: 'gift', key: 'top_up_10' }, { kind: 'plan', key: 'Team!' }, { kind: 'plan' }, { kind: 'plan', key: 'team', price: 1 }]) {
     assert.equal((await request('/admin/api/billing/checkout', post(body))).status, 400, JSON.stringify(body));
   }
-  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }, 'PUT'))).status, 400);
   assert.deepEqual(calls, []);
 });
 
@@ -170,14 +165,13 @@ test('a port that fails, or answers with a URL that is not HTTPS, is unavailable
 });
 
 for (const role of ['member', 'admin'] as const) {
-  test(`a${role === 'admin' ? 'n Admin' : ' Member'} sees the balance alone and cannot buy or change funding`, async (t) => {
+  test(`a${role === 'admin' ? 'n Admin' : ' Member'} sees the balance alone and cannot buy`, async (t) => {
     const { port, calls } = fakePort(CREDITS);
     const request = admin(t, { role, port });
     assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'credits', manage: false, balance: 48_210 });
     assert.equal((await request('/admin/plan')).status, 200);
     assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 403);
     assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
-    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }, 'PUT'))).status, 403);
     assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
   });
 }

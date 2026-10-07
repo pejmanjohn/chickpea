@@ -17,7 +17,6 @@ export const PLAN_AND_CREDITS_PATH = '/admin/plan';
 const MAX_BILLING_BODY_BYTES = 512;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'top_up']), key: rateCardKey });
-const fundingSchema = v.strictObject({ funding: v.picklist(['credits', 'own_key']) });
 
 interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
@@ -86,17 +85,10 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   app.post('/billing/portal', (c) => withOwnerBilling(c, async (port, installationId) =>
     redirect(c, await port.portal(installationId, PLAN_AND_CREDITS_PATH))));
 
-  app.put('/billing/funding', (c) => withOwnerBilling(c, async (port, installationId) => {
-    const parsed = v.safeParse(fundingSchema, await readJson(c, MAX_BILLING_BODY_BYTES));
-    if (!parsed.success) return invalidRequest(c);
-    await port.chooseFunding(installationId, parsed.output.funding);
-    return c.json({ funding: parsed.output.funding });
-  }));
-
   return app;
 }
 
-/** Whether the request is an Owner's own session: only Owners buy credits or change how Chickpea is paid for. */
+/** Whether the request is an Owner's own session: only Owners buy credits. */
 function isOwner(c: Context): boolean {
   const principal = requestPrincipal(c.req.raw);
   return Boolean(principal && !principal.machine && principal.role === 'owner');

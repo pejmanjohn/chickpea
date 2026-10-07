@@ -209,6 +209,7 @@ import {
   completeOnboardingJourney,
   ONBOARDING_PROVIDER_IDS,
   readOnboardingJourney,
+  selectOnboardingFunding,
   selectOnboardingProvider,
   settleOnboardingGithubStep,
   startOnboardingTry,
@@ -1566,6 +1567,11 @@ const composioProjectSetupSchema = v.strictObject({
 const onboardingProviderSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
   providerId: v.picklist(ONBOARDING_PROVIDER_IDS),
+});
+
+const onboardingFundingSchema = v.strictObject({
+  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+  funding: v.picklist(['credits', 'own_key']),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -10076,6 +10082,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           : null,
       },
       channel: null,
+      ...(journey.selectedFunding ? { funding: journey.selectedFunding } : {}),
       providerId: journey.selectedProviderId ?? null,
       modelId: null,
       models: journey.selectedProviderId
@@ -10120,6 +10127,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         providerId: parsed.output.providerId,
       });
       return onboardingResponse(c, selected);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  // Where the host sells credits, the Owner's first onboarding choice: the
+  // host records it, and the journey keeps it. Once onboarding ends, how the
+  // installation pays is not Admin's to change.
+  app.post('/admin/api/onboarding/funding', async (c) => {
+    const parsed = v.safeParse(onboardingFundingSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    try {
+      const port = platformBilling();
+      const installationId = port && requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
+      if (!port || !installationId) return c.json({ error: 'not_found' }, 404);
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.journey.state === 'complete') return c.json({ error: 'onboarding_complete' }, 409);
+      if (snapshot.revision !== parsed.output.expectedRevision) return c.json({ error: 'onboarding_changed' }, 409);
+      await port.chooseFunding(installationId, parsed.output.funding);
+      return onboardingResponse(c, await selectOnboardingFunding(settings(c), {
+        expectedRevision: snapshot.revision,
+        funding: parsed.output.funding,
+      }));
     } catch (error) {
       return internalError(c, error);
     }

@@ -61,13 +61,17 @@ async function harness(options: {
   billing?: BillingView;
   owner?: boolean;
   workspaceAdminUi?: boolean;
+  /** The funding choice the onboarding journey already holds, as after a reload. */
+  savedFunding?: 'credits' | 'own_key';
 }) {
   let html = '';
   const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; } };
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const assigned: string[] = [];
-  let onboarding: Record<string, unknown> = { ...CHOOSE_PROVIDER };
+  let onboarding: Record<string, unknown> = {
+    ...CHOOSE_PROVIDER, ...(options.savedFunding ? { funding: options.savedFunding } : {}),
+  };
   const location = {
     pathname: options.path, search: '',
     assign(url: string) { assigned.push(url); },
@@ -101,7 +105,10 @@ async function harness(options: {
     }
     if (path === '/admin/api/billing/checkout') return response({ url: `https://checkout.stripe.com/c/pay/${body.key}` });
     if (path === '/admin/api/billing/portal') return response({ url: 'https://billing.stripe.com/p/session/portal' });
-    if (path === '/admin/api/billing/funding') return response({ funding: body.funding });
+    if (path === '/admin/api/onboarding/funding') {
+      onboarding = { ...onboarding, funding: body.funding, revision: 'revision_2' };
+      return response(onboarding);
+    }
     if (path === '/admin/api/onboarding') return response(onboarding);
     if (path === '/admin/api/onboarding/provider') {
       onboarding = { ...onboarding, stage: 'choose_model', providerId: body.providerId, models: ['anthropic/claude-sonnet-5-5'] };
@@ -225,9 +232,12 @@ test('hosted onboarding offers credits first; choosing them skips the key', asyn
   assert.match(offer, /<strong>Use your own key<\/strong>/);
 
   await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'credits' });
-  assert.ok(page.requests.some((request) => request.method === 'PUT' && request.path === '/admin/api/billing/funding' &&
-    (request.body as { funding: string }).funding === 'credits'));
+  assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
+    JSON.stringify(request.body) === JSON.stringify({ expectedRevision: 'revision_1', funding: 'credits' })));
   assert.match(page.html(), /Paid with credits/);
+  assert.match(page.html(), /Choose a provider\. Chickpea credits pay for its models\./);
+  assert.match(page.html(), /Choose the provider whose models Chickpea should use\./);
+  assert.doesNotMatch(page.html(), /finish the setup it needs|shows the setup it needs/);
   assert.doesNotMatch(page.html(), /onboarding-provider-key|Paste your key|Workers AI/);
 
   await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
@@ -242,7 +252,7 @@ test('hosted onboarding offers credits first; choosing them skips the key', asyn
 test('choosing your own key in hosted onboarding keeps the key step', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, billing: { funding: 'own_key' } });
   await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'own_key' });
-  assert.ok(page.requests.some((request) => request.method === 'PUT' && request.path === '/admin/api/billing/funding' &&
+  assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
     (request.body as { funding: string }).funding === 'own_key'));
   await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
   assert.match(page.html(), /Needs API key/);
@@ -250,10 +260,17 @@ test('choosing your own key in hosted onboarding keeps the key step', async () =
   assert.doesNotMatch(page.html(), /Paid with credits/);
 });
 
-test('an installation already on credits resumes onboarding at its providers, with no key', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, billing: OWNER_VIEW });
-  assert.match(page.html(), /Paid with credits/);
-  assert.match(page.html(), /data-action="onboarding-funding-change"[^>]*>Change how you pay<\/button>/);
-  await page.click({ 'data-action': 'onboarding-funding-change' });
-  assert.match(page.html(), /Choose how to pay for models/);
+test('a reload continues from the saved choice: credits to keyless providers, your own key to the key step', async () => {
+  const credits = await harness({ path: '/admin/onboarding', billingOffered: true, billing: OWNER_VIEW, savedFunding: 'credits' });
+  assert.match(credits.html(), /Paid with credits/);
+  assert.doesNotMatch(credits.html(), /Choose how to pay for models/);
+  assert.match(credits.html(), /data-action="onboarding-funding-change"[^>]*>Change how you pay<\/button>/);
+  await credits.click({ 'data-action': 'onboarding-funding-change' });
+  assert.match(credits.html(), /Choose how to pay for models/);
+
+  const ownKey = await harness({ path: '/admin/onboarding', billingOffered: true, billing: { funding: 'own_key' }, savedFunding: 'own_key' });
+  assert.doesNotMatch(ownKey.html(), /Choose how to pay for models|Paid with credits/);
+  await ownKey.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' });
+  assert.match(ownKey.html(), /id="onboarding-provider-key"/);
+  assert.equal(ownKey.requests.some((request) => request.path === '/admin/api/onboarding/funding'), false);
 });
