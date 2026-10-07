@@ -44,7 +44,7 @@ const CONTEXT: Context = {
   tools: [{
     name: 'lookup',
     description: 'Look up a word.',
-    parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'] } as never,
+    parameters: { type: 'object', properties: { word: { type: 'string' } }, required: ['word'] },
   }],
 };
 
@@ -54,8 +54,6 @@ interface Route {
   readonly model: string;
 }
 
-// Each model goes through the provider production sends it with. The library lacks Sonnet 5.5, so it goes
-// through the compatibility provider. Haiku 4.5 and GPT-5.6 Luna are the library's own, sent by its built-in providers.
 const SONNET: Route = { registeredId: ANTHROPIC_COMPAT_PROVIDER_ID, providerId: 'anthropic', model: 'claude-sonnet-5-5' };
 const HAIKU: Route = { registeredId: 'anthropic', providerId: 'anthropic', model: 'claude-haiku-4-5' };
 const LUNA: Route = { registeredId: 'openai', providerId: 'openai', model: 'gpt-5.6-luna' };
@@ -75,12 +73,10 @@ function grant(
   };
 }
 
-/** A hosted installation on credits, whose requests Chickpea pays for. */
 function onCredits(route: Route): [ModelAccessGrant, PlatformEnv] {
   return [grant(route.providerId, 'platform', 'inst_credits'), hostedEnv('inst_credits')];
 }
 
-/** The proxy with no endpoint override, as a hosted resolver gives it, and a host port that charges credits. */
 function proxied(t: TestContext) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   resetModelAccessForTests();

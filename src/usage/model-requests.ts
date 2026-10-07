@@ -116,7 +116,6 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
   };
 }
 
-/** What a provider's response body reports that the model library drops; null where it reported none. */
 export interface ProviderReport {
   readonly providerCostUsdMicros: number | null;
   readonly providerServiceTier: string | null;
@@ -127,7 +126,6 @@ export type ReportingProvider = 'openrouter' | 'anthropic' | 'openai';
 
 export interface ProviderReportReader {
   readonly fetch: typeof fetch;
-  /** Every field reported so far, once each copy is read (bounded wait). */
   report(): Promise<ProviderReport>;
 }
 
@@ -139,10 +137,8 @@ export const NO_PROVIDER_REPORT: ProviderReport = {
 
 const PROVIDER_REPORT_WAIT_MS = 1_000;
 
-/** What one parsed body or event reports. A field it does not report is null or absent. */
 const REPORTED_FIELDS: Readonly<Record<ReportingProvider, (parsed: unknown) => Partial<ProviderReport>>> = {
   openrouter: (parsed) => ({ providerCostUsdMicros: reportedCostUsdMicros(recordAt(parsed, 'usage')?.cost) }),
-  // Only `message_start` names the served mode; `message_delta` usage omits it.
   anthropic: (parsed) => {
     const usage = isRecord(parsed) && parsed.type === 'message_start'
       ? recordAt(recordAt(parsed, 'message'), 'usage')
@@ -165,9 +161,7 @@ const BODY_READERS = new Map<string, BodyReader>([
 /**
  * The library keeps none of what a provider reports about how it billed a
  * request: OpenRouter's cost (it recomputes cost from its own price table),
- * or the tier and region Anthropic and OpenAI served. They are read here,
- * from a copy of each response body; a later report of a field replaces an
- * earlier one.
+ * or the tier and region Anthropic and OpenAI served.
  */
 export function providerReportReader(provider: ReportingProvider, base: typeof fetch | undefined): ProviderReportReader {
   const fieldsOf = REPORTED_FIELDS[provider];

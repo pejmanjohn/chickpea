@@ -390,31 +390,32 @@ interface ModelAccessRequest<TModel, TOptions> {
 
 type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
-/**
- * What a platform-funded request sends so its provider bills it at list
- * price, the price it is charged, and what a response may report at that
- * price. An unreported (null) value counts as list price.
- */
 interface ListPriceMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
-  readonly serviceTiers: readonly string[];
-  readonly inferenceGeos: readonly string[];
+  readonly listPricedServiceTiers: readonly string[];
+  readonly listPricedInferenceGeos: readonly string[];
 }
 
-const LIST_PRICE_MODES: Partial<Record<ModelAccessProviderId, ListPriceMode>> = {
+const LIST_PRICE_MODES = {
   anthropic: {
     pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
-    serviceTiers: ['standard'],
+    listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
-    inferenceGeos: ['global', 'not_available'],
+    listPricedInferenceGeos: ['global', 'not_available'],
   },
   openai: {
     // The default, `auto`, takes the project's tier, which can be a priced one.
     pin: (payload) => ({ ...payload, service_tier: 'default' }),
-    serviceTiers: ['default'],
-    inferenceGeos: [],
+    listPricedServiceTiers: ['default'],
+    listPricedInferenceGeos: [],
   },
-};
+} satisfies Record<string, ListPriceMode>;
+
+type ListPricedProvider = keyof typeof LIST_PRICE_MODES;
+
+function listPricedProvider(providerId: string): ListPricedProvider | undefined {
+  return Object.hasOwn(LIST_PRICE_MODES, providerId) ? providerId as ListPricedProvider : undefined;
+}
 
 /**
  * The request the proxy of registered provider `registeredId` sends: the
@@ -446,14 +447,8 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
   const platformGrant = bound?.grant.fundingSource === 'platform' ? bound.grant : undefined;
-  const listPriceMode = platformGrant && LIST_PRICE_MODES[platformGrant.providerId];
-  // Every OpenRouter request has its reported cost read. An Anthropic or OpenAI
-  // request has its served mode read only when Chickpea pays for it, so a
-  // customer's own request is sent as it always was.
-  const reporting =
-    providerId === 'openrouter' || (listPriceMode && (providerId === 'anthropic' || providerId === 'openai'))
-      ? providerId
-      : undefined;
+  const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
+  const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, platformGrant, reader, start);
@@ -466,7 +461,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
-      ...(listPriceMode ? { onPayload: listPricedPayload(options?.onPayload, listPriceMode) } : {}),
+      ...(listPriced ? { onPayload: listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced]) } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -555,14 +550,15 @@ function settleRequest(
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
 ): (final: AssistantMessage) => Promise<void> {
-  const mode = platformGrant && LIST_PRICE_MODES[platformGrant.providerId];
+  const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
+  const mode = listPriced && LIST_PRICE_MODES[listPriced];
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
     const record = modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
-    // The record is priced from the catalog's standard rates whatever mode served it, so an off-list mode is only logged.
     const offListPrice = mode &&
-      (offList(record.providerServiceTier, mode.serviceTiers) || offList(record.providerInferenceGeo, mode.inferenceGeos));
+      (offList(record.providerServiceTier, mode.listPricedServiceTiers) ||
+        offList(record.providerInferenceGeo, mode.listPricedInferenceGeos));
     if (offListPrice) {
       console.warn('[chickpea] platform-funded model request served off list price', {
         route: request.route,
@@ -580,11 +576,6 @@ function offList(reported: string | null, listPriced: readonly string[]): boolea
   return reported !== null && !listPriced.includes(reported);
 }
 
-/**
- * The caller's payload hook runs first and the pin last, so nothing the
- * caller sets moves the request off list price. A payload the pin cannot
- * read fails the request before it is sent.
- */
 function listPricedPayload(
   callerHook: StreamOptions['onPayload'],
   mode: ListPriceMode,
