@@ -232,12 +232,13 @@ test('a list with one undecodable image is one invalid response, not a partial s
     jsonResponse({ data: [{ b64_json: PIXEL_BASE64 }, { b64_json: 'not base64!' }] }),
   );
   const result = await client(fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000, count: 2 });
-  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response' });
+  assert.deepEqual(result, { ok: false, reason: 'unreachable', detail: 'invalid_response', usageUnavailable: true });
 
-  const empty = recordingFetch(() => jsonResponse({ data: [] }));
+  const empty = recordingFetch(() => jsonResponse({ data: [], usage: { input_tokens: 3, output_tokens: 7 } }));
   assert.deepEqual(
     await client(empty.fetchImpl).generate({ prompt: 'ads', format: PNG_POLICY, deadlineMs: 5_000 }),
-    { ok: false, reason: 'unreachable', detail: 'invalid_response' },
+    { ok: false, reason: 'unreachable', detail: 'invalid_response', usage: { input_tokens: 3, output_tokens: 7 } },
+    'the usage the provider reported survives a response Chickpea cannot use',
   );
 });
 
@@ -335,7 +336,7 @@ test('a response slower than the deadline times out and aborts the request', asy
     deadlineMs: 10,
   });
 
-  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded' });
+  assert.deepEqual(result, { ok: false, reason: 'timeout', detail: 'deadline_exceeded', usageUnavailable: true });
   assert.equal(observed?.aborted, true);
 });
 

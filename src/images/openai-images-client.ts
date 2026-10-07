@@ -72,7 +72,15 @@ export type ImageCallResult =
       appliedFormat: ImageOutputFormat;
       usage?: ImageCallUsage;
     }
-  | { ok: false; reason: ImageCallFailureReason; detail: string };
+  | {
+      ok: false;
+      reason: ImageCallFailureReason;
+      detail: string;
+      /** What the provider reported it used, when its answer said; it is billed whatever failed afterwards. */
+      usage?: ImageCallUsage;
+      /** Sent, but no answer was read, so what the provider billed is unknown. */
+      usageUnavailable?: true;
+    };
 
 export interface OpenAiImagesClient {
   readonly profile: ImageModelProfile;
@@ -141,11 +149,11 @@ export function createOpenAiImagesClient(options: OpenAiImagesClientOptions): Op
         );
       } catch (err) {
         if (err instanceof ImageDeadlineError) {
-          return { ok: false, reason: 'timeout', detail: err.message };
+          return { ok: false, reason: 'timeout', detail: err.message, usageUnavailable: true };
         }
         // Transport failures carry URLs and socket detail, never request content,
         // but the message is dropped anyway so nothing can leak through it.
-        return { ok: false, reason: 'unreachable', detail: 'network_error' };
+        return { ok: false, reason: 'unreachable', detail: 'network_error', usageUnavailable: true };
       }
     });
   }
@@ -296,19 +304,22 @@ async function readImageResponse(
   const declared = response.headers.get('content-length');
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_CHARACTERS)) {
     await response.body?.cancel().catch(() => {});
-    return { ok: false, reason: 'unreachable', detail: 'response_too_large' };
+    return { ok: false, reason: 'unreachable', detail: 'response_too_large', usageUnavailable: true };
   }
   const text = await response.text();
   if (text.length > MAX_RESPONSE_CHARACTERS) {
-    return { ok: false, reason: 'unreachable', detail: 'response_too_large' };
+    return { ok: false, reason: 'unreachable', detail: 'response_too_large', usageUnavailable: true };
   }
   const payload = parseJsonRecord(text);
+  const usage = projectUsage(payload?.usage);
+  // A refusal that reports no usage cost nothing; an accepted request that
+  // reports none may still have been billed.
+  const billed = usage ? { usage } : response.ok ? { usageUnavailable: true as const } : {};
   if (!response.ok) {
-    return mapErrorResponse(response.status, payload, prompt);
+    return { ...mapErrorResponse(response.status, payload, prompt), ...billed };
   }
-  if (!payload) {
-    return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
-  }
+  const invalid = { ok: false, reason: 'unreachable', detail: 'invalid_response', ...billed } as const;
+  if (!payload) return invalid;
   const entries = Array.isArray(payload.data) ? payload.data : [];
   const first = isRecord(entries[0]) ? entries[0] : undefined;
   // Every entry must decode: a list that is short, empty, or carries one bad
@@ -317,13 +328,10 @@ async function readImageResponse(
   const images: Uint8Array[] = [];
   for (const entry of entries) {
     const bytes = decodeImageEntry(entry);
-    if (!bytes) return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
+    if (!bytes) return invalid;
     images.push(bytes);
   }
-  if (images.length === 0) {
-    return { ok: false, reason: 'unreachable', detail: 'invalid_response' };
-  }
-  const usage = projectUsage(payload.usage);
+  if (images.length === 0) return invalid;
   return {
     ok: true,
     images,

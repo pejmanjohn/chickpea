@@ -35,7 +35,7 @@ export interface ImageRequestEnd {
  * and image input rates to the parts the provider reported.
  */
 export function imageRequestRecord(end: ImageRequestEnd): ModelRequestRecord {
-  const usage = end.result.ok ? end.result.usage : undefined;
+  const { usage } = end.result;
   const price = imageUsagePrice(end, usage);
   return {
     requestId: end.requestId,
@@ -66,8 +66,10 @@ function imageUsagePrice(end: ImageRequestEnd, usage: ImageCallUsage | undefined
   const matched = priceCatalogFor('image_tokens', end.provider, end.model, end.finishedAt);
   if (!matched) return { unknown: 'price_unknown' };
   if (end.finishedAt >= matched.version.staleAfter) return { unknown: 'price_stale' };
-  // A request that failed before the provider reported usage made nothing to bill.
-  if (!usage && !end.result.ok) return { amount: 0, priceVersionId: matched.version.id };
+  // Refused by the provider with no usage reported: nothing was made to bill.
+  if (!usage && !end.result.ok && !end.result.usageUnavailable) {
+    return { amount: 0, priceVersionId: matched.version.id };
+  }
   const parts = usage && imageTokenParts(usage);
   if (!parts) return { unknown: 'pricing_dimension_unknown' };
   const { rate } = matched;

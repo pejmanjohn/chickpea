@@ -310,3 +310,29 @@ test('image usage the image rates cannot price records its tokens with no price'
   assert.equal(imageRequestRecord({ ...end, result: { ok: false, reason: 'timeout', detail: 'aborted' } }).outcome,
     'stopped');
 });
+
+test('an image the provider billed is charged even when Chickpea cannot use the answer; a refusal is not', async (t) => {
+  const { settings, recorded } = proxy(t, 'sk-platform-images');
+  const { env, port } = creditsInstallation(t);
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const undecodable = provider(() => imagesResponse(200, { data: [{ b64_json: 'not base64!' }], usage: USAGE }));
+    const result = await (await imageClient(env, settings, undecodable.fetchImpl)).generate(generation);
+    assert.equal(result.ok, false);
+    assert.equal(port.charge.length, 1);
+    assert.equal(port.charge[0]!.outcome, 'error');
+    assert.equal(port.charge[0]!.inputTokens, 50);
+    assert.equal(port.charge[0]!.listPriceUsdMicros, USAGE_PRICE_MICROS);
+
+    const refused = provider(() => imagesResponse(400, { error: { code: 'moderation_blocked', message: 'no' } }));
+    assert.equal((await (await imageClient(env, settings, refused.fetchImpl)).generate(generation)).ok, false);
+    assert.equal(port.charge.length, 2);
+    assert.equal(port.charge[1]!.listPriceUsdMicros, 0, 'a refusal with no usage costs nothing');
+
+    const lost = provider(() => { throw new TypeError('socket closed'); });
+    assert.equal((await (await imageClient(env, settings, lost.fetchImpl)).generate(generation)).ok, false);
+    assert.equal(port.charge.length, 3);
+    assert.equal(port.charge[2]!.listPriceUsdMicros, null, 'a request sent with no answer read is never priced at zero');
+    assert.equal(port.charge[2]!.priceUnknownReason, 'pricing_dimension_unknown');
+    assert.deepEqual(port.charge, recorded);
+  });
+});
