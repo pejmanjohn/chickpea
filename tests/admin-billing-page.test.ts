@@ -54,7 +54,7 @@ const CHOOSE_PROVIDER = {
   slackAppId: 'AACME', tryStartedAt: null, completedAt: null,
 };
 
-/** The Admin script in a VM with a fake server; `billing` is what GET /admin/api/billing answers. */
+/** With no `billing`, GET /admin/api/billing answers 404, as where the host installed no port. */
 async function harness(options: {
   path: string;
   billingOffered: boolean;

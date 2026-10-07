@@ -25,7 +25,7 @@ interface BillingAdminApiOptions {
   personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
 }
 
-/** One row of credit use; a null name is use with no Agent or person, or one that no longer exists. */
+/** One row of credit use; a null name gathers use with no Agent or person, or one with no name. */
 interface NamedCreditUse {
   name: string | null;
   credits: number;
@@ -126,7 +126,7 @@ function withOwnerBilling(
     isOwner(c) ? handle(port, installationId) : c.json({ error: 'forbidden' }, 403));
 }
 
-/** The browser follows this URL, so it must be a Stripe page over HTTPS. */
+/** The browser follows this URL, so only HTTPS gets through. */
 function redirect(c: Context, target: { url: string }): Response {
   if (!URL.canParse(target.url) || new URL(target.url).protocol !== 'https:') {
     throw new Error('The billing port returned a URL that is not HTTPS.');
@@ -134,7 +134,6 @@ function redirect(c: Context, target: { url: string }): Response {
   return c.json({ url: target.url });
 }
 
-/** Most credits first; every row whose Agent or person has no name folds into one unnamed row, last. */
 function namedUse(use: readonly CreditUse[], names: ReadonlyMap<string, string>): NamedCreditUse[] {
   const named: NamedCreditUse[] = [];
   let unnamed = 0;

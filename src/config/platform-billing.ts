@@ -44,9 +44,9 @@ export interface CreditsBillingSummary {
   /** The billing period `use` covers; its end is when the plan renews. */
   readonly period: { readonly start: Date; readonly end: Date };
   readonly use: {
-    /** Keyed by Agent ID. */
+    /** Each row's `id` is an Agent ID. */
     readonly byAgent: readonly CreditUse[];
-    /** Keyed by the Chickpea membership ID of the person who started the work. */
+    /** Each row's `id` is the Chickpea membership ID of the person who started the work. */
     readonly byPerson: readonly CreditUse[];
   };
   readonly offers: { readonly plans: readonly CreditPlanOffer[]; readonly topUps: readonly TopUpOffer[] };

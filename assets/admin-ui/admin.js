@@ -107,7 +107,7 @@
     billingError: "",
     billingBusy: "",
     billingPlansOpen: false,
-    // Onboarding's answer to how Chickpea pays for models: "credits" or "own_key".
+    // Onboarding's answer to how Chickpea pays for models: "credits", "own_key", or "" until the Owner chooses.
     onboardingFunding: "",
     onboardingFundingBusy: false,
     teamError: "",
@@ -2665,7 +2665,6 @@
   }
 
   function chooseOnboardingFunding(funding) {
-    if (funding !== "credits" && funding !== "own_key") return;
     state.onboardingFundingBusy = true;
     state.onboardingError = "";
     render();

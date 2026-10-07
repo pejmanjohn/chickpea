@@ -43,7 +43,6 @@ function principal(role: AuthPrincipal['role'], machine = false): AuthPrincipal 
   };
 }
 
-/** The port the host would install, recording every call. */
 function fakePort(summary: BillingSummary, overrides: Partial<PlatformBillingPort> = {}) {
   const calls: unknown[][] = [];
   const port: PlatformBillingPort = {
