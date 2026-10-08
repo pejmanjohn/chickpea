@@ -718,7 +718,7 @@ test('a credits installation with no saved key can choose a priced coding model,
     assert.equal(unpriced.status, 400);
     assert.deepEqual(await unpriced.json(), {
       error: 'invalid_request',
-      message: 'Not offered with Chickpea credits. Choose another model.',
+      message: 'Not offered with Chickpea’s models. Choose another model.',
     });
 
     t.mock.timers.setTime(NOW);

@@ -22,7 +22,7 @@ export interface OnboardingJourney {
   selectedWorkspaceId?: string;
   selectedChannelId?: string;
   selectedChannelName?: string;
-  /** Where the host sells credits: how the Owner chose to pay for models. */
+  /** Where the host sells Chickpea's models: how the Owner chose to pay for models. */
   selectedFunding?: BillingFunding;
   selectedProviderId?: OnboardingProviderId;
   selectedModelId?: string;

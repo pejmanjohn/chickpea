@@ -2743,8 +2743,8 @@
     return '<img class="onboarding-provider-logo" src="' + esc(MODEL_PROVIDER_LOGOS[provider.id] || "") + '" alt="">';
   }
 
-  // Where the host sells credits, an Owner first chooses how Chickpea pays
-  // for models: credits, which need no key, or their own provider key.
+  // Where the host sells Chickpea's models, an Owner first chooses how to
+  // pay for models: Chickpea's, which need no key, or their own provider key.
   function onboardingPlatformOffered() {
     return BILLING_OFFERED && INSTALLATION_OWNER;
   }
@@ -2765,9 +2765,9 @@
     };
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose how to pay for models</h1>' +
-      '<p class="onboarding-lede">Use Chickpea credits, or connect a model provider with your own API key.</p>' +
+      '<p class="onboarding-lede">Use Chickpea&rsquo;s models, or connect a model provider with your own API key.</p>' +
       '<div class="onboarding-funding-options" role="group" aria-label="How to pay for models">' +
-      option("platform", "Use Chickpea credits", "No API key needed. Each reply draws credits from your workspace&rsquo;s balance.") +
+      option("platform", "Use Chickpea&rsquo;s models", "No API key needed. Replies draw on your workspace&rsquo;s usage.") +
       option("own_key", "Use your own key", "Connect an Anthropic, OpenAI, or OpenRouter API key. The provider bills you directly.") +
       '</div>' + (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') + '</section>';
   }
@@ -2801,14 +2801,14 @@
     var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
     var configured = selected ? platform || onboardingProviderConfigured(selected.id) : false;
     // Workers AI exists only where the deployment has the binding; Node
-    // installs never see it, and credits never pay for it.
+    // installs never see it, and Chickpea's models never include it.
     var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
       return provider.id !== "cloudflare" || (!platform && onboardingProviderConfigured("cloudflare"));
     }).map(function (provider) {
       var active = !!selected && provider.id === selected.id;
       var ready = onboardingProviderConfigured(provider.id);
       var status = platform
-        ? '<span class="onboarding-provider-tab-status">Paid with credits</span>'
+        ? '<span class="onboarding-provider-tab-status">No key needed</span>'
         : ready
           ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
           : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" && SELF_HOSTED ? "Needs API key or subscription" : provider.sublabel) + '</span>';
@@ -2822,12 +2822,12 @@
     var panel = !selected
       ? '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">' + (platform ? 'Choose the provider whose models Chickpea should use.' : 'Choose the provider you want Chickpea to use. Each option shows the setup it needs.') + '</p></div>'
       : platform
-        ? '<div class="onboarding-provider-config"><h2>Use ' + esc(selected.name) + '</h2><p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use with Chickpea credits.</p></div>'
+        ? '<div class="onboarding-provider-config"><h2>Use ' + esc(selected.name) + '</h2><p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p></div>'
         : '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>';
     var continueLabel = platform ? 'Continue' : 'Validate and Continue';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
-      '<p class="onboarding-lede">' + (platform ? 'Choose a provider. Chickpea credits pay for its models.' : 'Choose a provider, then finish the setup it needs.') + '</p>' +
+      '<p class="onboarding-lede">' + (platform ? 'Choose a provider. No API key is needed.' : 'Choose a provider, then finish the setup it needs.') + '</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
       '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? (platform ? 'Continuing&hellip;' : 'Validating&hellip;') : continueLabel) + '</button>' +
@@ -10247,7 +10247,7 @@
     var repair = health.status !== "repair_required"
       ? ""
       : health.code === "funding_not_offered"
-        ? '<p class="hint">Not offered with Chickpea credits. Choose another model.</p>'
+        ? '<p class="hint">Not offered with Chickpea&rsquo;s models. Choose another model.</p>'
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
     var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
@@ -13073,7 +13073,7 @@
     if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_provider") return;
     var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
     if (!providerId) return;
-    // Credits need no key: the provider step only records the choice.
+    // Chickpea's models need no key: the provider step only records the choice.
     var platform = onboardingPaysWithPlatform() && providerId !== "cloudflare";
     var configured = platform || onboardingProviderConfigured(providerId);
     var addsOpenAiKey = providerId === "openai" && !configured;

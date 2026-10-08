@@ -9934,7 +9934,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     if (!isProviderKeyId(providerId)) return false;
     const env = c.env as PlatformEnv | undefined;
-    // Credits pay for the request with Chickpea's own key.
+    // On Chickpea's models, Chickpea's own key pays for the request.
     if (await installationFunding(env) === 'platform') return true;
     if (providerId === 'openai') {
       const settingsStore = settings(c);
@@ -10147,9 +10147,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // Where the host sells credits, the Owner's first onboarding choice: the
-  // host records it, and the journey keeps it. Once onboarding ends, the Plan
-  // and credits page switches an installation's funding.
+  // Where the host sells Chickpea's models, the Owner's first onboarding
+  // choice: the host records it, and the journey keeps it. Once onboarding
+  // ends, the Plan page switches an installation's funding.
   app.post('/admin/api/onboarding/funding', async (c) => {
     const parsed = v.safeParse(onboardingFundingSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
@@ -12736,11 +12736,11 @@ async function codingModelChoiceError(input: {
   );
   if (!unavailable) return undefined;
   return unavailable === 'funding_not_offered'
-    ? CREDITS_NOT_OFFERED_TEXT
+    ? PLATFORM_NOT_OFFERED_TEXT
     : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
 
-const CREDITS_NOT_OFFERED_TEXT = 'Not offered with Chickpea credits. Choose another model.';
+const PLATFORM_NOT_OFFERED_TEXT = 'Not offered with Chickpea’s models. Choose another model.';
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');

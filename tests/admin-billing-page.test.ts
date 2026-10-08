@@ -521,7 +521,7 @@ test('a switch to Chickpea\'s models the host refuses keeps the confirmation ope
   assert.match(page.html(), /data-action="billing-funding-confirm">Switch to Chickpea&rsquo;s models<\/button>/);
 });
 
-test('no page state uses words the customer never sees', async () => {
+test('no Plan page or onboarding state uses words the customer never sees', async () => {
   const states: Array<[string, Parameters<typeof harness>[0], Array<Record<string, string>>]> = [
     ['plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-own-key' }]],
     ['frozen', { path: '/admin/plan', billingOffered: true, summary: FROZEN }, [{ 'data-action': 'billing-change-plan' }]],
@@ -543,6 +543,19 @@ test('no page state uses words the customer never sees', async () => {
       assert.doesNotMatch(page.html(), /credit|markup|refund|multiplier/i, `${label} after ${target['data-action']}`);
     }
   }
+  const onboarding = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE });
+  const steps: Array<[string, Record<string, string> | null]> = [
+    ['the funding choice', null],
+    ['the provider step on Chickpea\'s models', { 'data-action': 'onboarding-funding', 'data-funding': 'platform' }],
+    ['a provider chosen', { 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }],
+    ['the funding choice again', { 'data-action': 'onboarding-funding-change' }],
+    ['the provider step on your own key', { 'data-action': 'onboarding-funding', 'data-funding': 'own_key' }],
+  ];
+  for (const [label, target] of steps) {
+    if (target) await onboarding.click(target);
+    assert.doesNotMatch(onboarding.html(), /credit|markup|refund|multiplier/i, `onboarding: ${label}`);
+  }
+  assert.match(onboarding.html(), /Choose your model provider/, 'the walk reached the own-key provider step');
 });
 
 test('standalone shows nothing new: no billing request, no page, and onboarding goes straight to providers', async () => {
@@ -553,7 +566,7 @@ test('standalone shows nothing new: no billing request, no page, and onboarding 
 
   const onboarding = await harness({ path: '/admin/onboarding', billingOffered: false });
   assert.match(onboarding.html(), /Choose your model provider/);
-  assert.doesNotMatch(onboarding.html(), /Chickpea credits|onboarding-funding|Change how you pay/);
+  assert.doesNotMatch(onboarding.html(), /Chickpea&rsquo;s models|onboarding-funding|Change how you pay/);
 });
 
 test('hosted onboarding offers Chickpea\'s models first; choosing them skips the key', async () => {
@@ -563,20 +576,21 @@ test('hosted onboarding offers Chickpea\'s models first; choosing them skips the
   const platform = offer.indexOf('data-funding="platform"');
   const ownKey = offer.indexOf('data-funding="own_key"');
   assert.ok(platform >= 0 && ownKey > platform, 'Chickpea\'s models come first, your own key second');
-  assert.match(offer, /<strong>Use Chickpea credits<\/strong>/);
-  assert.match(offer, /<strong>Use your own key<\/strong>/);
+  assertShows(offer, 'Use Chickpea’s models, or connect a model provider with your own API key.');
+  assertShows(offer, '<strong>Use Chickpea’s models</strong><span>No API key needed. Replies draw on your workspace’s usage.</span>');
+  assertShows(offer, '<strong>Use your own key</strong><span>Connect an Anthropic, OpenAI, or OpenRouter API key. The provider bills you directly.</span>');
 
   await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'platform' });
   assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
     JSON.stringify(request.body) === JSON.stringify({ expectedRevision: 'revision_1', funding: 'platform' })));
-  assert.match(page.html(), /Paid with credits/);
-  assert.match(page.html(), /Choose a provider\. Chickpea credits pay for its models\./);
+  assert.match(page.html(), /<span class="onboarding-provider-tab-status">No key needed<\/span>/);
+  assert.match(page.html(), /<p class="onboarding-lede">Choose a provider\. No API key is needed\.<\/p>/);
   assert.match(page.html(), /Choose the provider whose models Chickpea should use\./);
   assert.doesNotMatch(page.html(), /finish the setup it needs|shows the setup it needs/);
   assert.doesNotMatch(page.html(), /onboarding-provider-key|Paste your key|Workers AI/);
 
   await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
-  assert.match(page.html(), /Anthropic is ready to use with Chickpea credits\./);
+  assert.match(page.html(), /<h2>Use Anthropic<\/h2><p class="onboarding-provider-ready">Anthropic is ready to use\.<\/p>/);
   await page.click({ 'data-action': 'onboarding-provider-continue' });
   assert.equal(page.requests.some((request) => request.path.startsWith('/admin/api/providers/')), false, 'no key is saved or validated');
   assert.ok(page.requests.some((request) => request.path === '/admin/api/onboarding/provider' &&
@@ -592,19 +606,19 @@ test('choosing your own key in hosted onboarding keeps the key step', async () =
   await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
   assert.match(page.html(), /Needs API key/);
   assert.match(page.html(), /id="onboarding-provider-key"/);
-  assert.doesNotMatch(page.html(), /Paid with credits/);
+  assert.doesNotMatch(page.html(), /onboarding-provider-tab-status">No key needed/);
 });
 
 test('a reload continues from the saved choice: Chickpea\'s models to keyless providers, your own key to the key step', async () => {
   const platform = await harness({ path: '/admin/onboarding', billingOffered: true, summary: TEAM_PLAN, savedFunding: 'platform' });
-  assert.match(platform.html(), /Paid with credits/);
+  assert.match(platform.html(), /onboarding-provider-tab-status">No key needed/);
   assert.doesNotMatch(platform.html(), /Choose how to pay for models/);
   assert.match(platform.html(), /data-action="onboarding-funding-change"[^>]*>Change how you pay<\/button>/);
   await platform.click({ 'data-action': 'onboarding-funding-change' });
   assert.match(platform.html(), /Choose how to pay for models/);
 
   const ownKey = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE, savedFunding: 'own_key' });
-  assert.doesNotMatch(ownKey.html(), /Choose how to pay for models|Paid with credits/);
+  assert.doesNotMatch(ownKey.html(), /Choose how to pay for models|onboarding-provider-tab-status">No key needed/);
   await ownKey.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' });
   assert.match(ownKey.html(), /id="onboarding-provider-key"/);
   assert.equal(ownKey.requests.some((request) => request.path === '/admin/api/onboarding/funding'), false);
