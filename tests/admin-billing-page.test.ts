@@ -17,7 +17,7 @@ import {
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, OWN_KEY_AT_LAUNCH, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_AT_LAUNCH, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -282,6 +282,31 @@ test('an Owner on the Team plan sees the meter in dollars, what carried over, ex
   ]);
 });
 
+test('an Owner on a plan with no recorded period sees the plan by name, with no meter, and can still add extra usage', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD })).html();
+  assert.equal(lede(html), PLAN_LEDE);
+  assert.match(html, /<div class="usage-card usage-card-primary"><span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span><\/div>/);
+  assertHides(html, 'No plan');
+  assert.doesNotMatch(html, /role="meter"/);
+  assertHides(html, 'resets');
+  assert.match(html, /<h2 class="section-title">Plan<\/h2><p><strong>Team<\/strong><\/p><p class="hint">\$200 a month includes \$240 of usage\.<\/p>/);
+  assertHides(html, 'Renews');
+  assert.match(html, /<li>Extra usage: \$40<\/li>/);
+  for (const dollars of [25, 50, 100]) {
+    assert.match(html, new RegExp(`data-action="billing-add-extra-usage" data-key="extra_usage_${dollars}">Add \\$${dollars}</button>`));
+  }
+
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, funding: 'own_key' } })).html();
+  assert.equal(lede(ownKey), 'Your workspace pays for models with its own API key. Your plan covers tasks.');
+});
+
+test('a Member on a plan with no recorded period sees the plan by name, not no plan', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD })).html();
+  assert.equal(lede(html), PLAN_LEDE);
+  assert.match(html, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span>/);
+  assertHides(html, 'No plan');
+});
+
 test('each Stripe button asks the host for a Stripe page and opens the URL it returns', async () => {
   const extra = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN });
   await extra.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_50' });
@@ -343,6 +368,11 @@ test('a trial shows what is left and until when, as the card without a plan and 
   assert.match(both.html(), /<li>Extra usage: \$40<\/li><li>\$32\.50 of trial usage left, until Nov 6<\/li><\/ul>/);
   assert.match(both.html(), /<span class="usage-card-label">Plan usage<\/span>/);
   assert.equal(lede(both.html()), PLAN_LEDE, 'a plan\'s meter outranks the trial');
+
+  const noPeriod = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, trial: TRIAL.trial } })).html();
+  assert.match(noPeriod, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span>/);
+  assert.match(noPeriod, /<li>Extra usage: \$40<\/li><li>\$32\.50 of trial usage left, until Nov 6<\/li><\/ul>/);
+  assert.equal(lede(noPeriod), PLAN_LEDE, 'a plan outranks the trial without a period too');
 });
 
 test('an own key in its grace says until when, which plans an own key can choose, and offers Chickpea\'s models', async () => {
@@ -609,6 +639,8 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['frozen', { path: '/admin/plan', billingOffered: true, summary: FROZEN }, [{ 'data-action': 'billing-change-plan' }]],
     ['trial', { path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL.trial } }, []],
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
+    ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
+    ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
     ['grace', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
     ['grace ended', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST }, []],
     ['own key at launch', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],

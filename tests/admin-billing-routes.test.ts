@@ -15,7 +15,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
-import { NO_PLAN, OWN_KEY_AT_LAUNCH, PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_AT_LAUNCH, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
 const INSTALLATION = 'inst_billing';
@@ -73,6 +73,7 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 
 const TEAM_STATUS = {
   funding: 'platform',
+  planName: 'Team',
   meter: { used: '$128', included: '$240', percent: 53, onPacePercent: 80, resets: 'Nov 7' },
   rollover: '$20',
   extraUsage: { remaining: '$40', frozen: false, until: 'Sep 14, 2027' },
@@ -154,6 +155,12 @@ test('the status leaves out what is empty: no zero rollover or extra usage, and 
   const trial = await status({ ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } });
   assert.deepEqual(trial.trial, { remaining: '$32.50', until: 'Nov 6' });
   assert.equal(trial.meter, null, 'no meter without a plan period');
+});
+
+test('a Member reads the plan\'s name when the plan has no recorded period, and no meter', async (t) => {
+  const status = await (await admin(t, { port: fakePort(PLAN_NO_PERIOD).port, role: 'member' })('/admin/api/billing')).json() as Record<string, unknown>;
+  assert.equal(status.planName, 'Team');
+  assert.equal(status.meter, null);
 });
 
 test('an Owner of an own-key workspace at launch reads no plan, charges not yet begun, and the switch to Chickpea\'s models', async (t) => {

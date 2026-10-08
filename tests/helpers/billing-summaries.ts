@@ -53,6 +53,9 @@ export const TEAM_PLAN: BillingSummary = {
   },
 };
 
+/** The Team plan before its next subscription event records a period, so there is no meter. */
+export const PLAN_NO_PERIOD: BillingSummary = { ...TEAM_PLAN, period: null, planUsage: null, rollover: null };
+
 /** Below the lowest plan for an own key. */
 export const STARTER_PLAN: BillingSummary = {
   ...NO_PLAN,

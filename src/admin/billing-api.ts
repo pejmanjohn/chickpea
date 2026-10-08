@@ -55,7 +55,8 @@ interface NamedUse {
 /** What everyone sees. Amounts are formatted dollars; dates are formatted UTC days, "Nov 7" or "Oct 7, 2027". */
 interface BillingStatus {
   funding: BillingFunding;
-  /** Null without a plan period. */
+  planName: string | null;
+  /** Null without a plan period, which a plan can lack until its next subscription event. */
   meter: { used: string; included: string; percent: number; onPacePercent: number | null; resets: string } | null;
   /** Null when nothing carried over. */
   rollover: string | null;
@@ -186,6 +187,7 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer, now: Date): 
   const { planUsage, period, rollover, extraUsage, trial } = summary;
   return {
     funding: summary.funding,
+    planName: summary.plan?.name ?? null,
     meter: planUsage && period && {
       used: formatUsageDollars(planUsage.usedMicros, 'down'),
       included: formatUsageDollars(planUsage.includedMicros),

@@ -2534,11 +2534,13 @@
       ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
         (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
         '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
-      : billing.trial
-        ? '<span class="usage-card-label">Trial</span><span class="billing-meter-text">' + billingTrialText(billing.trial) + '</span>'
-        : billing.funding === "platform"
-          ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">No plan</span><span class="hint">Choose a plan for monthly usage.</span>'
-          : '';
+      : billing.planName
+        ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">' + esc(billing.planName) + '</span>'
+        : billing.trial
+          ? '<span class="usage-card-label">Trial</span><span class="billing-meter-text">' + billingTrialText(billing.trial) + '</span>'
+          : billing.funding === "platform"
+            ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">No plan</span><span class="hint">Choose a plan for monthly usage.</span>'
+            : '';
     var lines = [];
     if (billing.rollover) lines.push('Carried from last month: ' + esc(billing.rollover));
     if (billing.extraUsage) {
@@ -2546,7 +2548,7 @@
         ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + esc(billing.extraUsage.until)
         : 'Extra usage: ' + esc(billing.extraUsage.remaining));
     }
-    if (meter && billing.trial) lines.push(billingTrialText(billing.trial));
+    if (billing.trial && (meter || billing.planName)) lines.push(billingTrialText(billing.trial));
     return notice +
       (card ? '<div class="usage-grid billing-grid"><div class="usage-card usage-card-primary">' + card + '</div></div>' : '') +
       (lines.length ? '<ul class="billing-lines">' + lines.map(function (line) { return '<li>' + line + '</li>'; }).join("") + '</ul>' : '');
@@ -2648,8 +2650,8 @@
   }
 
   function billingLede(billing) {
-    if (billing.funding === "own_key") return 'Your workspace pays for models with its own API key.' + (billing.meter ? ' Your plan covers tasks.' : '');
-    if (billing.meter) return 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
+    if (billing.funding === "own_key") return 'Your workspace pays for models with its own API key.' + (billing.planName ? ' Your plan covers tasks.' : '');
+    if (billing.planName) return 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
     if (billing.trial) return 'Your trial includes usage for your Agents&rsquo; chat and tasks.';
     return 'Your workspace has no plan. Plans include usage for your Agents&rsquo; chat and tasks.';
   }
