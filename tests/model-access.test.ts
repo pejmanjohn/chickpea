@@ -543,6 +543,7 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
 
     const access = await lookup(worker(instanceId), envA);
+    assert.equal(access.runKind, undefined, 'its coordinator posts the run\'s fees; a worker posts none');
     assert.deepEqual('grant' in access && access.grant, {
       installationId: 'inst_a', providerId: 'anthropic', credentialRefId: frozen.credentialRefId,
       credentialVersion: frozen.credentialVersion, runId: `sub_${instanceId}`, fundingSource: 'customer',
@@ -641,6 +642,7 @@ test('the Slack lookup binds the plan staged for the attempt\'s TurnJob, and nev
       credentialVersion: 1, runId: 'sub_lookup', fundingSource: 'customer',
     });
     assert.equal(JSON.stringify(plan).includes('sk-ant-worker-secret'), false, 'the plan freezes a reference, never the key');
+    assert.equal(attempt.runKind, 'interactive', 'a Slack turn is a reply run a person asked for');
 
     // A thread instance's TurnJob with no staged plan: the lookup broke, so the attempt fails closed.
     await assert.rejects(lookupWithin('turn_never_staged', 'sub_other'),
@@ -705,6 +707,7 @@ test('the routine lookup binds the running occurrence\'s frozen plan, owned by t
     await dispatch('hosted', hostedInstance, compiledPlan(envA));
     const hosted = await lookupAttemptModelAccess(routineContext(hostedInstance), async () => envA);
     assert.equal('grant' in hosted && hosted.grant.installationId, 'inst_a');
+    assert.equal(hosted.runKind, 'scheduled');
     await assert.rejects(lookupAttemptModelAccess(routineContext(hostedInstance), async () => envB),
       /belongs to another installation/);
     await dispatch('unowned', scopedObjectName({ installationId: 'inst_a' }, 'routineagent_unowned'), compiledPlan());
