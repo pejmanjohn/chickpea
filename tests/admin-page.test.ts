@@ -352,7 +352,6 @@ function effectiveConfig(agent: typeof releaseAgent, channelId: string): unknown
       model: agent.model,
       provider: 'local-stub',
       instructions: `${agent.name} resolved instructions.`,
-      instructionLayers: [{ source: 'profile', label: 'Profile', text: agent.instructions }],
       snapshotHash: `sha256-${channelId}`,
     },
   };

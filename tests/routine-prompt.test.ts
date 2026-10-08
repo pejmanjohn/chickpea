@@ -93,7 +93,7 @@ test('a private routine hydrates only its stored thread with the saved task as a
       workspaceId: 'T_TEST', channelId: 'D_TEST', agentId: 'agent_private',
       agent: { id: 'agent_private', name: 'Private Agent', enabled: true },
       model: 'openai/gpt-5', provider: 'openai', instructions: 'Be useful.',
-      instructionLayers: [], modelAttribution: { source: 'pinned', providerId: 'openai' },
+      modelAttribution: { source: 'pinned', providerId: 'openai' },
     },
     accessHash: 'a'.repeat(64), botToken: 'xoxb-test', botUserId: 'UBOT',
     actorMembershipId: 'membership_private', actorSlackUserId: 'U_MEMBER',
@@ -143,7 +143,7 @@ test('scheduled thread prompts recover bounded admitted corrections', async () =
       ownerMembershipId: 'member' } } as RoutineDefinition;
   const occurrence = { id: 'run_context', scheduledFor, revision: { taskText: 'Report the corrected budget.' } } as RoutineRun;
   const access = { config: { workspaceId: 'T_TEST', channelId: 'D_TEST', agentId: 'agent_test',
-    agent: { id: 'agent_test', enabled: true }, instructionLayers: [], instructions: '' },
+    agent: { id: 'agent_test', enabled: true }, instructions: '' },
     actorSlackUserId: 'U_MEMBER', botUserId: 'U_BOT' } as never;
   let calls = 0;
   const client = { conversations: { replies: async () => {

@@ -13267,7 +13267,6 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
     model: config.model,
     provider: config.provider,
     instructions: config.instructions,
-    instructionLayers: config.instructionLayers,
     snapshotHash: computeSnapshotHash(config),
   };
 }
