@@ -5,8 +5,10 @@
  * The host decides per installation through one port it installs at module
  * scope. Core asks it which funding an installation's runs freeze, admits
  * each platform-funded request against the balance before the proxy sends
- * it, and charges each finished request once from its request record.
- * Standalone, and any deployment with no port installed, is customer-funded.
+ * it, and charges each finished request once from its request record. It
+ * also posts each run's chat and task fee rows, on own-key installations too.
+ * Standalone, and any deployment with no port installed, is customer-funded
+ * and posts no fees.
  *
  * Fail closed. Unlike installation admission, a check that cannot be read
  * refuses the request. A positive answer serves an installation for at most
@@ -26,6 +28,45 @@ export interface PlatformFundedModel {
   readonly model: string;
 }
 
+/** Millionths of a dollar of usage at metered rates: the unit the host's ledger and the customer read. */
+export type UsageMicros = number & { readonly __unit: 'usage_micros' };
+
+/** One run as the ledger keys it: the run ID its model request records carry. */
+export interface RunRef {
+  readonly installationId: string;
+  readonly runId: string;
+}
+
+export type FeeTier = 'chat' | 'task';
+
+export interface FeePost extends RunRef {
+  readonly tier: FeeTier;
+  readonly agentId: string | null;
+}
+
+export type FeeOutcome =
+  | { readonly kind: 'posted' }
+  | { readonly kind: 'duplicate' }
+  /** No fee on this installation under the rate card in effect. */
+  | { readonly kind: 'not_applicable' }
+  /** Task tier only: the spendable balance is not above zero, so the row was not written. */
+  | { readonly kind: 'refused' };
+
+export type CreditBackReason = 'provider' | 'timeout' | 'sandbox' | 'evicted' | 'chickpea';
+
+export type CreditBackOutcome =
+  | { readonly kind: 'credited'; readonly usageMicros: UsageMicros }
+  | { readonly kind: 'duplicate'; readonly usageMicros: UsageMicros }
+  /** The run posted no rows. */
+  | { readonly kind: 'nothing' };
+
+export interface RunCost {
+  /** The run's model and fee rows less its credited-back rows. */
+  readonly usageMicros: UsageMicros;
+  /** At or above the rate card's display threshold, which only the host knows. */
+  readonly shown: boolean;
+}
+
 export interface PlatformFundingPort {
   /** Whether the installation's model requests are paid from its credits. */
   funding(installationId: string): Promise<ModelRequestFundingSource>;
@@ -41,8 +82,16 @@ export interface PlatformFundingPort {
    * when Core could not price the usage, and `priceUnknownReason` says why.
    */
   charge(record: ModelRequestRecord): Promise<void>;
-  /** What a platform-funded request is charged per unit of list price, from the host's rate card. */
-  priceMultiplier(grant: ModelAccessGrant): Promise<number>;
+  /**
+   * A run's chat row at its first attempt and its task row at its first
+   * qualifying action, on platform-funded and own-key installations alike.
+   * Idempotent on `(installationId, runId, tier)`.
+   */
+  postFee(post: FeePost): Promise<FeeOutcome>;
+  /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
+  creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
+  /** What a run used, read after it settles. */
+  runCost(run: RunRef): Promise<RunCost>;
 }
 
 export const CREDITS_EXHAUSTED_CODE = 'credits_exhausted';
@@ -147,19 +196,6 @@ export async function requirePlatformFundingAdmitted(
   }
 }
 
-/** The host's multiplier over list price, refused unless it is a positive number. */
-export async function platformPriceMultiplier(grant: ModelAccessGrant): Promise<number> {
-  let multiplier: number;
-  try {
-    if (!port) throw new Error('No platform funding port is configured.');
-    multiplier = await port.priceMultiplier(grant);
-  } catch (error) {
-    throw new PlatformFundingUnavailableError(error);
-  }
-  if (!Number.isFinite(multiplier) || multiplier <= 0) throw new PlatformFundingUnavailableError();
-  return multiplier;
-}
-
 /**
  * Charges one finished request, trying once more when the first charge fails;
  * the port takes `record.requestId` as its idempotency key, so a retry never
@@ -177,6 +213,11 @@ export async function chargePlatformRequest(grant: ModelAccessGrant, record: Mod
     forgetAdmission(grant.installationId);
     throw error;
   }
+}
+
+export async function postRunFee(post: FeePost): Promise<FeeOutcome> {
+  if (!port) throw new Error('No platform funding port is configured.');
+  return port.postFee(post);
 }
 
 function forgetAdmission(installationId: string): void {

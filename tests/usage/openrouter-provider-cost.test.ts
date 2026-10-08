@@ -27,6 +27,7 @@ import {
 } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../../src/usage/store.ts';
+import { NO_RUN_FEES } from '../helpers/platform-funding.ts';
 
 // One OpenRouter credit is one US dollar: https://openrouter.ai/docs/faq ("OpenRouter
 // uses a credit system where the base currency is US dollars").
@@ -150,7 +151,7 @@ test('a platform-funded OpenRouter request is charged with the cost OpenRouter r
     funding: async () => 'platform',
     admit: async () => 'admitted',
     charge: async (record) => { charged.push(record); },
-    priceMultiplier: async () => 1.5,
+    ...NO_RUN_FEES,
   });
   const network = t.mock.method(globalThis, 'fetch', async () => recordedResponse());
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_credits' }) as PlatformEnv;

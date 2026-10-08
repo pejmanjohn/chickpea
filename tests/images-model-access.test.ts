@@ -33,6 +33,7 @@ import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const BASE_URL = 'https://images.openai.invalid/v1';
@@ -122,7 +123,7 @@ function creditsInstallation(
     charge: async (record) => {
       fundingCalls.charge.push(record);
     },
-    priceMultiplier: async () => 1.5,
+    ...NO_RUN_FEES,
   });
   return { env, fundingCalls };
 }
