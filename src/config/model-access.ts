@@ -159,16 +159,15 @@ class RunFees {
     await postRunFee({ ...this.#run, tier: 'chat' });
   }
 
-  requireTaskFee(): Promise<void> {
+  /** One post per run; a refusal only sets `refused`, which the proxy reads before the next request. */
+  postTaskFee(): Promise<void> {
     if (this.#taskFee === 'unposted') this.#taskFee = this.#postTaskFee();
-    if (this.#taskFee === 'refused') return Promise.reject(new CreditsExhaustedError());
-    return this.#taskFee === 'posted' ? Promise.resolve() : this.#taskFee;
+    return typeof this.#taskFee === 'string' ? Promise.resolve() : this.#taskFee;
   }
 
   async #postTaskFee(): Promise<void> {
     const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
     this.#taskFee = kind === 'refused' ? 'refused' : kind === 'unanswered' ? 'unposted' : 'posted';
-    if (kind === 'refused') throw new CreditsExhaustedError();
   }
 }
 
