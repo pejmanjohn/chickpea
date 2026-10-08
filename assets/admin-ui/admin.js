@@ -20,8 +20,8 @@
   // installations is run by its host, so that guidance and those steps are
   // left out there, without replacement copy.
   var SELF_HOSTED = CONFIG.selfHosted !== false;
-  // The host sells Chickpea credits: Admin has the Plan and credits page,
-  // and onboarding offers credits.
+  // The host sells Chickpea's models: Admin has the Plan page, and
+  // onboarding offers them.
   var BILLING_OFFERED = CONFIG.billingOffered === true;
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
@@ -100,11 +100,12 @@
     // ordinary members; Owners manage the durable roster here.
     team: null,
     teamLoading: false,
-    // Plan and credits: the host's answer once read, and what an Owner is
-    // waiting on ("top_up", "plan" or "portal" for a Stripe page, "funding"
-    // for a switch between credits and the workspace's own key).
+    // The Plan page: the host's answer once read, what an Owner is waiting
+    // on ("plan", "portal", "extra_usage:<key>" or "minimum_plan" for a
+    // Stripe page, "funding" for a switch between Chickpea's models and the
+    // workspace's own key), and an error with the part of the page it is for.
     billing: null,
-    billingError: "",
+    billingError: null,
     billingBusy: "",
     billingPlansOpen: false,
     billingFundingConfirm: false,
@@ -2427,19 +2428,20 @@
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
-  // ---- Plan and credits ----------------------------------------------------
-  // The host keeps the balance and sells credits through Stripe. Admin shows
-  // its answer and sends an Owner to the Stripe page it returns.
-  var BILLING_SECTION = { id: "billing", label: "Plan and credits", action: "open-billing" };
+  // ---- Plan ------------------------------------------------------------------
+  // The host keeps the plan and its usage and sells through Stripe. Admin
+  // shows its answer, with every amount already in dollars, and sends an
+  // Owner to the Stripe page it returns.
+  var BILLING_SECTION = { id: "billing", label: "Plan", action: "open-billing" };
   var billingRequest = null;
 
   function loadBilling() {
     if (billingRequest) return billingRequest;
-    state.billingError = "";
+    state.billingError = null;
     billingRequest = api("/admin/api/billing", { cache: "no-store" }).then(function (body) {
       state.billing = body;
     }).catch(function () {
-      state.billingError = "Your plan and credits could not be loaded.";
+      state.billingError = { at: "load", text: "Your plan could not be loaded." };
     }).then(function () {
       billingRequest = null;
       render();
@@ -2462,49 +2464,45 @@
     if (state.billingBusy) return;
     var next = state.billing.funding === "platform" ? "own_key" : "platform";
     state.billingBusy = "funding";
-    state.billingError = "";
+    state.billingError = null;
     render();
     postJson("/admin/api/billing/funding", "POST", { funding: next }).then(function (body) {
       state.billing = body;
       state.billingFundingConfirm = false;
     }).catch(function () {
-      state.billingError = next === "platform" ? "Could not switch to Chickpea credits. Try again." : "Could not switch to your own key. Try again.";
+      state.billingError = { at: "switch", text: next === "platform" ? "Could not switch to Chickpea’s models. Try again." : "Could not switch to your own key. Try again." };
     }).then(function () {
       state.billingBusy = "";
       render();
     });
   }
 
-  function openStripe(path, body, busy) {
+  function openStripe(path, body, busy, at) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
-    state.billingError = "";
+    state.billingError = null;
     render();
     postJson(path, "POST", body).then(function (response) {
       location.assign(response.url);
     }).catch(function () {
       state.billingBusy = "";
-      state.billingError = "Stripe could not be opened. Try again.";
+      state.billingError = { at: at, text: "Stripe could not be opened. Try again." };
       render();
     });
   }
 
-  function billingNumber(value) {
-    return Number(value).toLocaleString("en-US");
+  function billingErrorHtml(at) {
+    return state.billingError && state.billingError.at === at
+      ? '<p class="field-error" role="alert">' + esc(state.billingError.text) + '</p>'
+      : '';
   }
 
-  function billingCredits(value) {
-    return billingNumber(value) + (Number(value) === 1 ? " credit" : " credits");
+  function billingShortDate(iso) {
+    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   }
 
-  function billingDollars(cents) {
-    return (Number(cents) / 100).toLocaleString("en-US", {
-      style: "currency", currency: "USD", minimumFractionDigits: Number(cents) % 100 ? 2 : 0
-    });
-  }
-
-  function billingDate(iso) {
-    return new Date(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  function billingLongDate(iso) {
+    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   }
 
   function billingTopbarHtml() {
@@ -2513,36 +2511,109 @@
   }
 
   function billingRailHtml() {
-    return '<nav class="rail primary-shell-sidebar" aria-label="Plan and credits">' + primaryShellBrandHtml() + '<div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Plan and credits</span></div>' +
-      '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' + billingRailMeta() + '</span></button>' +
+    return '<nav class="rail primary-shell-sidebar" aria-label="Plan">' + primaryShellBrandHtml() + '<div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Plan</span></div>' +
+      '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' +
+      (state.billing && state.billing.funding === "own_key" ? "Own API key" : "Usage") + '</span></button>' +
       '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
-  function billingRailMeta() {
-    if (state.billing && state.billing.funding === "own_key") return "Own API key";
-    return state.billing && state.billing.manage ? "Balance and use" : "Balance";
+  function billingButtonHtml(action, label, key, busyKey, className) {
+    var busy = state.billingBusy;
+    return '<button type="button" class="btn ' + className + '" data-action="' + action + '"' + (key ? ' data-key="' + esc(key) + '"' : '') + (busy ? ' disabled' : '') + '>' + (busy === busyKey ? 'Opening Stripe&hellip;' : label) + '</button>';
   }
 
-  function billingUseTableHtml(heading, rows) {
-    var body = rows.length
-      ? rows.map(function (row) {
-        return '<tr><td>' + esc(row.name || "Other") + '</td><td class="number">' + billingNumber(row.credits) + '</td></tr>';
-      }).join("")
-      : '<tr><td colspan="2">No credits used yet this period.</td></tr>';
-    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + heading + '</th><th class="number">Credits</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  function billingTrialText(trial) {
+    return esc(trial.remaining) + ' of trial usage left, until ' + billingShortDate(trial.expiresAt);
+  }
+
+  function billingStatusHtml(billing) {
+    var grace = billing.ownKeyGrace;
+    var notice = grace
+      ? '<div class="usage-contract"><p>' + (new Date(grace.until).getTime() > Date.now()
+        ? 'Your workspace uses its own API key with no Chickpea charges until ' + billingLongDate(grace.until) + '. After that, your Agents need a plan to keep replying.'
+        : 'Your Agents need a plan to keep replying.') +
+        ' Plans for your own key start at ' + esc(grace.minimumPrice) + ' a month.</p></div>'
+      : '';
+    var meter = billing.meter;
+    var card = meter
+      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + billingShortDate(meter.resetsAt) +
+        (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
+        '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
+      : billing.trial
+        ? '<span class="usage-card-label">Trial</span><span class="billing-meter-text">' + billingTrialText(billing.trial) + '</span>'
+        : billing.funding === "platform"
+          ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">No plan</span><span class="hint">Choose a plan for monthly usage.</span>'
+          : '';
+    var lines = [];
+    if (billing.rollover) lines.push('Carried from last month: ' + esc(billing.rollover));
+    if (billing.extraUsage) {
+      lines.push(billing.extraUsage.frozen
+        ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + billingLongDate(billing.extraUsage.expiresAt)
+        : 'Extra usage: ' + esc(billing.extraUsage.remaining));
+    }
+    if (meter && billing.trial) lines.push(billingTrialText(billing.trial));
+    return notice +
+      (card ? '<div class="usage-grid billing-grid"><div class="usage-card usage-card-primary">' + card + '</div></div>' : '') +
+      (lines.length ? '<ul class="billing-lines">' + lines.map(function (line) { return '<li>' + line + '</li>'; }).join("") + '</ul>' : '');
   }
 
   function billingPlansHtml(billing) {
     if (!state.billingPlansOpen) return "";
     var current = billing.plan && billing.plan.key;
-    return '<section class="billing-plans" aria-labelledby="billing-plans-heading"><h2 class="section-title" id="billing-plans-heading">Choose a plan</h2>' +
+    var ownKey = billing.funding === "own_key";
+    return '<div class="billing-plans" role="group" aria-labelledby="billing-plans-heading"><h3 class="section-title" id="billing-plans-heading">Choose a plan</h3>' +
       billing.offers.plans.map(function (plan) {
         var action = plan.key === current
           ? '<span class="badge badge-on"><span class="dot"></span>Current plan</span>'
-          : '<button type="button" class="btn btn-soft" data-action="billing-choose-plan" data-key="' + esc(plan.key) + '"' + (state.billingBusy ? ' disabled' : '') + '>Choose</button>';
-        return '<div class="billing-plan"><div><strong>' + esc(plan.name) + '</strong><p class="hint">' + billingDollars(plan.priceCents) + ' a month · ' + billingCredits(plan.credits) + ' each month</p></div>' + action + '</div>';
-      }).join("") + '</section>';
+          : ownKey && !plan.ownKeyEligible
+            ? '<span class="hint">Chickpea&rsquo;s models only</span>'
+            : '<button type="button" class="btn btn-soft" data-action="billing-choose-plan" data-key="' + esc(plan.key) + '"' + (state.billingBusy ? ' disabled' : '') + '>Choose</button>';
+        return '<div class="billing-plan"><div><strong>' + esc(plan.name) + '</strong><p class="hint">' + esc(plan.price) + ' a month includes ' + esc(plan.included) + ' of usage</p>' +
+          (plan.ownKeyMinimum ? '<p class="hint">Lowest plan for your own API key</p>' : '') + '</div>' + action + '</div>';
+      }).join("") + '</div>';
+  }
+
+  function billingPlanSectionHtml(billing) {
+    var plan = billing.plan;
+    var summary = plan
+      ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
+        (billing.period ? ' Renews ' + billingShortDate(billing.period.end) + '.' : '') + '</p>'
+      : '<p class="hint">No plan</p>';
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
+      '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +
+      (plan ? billingButtonHtml("billing-manage", "Manage billing", "", "portal", "btn-ghost") : '') + '</div>' +
+      billingErrorHtml("plan") + billingPlansHtml(billing) + '</section>';
+  }
+
+  // Extra usage is spent only while a plan is active, so it is sold only then.
+  function billingExtraUsageHtml(billing) {
+    var offers = billing.offers.extraUsage;
+    var body = billing.plan
+      ? '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2></div></div>' +
+        '<div class="billing-actions">' + offers.map(function (offer) {
+          return billingButtonHtml("billing-add-extra-usage", "Add " + esc(offer.usage), offer.key, "extra_usage:" + offer.key, "btn-soft");
+        }).join("") + '</div>' +
+        (offers.length ? '<p class="hint">Extra usage is sold at face value and keeps for ' + offers[0].validMonths + ' months. You need a plan to use it.</p>' : '')
+      : '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2><p class="hint">Choose a plan to add extra usage.</p></div></div>';
+    return '<section class="usage-section">' + body + billingErrorHtml("extra_usage") + '</section>';
+  }
+
+  function billingUseTableHtml(heading, rows, empty) {
+    var body = rows.length
+      ? rows.map(function (row) {
+        return '<tr><td>' + esc(row.name || "Other") + '</td><td class="number">' + esc(row.used) + '</td></tr>';
+      }).join("")
+      : '<tr><td colspan="2">' + empty + '</td></tr>';
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + heading + '</th><th class="number">Used</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  function billingUseHtml(billing) {
+    var period = billing.period;
+    var empty = period ? "No usage yet this period." : "No usage yet.";
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + (period ? 'Usage this period' : 'Usage') + '</h2>' +
+      (period ? '<p class="hint">Since ' + billingShortDate(period.start) + '.</p>' : '') + '</div></div>' +
+      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) + billingUseTableHtml("Person", billing.use.byPerson, empty) + '</div></section>';
   }
 
   function billingFundingConfirmHtml(question, confirmLabel) {
@@ -2552,72 +2623,51 @@
       '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : confirmLabel) + '</button></div>';
   }
 
-  function billingOwnKeyHtml(head, billing) {
-    if (!billing.manage) return head + '<div class="usage-contract"><p>An Owner can switch to Chickpea credits.</p></div>';
-    var notice = state.billingError ? '<p class="field-error" role="alert">' + esc(state.billingError) + '</p>' : '';
-    var body = state.billingFundingConfirm
-      ? billingFundingConfirmHtml('Switch to Chickpea credits? Replies will stop using your own key.', 'Switch to credits')
-      : '<div class="usage-contract"><p>With Chickpea credits, no API key is needed. Each reply draws credits from your workspace&rsquo;s balance.</p></div>' +
-        '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea credits</button></div>';
-    return head + body + notice;
-  }
-
-  // Paying with the workspace's own key needs a key for the default model's
-  // provider, so without one the way back starts in Settings.
-  function billingUseOwnKeyHtml(billing, notice) {
-    var ownKey = billing.ownKey;
-    var stranded = ownKey.ready && ownKey.agentsWithoutKey.length
-      ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + ownKey.agentsWithoutKey.map(esc).join(", ") + '.'
-      : '';
-    var body = !ownKey.ready
-      ? '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
-        '<p class="hint">' + (ownKey.provider ? 'Your default model needs an ' + esc(providerMeta(ownKey.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>'
-      : state.billingFundingConfirm
-      ? billingFundingConfirmHtml('Switch to your own key? Replies will use your saved API key. Unused credits stay on your balance until they expire.' + stranded, 'Switch to your own key') + notice
-      : '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
-    return '<section class="usage-section">' + body + '</section>';
+  // An own key needs a plan at or above the lowest one for it, then a key for
+  // the default model's provider, so the way there starts at whichever is missing.
+  function billingSwitchHtml(billing) {
+    var next = billing.switchFunding;
+    var open = state.billingFundingConfirm;
+    var body;
+    if (next.to === "platform") {
+      body = open
+        ? billingFundingConfirmHtml('Switch to Chickpea&rsquo;s models? Replies will stop using your own key.', 'Switch to Chickpea&rsquo;s models')
+        : '<div class="usage-contract"><p>With Chickpea&rsquo;s models, no API key is needed. Replies draw on your plan&rsquo;s usage.</p></div>' +
+          '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea&rsquo;s models</button></div>';
+    } else if (!next.ready && next.needs === "key") {
+      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
+        '<p class="hint">' + (next.provider ? 'Your default model needs an ' + esc(providerMeta(next.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>';
+    } else if (!open) {
+      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
+    } else if (next.ready) {
+      body = billingFundingConfirmHtml('Switch to your own key? Your provider bills you for the model directly, and your plan covers tasks.' +
+        (next.agentsWithoutKey.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + next.agentsWithoutKey.map(esc).join(", ") + '.' : ''),
+        'Switch to your own key');
+    } else {
+      body = '<div class="callout"><span>Your own API key needs the ' + esc(next.minimumPlan.price) + ' plan or higher. Choose it first, then switch to your own key.</span></div>' +
+        '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (state.billingBusy ? ' disabled' : '') + '>Cancel</button>' +
+        billingButtonHtml("billing-choose-minimum-plan", "Choose the " + esc(next.minimumPlan.price) + " plan", next.minimumPlan.key, "minimum_plan", "btn-primary") + '</div>';
+    }
+    return '<section class="usage-section">' + body + billingErrorHtml("switch") + '</section>';
   }
 
   function billingMainHtml() {
     var billing = state.billing;
-    var ownKey = !!(billing && billing.funding === "own_key");
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan and credits</h1><p class="hint">' +
-      (ownKey ? 'Your workspace pays for models with its own API key.' : 'Credits pay for the models your Agents use.') + '</p></div></div>';
-    if (ownKey) return billingOwnKeyHtml(head, billing);
+    var lede = billing && billing.funding === "own_key"
+      ? 'Your workspace pays for models with its own API key.' + (billing.meter ? ' Your plan covers tasks.' : '')
+      : 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1><p class="hint">' + lede + '</p></div></div>';
     if (!billing) {
-      if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
-      return head + '<div class="empty"><p class="hint">Loading your plan and credits&hellip;</p></div>';
+      if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
+      return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';
     }
-    var balance = '<div class="usage-card usage-card-primary"><span class="usage-card-label">Balance</span><span class="usage-card-value">' + billingNumber(billing.balance) + '</span><span class="hint">' + (Number(billing.balance) === 1 ? "credit" : "credits") + '</span></div>';
-    var notice = state.billingError ? '<p class="field-error" role="alert">' + esc(state.billingError) + '</p>' : '';
-    if (!billing.manage) {
-      return head + '<div class="usage-grid billing-grid">' + balance + '</div>' +
-        '<div class="usage-contract"><p>An Owner can add credits or change the plan.</p></div>' + notice;
-    }
-    var used = billing.use.byAgent.reduce(function (sum, row) { return sum + Number(row.credits); }, 0);
-    var plan = billing.plan;
-    var planOffer = plan && billing.offers.plans.find(function (offer) { return offer.key === plan.key; });
-    var planHint = plan
-      ? (planOffer ? billingDollars(planOffer.priceCents) + ' a month · ' : '') + 'renews ' + billingDate(billing.period.end)
-      : 'Choose a plan for monthly credits.';
-    var cards = '<div class="usage-grid billing-grid">' + balance +
-      '<div class="usage-card"><span class="usage-card-label">Used this period</span><span class="usage-card-value">' + billingNumber(used) + '</span><span class="hint">credits since ' + billingDate(billing.period.start) + '</span></div>' +
-      '<div class="usage-card"><span class="usage-card-label">Plan</span><span class="usage-card-value">' + esc(plan ? plan.name : "No plan") + '</span><span class="hint">' + esc(planHint) + '</span></div></div>';
-    var busy = state.billingBusy;
-    var topUp = billing.offers.topUps[0];
-    var buttonHtml = function (action, label, key, busyKey, className) {
-      return '<button type="button" class="btn ' + className + '" data-action="' + action + '"' + (key ? ' data-key="' + esc(key) + '"' : '') + (busy ? ' disabled' : '') + '>' + (busy === busyKey ? 'Opening Stripe&hellip;' : label) + '</button>';
-    };
-    var actions = '<div class="billing-actions">' +
-      (topUp ? buttonHtml("billing-top-up", "Top up", topUp.key, "top_up", "btn-primary") : '') +
-      buttonHtml("billing-change-plan", "Change plan", "", "plan", "btn-soft") +
-      buttonHtml("billing-manage", "Manage billing", "", "portal", "btn-ghost") + '</div>' +
-      (topUp ? '<p class="hint">Top up adds ' + billingCredits(topUp.credits) + ' for ' + billingDollars(topUp.priceCents) + '. They last ' + topUp.validMonths + ' months.</p>' : '');
-    // An open confirmation is the switch's, so its error shows beside it.
-    return head + cards + actions + (state.billingFundingConfirm ? '' : notice) + billingPlansHtml(billing) +
-      '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Credits used this period</h2><p class="hint">Since ' + billingDate(billing.period.start) + '.</p></div></div>' +
-      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent) + billingUseTableHtml("Person", billing.use.byPerson) + '</div></section>' +
-      billingUseOwnKeyHtml(billing, notice);
+    var status = billingErrorHtml("load") + billingStatusHtml(billing);
+    if (!billing.manage) return head + status + '<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models.</p></div>';
+    var platform = billing.funding === "platform";
+    return head + status +
+      (platform || billing.plan || billing.ownKeyGrace ? billingPlanSectionHtml(billing) : '') +
+      (platform || billing.plan ? billingExtraUsageHtml(billing) : '') +
+      billingUseHtml(billing) + billingSwitchHtml(billing);
   }
 
   function isOnboardingSlackConnection() {
@@ -13681,12 +13731,16 @@
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
     if (action === "open-billing" && BILLING_OFFERED) { openBilling(); }
     if (action === "billing-retry") { loadBilling(); }
-    if (action === "billing-top-up") openStripe("/admin/api/billing/checkout", { kind: "top_up", key: target.getAttribute("data-key") || "" }, "top_up");
+    if (action === "billing-add-extra-usage") {
+      var extraUsageKey = target.getAttribute("data-key") || "";
+      openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+    }
     if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
-    if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan");
-    if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal");
-    if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
-    if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = ""; render(); }
+    if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan", "plan");
+    if (action === "billing-choose-minimum-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "minimum_plan", "switch");
+    if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal", "plan");
+    if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = null; render(); }
+    if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = null; render(); }
     if (action === "billing-funding-confirm") switchFunding();
     if (action === "onboarding-funding" && !state.onboardingFundingBusy) { chooseOnboardingFunding(target.getAttribute("data-funding") || ""); }
     if (action === "onboarding-funding-change" && !state.onboardingBusy) {

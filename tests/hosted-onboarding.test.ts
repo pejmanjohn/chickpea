@@ -41,6 +41,7 @@ import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
@@ -422,7 +423,7 @@ test('an installation on Chickpea\'s models chooses a provider with no key; one 
 test('the Owner\'s choice between Chickpea\'s models and their own key is the host\'s to record and the journey\'s to keep; after onboarding, the Plan page switches', async (t) => {
   const chosen: BillingFunding[] = [];
   configurePlatformBilling({
-    summary: async () => ({ funding: 'own_key' }),
+    summary: async () => ({ ...NO_PLAN, funding: 'own_key' }),
     checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
     portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
     chooseFunding: async (_installationId, funding) => { chosen.push(funding); },
@@ -477,14 +478,7 @@ test('an installation on Chickpea\'s models switches back to its own key only wi
     let funding: BillingFunding = 'platform';
     const chosen: BillingFunding[] = [];
     configurePlatformBilling({
-      summary: async () => (funding === 'own_key' ? { funding } : {
-        funding,
-        balance: 900,
-        plan: null,
-        period: { start: new Date('2026-10-07T00:00:00Z'), end: new Date('2026-11-07T00:00:00Z') },
-        use: { byAgent: [], byPerson: [] },
-        offers: { plans: [], topUps: [] },
-      }),
+      summary: async () => ({ ...TEAM_PLAN, funding }),
       checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
       portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
       chooseFunding: async (_installationId, next) => { chosen.push(next); funding = next; },
@@ -510,22 +504,24 @@ test('an installation on Chickpea\'s models switches back to its own key only wi
       });
       assert.equal(saved.status, 200, await saved.clone().text());
     };
-    const ownKey = async () => (await json(admin('/admin/api/billing'))).ownKey;
+    const ownKey = async () => (await json(admin('/admin/api/billing'))).switchFunding;
     const switchToOwnKey = () => admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'own_key' }) });
 
-    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' });
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' });
     await saveKey('openrouter');
-    assert.deepEqual(await ownKey(), { ready: false, provider: 'anthropic' }, 'a key for another provider is not enough');
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' }, 'a key for another provider is not enough');
     const refused = await switchToOwnKey();
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { error: 'own_key_missing', provider: 'anthropic' });
     assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on Chickpea\'s models');
 
     await saveKey('anthropic');
-    assert.deepEqual(await ownKey(), { ready: true, agentsWithoutKey: ['Research'] },
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: true, agentsWithoutKey: ['Research'] },
       'only an active, enabled Agent pinned to a provider with no key would stop');
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      assert.deepEqual(await json(switchToOwnKey()), { funding: 'own_key', manage: true });
+      const switched = await json(switchToOwnKey());
+      assert.equal(switched.funding, 'own_key');
+      assert.deepEqual(switched.switchFunding, { to: 'platform' });
     }
     assert.deepEqual(chosen, ['own_key', 'own_key'], 'switching again asks the host for the same funding');
   });

@@ -50,7 +50,7 @@ import {
 } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
-import { createBillingAdminApi, PLAN_AND_CREDITS_PATH } from './billing-api.ts';
+import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
 import { platformBilling } from '../config/platform-billing.ts';
 import { installationFunding } from '../config/platform-funding.ts';
 import {
@@ -11989,8 +11989,8 @@ function permissionForAdminPage(path: string): Permission {
   // Settings → MCP reads only GET /admin/api/mcp-clients, which every
   // signed-in person may read.
   if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
-  // Everyone sees the balance; only an Owner's page offers to buy credits.
-  if (path === PLAN_AND_CREDITS_PATH) return 'account.view';
+  // Everyone sees the plan's usage; only an Owner's page offers to buy.
+  if (path === PLAN_PATH) return 'account.view';
   return 'admin.configure';
 }
 
