@@ -5,6 +5,7 @@ import { test, type TestContext } from 'node:test';
 import { prepareInstallationCodingWorker } from '../src/agents/coding-worker-task.ts';
 import {
   codingWorkerCloudflareExtension,
+  codingWorkerSubmissionId,
   readStagedCodingWorkerBindingFrom,
   readStagedCodingWorkerRunFrom,
   stageCodingWorkerBinding,
@@ -697,7 +698,7 @@ test('the coordinator stages each worker submission\'s parent run in the worker\
     /binding WORKERS is unavailable/);
 });
 
-test('an installation\'s coding worker is inventoried before its binding is staged; a standalone worker needs neither', async () => {
+test('every coding worker gets its task\'s parent run staged; an installation\'s is inventoried and its binding staged first', async () => {
   const calls: string[] = [];
   const env = hostedEnv(INSTALLATION_A);
   const dependencies = {
@@ -708,24 +709,38 @@ test('an installation\'s coding worker is inventoried before its binding is stag
     stage: async (_env: Record<string, unknown> | undefined, bindingName: string, instanceId: string) => {
       calls.push(`stage:${bindingName}:${instanceId}`);
     },
+    stageRun: async (
+      _env: Record<string, unknown> | undefined, bindingName: string, instanceId: string, submissionId: string, runId: string,
+    ) => {
+      calls.push(`stage-run:${bindingName}:${instanceId}:${submissionId}:${runId}`);
+    },
   };
-  await prepareInstallationCodingWorker('codingworker_x', codingWorkerBindingForPlan(plan(), THREAD_KEY), dependencies as never);
-  assert.deepEqual(calls, [], 'standalone records and stages nothing');
+  const delegation = { taskKey: 'workspace_task:call-1', runId: 'sub_coordinator' };
+  const standaloneId = codingWorkerInstanceId(codingWorkerBindingForPlan(plan(), THREAD_KEY));
+  await prepareInstallationCodingWorker(standaloneId, codingWorkerBindingForPlan(plan(), THREAD_KEY), delegation, dependencies);
+  const standaloneSubmission = await codingWorkerSubmissionId(standaloneId, delegation.taskKey);
+  assert.match(standaloneSubmission, /^sub_ik_[0-9a-f]{32}$/);
+  assert.deepEqual(calls, [
+    'env',
+    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${standaloneId}:${standaloneSubmission}:sub_coordinator`,
+  ], 'standalone records nothing and stages only the run');
 
+  calls.length = 0;
   const binding = codingWorkerBindingForPlan(plan({ installationId: INSTALLATION_A, codingCredential: true }), THREAD_KEY);
   const instanceId = codingWorkerInstanceId(binding);
-  await prepareInstallationCodingWorker(instanceId, binding, dependencies as never);
+  await prepareInstallationCodingWorker(instanceId, binding, delegation, dependencies);
   assert.deepEqual(calls, [
     'env',
     `record:coding_worker:${instanceId}`,
     `stage:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${instanceId}`,
+    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${instanceId}:${await codingWorkerSubmissionId(instanceId, delegation.taskKey)}:sub_coordinator`,
   ]);
 
   calls.length = 0;
-  await assert.rejects(prepareInstallationCodingWorker(instanceId, binding, {
+  await assert.rejects(prepareInstallationCodingWorker(instanceId, binding, delegation, {
     ...dependencies,
     record: async () => { throw new Error('state store unavailable'); },
-  } as never), /state store unavailable/);
+  }), /state store unavailable/);
   assert.deepEqual(calls, ['env'], 'a worker that could not be recorded is never staged');
 });
 

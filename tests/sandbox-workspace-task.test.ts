@@ -584,23 +584,25 @@ test('a task whose record cannot be written is refused before any dispatch', asy
   assert.equal(h.state.running.size, 0);
 });
 
-test('a worker is prepared (inventoried, its binding staged) before its task record and dispatch name it', async () => {
+test('a worker is prepared (inventoried, its binding and run staged) with its task key before its task record and dispatch name it', async () => {
   const h = harness();
   const records = recordingStore(h);
-  const prepared: string[] = [];
+  const prepared: Array<[string, string]> = [];
   const tool = taskTool(h, workspace([]), async () => reply('done'), {
     taskRecords: records.store,
-    prepareWorker: async (instanceId, binding) => {
+    prepareWorker: async (instanceId, binding, taskKey) => {
       assert.equal(instanceId, codingWorkerInstanceId(binding));
-      prepared.push(instanceId);
+      prepared.push([instanceId, taskKey]);
       h.calls.push('prepare');
     },
   });
-  assert.equal((await run(tool, h, { task: 'x' })).ok, true);
+  assert.equal((await run(tool, h, { task: 'x' }, 'call-7')).ok, true);
   assert.deepEqual(h.calls.filter((call) => /^(prepare|record:put|dispatch)/.test(call)), [
     'prepare', 'record:put:turn-1:dispatch_pending', 'dispatch', 'record:put:turn-1:accepted',
   ]);
-  assert.deepEqual(prepared, [h.dispatched[0]!.instanceId]);
+  // The worker's run is staged under the key its dispatch carries, so under the submission it runs as.
+  assert.deepEqual(prepared, [[h.dispatched[0]!.instanceId, 'workspace_task:call-7']]);
+  assert.equal(h.dispatched[0]!.idempotencyKey, 'workspace_task:call-7');
 
   // A worker that could not be prepared is never named, recorded or started.
   const refused = harness();
