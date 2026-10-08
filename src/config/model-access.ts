@@ -188,14 +188,19 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess =
+/**
+ * What the trusted host knows about one attempt before its first model call.
+ * `runId` names the run the attempt works for when that is not the attempt's
+ * own submission: a coding worker's requests belong to the run that delegated.
+ */
+export type AttemptModelAccess = { readonly runId?: string } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
   | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true; readonly agentId?: string }
   /** An agent with no persisted run of its own (the coding worker). */
-  | { readonly env: PlatformEnv | undefined; readonly agentId?: string };
+  | { readonly env: PlatformEnv | undefined; readonly agentId?: string }
+);
 
 export interface ModelAccessInterceptorOptions {
   /** The attempt's run, from trusted persisted state; never from model-visible input. */
@@ -232,7 +237,7 @@ export function createModelAccessInterceptor(
     // A new, retried or resumed attempt, before anything is decrypted.
     const installationId = hosted ? installationScopeOf(attempt.env)?.installationId : undefined;
     if (installationId) await requireInstallationAdmitted(installationId);
-    const runId = context.submissionId ?? context.instanceId ?? 'attempt';
+    const runId = attempt.runId ?? context.submissionId ?? context.instanceId ?? 'attempt';
     let grants: readonly ModelAccessGrant[] = [];
     if ('grant' in attempt) {
       grants = [attempt.grant];
@@ -242,6 +247,11 @@ export function createModelAccessInterceptor(
     const cell = await resolveCell(grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null);
     return cells.run(cell, next);
   };
+}
+
+/** The run the current attempt's requests are recorded under, if a cell is in scope. */
+export function currentModelAccessRunId(): string | undefined {
+  return cells.getStore()?.attribution.runId;
 }
 
 /** A stateless call runs inside an explicit grant, resolved once. */

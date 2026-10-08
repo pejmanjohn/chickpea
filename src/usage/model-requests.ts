@@ -13,6 +13,13 @@ export type ModelRequestOutcome = 'completed' | 'stopped' | 'error';
 /** Who pays the provider: the installation's own key, or Chickpea's, drawn from the installation's credits. */
 export type ModelRequestFundingSource = 'customer' | 'platform';
 
+/**
+ * What a request was for. `reply` is an Agent's own work inside a run its
+ * requester sees; every other purpose is named where its request starts.
+ */
+export const MODEL_REQUEST_PURPOSES = ['reply', 'image', 'intent', 'compaction', 'attachment', 'vision'] as const;
+export type ModelRequestPurpose = (typeof MODEL_REQUEST_PURPOSES)[number];
+
 export interface ModelRequestAttribution {
   readonly installationId: string;
   readonly runId: string;
