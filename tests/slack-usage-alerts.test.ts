@@ -243,6 +243,18 @@ test('a workspace whose Slack cannot be reached does not stop the others', async
   assert.deepEqual(warnings, [["[chickpea] A usage alert could not reach this workspace's Owners"]]);
 });
 
+test('installations that cannot be read report no Owner, so the host tries again', async (t) => {
+  const warnings = quietWarnings(t);
+  const slack = workspace();
+  const dependencies = {
+    ...slack.dependencies,
+    config: { listWorkspaceInstallations: async () => { throw new Error('state_unavailable'); } },
+  };
+  assert.equal(await deliverUsageAlert(HOSTED_ENV, alert({ threshold: 75 }), dependencies), 'no_owner');
+  assert.deepEqual(slack.of('conversations.open'), []);
+  assert.deepEqual(warnings, [['[chickpea] A usage alert could not read the workspace installations']]);
+});
+
 test('standalone never sends usage alerts and reads nothing', async () => {
   for (const env of [undefined, {}, { CHICKPEA_TENANCY: 'standalone' }]) {
     const slack = workspace();

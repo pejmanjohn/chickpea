@@ -89,8 +89,12 @@ export async function deliverUsageAlert(
   const resolveExecution = dependencies.installationExecution ??
     ((workspaceId: string) => resolveSlackInstallationExecutionContext(workspaceId, env));
   const message = usageAlertMessage(alert);
+  const installations = await config.listWorkspaceInstallations().catch(() => {
+    console.warn('[chickpea] A usage alert could not read the workspace installations');
+    return [];
+  });
   let sent = 0;
-  for (const installation of await config.listWorkspaceInstallations()) {
+  for (const installation of installations) {
     if (installation.health === 'revoked') continue;
     try {
       const owners = await activeOwnerSlackUserIds(identity, installation.workspaceId);
