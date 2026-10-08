@@ -53,7 +53,6 @@ function installation(workspaceId: string, health: InstallationHealth = 'healthy
   };
 }
 
-/** Two active Owners of the team, a suspended Owner, an active member, and an active Owner bound to another team. */
 const MEMBERSHIPS = [
   membership('m_owner1', 'owner', 'active'),
   membership('m_owner2', 'owner', 'active'),
@@ -69,7 +68,6 @@ const BINDINGS = [
   binding('UELSEWHERE', 'm_elsewhere', OTHER_TEAM),
 ];
 
-/** A hosted installation's stores and Slack, each recording what it was asked. */
 function workspace(options: {
   memberships?: Membership[];
   installations?: WorkspaceInstallation[];
@@ -122,7 +120,6 @@ function quietWarnings(t: TestContext): unknown[][] {
   return warnings;
 }
 
-/** Delivers to the default workspace and returns the one message each Owner was sent. */
 async function sent(usage: UsageAlert): Promise<{ text: string; blocks: Block[] }> {
   const slack = workspace();
   assert.equal(await deliverUsageAlert(HOSTED_ENV, usage, slack.dependencies), 'sent');

@@ -767,7 +767,6 @@ function modelProviderKeyContext(
 function platformRegistration(id: ProviderKeyId): CredentialRegistration {
   return {
     credentialRefId: platformCredentialRefId(id),
-    // The registry refuses new metadata on an existing epoch, so the label change needs a new version.
     version: 2,
     providerId: id,
     sourceKind: 'platform',

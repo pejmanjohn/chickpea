@@ -6,7 +6,6 @@ import { usageAlertMessage, type UsageAlert } from '../src/slack/usage-alerts.ts
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { UsageMicros } from '../src/usage/usage-display.ts';
 
-/** Words for internals a customer never sees: they read usage in dollars, never how it is metered. */
 const HIDDEN_WORDS = /\b(credits?|steps|multiplier|cache|prefix|working reply|refunds?|markup)\b/i;
 
 const base: UsageAlert = {

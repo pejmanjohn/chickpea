@@ -31,7 +31,6 @@ export interface UsageAlertDependencies {
 
 type UsageAlertButton = 'upgrade' | 'add_extra_usage' | 'turn_off_auto_upgrade';
 
-/** Outside the host UI namespaces; each button only opens the Plan page. */
 const BUTTONS: Record<UsageAlertButton, { readonly actionId: string; readonly label: string }> = {
   upgrade: { actionId: 'chickpea.usage.v1.upgrade', label: 'Upgrade' },
   add_extra_usage: { actionId: 'chickpea.usage.v1.add_extra_usage', label: 'Add extra usage' },
@@ -77,7 +76,6 @@ export function usageAlertMessage(alert: UsageAlert): UsageAlertMessage {
   return { text, blocks: [section, actions] };
 }
 
-/** The host releases its claim and retries on 'no_owner', so 'sent' means at least one Owner got the DM. */
 export async function deliverUsageAlert(
   env: PlatformEnv | undefined,
   alert: UsageAlert,
