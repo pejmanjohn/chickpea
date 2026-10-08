@@ -38,6 +38,13 @@ import { resolveModelCredentialAttribution } from '../config/model-credential-re
 import { isCreditsExhausted, platformFundingConfigured, postRunFee } from '../config/platform-funding.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import {
+  creditBackFailedRun,
+  creditBackReason,
+  hostedRun,
+  runCostLine,
+  withCreditedBack,
+} from '../usage/run-settlement.ts';
+import {
   imageCapabilityForResolution,
   resolveAgentModelRoleFromStore,
   type ModelRoleReader,
@@ -256,6 +263,11 @@ export async function executeRoutineOccurrence(
         }).catch(() => undefined),
       ]);
     }
+    // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
+    const creditedBack = await creditBackFailedRun(
+      hostedRun(input.env, admission.flueAgentReceipt?.submissionId),
+      creditBackReason(failure.failureClass),
+    );
     let terminalFailure = false;
     if (
       failure.failureClass === 'assignment_missing' &&
@@ -286,7 +298,7 @@ export async function executeRoutineOccurrence(
             store: input.store,
             runId: current.id,
             access: freshAccess,
-          }, terminalRun.publicError ?? failure.publicError);
+          }, withCreditedBack(terminalRun.publicError ?? failure.publicError, creditedBack));
         }
       }
     }
@@ -316,6 +328,8 @@ export async function executeRoutineOccurrence(
   let modelSettled = false;
   // Why the attempt ended without a result to post: refused, or an outage.
   let withoutResult: SkipReason | undefined;
+  // A credits refusal after a tool call settles as an unknown external outcome; it is still not ours to credit back.
+  let outOfUsage = false;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
   // Only model execution and result validation belong to this catch. Once a
@@ -410,6 +424,7 @@ export async function executeRoutineOccurrence(
     };
   } catch (error) {
     const toolCallCount = toolCalls.count;
+    outOfUsage = isCreditsExhausted(error);
     // A model request the installation's admission refused, or the deployment
     // keyring not loading, ended the attempt: not the routine's failure.
     withoutResult = isInstallationRefusal(error) ? REFUSED_SKIP
@@ -447,7 +462,7 @@ export async function executeRoutineOccurrence(
     // is skipped, and nothing is posted or counted against the routine.
     withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
     if (withoutResult) return await skipWithoutResult(prepared, withoutResult, now());
-    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId);
+    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId, outOfUsage);
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
     prepared.persistence.emit();
@@ -899,6 +914,7 @@ async function finalizeSettlement(
   settlement: RoutineAgentSettlementV1,
   at: number,
   submissionId: string | undefined,
+  outOfUsage = false,
 ): Promise<RoutineExecutionOutcome> {
   if (settlement.outcome === 'completed') {
     prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
@@ -919,12 +935,14 @@ async function finalizeSettlement(
           safeFailureCode: routineLifecycleFailureCode(refusedTask.failureClass),
         });
       } else if (prepared.run.deliveryStatus === 'none') {
+        const usageLine = await runCostLine(hostedRun(prepared.env, submissionId));
         try {
           await deliverRoutineResult({
             store: prepared.store, run: prepared.run, routine: prepared.routine,
             access: prepared.access, message: settlement.result.message,
             changeKeyHash: settlement.result.changeKeyHash,
             ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
+            ...(usageLine ? { usageLine } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
           }, prepared.access.client);
         } catch (error) {
@@ -946,6 +964,7 @@ async function finalizeSettlement(
     } else {
       await prepared.workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
     }
+    if (failure) await creditBackFailedRun(hostedRun(prepared.env, submissionId), creditBackReason(failure.failureClass));
     const usage = settlement.result.usage;
     prepared.run = await prepared.store.transitionRun({
       occurrenceId: prepared.run.id,
@@ -978,6 +997,11 @@ async function finalizeSettlement(
     if (failure) await deliverPauseNoticeBestEffort(prepared);
     return 'completed';
   }
+  // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
+  const creditedBack = await creditBackFailedRun(
+    hostedRun(prepared.env, submissionId),
+    creditBackReason(outOfUsage ? 'spend_limited' : settlement.failureClass),
+  );
   await prepared.workLifecycle?.settleWithoutDelivery({
     terminalDisposition: 'failed',
     safeFailureCode: routineLifecycleFailureCode(settlement.failureClass),
@@ -1004,7 +1028,7 @@ async function finalizeSettlement(
     runId: prepared.run.id,
     access: prepared.access,
     ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
-  }, settlement.publicError);
+  }, withCreditedBack(settlement.publicError, creditedBack));
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
 }
