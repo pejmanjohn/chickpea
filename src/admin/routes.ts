@@ -209,7 +209,6 @@ import {
   completeOnboardingJourney,
   ONBOARDING_PROVIDER_IDS,
   readOnboardingJourney,
-  selectOnboardingFunding,
   selectOnboardingProvider,
   settleOnboardingGithubStep,
   startOnboardingTry,
@@ -1569,11 +1568,6 @@ const composioProjectSetupSchema = v.strictObject({
 const onboardingProviderSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
   providerId: v.picklist(ONBOARDING_PROVIDER_IDS),
-});
-
-const onboardingFundingSchema = v.strictObject({
-  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
-  funding: v.picklist(['platform', 'own_key']),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -10075,6 +10069,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           name: slack.teamId === journey.selectedWorkspaceId ? (slack.teamName ?? null) : null,
         },
         channel: null,
+        ...(journey.selectedFunding ? { funding: journey.selectedFunding } : {}),
         providerId: journey.selectedProviderId ?? null,
         modelId: journey.selectedModelId ?? null,
         models: [],
@@ -10147,12 +10142,149 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // Where the host sells Chickpea's models, the Owner's first onboarding
-  // choice: the host records it, and the journey keeps it. Once onboarding
-  // ends, the Plan page switches an installation's funding.
-  app.post('/admin/api/onboarding/funding', async (c) => {
-    const parsed = v.safeParse(onboardingFundingSchema, await readJson(c.req));
+  /**
+   * The chosen model becomes the workspace default, a legacy workspace cuts
+   * over to Chickpea, and the journey starts Try.
+   */
+  const startOnboardingTryWithModel = async (
+    c: Context,
+    snapshot: OnboardingSnapshot,
+    choice: {
+      workspaceId: string;
+      providerId: OnboardingProviderId;
+      modelId: string;
+      expectedDefaultRevision: number;
+    },
+  ): Promise<Response> => {
+    const principal = principalByContext.get(c)!;
+    const { workspaceId } = choice;
+    const modelOptions = await onboardingModelOptions(c, choice.providerId);
+    if (!modelOptions.includes(choice.modelId)) {
+      return invalidRequest(c, 'Choose a model from the selected provider.');
+    }
+    if (!await onboardingProviderReady(c, choice.providerId)) {
+      return c.json({ error: 'onboarding_provider_not_configured' }, 409);
+    }
+    const compatibilityError = await activeCatalogCompatibilityError(
+      choice.modelId,
+      await resolveOpenAiAuthMethod(settings(c)),
+      settings(c), c.env as PlatformEnv | undefined,
+    );
+    if (compatibilityError) return invalidRequest(c, compatibilityError);
+    const slack = await onboardingSlackContext(c);
+    if (!slack.connected || !slack.teamId) {
+      return c.json({ error: 'slack_not_connected' }, 409);
+    }
+    if (slack.teamId !== workspaceId) {
+      return c.json({ error: 'workspace_mismatch' }, 400);
+    }
+    const actor = await agentActor(c);
+    if (actor.slackTeamId !== workspaceId) {
+      return c.json({ error: 'workspace_mismatch' }, 400);
+    }
+    const installation = await store(c).getWorkspaceInstallation(workspaceId);
+    if (!installation) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    if (!(slack.appId ?? installation.appId)) {
+      return c.json({ error: 'slack_app_id_required' }, 409);
+    }
+    try {
+      await store(c).putWorkspaceModelDefault({
+        workspaceId,
+        modelId: choice.modelId,
+        provenance: 'admin_selected',
+        lastChangedByMembershipId: principal.membershipId,
+      }, choice.expectedDefaultRevision);
+    } catch (error) {
+      if (!(error instanceof WorkspaceModelDefaultRevisionConflictError)) throw error;
+      const current = await store(c).getWorkspaceModelDefault(workspaceId);
+      if (current?.modelId !== choice.modelId) {
+        return c.json({
+          error: 'workspace_model_default_revision_conflict',
+          expectedRevision: error.expectedRevision,
+          actualRevision: error.actualRevision,
+          workspaceDefault: await workspaceModelDefaultProjection({
+            installation,
+            configStore: store(c),
+            settingsStore: settings(c),
+            platformEnv: c.env as PlatformEnv | undefined,
+            runtimeProviders: await modelProviders(c),
+          }),
+        }, 409);
+      }
+    }
+    const [currentInstallation, currentDefault] = await Promise.all([
+      store(c).getWorkspaceInstallation(workspaceId),
+      store(c).getWorkspaceModelDefault(workspaceId),
+    ]);
+    if (!currentInstallation || !currentDefault?.modelId) {
+      return c.json({ error: 'workspace_installation_required' }, 409);
+    }
+    if (currentInstallation.runtimeContract !== 'chickpea-v1') {
+      const preflight = await store(c).preflightChickpeaCutover(workspaceId);
+      if (preflight.blockers.length) {
+        return c.json({
+          error: 'chickpea_cutover_preflight_failed',
+          blockers: preflight.blockers,
+        }, 409);
+      }
+      try {
+        await store(c).activateChickpeaCutover({
+          workspaceId,
+          expectedInstallationRevision: currentInstallation.revision,
+          expectedDefaultRevision: currentDefault.revision,
+          defaultReady: true,
+        });
+      } catch (error) {
+        if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
+          return c.json({ error: 'workspace_model_default_revision_conflict' }, 409);
+        }
+        throw error;
+      }
+    }
+    const started = await startOnboardingTry(settings(c), {
+      expectedRevision: snapshot.revision,
+      agentId: CHICKPEA_AGENT_ID,
+      modelId: choice.modelId,
+      slackUserId: actor.slackUserId,
+      githubStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
+        !await onboardingGithubConnectPath(c),
+    });
+    return onboardingResponse(c, started);
+  };
+
+  app.post('/admin/api/onboarding/try', async (c) => {
+    const parsed = v.safeParse(onboardingTrySchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
+    try {
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'onboarding_changed' }, 409);
+      }
+      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
+      const { selectedProviderId: providerId, selectedWorkspaceId: workspaceId } = snapshot.journey;
+      if (!providerId || !workspaceId) {
+        return c.json({ error: 'onboarding_provider_required' }, 409);
+      }
+      return await startOnboardingTryWithModel(c, snapshot, {
+        workspaceId,
+        providerId,
+        modelId: parsed.output.modelId,
+        expectedDefaultRevision: parsed.output.expectedDefaultRevision,
+      });
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  const PLATFORM_DEFAULT_MODEL = { providerId: 'anthropic', modelId: 'anthropic/claude-opus-5-5' } as const;
+
+  // Where the host sells Chickpea's models, onboarding puts the workspace on
+  // them and their default model, then goes straight to Try. A journey that
+  // already reached Try, as after a reload or another Owner, changes nothing.
+  app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
     if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
     try {
@@ -10161,129 +10293,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (!port || !installationId) return c.json({ error: 'not_found' }, 404);
       const snapshot = await readOnboardingJourney(settings(c));
       if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
-      if (snapshot.journey.state === 'complete') return c.json({ error: 'onboarding_complete' }, 409);
-      if (snapshot.revision !== parsed.output.expectedRevision) return c.json({ error: 'onboarding_changed' }, 409);
-      await port.chooseFunding(installationId, parsed.output.funding);
-      return onboardingResponse(c, await selectOnboardingFunding(settings(c), {
-        expectedRevision: snapshot.revision,
-        funding: parsed.output.funding,
-      }));
-    } catch (error) {
-      return internalError(c, error);
-    }
-  });
-
-  app.post('/admin/api/onboarding/try', async (c) => {
-    const parsed = v.safeParse(onboardingTrySchema, await readJson(c.req));
-    if (!parsed.success) return invalidRequest(c);
-    try {
-      const principal = principalByContext.get(c)!;
-      const snapshot = await readOnboardingJourney(settings(c));
-      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
-      if (snapshot.revision !== parsed.output.expectedRevision) {
-        return c.json({ error: 'onboarding_changed' }, 409);
-      }
-      if (snapshot.journey.state === 'complete') return onboardingResponse(c, snapshot);
-      const journey = snapshot.journey;
-      const providerId = journey.selectedProviderId;
-      const workspaceId = journey.selectedWorkspaceId;
-      if (!providerId || !workspaceId) {
-        return c.json({ error: 'onboarding_provider_required' }, 409);
-      }
-      const modelOptions = await onboardingModelOptions(c, providerId);
-      if (!modelOptions.includes(parsed.output.modelId)) {
-        return invalidRequest(c, 'Choose a model from the selected provider.');
-      }
-      if (!await onboardingProviderReady(c, providerId)) {
-        return c.json({ error: 'onboarding_provider_not_configured' }, 409);
-      }
-      const compatibilityError = await activeCatalogCompatibilityError(
-        parsed.output.modelId,
-        await resolveOpenAiAuthMethod(settings(c)),
-        settings(c), c.env as PlatformEnv | undefined,
-      );
-      if (compatibilityError) return invalidRequest(c, compatibilityError);
+      if (snapshot.journey.state === 'complete' || snapshot.journey.tryStartedAt) return onboardingResponse(c, snapshot);
+      if (snapshot.journey.selectedFunding === 'own_key') return c.json({ error: 'onboarding_own_key' }, 409);
       const slack = await onboardingSlackContext(c);
-      if (!slack.connected || !slack.teamId) {
-        return c.json({ error: 'slack_not_connected' }, 409);
-      }
-      if (slack.teamId !== workspaceId) {
-        return c.json({ error: 'workspace_mismatch' }, 400);
-      }
-      const actor = await agentActor(c);
-      if (actor.slackTeamId !== workspaceId) {
-        return c.json({ error: 'workspace_mismatch' }, 400);
-      }
-      const installation = await store(c).getWorkspaceInstallation(workspaceId);
-      if (!installation) {
-        return c.json({ error: 'workspace_installation_required' }, 409);
-      }
-      if (!(slack.appId ?? installation.appId)) {
-        return c.json({ error: 'slack_app_id_required' }, 409);
-      }
+      if (!slack.connected || !slack.teamId) return c.json({ error: 'slack_not_connected' }, 409);
       try {
-        await store(c).putWorkspaceModelDefault({
-          workspaceId,
-          modelId: parsed.output.modelId,
-          provenance: 'admin_selected',
-          lastChangedByMembershipId: principal.membershipId,
-        }, parsed.output.expectedDefaultRevision);
+        await port.chooseFunding(installationId, 'platform');
+        const selected = await selectOnboardingProvider(settings(c), {
+          expectedRevision: snapshot.revision,
+          workspaceId: slack.teamId,
+          providerId: PLATFORM_DEFAULT_MODEL.providerId,
+        });
+        return await startOnboardingTryWithModel(c, selected, {
+          workspaceId: slack.teamId,
+          providerId: PLATFORM_DEFAULT_MODEL.providerId,
+          modelId: PLATFORM_DEFAULT_MODEL.modelId,
+          expectedDefaultRevision: (await store(c).getWorkspaceModelDefault(slack.teamId))?.revision ?? 0,
+        });
       } catch (error) {
-        if (!(error instanceof WorkspaceModelDefaultRevisionConflictError)) throw error;
-        const current = await store(c).getWorkspaceModelDefault(workspaceId);
-        if (current?.modelId !== parsed.output.modelId) {
-          return c.json({
-            error: 'workspace_model_default_revision_conflict',
-            expectedRevision: error.expectedRevision,
-            actualRevision: error.actualRevision,
-            workspaceDefault: await workspaceModelDefaultProjection({
-              installation,
-              configStore: store(c),
-              settingsStore: settings(c),
-              platformEnv: c.env as PlatformEnv | undefined,
-              runtimeProviders: await modelProviders(c),
-            }),
-          }, 409);
-        }
+        const raced = await readOnboardingJourney(settings(c));
+        if (!raced || (raced.journey.state !== 'complete' && !raced.journey.tryStartedAt)) throw error;
+        return onboardingResponse(c, raced);
       }
-      const [currentInstallation, currentDefault] = await Promise.all([
-        store(c).getWorkspaceInstallation(workspaceId),
-        store(c).getWorkspaceModelDefault(workspaceId),
-      ]);
-      if (!currentInstallation || !currentDefault?.modelId) {
-        return c.json({ error: 'workspace_installation_required' }, 409);
-      }
-      if (currentInstallation.runtimeContract !== 'chickpea-v1') {
-        const preflight = await store(c).preflightChickpeaCutover(workspaceId);
-        if (preflight.blockers.length) {
-          return c.json({
-            error: 'chickpea_cutover_preflight_failed',
-            blockers: preflight.blockers,
-          }, 409);
-        }
-        try {
-          await store(c).activateChickpeaCutover({
-            workspaceId,
-            expectedInstallationRevision: currentInstallation.revision,
-            expectedDefaultRevision: currentDefault.revision,
-            defaultReady: true,
-          });
-        } catch (error) {
-          if (error instanceof WorkspaceModelDefaultRevisionConflictError) {
-            return c.json({ error: 'workspace_model_default_revision_conflict' }, 409);
-          }
-          throw error;
-        }
-      }
-      const started = await startOnboardingTry(settings(c), {
-        expectedRevision: snapshot.revision,
-        agentId: CHICKPEA_AGENT_ID,
-        modelId: parsed.output.modelId,
-        slackUserId: actor.slackUserId,
-        githubStepNotOffered: deploymentServesManyInstallations(c.env as PlatformEnv | undefined) &&
-          !await onboardingGithubConnectPath(c),
-      });
-      return onboardingResponse(c, started);
     } catch (error) {
       return internalError(c, error);
     }
