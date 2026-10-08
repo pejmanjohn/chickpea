@@ -657,7 +657,10 @@ test('a coding worker\'s request is recorded under the run that delegated it, no
     assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['worker', KEY_A1]]);
     assert.equal(recorded.length, 1);
     const record = await usage.getModelRequest(recorded[0]!);
-    assert.deepEqual([record?.installationId, record?.runId, record?.agentId], ['inst_a', 'sub_coordinator', 'agent_lookup']);
+    assert.deepEqual(
+      [record?.installationId, record?.runId, record?.agentId, record?.purpose],
+      ['inst_a', 'sub_coordinator', 'agent_lookup', 'reply'],
+    );
   });
 });
 

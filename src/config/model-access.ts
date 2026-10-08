@@ -29,7 +29,7 @@ import {
   type OpenAICompletionsCompat,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
-import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation } from '@flue/runtime';
+import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation, LlmTurnPurpose } from '@flue/runtime';
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
@@ -263,9 +263,15 @@ export function createModelAccessInterceptor(
  * context just before that turn's model operation.
  */
 export function observeModelAccess(event: FlueObservation): void {
-  if (event.type !== 'turn_request' || event.purpose === 'agent') return;
+  if (event.type !== 'turn_request' || !COMPACTION_TURN[event.purpose]) return;
   cells.getStore()?.compactionTurns.add(event.turnId);
 }
+
+const COMPACTION_TURN: Readonly<Record<LlmTurnPurpose, boolean>> = {
+  agent: false,
+  compaction: true,
+  compaction_prefix: true,
+};
 
 /**
  * Runs `fn` in the current attempt with its requests recorded under
