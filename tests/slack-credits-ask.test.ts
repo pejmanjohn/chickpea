@@ -251,7 +251,7 @@ test('a hosted Owner\'s out-of-credits reply has no button, only the Owner hint'
   const blocks = writtenBlocks(await outOfCreditsTurn(t, HOSTED_ENV, 'UOWNER1'));
   assert.deepEqual(buttons(blocks), []);
   assert.ok(contextTexts(blocks).includes(
-    "You're an Owner, so you can add credits in Chickpea.",
+    "You're an Owner, so you can add extra usage or upgrade in Chickpea.",
   ), JSON.stringify(blocks));
 });
 
@@ -375,8 +375,8 @@ test('a click DMs each active Owner once and swaps only the button for a confirm
   assert.equal(await askOwnersForCredits(action, { identity, claims, client }), 'asked');
 
   assert.deepEqual(of('conversations.open').map(({ users }) => users).sort(), ['UOWNER1', 'UOWNER2']);
-  const dm = '<@UMEMBER1> asked you to add Chickpea credits. ' +
-    'A request in <#CCREDITS1> stopped because this workspace is out of credits.';
+  const dm = '<@UMEMBER1> asked you to add usage to Chickpea. ' +
+    'A request in <#CCREDITS1> stopped because this workspace has used all of its plan\'s usage.';
   assert.deepEqual(
     of('chat.postMessage').sort((a, b) => String(a.channel).localeCompare(String(b.channel))),
     [{ channel: 'DOWNER1', text: dm }, { channel: 'DOWNER2', text: dm }],
@@ -390,15 +390,15 @@ test('a click DMs each active Owner once and swaps only the button for a confirm
       before[0],
       {
         type: 'context',
-        elements: [{ type: 'plain_text', text: "I asked this workspace's Owners to add credits.", emoji: false }],
+        elements: [{ type: 'plain_text', text: "I asked this workspace's Owners to add usage.", emoji: false }],
       },
       FOOTER,
     ],
   }]);
   assert.deepEqual(of('chat.postEphemeral'), []);
   assert.equal(creditsAskOwnerDmText('UMEMBER1', 'DCREDITS1'),
-    '<@UMEMBER1> asked you to add Chickpea credits. ' +
-    'A request in a direct message stopped because this workspace is out of credits.');
+    '<@UMEMBER1> asked you to add usage to Chickpea. ' +
+    'A request in a direct message stopped because this workspace has used all of its plan\'s usage.');
 });
 
 test('Owners are asked at most once an hour per installation', async (t) => {

@@ -12740,7 +12740,7 @@ async function codingModelChoiceError(input: {
     : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
 
-const PLATFORM_NOT_OFFERED_TEXT = 'Not offered with Chickpea’s models. Choose another model.';
+const PLATFORM_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');

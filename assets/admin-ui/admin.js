@@ -10246,7 +10246,7 @@
     var repair = health.status !== "repair_required"
       ? ""
       : health.code === "funding_not_offered"
-        ? '<p class="hint">Not offered with Chickpea&rsquo;s models. Choose another model.</p>'
+        ? '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>'
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
     var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";

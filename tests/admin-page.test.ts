@@ -13913,7 +13913,7 @@ test('Settings tells a credits workspace to choose another model when its defaul
 
   const html = harness.app.innerHTML;
   assert.match(html, /Repair required/);
-  assert.match(html, /<p class="hint">Not offered with Chickpea&rsquo;s models\. Choose another model\.<\/p>/);
+  assert.match(html, /<p class="hint">Not available on Chickpea's models\. Choose another model\.<\/p>/);
   assert.doesNotMatch(html, /Review anthropic provider settings/);
 });
 
