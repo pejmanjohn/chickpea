@@ -1008,6 +1008,7 @@ async function finalizeSettlement(
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
 }
+
 async function requireDeliveryTaskFee(
   prepared: PreparedExecution,
   submissionId: string | undefined,
