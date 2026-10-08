@@ -17,7 +17,7 @@ import {
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_AT_LAUNCH, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -371,6 +371,30 @@ test('an own key in its grace says until when, which plans an own key can choose
   assertHides(past.html(), 'no Chickpea charges');
 });
 
+test('an own key at launch, with no plan and no date for charges, still shows the plan to choose and Chickpea\'s models', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH });
+  const html = page.html();
+  assert.match(html, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
+  assert.equal(lede(html), 'Your workspace pays for models with its own API key.');
+  assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
+  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
+  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
+  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>[\s\S]*<th>Person<\/th>/);
+  assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
+
+  await page.click({ 'data-action': 'billing-change-plan' });
+  const rows = Object.fromEntries([...page.html().matchAll(/<div class="billing-plan"><div><strong>([^<]+)<\/strong><p class="hint">([^<]+)<\/p>.*?<\/div>(.*?)<\/div>/g)]
+    .map((row) => [row[2], /data-action="billing-choose-plan"/.test(row[3]!) ? 'choose' : decoded(row[3]!)]));
+  assert.deepEqual(rows, {
+    '$25 a month includes $30 of usage': '<span class="hint">Chickpea’s models only</span>',
+    '$50 a month includes $60 of usage': '<span class="hint">Chickpea’s models only</span>',
+    '$100 a month includes $120 of usage': 'choose',
+    '$200 a month includes $240 of usage': 'choose',
+    '$300 a month includes $360 of usage': 'choose',
+    '$500 a month includes $600 of usage': 'choose',
+  });
+});
+
 test('below the lowest plan for an own key, the switch asks for that plan first and opens its Checkout, never the switch', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN, ownKey: KEYED });
   assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/);
@@ -420,6 +444,11 @@ test('a Member sees the plan\'s usage and that an Owner changes it, with no butt
   assertShows(ownKey.html(), 'Your workspace uses its own API key with no Chickpea charges until Dec 1, 2030.');
   assertShows(ownKey.html(), 'An Owner can change the plan and how your workspace pays for models.');
   assert.doesNotMatch(ownKey.html(), /data-action="billing-/);
+
+  const atLaunch = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH })).html();
+  assert.match(atLaunch, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
+  assert.match(atLaunch, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
+  assert.doesNotMatch(atLaunch, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
 });
 
 test('the meter\'s dollar figures give its percentage', async () => {

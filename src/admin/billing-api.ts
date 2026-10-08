@@ -61,8 +61,12 @@ interface BillingStatus {
   rollover: string | null;
   extraUsage: { remaining: string; frozen: boolean; expiresAt: string } | null;
   trial: { remaining: string; expiresAt: string } | null;
-  /** Own key with no plan and a grace date: until when, and the price of the lowest plan for an own key. */
-  ownKeyGrace: { until: string; minimumPrice: string } | null;
+  /** Own key with no plan: when Chickpea charges begin, and the lowest plan price for an own key. */
+  ownKeyWithoutPlan:
+    | { charges: 'not_yet'; minimumPrice: string } // no grace date set
+    | { charges: 'from'; from: string; minimumPrice: string } // grace date in the future, long format
+    | { charges: 'due'; minimumPrice: string } // grace date passed
+    | null;
 }
 
 /** Whether an Owner can switch funding from the page, and what is missing when not. */
@@ -101,11 +105,11 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
 
   const view = async (c: Context, port: PlatformBillingPort, installationId: string): Promise<BillingView> => {
     const summary = await port.summary(installationId);
-    if (!isOwner(c)) return billingView(summary, null);
+    if (!isOwner(c)) return billingView(summary, null, new Date());
     const [agentNames, personNames, ownKey] = await Promise.all([
       options.agentNames(c), options.personNames(c), options.ownKeyFacts(c),
     ]);
-    return billingView(summary, { agentNames, personNames, ownKey });
+    return billingView(summary, { agentNames, personNames, ownKey }, new Date());
   };
 
   app.get('/billing', (c) => withBilling(c, async (port, installationId) =>
@@ -139,9 +143,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   return app;
 }
 
-function billingView(summary: BillingSummary, owner: OwnerFacts | null): BillingView {
+function billingView(summary: BillingSummary, owner: OwnerFacts | null, now: Date): BillingView {
   const minimum = ownKeyMinimumPlan(summary);
-  const status = billingStatus(summary, minimum);
+  const status = billingStatus(summary, minimum, now);
   if (!owner) return { manage: false, ...status };
   const planOffer = summary.plan && summary.offers.plans.find((offer) => offer.key === summary.plan?.key);
   return {
@@ -178,7 +182,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
   };
 }
 
-function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStatus {
+function billingStatus(summary: BillingSummary, minimum: PlanOffer, now: Date): BillingStatus {
   const { planUsage, period, rollover, extraUsage, trial } = summary;
   return {
     funding: summary.funding,
@@ -194,10 +198,15 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
       ? { remaining: formatUsageDollars(extraUsage.remainingMicros), frozen: extraUsage.frozen, expiresAt: extraUsage.expiresAt.toISOString() }
       : null,
     trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), expiresAt: trial.expiresAt.toISOString() },
-    ownKeyGrace: summary.funding === 'own_key' && summary.plan === null && summary.ownKeyGraceUntil
-      ? { until: summary.ownKeyGraceUntil.toISOString(), minimumPrice: formatPriceCents(minimum.priceCents) }
+    ownKeyWithoutPlan: summary.funding === 'own_key' && summary.plan === null
+      ? ownKeyCharges(summary.ownKeyGraceUntil, formatPriceCents(minimum.priceCents), now)
       : null,
   };
+}
+
+function ownKeyCharges(graceUntil: Date | null, minimumPrice: string, now: Date): NonNullable<BillingStatus['ownKeyWithoutPlan']> {
+  if (!graceUntil) return { charges: 'not_yet', minimumPrice };
+  return graceUntil > now ? { charges: 'from', from: LONG_DATE.format(graceUntil), minimumPrice } : { charges: 'due', minimumPrice };
 }
 
 /** The port answered inconsistent data when the lowest plan for an own key is not on sale; `withBilling` makes that a 503. */
@@ -291,6 +300,9 @@ function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>):
   const rows = unnamed > 0 ? [...named, { name: null, micros: unnamed }] : named;
   return rows.map((row) => ({ name: row.name, used: formatUsageDollars(row.micros as UsageMicros) }));
 }
+
+// UTC, so a date reads the same here as in Chickpea's Slack messages about the plan.
+const LONG_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
 
 // Same signatures as src/usage/usage-display.ts, which replaces these once it is on main.
 const MICROS_PER_CENT = 10_000;

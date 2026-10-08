@@ -35,6 +35,9 @@ export const NO_PLAN: BillingSummary = {
   offers: OFFERS,
 };
 
+/** An own-key workspace as it is at launch: no plan, and no date when Chickpea charges begin. */
+export const OWN_KEY_AT_LAUNCH: BillingSummary = { ...NO_PLAN, funding: 'own_key', ownKeyGraceUntil: null };
+
 /** The Team plan part-way through its period, with usage carried over and extra usage on hand. */
 export const TEAM_PLAN: BillingSummary = {
   ...NO_PLAN,

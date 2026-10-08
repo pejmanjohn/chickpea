@@ -15,7 +15,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
-import { NO_PLAN, PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_AT_LAUNCH, PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
 const INSTALLATION = 'inst_billing';
@@ -77,7 +77,7 @@ const TEAM_STATUS = {
   rollover: '$20',
   extraUsage: { remaining: '$40', frozen: false, expiresAt: '2027-09-14T17:00:00.000Z' },
   trial: null,
-  ownKeyGrace: null,
+  ownKeyWithoutPlan: null,
 };
 
 test('standalone has no billing: the API is not found and the page offers nothing, even with a port installed', async (t) => {
@@ -131,7 +131,7 @@ test('an Owner reads the plan\'s usage in dollars, the offers, and named use; un
   assert.deepEqual(calls, [['summary', INSTALLATION]]);
 });
 
-test('the status leaves out what is empty: no zero rollover or extra usage, and the own-key grace only without a plan', async (t) => {
+test('the status leaves out what is empty: no zero rollover or extra usage, and own-key charges only without a plan', async (t) => {
   const status = async (summary: BillingSummary) => {
     const response = await admin(t, { port: fakePort(summary).port, role: 'member' })('/admin/api/billing');
     return await response.json() as Record<string, unknown>;
@@ -143,14 +143,26 @@ test('the status leaves out what is empty: no zero rollover or extra usage, and 
   });
   assert.equal(drained.rollover, null);
   assert.equal(drained.extraUsage, null);
-  const grace = new Date('2026-12-01T17:00:00Z');
-  assert.deepEqual((await status({ ...NO_PLAN, funding: 'own_key', ownKeyGraceUntil: grace })).ownKeyGrace,
-    { until: '2026-12-01T17:00:00.000Z', minimumPrice: '$100' });
-  assert.equal((await status({ ...TEAM_PLAN, funding: 'own_key', ownKeyGraceUntil: grace })).ownKeyGrace, null, 'a plan ends the grace');
-  assert.equal((await status({ ...NO_PLAN, ownKeyGraceUntil: grace })).ownKeyGrace, null, 'Chickpea\'s models have no own-key grace');
+  const grace = new Date('2030-12-01T17:00:00Z');
+  assert.deepEqual((await status({ ...OWN_KEY_AT_LAUNCH, ownKeyGraceUntil: grace })).ownKeyWithoutPlan,
+    { charges: 'from', from: 'Dec 1, 2030', minimumPrice: '$100' });
+  assert.deepEqual((await status({ ...OWN_KEY_AT_LAUNCH, ownKeyGraceUntil: new Date('2025-06-01T17:00:00Z') })).ownKeyWithoutPlan,
+    { charges: 'due', minimumPrice: '$100' }, 'the server\'s clock says the date has passed');
+  assert.deepEqual((await status(OWN_KEY_AT_LAUNCH)).ownKeyWithoutPlan, { charges: 'not_yet', minimumPrice: '$100' });
+  assert.equal((await status({ ...TEAM_PLAN, funding: 'own_key', ownKeyGraceUntil: grace })).ownKeyWithoutPlan, null, 'a plan ends the grace');
+  assert.equal((await status({ ...NO_PLAN, ownKeyGraceUntil: grace })).ownKeyWithoutPlan, null, 'Chickpea\'s models have no own-key charges to wait for');
   const trial = await status({ ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } });
   assert.deepEqual(trial.trial, { remaining: '$32.50', expiresAt: '2026-11-06T17:00:00.000Z' });
   assert.equal(trial.meter, null, 'no meter without a plan period');
+});
+
+test('an Owner of an own-key workspace at launch reads no plan, charges not yet begun, and the switch to Chickpea\'s models', async (t) => {
+  const { port } = fakePort(OWN_KEY_AT_LAUNCH);
+  const view = await (await admin(t, { port })('/admin/api/billing')).json() as Record<string, unknown>;
+  assert.deepEqual(
+    { funding: view.funding, meter: view.meter, plan: view.plan, period: view.period, ownKeyWithoutPlan: view.ownKeyWithoutPlan, switchFunding: view.switchFunding },
+    { funding: 'own_key', meter: null, plan: null, period: null, ownKeyWithoutPlan: { charges: 'not_yet', minimumPrice: '$100' }, switchFunding: { to: 'platform' } },
+  );
 });
 
 test('an Owner switches an own-key installation to Chickpea\'s models, and switching again changes nothing', async (t) => {
