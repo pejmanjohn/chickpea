@@ -112,6 +112,7 @@ async function harness(options: {
   ownKey?: OwnKeyFacts;
   onboarding?: Record<string, unknown>;
   platformFailures?: number;
+  platformFailureBody?: unknown;
   platformHeld?: boolean;
   switchFails?: boolean;
   stripeFails?: boolean;
@@ -198,7 +199,7 @@ async function harness(options: {
       await platformGate;
       if (platformFailures > 0) {
         platformFailures -= 1;
-        return response({ error: 'internal_error' }, 500);
+        return response(options.platformFailureBody ?? { error: 'internal_error' }, 500);
       }
       const github = onboarding.githubConnectPath ? { stage: 'connect_github', githubConnectPath: onboarding.githubConnectPath } : {};
       onboarding = { ...TRY, modelId: 'anthropic/claude-opus-5-5', ...github };
@@ -836,14 +837,29 @@ test('setup that does not finish offers Try again, never the provider steps, and
   assert.equal(platformRequests(page.requests), 1);
   assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
     '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
+    '<p class="hint">Code: internal_error</p>' +
     '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>'));
-  assert.doesNotMatch(page.html(), /Choose your model provider|onboarding-provider-tab|internal_error/);
+  assert.doesNotMatch(page.html(), /Choose your model provider|onboarding-provider-tab/);
   await flush();
   assert.equal(platformRequests(page.requests), 1, 'a failure waits for Try again');
 
   await page.click({ 'data-action': 'onboarding-platform-retry' });
   assert.equal(platformRequests(page.requests), 2);
   assert.match(page.html(), /Meet Chickpea in Slack/);
+});
+
+test('the failed setup card names the route\'s error code, and shows no code line when the response has none', async () => {
+  const coded = await harness({
+    path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1, platformFailureBody: { error: 'workspace_mismatch' },
+  });
+  assert.ok(coded.html().includes('Chickpea could not finish setting up. Try again.</p><p class="hint">Code: workspace_mismatch</p>'));
+  const uncoded = await harness({
+    path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1, platformFailureBody: 'Bad gateway',
+  });
+  assert.match(uncoded.html(), /Setup did not finish/);
+  assert.doesNotMatch(uncoded.html(), /Code:/);
+  await uncoded.click({ 'data-action': 'onboarding-platform-retry' });
+  assert.match(uncoded.html(), /Meet Chickpea in Slack/);
 });
 
 test('a journey already past the provider step sets up the same way', async () => {

@@ -220,6 +220,7 @@
     onboardingError: "",
     onboardingBusy: false,
     onboardingNotice: "",
+    onboardingPlatformErrorCode: "",
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
@@ -2763,6 +2764,7 @@
     if (state.onboardingError) {
       return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
         '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
+        (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
     }
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>';
@@ -13175,14 +13177,16 @@
       !onboardingOnChickpeaModels() || state.onboardingBusy || state.onboardingError
     ) return;
     state.onboardingBusy = true;
+    state.onboardingPlatformErrorCode = "";
     postJson("/admin/api/onboarding/platform", "POST", {}).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
       state.onboardingNotice = "";
       render();
-    }).catch(function () {
+    }).catch(function (error) {
       state.onboardingBusy = false;
       state.onboardingError = "Chickpea could not finish setting up. Try again.";
+      state.onboardingPlatformErrorCode = error && error.payload && typeof error.payload.error === "string" ? error.payload.error : "";
       render();
     });
   }
