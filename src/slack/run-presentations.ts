@@ -3401,6 +3401,7 @@ function validateReplyClosing(closing: SlackReplyClosing): void {
   validateId(footer.agentId, 'Footer Agent id');
   validateClosingFact(footer.modelLabel, 'Footer model label');
   validateClosingFact(footer.publicUrl, 'Footer public URL');
+  validateClosingFact(footer.usageLine, 'Footer usage line');
   for (const flag of [footer.includeConfigureLink, footer.modelRepair, footer.scheduled]) {
     if (flag !== undefined && typeof flag !== 'boolean') {
       throw stateError('invalid_input', 'Footer flags must be boolean.');
