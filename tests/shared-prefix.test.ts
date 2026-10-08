@@ -126,6 +126,7 @@ test('markers sit at A, B, C and D with the design TTLs', async () => {
   assert.deepEqual(markers(streaming), [
     `tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m',
   ]);
+  assert.deepEqual(streaming.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
 
   const universalOnly = await render({ ...ALPHA, progressiveStreamingOffered: false });
   assert.equal(anchorIndex(universalOnly), universalOnly.tools.length - 1, 'no capability tool follows A');
@@ -154,10 +155,47 @@ test('a request whose system block does not match goes out unchanged and counts 
   assert.equal(sharePromptPrefix(mismatched), mismatched);
   assert.equal(sharedPrefixMisses(), before + 1);
 
+  const changedTool = structuredClone(customer);
+  changedTool.tools[12].description = `${changedTool.tools[12].description} Workspace ${ALPHA.workspace}.`;
+  assert.equal(sharePromptPrefix(changedTool), changedTool, 'universal tools other than the rendered ones');
+  assert.equal(sharedPrefixMisses(), before + 2);
+  assert.notEqual(sharePromptPrefix(structuredClone(customer)), customer, 'the unchanged request shares');
+
   const intentCheck = { model: 'claude-opus-5-5', system: [{ type: 'text', text: 'Classify.' }], messages: [] };
   assert.equal(sharePromptPrefix(intentCheck), intentCheck);
-  assert.equal(sharedPrefixMisses(), before + 1, 'a request that is not a Slack turn is not a miss');
+  assert.equal(sharedPrefixMisses(), before + 2, 'a request that is not a Slack turn is not a miss');
 });
+
+test('the last user block keeps a 5-minute marker after the 1-hour ones', async () => {
+  const longRetention = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
+  longRetention.messages.at(-1).content.at(-1).cache_control = ONE_HOUR;
+  const shared = sharePromptPrefix(longRetention) as RenderedRequest;
+  assert.deepEqual(markers(shared).at(-1), 'user 5m');
+  assert.deepEqual(shared.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
+});
+
+const MOUNTED_GUIDANCE = [
+  { text: SLACK_LISTS_INSTRUCTION, tool: 'read_slack_list' },
+  { text: SLACK_READING_INSTRUCTION, tool: 'read_slack_thread' },
+  { text: SLACK_MANAGEMENT_GUIDANCE, tool: 'inspect_workspace' },
+];
+
+for (const [name, variant, unmounted] of [
+  ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread']],
+  ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'inspect_workspace']],
+] as const) {
+  test(`${name} gets guidance only for the tools it mounts, and does not share`, async () => {
+    const request = await render(variant);
+    const toolNames = new Set(request.tools.map((tool: any) => tool.name));
+    for (const tool of unmounted) assert.ok(!toolNames.has(tool), `${tool} is not mounted`);
+    assert.equal(request.system.length, 1, 'the system block does not match a shared block, so it goes out as built');
+    const text = request.system[0].text;
+    for (const guidance of MOUNTED_GUIDANCE) {
+      assert.equal(text.split(guidance.text).length - 1, toolNames.has(guidance.tool) ? 1 : 0,
+        `${guidance.tool} guidance appears once exactly when the tool mounts`);
+    }
+  });
+}
 
 test('sharedPrefixRequest sends the bytes a rendered request sends, and its tools match a fresh render', async () => {
   const update = process.env.UPDATE_SHARED_PREFIX === '1';

@@ -2604,7 +2604,7 @@ async function readThreadContinuation(
   }
 }
 
-async function freezeRuntimePlanForTurn(input: {
+export async function freezeRuntimePlanForTurn(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;

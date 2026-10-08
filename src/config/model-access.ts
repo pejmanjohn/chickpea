@@ -503,8 +503,15 @@ interface ListPriceMode {
 const LIST_PRICE_MODES = {
   anthropic: {
     pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
-    // Loaded on first use: every module the shared instructions come from imports this one.
-    sharePrefix: async (payload) => (await import('../agents/shared-prefix.ts')).sharePromptPrefix(payload),
+    // Loaded on first use: every module the shared instructions come from
+    // imports this one. Without it the request goes out as built.
+    sharePrefix: async (payload) => {
+      const shared = await import('../agents/shared-prefix.ts').catch((error: unknown) => {
+        console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
+        return undefined;
+      });
+      return shared ? shared.sharePromptPrefix(payload) : payload;
+    },
     listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
     listPricedInferenceGeos: ['global', 'not_available'],

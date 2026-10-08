@@ -146,10 +146,12 @@ function withoutCacheControl(block: unknown): unknown {
  * Set breakpoints so the request shares its prefix: A on the last universal
  * tool (1 hour), B on the constant system block (1 hour, or 5 minutes when
  * capability tools sit between A and B and key it to this tool set), C on
- * the tenant block (5 minutes), and pi-ai's D on the last user block. A
- * request that carries the anchor tool or a shared block but not both goes
- * out exactly as built and counts as a miss; any other request (an intent
- * check, a routine) is not a Slack turn and goes out unchanged.
+ * the tenant block (5 minutes), and D on pi-ai's last user block (5 minutes,
+ * whatever retention pi-ai chose, since a 1-hour marker may not follow a
+ * 5-minute one). A request that carries the anchor tool or a shared block
+ * but not both, or universal tools other than the rendered ones, goes out
+ * exactly as built and counts as a miss; any other request (an intent check,
+ * a routine) is not a Slack turn and goes out unchanged.
  */
 export function sharePromptPrefix(payload: Payload): Payload {
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
@@ -160,11 +162,16 @@ export function sharePromptPrefix(payload: Payload): Payload {
     : AGENT_KINDS.map(sharedSystemBlock).find((block) => text.startsWith(block + PART_SEPARATOR));
   if (anchor < 0 && constant === undefined) return payload;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
-  if (anchor < 0 || constant === undefined || tail.length === 0) {
+  const miss = anchor < 0
+    ? 'universal_tools_missing'
+    : JSON.stringify(tools.slice(0, anchor + 1).map(withoutCacheControl)) !== renderedToolsJson()
+      ? 'universal_tools_differ'
+      : constant === undefined ? 'system_block_missing' : tail.length === 0 ? 'tenant_block_empty' : undefined;
+  if (miss) {
     missed += 1;
     console.warn('[chickpea] platform-funded request went out without the shared prompt prefix', {
       model: payload.model,
-      reason: anchor < 0 ? 'universal_tools_missing' : constant === undefined ? 'system_block_missing' : 'tenant_block_empty',
+      reason: miss,
     });
     return payload;
   }
@@ -177,6 +184,17 @@ export function sharePromptPrefix(payload: Payload): Payload {
       { type: 'text', text: constant, cache_control: anchor === tools.length - 1 ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
+    ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
+  };
+}
+
+function withFiveMinuteMarkers(message: unknown): unknown {
+  if (!isRecord(message) || !Array.isArray(message.content)) return message;
+  return {
+    ...message,
+    content: message.content.map((block) => isRecord(block) && 'cache_control' in block
+      ? { ...block, cache_control: FIVE_MINUTES }
+      : block),
   };
 }
 
@@ -184,6 +202,12 @@ type RenderedPrefix = {
   tools: Payload[];
   models: Record<string, Payload>;
 };
+
+let toolsJson: string | undefined;
+function renderedToolsJson(): string {
+  toolsJson ??= JSON.stringify((rendered as RenderedPrefix).tools);
+  return toolsJson;
+}
 
 const PREWARM_TURN = 'Reply with one word.';
 

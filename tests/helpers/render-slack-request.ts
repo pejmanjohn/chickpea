@@ -15,12 +15,11 @@ process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
 const { createFlueContext, resolveModel } = await import('@flue/runtime/internal');
 const { ChickpeaSlack } = await import('../../src/agents/slack-thread.ts');
-const { compileRuntimePlanV2 } = await import('../../src/agents/runtime-plan.ts');
-const { slackTenantInstructions } = await import('../../src/agents/shared-prefix.ts');
+const { freezeRuntimePlanForTurn } = await import('../../src/slack/run-turn.ts');
+const { FILE_DELIVERY_SIGNAL_TAG, FILE_DELIVERY_SIGNAL_TYPE } = await import('../../src/slack/file-delivery-completion.ts');
 const { getConfigStore, getIdentityStore, getSettingsStore } = await import('../../src/config/state-backend.ts');
 const { createChickpeaAgent } = await import('../../src/config/seed.ts');
 const { serializeCurrentRequestEnvelope } = await import('../../src/memory/tool-policy.ts');
-const { resolveRuntimeModel } = await import('../../src/config/runtime-model.ts');
 const { configureModelAccessResolver, withModelAccess } = await import('../../src/config/model-access.ts');
 const { configurePlatformFunding } = await import('../../src/config/platform-funding.ts');
 const { configureInstallationAdmission } = await import('../../src/config/installation-admission.ts');
@@ -39,6 +38,10 @@ export interface SlackRequestVariant {
   model?: string;
   funding?: 'platform' | 'customer';
   progressiveStreamingOffered?: boolean;
+  /** False renders a requester with no workspace membership. */
+  member?: boolean;
+  /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
+  delivery?: 'message' | 'file_delivery_check';
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -93,7 +96,6 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   current = variant;
   captured = undefined;
   const agent = currentAgent();
-  const runtime = await resolveRuntimeModel(agent.id, agent.model, { settings: getSettingsStore() } as any);
   const messageTs = (Number(variant.thread) + 0.0001).toFixed(6);
   const assignment = {
     workspaceId: variant.workspace, channelId: variant.channel, agentId: agent.id, agent, model: agent.model,
@@ -101,13 +103,13 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   } as any;
   const turn = {
     workspaceId: variant.workspace, channelId: variant.channel, eventId: `E_${variant.thread}`, text: variant.text,
-    userId: variant.user, actorMembershipId: 'member', messageTs, threadTs: variant.thread, source: 'app_mention',
-    contextMode: 'thread',
+    userId: variant.user, ...(variant.member === false ? {} : { actorMembershipId: 'member' }), messageTs,
+    threadTs: variant.thread, source: 'app_mention', contextMode: 'thread',
   };
-  const plan = compileRuntimePlanV2({
-    turn, assignment, runtimeModel: runtime.model, instructions: slackTenantInstructions(assignment),
-    memoryEpoch: 1, effectiveConnections: [],
+  const { decision } = await freezeRuntimePlanForTurn({
+    turn, assignment, platformEnv: undefined, settingsStore: getSettingsStore(), memoryEpoch: Promise.resolve(1),
   } as any);
+  const plan = decision.runtimePlan;
   const context = createFlueContext({
     id: `render-${variant.workspace}-${variant.channel}-${variant.thread}`,
     agentName: 'chickpea-slack-v2', env: {}, agentConfig: { resolveModel } as any,
@@ -115,14 +117,17 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const body = serializeCurrentRequestEnvelope(variant.text, false, variant.user, messageTs, {
     schemaVersion: 2, progressiveStreamingOffered: variant.progressiveStreamingOffered ?? true,
   });
-  const signal = {
-    kind: 'signal', type: 'slack.message', tagName: 'slack_message', body,
-    attributes: {
-      workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread,
-      slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}`,
-    },
-  } as any;
-  const harness: any = await context.initializeRootHarness(ChickpeaSlack, signal, plan);
+  const attributes = {
+    workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread,
+    slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}`,
+  };
+  const signal = variant.delivery === 'file_delivery_check'
+    ? {
+        kind: 'signal', type: FILE_DELIVERY_SIGNAL_TYPE, tagName: FILE_DELIVERY_SIGNAL_TAG, body,
+        attributes: { ...attributes, boundThreadTs: variant.thread, originalType: 'slack.message' },
+      }
+    : { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body, attributes };
+  const harness: any = await context.initializeRootHarness(ChickpeaSlack, signal as any, plan);
   const grant = {
     installationId: `inst_${variant.workspace}`, providerId: 'anthropic', runId: `run_${variant.thread}`,
     fundingSource: variant.funding ?? 'platform', credentialRefId: 'platform:anthropic', credentialVersion: 1,
