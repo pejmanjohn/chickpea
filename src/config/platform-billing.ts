@@ -9,7 +9,7 @@
  */
 
 /** How an installation pays for its model requests. */
-export type BillingFunding = 'credits' | 'own_key';
+export type BillingFunding = 'platform' | 'own_key';
 
 /** A plan the host's rate card sells. */
 export interface CreditPlanOffer {
@@ -36,7 +36,7 @@ export interface CreditUse {
 }
 
 export interface CreditsBillingSummary {
-  readonly funding: 'credits';
+  readonly funding: 'platform';
   /** Whole credits. Below zero only by requests that were already running when it reached zero. */
   readonly balance: number;
   /** The subscribed plan; null while the installation has only trial or top-up credits. */

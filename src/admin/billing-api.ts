@@ -18,7 +18,7 @@ export const PLAN_AND_CREDITS_PATH = '/admin/plan';
 const MAX_BILLING_BODY_BYTES = 512;
 const rateCardKey = v.pipe(v.string(), v.regex(/^[a-z][a-z0-9_]{0,63}$/));
 const checkoutSchema = v.strictObject({ kind: v.picklist(['plan', 'top_up']), key: rateCardKey });
-const fundingSchema = v.strictObject({ funding: v.picklist(['credits', 'own_key']) });
+const fundingSchema = v.strictObject({ funding: v.picklist(['platform', 'own_key']) });
 
 interface BillingAdminApiOptions {
   agentNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
@@ -58,9 +58,9 @@ interface NamedCreditUse {
  */
 export type BillingView =
   | { funding: 'own_key'; manage: boolean }
-  | { funding: 'credits'; manage: false; balance: number }
+  | { funding: 'platform'; manage: false; balance: number }
   | {
-    funding: 'credits';
+    funding: 'platform';
     manage: true;
     balance: number;
     plan: CreditsBillingSummary['plan'];
@@ -83,12 +83,12 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   const view = async (c: Context, port: PlatformBillingPort, installationId: string): Promise<BillingView> => {
     const summary = await port.summary(installationId);
     if (summary.funding === 'own_key') return { funding: 'own_key', manage: isOwner(c) };
-    if (!isOwner(c)) return { funding: 'credits', manage: false, balance: summary.balance };
+    if (!isOwner(c)) return { funding: 'platform', manage: false, balance: summary.balance };
     const [agentNames, personNames, ownKeyFacts] = await Promise.all([
       options.agentNames(c), options.personNames(c), options.ownKeyFacts(c),
     ]);
     return {
-      funding: 'credits',
+      funding: 'platform',
       manage: true,
       balance: summary.balance,
       plan: summary.plan,

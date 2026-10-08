@@ -393,7 +393,7 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   assert.equal((await signup.journey())!.revision, revision);
 });
 
-test('an installation on credits chooses a provider with no key; one on its own key still needs one', async (t) => {
+test('an installation on Chickpea\'s models chooses a provider with no key; one on its own key still needs one', async (t) => {
   let funding: 'platform' | 'customer' = 'customer';
   configurePlatformFunding({
     funding: async () => funding,
@@ -419,7 +419,7 @@ test('an installation on credits chooses a provider with no key; one on its own 
   assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
 });
 
-test('the Owner\'s credits-or-own-key choice is the host\'s to record and the journey\'s to keep; after onboarding, the Plan and credits page switches', async (t) => {
+test('the Owner\'s choice between Chickpea\'s models and their own key is the host\'s to record and the journey\'s to keep; after onboarding, the Plan page switches', async (t) => {
   const chosen: BillingFunding[] = [];
   configurePlatformBilling({
     summary: async () => ({ funding: 'own_key' }),
@@ -443,17 +443,17 @@ test('the Owner\'s credits-or-own-key choice is the host\'s to record and the jo
   assert.equal((await json(admin('/admin/api/onboarding'))).funding, 'own_key', 'a reload continues from the choice');
   assert.equal((await signup.journey())!.journey.selectedFunding, 'own_key');
 
-  assert.equal((await choose('credits', ownKey.revision as string)).status, 200);
+  assert.equal((await choose('platform', ownKey.revision as string)).status, 200);
   assert.equal((await choose('own_key', ownKey.revision as string)).status, 409, 'a stale revision changes nothing');
-  assert.equal((await choose('credits', undefined, signup.admin(principalFor('admin')))).status, 403);
-  assert.equal((await choose('credits', undefined, signup.admin(principalFor('member')))).status, 403);
-  assert.deepEqual(chosen, ['own_key', 'credits']);
+  assert.equal((await choose('platform', undefined, signup.admin(principalFor('admin')))).status, 403);
+  assert.equal((await choose('platform', undefined, signup.admin(principalFor('member')))).status, 403);
+  assert.deepEqual(chosen, ['own_key', 'platform']);
 
-  const credits = (await signup.journey())!;
+  const platform = (await signup.journey())!;
   const provider = await selectOnboardingProvider(signup.settings, {
-    expectedRevision: credits.revision, workspaceId: TEAM, providerId: 'anthropic',
+    expectedRevision: platform.revision, workspaceId: TEAM, providerId: 'anthropic',
   });
-  assert.equal(provider.journey.selectedFunding, 'credits', 'choosing a provider keeps the choice');
+  assert.equal(provider.journey.selectedFunding, 'platform', 'choosing a provider keeps the choice');
   const trying = await startOnboardingTry(signup.settings, {
     expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER,
   });
@@ -461,20 +461,20 @@ test('the Owner\'s credits-or-own-key choice is the host\'s to record and the jo
   const refused = await choose('own_key');
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: 'onboarding_complete' });
-  assert.deepEqual(chosen, ['own_key', 'credits'], 'onboarding\'s own route is closed once it is complete');
-  const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'credits' }) });
-  assert.equal(switched.status, 200, 'the Plan and credits page still switches after onboarding');
-  assert.deepEqual(chosen, ['own_key', 'credits', 'credits']);
+  assert.deepEqual(chosen, ['own_key', 'platform'], 'onboarding\'s own route is closed once it is complete');
+  const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'platform' }) });
+  assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
+  assert.deepEqual(chosen, ['own_key', 'platform', 'platform']);
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
   await beginOnboardingJourney(signup.settings);
-  assert.equal((await choose('credits')).status, 404, 'no port, no choice');
+  assert.equal((await choose('platform')).status, 404, 'no port, no choice');
 });
 
-test('a credits installation switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {
+test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {
   await withProviders(async () => {
-    let funding: BillingFunding = 'credits';
+    let funding: BillingFunding = 'platform';
     const chosen: BillingFunding[] = [];
     configurePlatformBilling({
       summary: async () => (funding === 'own_key' ? { funding } : {
@@ -519,7 +519,7 @@ test('a credits installation switches back to its own key only with a key for it
     const refused = await switchToOwnKey();
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { error: 'own_key_missing', provider: 'anthropic' });
-    assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on credits');
+    assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on Chickpea\'s models');
 
     await saveKey('anthropic');
     assert.deepEqual(await ownKey(), { ready: true, agentsWithoutKey: ['Research'] },

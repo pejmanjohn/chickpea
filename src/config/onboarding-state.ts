@@ -264,7 +264,7 @@ function hasSelectedChannel(journey: OnboardingJourney): boolean {
 }
 
 function funding(value: string): BillingFunding {
-  if (value !== 'credits' && value !== 'own_key') throw new Error('funding is invalid.');
+  if (value !== 'platform' && value !== 'own_key') throw new Error('funding is invalid.');
   return value;
 }
 

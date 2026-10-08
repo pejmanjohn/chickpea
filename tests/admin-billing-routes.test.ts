@@ -21,7 +21,7 @@ const INSTALLATION = 'inst_billing';
 const HOSTED = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>, { installationId: INSTALLATION });
 
 const CREDITS: BillingSummary = {
-  funding: 'credits',
+  funding: 'platform',
   balance: 48_210,
   plan: { key: 'starter', name: 'Starter' },
   period: { start: new Date('2026-10-07T17:00:00Z'), end: new Date('2026-11-07T17:00:00Z') },
@@ -90,7 +90,7 @@ test('standalone has no billing: the API is not found and the page offers nothin
   const request = admin(t, { port, env: {} });
   assert.equal((await request('/admin/api/billing')).status, 404);
   assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 404);
-  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 404);
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 404);
   assert.match(await (await request('/admin')).text(), /"billingOffered":false/);
   assert.deepEqual(calls, []);
 });
@@ -112,22 +112,22 @@ test('an installation on its own key reads only that, and whether the reader may
 });
 
 test('an Owner switches an own-key installation to credits, and switching again changes nothing', async (t) => {
-  let funding: 'own_key' | 'credits' = 'own_key';
+  let funding: 'own_key' | 'platform' = 'own_key';
   const { port, calls } = fakePort(CREDITS, {
-    summary: async () => (funding === 'credits' ? CREDITS : { funding: 'own_key' }),
+    summary: async () => (funding === 'platform' ? CREDITS : { funding: 'own_key' }),
     chooseFunding: async (installationId, next) => { calls.push(['chooseFunding', installationId, next]); funding = next; },
   });
   const request = admin(t, { port });
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const switched = await request('/admin/api/billing/funding', post({ funding: 'credits' }));
+    const switched = await request('/admin/api/billing/funding', post({ funding: 'platform' }));
     assert.equal(switched.status, 200);
     assert.equal(switched.headers.get('cache-control'), 'no-store');
     const view = await switched.json() as Record<string, unknown>;
-    assert.equal(view.funding, 'credits');
+    assert.equal(view.funding, 'platform');
     assert.equal(view.manage, true);
     assert.equal(view.balance, 48_210);
   }
-  assert.deepEqual(calls, [['chooseFunding', INSTALLATION, 'credits'], ['chooseFunding', INSTALLATION, 'credits']]);
+  assert.deepEqual(calls, [['chooseFunding', INSTALLATION, 'platform'], ['chooseFunding', INSTALLATION, 'platform']]);
 });
 
 test('switching to your own key with no key saved, or a malformed switch, is refused before the port is asked', async (t) => {
@@ -136,7 +136,7 @@ test('switching to your own key with no key saved, or a malformed switch, is ref
   const keyless = await request('/admin/api/billing/funding', post({ funding: 'own_key' }));
   assert.equal(keyless.status, 409);
   assert.deepEqual(await keyless.json(), { error: 'own_key_missing', provider: null });
-  for (const body of [{}, { funding: 'byok' }, { funding: 'credits', installationId: 'inst_other' }]) {
+  for (const body of [{}, { funding: 'byok' }, { funding: 'credits' }, { funding: 'platform', installationId: 'inst_other' }]) {
     assert.equal((await request('/admin/api/billing/funding', post(body))).status, 400, JSON.stringify(body));
   }
   assert.deepEqual(calls, []);
@@ -148,7 +148,7 @@ test('an Owner reads the balance, plan, period and named use; unnamed use folds 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.deepEqual(await response.json(), {
-    funding: 'credits',
+    funding: 'platform',
     manage: true,
     balance: 48_210,
     plan: { key: 'starter', name: 'Starter' },
@@ -203,11 +203,11 @@ for (const role of ['member', 'admin'] as const) {
   test(`a${role === 'admin' ? 'n Admin' : ' Member'} sees the balance alone and cannot buy`, async (t) => {
     const { port, calls } = fakePort(CREDITS);
     const request = admin(t, { role, port });
-    assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'credits', manage: false, balance: 48_210 });
+    assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'platform', manage: false, balance: 48_210 });
     assert.equal((await request('/admin/plan')).status, 200);
     assert.equal((await request('/admin/api/billing/checkout', post({ kind: 'top_up', key: 'top_up_10' }))).status, 403);
     assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
-    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
+    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 403);
     assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 403);
     assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
   });
@@ -216,9 +216,9 @@ for (const role of ['member', 'admin'] as const) {
 test('an Owner\'s personal token is not an Owner\'s own session: no use, no purchases', async (t) => {
   const { port, calls } = fakePort(CREDITS);
   const request = admin(t, { port, machine: true });
-  assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'credits', manage: false, balance: 48_210 });
+  assert.deepEqual(await (await request('/admin/api/billing')).json(), { funding: 'platform', manage: false, balance: 48_210 });
   assert.equal((await request('/admin/api/billing/portal', post({}))).status, 403);
-  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'credits' }))).status, 403);
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 403);
   assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 403);
   assert.deepEqual(calls.filter(([name]) => name !== 'summary'), []);
 });

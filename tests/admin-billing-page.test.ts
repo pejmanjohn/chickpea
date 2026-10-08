@@ -30,7 +30,7 @@ async function flush(): Promise<void> {
 }
 
 const OWNER_VIEW: BillingView = {
-  funding: 'credits',
+  funding: 'platform',
   manage: true,
   balance: 48_210,
   plan: { key: 'starter', name: 'Starter' },
@@ -65,7 +65,7 @@ async function harness(options: {
   owner?: boolean;
   workspaceAdminUi?: boolean;
   /** The funding choice the onboarding journey already holds, as after a reload. */
-  savedFunding?: 'credits' | 'own_key';
+  savedFunding?: 'platform' | 'own_key';
   /** Whether POST /admin/api/billing/funding fails, as when the host is down. */
   switchFails?: boolean;
 }) {
@@ -201,7 +201,7 @@ test('each button asks the host for a Stripe page and opens the URL it returns',
 test('a Member sees the balance and that an Owner adds credits, with no buy buttons', async () => {
   const page = await harness({
     path: '/admin/plan', billingOffered: true, owner: false, workspaceAdminUi: false,
-    billing: { funding: 'credits', manage: false, balance: 48_210 },
+    billing: { funding: 'platform', manage: false, balance: 48_210 },
   });
   const html = page.html();
   assert.equal(page.location.pathname, '/admin/plan', 'a Member may open the page');
@@ -227,7 +227,7 @@ test('an Owner on credits with a saved key switches back to it only after confir
   assert.deepEqual(billingWrites(page.requests).map((request) => [request.method, request.path, (request as { body?: unknown }).body]),
     [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
   assert.match(page.html(), /Your workspace pays for models with its own API key\./, 'the page turns into the own-key view');
-  assert.match(page.html(), /data-action="billing-use-credits">Use Chickpea credits<\/button>/);
+  assert.match(page.html(), /data-action="billing-use-platform">Use Chickpea credits<\/button>/);
   assert.doesNotMatch(page.html(), /Switch to Chickpea credits\?/, 'the own-key view does not open on a confirmation');
 });
 
@@ -289,27 +289,27 @@ test('an Owner on their own key finds the page and switches to credits only afte
   assert.equal(page.location.pathname, '/admin/plan');
   assert.match(page.html(), /<h1 class="page-title">Plan and credits<\/h1>/);
   assert.match(page.html(), /Your workspace pays for models with its own API key\./);
-  assert.match(page.html(), /data-action="billing-use-credits">Use Chickpea credits<\/button>/);
+  assert.match(page.html(), /data-action="billing-use-platform">Use Chickpea credits<\/button>/);
   assert.doesNotMatch(page.html(), /Top up|Change plan|Manage billing/);
 
   assert.match(page.html(), /With Chickpea credits, no API key is needed\./);
-  await page.click({ 'data-action': 'billing-use-credits' });
+  await page.click({ 'data-action': 'billing-use-platform' });
   assert.match(page.html(), /Switch to Chickpea credits\? Replies will stop using your own key\./);
   await page.click({ 'data-action': 'billing-funding-cancel' });
   assert.doesNotMatch(page.html(), /Switch to Chickpea credits\?/);
   assert.deepEqual(billingWrites(page.requests), [], 'nothing switches before the Owner confirms');
 
-  await page.click({ 'data-action': 'billing-use-credits' });
+  await page.click({ 'data-action': 'billing-use-platform' });
   await page.click({ 'data-action': 'billing-funding-confirm' });
   assert.deepEqual(billingWrites(page.requests).map((request) => [request.method, request.path, (request as { body?: unknown }).body]),
-    [['POST', '/admin/api/billing/funding', { funding: 'credits' }]]);
+    [['POST', '/admin/api/billing/funding', { funding: 'platform' }]]);
   assert.match(page.html(), /Balance<\/span><span class="usage-card-value">48,210<\/span>/, 'the page turns into the credits view');
   assert.match(page.html(), /data-action="billing-top-up"/);
 });
 
 test('a switch the host refuses keeps the confirmation open with a retryable error', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, billing: { funding: 'own_key', manage: true }, switchFails: true });
-  await page.click({ 'data-action': 'billing-use-credits' });
+  await page.click({ 'data-action': 'billing-use-platform' });
   await page.click({ 'data-action': 'billing-funding-confirm' });
   assert.match(page.html(), /Could not switch to Chickpea credits\. Try again\./);
   assert.match(page.html(), /data-action="billing-funding-confirm">Switch to credits<\/button>/);
@@ -323,22 +323,22 @@ test('a Member on their own key sees that an Owner can switch, with no switch', 
   assert.equal(page.location.pathname, '/admin/plan');
   assert.match(page.html(), /Your workspace pays for models with its own API key\./);
   assert.match(page.html(), /An Owner can switch to Chickpea credits\./);
-  assert.doesNotMatch(page.html(), /billing-use-credits/);
+  assert.doesNotMatch(page.html(), /billing-use-platform/);
 });
 
 test('hosted onboarding offers credits first; choosing them skips the key', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, billing: { funding: 'own_key', manage: true } });
   const offer = page.html();
   assert.match(offer, /Choose how to pay for models/);
-  const credits = offer.indexOf('data-funding="credits"');
+  const credits = offer.indexOf('data-funding="platform"');
   const ownKey = offer.indexOf('data-funding="own_key"');
   assert.ok(credits >= 0 && ownKey > credits, 'credits come first, your own key second');
   assert.match(offer, /<strong>Use Chickpea credits<\/strong>/);
   assert.match(offer, /<strong>Use your own key<\/strong>/);
 
-  await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'credits' });
+  await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'platform' });
   assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
-    JSON.stringify(request.body) === JSON.stringify({ expectedRevision: 'revision_1', funding: 'credits' })));
+    JSON.stringify(request.body) === JSON.stringify({ expectedRevision: 'revision_1', funding: 'platform' })));
   assert.match(page.html(), /Paid with credits/);
   assert.match(page.html(), /Choose a provider\. Chickpea credits pay for its models\./);
   assert.match(page.html(), /Choose the provider whose models Chickpea should use\./);
@@ -366,7 +366,7 @@ test('choosing your own key in hosted onboarding keeps the key step', async () =
 });
 
 test('a reload continues from the saved choice: credits to keyless providers, your own key to the key step', async () => {
-  const credits = await harness({ path: '/admin/onboarding', billingOffered: true, billing: OWNER_VIEW, savedFunding: 'credits' });
+  const credits = await harness({ path: '/admin/onboarding', billingOffered: true, billing: OWNER_VIEW, savedFunding: 'platform' });
   assert.match(credits.html(), /Paid with credits/);
   assert.doesNotMatch(credits.html(), /Choose how to pay for models/);
   assert.match(credits.html(), /data-action="onboarding-funding-change"[^>]*>Change how you pay<\/button>/);

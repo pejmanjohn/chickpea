@@ -1573,7 +1573,7 @@ const onboardingProviderSchema = v.strictObject({
 
 const onboardingFundingSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
-  funding: v.picklist(['credits', 'own_key']),
+  funding: v.picklist(['platform', 'own_key']),
 });
 
 const onboardingTrySchema = v.strictObject({

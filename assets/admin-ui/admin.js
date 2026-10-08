@@ -2460,7 +2460,7 @@
   // The page offers one switch: away from how the workspace pays now.
   function switchFunding() {
     if (state.billingBusy) return;
-    var next = state.billing.funding === "credits" ? "own_key" : "credits";
+    var next = state.billing.funding === "platform" ? "own_key" : "platform";
     state.billingBusy = "funding";
     state.billingError = "";
     render();
@@ -2468,7 +2468,7 @@
       state.billing = body;
       state.billingFundingConfirm = false;
     }).catch(function () {
-      state.billingError = next === "credits" ? "Could not switch to Chickpea credits. Try again." : "Could not switch to your own key. Try again.";
+      state.billingError = next === "platform" ? "Could not switch to Chickpea credits. Try again." : "Could not switch to your own key. Try again.";
     }).then(function () {
       state.billingBusy = "";
       render();
@@ -2558,7 +2558,7 @@
     var body = state.billingFundingConfirm
       ? billingFundingConfirmHtml('Switch to Chickpea credits? Replies will stop using your own key.', 'Switch to credits')
       : '<div class="usage-contract"><p>With Chickpea credits, no API key is needed. Each reply draws credits from your workspace&rsquo;s balance.</p></div>' +
-        '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-credits">Use Chickpea credits</button></div>';
+        '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea credits</button></div>';
     return head + body + notice;
   }
 
@@ -2695,7 +2695,7 @@
 
   // Where the host sells credits, an Owner first chooses how Chickpea pays
   // for models: credits, which need no key, or their own provider key.
-  function onboardingCreditsOffered() {
+  function onboardingPlatformOffered() {
     return BILLING_OFFERED && INSTALLATION_OWNER;
   }
 
@@ -2703,8 +2703,8 @@
     return state.onboardingFundingChanging ? "" : (state.onboarding && state.onboarding.funding) || "";
   }
 
-  function onboardingPaysWithCredits() {
-    return onboardingCreditsOffered() && onboardingFundingChoice() === "credits";
+  function onboardingPaysWithPlatform() {
+    return onboardingPlatformOffered() && onboardingFundingChoice() === "platform";
   }
 
   function onboardingFundingHtml() {
@@ -2717,7 +2717,7 @@
       '<h1 class="onboarding-title">Choose how to pay for models</h1>' +
       '<p class="onboarding-lede">Use Chickpea credits, or connect a model provider with your own API key.</p>' +
       '<div class="onboarding-funding-options" role="group" aria-label="How to pay for models">' +
-      option("credits", "Use Chickpea credits", "No API key needed. Each reply draws credits from your workspace&rsquo;s balance.") +
+      option("platform", "Use Chickpea credits", "No API key needed. Each reply draws credits from your workspace&rsquo;s balance.") +
       option("own_key", "Use your own key", "Connect an Anthropic, OpenAI, or OpenRouter API key. The provider bills you directly.") +
       '</div>' + (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') + '</section>';
   }
@@ -2745,19 +2745,19 @@
   }
 
   function onboardingProviderHtml() {
-    if (onboardingCreditsOffered() && !onboardingFundingChoice()) return onboardingFundingHtml();
-    var credits = onboardingPaysWithCredits();
+    if (onboardingPlatformOffered() && !onboardingFundingChoice()) return onboardingFundingHtml();
+    var platform = onboardingPaysWithPlatform();
     var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
     var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
-    var configured = selected ? credits || onboardingProviderConfigured(selected.id) : false;
+    var configured = selected ? platform || onboardingProviderConfigured(selected.id) : false;
     // Workers AI exists only where the deployment has the binding; Node
     // installs never see it, and credits never pay for it.
     var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
-      return provider.id !== "cloudflare" || (!credits && onboardingProviderConfigured("cloudflare"));
+      return provider.id !== "cloudflare" || (!platform && onboardingProviderConfigured("cloudflare"));
     }).map(function (provider) {
       var active = !!selected && provider.id === selected.id;
       var ready = onboardingProviderConfigured(provider.id);
-      var status = credits
+      var status = platform
         ? '<span class="onboarding-provider-tab-status">Paid with credits</span>'
         : ready
           ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
@@ -2770,18 +2770,18 @@
       ? "Use OpenAI models with a Platform API key or ChatGPT subscription."
       : selected && selected.description;
     var panel = !selected
-      ? '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">' + (credits ? 'Choose the provider whose models Chickpea should use.' : 'Choose the provider you want Chickpea to use. Each option shows the setup it needs.') + '</p></div>'
-      : credits
+      ? '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">' + (platform ? 'Choose the provider whose models Chickpea should use.' : 'Choose the provider you want Chickpea to use. Each option shows the setup it needs.') + '</p></div>'
+      : platform
         ? '<div class="onboarding-provider-config"><h2>Use ' + esc(selected.name) + '</h2><p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use with Chickpea credits.</p></div>'
         : '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>';
-    var continueLabel = credits ? 'Continue' : 'Validate and Continue';
+    var continueLabel = platform ? 'Continue' : 'Validate and Continue';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
-      '<p class="onboarding-lede">' + (credits ? 'Choose a provider. Chickpea credits pay for its models.' : 'Choose a provider, then finish the setup it needs.') + '</p>' +
+      '<p class="onboarding-lede">' + (platform ? 'Choose a provider. Chickpea credits pay for its models.' : 'Choose a provider, then finish the setup it needs.') + '</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? (credits ? 'Continuing&hellip;' : 'Validating&hellip;') : continueLabel) + '</button>' +
-      (onboardingCreditsOffered() ? '<button type="button" class="btn btn-ghost" data-action="onboarding-funding-change"' + (state.onboardingBusy ? ' disabled' : '') + '>Change how you pay</button>' : '') +
+      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? (platform ? 'Continuing&hellip;' : 'Validating&hellip;') : continueLabel) + '</button>' +
+      (onboardingPlatformOffered() ? '<button type="button" class="btn btn-ghost" data-action="onboarding-funding-change"' + (state.onboardingBusy ? ' disabled' : '') + '>Change how you pay</button>' : '') +
       '</div></section>';
   }
 
@@ -13024,8 +13024,8 @@
     var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
     if (!providerId) return;
     // Credits need no key: the provider step only records the choice.
-    var credits = onboardingPaysWithCredits() && providerId !== "cloudflare";
-    var configured = credits || onboardingProviderConfigured(providerId);
+    var platform = onboardingPaysWithPlatform() && providerId !== "cloudflare";
+    var configured = platform || onboardingProviderConfigured(providerId);
     var addsOpenAiKey = providerId === "openai" && !configured;
     var key = String(state.onboardingProviderKey || "").trim();
     if (!configured && (providerId === "cloudflare" || !key)) {
@@ -13043,7 +13043,7 @@
       : postJson("/admin/api/providers/" + encodeURIComponent(providerId) + "/key", "POST", { key: key });
     validate.then(function () {
       var runtime = onboardingRuntimeProvider(providerId);
-      if (runtime && !credits) configured = runtime.configured = true;
+      if (runtime && !platform) configured = runtime.configured = true;
       return postJson("/admin/api/onboarding/provider", "POST", {
         expectedRevision: state.onboarding.revision,
         providerId: providerId
@@ -13685,7 +13685,7 @@
     if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
     if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan");
     if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal");
-    if (action === "billing-use-credits" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
+    if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = ""; render(); }
     if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = ""; render(); }
     if (action === "billing-funding-confirm") switchFunding();
     if (action === "onboarding-funding" && !state.onboardingFundingBusy) { chooseOnboardingFunding(target.getAttribute("data-funding") || ""); }
