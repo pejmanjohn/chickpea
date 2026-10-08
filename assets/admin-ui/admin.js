@@ -2634,8 +2634,10 @@
     } else if (!open) {
       body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
     } else if (next.ready) {
+      var stranded = next.agentsWithoutKey;
       body = billingFundingConfirmHtml('Switch to your own key? Your provider bills you for the model directly, and your plan covers tasks.' +
-        (next.agentsWithoutKey.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + next.agentsWithoutKey.map(esc).join(", ") + '.' : ''),
+        (stranded.length === 1 ? ' This Agent will stop replying until a key is added for its model&rsquo;s provider: ' + esc(stranded[0]) + '.'
+          : stranded.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + stranded.map(esc).join(", ") + '.' : ''),
         'Switch to your own key');
     } else {
       body = '<div class="callout"><span>Your own API key needs the ' + esc(next.minimumPlan.price) + ' plan or higher. Choose it first, then switch to your own key.</span></div>' +

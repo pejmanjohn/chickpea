@@ -520,7 +520,7 @@ test('an Owner on the plan with a saved key switches to it only after confirming
   assertHides(page.html(), 'Switch to Chickpea’s models?');
 });
 
-test('the confirmation names each Agent whose pinned model has no saved key', async () => {
+test('the confirmation names each Agent whose pinned model has no saved key, in the singular for one', async () => {
   const page = await harness({
     path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
     ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Ops <Desk>', model: 'openrouter/openai/gpt-5.6-terra' }, { name: 'Writer' }] },
@@ -528,6 +528,14 @@ test('the confirmation names each Agent whose pinned model has no saved key', as
   assert.doesNotMatch(page.html(), /will stop replying/, 'only the confirmation warns');
   await page.click({ 'data-action': 'billing-use-own-key' });
   assert.match(page.html(), /and your plan covers tasks\. These Agents will stop replying until a key is added for their model&rsquo;s provider: Research, Ops &lt;Desk&gt;\.<\/span>/);
+
+  const one = await harness({
+    path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
+    ownKey: { ...KEYED, agents: [{ name: 'Research', model: 'openai/gpt-5.6-terra' }, { name: 'Writer' }] },
+  });
+  await one.click({ 'data-action': 'billing-use-own-key' });
+  assert.match(one.html(), /and your plan covers tasks\. This Agent will stop replying until a key is added for its model&rsquo;s provider: Research\.<\/span>/);
+  assertHides(one.html(), 'These Agents');
 });
 
 test('a switch to your own key the host refuses shows its error beside the open confirmation', async () => {
