@@ -33,7 +33,6 @@ import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
 import { createSlackReadGate } from '../src/slack/read-budget.ts';
-import { SlackReadError } from '../src/slack/reading/errors.ts';
 import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
@@ -111,8 +110,6 @@ function interceptors(
 }
 
 const ran: string[] = [];
-/** Errors the next synthetic read_slack_channel calls throw before doing any work, one per call. */
-const channelReadRefusals: Error[] = [];
 
 function FeeProbe() {
   useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
@@ -123,10 +120,8 @@ function FeeProbe() {
       input: v.object({}),
       output: v.string(),
       run: () => {
-        const refusal = name === 'read_slack_channel' ? channelReadRefusals.shift() : undefined;
-        if (refusal) throw refusal;
         ran.push(name);
-        return { output: 'ok' };
+        return { output: JSON.stringify({ status: 'ok' }) };
       },
     });
   }
@@ -146,6 +141,9 @@ function FeeProbe() {
 const MENTION = { workspaceId: 'T0FEES', channelId: 'C0FEES', threadTs: '1000.000100', messageTs: '1000.000100' };
 const slackHistoryCalls: unknown[] = [];
 const readBudgetDecisions: boolean[] = [];
+const grantChecks: string[] = [];
+/** A channel the requester belongs to but this Agent was never added to. */
+const UNGRANTED_CHANNEL = 'C0UNGRANTED';
 
 /** The real Slack read tools on a shared app, paced at one read a minute. */
 function ChannelMentionProbe() {
@@ -163,7 +161,10 @@ function ChannelMentionProbe() {
     },
     authority: {
       workspaceId: MENTION.workspaceId, managementAgent: false, requesterSlackUserId: 'U_REQUESTER', current: MENTION,
-      assertActive: async () => {}, conversation: async () => undefined, isMember: async () => true, hasActiveGrant: async () => true,
+      assertActive: async () => {},
+      conversation: async (id) => ({ id, teamId: MENTION.workspaceId, im: false, mpim: false, private: false, member: true, shared: false }),
+      isMember: async () => true,
+      hasActiveGrant: async (id) => { grantChecks.push(id); return id !== UNGRANTED_CHANNEL; },
     },
     self: { botUserId: 'U_BOT' },
   });
@@ -171,8 +172,8 @@ function ChannelMentionProbe() {
   return 'Read the channel.';
 }
 
-const readsMentionChannel = (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
-  { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel: MENTION.channelId } },
+const readsChannel = (channel: string) => (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel } },
 ], 'toolUse');
 
 async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise<{ text: string } | unknown> {
@@ -258,36 +259,10 @@ test('a qualifying tool that throws after doing its work posts one task row', { 
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
-for (const code of ['rate_limited', 'read_limit'] as const) {
-  test(`a Slack read that throws ${code} before doing any work posts no task row`, { timeout: 20_000 }, async (t) => {
-    const posts = hostedPort(t);
-    interceptors(t, replyRun(hostedEnv()));
-    scriptedProvider([callsTools('read_slack_channel'), answers]);
-    ran.length = 0;
-    channelReadRefusals.splice(0, Infinity, new SlackReadError(code));
-
-    assert.deepEqual(await slackTurn(`fees-thrown-${code}`), { text: 'done' });
-    assert.deepEqual(ran, []);
-    assert.deepEqual(tiers(posts), ['chat:posted']);
-  });
-}
-
-test('a run whose first Slack read is refused posts one task row when a second qualifying tool completes', { timeout: 20_000 }, async (t) => {
-  const posts = hostedPort(t);
-  interceptors(t, replyRun(hostedEnv()));
-  scriptedProvider([callsTools('read_slack_channel'), callsTools('read_slack_channel'), answers]);
-  ran.length = 0;
-  channelReadRefusals.splice(0, Infinity, new SlackReadError('rate_limited'));
-
-  assert.deepEqual(await slackTurn('fees-refused-then-done'), { text: 'done' });
-  assert.deepEqual(ran, ['read_slack_channel']);
-  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
-});
-
 test('a channel read the Slack read budget refuses posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
   interceptors(t, replyRun(hostedEnv()));
-  scriptedProvider([readsMentionChannel, answers]);
+  scriptedProvider([readsChannel(MENTION.channelId), answers]);
   slackHistoryCalls.length = 0;
   readBudgetDecisions.length = 0;
   const preRead = await createSlackReadGate({ state: undefined, workspaceId: MENTION.workspaceId, gated: true }).reserve('conversations.history');
@@ -295,6 +270,21 @@ test('a channel read the Slack read budget refuses posts no task row, and Slack 
 
   assert.deepEqual(await slackTurn('fees-read-refused', ChannelMentionProbe), { text: 'done' });
   assert.deepEqual(readBudgetDecisions, [false], 'the read budget refused the channel read');
+  assert.deepEqual(slackHistoryCalls, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a read of a channel this Agent was never added to posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([readsChannel(UNGRANTED_CHANNEL), answers]);
+  slackHistoryCalls.length = 0;
+  readBudgetDecisions.length = 0;
+  grantChecks.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-read-ungranted', ChannelMentionProbe), { text: 'done' });
+  assert.deepEqual(grantChecks, [UNGRANTED_CHANNEL], 'the Agent\'s channel access refused the read');
+  assert.deepEqual(readBudgetDecisions, []);
   assert.deepEqual(slackHistoryCalls, []);
   assert.deepEqual(tiers(posts), ['chat:posted']);
 });
@@ -400,7 +390,7 @@ test('a retried attempt of the same run posts only duplicates', async (t) => {
     { type: 'agent', operationId: 'op_retry', operationKind: 'prompt' },
     { instanceId: 'fees-retry', submissionId: 'sub_retry' },
     () => runFeeInterceptor(
-      { type: 'tool', toolCallId: 'call_retry', toolName: 'read_slack_channel' },
+      { type: 'tool', toolCallId: 'call_retry', toolName: 'read_slack_list' },
       { instanceId: 'fees-retry', submissionId: 'sub_retry' },
       async () => 'ran',
     ),
@@ -409,6 +399,23 @@ test('a retried attempt of the same run posts only duplicates', async (t) => {
   assert.equal(await attempt(), 'ran');
   assert.equal(await attempt(), 'ran');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted', 'chat:duplicate', 'task:duplicate']);
+});
+
+test('a channel read whose result has an unexpected shape posts the task row and keeps its result', async (t) => {
+  const posts = hostedPort(t);
+  const malformed = [null, 'ran', { details: { output: 42 } }, { details: { output: 'not json' } }, { details: { output: 'null' } }];
+  for (const [index, result] of malformed.entries()) {
+    const modelAccess = createModelAccessInterceptor({
+      lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
+      installationGrants: async () => [],
+    });
+    const context = { instanceId: `fees-malformed-${index}`, submissionId: `sub_malformed_${index}` };
+    const returned = await modelAccess({ type: 'agent', operationId: 'op_malformed', operationKind: 'prompt' }, context, () =>
+      runFeeInterceptor({ type: 'tool', toolCallId: 'call_read', toolName: 'read_slack_channel' }, context, async () => result));
+    assert.equal(returned, result);
+  }
+  assert.deepEqual(posts.filter(({ tier }) => tier === 'task').map(({ runId }) => runId),
+    malformed.map((_, index) => `sub_malformed_${index}`));
 });
 
 test('the shell posts the task row only when the run\'s shell reaches a granted repository', async (t) => {
@@ -455,7 +462,7 @@ test('a qualifying tool inside an absorbed purpose, such as reading an attachmen
   });
   const context = { instanceId: 'fees-attachment', submissionId: 'sub_attachment' };
   const read = () => runFeeInterceptor(
-    { type: 'tool', toolCallId: 'call_read', toolName: 'read_slack_channel' }, context, async () => 'ran',
+    { type: 'tool', toolCallId: 'call_read', toolName: 'read_slack_list' }, context, async () => 'ran',
   );
 
   await modelAccess({ type: 'agent', operationId: 'op_attachment', operationKind: 'prompt' }, context, async () => {
