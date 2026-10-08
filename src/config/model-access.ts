@@ -15,7 +15,10 @@
  * stateless call), so a suspended or ended installation starts no attempt and
  * sends no further request (see installation-admission.ts). A grant Chickpea
  * pays for is also admitted against the installation's credits before each
- * request and charged once when it finishes (see platform-funding.ts).
+ * request and charged once when it finishes (see platform-funding.ts). A
+ * hosted reply run posts its chat fee row when an attempt starts and its task
+ * fee row at its first qualifying tool (see run-fee-interceptor.ts); once the
+ * host refuses the task row, the attempt sends no further request.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -33,7 +36,16 @@ import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runti
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
-import { chargePlatformRequest, requirePlatformFundingAdmitted } from './platform-funding.ts';
+import {
+  chargePlatformRequest,
+  CreditsExhaustedError,
+  platformFundingConfigured,
+  postRunFee,
+  requirePlatformFundingAdmitted,
+  type FeeOutcome,
+  type FeePost,
+  type FeeTier,
+} from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -53,6 +65,7 @@ import {
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
+import type { RunKind } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
 import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
@@ -127,6 +140,74 @@ interface ModelAccessCell {
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
+  /** A hosted reply run whose host posts fees; undefined on standalone and for stateless calls. */
+  readonly fees: RunFees | undefined;
+}
+
+/**
+ * One attempt's fee rows. The host's key absorbs a row another attempt of
+ * the same run already posted, so each attempt posts its own.
+ */
+export class RunFees {
+  readonly runKind: RunKind;
+  readonly #run: Omit<FeePost, 'tier'>;
+  #task: Promise<void> | undefined;
+  #refused = false;
+
+  constructor(runKind: RunKind, run: Omit<FeePost, 'tier'>) {
+    this.runKind = runKind;
+    this.#run = run;
+  }
+
+  /** The host refused the task row: the attempt sends no further model request. */
+  get refused(): boolean {
+    return this.#refused;
+  }
+
+  /** Never fails the attempt: a lost chat row is harmless, and requests are admitted on their own. */
+  async postChatFee(): Promise<void> {
+    await postFeeWithinBudget({ ...this.#run, tier: 'chat' });
+  }
+
+  /**
+   * Before a qualifying tool runs. Parallel tools share one post. A post the
+   * host cannot answer lets the tool run, like a lost charge, and the next
+   * qualifying tool asks again; a refusal throws for this and every later one.
+   */
+  requireTaskFee(): Promise<void> {
+    this.#task ??= this.#postTaskFee();
+    return this.#task;
+  }
+
+  async #postTaskFee(): Promise<void> {
+    const outcome = await postFeeWithinBudget({ ...this.#run, tier: 'task' });
+    if (outcome?.kind === 'refused') {
+      this.#refused = true;
+      throw new CreditsExhaustedError();
+    }
+    if (!outcome) this.#task = undefined;
+  }
+}
+
+async function postFeeWithinBudget(post: FeePost): Promise<FeeOutcome | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), RECORD_BUDGET_MS);
+  });
+  try {
+    const outcome = await Promise.race([postRunFee(post), budget]);
+    if (!outcome) logFeeFailure(post.tier, 'timeout');
+    return outcome;
+  } catch (error) {
+    logFeeFailure(post.tier, errorKind(error));
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function logFeeFailure(tier: FeeTier, error: string): void {
+  console.warn('[chickpea] run fee post failed', { tier, error });
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
@@ -188,14 +269,18 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess =
+/**
+ * What the trusted host knows about one attempt before its first model call.
+ * `runKind` names a reply run, which posts fees on a hosted installation.
+ */
+export type AttemptModelAccess = { readonly runKind?: RunKind } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
   | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true; readonly agentId?: string }
   /** An agent with no persisted run of its own (the coding worker). */
-  | { readonly env: PlatformEnv | undefined; readonly agentId?: string };
+  | { readonly env: PlatformEnv | undefined; readonly agentId?: string }
+);
 
 export interface ModelAccessInterceptorOptions {
   /** The attempt's run, from trusted persisted state; never from model-visible input. */
@@ -239,9 +324,17 @@ export function createModelAccessInterceptor(
     } else if (!('deploymentLane' in attempt) && !hosted) {
       grants = await options.installationGrants(attempt.env, runId);
     }
-    const cell = await resolveCell(grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null);
+    const cell = await resolveCell(
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, attempt.runKind,
+    );
+    await cell.fees?.postChatFee();
     return cells.run(cell, next);
   };
+}
+
+/** The current attempt's fee rows, when it is a hosted reply run whose host posts them. */
+export function currentRunFees(): RunFees | undefined {
+  return cells.getStore()?.fees;
 }
 
 /** A stateless call runs inside an explicit grant, resolved once. */
@@ -345,6 +438,7 @@ async function resolveCell(
   instanceId: string | undefined,
   runId: string,
   agentId: string | null,
+  runKind?: RunKind,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -358,7 +452,10 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution });
+  const fees = installationId && runKind && platformFundingConfigured()
+    ? new RunFees(runKind, { installationId, runId, agentId })
+    : undefined;
+  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution, fees });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
@@ -485,6 +582,7 @@ function sendRequest<TModel extends Model<Api>>(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
+      if (cell.fees?.refused) throw new CreditsExhaustedError();
       if (installationId) await requireInstallationAdmitted(installationId);
       source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
     } catch (error) {

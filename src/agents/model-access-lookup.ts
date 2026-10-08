@@ -126,7 +126,10 @@ export async function lookupAttemptModelAccess(
   if (!plan || !instanceId) {
     throw new ModelAccessError('scope_missing', 'No persisted run binds model access for this attempt.');
   }
-  return planModelAccess(plan, instanceId, submissionId ?? instanceId, env);
+  return {
+    ...await planModelAccess(plan, instanceId, submissionId ?? instanceId, env),
+    runKind: context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME ? 'scheduled' : 'interactive',
+  };
 }
 
 /** A plan's frozen credential as a grant, or the installation's current one when it froze none. */

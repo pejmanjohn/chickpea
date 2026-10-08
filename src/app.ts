@@ -48,6 +48,7 @@ import { createRequestTelemetryLifecycle } from './telemetry/runtime.ts';
 import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
+import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
   observeResponseMetadata,
@@ -153,6 +154,15 @@ instrument({
 instrument({
   key: Symbol.for('chickpea.model-access'),
   interceptor: modelAccessInterceptor,
+  observe() {},
+  dispose() {},
+});
+
+// A hosted reply run posts its task fee row before its first qualifying tool
+// runs. Registered inside model access, whose cell carries the run's fees.
+instrument({
+  key: Symbol.for('chickpea.run-fees'),
+  interceptor: runFeeInterceptor,
   observe() {},
   dispose() {},
 });

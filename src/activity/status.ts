@@ -234,6 +234,15 @@ export function activityStatusForObservation(
   return toolActivityStatus(event.toolName, event.args, context);
 }
 
+/** The descriptor an instance's render registered for a tool, read as its activity reads it. */
+export function registeredToolDescriptor(
+  instanceId: string | undefined,
+  toolName: string,
+): SemanticActivityDescriptor | undefined {
+  const context = instanceId === undefined ? undefined : activityContexts.get(instanceId);
+  return context && descriptorForObservation(context, toolName, undefined);
+}
+
 /** Register an invocation-owner fact only when the exact plan grants its family. */
 export function registerActivityInvocationFact(
   instanceId: string,
