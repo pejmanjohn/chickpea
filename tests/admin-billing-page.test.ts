@@ -601,6 +601,8 @@ test('a switch to Chickpea\'s models the host refuses keeps the confirmation ope
   assert.match(page.html(), /data-action="billing-funding-confirm">Switch to Chickpea&rsquo;s models<\/button>/);
 });
 
+const FORBIDDEN_WORDS = /credit|markup|refund|multiplier|\bsteps\b|cache|prefix|working reply/i;
+
 test('no Plan page or onboarding state uses words the customer never sees', async () => {
   const states: Array<[string, Parameters<typeof harness>[0], Array<Record<string, string>>]> = [
     ['plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-own-key' }]],
@@ -609,6 +611,8 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
     ['grace', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
     ['grace ended', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST }, []],
+    ['own key at launch', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
+    ['member, own key at launch', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH }, []],
     ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, [{ 'data-action': 'billing-use-own-key' }]],
     ['no plan', { path: '/admin/plan', billingOffered: true, summary: NO_PLAN }, []],
     ['member', { path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN }, []],
@@ -617,10 +621,10 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
   ];
   for (const [label, options, clicks] of states) {
     const page = await harness(options);
-    assert.doesNotMatch(page.html(), /credit|markup|refund|multiplier/i, label);
+    assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, label);
     for (const target of clicks) {
       await page.click(target);
-      assert.doesNotMatch(page.html(), /credit|markup|refund|multiplier/i, `${label} after ${target['data-action']}`);
+      assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, `${label} after ${target['data-action']}`);
     }
   }
   const onboarding = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE });
@@ -633,7 +637,7 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
   ];
   for (const [label, target] of steps) {
     if (target) await onboarding.click(target);
-    assert.doesNotMatch(onboarding.html(), /credit|markup|refund|multiplier/i, `onboarding: ${label}`);
+    assert.doesNotMatch(onboarding.html(), FORBIDDEN_WORDS, `onboarding: ${label}`);
   }
   assert.match(onboarding.html(), /Choose your model provider/, 'the walk reached the own-key provider step');
 });
