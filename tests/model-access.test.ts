@@ -623,9 +623,20 @@ test('a coding worker\'s attempt and grant name the run that delegated its task,
       assert.equal(access.runId, runId);
       assert.equal('grant' in access && access.grant.runId, runId);
     }
-    // A submission with no staged run binds nothing on a deployment serving many.
-    await assert.rejects(lookup(instanceId, 'sub_ik_task_3', envA),
+    // A submission Flue re-drives across a deploy has no staged run: its binding still
+    // decides the key, and it runs under its own submission with one warning.
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    const redriven = await lookup(instanceId, 'sub_ik_task_3', envA);
+    assert.equal(redriven.runId, 'sub_ik_task_3');
+    assert.deepEqual('grant' in redriven && [redriven.grant.runId, redriven.grant.credentialRefId],
+      ['sub_ik_task_3', frozen.credentialRefId]);
+    assert.deepEqual(warn.mock.calls.map((call) => call.arguments),
+      [['[chickpea] coding worker submission has no staged run', { submissionId: 'sub_ik_task_3' }]]);
+    // Without its binding the same submission still fails closed, and the binding check comes first.
+    await assert.rejects(lookup(`${instanceId}0`, 'sub_ik_task_3', envA),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+    assert.equal(warn.mock.calls.length, 1);
+    warn.mock.restore();
 
     // Standalone runs under the staged run, or under its own submission when none was staged.
     assert.deepEqual(

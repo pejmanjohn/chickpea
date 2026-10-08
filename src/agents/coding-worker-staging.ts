@@ -8,6 +8,7 @@ import { sha256Hex } from '../security/digest.ts';
 import { isStorableRequestText } from '../usage/validation.ts';
 import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
+import { CODING_WORKER_DURABILITY } from './submission-durability.ts';
 import type { TurnInputSql } from './turn-input.ts';
 
 /**
@@ -94,6 +95,8 @@ export function writeStagedCodingWorkerRun(
     throw new Error('A staged coding worker run needs a submission ID, a run ID and an Agent ID of at most 256 bytes.');
   }
   ensureStagedRunTable(sql);
+  // No submission outlives the worker's budget, so an older row is never read again.
+  sql.exec(`DELETE FROM ${STAGED_RUN_TABLE} WHERE staged_at < ?`, now - CODING_WORKER_DURABILITY.timeoutMs);
   sql.exec(
     `INSERT INTO ${STAGED_RUN_TABLE} (submission_id, run_id, agent_id, staged_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(submission_id) DO NOTHING`,

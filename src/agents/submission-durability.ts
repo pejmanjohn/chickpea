@@ -9,3 +9,9 @@ export const CHICKPEA_SUBMISSION_DURABILITY: DurabilityConfig = {
   maxAttempts: 10,
   timeoutMs: 155 * 60_000,
 };
+
+/**
+ * A coding worker settles on its own before the coordinator's longest wait
+ * ends, so a runaway task can never outlive the turn that asked for it.
+ */
+export const CODING_WORKER_DURABILITY = { maxAttempts: 5, timeoutMs: 65 * 60_000 } as const satisfies DurabilityConfig;

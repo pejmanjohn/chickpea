@@ -21,8 +21,11 @@
  * runs as (coding-worker-staging.ts), and this lookup reads it back for the
  * attempt's own submission. On a deployment serving many installations the
  * coordinator also stages the worker's version 2 binding, carrying the
- * credential its plan froze for the coding model, and a worker missing
- * either fails closed. Standalone binds the installation's current keys.
+ * credential its plan froze for the coding model; a worker without one
+ * fails closed. The binding decides whose key is used, so a submission
+ * dispatched before its run was staged (one Flue re-drives across a deploy)
+ * still runs, under its own submission. Standalone binds the installation's
+ * current keys.
  *
  * Routine intent has no dispatch site and no persisted run. Standalone keeps
  * today's live keys for it; a deployment serving many installations refuses
@@ -113,10 +116,15 @@ export async function lookupAttemptModelAccess(
     case CHICKPEA_CODING_WORKER_AGENT_NAME: {
       const staged = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
       if (!deploymentServesManyInstallations(env)) return staged ? { env, ...staged } : { env };
-      if (!instanceId || !staged) {
-        throw new ModelAccessError('scope_missing', 'No staged run binds model access for this coding worker.');
-      }
-      return codingWorkerModelAccess(await stagedCodingWorkerBinding(instanceId), instanceId, staged.runId, env);
+      if (!instanceId) break;
+      const access = await codingWorkerModelAccess(
+        await stagedCodingWorkerBinding(instanceId),
+        instanceId,
+        staged?.runId ?? submissionId ?? instanceId,
+        env,
+      );
+      if (!staged) console.warn('[chickpea] coding worker submission has no staged run', { submissionId });
+      return access;
     }
     case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:
       if (deploymentServesManyInstallations(env)) {

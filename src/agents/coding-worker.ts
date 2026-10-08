@@ -44,6 +44,7 @@ import { admitHostedContainer, type WorkspaceSandboxStub } from '../sandbox/work
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { TurnEnvelopeContext } from './turn-envelope.ts';
 import { codingWorkerCloudflareExtension } from './coding-worker-staging.ts';
+import { CODING_WORKER_DURABILITY } from './submission-durability.ts';
 
 /**
  * A coding worker: one Flue agent instance per coding workspace and binding,
@@ -195,6 +196,4 @@ CodingWorker.initialData = v.custom<CodingWorkerBinding>((value) => {
     return false;
   }
 }, 'Coding worker binding is invalid.');
-// A worker settles on its own before the coordinator's longest wait ends, so a
-// runaway task can never outlive the turn that asked for it.
-CodingWorker.durability = { maxAttempts: 5, timeoutMs: 65 * 60_000 };
+CodingWorker.durability = CODING_WORKER_DURABILITY;

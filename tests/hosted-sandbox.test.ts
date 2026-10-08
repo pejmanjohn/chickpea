@@ -13,6 +13,7 @@ import {
   writeStagedCodingWorkerBinding,
   writeStagedCodingWorkerRun,
 } from '../src/agents/coding-worker-staging.ts';
+import { CODING_WORKER_DURABILITY } from '../src/agents/submission-durability.ts';
 import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { configureHostedGithub, resetHostedGithubForTests } from '../src/config/hosted-github.ts';
@@ -672,6 +673,16 @@ test('the coordinator stages each worker submission\'s parent run in the worker\
     storage.sql.exec('SELECT submission_id, run_id, agent_id FROM chickpea_coding_worker_run').toArray(),
     [{ submission_id: 'sub_ik_task_1', run_id: 'sub_coordinator', agent_id: 'agent_coder' }],
     'a refused run stores nothing',
+  );
+
+  // A write drops rows staged before the worker's whole budget, which no submission outlives.
+  const budget = CODING_WORKER_DURABILITY.timeoutMs;
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_9', 'sub_coordinator', 'agent_coder', 1 + budget);
+  assert.ok(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_1'), 'a row exactly one budget old stays');
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_10', 'sub_coordinator', 'agent_coder', 2 + budget);
+  assert.deepEqual(
+    storage.sql.exec('SELECT submission_id FROM chickpea_coding_worker_run ORDER BY staged_at').toArray(),
+    [{ submission_id: 'sub_ik_task_9' }, { submission_id: 'sub_ik_task_10' }],
   );
 
   // Host side: the run lands in the object named by the worker's instance, through its RPC.
