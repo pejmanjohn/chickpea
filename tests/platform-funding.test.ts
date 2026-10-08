@@ -84,7 +84,6 @@ function hostedEnv(installationId: string): PlatformEnv {
   return scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId }) as PlatformEnv;
 }
 
-/** A host's port: platform funding and admitted unless overridden; it remembers every call. */
 function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
   const calls = {
     funding: [] as string[],

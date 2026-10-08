@@ -446,14 +446,10 @@ test('a scheduled run refused for credits is recorded as failed with the credits
   } finally { store.close(); }
 });
 
-/**
- * A hosted scheduled run whose host answers its task row with `outcome`, or
- * no host when `outcome` is undefined; it records fee posts and Slack posts in order.
- */
 async function scheduledRunWithFees(
   t: TestContext,
   suffix: string,
-  input: { outcome?: FeeOutcome['kind']; reply?: AgentReply; env?: Record<string, unknown> },
+  input: { outcome: FeeOutcome['kind']; port?: false; reply?: AgentReply; env?: Record<string, unknown> },
 ) {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   resetInstallationAdmissionForTests();
@@ -467,7 +463,7 @@ async function scheduledRunWithFees(
   const events: string[] = [];
   const posts: FeePost[] = [];
   const messages: string[] = [];
-  if (input.outcome) {
+  if (input.port !== false) {
     const outcome = input.outcome;
     configurePlatformFunding({
       ...NO_RUN_FEES,
@@ -537,7 +533,7 @@ test('a standalone scheduled run, or one with no host port, posts its result wit
   const standalone = await scheduledRunWithFees(t, 'fee_standalone', { outcome: 'refused', env: {} });
   assert.equal(standalone.run?.status, 'succeeded');
   assert.deepEqual(standalone.events, ['slack-post']);
-  const noPort = await scheduledRunWithFees(t, 'fee_no_port', {});
+  const noPort = await scheduledRunWithFees(t, 'fee_no_port', { outcome: 'refused', port: false });
   assert.equal(noPort.run?.status, 'succeeded');
   assert.deepEqual(noPort.events, ['slack-post']);
 });

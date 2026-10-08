@@ -158,8 +158,6 @@ instrument({
   dispose() {},
 });
 
-// A hosted reply run posts its task fee row before its first qualifying tool
-// runs. Registered inside model access, whose cell carries the run's fees.
 instrument({
   key: Symbol.for('chickpea.run-fees'),
   interceptor: runFeeInterceptor,

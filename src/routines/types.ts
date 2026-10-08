@@ -44,7 +44,6 @@ export type RoutineFailureClass =
   | 'policy_denied'
   | 'capacity_limited'
   | 'spend_limited'
-  /** The host refused a scheduled run's task row when it came to post its result. */
   | 'usage_exhausted'
   | 'schedule_invalid'
   | 'admission_unknown'

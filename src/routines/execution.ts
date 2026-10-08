@@ -36,6 +36,7 @@ import {
 import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import { isCreditsExhausted, platformFundingConfigured, postRunFee } from '../config/platform-funding.ts';
+import { qualifiesAsTask } from '../usage/run-fees.ts';
 import {
   imageCapabilityForResolution,
   resolveAgentModelRoleFromStore,
@@ -897,8 +898,7 @@ async function finalizeSettlement(
   prepared: PreparedExecution,
   settlement: RoutineAgentSettlementV1,
   at: number,
-  /** The Flue submission the run's requests were recorded under. */
-  runId: string | undefined,
+  submissionId: string | undefined,
 ): Promise<RoutineExecutionOutcome> {
   if (settlement.outcome === 'completed') {
     prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
@@ -912,7 +912,7 @@ async function finalizeSettlement(
           occurrenceId: prepared.run.id, outcome: 'unknown', at, failureClass: 'delivery_unknown',
         });
       }
-      if (prepared.run.deliveryStatus === 'none') refusedTask = failure = await requireDeliveryTaskFee(prepared, runId);
+      if (prepared.run.deliveryStatus === 'none') refusedTask = failure = await requireDeliveryTaskFee(prepared, submissionId);
       if (refusedTask) {
         await prepared.workLifecycle?.settleWithoutDelivery({
           terminalDisposition: 'failed',
@@ -1008,21 +1008,19 @@ async function finalizeSettlement(
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
 }
-/**
- * Posting its result makes a scheduled run a task. A refused task row posts
- * nothing, and the run fails as out of usage. A host that cannot answer
- * lets the result post, as an interactive run's tool runs.
- */
 async function requireDeliveryTaskFee(
   prepared: PreparedExecution,
-  runId: string | undefined,
+  submissionId: string | undefined,
 ): Promise<RoutineRuntimeError | undefined> {
   const installationId = deploymentServesManyInstallations(prepared.env)
     ? installationScopeOf(prepared.env)?.installationId
     : undefined;
-  if (!installationId || !runId || !platformFundingConfigured()) return undefined;
-  const outcome = await postRunFee({ installationId, runId, tier: 'task', agentId: prepared.access.config.agentId });
-  return outcome?.kind === 'refused' ? new RoutineRuntimeError('usage_exhausted', CREDITS_EXHAUSTED_TEXT) : undefined;
+  if (!installationId || !submissionId || !platformFundingConfigured()) return undefined;
+  if (!qualifiesAsTask('scheduled', { kind: 'post' })) return undefined;
+  const outcome = await postRunFee({
+    installationId, runId: submissionId, tier: 'task', agentId: prepared.access.config.agentId,
+  });
+  return outcome.kind === 'refused' ? new RoutineRuntimeError('usage_exhausted', CREDITS_EXHAUSTED_TEXT) : undefined;
 }
 
 function captureScheduledRun(

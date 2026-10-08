@@ -234,7 +234,6 @@ export function activityStatusForObservation(
   return toolActivityStatus(event.toolName, event.args, context);
 }
 
-/** The descriptor an instance's render registered for a tool, read as its activity reads it. */
 export function registeredToolDescriptor(
   instanceId: string | undefined,
   toolName: string,

@@ -15,10 +15,7 @@
  * stateless call), so a suspended or ended installation starts no attempt and
  * sends no further request (see installation-admission.ts). A grant Chickpea
  * pays for is also admitted against the installation's credits before each
- * request and charged once when it finishes (see platform-funding.ts). A
- * hosted reply run posts its chat fee row when an attempt starts and its task
- * fee row at its first qualifying tool (see run-fee-interceptor.ts); once the
- * host refuses the task row, the attempt sends no further request.
+ * request and charged once when it finishes (see platform-funding.ts).
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
@@ -138,52 +135,37 @@ interface ModelAccessCell {
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
-  /** A hosted reply run whose host posts fees; undefined on standalone and for stateless calls. */
   readonly fees: RunFees | undefined;
 }
 
-/**
- * One attempt's fee rows. The host's key absorbs a row another attempt of
- * the same run already posted, so each attempt posts its own.
- */
 class RunFees {
   readonly runKind: RunKind;
   readonly #run: Omit<FeePost, 'tier'>;
-  #task: Promise<void> | undefined;
-  #refused = false;
+  #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
 
   constructor(runKind: RunKind, run: Omit<FeePost, 'tier'>) {
     this.runKind = runKind;
     this.#run = run;
   }
 
-  /** The host refused the task row: the attempt sends no further model request. */
   get refused(): boolean {
-    return this.#refused;
+    return this.#taskFee === 'refused';
   }
 
-  /** Never fails the attempt: a lost chat row is harmless, and requests are admitted on their own. */
   async postChatFee(): Promise<void> {
     await postRunFee({ ...this.#run, tier: 'chat' });
   }
 
-  /**
-   * Before a qualifying tool runs. Parallel tools share one post. A post the
-   * host cannot answer lets the tool run, like a lost charge, and the next
-   * qualifying tool asks again; a refusal throws for this and every later one.
-   */
   requireTaskFee(): Promise<void> {
-    this.#task ??= this.#postTaskFee();
-    return this.#task;
+    if (this.#taskFee === 'unposted') this.#taskFee = this.#postTaskFee();
+    if (this.#taskFee === 'refused') return Promise.reject(new CreditsExhaustedError());
+    return this.#taskFee === 'posted' ? Promise.resolve() : this.#taskFee;
   }
 
   async #postTaskFee(): Promise<void> {
-    const outcome = await postRunFee({ ...this.#run, tier: 'task' });
-    if (outcome?.kind === 'refused') {
-      this.#refused = true;
-      throw new CreditsExhaustedError();
-    }
-    if (!outcome) this.#task = undefined;
+    const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
+    this.#taskFee = kind === 'refused' ? 'refused' : kind === 'unanswered' ? 'unposted' : 'posted';
+    if (kind === 'refused') throw new CreditsExhaustedError();
   }
 }
 
@@ -246,10 +228,7 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/**
- * What the trusted host knows about one attempt before its first model call.
- * `runKind` names a reply run, which posts fees on a hosted installation.
- */
+/** What the trusted host knows about one attempt before its first model call. */
 export type AttemptModelAccess = { readonly runKind?: RunKind } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
@@ -309,7 +288,6 @@ export function createModelAccessInterceptor(
   };
 }
 
-/** The current attempt's fee rows, when it is a hosted reply run whose host posts them. */
 export function currentRunFees(): RunFees | undefined {
   return cells.getStore()?.fees;
 }

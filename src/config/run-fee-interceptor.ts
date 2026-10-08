@@ -1,8 +1,3 @@
-/**
- * Posts a hosted reply run's task fee row before its first qualifying tool
- * runs. A refused row fails the tool, and the provider proxy then refuses the
- * attempt's next model request, so the turn ends as out of usage.
- */
 import type { FlueExecutionInterceptor } from '@flue/runtime';
 
 import { registeredToolDescriptor } from '../activity/status.ts';

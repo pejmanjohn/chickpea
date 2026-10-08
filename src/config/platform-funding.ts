@@ -5,10 +5,8 @@
  * The host decides per installation through one port it installs at module
  * scope. Core asks it which funding an installation's runs freeze, admits
  * each platform-funded request against the balance before the proxy sends
- * it, and charges each finished request once from its request record. It
- * also posts each run's chat and task fee rows, on own-key installations too.
- * Standalone, and any deployment with no port installed, is customer-funded
- * and posts no fees.
+ * it, and charges each finished request once from its request record.
+ * Standalone, and any deployment with no port installed, is customer-funded.
  *
  * Fail closed. Unlike installation admission, a check that cannot be read
  * refuses the request. A positive answer serves an installation for at most
@@ -83,9 +81,9 @@ export interface PlatformFundingPort {
    */
   charge(record: ModelRequestRecord): Promise<void>;
   /**
-   * A run's chat row at its first attempt and its task row at its first
+   * A run's chat row as each attempt starts and its task row at its first
    * qualifying action, on platform-funded and own-key installations alike.
-   * Idempotent on `(installationId, runId, tier)`.
+   * Idempotent on `(installationId, runId, tier)`: every attempt posts again.
    */
   postFee(post: FeePost): Promise<FeeOutcome>;
   /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
@@ -216,11 +214,10 @@ export async function chargePlatformRequest(grant: ModelAccessGrant, record: Mod
   }
 }
 
-/**
- * Posts one of a run's fee rows, waiting at most two seconds. Never throws:
- * undefined means the host did not answer in time and the row may be lost.
- */
-export async function postRunFee(post: FeePost): Promise<FeeOutcome | undefined> {
+/** The host did not answer a fee post in time, or failed; the row may be lost. */
+export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
+
+export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const budget = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), FEE_POST_BUDGET_MS);
@@ -235,10 +232,9 @@ export async function postRunFee(post: FeePost): Promise<FeeOutcome | undefined>
   } finally {
     clearTimeout(timer);
   }
-  return undefined;
+  return FEE_UNANSWERED;
 }
 
-/** Content-free: names no installation or run. */
 function logFeePostFailure(tier: FeeTier, error: string): void {
   console.warn(JSON.stringify({ component: 'platform_funding', event: 'fee_post_failed', tier, error }));
 }

@@ -74,7 +74,6 @@ const callsTools = (...names: string[]): Reply => (model) => message(
 );
 const answers: Reply = (model) => message(model, [{ type: 'text', text: 'done' }], 'stop');
 
-/** Streams a whole message as a provider does: each block's start and end, then done. */
 function streamMessage(output: AssistantMessageEventStream, final: AssistantMessage): void {
   const partial: AssistantMessage = { ...final, content: [] };
   output.push({ type: 'start', partial: { ...partial } });
@@ -93,7 +92,6 @@ function streamMessage(output: AssistantMessageEventStream, final: AssistantMess
   output.end();
 }
 
-/** A provider through the production proxy that answers each request it is sent with the next reply. */
 function scriptedProvider(replies: Reply[]) {
   const model = {
     id: SONNET, name: SONNET, api: 'anthropic-messages', provider: ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -118,11 +116,6 @@ function scriptedProvider(replies: Reply[]) {
   return { sent, model };
 }
 
-/**
- * A host whose port keys each fee row as the ledger does: the first post of a
- * key is `posted`, any later one `duplicate`; `refuse` refuses that tier
- * instead, and `fail` throws for it. It remembers every post and its answer.
- */
 function hostedPort(
   t: TestContext,
   options: { refuse?: FeePost['tier']; fail?: FeePost['tier']; port?: boolean } = {},
