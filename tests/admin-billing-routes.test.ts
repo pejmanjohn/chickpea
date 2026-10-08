@@ -73,9 +73,9 @@ const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.strin
 
 const TEAM_STATUS = {
   funding: 'platform',
-  meter: { used: '$128', included: '$240', percent: 53, onPacePercent: 80, resetsAt: '2026-11-07T17:00:00.000Z' },
+  meter: { used: '$128', included: '$240', percent: 53, onPacePercent: 80, resets: 'Nov 7' },
   rollover: '$20',
-  extraUsage: { remaining: '$40', frozen: false, expiresAt: '2027-09-14T17:00:00.000Z' },
+  extraUsage: { remaining: '$40', frozen: false, until: 'Sep 14, 2027' },
   trial: null,
   ownKeyWithoutPlan: null,
 };
@@ -106,7 +106,7 @@ test('an Owner reads the plan\'s usage in dollars, the offers, and named use; un
     manage: true,
     ...TEAM_STATUS,
     plan: { key: 'team', name: 'Team', price: '$200', included: '$240' },
-    period: { start: '2026-10-07T17:00:00.000Z', end: '2026-11-07T17:00:00.000Z' },
+    period: { start: 'Oct 7', end: 'Nov 7' },
     use: {
       byAgent: [{ name: 'Chickpea', used: '$30.25' }, { name: null, used: '$7' }],
       byPerson: [{ name: 'Maya Chen', used: '$31.50' }, { name: null, used: '$6' }],
@@ -152,7 +152,7 @@ test('the status leaves out what is empty: no zero rollover or extra usage, and 
   assert.equal((await status({ ...TEAM_PLAN, funding: 'own_key', ownKeyGraceUntil: grace })).ownKeyWithoutPlan, null, 'a plan ends the grace');
   assert.equal((await status({ ...NO_PLAN, ownKeyGraceUntil: grace })).ownKeyWithoutPlan, null, 'Chickpea\'s models have no own-key charges to wait for');
   const trial = await status({ ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } });
-  assert.deepEqual(trial.trial, { remaining: '$32.50', expiresAt: '2026-11-06T17:00:00.000Z' });
+  assert.deepEqual(trial.trial, { remaining: '$32.50', until: 'Nov 6' });
   assert.equal(trial.meter, null, 'no meter without a plan period');
 });
 

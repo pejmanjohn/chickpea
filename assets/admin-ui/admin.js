@@ -2497,14 +2497,6 @@
       : '';
   }
 
-  function billingShortDate(iso) {
-    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  }
-
-  function billingLongDate(iso) {
-    return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  }
-
   function billingTopbarHtml() {
     if (!BILLING_OFFERED) return "";
     return '<button type="button" class="btn btn-soft' + (primarySection() === "billing" ? " nav-active" : "") + '" data-action="open-billing" data-section-switcher="true">' + BILLING_SECTION.label + '</button>';
@@ -2524,7 +2516,7 @@
   }
 
   function billingTrialText(trial) {
-    return esc(trial.remaining) + ' of trial usage left, until ' + billingShortDate(trial.expiresAt);
+    return esc(trial.remaining) + ' of trial usage left, until ' + esc(trial.until);
   }
 
   function billingStatusHtml(billing) {
@@ -2539,7 +2531,7 @@
       : '';
     var meter = billing.meter;
     var card = meter
-      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + billingShortDate(meter.resetsAt) +
+      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
         (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
         '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
       : billing.trial
@@ -2551,7 +2543,7 @@
     if (billing.rollover) lines.push('Carried from last month: ' + esc(billing.rollover));
     if (billing.extraUsage) {
       lines.push(billing.extraUsage.frozen
-        ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + billingLongDate(billing.extraUsage.expiresAt)
+        ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + esc(billing.extraUsage.until)
         : 'Extra usage: ' + esc(billing.extraUsage.remaining));
     }
     if (meter && billing.trial) lines.push(billingTrialText(billing.trial));
@@ -2580,7 +2572,7 @@
     var plan = billing.plan;
     var summary = plan
       ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
-        (billing.period ? ' Renews ' + billingShortDate(billing.period.end) + '.' : '') + '</p>'
+        (billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '') + '</p>'
       : '<p class="hint">No plan</p>';
     return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
       '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +
@@ -2614,7 +2606,7 @@
     var period = billing.period;
     var empty = period ? "No usage yet this period." : "No usage yet.";
     return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + (period ? 'Usage this period' : 'Usage') + '</h2>' +
-      (period ? '<p class="hint">Since ' + billingShortDate(period.start) + '.</p>' : '') + '</div></div>' +
+      (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div></div>' +
       '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) + billingUseTableHtml("Person", billing.use.byPerson, empty) + '</div></section>';
   }
 

@@ -471,6 +471,28 @@ test('the meter\'s dollar figures give its percentage', async () => {
   assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: edge })).html(), '$239.99 of $240 used, 99%');
 });
 
+test('every date reads as its UTC day, whatever timezone the server and browser run in', async () => {
+  const edges: BillingSummary = {
+    ...TEAM_PLAN,
+    period: { start: new Date('2026-10-07T00:30:00Z'), end: new Date('2026-11-07T23:30:00Z') },
+    trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T23:30:00Z') },
+  };
+  const plan = (await harness({ path: '/admin/plan', billingOffered: true, summary: edges })).html();
+  assertShows(plan, 'resets Nov 7');
+  assertShows(plan, 'Renews Nov 7.');
+  assertShows(plan, 'Since Oct 7.');
+  assertShows(plan, '$32.50 of trial usage left, until Nov 6');
+  const frozen = (await harness({
+    path: '/admin/plan', billingOffered: true,
+    summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
+  })).html();
+  assertShows(frozen, 'available when you renew, until Oct 7, 2027');
+  const grace = (await harness({
+    path: '/admin/plan', billingOffered: true, summary: { ...OWN_KEY_AT_LAUNCH, ownKeyGraceUntil: new Date('2030-12-01T00:30:00Z') },
+  })).html();
+  assertShows(grace, 'no Chickpea charges until Dec 1, 2030.');
+});
+
 test('a plan the host cannot read says so, with a retry', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: UNREADABLE });
   assert.match(page.html(), /<p class="field-error">Your plan could not be loaded\.<\/p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry<\/button>/);

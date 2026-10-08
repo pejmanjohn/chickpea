@@ -52,15 +52,15 @@ interface NamedUse {
   used: string;
 }
 
-/** What everyone sees. Amounts are formatted dollars; dates are ISO strings the browser formats. */
+/** What everyone sees. Amounts are formatted dollars; dates are formatted UTC days, "Nov 7" or "Oct 7, 2027". */
 interface BillingStatus {
   funding: BillingFunding;
   /** Null without a plan period. */
-  meter: { used: string; included: string; percent: number; onPacePercent: number | null; resetsAt: string } | null;
+  meter: { used: string; included: string; percent: number; onPacePercent: number | null; resets: string } | null;
   /** Null when nothing carried over. */
   rollover: string | null;
-  extraUsage: { remaining: string; frozen: boolean; expiresAt: string } | null;
-  trial: { remaining: string; expiresAt: string } | null;
+  extraUsage: { remaining: string; frozen: boolean; until: string } | null;
+  trial: { remaining: string; until: string } | null;
   /** Own key with no plan: when Chickpea charges begin, and the lowest plan price for an own key. */
   ownKeyWithoutPlan:
     | { charges: 'not_yet'; minimumPrice: string } // no grace date set
@@ -157,7 +157,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null, now: Dat
       price: formatPriceCents(summary.plan.priceCents),
       included: planOffer ? formatUsageDollars(planOffer.includedMicros) : null,
     },
-    period: summary.period && { start: summary.period.start.toISOString(), end: summary.period.end.toISOString() },
+    period: summary.period && { start: SHORT_DATE.format(summary.period.start), end: SHORT_DATE.format(summary.period.end) },
     use: {
       byAgent: namedUse(summary.use.byAgent, owner.agentNames),
       byPerson: namedUse(summary.use.byPerson, owner.personNames),
@@ -191,13 +191,13 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer, now: Date): 
       included: formatUsageDollars(planUsage.includedMicros),
       percent: usagePercent(planUsage.usedMicros, planUsage.includedMicros),
       onPacePercent: planUsage.onPacePercent,
-      resetsAt: period.end.toISOString(),
+      resets: SHORT_DATE.format(period.end),
     },
     rollover: rollover && rollover.remainingMicros > 0 ? formatUsageDollars(rollover.remainingMicros) : null,
     extraUsage: extraUsage && extraUsage.remainingMicros > 0
-      ? { remaining: formatUsageDollars(extraUsage.remainingMicros), frozen: extraUsage.frozen, expiresAt: extraUsage.expiresAt.toISOString() }
+      ? { remaining: formatUsageDollars(extraUsage.remainingMicros), frozen: extraUsage.frozen, until: LONG_DATE.format(extraUsage.expiresAt) }
       : null,
-    trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), expiresAt: trial.expiresAt.toISOString() },
+    trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), until: SHORT_DATE.format(trial.expiresAt) },
     ownKeyWithoutPlan: summary.funding === 'own_key' && summary.plan === null
       ? ownKeyCharges(summary.ownKeyGraceUntil, formatPriceCents(minimum.priceCents), now)
       : null,
@@ -302,6 +302,7 @@ function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>):
 }
 
 // UTC, so a date reads the same here as in Chickpea's Slack messages about the plan.
+const SHORT_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
 const LONG_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
 
 // Same signatures as src/usage/usage-display.ts, which replaces these once it is on main.
