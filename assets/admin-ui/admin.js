@@ -2651,12 +2651,17 @@
     return '<section class="usage-section">' + body + billingErrorHtml("switch") + '</section>';
   }
 
+  function billingLede(billing) {
+    if (billing.funding === "own_key") return 'Your workspace pays for models with its own API key.' + (billing.meter ? ' Your plan covers tasks.' : '');
+    if (billing.meter) return 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
+    if (billing.trial) return 'Your trial includes usage for your Agents&rsquo; chat and tasks.';
+    return 'Your workspace has no plan. Plans include usage for your Agents&rsquo; chat and tasks.';
+  }
+
   function billingMainHtml() {
     var billing = state.billing;
-    var lede = billing && billing.funding === "own_key"
-      ? 'Your workspace pays for models with its own API key.' + (billing.meter ? ' Your plan covers tasks.' : '')
-      : 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
-    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1><p class="hint">' + lede + '</p></div></div>';
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1>' +
+      (billing ? '<p class="hint">' + billingLede(billing) + '</p>' : '') + '</div></div>';
     if (!billing) {
       if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
       return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';

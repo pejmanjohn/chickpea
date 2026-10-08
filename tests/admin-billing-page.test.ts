@@ -222,6 +222,14 @@ function assertHides(html: string, copy: string): void {
   assert.ok(!decoded(html).includes(copy), `the page does not show "${copy}"`);
 }
 
+const PLAN_LEDE = 'Your plan includes usage for your Agents’ chat and tasks.';
+const NO_PLAN_LEDE = 'Your workspace has no plan. Plans include usage for your Agents’ chat and tasks.';
+
+/** The sentence under the page title. */
+function lede(html: string): string {
+  return decoded(/<h1 class="page-title">Plan<\/h1><p class="hint">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
+}
+
 const fundingWrites = (requests: Array<{ path: string }>) => requests.filter((request) => request.path === '/admin/api/billing/funding');
 const billingWrites = (requests: Array<{ path: string; method: string; body: unknown }>) =>
   requests.filter((request) => request.path.startsWith('/admin/api/billing/')).map((request) => [request.method, request.path, request.body]);
@@ -241,7 +249,7 @@ test('an Owner on the Team plan sees the meter in dollars, what carried over, ex
   assert.match(html, /<h1 class="page-title">Plan<\/h1>/);
   assert.match(html, /data-action="open-billing"[^>]*>Plan<\/button>/, 'the section switcher names the page');
   assert.match(html, /<span class="chan-name">Overview<\/span><span class="chan-meta">Usage<\/span>/);
-  assertShows(html, 'Your plan includes usage for your Agents’ chat and tasks.');
+  assert.equal(lede(html), PLAN_LEDE);
   assert.match(html, /<span class="usage-card-label">Plan usage<\/span>/);
   assertShows(html, '$128 of $240 used, 53%, resets Nov 7, on pace for 80%');
   assert.match(html, /role="meter"[^>]*aria-valuemin="0" aria-valuemax="100" aria-valuenow="53"><span style="width: 53%">/);
@@ -311,6 +319,8 @@ test('a Stripe page that cannot be opened says so beside the button that asked f
 test('frozen extra usage shows until when it keeps, and no plan means nothing to add it to', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: FROZEN });
   const html = page.html();
+  assert.equal(lede(html), NO_PLAN_LEDE);
+  assertHides(html, PLAN_LEDE);
   assert.match(html, /<li>\$40 of extra usage, available when you renew, until Oct 7, 2027<\/li>/);
   assertHides(html, 'Extra usage: $40');
   assert.match(html, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">No plan<\/span><span class="hint">Choose a plan for monthly usage\.<\/span>/);
@@ -324,12 +334,15 @@ test('frozen extra usage shows until when it keeps, and no plan means nothing to
 test('a trial shows what is left and until when, as the card without a plan and as a line beside one', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TRIAL });
   const html = page.html();
+  assert.equal(lede(html), 'Your trial includes usage for your Agents’ chat and tasks.');
+  assertHides(html, PLAN_LEDE);
   assert.match(html, /<span class="usage-card-label">Trial<\/span><span class="billing-meter-text">\$32\.50 of trial usage left, until Nov 6<\/span>/);
   assert.doesNotMatch(html, /role="meter"|Plan usage/);
 
   const both = await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL.trial } });
   assert.match(both.html(), /<li>Extra usage: \$40<\/li><li>\$32\.50 of trial usage left, until Nov 6<\/li><\/ul>/);
   assert.match(both.html(), /<span class="usage-card-label">Plan usage<\/span>/);
+  assert.equal(lede(both.html()), PLAN_LEDE, 'a plan\'s meter outranks the trial');
 });
 
 test('an own key in its grace says until when, which plans an own key can choose, and offers Chickpea\'s models', async () => {
@@ -380,6 +393,8 @@ test('below the lowest plan for an own key, the switch asks for that plan first 
 test('with no plan, the page offers a plan and nothing else to buy', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: NO_PLAN });
   const html = page.html();
+  assert.equal(lede(html), NO_PLAN_LEDE);
+  assertHides(html, PLAN_LEDE);
   assert.match(html, /<span class="usage-card-value">No plan<\/span><span class="hint">Choose a plan for monthly usage\.<\/span>/);
   assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
   assert.doesNotMatch(html, /billing-add-extra-usage|billing-manage|billing-lines/);
@@ -425,6 +440,7 @@ test('the meter\'s dollar figures give its percentage', async () => {
 test('a plan the host cannot read says so, with a retry', async () => {
   const page = await harness({ path: '/admin/plan', billingOffered: true, summary: UNREADABLE });
   assert.match(page.html(), /<p class="field-error">Your plan could not be loaded\.<\/p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry<\/button>/);
+  assert.equal(lede(page.html()), '', 'a plan that could not be read is not described');
 });
 
 test('an Owner on the plan with a saved key switches to it only after confirming, and the plan keeps covering tasks', async () => {
@@ -509,7 +525,7 @@ test('an Owner on their own key finds the page and switches to Chickpea\'s model
   await page.click({ 'data-action': 'billing-use-platform' });
   await page.click({ 'data-action': 'billing-funding-confirm' });
   assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'platform' }]]);
-  assertShows(page.html(), 'Your plan includes usage for your Agents’ chat and tasks.');
+  assert.equal(lede(page.html()), PLAN_LEDE);
   assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/, 'the page turns into the platform view');
 });
 
