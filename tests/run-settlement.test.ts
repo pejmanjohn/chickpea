@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { CreditBackReason } from '../src/config/platform-funding.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  configurePlatformFunding,
+  resetPlatformFundingForTests,
+  type CreditBackReason,
+} from '../src/config/platform-funding.ts';
 import type { RoutineFailureClass } from '../src/routines/types.ts';
-import { creditBackReason, type SlackFailureKind } from '../src/usage/run-settlement.ts';
+import { creditBackReason, hostedRun, type SlackFailureKind } from '../src/usage/run-settlement.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * The credit-back policy in one place: each way a Slack turn or a scheduled
@@ -54,4 +60,19 @@ test('each failure kind and class is credited back only when the failure was on 
       kind,
     );
   }
+});
+
+test('only a dispatched run on a hosted installation with a host port is the ledger\'s', (t) => {
+  const hosted = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_gate' });
+  assert.equal(hostedRun(hosted, 'sub_gate'), undefined, 'no port');
+  configurePlatformFunding({
+    funding: async () => 'customer', admit: async () => 'admitted', charge: async () => undefined, ...NO_RUN_FEES,
+  });
+  t.after(() => resetPlatformFundingForTests());
+  assert.deepEqual(hostedRun(hosted, 'sub_gate'), { installationId: 'inst_gate', runId: 'sub_gate' });
+  assert.equal(hostedRun(hosted, undefined), undefined, 'not dispatched');
+  assert.equal(hostedRun(undefined, 'sub_gate'), undefined, 'standalone');
+  assert.equal(hostedRun({}, 'sub_gate'), undefined, 'standalone');
+  // A scope copied onto a standalone deployment's env is still standalone.
+  assert.equal(hostedRun({ ...hosted, CHICKPEA_TENANCY: 'standalone' }, 'sub_gate'), undefined, 'standalone tenancy');
 });
