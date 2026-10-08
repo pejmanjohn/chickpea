@@ -213,6 +213,27 @@ test('routine terminal replay keeps the original observation identity', async ()
   }
 });
 
+test('routine replay records a missing measurement once at its observation time', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  const options = {
+    operationId: 'rrun_missing_replay', executionId: 'exec_missing_replay', startedAt: 1_000,
+    workspaceId: routine.workspaceId, channelId: routine.channelId,
+    agentId: config.agentId, agentLabel: config.agent.name,
+    routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
+    credentialRefId: null, credentialVersion: null, store: usage, replaySettlementAt: 2_000,
+  };
+  try {
+    for (const at of [3_000, 4_000]) {
+      const recorder = new RoutineUsageRecorder({ ...options, now: () => at });
+      await recorder.admit();
+      await recorder.recordTerminal({ status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 } });
+    }
+    const detail = await usage.getOperation(options.operationId);
+    assert.equal(detail?.measurements.length, 1);
+    assert.equal(detail?.measurements[0]?.observedAt, 3_000);
+  } finally { usage.close(); }
+});
+
 test('routine reply metadata yields one bounded aggregate with returned-model evidence', () => {
   const usage = routineUsageFromAgentReply({
     submissionId: 'submission_usage', text: '', data: {},
