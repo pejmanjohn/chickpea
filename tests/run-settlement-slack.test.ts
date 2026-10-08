@@ -19,7 +19,6 @@ import {
   resetPlatformFundingForTests,
   type CreditBackOutcome,
   type CreditBackReason,
-  type RunCost,
   type RunRef,
 } from '../src/config/platform-funding.ts';
 import { closeNodeStateStores, type PlatformEnv } from '../src/config/state-backend.ts';
@@ -48,7 +47,7 @@ import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * A hosted Slack turn that failed on Chickpea's side is credited back once
- * and says so; one that settled completed shows what it used in its footer.
+ * and says so; one that settled completed says nothing of what it used.
  * Standalone, and a hosted deployment with no port, are unchanged.
  */
 
@@ -126,13 +125,11 @@ async function turnState(t: TestContext): Promise<void> {
   config.close();
 }
 
-/** A host port that records each credit-back and cost read and answers as told. */
+/** A host port that records each credit-back and answers as told. */
 function fundingPort(answers: {
   creditBack?: () => Promise<CreditBackOutcome>;
-  runCost?: () => Promise<RunCost>;
 } = {}) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
-  const runCosts: RunRef[] = [];
   configurePlatformFunding({
     funding: async () => 'customer',
     admit: async () => 'admitted',
@@ -142,12 +139,8 @@ function fundingPort(answers: {
       creditBacks.push({ run, reason });
       return (answers.creditBack ?? (async () => ({ kind: 'credited', usageMicros: 120_000 as UsageMicros })))();
     },
-    runCost: async (run) => {
-      runCosts.push(run);
-      return (answers.runCost ?? (async () => ({ usageMicros: 305_000 as UsageMicros, shown: true })))();
-    },
   });
-  return { creditBacks, runCosts };
+  return { creditBacks };
 }
 
 /**
@@ -317,8 +310,7 @@ for (const { name, ending, error, reason } of OURS) {
       const calls = await settledTurn(t, HOSTED_ENV, `${name}_${legacy}`, ending, { legacy, platformFunded: true });
       assert.deepEqual(port.creditBacks, [{ run: { installationId: INSTALLATION, runId: `sub_${name}_${legacy}` }, reason }]);
       assert.ok(visibleTexts(calls).includes(`${agentFailureText(error)} ${CREDITED_BACK}`), JSON.stringify(calls));
-      assert.deepEqual(port.runCosts, [], 'a failed run reads no cost');
-      assert.ok(footers(calls).every((footer) => !footer.some((segment) => segment.startsWith('This reply used'))));
+      assert.equal(JSON.stringify(calls).includes('used $'), false);
     }
   });
 }
@@ -463,9 +455,8 @@ test('a requester\'s stop credits nothing back and shows no cost', async (t) => 
   }, { platformFunded: true, extra: { stopEnding: { finish: async () => STOP_FACTS } } });
   assert.ok(visibleTexts(calls).some((text) => text.startsWith('Stopped by <@USTOPPER>.')), JSON.stringify(calls));
   assert.deepEqual(port.creditBacks, []);
-  assert.deepEqual(port.runCosts, []);
   assert.equal(JSON.stringify(calls).includes(CREDITED_BACK), false);
-  assert.equal(JSON.stringify(calls).includes('This reply used'), false);
+  assert.equal(JSON.stringify(calls).includes('used $'), false);
 });
 
 test('a suspended installation\'s failed turn credits nothing back and posts nothing', async (t) => {
@@ -510,24 +501,18 @@ test('a host that answers too late holds the failure reply for no more than the 
   assert.ok(elapsedMs >= 1_900 && elapsedMs < 4_000, `elapsed ${elapsedMs} ms`);
 });
 
-test('a completed hosted turn ends its footer with what it used, when the host shows it', async (t) => {
+test('a completed hosted turn\'s footer says nothing of what it used', async (t) => {
   await turnState(t);
-  const shown = fundingPort();
-  for (const legacy of [false, true]) {
-    shown.runCosts.length = 0;
-    const calls = await settledTurn(t, HOSTED_ENV, `cost_${legacy}`, { kind: 'answer' }, { legacy });
-    assert.deepEqual(shown.runCosts, [{ installationId: INSTALLATION, runId: `sub_cost_${legacy}` }]);
-    const [footer, ...others] = footers(calls);
-    assert.deepEqual(others, [], JSON.stringify(calls));
-    // 305,000 usage micros is 30.5 cents, rounded half up.
-    assert.equal(footer?.at(-1), 'This reply used $0.31');
-    assert.deepEqual(shown.creditBacks, []);
+  const port = fundingPort();
+  for (const platformFunded of [true, false]) {
+    for (const legacy of [false, true]) {
+      const calls = await settledTurn(t, HOSTED_ENV, `completed_${platformFunded}_${legacy}`, { kind: 'answer' }, {
+        legacy, platformFunded,
+      });
+      assert.deepEqual(footers(calls), [['Settlement Agent', 'local-stub/settlement', 'Configure']], JSON.stringify(calls));
+    }
   }
-
-  const hidden = fundingPort({ runCost: async () => ({ usageMicros: 305_000 as UsageMicros, shown: false }) });
-  const below = await settledTurn(t, HOSTED_ENV, 'cost_hidden', { kind: 'answer' });
-  assert.equal(hidden.runCosts.length, 1);
-  assert.deepEqual(footers(below), [['Settlement Agent', 'local-stub/settlement', 'Configure']]);
+  assert.deepEqual(port.creditBacks, []);
 });
 
 test('a recovery notice replayed for a dispatched turn shows no cost and is not credited back by the turn', async (t) => {
@@ -539,16 +524,15 @@ test('a recovery notice replayed for a dispatched turn shows no cost and is not 
   });
   assert.equal(calls.prompted, false);
   assert.ok(visibleTexts(calls).includes(DURABLE_RECOVERY_FAILURE_TEXT), JSON.stringify(calls));
-  assert.deepEqual(port.runCosts, []);
   assert.deepEqual(port.creditBacks, []);
-  assert.equal(JSON.stringify(calls).includes('This reply used'), false);
+  assert.equal(JSON.stringify(calls).includes('used $'), false);
 });
 
 const STANDALONE_FOOTER = 'Settlement Agent | local-stub/settlement | Configure';
 const STANDALONE_FAILURE =
   'I reached the Slack thread, but the model provider call failed before completion. I did not expose provider error details in Slack.';
 
-test('standalone, a port that would credit back and show a cost changes nothing Slack receives', async (t) => {
+test('standalone, a port that would credit back changes nothing Slack receives', async (t) => {
   await turnState(t);
   for (const [name, ending] of [['answer', { kind: 'answer' }], ['failure', failureEnding('provider')]] as const) {
     for (const env of [undefined, {}]) {
@@ -558,7 +542,6 @@ test('standalone, a port that would credit back and show a cost changes nothing 
       const withoutPort = await settledTurn(t, env, `standalone_${name}`, ending, { messageTs: '1810009001.000100' });
       assert.deepEqual(withPort, withoutPort);
       assert.deepEqual(port.creditBacks, []);
-      assert.deepEqual(port.runCosts, []);
       assert.deepEqual(footers(withPort).map((footer) => footer.join(' | ')), [STANDALONE_FOOTER]);
       if (name === 'failure') assert.ok(visibleTexts(withPort).includes(STANDALONE_FAILURE), JSON.stringify(withPort));
       else assert.ok(visibleTexts(withPort).includes(ANSWER.text));

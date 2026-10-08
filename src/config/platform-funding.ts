@@ -56,13 +56,6 @@ export type CreditBackOutcome =
   /** The run posted no rows. */
   | { readonly kind: 'nothing' };
 
-export interface RunCost {
-  /** The run's model and fee rows less its credited-back rows. */
-  readonly usageMicros: UsageMicros;
-  /** At or above the rate card's display threshold, which only the host knows. */
-  readonly shown: boolean;
-}
-
 export interface PlatformFundingPort {
   /** Whether the installation's model requests are paid from its credits. */
   funding(installationId: string): Promise<ModelRequestFundingSource>;
@@ -86,8 +79,6 @@ export interface PlatformFundingPort {
   postFee(post: FeePost): Promise<FeeOutcome>;
   /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
   creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
-  /** What a run used, read after it settles. */
-  runCost(run: RunRef): Promise<RunCost>;
 }
 
 export const CREDITS_EXHAUSTED_CODE = 'credits_exhausted';
@@ -222,10 +213,6 @@ export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE
 
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
   return askWithinBudget((current) => current.creditBack(run, reason), { event: 'credit_back_failed', reason });
-}
-
-export function readRunCost(run: RunRef): Promise<RunCost | undefined> {
-  return askWithinBudget((current) => current.runCost(run), { event: 'run_cost_failed' });
 }
 
 const UNANSWERED_IN_TIME = Symbol('unanswered in time');
