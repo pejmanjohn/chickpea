@@ -115,6 +115,7 @@ export class PlatformFundingUnavailableError extends Error {
 }
 
 export const PLATFORM_ADMISSION_TTL_MS = 30_000;
+const FEE_POST_BUDGET_MS = 2_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 const LOG_INTERVAL_MS = 60_000;
 
@@ -215,9 +216,31 @@ export async function chargePlatformRequest(grant: ModelAccessGrant, record: Mod
   }
 }
 
-export async function postRunFee(post: FeePost): Promise<FeeOutcome> {
-  if (!port) throw new Error('No platform funding port is configured.');
-  return port.postFee(post);
+/**
+ * Posts one of a run's fee rows, waiting at most two seconds. Never throws:
+ * undefined means the host did not answer in time and the row may be lost.
+ */
+export async function postRunFee(post: FeePost): Promise<FeeOutcome | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), FEE_POST_BUDGET_MS);
+  });
+  try {
+    if (!port) throw new Error('No platform funding port is configured.');
+    const outcome = await Promise.race([port.postFee(post), budget]);
+    if (outcome !== 'timeout') return outcome;
+    logFeePostFailure(post.tier, 'timeout');
+  } catch (error) {
+    logFeePostFailure(post.tier, error instanceof Error ? error.name : typeof error);
+  } finally {
+    clearTimeout(timer);
+  }
+  return undefined;
+}
+
+/** Content-free: names no installation or run. */
+function logFeePostFailure(tier: FeeTier, error: string): void {
+  console.warn(JSON.stringify({ component: 'platform_funding', event: 'fee_post_failed', tier, error }));
 }
 
 function forgetAdmission(installationId: string): void {

@@ -42,9 +42,7 @@ import {
   platformFundingConfigured,
   postRunFee,
   requirePlatformFundingAdmitted,
-  type FeeOutcome,
   type FeePost,
-  type FeeTier,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
@@ -166,7 +164,7 @@ export class RunFees {
 
   /** Never fails the attempt: a lost chat row is harmless, and requests are admitted on their own. */
   async postChatFee(): Promise<void> {
-    await postFeeWithinBudget({ ...this.#run, tier: 'chat' });
+    await postRunFee({ ...this.#run, tier: 'chat' });
   }
 
   /**
@@ -180,34 +178,13 @@ export class RunFees {
   }
 
   async #postTaskFee(): Promise<void> {
-    const outcome = await postFeeWithinBudget({ ...this.#run, tier: 'task' });
+    const outcome = await postRunFee({ ...this.#run, tier: 'task' });
     if (outcome?.kind === 'refused') {
       this.#refused = true;
       throw new CreditsExhaustedError();
     }
     if (!outcome) this.#task = undefined;
   }
-}
-
-async function postFeeWithinBudget(post: FeePost): Promise<FeeOutcome | undefined> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const budget = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), RECORD_BUDGET_MS);
-  });
-  try {
-    const outcome = await Promise.race([postRunFee(post), budget]);
-    if (!outcome) logFeeFailure(post.tier, 'timeout');
-    return outcome;
-  } catch (error) {
-    logFeeFailure(post.tier, errorKind(error));
-    return undefined;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function logFeeFailure(tier: FeeTier, error: string): void {
-  console.warn('[chickpea] run fee post failed', { tier, error });
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;

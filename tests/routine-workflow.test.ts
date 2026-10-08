@@ -19,6 +19,12 @@ import {
 } from '../src/config/installation-admission.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
+  configurePlatformFunding,
+  resetPlatformFundingForTests,
+  type FeeOutcome,
+  type FeePost,
+} from '../src/config/platform-funding.ts';
+import {
   executeRoutineOccurrence,
   REFUSED_SKIP,
 } from '../src/routines/execution.ts';
@@ -51,6 +57,7 @@ import { SqliteWorkStore } from '../src/work/store.ts';
 import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 const offlineSlackClient = {
@@ -437,6 +444,102 @@ test('a scheduled run refused for credits is recorded as failed with the credits
       ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]);
     assert.equal(events.filter((event) => event === 'dispatch').length, 1);
   } finally { store.close(); }
+});
+
+/**
+ * A hosted scheduled run whose host answers its task row with `outcome`, or
+ * no host when `outcome` is undefined; it records fee posts and Slack posts in order.
+ */
+async function scheduledRunWithFees(
+  t: TestContext,
+  suffix: string,
+  input: { outcome?: FeeOutcome['kind']; reply?: AgentReply; env?: Record<string, unknown> },
+) {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  resetInstallationAdmissionForTests();
+  resetPlatformFundingForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  t.after(() => {
+    store.close();
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+  });
+  const events: string[] = [];
+  const posts: FeePost[] = [];
+  const messages: string[] = [];
+  if (input.outcome) {
+    const outcome = input.outcome;
+    configurePlatformFunding({
+      ...NO_RUN_FEES,
+      funding: async () => 'customer',
+      admit: async () => 'admitted',
+      charge: async () => {},
+      postFee: async (post) => {
+        events.push(`fee:${post.tier}`);
+        posts.push(post);
+        return { kind: outcome };
+      },
+    });
+  }
+  const client = {
+    chat: {
+      postMessage: async (message: { text?: string }) => {
+        events.push('slack-post');
+        messages.push(message.text ?? '');
+        return { ok: true, channel: 'C_TEST', ts: '1785153600.000000' };
+      },
+    },
+  } as unknown as WebClient;
+  const fixture = await admittedFixture(store, suffix);
+  const base = dependencies();
+  const env = input.env ?? scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${suffix}` });
+  assert.equal(await executeRoutineOccurrence({ env, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt }, {
+    ...base,
+    resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+    handle: fakeHandle({ reply: input.reply ?? successfulReply() }),
+  }), 'completed');
+  return { run: await store.getRun(fixture.run.id), events, posts, messages };
+}
+
+test('a hosted scheduled run posts its task row once, before its result', async (t) => {
+  const { run, events, posts } = await scheduledRunWithFees(t, 'fee_posted', { outcome: 'posted' });
+  assert.equal(run?.status, 'succeeded');
+  assert.deepEqual(events, ['fee:task', 'slack-post']);
+  assert.deepEqual(posts, [{ installationId: 'inst_fee_posted', runId: 'submission_test', tier: 'task', agentId: config.agentId }]);
+});
+
+test('a scheduled run whose task row is a duplicate or carries no fee still posts its result', async (t) => {
+  for (const outcome of ['duplicate', 'not_applicable'] as const) {
+    const { run, events } = await scheduledRunWithFees(t, `fee_${outcome}`, { outcome });
+    assert.equal(run?.status, 'succeeded', outcome);
+    assert.deepEqual(events, ['fee:task', 'slack-post'], outcome);
+  }
+});
+
+test('a quiet scheduled run posts no task row', async (t) => {
+  const quiet = { ...successfulReply(), data: { [ROUTINE_RESULT_DATA_NAME]: [{ outcome: 'no_op', message: '' }] } };
+  const { run, events } = await scheduledRunWithFees(t, 'fee_quiet', { outcome: 'posted', reply: quiet });
+  assert.equal(run?.status, 'no_op');
+  assert.deepEqual(events, []);
+});
+
+test('a scheduled run whose task row is refused fails out of usage, and its destination gets the notice, not the result', async (t) => {
+  const { run, events, messages } = await scheduledRunWithFees(t, 'fee_refused', { outcome: 'refused' });
+  assert.deepEqual([run?.status, run?.failureClass, run?.publicError], ['failed', 'usage_exhausted', CREDITS_EXHAUSTED_TEXT]);
+  assert.deepEqual(events, ['fee:task', 'slack-post']);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]!, /Routine needs attention/);
+  assert.ok(messages[0]!.includes(CREDITS_EXHAUSTED_TEXT), messages[0]!);
+  assert.doesNotMatch(messages[0]!, /Routine result/);
+});
+
+test('a standalone scheduled run, or one with no host port, posts its result with no fee', async (t) => {
+  const standalone = await scheduledRunWithFees(t, 'fee_standalone', { outcome: 'refused', env: {} });
+  assert.equal(standalone.run?.status, 'succeeded');
+  assert.deepEqual(standalone.events, ['slack-post']);
+  const noPort = await scheduledRunWithFees(t, 'fee_no_port', {});
+  assert.equal(noPort.run?.status, 'succeeded');
+  assert.deepEqual(noPort.events, ['slack-post']);
 });
 
 test('a scheduled run refused for credits after a tool call still pauses for its unknown outcome', async () => {

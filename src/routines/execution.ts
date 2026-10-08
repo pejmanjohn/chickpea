@@ -35,7 +35,7 @@ import {
 } from '../config/installation-admission.ts';
 import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
-import { isCreditsExhausted } from '../config/platform-funding.ts';
+import { isCreditsExhausted, platformFundingConfigured, postRunFee } from '../config/platform-funding.ts';
 import {
   imageCapabilityForResolution,
   resolveAgentModelRoleFromStore,
@@ -70,7 +70,9 @@ import {
 } from '../usage/runtime-recorder.ts';
 import { opaqueId } from '../work/admission.ts';
 import {
+  deploymentServesManyInstallations,
   installationOwnershipOf,
+  installationScopeOf,
   scopedObjectName,
   type InstallationOwnership,
 } from '../config/installation-scope.ts';
@@ -153,6 +155,7 @@ interface RoutineExecutionDependencies {
 }
 
 interface PreparedExecution {
+  env: PlatformEnv;
   store: RoutineStore;
   run: RoutineRun;
   routine: RoutineDefinition;
@@ -292,7 +295,7 @@ export async function executeRoutineOccurrence(
     try {
       await recordUsage(prepared, prepared.run.flueAgentSettlement);
       if (refused) return await skipWithoutResult(prepared, REFUSED_SKIP, now());
-      return await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now());
+      return await finalizeSettlement(prepared, prepared.run.flueAgentSettlement, now(), prepared.receipt?.submissionId);
     } finally {
       await prepared.usageRecorder?.repairAfterTerminal();
       prepared.persistence.emit();
@@ -443,7 +446,7 @@ export async function executeRoutineOccurrence(
     // is skipped, and nothing is posted or counted against the routine.
     withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
     if (withoutResult) return await skipWithoutResult(prepared, withoutResult, now());
-    return await finalizeSettlement(prepared, settlement, now());
+    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId);
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
     prepared.persistence.emit();
@@ -669,6 +672,7 @@ async function prepareExecution(
     access,
     prompt,
     envelope,
+    env: input.env,
     receipt: input.admission.flueAgentReceipt ?? null,
     ...(usageRecorder ? { usageRecorder } : {}),
     ...(workLifecycle ? { workLifecycle } : {}),
@@ -893,10 +897,13 @@ async function finalizeSettlement(
   prepared: PreparedExecution,
   settlement: RoutineAgentSettlementV1,
   at: number,
+  /** The Flue submission the run's requests were recorded under. */
+  runId: string | undefined,
 ): Promise<RoutineExecutionOutcome> {
   if (settlement.outcome === 'completed') {
     prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
     let failure: RoutineRuntimeError | undefined;
+    let refusedTask: RoutineRuntimeError | undefined;
     if (settlement.result.status === 'succeeded') {
       if (prepared.run.deliveryStatus === 'leased') {
         // A concurrent post may still be in flight. Keep its lease intact.
@@ -905,7 +912,13 @@ async function finalizeSettlement(
           occurrenceId: prepared.run.id, outcome: 'unknown', at, failureClass: 'delivery_unknown',
         });
       }
-      if (prepared.run.deliveryStatus === 'none') {
+      if (prepared.run.deliveryStatus === 'none') refusedTask = failure = await requireDeliveryTaskFee(prepared, runId);
+      if (refusedTask) {
+        await prepared.workLifecycle?.settleWithoutDelivery({
+          terminalDisposition: 'failed',
+          safeFailureCode: routineLifecycleFailureCode(refusedTask.failureClass),
+        });
+      } else if (prepared.run.deliveryStatus === 'none') {
         try {
           await deliverRoutineResult({
             store: prepared.store, run: prepared.run, routine: prepared.routine,
@@ -954,6 +967,14 @@ async function finalizeSettlement(
       suppressedAsNoOp: settlement.result.suppressedAsNoOp,
     });
     captureScheduledRun(prepared, failure ? 'failed' : settlement.result.status);
+    if (refusedTask) {
+      await deliverFailureNoticeBestEffort({
+        store: prepared.store,
+        runId: prepared.run.id,
+        access: prepared.access,
+        ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
+      }, refusedTask.publicError);
+    }
     if (failure) await deliverPauseNoticeBestEffort(prepared);
     return 'completed';
   }
@@ -987,6 +1008,23 @@ async function finalizeSettlement(
   await deliverPauseNoticeBestEffort(prepared);
   return 'completed';
 }
+/**
+ * Posting its result makes a scheduled run a task. A refused task row posts
+ * nothing, and the run fails as out of usage. A host that cannot answer
+ * lets the result post, as an interactive run's tool runs.
+ */
+async function requireDeliveryTaskFee(
+  prepared: PreparedExecution,
+  runId: string | undefined,
+): Promise<RoutineRuntimeError | undefined> {
+  const installationId = deploymentServesManyInstallations(prepared.env)
+    ? installationScopeOf(prepared.env)?.installationId
+    : undefined;
+  if (!installationId || !runId || !platformFundingConfigured()) return undefined;
+  const outcome = await postRunFee({ installationId, runId, tier: 'task', agentId: prepared.access.config.agentId });
+  return outcome?.kind === 'refused' ? new RoutineRuntimeError('usage_exhausted', CREDITS_EXHAUSTED_TEXT) : undefined;
+}
+
 function captureScheduledRun(
   prepared: PreparedExecution,
   outcome: 'succeeded' | 'no_op' | 'failed',
