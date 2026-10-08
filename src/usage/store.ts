@@ -794,14 +794,22 @@ export class UsageStoreLogic {
       const existing = this.getCredentialRow(input.credentialRefId, input.version);
       if (existing) {
         const credential = mapCredential(existing);
-        if (!sameCredential(credential, input)) {
+        if (!sameCredentialEpoch(credential, input)) {
           throw new UsageStateError(
             'usage_credential_conflict',
             'Credential reference epoch already has different metadata.',
             { credentialRefId: input.credentialRefId, version: String(input.version) },
           );
         }
-        return credential;
+        if (credential.label === input.label && credential.scopeLabel === input.scopeLabel) return credential;
+        this.db.run(
+          'UPDATE usage_credentials SET label = ?, scope_label = ? WHERE credential_ref_id = ? AND version = ?',
+          input.label,
+          input.scopeLabel,
+          input.credentialRefId,
+          input.version,
+        );
+        return requiredCredential(this.getCredentialRow(input.credentialRefId, input.version));
       }
       this.db.run(
         `INSERT INTO usage_credentials (
@@ -1833,7 +1841,8 @@ function unpricedEstimate(
   return estimate.estimateCompleteness === 'unknown' || estimate.estimateCompleteness === 'partial';
 }
 
-function sameCredential(
+/** Labels are display text, so only the rest identifies an epoch. */
+function sameCredentialEpoch(
   credential: ModelCredentialRecord,
   input: PutModelCredentialInput,
 ): boolean {
@@ -1841,8 +1850,6 @@ function sameCredential(
     credential.version === input.version &&
     credential.providerId === input.providerId &&
     credential.sourceKind === input.sourceKind &&
-    credential.label === input.label &&
-    credential.scopeLabel === input.scopeLabel &&
     credential.unknownRotation === input.unknownRotation &&
     credential.activeFrom === input.activeFrom;
 }
