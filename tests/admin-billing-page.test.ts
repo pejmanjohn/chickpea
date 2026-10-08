@@ -738,8 +738,6 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['onboarding on Chickpea\'s models', { path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN }, []],
     ['onboarding setup that did not finish', { path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1 },
       [{ 'data-action': 'onboarding-platform-retry' }]],
-    ['onboarding on an own key', { path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: OWN_KEY_JOURNEY },
-      [{ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }]],
   ];
   for (const [label, options, clicks] of onboarding) {
     const page = await harness(options);
@@ -794,7 +792,6 @@ test('standalone, and hosted where Chickpea\'s models are not offered, keep toda
   }
 });
 
-const OWN_KEY_JOURNEY = { ...CHOOSE_PROVIDER, funding: 'own_key' };
 const platformRequests = (requests: Array<{ path: string; method: string }>) =>
   requests.filter((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/platform').length;
 const stepLabels = (html: string) =>
@@ -853,16 +850,5 @@ test('a journey already past the provider step sets up the same way', async () =
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...CHOOSE_PROVIDER, stage: 'choose_model', providerId: 'openai' } });
   assert.equal(platformRequests(page.requests), 1, 'a journey already past the provider sets up too');
   assert.match(page.html(), /Meet Chickpea in Slack/);
-});
-
-test('a hosted journey whose Owner chose their own key keeps today\'s four steps and the key entry, and sets nothing up', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: OWN_KEY_JOURNEY });
-  assert.equal(progress(page.html()), TODAY_AT_CHOOSE_PROVIDER);
-  assert.match(page.html(), /Choose your model provider/);
-  await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
-  assert.match(page.html(), /id="onboarding-provider-key"/);
-  const trying = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...TRY, funding: 'own_key' } });
-  assert.equal(progress(trying.html()), TODAY_AT_TRY);
-  assert.equal(platformRequests([...page.requests, ...trying.requests]), 0);
 });
 

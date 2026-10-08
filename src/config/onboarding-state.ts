@@ -1,5 +1,4 @@
 import { isRecord } from '../security/content-validation.ts';
-import type { BillingFunding } from './platform-billing.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
 
@@ -22,11 +21,6 @@ export interface OnboardingJourney {
   selectedWorkspaceId?: string;
   selectedChannelId?: string;
   selectedChannelName?: string;
-  /**
-   * How an earlier onboarding's Owner chose to pay for models. `own_key`
-   * keeps the journey on its provider and model steps.
-   */
-  selectedFunding?: BillingFunding;
   selectedProviderId?: OnboardingProviderId;
   selectedModelId?: string;
   trySlackUserId?: string;
@@ -207,7 +201,6 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
     ...(typeof value.selectedChannelName === 'string'
       ? { selectedChannelName: channelName(value.selectedChannelName) }
       : {}),
-    ...(typeof value.selectedFunding === 'string' ? { selectedFunding: funding(value.selectedFunding) } : {}),
     ...(hasRawProvider
       ? { selectedProviderId: providerId(String(value.selectedProviderId)) }
       : {}),
@@ -254,11 +247,6 @@ function hasSelectedChannel(journey: OnboardingJourney): boolean {
   return Boolean(
     journey.agentId && journey.selectedWorkspaceId && journey.selectedChannelId && journey.selectedChannelName,
   );
-}
-
-function funding(value: string): BillingFunding {
-  if (value !== 'platform' && value !== 'own_key') throw new Error('funding is invalid.');
-  return value;
 }
 
 function providerId(value: string): OnboardingProviderId {

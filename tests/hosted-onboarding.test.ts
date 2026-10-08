@@ -498,36 +498,6 @@ test('when the host cannot record Chickpea\'s models, onboarding changes nothing
   assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))?.modelId, 'anthropic/claude-opus-5-5');
 });
 
-test('a journey whose Owner already chose their own key keeps its provider and model steps', async (t) => {
-  const host = hostPorts(t);
-  const signup = await signUp(t);
-  await signup.claim();
-  const admin = signup.admin(await signup.ownerPrincipal());
-  const begun = (await signup.journey())!;
-  const ownKey = JSON.stringify({ ...begun.journey, selectedFunding: 'own_key' });
-  assert.equal(await signup.settings.applySettingsPatch({
-    expected: { key: ONBOARDING_JOURNEY_KEY, value: begun.revision },
-    set: [{ key: ONBOARDING_JOURNEY_KEY, value: ownKey }],
-  }), true);
-  const refused = await startOnPlatform(admin);
-  assert.equal(refused.status, 409);
-  assert.deepEqual(await refused.json(), { error: 'onboarding_own_key' });
-  assert.deepEqual(host.chosen, []);
-  assert.equal((await signup.journey())!.revision, ownKey);
-  const onboarding = await json(admin('/admin/api/onboarding'));
-  assert.equal(onboarding.stage, 'choose_provider');
-  assert.equal(onboarding.funding, 'own_key');
-  const provider = await selectOnboardingProvider(signup.settings, {
-    expectedRevision: ownKey, workspaceId: TEAM, providerId: 'anthropic',
-  });
-  await startOnboardingTry(signup.settings, {
-    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER,
-  });
-  const trying = await json(admin('/admin/api/onboarding'));
-  assert.equal(trying.stage, 'try');
-  assert.equal(trying.funding, 'own_key', 'Try still knows the journey is on its own key');
-});
-
 test('a Member, an Admin, a finished journey, or a host with no billing port changes nothing; the Plan page still switches after onboarding', async (t) => {
   const host = hostPorts(t);
   const signup = await signUp(t);

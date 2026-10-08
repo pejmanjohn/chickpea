@@ -10069,7 +10069,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           name: slack.teamId === journey.selectedWorkspaceId ? (slack.teamName ?? null) : null,
         },
         channel: null,
-        ...(journey.selectedFunding ? { funding: journey.selectedFunding } : {}),
         providerId: journey.selectedProviderId ?? null,
         modelId: journey.selectedModelId ?? null,
         models: [],
@@ -10092,7 +10091,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           : null,
       },
       channel: null,
-      ...(journey.selectedFunding ? { funding: journey.selectedFunding } : {}),
       providerId: journey.selectedProviderId ?? null,
       modelId: null,
       models: journey.selectedProviderId
@@ -10291,7 +10289,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const snapshot = await readOnboardingJourney(settings(c));
       if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
       if (snapshot.journey.state === 'complete' || snapshot.journey.tryStartedAt) return onboardingResponse(c, snapshot);
-      if (snapshot.journey.selectedFunding === 'own_key') return c.json({ error: 'onboarding_own_key' }, 409);
       const slack = await onboardingSlackContext(c);
       if (!slack.connected || !slack.teamId) return c.json({ error: 'slack_not_connected' }, 409);
       try {

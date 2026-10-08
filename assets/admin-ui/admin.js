@@ -2756,7 +2756,7 @@
   }
 
   function onboardingOnChickpeaModels() {
-    return BILLING_OFFERED && INSTALLATION_OWNER && !(state.onboarding && state.onboarding.funding === "own_key");
+    return BILLING_OFFERED && INSTALLATION_OWNER;
   }
 
   function onboardingPlatformSetupHtml() {
