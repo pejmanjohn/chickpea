@@ -6,8 +6,11 @@ import { prepareInstallationCodingWorker } from '../src/agents/coding-worker-tas
 import {
   codingWorkerCloudflareExtension,
   readStagedCodingWorkerBindingFrom,
+  readStagedCodingWorkerRunFrom,
   stageCodingWorkerBinding,
+  stageCodingWorkerRun,
   writeStagedCodingWorkerBinding,
+  writeStagedCodingWorkerRun,
 } from '../src/agents/coding-worker-staging.ts';
 import { compileRuntimePlanV2, parseRuntimePlanV2, type RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
@@ -644,6 +647,54 @@ test('the coordinator stages the binding beside its worker; only the binding of 
   await stageCodingWorkerBinding({ WORKERS: namespace }, 'WORKERS', instanceId, binding);
   await assert.rejects(stageCodingWorkerBinding({ WORKERS: namespace }, 'WORKERS', `${instanceId}0`, binding), /another instance/);
   assert.deepEqual(addressed, [instanceId]);
+});
+
+test('the coordinator stages each worker submission\'s parent run in the worker\'s object; the first write stays', async () => {
+  const storage = new FakeObjectStorage();
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_coordinator', 1);
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_retried_elsewhere', 2);
+  assert.equal(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_1'), 'sub_coordinator');
+  assert.equal(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_2'), undefined);
+  for (const [submissionId, runId] of [
+    ['', 'sub_coordinator'],
+    ['sub_ik_task_3', ''],
+    ['sub_ik_task_4', 'r'.repeat(257)],
+    ['s'.repeat(257), 'sub_coordinator'],
+    ['sub_ik_task_5', 'sub_\u0007coordinator'],
+    ['sub_ik_task_6', 42],
+  ] as const) {
+    assert.throws(() => writeStagedCodingWorkerRun(storage.sql, submissionId, runId, 3), /staged coding worker run/);
+  }
+  assert.deepEqual(
+    storage.sql.exec('SELECT submission_id, run_id FROM chickpea_coding_worker_run').toArray(),
+    [{ submission_id: 'sub_ik_task_1', run_id: 'sub_coordinator' }],
+    'a refused run stores nothing',
+  );
+
+  // Host side: the run lands in the object named by the worker's instance, through its RPC.
+  class FakeAgentBase {
+    constructor(readonly ctx: unknown, readonly env: unknown) {}
+  }
+  const Worker = codingWorkerCloudflareExtension.base(FakeAgentBase) as unknown as new (
+    ctx: { id: { name?: string }; storage: { sql: FakeObjectStorage['sql'] } }, env: unknown,
+  ) => { chickpeaStageCodingWorkerRun(submissionId: string, runId: string): void };
+  const objects = new Map<string, FakeObjectStorage>();
+  const namespace = {
+    idFromName: (name: string) => name,
+    get: (name: string) => {
+      const objectStorage = objects.get(name) ?? new FakeObjectStorage();
+      objects.set(name, objectStorage);
+      return new Worker({ id: { name }, storage: { sql: objectStorage.sql } }, HOSTED);
+    },
+  };
+  const instanceId = codingWorkerInstanceId(codingWorkerBindingForPlan(plan(), THREAD_KEY));
+  await stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_1', 'sub_coordinator');
+  assert.deepEqual([...objects.keys()], [instanceId]);
+  assert.equal(readStagedCodingWorkerRunFrom(objects.get(instanceId)!.sql, 'sub_ik_task_1'), 'sub_coordinator');
+  await assert.rejects(stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_2', ''),
+    /staged coding worker run/);
+  await assert.rejects(stageCodingWorkerRun({}, 'WORKERS', instanceId, 'sub_ik_task_1', 'sub_coordinator'),
+    /binding WORKERS is unavailable/);
 });
 
 test('an installation\'s coding worker is inventoried before its binding is staged; a standalone worker needs neither', async () => {
