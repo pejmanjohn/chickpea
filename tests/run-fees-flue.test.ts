@@ -1,13 +1,6 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import {
-  createAssistantMessageEventStream,
-  createProvider,
-  type AssistantMessage,
-  type AssistantMessageEventStream,
-  type Model,
-} from '@earendil-works/pi-ai';
 import { init, instrument, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
@@ -25,7 +18,7 @@ import {
   type AttemptModelAccess,
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
-import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
 import {
   configurePlatformFunding,
   resetPlatformFundingForTests,
@@ -42,8 +35,8 @@ import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { RunKind } from '../src/usage/run-fees.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { answers, callsTools, SCRIPTED_MODEL, scriptedProvider } from './helpers/scripted-provider.ts';
 
-const SONNET = 'claude-sonnet-5-5';
 const INSTALLATION = 'inst_fees';
 
 function hostedEnv(): PlatformEnv {
@@ -57,70 +50,9 @@ function ownKeyGrant(runId: string): ModelAccessGrant {
   };
 }
 
-type Reply = (model: Model<string>) => AssistantMessage;
-
-function message(model: Model<string>, content: AssistantMessage['content'], stopReason: 'stop' | 'toolUse'): AssistantMessage {
-  return {
-    role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, stopReason, timestamp: 1,
-    usage: {
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-  };
-}
-
-const callsTools = (...names: string[]): Reply => (model) => message(
-  model,
-  names.map((name, index) => ({ type: 'toolCall', id: `call_${index}_${name}`, name, arguments: {} })),
-  'toolUse',
-);
-const answers: Reply = (model) => message(model, [{ type: 'text', text: 'done' }], 'stop');
-
-function streamMessage(output: AssistantMessageEventStream, final: AssistantMessage): void {
-  const partial: AssistantMessage = { ...final, content: [] };
-  output.push({ type: 'start', partial: { ...partial } });
-  final.content.forEach((block, contentIndex) => {
-    partial.content = [...partial.content, block];
-    if (block.type === 'text') {
-      output.push({ type: 'text_start', contentIndex, partial: { ...partial } });
-      output.push({ type: 'text_delta', contentIndex, delta: block.text, partial: { ...partial } });
-      output.push({ type: 'text_end', contentIndex, content: block.text, partial: { ...partial } });
-    } else if (block.type === 'toolCall') {
-      output.push({ type: 'toolcall_start', contentIndex, partial: { ...partial } });
-      output.push({ type: 'toolcall_end', contentIndex, toolCall: block, partial: { ...partial } });
-    }
-  });
-  output.push({ type: 'done', reason: final.stopReason as 'stop' | 'toolUse', message: final });
-  output.end();
-}
-
-function scriptedProvider(replies: Reply[]) {
-  const model = {
-    id: SONNET, name: SONNET, api: 'anthropic-messages', provider: ANTHROPIC_COMPAT_PROVIDER_ID,
-    baseUrl: 'https://provider.invalid', reasoning: false, input: ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
-  } as Model<'anthropic-messages'>;
-  const sent: number[] = [];
-  const stream = (sentModel: Model<string>): AssistantMessageEventStream => {
-    sent.push(sent.length);
-    const output = createAssistantMessageEventStream();
-    const reply = replies.shift();
-    assert.ok(reply, 'a scripted reply remains for every request sent');
-    queueMicrotask(() => streamMessage(output, reply(sentModel)));
-    return output;
-  };
-  registerPiProvider(createProvider({
-    id: ANTHROPIC_COMPAT_PROVIDER_ID,
-    auth: { apiKey: { name: 'probe', resolve: async () => ({ auth: {} }) } },
-    models: [model],
-    api: { stream, streamSimple: stream },
-  }));
-  return { sent, model };
-}
-
 function hostedPort(
   t: TestContext,
-  options: { refuse?: FeePost['tier']; fail?: FeePost['tier']; port?: boolean } = {},
+  options: { refuse?: FeePost['tier']; fail?: FeePost['tier']; stall?: FeePost['tier']; port?: boolean } = {},
 ) {
   resetModelAccessForTests();
   resetPlatformFundingForTests();
@@ -135,6 +67,10 @@ function hostedPort(
       admit: async () => 'admitted',
       charge: async () => {},
       postFee: async (post) => {
+        if (post.tier === options.stall) {
+          posts.push({ ...post, outcome: 'failed' });
+          return new Promise<never>(() => {});
+        }
         if (post.tier === options.fail) {
           posts.push({ ...post, outcome: 'failed' });
           throw new Error('ledger unavailable');
@@ -167,7 +103,7 @@ function interceptors(t: TestContext, lookup: (runId: string | undefined) => Att
 const ran: string[] = [];
 
 function FeeProbe() {
-  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SONNET}`);
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
   for (const name of ['read_slack_channel', 'read_slack_thread']) {
     useTool({
       name,
@@ -194,7 +130,7 @@ async function slackTurn(id: string): Promise<{ text: string } | unknown> {
     return await promptSlackThreadAgent({
       handle: agent, message: 'unused saved dispatch', turnId: id,
       conversationKey: 'T_FIXTURE:C_FIXTURE:1',
-      requestedModel: `anthropic/${SONNET}`,
+      requestedModel: `anthropic/${SCRIPTED_MODEL}`,
       state: {
         dispatchEnvelope: { instanceId: id } as FlueDispatchEnvelopeV1,
         dispatchReceipt: receipt,
@@ -297,6 +233,18 @@ test('a task row the host cannot post lets the tool run, and the next qualifying
   const logged = warn.mock.calls.map(({ arguments: [line] }) => String(line)).filter((line) => line.includes('fee_post_failed'));
   assert.equal(logged.length, 2);
   assert.ok(logged.every((line) => !line.includes(INSTALLATION) && !line.includes('sub_')), 'the log names no installation or run');
+});
+
+test('a chat row the host never answers does not delay the first model request', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t, { stall: 'chat' });
+  t.mock.method(console, 'warn', () => undefined);
+  interceptors(t, replyRun(hostedEnv()));
+  const { sentAt } = scriptedProvider([answers]);
+  const startedAt = performance.now();
+
+  assert.deepEqual(await slackTurn('fees-chat-stalled'), { text: 'done' });
+  assert.deepEqual(tiers(posts), ['chat:failed']);
+  assert.ok(sentAt[0]! - startedAt < 1_000, `the first request waited ${Math.round(sentAt[0]! - startedAt)} ms`);
 });
 
 test('a chat row the host cannot post never fails the attempt', { timeout: 20_000 }, async (t) => {

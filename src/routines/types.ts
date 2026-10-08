@@ -44,7 +44,6 @@ export type RoutineFailureClass =
   | 'policy_denied'
   | 'capacity_limited'
   | 'spend_limited'
-  | 'usage_exhausted'
   | 'schedule_invalid'
   | 'admission_unknown'
   | 'workflow_interrupted'

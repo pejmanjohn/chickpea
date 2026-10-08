@@ -6,7 +6,18 @@ import { test, type TestContext } from 'node:test';
 
 import * as v from 'valibot';
 
-import { AgentRunError, type AgentInstanceHandle, type AgentReply, type DispatchReceipt } from '@flue/runtime';
+import {
+  AgentRunError,
+  init,
+  instrument,
+  useDataWriter,
+  useModel,
+  useTool,
+  type AgentInstanceHandle,
+  type AgentReply,
+  type DispatchReceipt,
+} from '@flue/runtime';
+import { start } from '@flue/runtime/node';
 import { WebClient } from '@slack/web-api';
 
 import type { EffectiveSlackConfig } from '../src/config/effective-config.ts';
@@ -58,6 +69,15 @@ import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
 import type { ProductTelemetryEventInput } from '../src/telemetry/events.ts';
 import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
+import {
+  configureModelAccessResolver,
+  createModelAccessInterceptor,
+  resetModelAccessForTests,
+} from '../src/config/model-access.ts';
+import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
+import { RoutineModelResultSchema } from '../src/routines/prompt.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 const offlineSlackClient = {
@@ -521,12 +541,92 @@ test('a quiet scheduled run posts no task row', async (t) => {
 
 test('a scheduled run whose task row is refused fails out of usage, and its destination gets the notice, not the result', async (t) => {
   const { run, events, messages } = await scheduledRunWithFees(t, 'fee_refused', { outcome: 'refused' });
-  assert.deepEqual([run?.status, run?.failureClass, run?.publicError], ['failed', 'usage_exhausted', CREDITS_EXHAUSTED_TEXT]);
+  assert.deepEqual([run?.status, run?.failureClass, run?.publicError], ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]);
   assert.deepEqual(events, ['fee:task', 'slack-post']);
   assert.equal(messages.length, 1);
   assert.match(messages[0]!, /Routine needs attention/);
   assert.ok(messages[0]!.includes(CREDITS_EXHAUSTED_TEXT), messages[0]!);
   assert.doesNotMatch(messages[0]!, /Routine result/);
+});
+
+function RoutineFeeProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  const writeResult = useDataWriter(ROUTINE_RESULT_DATA_NAME, { schema: RoutineModelResultSchema });
+  useTool({
+    name: 'submit_routine_result',
+    description: 'Submit the result.',
+    input: RoutineModelResultSchema,
+    output: v.string(),
+    run: ({ data }) => {
+      writeResult(data);
+      return { output: 'Routine result submitted.', terminate: true };
+    },
+  });
+  return 'Submit the scripted result.';
+}
+
+test('a scheduled run\'s chat row and task row carry the one run ID its requests are recorded under', { timeout: 20_000 }, async (t) => {
+  const installationId = 'inst_fee_run_id';
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId });
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  resetModelAccessForTests();
+  resetInstallationAdmissionForTests();
+  resetPlatformFundingForTests();
+  t.after(() => {
+    store.close();
+    resetModelAccessForTests();
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+  });
+  configureInstallationAdmission(async () => 'admitted');
+  configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-routine-fee-test-key' }) });
+  const posts: FeePost[] = [];
+  configurePlatformFunding({
+    ...NO_RUN_FEES,
+    funding: async () => 'customer',
+    admit: async () => 'admitted',
+    charge: async () => {},
+    postFee: async (post) => {
+      posts.push(post);
+      return { kind: 'posted' };
+    },
+  });
+  const modelAccess = createModelAccessInterceptor({
+    lookup: async (context) => ({
+      env,
+      grant: {
+        installationId, providerId: 'anthropic', runId: context.submissionId!, fundingSource: 'customer',
+        credentialRefId: 'cred_anthropic', credentialVersion: 1,
+      },
+      agentId: config.agentId,
+      runKind: 'scheduled',
+    }),
+    installationGrants: async () => [],
+  });
+  t.after(instrument({ key: Symbol('routine-fees'), interceptor: modelAccess, observe() {}, dispose() {} }));
+  scriptedProvider([(model) => scriptedMessage(model, [{
+    type: 'toolCall', id: 'call_submit', name: 'submit_routine_result',
+    arguments: { outcome: 'succeeded', message: 'Routine result' },
+  }], 'toolUse')]);
+  const runtime = await start({
+    agents: [{ agent: RoutineFeeProbe, name: 'routine-fee-probe' }],
+    providers: [registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!],
+  });
+  t.after(() => runtime.stop());
+  const fixture = await admittedFixture(store, 'fee_run_id');
+  const base = offlineDependencies();
+
+  assert.equal(await executeRoutineOccurrence(
+    { env, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt },
+    { ...base, handle: init(RoutineFeeProbe, { id: 'routine-fee-run-id' }) },
+  ), 'completed');
+
+  assert.equal((await store.getRun(fixture.run.id))?.status, 'succeeded');
+  assert.deepEqual(posts.map(({ tier }) => tier), ['chat', 'task']);
+  assert.match(posts[0]!.runId, /^sub_/);
+  assert.equal(posts[1]!.runId, posts[0]!.runId);
+  const [admission] = await store.listAdmissions(fixture.run.id);
+  assert.equal(posts[1]!.runId, admission?.flueAgentReceipt?.submissionId, 'the receipt the run recorded');
 });
 
 test('a standalone scheduled run, or one with no host port, posts its result with no fee', async (t) => {

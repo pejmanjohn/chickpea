@@ -283,8 +283,12 @@ export function createModelAccessInterceptor(
     const cell = await resolveCell(
       grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, attempt.runKind,
     );
-    await cell.fees?.postChatFee();
-    return cells.run(cell, next);
+    const chatFee = cell.fees?.postChatFee();
+    try {
+      return await cells.run(cell, next);
+    } finally {
+      await chatFee;
+    }
   };
 }
 

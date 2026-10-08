@@ -1021,7 +1021,7 @@ async function requireDeliveryTaskFee(
   const outcome = await postRunFee({
     installationId, runId: submissionId, tier: 'task', agentId: prepared.access.config.agentId,
   });
-  return outcome.kind === 'refused' ? new RoutineRuntimeError('usage_exhausted', CREDITS_EXHAUSTED_TEXT) : undefined;
+  return outcome.kind === 'refused' ? new RoutineRuntimeError('spend_limited', CREDITS_EXHAUSTED_TEXT) : undefined;
 }
 
 function captureScheduledRun(
