@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAssistantMessageEventStream, createProvider, type Model } from '@earendil-works/pi-ai';
 import {
   AgentInstanceNotFoundError,
   AgentRunError,
+  init,
+  useModel,
   type AgentReply,
   type ConversationStreamChunk,
   type DispatchReceipt,
   type Sandbox,
 } from '@flue/runtime';
+import { start } from '@flue/runtime/node';
 
 import { CodingWorker } from '../src/agents/coding-worker.ts';
+import { codingWorkerSubmissionId } from '../src/agents/coding-worker-staging.ts';
 import { CHICKPEA_SUBMISSION_DURABILITY } from '../src/agents/coding-worker-task.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from '../src/agents/names.ts';
 import { ChickpeaRoutineExecution } from '../src/agents/routine-execution.ts';
@@ -30,6 +35,7 @@ import {
   putStoredCodingTask,
   readStoredCodingTasks,
   settleStoredCodingTask,
+  workspaceTaskDispatchKey,
   type CodingTaskRecordV1,
 } from '../src/sandbox/coding-task-record.ts';
 import { stopCodingTasks } from '../src/sandbox/coding-task-stop.ts';
@@ -606,6 +612,57 @@ test('a worker is prepared (inventoried, its binding staged) before its task rec
   assert.equal(output.reason, 'workspace_unavailable');
   assert.deepEqual(refusedRecords.puts, []);
   assert.equal(refused.dispatched.length, 0);
+});
+
+test('a coding task\'s keyed dispatch runs as the submission the coordinator derives for it', { timeout: 20_000 }, async () => {
+  const provider = createProvider({
+    id: 'worker-submission-lane',
+    auth: { apiKey: { name: 'probe', resolve: async () => ({ auth: {} }) } },
+    models: [{
+      id: 'probe', name: 'Probe', api: 'anthropic-messages', provider: 'worker-submission-lane',
+      baseUrl: 'https://provider.invalid', reasoning: false, input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000, maxTokens: 1_024,
+    } as Model<'anthropic-messages'>],
+    api: { stream: answered, streamSimple: answered },
+  });
+  function answered() {
+    const output = createAssistantMessageEventStream();
+    queueMicrotask(() => {
+      output.push({ type: 'done', reason: 'stop', message: {
+        role: 'assistant', content: [{ type: 'text', text: 'done' }], api: 'anthropic-messages',
+        provider: 'worker-submission-lane', model: 'probe', stopReason: 'stop', timestamp: 1,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      } });
+      output.end();
+    });
+    return output;
+  }
+  function WorkerProbe() {
+    useModel('worker-submission-lane/probe');
+    return 'Answer.';
+  }
+  const runtime = await start({
+    agents: [{ agent: WorkerProbe, name: CHICKPEA_CODING_WORKER_AGENT_NAME }],
+    providers: [provider],
+  });
+  const hosted = codingWorkerBindingForPlan(
+    { ...plan(CODING_MODEL), installation: { version: 1, installationId: 'inst_a' } },
+    WORKSPACE_ID,
+  );
+  try {
+    for (const [instanceId, taskKey] of [
+      [codingWorkerInstanceId(codingWorkerBindingForPlan(plan(CODING_MODEL), WORKSPACE_ID)), workspaceTaskDispatchKey('call-1')],
+      [codingWorkerInstanceId(hosted), workspaceTaskDispatchKey('toolu_01AbCdEf')],
+    ] as const) {
+      const worker = init(WorkerProbe, { id: instanceId });
+      const accepted = await worker.dispatch({ message: 'Fix the test.', idempotencyKey: taskKey });
+      await worker.read(accepted);
+      assert.equal(accepted.submissionId, await codingWorkerSubmissionId(instanceId, taskKey));
+    }
+  } finally {
+    await runtime.stop();
+  }
 });
 
 test('a failed acceptance write never fails a task the worker already took', async () => {

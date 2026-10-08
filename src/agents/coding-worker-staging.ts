@@ -4,7 +4,9 @@ import {
   parseCodingWorkerBinding,
   type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
+import { sha256Hex } from '../security/digest.ts';
 import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
+import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
 import type { TurnInputSql } from './turn-input.ts';
 
 /**
@@ -122,4 +124,19 @@ export async function readStagedCodingWorkerBinding(instanceId: string): Promise
   if (!isCloudflareTarget()) return undefined;
   const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
   return readStagedCodingWorkerBindingFrom(getCloudflareContext().storage.sql, instanceId);
+}
+
+/**
+ * The submission ID Flue gives a dispatch that carries an idempotency key.
+ * Flue documents this derivation as a frozen wire format; the coordinator
+ * computes it to name the worker's submission before dispatching it.
+ */
+async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
+  const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
+  return `sub_ik_${digest.slice(0, 32)}`;
+}
+
+/** The submission a coding task dispatched to `instanceId` under `taskKey` runs as. */
+export function codingWorkerSubmissionId(instanceId: string, taskKey: string): Promise<string> {
+  return keyedSubmissionId(CHICKPEA_CODING_WORKER_AGENT_NAME, instanceId, taskKey);
 }
