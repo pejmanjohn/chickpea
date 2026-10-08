@@ -77,6 +77,12 @@ export interface PlatformFundingPort {
    * Idempotent on `(installationId, runId, tier)`: every attempt posts again.
    */
   postFee(post: FeePost): Promise<FeeOutcome>;
+  /**
+   * Before a reply run's first qualifying tool call, once per attempt.
+   * Read-only: writes no row. `refused` exactly when a task-tier `postFee`
+   * for the run would answer `refused`.
+   */
+  admitTask(run: RunRef): Promise<'admitted' | 'refused'>;
   /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
   creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
 }
@@ -209,6 +215,12 @@ export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
 export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
   return (await askWithinBudget((current) => current.postFee(post), { event: 'fee_post_failed', tier: post.tier }))
     ?? FEE_UNANSWERED;
+}
+
+/** A host that does not answer in time, fails, or is not configured admits: a slow ledger never blocks a task. */
+export async function admitRunTask({ installationId, runId }: RunRef): Promise<'admitted' | 'refused'> {
+  return (await askWithinBudget((current) => current.admitTask({ installationId, runId }), { event: 'task_admission_failed' }))
+    ?? 'admitted';
 }
 
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {

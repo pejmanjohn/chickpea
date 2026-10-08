@@ -3,13 +3,13 @@ import type { FlueExecutionInterceptor } from '@flue/runtime';
 import { registeredToolDescriptor } from '../activity/status.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import { currentRunFees } from './model-access.ts';
-import { CreditsExhaustedError } from './platform-funding.ts';
 
 /**
- * A qualifying tool call makes the reply a task once it returns or throws,
- * since a throw can follow work already done. Flue reports a tool's error to
- * an interceptor only by rejecting `next()`. Once the run's post is refused,
- * no later qualifying call does any work.
+ * Each attempt asks once, before its first qualifying call, whether the run
+ * may become a task, and no qualifying call runs once that answer or the post
+ * refuses it. A call makes the reply a task once it returns or throws, since a
+ * throw can follow work already done; Flue reports a tool's error to an
+ * interceptor only by rejecting `next()`.
  */
 export const runFeeInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
   if (operation.type !== 'tool') return next();
@@ -19,7 +19,7 @@ export const runFeeInterceptor: FlueExecutionInterceptor = async (operation, con
     toolName: operation.toolName,
     descriptor: registeredToolDescriptor(context.instanceId, operation.toolName),
   })) return next();
-  if (fees.refused) throw new CreditsExhaustedError();
+  await fees.requireTaskAdmitted();
   const result = await next().catch(async (error: unknown) => {
     await fees.postTaskFee();
     throw error;

@@ -34,6 +34,7 @@ import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation, L
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
 import {
+  admitRunTask,
   chargePlatformRequest,
   CreditsExhaustedError,
   platformFundingConfigured,
@@ -145,6 +146,7 @@ class RunFees {
   readonly feeRun: FeeRun;
   readonly #run: Omit<FeePost, 'tier'>;
   #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
+  #admission: Promise<void> | undefined;
 
   constructor(feeRun: FeeRun, run: Omit<FeePost, 'tier'>) {
     this.feeRun = feeRun;
@@ -153,6 +155,20 @@ class RunFees {
 
   get refused(): boolean {
     return this.#taskFee === 'refused';
+  }
+
+  /**
+   * Throws once the task is refused, by the attempt's one admission or by its
+   * post. Parallel calls await the same admission in flight, so the host is asked once.
+   */
+  async requireTaskAdmitted(): Promise<void> {
+    this.#admission ??= this.#admitTask();
+    await this.#admission;
+    if (this.refused) throw new CreditsExhaustedError();
+  }
+
+  async #admitTask(): Promise<void> {
+    if (await admitRunTask(this.#run) === 'refused') this.#taskFee = 'refused';
   }
 
   async postChatFee(): Promise<void> {
