@@ -2604,12 +2604,15 @@
     return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + heading + '</th><th class="number">Used</th></tr></thead><tbody>' + body + '</tbody></table></div>';
   }
 
+  // A host whose ledger records no person sends no person rows, so the Person
+  // table shows only when there are some.
   function billingUseHtml(billing) {
     var period = billing.period;
     var empty = period ? "No usage yet this period." : "No usage yet.";
     return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + (period ? 'Usage this period' : 'Usage') + '</h2>' +
       (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div></div>' +
-      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) + billingUseTableHtml("Person", billing.use.byPerson, empty) + '</div></section>';
+      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) +
+      (billing.use.byPerson.length ? billingUseTableHtml("Person", billing.use.byPerson, empty) : '') + '</div></section>';
   }
 
   function billingFundingConfirmHtml(question, confirmLabel) {

@@ -409,7 +409,7 @@ test('an own key at launch, with no plan and no date for charges, still shows th
   assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
   assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
   assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
-  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>[\s\S]*<th>Person<\/th>/);
+  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
   assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
 
   await page.click({ 'data-action': 'billing-change-plan' });
@@ -456,6 +456,16 @@ test('with no plan, the page offers a plan and nothing else to buy', async () =>
   assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>/, 'no period, so no "since"');
   assert.match(html, /<td colspan="2">No usage yet\.<\/td>/);
   assert.match(html, /data-action="billing-use-own-key">Use your own key instead<\/button>/);
+});
+
+test('a host that records no person shows the Agent table alone, with no empty Person table beside it', async () => {
+  const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, use: { ...TEAM_PLAN.use, byPerson: [] } } })).html();
+  assert.match(html, /<th>Agent<\/th><th class="number">Used<\/th>[\s\S]*<td>Chickpea<\/td><td class="number">\$30\.25<\/td><\/tr><tr><td>Other<\/td><td class="number">\$7<\/td>/);
+  assert.doesNotMatch(html, /<th>Person<\/th>/);
+  assertHides(html, 'No usage yet');
+
+  const none = (await harness({ path: '/admin/plan', billingOffered: true, summary: NO_PLAN })).html();
+  assert.equal(none.match(/No usage yet\./g)?.length, 1, 'with no use at all, the empty message shows once');
 });
 
 test('a Member sees the plan\'s usage and that an Owner changes it, with no buttons, plan, or use', async () => {
