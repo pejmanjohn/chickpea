@@ -33,6 +33,7 @@ import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const BASE_URL = 'https://images.openai.invalid/v1';
@@ -122,7 +123,7 @@ function creditsInstallation(
     charge: async (record) => {
       fundingCalls.charge.push(record);
     },
-    priceMultiplier: async () => 1.5,
+    ...NO_RUN_FEES,
   });
   return { env, fundingCalls };
 }
@@ -153,6 +154,7 @@ test('a customer-funded image generation returns its images as before and writes
     );
     assert.deepEqual(await store.getModelRequest(recorded[0]!.requestId), {
       requestId: recorded[0]!.requestId,
+      purpose: 'image',
       installationId: 'chickpea',
       runId: 'image-generation',
       attemptId: recorded[0]!.attemptId,
@@ -219,7 +221,7 @@ test('an image request inside a run is recorded against that run', async (t) => 
       installationId: 'chickpea', providerId: 'anthropic', credentialRefId: 'cred_anthropic', credentialVersion: 1,
       runId: 'run_with_image', fundingSource: 'customer',
     };
-    await withModelAccess(run, undefined, async () => {
+    await withModelAccess(run, undefined, 'reply', async () => {
       assert.ok((await (await imageClient(undefined, settings, fetchImpl)).generate(generation)).ok);
     });
     assert.equal(recorded.length, 1);

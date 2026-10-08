@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  configurePlatformFunding,
+  resetPlatformFundingForTests,
+  type CreditBackOutcome,
+  type CreditBackReason,
+  type RunRef,
+} from '../src/config/platform-funding.ts';
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
@@ -16,6 +24,8 @@ import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
 import { AGENT_FAILURE_TEXT, DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { SlackPresentationOwner } from '../src/slack/run-presentations.ts';
+import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 type RunTurnScript = (options: RunTurnOptions) => Promise<void>;
 
@@ -572,4 +582,65 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
       assert.ok(h.calls.indexOf('markDelivered("turn_1")') < h.calls.indexOf('dispatchAgentAsks'));
     }
   }
+});
+
+const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
+
+/**
+ * A hosted turn whose every reattachment fails, on its last attempt: the
+ * executor gives up and posts the recovery text. Returns that text and the
+ * host's credit-backs.
+ */
+async function givenUpHostedTurn(
+  t: TestContext,
+  answer: CreditBackOutcome,
+  receipt: boolean,
+) {
+  const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  configurePlatformFunding({
+    funding: async () => 'customer',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+    creditBack: async (run, reason) => { creditBacks.push({ run, reason }); return answer; },
+  });
+  t.after(() => resetPlatformFundingForTests());
+  const replayed: Array<string | undefined> = [];
+  const h = fakePorts(async (options) => {
+    if (options.replayTerminalResult !== 'failure') throw new Error('Flue read failed');
+    replayed.push(options.replayText);
+    await options.onDelivered?.();
+  });
+  h.ports.env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_executor' });
+  const job = pendingJob({
+    attempts: MAX_POST_DISPATCH_ATTEMPTS - 1,
+    dispatchEnvelope: { instanceId: 'agent' } as never,
+    ...(receipt
+      ? { dispatchReceipt: { submissionId: 'sub_given_up', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_given_up' } }
+      : {}),
+  });
+  assert.equal(await executeTurnJob(job, h.ports, h.options), true);
+  return { replayed, creditBacks };
+}
+
+test('a hosted turn the executor gives up on is credited back as evicted, and its recovery text says so', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true,
+  );
+  assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'evicted' }]);
+});
+
+test('a given-up run with nothing to credit back posts the plain recovery text', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(t, { kind: 'nothing' }, true);
+  assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+  assert.equal(creditBacks.length, 1);
+});
+
+test('a given-up turn with no receipt asks the host nothing', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, false,
+  );
+  assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+  assert.deepEqual(creditBacks, []);
 });

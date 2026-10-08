@@ -29,11 +29,18 @@ import {
   type OpenAICompletionsCompat,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
-import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runtime';
+import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation, LlmTurnPurpose } from '@flue/runtime';
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
-import { chargePlatformRequest, requirePlatformFundingAdmitted } from './platform-funding.ts';
+import {
+  chargePlatformRequest,
+  CreditsExhaustedError,
+  platformFundingConfigured,
+  postRunFee,
+  requirePlatformFundingAdmitted,
+  type FeePost,
+} from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -49,10 +56,12 @@ import {
   type ModelRequestAttribution,
   type ModelRequestEnd,
   type ModelRequestFundingSource,
+  type ModelRequestPurpose,
   type ModelRequestRecord,
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
+import type { FeeRun } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
 import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
@@ -127,6 +136,39 @@ interface ModelAccessCell {
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
+  readonly purpose: ModelRequestPurpose;
+  readonly compactionTurns: Set<string>;
+  readonly fees: RunFees | undefined;
+}
+
+class RunFees {
+  readonly feeRun: FeeRun;
+  readonly #run: Omit<FeePost, 'tier'>;
+  #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
+
+  constructor(feeRun: FeeRun, run: Omit<FeePost, 'tier'>) {
+    this.feeRun = feeRun;
+    this.#run = run;
+  }
+
+  get refused(): boolean {
+    return this.#taskFee === 'refused';
+  }
+
+  async postChatFee(): Promise<void> {
+    await postRunFee({ ...this.#run, tier: 'chat' });
+  }
+
+  /** One post per run; a refusal only sets `refused`, which the proxy reads before the next request. */
+  postTaskFee(): Promise<void> {
+    if (this.#taskFee === 'unposted') this.#taskFee = this.#postTaskFee();
+    return typeof this.#taskFee === 'string' ? Promise.resolve() : this.#taskFee;
+  }
+
+  async #postTaskFee(): Promise<void> {
+    const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
+    this.#taskFee = kind === 'refused' ? 'refused' : kind === 'unanswered' ? 'unposted' : 'posted';
+  }
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
@@ -189,13 +231,14 @@ export function providerPrefix(model: string): string {
 }
 
 /** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess =
+export type AttemptModelAccess = { readonly runId?: string; readonly feeRun?: FeeRun } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
   | { readonly env: PlatformEnv | undefined; readonly deploymentLane: true; readonly agentId?: string }
   /** An agent with no persisted run of its own (the coding worker). */
-  | { readonly env: PlatformEnv | undefined; readonly agentId?: string };
+  | { readonly env: PlatformEnv | undefined; readonly agentId?: string }
+);
 
 export interface ModelAccessInterceptorOptions {
   /** The attempt's run, from trusted persisted state; never from model-visible input. */
@@ -222,7 +265,8 @@ export function createModelAccessInterceptor(
       if (!cell || (cell.hosted && cell.bound.size === 0)) {
         throw new ModelAccessError('scope_missing', 'No model access is in scope for this model call.');
       }
-      return next();
+      if (!cell.compactionTurns.delete(operation.turnId)) return next();
+      return cells.run(Object.freeze({ ...cell, purpose: 'compaction' }), next);
     }
     if (operation.type !== 'agent') return next();
     const active = cells.getStore();
@@ -232,26 +276,64 @@ export function createModelAccessInterceptor(
     // A new, retried or resumed attempt, before anything is decrypted.
     const installationId = hosted ? installationScopeOf(attempt.env)?.installationId : undefined;
     if (installationId) await requireInstallationAdmitted(installationId);
-    const runId = context.submissionId ?? context.instanceId ?? 'attempt';
+    const runId = attempt.runId ?? context.submissionId ?? context.instanceId ?? 'attempt';
     let grants: readonly ModelAccessGrant[] = [];
     if ('grant' in attempt) {
       grants = [attempt.grant];
     } else if (!('deploymentLane' in attempt) && !hosted) {
       grants = await options.installationGrants(attempt.env, runId);
     }
-    const cell = await resolveCell(grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null);
-    return cells.run(cell, next);
+    const cell = await resolveCell(
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply', attempt.feeRun,
+    );
+    const chatFee = cell.fees?.postChatFee();
+    try {
+      return await cells.run(cell, next);
+    } finally {
+      await chatFee;
+    }
   };
+}
+
+export function currentRunFees(): RunFees | undefined {
+  const cell = cells.getStore();
+  return cell?.purpose === 'reply' ? cell.fees : undefined;
+}
+
+/**
+ * Flue's model operation does not say a turn is a compaction; its
+ * `turn_request` observation does, emitted synchronously in the attempt's
+ * context just before that turn's model operation.
+ */
+export function observeModelAccess(event: FlueObservation): void {
+  if (event.type !== 'turn_request' || !COMPACTION_TURN[event.purpose]) return;
+  cells.getStore()?.compactionTurns.add(event.turnId);
+}
+
+const COMPACTION_TURN: Readonly<Record<LlmTurnPurpose, boolean>> = {
+  agent: false,
+  compaction: true,
+  compaction_prefix: true,
+};
+
+export function withModelRequestPurpose<T>(purpose: ModelRequestPurpose, fn: () => Promise<T>): Promise<T> {
+  const cell = cells.getStore();
+  return cell ? cells.run(Object.freeze({ ...cell, purpose }), fn) : fn();
+}
+
+export function currentModelAccessRunId(): string | undefined {
+  return cells.getStore()?.attribution.runId;
 }
 
 /** A stateless call runs inside an explicit grant, resolved once. */
 export async function withModelAccess<T>(
   grant: ModelAccessGrant,
   env: PlatformEnv | undefined,
+  purpose: ModelRequestPurpose,
   fn: () => Promise<T>,
 ): Promise<T> {
   const hosted = deploymentServesManyInstallations(env);
-  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null), fn);
+  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null, purpose), fn);
 }
 
 /**
@@ -261,10 +343,11 @@ export async function withModelAccess<T>(
 export async function withDeploymentLane<T>(
   env: PlatformEnv | undefined,
   runId: string,
+  purpose: ModelRequestPurpose,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (deploymentServesManyInstallations(env)) throw providerNotOffered('this provider');
-  return cells.run(await resolveCell([], env, false, undefined, runId, null), fn);
+  return cells.run(await resolveCell([], env, false, undefined, runId, null, purpose), fn);
 }
 
 export type ImageEndpointFetch = (
@@ -345,6 +428,8 @@ async function resolveCell(
   instanceId: string | undefined,
   runId: string,
   agentId: string | null,
+  purpose: ModelRequestPurpose,
+  feeRun?: FeeRun,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -358,7 +443,12 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution });
+  const fees = installationId && feeRun && purpose === 'reply' && platformFundingConfigured()
+    ? new RunFees(feeRun, { installationId, runId, agentId })
+    : undefined;
+  return Object.freeze({
+    instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
+  });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
@@ -485,6 +575,7 @@ function sendRequest<TModel extends Model<Api>>(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
+      if (cell.fees?.refused) throw new CreditsExhaustedError();
       if (installationId) await requireInstallationAdmitted(installationId);
       source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
     } catch (error) {
@@ -549,7 +640,9 @@ function settleRequest(
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
-    const record = modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
+    const record = modelRequestRecord({
+      ...request, attribution: cell.attribution, purpose: cell.purpose, message: final, ...report, finishedAt,
+    });
     const offListPrice = mode &&
       (offList(record.providerServiceTier, mode.listPricedServiceTiers) ||
         offList(record.providerInferenceGeo, mode.listPricedInferenceGeos));

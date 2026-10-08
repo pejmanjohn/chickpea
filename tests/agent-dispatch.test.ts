@@ -11,6 +11,7 @@ import {
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
 import { canonicalSlackMarkdownText, streamableSlackMarkdownPrefix } from '../src/slack/message-format.ts';
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import type { AgentInstanceHandle } from '@flue/runtime';
 import { AgentInstanceExistsError, AgentInstanceNotFoundError, AgentRunError } from '@flue/runtime';
 import { opaqueId } from '../src/work/admission.ts';
@@ -636,6 +637,63 @@ test('extreme punctuation output settles as terminal failure and never repeats a
   assert.equal(reads, 1);
   assert.equal(dispatchState.flueSettlement?.outcome, 'failed');
 });
+test('a failed reply carries the tools its own submission called, apart from its answer declaration', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const toolInput = (messageId: string, toolCallId: string, toolName: string) => ({
+    type: 'tool-input', conversationId: 'c', messageId, toolCallId, toolName, input: {},
+  });
+  const message = (id: string, submissionId: string, tools: Array<[string, string]>) => ({
+    id, role: 'assistant', purpose: 'answer', display: 'visible', submissionId,
+    parts: tools.map(([toolCallId, toolName]) => ({
+      type: 'dynamic-tool', toolCallId, toolName, state: 'input-available', input: {},
+    })),
+  });
+  const streams: Record<string, unknown[]> = {
+    // A re-attached read replays an earlier submission first, and may repeat a chunk.
+    live: [
+      { type: 'message-started', conversationId: 'c', messageId: 'earlier', submissionId: 'submission_earlier' },
+      toolInput('earlier', 'call_old', 'read_slack_channel'),
+      { type: 'message-started', conversationId: 'c', messageId: 'response', submissionId: RECEIPT.submissionId },
+      toolInput('response', 'call_a', 'read_slack_channel'),
+      toolInput('response', 'call_a', 'read_slack_channel'),
+      toolInput('response', 'call_b', SLACK_STREAM_ANSWER_TOOL_NAME),
+      { type: 'message-started', conversationId: 'c', messageId: 'response_2', submissionId: RECEIPT.submissionId },
+      toolInput('response_2', 'call_c', 'list_slack_channels'),
+    ],
+    snapshot: [
+      { type: 'conversation-reset', conversationId: 'c', snapshot: {
+        v: 1, conversationId: 'c', offset: '1', settlements: [], messages: [
+          message('earlier', 'submission_earlier', [['call_old', 'read_slack_channel']]),
+          message('response', RECEIPT.submissionId, [['call_a', 'read_slack_channel'], ['call_b', SLACK_STREAM_ANSWER_TOOL_NAME]]),
+        ],
+      } },
+      { type: 'message-appended', conversationId: 'c',
+        message: message('response_2', RECEIPT.submissionId, [['call_c', 'list_slack_channels']]) },
+    ],
+  };
+  for (const [name, chunks] of Object.entries(streams)) {
+    for (const ending of ['unusable', 'failed'] as const) {
+      const agent = handle({ async read(_receipt, options) {
+        chunks.forEach((chunk, index) => options?.onEvent?.({ ...(chunk as object), position: { batch: 1, index } } as never));
+        if (ending === 'failed') {
+          throw new AgentRunError({ outcome: 'failed', submissionId: RECEIPT.submissionId, cause: new Error('private') });
+        }
+        return { text: '?'.repeat(1_500), data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
+      } });
+      await assert.rejects(() => promptSlackThreadAgent(promptInput(state(), agent)), (error: unknown) =>
+        error instanceof AgentPromptFailure && error.toolCallCount === 2, `${name} ${ending}`);
+    }
+  }
+  const declaredOnly = handle({ async read(_receipt, options) {
+    options?.onEvent?.({ type: 'message-started', conversationId: 'c', messageId: 'response',
+      submissionId: RECEIPT.submissionId, position: { batch: 1, index: 0 } });
+    options?.onEvent?.({ ...toolInput('response', 'call_b', SLACK_STREAM_ANSWER_TOOL_NAME), position: { batch: 1, index: 1 } } as never);
+    return { text: '?'.repeat(1_500), data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
+  } });
+  await assert.rejects(() => promptSlackThreadAgent(promptInput(state(), declaredOnly)), (error: unknown) =>
+    error instanceof AgentPromptFailure && error.kind === 'invalid-output' && error.toolCallCount === 0);
+});
+
 test('short punctuation, structured results and ordinary long answers remain valid', async () => {
   for (const text of ['!!!', '!'.repeat(1023), '{"ok":true}', '---\n# Answer\n---', 'Confirmed. '.repeat(1000), '!?'.repeat(1024)]) {
     const result = await promptSlackThreadAgent(promptInput(state(), handle({

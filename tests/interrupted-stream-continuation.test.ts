@@ -111,7 +111,7 @@ test('every registered provider streams through the seam and keeps its other mem
   registerPiProvider(new ClassProvider() as unknown as Provider);
   const registered = registeredPiProvider('continuation-test')!;
   assert.deepEqual(registered.getModels(), [model], 'private members still reachable');
-  await withDeploymentLane(undefined, 'interrupted-stream', async () => {
+  await withDeploymentLane(undefined, 'interrupted-stream', 'reply', async () => {
     registered.streamSimple(model, recoveredContext(PARTIAL));
     registered.stream(model, recoveredContext(PARTIAL));
   });
@@ -238,7 +238,7 @@ async function sentPayload(
     credentialVersion: 1, runId: 'run_test', fundingSource: 'customer' as const,
   };
   try {
-    await withModelAccess(grant, undefined, async () => {
+    await withModelAccess(grant, undefined, 'reply', async () => {
       const stream = provider.streamSimple(model, recoveredContext(partial), {
         reasoning: 'medium',
         onPayload: (body: unknown) => { payload = body; throw new Error('captured'); },

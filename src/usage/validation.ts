@@ -22,10 +22,11 @@ import {
   hasDisallowedControlCharacter,
 } from '../security/content-validation.ts';
 import type { AgentModelSource } from '../config/types.ts';
-import type {
-  ModelRequestFundingSource,
-  ModelRequestOutcome,
-  ModelRequestRecord,
+import {
+  MODEL_REQUEST_PURPOSES,
+  type ModelRequestFundingSource,
+  type ModelRequestOutcome,
+  type ModelRequestRecord,
 } from './model-requests.ts';
 
 const OPAQUE_ID = /^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,255}$/;
@@ -162,6 +163,7 @@ export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelReq
   const cacheWriteTokens = tokenCount(input.cacheWriteTokens?.total, 'cache write tokens');
   const normalized: ModelRequestRecord = {
     requestId: requestText(input.requestId, 'request ID'),
+    purpose: enumValue(input.purpose, MODEL_REQUEST_PURPOSES, 'request purpose'),
     installationId: requestText(input.installationId, 'installation ID'),
     runId: requestText(input.runId, 'Run ID'),
     attemptId: requestText(input.attemptId, 'attempt ID'),

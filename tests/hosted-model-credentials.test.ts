@@ -287,7 +287,7 @@ test('deletion fails the next attempt closed while the running attempt keeps its
     assert.equal(await installationModelAccessGrant('anthropic', envA, 'run', settingsOf(envA)), undefined);
     assert.deepEqual(await resolveProviderApiKey('anthropic', envA, settingsOf(envA)), { apiKey: undefined, source: 'missing' });
     await assert.rejects(
-      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, settings: settingsOf(envA), runId: 'classifier' }, async () => undefined),
+      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, settings: settingsOf(envA), runId: 'classifier', purpose: 'intent' }, async () => undefined),
       (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
     );
     await attempt('agent_b', () => modelCall(model, 'B-unaffected'));
@@ -356,7 +356,7 @@ test('a key whose keyring slot was retired reads as missing everywhere, and a re
     assert.deepEqual(await resolveProviderApiKey('anthropic', envB, settingsOf(envB)), { apiKey: undefined, source: 'missing' });
     assert.equal(await installationModelAccessGrant('anthropic', envB, 'run', settingsOf(envB)), undefined);
     await assert.rejects(
-      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envB, settings: settingsOf(envB), runId: 'classifier' }, async () => undefined),
+      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envB, settings: settingsOf(envB), runId: 'classifier', purpose: 'intent' }, async () => undefined),
       (error: unknown) => error instanceof RuntimeModelReadinessError && error.status === 'provider_setup_required',
     );
     assert.deepEqual(await rewrapHostedModelCredentials({ env: envB, settings: settingsOf(envB), keyring: retired }),

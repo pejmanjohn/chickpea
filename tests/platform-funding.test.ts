@@ -66,6 +66,7 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const SONNET = 'claude-sonnet-5-5';
@@ -84,13 +85,11 @@ function hostedEnv(installationId: string): PlatformEnv {
   return scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId }) as PlatformEnv;
 }
 
-/** A host's port: platform funding, admitted, a 1.5 multiplier unless overridden; it remembers every call. */
 function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
   const calls = {
     funding: [] as string[],
     admit: [] as Array<{ grant: ModelAccessGrant; model: PlatformFundedModel }>,
     charge: [] as ModelRequestRecord[],
-    priceMultiplier: 0,
   };
   configurePlatformFunding({
     funding: async (installationId) => {
@@ -105,10 +104,7 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
       calls.charge.push(record);
       if (overrides.charge) await overrides.charge(record);
     },
-    priceMultiplier: async (grant) => {
-      calls.priceMultiplier += 1;
-      return overrides.priceMultiplier ? overrides.priceMultiplier(grant) : 1.5;
-    },
+    ...NO_RUN_FEES,
   });
   return calls;
 }
@@ -404,7 +400,7 @@ test('an installation out of credits is refused before any provider call, and th
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
   const platform = grant('inst_credits', 'platform');
 
-  const refused = await withModelAccess(platform, env, () => modelCall(model));
+  const refused = await withModelAccess(platform, env, 'reply', () => modelCall(model));
 
   assert.equal(refused.stopReason, 'error');
   assert.match(refused.errorMessage ?? '', /\(credits_exhausted\)/);
@@ -412,9 +408,9 @@ test('an installation out of credits is refused before any provider call, and th
   assert.deepEqual(calls.admit, [{ grant: platform, model: { provider: 'anthropic', model: SONNET } }]);
   assert.deepEqual([recorded.length, calls.charge.length], [0, 0], 'a request refused before send has no record and no charge');
 
-  await withModelAccess(platform, env, () => modelCall(model));
+  await withModelAccess(platform, env, 'reply', () => modelCall(model));
   assert.equal(calls.admit.length, 2, 'a refusal is asked again, so added credits apply at once');
-  await withModelAccess(platform, undefined, () => modelCall(model));
+  await withModelAccess(platform, undefined, 'reply', () => modelCall(model));
   assert.equal(calls.admit.length, 3, 'a platform grant is gated even on a cell that names no installation');
   assert.equal(sentModels.length, 0);
 });
@@ -424,14 +420,14 @@ test('the credit gate refuses when the port throws or none is installed, unlike 
   const calls = fakePort({ admit: async () => { throw new Error('ledger unreachable'); } });
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
 
-  const unreadable = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model));
+  const unreadable = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(model));
   assert.equal(unreadable.stopReason, 'error');
   assert.match(unreadable.errorMessage ?? '', /\(credits_unavailable\)/);
   assert.doesNotMatch(unreadable.errorMessage ?? '', /ledger unreachable/, 'the port error stays out of the conversation');
   assert.equal(calls.admit.length, 1);
 
   configurePlatformFunding(undefined);
-  const portless = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model));
+  const portless = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(model));
   assert.match(portless.errorMessage ?? '', /\(credits_unavailable\)/);
   assert.equal(sentModels.length, 0);
 });
@@ -443,15 +439,15 @@ test('a refusal answered while an earlier admission is in flight is not overwrit
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
   const platform = grant('inst_credits', 'platform');
 
-  const early = withModelAccess(platform, env, () => modelCall(model));
-  const late = withModelAccess(platform, env, () => modelCall(model));
+  const early = withModelAccess(platform, env, 'reply', () => modelCall(model));
+  const late = withModelAccess(platform, env, 'reply', () => modelCall(model));
   while (answers.length < 2) await new Promise((resolve) => setImmediate(resolve));
   answers[1]!('credits_exhausted');
   assert.match((await late).errorMessage ?? '', /\(credits_exhausted\)/);
   answers[0]!('admitted');
   assert.equal((await early).stopReason, 'stop', 'the earlier request was admitted when it was asked');
 
-  const next = withModelAccess(platform, env, () => modelCall(model));
+  const next = withModelAccess(platform, env, 'reply', () => modelCall(model));
   while (answers.length < 3) await new Promise((resolve) => setImmediate(resolve));
   answers[2]!('credits_exhausted');
   assert.match((await next).errorMessage ?? '', /\(credits_exhausted\)/, 'the next request asked the port again');
@@ -467,7 +463,7 @@ test('a positive answer serves an installation for at most 30 seconds, and only 
     Array.from({ length: 4 }, () => completes()));
   const call = (installationId: string, at: number) => {
     now = at;
-    return withModelAccess(grant(installationId, 'platform'), hostedEnv(installationId), () => modelCall(model));
+    return withModelAccess(grant(installationId, 'platform'), hostedEnv(installationId), 'reply', () => modelCall(model));
   };
 
   await call('inst_credits', NOW);
@@ -484,10 +480,10 @@ test('a customer grant of a hosted installation is never admitted against credit
   const calls = fakePort();
   const { model, sentModels } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
 
-  assert.equal((await withModelAccess(grant('inst_credits', 'customer'), env, () => modelCall(model))).stopReason, 'stop');
+  assert.equal((await withModelAccess(grant('inst_credits', 'customer'), env, 'reply', () => modelCall(model))).stopReason, 'stop');
 
   assert.equal(sentModels.length, 1);
-  assert.deepEqual([calls.admit.length, calls.charge.length, calls.priceMultiplier], [0, 0, 0]);
+  assert.deepEqual([calls.admit.length, calls.charge.length], [0, 0]);
   assert.equal(recorded[0]?.fundingSource, 'customer');
 });
 
@@ -504,7 +500,7 @@ test('each finished platform-funded request is charged once with its record, a s
     },
   ]);
 
-  const results = await withModelAccess(grant('inst_credits', 'platform'), env, async () =>
+  const results = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', async () =>
     [await modelCall(model), await modelCall(model)]);
 
   assert.deepEqual(results.map((result) => result.stopReason), ['stop', 'aborted']);
@@ -516,6 +512,29 @@ test('each finished platform-funded request is charged once with its record, a s
     [['platform', 'completed', 1_000, 200], ['platform', 'stopped', 800, 37]],
   );
   assert.equal(new Set(calls.charge.map((record) => record.requestId)).size, 2);
+});
+
+test('a charge names what its request was for: an attempt\'s request a reply, a stateless call its own purpose', async (t) => {
+  const { env } = hostedProxy(t);
+  const calls = fakePort();
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes(), completes()]);
+  const interceptor = createModelAccessInterceptor({
+    lookup: async () => ({ env, grant: grant('inst_credits', 'platform'), agentId: 'agent_credits' }),
+    installationGrants: async () => [],
+  });
+
+  await interceptor(
+    { type: 'agent', operationId: 'op', operationKind: 'prompt' },
+    { instanceId: 'credits', submissionId: 'sub_credits', agentName: 'chickpea-slack-v2' },
+    () => modelCall(model),
+  );
+  const intent = { ...grant('inst_credits', 'platform'), runId: 'slack-interaction-intent' };
+  await withModelAccess(intent, env, 'intent', () => modelCall(model));
+
+  assert.deepEqual(calls.charge.map(({ purpose, runId, agentId }) => ({ purpose, runId, agentId })), [
+    { purpose: 'reply', runId: 'sub_credits', agentId: 'agent_credits' },
+    { purpose: 'intent', runId: 'slack-interaction-intent', agentId: null },
+  ]);
 });
 
 test('a failed charge is tried once more under the same request ID, and a charge that succeeds then logs nothing', async (t) => {
@@ -530,7 +549,7 @@ test('a failed charge is tried once more under the same request ID, and a charge
   t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
   const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes()]);
 
-  assert.equal((await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(model))).stopReason, 'stop');
+  assert.equal((await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(model))).stopReason, 'stop');
 
   assert.deepEqual(calls.charge, [recorded[0], recorded[0]], 'the retry carries the same record and request ID');
   assert.deepEqual(warnings, []);
@@ -546,7 +565,7 @@ test('a charge that fails twice is logged once without content, and the installa
   const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes(), completes()]);
   const platform = grant('inst_credits', 'platform');
 
-  const result = await withModelAccess(platform, env, () => modelCall(model));
+  const result = await withModelAccess(platform, env, 'reply', () => modelCall(model));
 
   assert.equal(result.stopReason, 'stop', 'the model result is unchanged');
   assert.equal(calls.charge.length, 2);
@@ -554,7 +573,7 @@ test('a charge that fails twice is logged once without content, and the installa
   assert.deepEqual(warnings, [['[chickpea] model request charge failed', {
     route: ANTHROPIC_COMPAT_PROVIDER_ID, model: SONNET, requestId: recorded[0]!.requestId, error: 'ledger_down',
   }]]);
-  await withModelAccess(platform, env, () => modelCall(model));
+  await withModelAccess(platform, env, 'reply', () => modelCall(model));
   assert.equal(calls.admit.length, 2, 'the failed charge dropped the cached admission');
 });
 
@@ -569,20 +588,20 @@ test('a platform-funded request without a current list price is refused before s
     [unpricedAnthropic.model, 'anthropic'],
     [unpricedOpenRouter.model, 'openrouter'],
   ] as const) {
-    const refused = await withModelAccess(grant('inst_credits', 'platform', providerId), env, () => modelCall(model));
+    const refused = await withModelAccess(grant('inst_credits', 'platform', providerId), env, 'reply', () => modelCall(model));
     assert.match(refused.errorMessage ?? '', /no current price in Chickpea credits/, providerId);
     assert.ok(!refused.errorMessage?.includes(model.id), 'the refusal names no model, whose ID may hold a status code');
   }
   assert.deepEqual([unpricedAnthropic.sentModels.length, unpricedOpenRouter.sentModels.length], [0, 0]);
   assert.equal(calls.admit.length, 0, 'an unpriced model never reaches the ledger');
-  const customer = await withModelAccess(grant('inst_credits', 'customer'), env, () => modelCall(unpricedAnthropic.model));
+  const customer = await withModelAccess(grant('inst_credits', 'customer'), env, 'reply', () => modelCall(unpricedAnthropic.model));
   assert.equal(customer.stopReason, 'stop', 'a customer-funded request needs no price');
 
   const priced = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
   assert.ok(priced);
   t.mock.timers.setTime(priced.version.staleAfter);
   const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
-  const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, () => modelCall(stale.model));
+  const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(stale.model));
   assert.match(refusedStale.errorMessage ?? '', /no current price in Chickpea credits/, 'a stale price is not current');
   assert.equal(stale.sentModels.length, 0);
 });
@@ -594,14 +613,13 @@ test('a platform-funded OpenRouter request names the maker\'s price as the most 
   const { model, sentModels } = scriptedProvider('openrouter', KIMI, 'openai-completions',
     [completes(), completes()], { openRouterRouting: { sort: 'price' } });
 
-  await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, () => modelCall(model));
-  await withModelAccess(grant('inst_credits', 'customer', 'openrouter'), env, () => modelCall(model));
+  await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, 'reply', () => modelCall(model));
+  await withModelAccess(grant('inst_credits', 'customer', 'openrouter'), env, 'reply', () => modelCall(model));
 
   assert.deepEqual(sentModels[0]!.compat, {
     openRouterRouting: { sort: 'price', max_price: { prompt: 3, completion: 15 } },
   }, 'the maker\'s own price in USD per million tokens');
   assert.deepEqual(sentModels[1]!.compat, { openRouterRouting: { sort: 'price' } }, 'a customer request is not capped');
-  assert.equal(calls.priceMultiplier, 0, 'the cap asks the host for no multiplier');
   assert.deepEqual(calls.admit.map(({ model: admitted }) => admitted), [{ provider: 'openrouter', model: KIMI }]);
 });
 
@@ -615,7 +633,7 @@ test('a platform-funded request past the long-context threshold is charged at th
   const { model, sentModels } = scriptedProvider('openrouter', TERRA, 'openai-completions',
     [completes({ input: long.fromPromptTokens, output: 1_000 })]);
 
-  await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, () => modelCall(model));
+  await withModelAccess(grant('inst_credits', 'platform', 'openrouter'), env, 'reply', () => modelCall(model));
 
   assert.deepEqual(
     [calls.charge[0]?.priceVersionId, calls.charge[0]?.listPriceUsdMicros, calls.charge[0]?.priceUnknownReason],
