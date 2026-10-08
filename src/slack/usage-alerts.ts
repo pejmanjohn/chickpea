@@ -110,7 +110,7 @@ export async function deliverUsageAlert(
 
 function usageSentence(alert: UsageAlert): string {
   const used = `You've used ${usagePercent(alert.usedMicros, alert.includedMicros)}% of your plan ` +
-    `(${formatUsageDollars(alert.usedMicros)} of ${formatUsageDollars(alert.includedMicros)})`;
+    `(${formatUsageDollars(alert.usedMicros, 'down')} of ${formatUsageDollars(alert.includedMicros)})`;
   return alert.runOutAt
     ? `${used}, on pace to run out around ${slackDate(alert.runOutAt)}.`
     : `${used}. Usage resets ${slackDate(alert.periodEnd)}.`;

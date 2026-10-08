@@ -4,8 +4,10 @@ export type UsageMicros = number & { readonly __unit: 'usage_micros' };
 const MICROS_PER_CENT = 10_000;
 const WHOLE_DOLLARS = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
-export function formatUsageDollars(micros: UsageMicros): string {
-  const cents = Math.floor((Math.abs(micros) + MICROS_PER_CENT / 2) / MICROS_PER_CENT);
+/** `down` is for an amount used beside a percent, so the two never disagree at the plan's edge. */
+export function formatUsageDollars(micros: UsageMicros, rounding: 'half_up' | 'down' = 'half_up'): string {
+  const half = rounding === 'half_up' ? MICROS_PER_CENT / 2 : 0;
+  const cents = Math.floor((Math.abs(micros) + half) / MICROS_PER_CENT);
   return formatPriceCents(micros < 0 ? -cents : cents);
 }
 

@@ -26,6 +26,12 @@ test('usage renders in dollars, rounded half up to the cent and cents dropped wh
   }
 });
 
+test('an amount used rounds down to the cent, so it never reads as the whole plan before it is', () => {
+  assert.equal(formatUsageDollars(micros(239_999_999), 'down'), '$239.99');
+  assert.equal(formatUsageDollars(micros(305_000), 'down'), '$0.30');
+  assert.equal(formatUsageDollars(micros(240_000_000), 'down'), '$240');
+});
+
 test('a price in cents renders with thousands separators and two-digit cents only when present', () => {
   assert.equal(formatPriceCents(20_000), '$200');
   assert.equal(formatPriceCents(2_550), '$25.50');

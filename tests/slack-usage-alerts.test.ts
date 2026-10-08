@@ -161,6 +161,12 @@ test('the alert reads the floored actual percent, not the threshold it crossed',
   assert.equal(message.text, `You've used 77% of your plan ($187 of $240). ${RESETS}`);
 });
 
+test('just under the whole plan the alert reads 99% and a used amount below the plan', async () => {
+  const message = await sent(alert({ threshold: 90, usedMicros: 239_999_999 as UsageMicros }));
+  assert.equal(message.text,
+    `You've used 99% of your plan ($239.99 of $240). ${RESETS} Add extra usage or upgrade so nothing stops.`);
+});
+
 test('the 90% alert with auto-upgrade on names the next plan and offers to turn it off', async () => {
   const message = await sent(alert({
     threshold: 90,
