@@ -60,7 +60,7 @@ import {
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
-import type { RunKind } from '../usage/run-fees.ts';
+import type { FeeRun } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
 import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
@@ -139,12 +139,12 @@ interface ModelAccessCell {
 }
 
 class RunFees {
-  readonly runKind: RunKind;
+  readonly feeRun: FeeRun;
   readonly #run: Omit<FeePost, 'tier'>;
   #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
 
-  constructor(runKind: RunKind, run: Omit<FeePost, 'tier'>) {
-    this.runKind = runKind;
+  constructor(feeRun: FeeRun, run: Omit<FeePost, 'tier'>) {
+    this.feeRun = feeRun;
     this.#run = run;
   }
 
@@ -229,7 +229,7 @@ export function providerPrefix(model: string): string {
 }
 
 /** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess = { readonly runKind?: RunKind } & (
+export type AttemptModelAccess = { readonly feeRun?: FeeRun } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
@@ -281,7 +281,7 @@ export function createModelAccessInterceptor(
       grants = await options.installationGrants(attempt.env, runId);
     }
     const cell = await resolveCell(
-      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, attempt.runKind,
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, attempt.feeRun,
     );
     const chatFee = cell.fees?.postChatFee();
     try {
@@ -397,7 +397,7 @@ async function resolveCell(
   instanceId: string | undefined,
   runId: string,
   agentId: string | null,
-  runKind?: RunKind,
+  feeRun?: FeeRun,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -411,8 +411,8 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  const fees = installationId && runKind && platformFundingConfigured()
-    ? new RunFees(runKind, { installationId, runId, agentId })
+  const fees = installationId && feeRun && platformFundingConfigured()
+    ? new RunFees(feeRun, { installationId, runId, agentId })
     : undefined;
   return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution, fees });
 }

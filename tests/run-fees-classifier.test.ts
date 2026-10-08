@@ -246,8 +246,11 @@ before(async () => {
 });
 
 const tool = (toolName: string, descriptor?: SemanticActivityDescriptor): RunAction => ({ kind: 'tool', toolName, descriptor });
+const CHAT_SANDBOX = { kind: 'interactive', repositoryShell: false } as const;
+const REPOSITORY_SANDBOX = { kind: 'interactive', repositoryShell: true } as const;
+const SCHEDULED = { kind: 'scheduled' } as const;
 const interactive = (toolName: string, descriptor?: SemanticActivityDescriptor) =>
-  qualifiesAsTask('interactive', tool(toolName, descriptor));
+  qualifiesAsTask(CHAT_SANDBOX, tool(toolName, descriptor));
 const withTarget = (target: SemanticTargetFamily): SemanticActivityDescriptor => ({ ...unknownSemanticDescriptor(), target });
 
 test('the table classifies every tool name Core registers', () => {
@@ -311,8 +314,18 @@ test('replying, presenting and generating images never make a reply a task', () 
   for (const name of reply) assert.equal(interactive(name), false, name);
 });
 
-test("the Agent's own sandbox tools never make a reply a task", () => {
+test("the Agent's own sandbox tools never make a reply a task when its shell reaches no repository", () => {
   for (const name of ['bash', 'read', 'write', 'edit', 'grep', 'glob', 'task']) assert.equal(interactive(name), false, name);
+});
+
+test('the shell makes a reply a task when it reaches a granted repository', () => {
+  assert.equal(qualifiesAsTask(REPOSITORY_SANDBOX, tool('bash')), true);
+});
+
+test('reading or editing files never makes a reply a task, even beside a repository shell', () => {
+  for (const name of ['read', 'write', 'edit', 'grep', 'glob', 'task']) {
+    assert.equal(qualifiesAsTask(REPOSITORY_SANDBOX, tool(name)), false, name);
+  }
 });
 
 test('skills, artifacts and a person lookup never make a reply a task', () => {
@@ -324,17 +337,17 @@ test('skills, artifacts and a person lookup never make a reply a task', () => {
 test('a scheduled run is never a task by its tools, even a connector', () => {
   for (const name of [...registered.keys(), 'mcp__docs__search', 'unlisted_tool']) {
     for (const family of ['managed_connector', 'custom_connection'] as const) {
-      assert.equal(qualifiesAsTask('scheduled', tool(name, withTarget(family))), false, `${name} as ${family}`);
+      assert.equal(qualifiesAsTask(SCHEDULED, tool(name, withTarget(family))), false, `${name} as ${family}`);
     }
   }
 });
 
 test('a scheduled run posting its result is a task', () => {
-  assert.equal(qualifiesAsTask('scheduled', { kind: 'post' }), true);
+  assert.equal(qualifiesAsTask(SCHEDULED, { kind: 'post' }), true);
 });
 
 test('an interactive run posting is not a task', () => {
-  assert.equal(qualifiesAsTask('interactive', { kind: 'post' }), false);
+  assert.equal(qualifiesAsTask(CHAT_SANDBOX, { kind: 'post' }), false);
 });
 
 test('an MCP tool makes a reply a task with no descriptor', () => {

@@ -23,6 +23,11 @@ import {
 
 export type RunKind = 'interactive' | 'scheduled';
 
+/** A scheduled run's tools never qualify, so only an interactive run says whether its shell reaches repositories. */
+export type FeeRun =
+  | { readonly kind: 'scheduled' }
+  | { readonly kind: 'interactive'; readonly repositoryShell: boolean };
+
 export type RunAction =
   | { readonly kind: 'tool'; readonly toolName: string; readonly descriptor: SemanticActivityDescriptor | undefined }
   | { readonly kind: 'post' };
@@ -76,16 +81,22 @@ const NON_QUALIFYING_TOOLS: readonly string[] = [
   'submit_routine_intent',
   // The sandbox these work in holds only the current message's files and the
   // reply's staged files, which are absorbed or are artifacts.
-  'bash', 'read', 'write', 'edit', 'grep', 'glob', 'task',
+  'read', 'write', 'edit', 'grep', 'glob', 'task',
 ];
 
-function closedTable(): ReadonlyMap<string, boolean> {
-  const table = new Map<string, boolean>();
-  const entries: [string, boolean][] = [
+/** Repository work starts in the shell, the sandbox's only way to reach a granted repository. */
+const REPOSITORY_SHELL_TOOLS: readonly string[] = ['bash'];
+
+type TaskRule = boolean | 'with_repository_shell';
+
+function closedTable(): ReadonlyMap<string, TaskRule> {
+  const table = new Map<string, TaskRule>();
+  const entries: [string, TaskRule][] = [
     ...Object.entries(SLACK_READ_TOOLS),
     ...Object.entries(SLACK_LIST_TOOLS),
     ...QUALIFYING_TOOLS.map((name): [string, boolean] => [name, true]),
     ...NON_QUALIFYING_TOOLS.map((name): [string, boolean] => [name, false]),
+    ...REPOSITORY_SHELL_TOOLS.map((name): [string, TaskRule] => [name, 'with_repository_shell']),
   ];
   for (const [name, qualifies] of entries) {
     if (table.has(name)) throw new Error(`Tool ${name} is classified twice`);
@@ -94,17 +105,18 @@ function closedTable(): ReadonlyMap<string, boolean> {
   return table;
 }
 
-export const TASK_TOOL_TABLE: ReadonlyMap<string, boolean> = closedTable();
+export const TASK_TOOL_TABLE: ReadonlyMap<string, TaskRule> = closedTable();
 
 const MCP_TOOL_PREFIX = 'mcp__';
 
 const TASK_FAMILIES: ReadonlySet<SemanticTargetFamily> = new Set(['managed_connector', 'custom_connection']);
 
-export function qualifiesAsTask(runKind: RunKind, action: RunAction): boolean {
-  if (runKind === 'scheduled') return action.kind === 'post';
+export function qualifiesAsTask(run: FeeRun, action: RunAction): boolean {
+  if (run.kind === 'scheduled') return action.kind === 'post';
   if (action.kind === 'post') return false;
-  const named = TASK_TOOL_TABLE.get(action.toolName);
-  if (named !== undefined) return named;
+  const rule = TASK_TOOL_TABLE.get(action.toolName);
+  if (rule === 'with_repository_shell') return run.repositoryShell;
+  if (rule !== undefined) return rule;
   if (action.toolName.startsWith(MCP_TOOL_PREFIX)) return true;
   return action.descriptor !== undefined && TASK_FAMILIES.has(action.descriptor.target);
 }

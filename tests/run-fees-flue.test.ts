@@ -33,7 +33,7 @@ import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alia
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
-import type { RunKind } from '../src/usage/run-fees.ts';
+import type { FeeRun } from '../src/usage/run-fees.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { answers, callsTools, SCRIPTED_MODEL, scriptedProvider } from './helpers/scripted-provider.ts';
 
@@ -147,8 +147,8 @@ async function slackTurn(id: string): Promise<{ text: string } | unknown> {
 }
 
 const tiers = (posts: ReadonlyArray<{ tier: string; outcome: string }>) => posts.map(({ tier, outcome }) => `${tier}:${outcome}`);
-const replyRun = (env: PlatformEnv | undefined, runKind: RunKind = 'interactive') =>
-  (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', runKind });
+const replyRun = (env: PlatformEnv | undefined, feeRun: FeeRun = { kind: 'interactive', repositoryShell: false }) =>
+  (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', feeRun });
 
 test('an own-key task refused at zero ends the turn out of usage, before the tool runs or another request is sent', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t, { refuse: 'task' });
@@ -200,7 +200,7 @@ test('parallel qualifying tools in one attempt post one task row, before either 
 
 test('a scheduled run posts its chat row and never a task row for a tool, even a qualifying one', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
-  interceptors(t, replyRun(hostedEnv(), 'scheduled'));
+  interceptors(t, replyRun(hostedEnv(), { kind: 'scheduled' }));
   scriptedProvider([callsTools('read_slack_channel'), answers]);
   ran.length = 0;
 
@@ -277,6 +277,21 @@ test('a retried attempt of the same run posts only duplicates', async (t) => {
   assert.equal(await attempt(), 'ran');
   assert.equal(await attempt(), 'ran');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted', 'chat:duplicate', 'task:duplicate']);
+});
+
+test('the shell posts the task row only when the run\'s shell reaches a granted repository', async (t) => {
+  const posts = hostedPort(t);
+  for (const repositoryShell of [false, true]) {
+    const modelAccess = createModelAccessInterceptor({
+      lookup: async (context) => replyRun(hostedEnv(), { kind: 'interactive', repositoryShell })(context.submissionId),
+      installationGrants: async () => [],
+    });
+    const context = { instanceId: `fees-shell-${repositoryShell}`, submissionId: `sub_shell_${repositoryShell}` };
+    await modelAccess({ type: 'agent', operationId: 'op_shell', operationKind: 'prompt' }, context, () =>
+      runFeeInterceptor({ type: 'tool', toolCallId: 'call_bash', toolName: 'bash' }, context, async () => 'ran'));
+  }
+  assert.deepEqual(posts.map(({ runId, tier }) => `${runId}:${tier}`),
+    ['sub_shell_false:chat', 'sub_shell_true:chat', 'sub_shell_true:task']);
 });
 
 test('an unlisted tool qualifies by the family its render registered for it', async (t) => {

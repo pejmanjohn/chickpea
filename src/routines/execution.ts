@@ -1017,7 +1017,7 @@ async function requireDeliveryTaskFee(
     ? installationScopeOf(prepared.env)?.installationId
     : undefined;
   if (!installationId || !submissionId || !platformFundingConfigured()) return undefined;
-  if (!qualifiesAsTask('scheduled', { kind: 'post' })) return undefined;
+  if (!qualifiesAsTask({ kind: 'scheduled' }, { kind: 'post' })) return undefined;
   const outcome = await postRunFee({
     installationId, runId: submissionId, tier: 'task', agentId: prepared.access.config.agentId,
   });
