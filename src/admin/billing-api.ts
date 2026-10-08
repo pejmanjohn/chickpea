@@ -150,7 +150,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
     plan: summary.plan && {
       key: summary.plan.key,
       name: summary.plan.name,
-      price: formatPrice(summary.plan.priceCents),
+      price: formatPriceCents(summary.plan.priceCents),
       included: planOffer ? formatUsageDollars(planOffer.includedMicros) : null,
     },
     period: summary.period && { start: summary.period.start.toISOString(), end: summary.period.end.toISOString() },
@@ -162,14 +162,14 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
       plans: summary.offers.plans.map((offer) => ({
         key: offer.key,
         name: offer.name,
-        price: formatPrice(offer.priceCents),
+        price: formatPriceCents(offer.priceCents),
         included: formatUsageDollars(offer.includedMicros),
         ownKeyMinimum: offer.key === minimum.key,
         ownKeyEligible: offer.ownKeyEligible,
       })),
       extraUsage: summary.offers.extraUsage.map((offer) => ({
         key: offer.key,
-        price: formatPrice(offer.priceCents),
+        price: formatPriceCents(offer.priceCents),
         usage: formatUsageDollars(offer.usageMicros),
         validMonths: offer.validMonths,
       })),
@@ -183,7 +183,7 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
   return {
     funding: summary.funding,
     meter: planUsage && period && {
-      used: formatUsageDollars(planUsage.usedMicros),
+      used: formatUsageDollars(planUsage.usedMicros, 'down'),
       included: formatUsageDollars(planUsage.includedMicros),
       percent: usagePercent(planUsage.usedMicros, planUsage.includedMicros),
       onPacePercent: planUsage.onPacePercent,
@@ -195,7 +195,7 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStat
       : null,
     trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), expiresAt: trial.expiresAt.toISOString() },
     ownKeyGrace: summary.funding === 'own_key' && summary.plan === null && summary.ownKeyGraceUntil
-      ? { until: summary.ownKeyGraceUntil.toISOString(), minimumPrice: formatPrice(minimum.priceCents) }
+      ? { until: summary.ownKeyGraceUntil.toISOString(), minimumPrice: formatPriceCents(minimum.priceCents) }
       : null,
   };
 }
@@ -211,7 +211,7 @@ function ownKeyMinimumPlan(summary: BillingSummary): PlanOffer {
 function fundingSwitch(summary: BillingSummary, minimum: PlanOffer, ownKey: OwnKeyFacts): FundingSwitch {
   if (summary.funding === 'own_key') return { to: 'platform' };
   if (!summary.plan || summary.plan.priceCents < minimum.priceCents) {
-    return { to: 'own_key', ready: false, needs: 'plan', minimumPlan: { key: minimum.key, price: formatPrice(minimum.priceCents) } };
+    return { to: 'own_key', ready: false, needs: 'plan', minimumPlan: { key: minimum.key, price: formatPriceCents(minimum.priceCents) } };
   }
   return ownKeyReadiness(ownKey);
 }
@@ -293,19 +293,26 @@ function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>):
 }
 
 // Same signatures as src/usage/usage-display.ts, which replaces these once it is on main.
-function formatUsageDollars(micros: UsageMicros): string {
-  const cents = Math.round(Math.abs(micros) / 10_000);
-  return formatPrice(micros < 0 && cents > 0 ? -cents : cents);
+const MICROS_PER_CENT = 10_000;
+const WHOLE_DOLLARS = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+
+/** `down` is for an amount used beside a percent, so the two never disagree at the plan's edge. */
+function formatUsageDollars(micros: UsageMicros, rounding: 'half_up' | 'down' = 'half_up'): string {
+  const half = rounding === 'half_up' ? MICROS_PER_CENT / 2 : 0;
+  const cents = Math.floor((Math.abs(micros) + half) / MICROS_PER_CENT);
+  return formatPriceCents(micros < 0 ? -cents : cents);
+}
+
+function formatPriceCents(cents: number): string {
+  const magnitude = Math.abs(cents);
+  const dollars = WHOLE_DOLLARS.format(Math.floor(magnitude / 100));
+  const remainder = magnitude % 100;
+  const amount = remainder === 0 ? `$${dollars}` : `$${dollars}.${String(remainder).padStart(2, '0')}`;
+  return cents < 0 ? `-${amount}` : amount;
 }
 
 function usagePercent(used: UsageMicros, included: UsageMicros): number {
-  return included > 0 ? Math.floor((used * 100) / included) : 0;
-}
-
-function formatPrice(cents: number): string {
-  return (cents / 100).toLocaleString('en-US', {
-    style: 'currency', currency: 'USD', minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
-  });
+  return included > 0 ? Math.floor(used * 100 / included) : 0;
 }
 
 async function noStore(c: Context, next: () => Promise<void>): Promise<void> {

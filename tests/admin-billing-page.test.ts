@@ -427,14 +427,19 @@ test('the meter\'s dollar figures give its percentage', async () => {
     ...TEAM_PLAN,
     planUsage: { usedMicros: 37_456_789 as UsageMicros, includedMicros: 60_000_000 as UsageMicros, onPacePercent: null },
   };
-  for (const summary of [TEAM_PLAN, nonRound]) {
+  const edge: BillingSummary = {
+    ...TEAM_PLAN,
+    planUsage: { usedMicros: 239_999_999 as UsageMicros, includedMicros: 240_000_000 as UsageMicros, onPacePercent: null },
+  };
+  for (const summary of [TEAM_PLAN, nonRound, edge]) {
     const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
     const { used, included, percent } = meterFigures(html);
     assert.equal(Math.floor((used / included) * 100), percent, `${used} of ${included}`);
   }
   const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: nonRound })).html();
-  assertShows(html, '$37.46 of $60 used, 62%, resets Nov 7</span>');
+  assertShows(html, '$37.45 of $60 used, 62%, resets Nov 7</span>');
   assertHides(html, 'on pace');
+  assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: edge })).html(), '$239.99 of $240 used, 99%');
 });
 
 test('a plan the host cannot read says so, with a retry', async () => {
