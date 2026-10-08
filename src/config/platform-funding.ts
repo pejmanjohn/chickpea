@@ -17,6 +17,7 @@ import { requireInstallationScope } from './installation-scope.ts';
 import type { ModelAccessGrant } from './model-access.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
+import type { UsageMicros } from '../usage/usage-display.ts';
 
 export type PlatformFundingAdmission = 'admitted' | 'credits_exhausted';
 
@@ -24,6 +25,42 @@ export type PlatformFundingAdmission = 'admitted' | 'credits_exhausted';
 export interface PlatformFundedModel {
   readonly provider: string;
   readonly model: string;
+}
+
+/** One run as the ledger keys it: the run ID its model request records carry. */
+export interface RunRef {
+  readonly installationId: string;
+  readonly runId: string;
+}
+
+export type FeeTier = 'chat' | 'task';
+
+export interface FeePost extends RunRef {
+  readonly tier: FeeTier;
+  readonly agentId: string | null;
+}
+
+export type FeeOutcome =
+  | { readonly kind: 'posted' }
+  | { readonly kind: 'duplicate' }
+  /** No fee on this installation under the rate card in effect. */
+  | { readonly kind: 'not_applicable' }
+  /** Task tier only: the spendable balance is not above zero, so the row was not written. */
+  | { readonly kind: 'refused' };
+
+export type CreditBackReason = 'provider' | 'timeout' | 'sandbox' | 'evicted' | 'chickpea';
+
+export type CreditBackOutcome =
+  | { readonly kind: 'credited'; readonly usageMicros: UsageMicros }
+  | { readonly kind: 'duplicate'; readonly usageMicros: UsageMicros }
+  /** The run posted no rows. */
+  | { readonly kind: 'nothing' };
+
+export interface RunCost {
+  /** The run's model and fee rows less its credited-back rows. */
+  readonly usageMicros: UsageMicros;
+  /** At or above the rate card's display threshold, which only the host knows. */
+  readonly shown: boolean;
 }
 
 export interface PlatformFundingPort {
@@ -41,8 +78,16 @@ export interface PlatformFundingPort {
    * when Core could not price the usage, and `priceUnknownReason` says why.
    */
   charge(record: ModelRequestRecord): Promise<void>;
-  /** What a platform-funded request is charged per unit of list price, from the host's rate card. */
-  priceMultiplier(grant: ModelAccessGrant): Promise<number>;
+  /**
+   * A run's chat row as each attempt starts and its task row at its first
+   * qualifying action, on platform-funded and own-key installations alike.
+   * Idempotent on `(installationId, runId, tier)`: every attempt posts again.
+   */
+  postFee(post: FeePost): Promise<FeeOutcome>;
+  /** Restores what a run that failed on Chickpea's side was charged. Idempotent per run. */
+  creditBack(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome>;
+  /** What a run used, read after it settles. */
+  runCost(run: RunRef): Promise<RunCost>;
 }
 
 export const CREDITS_EXHAUSTED_CODE = 'credits_exhausted';
@@ -66,6 +111,7 @@ export class PlatformFundingUnavailableError extends Error {
 }
 
 export const PLATFORM_ADMISSION_TTL_MS = 30_000;
+const FEE_POST_BUDGET_MS = 2_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 const LOG_INTERVAL_MS = 60_000;
 
@@ -147,19 +193,6 @@ export async function requirePlatformFundingAdmitted(
   }
 }
 
-/** The host's multiplier over list price, refused unless it is a positive number. */
-export async function platformPriceMultiplier(grant: ModelAccessGrant): Promise<number> {
-  let multiplier: number;
-  try {
-    if (!port) throw new Error('No platform funding port is configured.');
-    multiplier = await port.priceMultiplier(grant);
-  } catch (error) {
-    throw new PlatformFundingUnavailableError(error);
-  }
-  if (!Number.isFinite(multiplier) || multiplier <= 0) throw new PlatformFundingUnavailableError();
-  return multiplier;
-}
-
 /**
  * Charges one finished request, trying once more when the first charge fails;
  * the port takes `record.requestId` as its idempotency key, so a retry never
@@ -177,6 +210,31 @@ export async function chargePlatformRequest(grant: ModelAccessGrant, record: Mod
     forgetAdmission(grant.installationId);
     throw error;
   }
+}
+
+/** The host did not answer a fee post in time, or failed; the row may be lost. */
+export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
+
+export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), FEE_POST_BUDGET_MS);
+  });
+  try {
+    if (!port) throw new Error('No platform funding port is configured.');
+    const outcome = await Promise.race([port.postFee(post), budget]);
+    if (outcome !== 'timeout') return outcome;
+    logFeePostFailure(post.tier, 'timeout');
+  } catch (error) {
+    logFeePostFailure(post.tier, error instanceof Error ? error.name : typeof error);
+  } finally {
+    clearTimeout(timer);
+  }
+  return FEE_UNANSWERED;
+}
+
+function logFeePostFailure(tier: FeeTier, error: string): void {
+  console.warn(JSON.stringify({ component: 'platform_funding', event: 'fee_post_failed', tier, error }));
 }
 
 function forgetAdmission(installationId: string): void {

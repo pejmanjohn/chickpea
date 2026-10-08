@@ -33,7 +33,14 @@ import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation, L
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
-import { chargePlatformRequest, requirePlatformFundingAdmitted } from './platform-funding.ts';
+import {
+  chargePlatformRequest,
+  CreditsExhaustedError,
+  platformFundingConfigured,
+  postRunFee,
+  requirePlatformFundingAdmitted,
+  type FeePost,
+} from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
@@ -54,6 +61,7 @@ import {
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
+import type { FeeRun } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
 import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
@@ -130,6 +138,38 @@ interface ModelAccessCell {
   readonly attribution: ModelRequestAttribution;
   readonly purpose: ModelRequestPurpose;
   readonly compactionTurns: Set<string>;
+  readonly fees: RunFees | undefined;
+}
+
+class RunFees {
+  readonly feeRun: FeeRun;
+  readonly #run: Omit<FeePost, 'tier'>;
+  #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
+
+  constructor(feeRun: FeeRun, run: Omit<FeePost, 'tier'>) {
+    this.feeRun = feeRun;
+    this.#run = run;
+  }
+
+  get refused(): boolean {
+    return this.#taskFee === 'refused';
+  }
+
+  async postChatFee(): Promise<void> {
+    await postRunFee({ ...this.#run, tier: 'chat' });
+  }
+
+  requireTaskFee(): Promise<void> {
+    if (this.#taskFee === 'unposted') this.#taskFee = this.#postTaskFee();
+    if (this.#taskFee === 'refused') return Promise.reject(new CreditsExhaustedError());
+    return this.#taskFee === 'posted' ? Promise.resolve() : this.#taskFee;
+  }
+
+  async #postTaskFee(): Promise<void> {
+    const { kind } = await postRunFee({ ...this.#run, tier: 'task' });
+    this.#taskFee = kind === 'refused' ? 'refused' : kind === 'unanswered' ? 'unposted' : 'posted';
+    if (kind === 'refused') throw new CreditsExhaustedError();
+  }
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
@@ -192,7 +232,7 @@ export function providerPrefix(model: string): string {
 }
 
 /** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess = { readonly runId?: string } & (
+export type AttemptModelAccess = { readonly runId?: string; readonly feeRun?: FeeRun } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
@@ -245,10 +285,20 @@ export function createModelAccessInterceptor(
       grants = await options.installationGrants(attempt.env, runId);
     }
     const cell = await resolveCell(
-      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply',
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply', attempt.feeRun,
     );
-    return cells.run(cell, next);
+    const chatFee = cell.fees?.postChatFee();
+    try {
+      return await cells.run(cell, next);
+    } finally {
+      await chatFee;
+    }
   };
+}
+
+export function currentRunFees(): RunFees | undefined {
+  const cell = cells.getStore();
+  return cell?.purpose === 'reply' ? cell.fees : undefined;
 }
 
 /**
@@ -380,6 +430,7 @@ async function resolveCell(
   runId: string,
   agentId: string | null,
   purpose: ModelRequestPurpose,
+  feeRun?: FeeRun,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -393,8 +444,11 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
+  const fees = installationId && feeRun && purpose === 'reply' && platformFundingConfigured()
+    ? new RunFees(feeRun, { installationId, runId, agentId })
+    : undefined;
   return Object.freeze({
-    instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(),
+    instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
   });
 }
 
@@ -522,6 +576,7 @@ function sendRequest<TModel extends Model<Api>>(
   void (async () => {
     let source: AssistantMessageEventStream;
     try {
+      if (cell.fees?.refused) throw new CreditsExhaustedError();
       if (installationId) await requireInstallationAdmitted(installationId);
       source = start(platformGrant ? await platformFundedModel(platformGrant, model, request) : model);
     } catch (error) {

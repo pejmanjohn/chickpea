@@ -66,6 +66,7 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const SONNET = 'claude-sonnet-5-5';
@@ -84,13 +85,11 @@ function hostedEnv(installationId: string): PlatformEnv {
   return scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId }) as PlatformEnv;
 }
 
-/** A host's port: platform funding, admitted, a 1.5 multiplier unless overridden; it remembers every call. */
 function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
   const calls = {
     funding: [] as string[],
     admit: [] as Array<{ grant: ModelAccessGrant; model: PlatformFundedModel }>,
     charge: [] as ModelRequestRecord[],
-    priceMultiplier: 0,
   };
   configurePlatformFunding({
     funding: async (installationId) => {
@@ -105,10 +104,7 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
       calls.charge.push(record);
       if (overrides.charge) await overrides.charge(record);
     },
-    priceMultiplier: async (grant) => {
-      calls.priceMultiplier += 1;
-      return overrides.priceMultiplier ? overrides.priceMultiplier(grant) : 1.5;
-    },
+    ...NO_RUN_FEES,
   });
   return calls;
 }
@@ -487,7 +483,7 @@ test('a customer grant of a hosted installation is never admitted against credit
   assert.equal((await withModelAccess(grant('inst_credits', 'customer'), env, 'reply', () => modelCall(model))).stopReason, 'stop');
 
   assert.equal(sentModels.length, 1);
-  assert.deepEqual([calls.admit.length, calls.charge.length, calls.priceMultiplier], [0, 0, 0]);
+  assert.deepEqual([calls.admit.length, calls.charge.length], [0, 0]);
   assert.equal(recorded[0]?.fundingSource, 'customer');
 });
 
@@ -624,7 +620,6 @@ test('a platform-funded OpenRouter request names the maker\'s price as the most 
     openRouterRouting: { sort: 'price', max_price: { prompt: 3, completion: 15 } },
   }, 'the maker\'s own price in USD per million tokens');
   assert.deepEqual(sentModels[1]!.compat, { openRouterRouting: { sort: 'price' } }, 'a customer request is not capped');
-  assert.equal(calls.priceMultiplier, 0, 'the cap asks the host for no multiplier');
   assert.deepEqual(calls.admit.map(({ model: admitted }) => admitted), [{ provider: 'openrouter', model: KIMI }]);
 });
 
