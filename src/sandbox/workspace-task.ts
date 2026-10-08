@@ -162,8 +162,8 @@ export interface WorkspaceTaskToolOptions {
   instanceId: (binding: CodingWorkerBinding) => string;
   /**
    * Make the worker addressable before anything names it: before its task
-   * record is written, and so before its dispatch, whose idempotency key is
-   * `taskKey`. A failure refuses the task as an unavailable workspace.
+   * record is written, and so before its dispatch. A failure refuses the
+   * task as an unavailable workspace.
    */
   prepareWorker?: (instanceId: string, binding: CodingWorkerBinding, taskKey: string) => Promise<void>;
   client: CodingWorkerClient;

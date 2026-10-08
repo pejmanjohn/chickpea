@@ -15,19 +15,14 @@
  * is staged before its dispatch, and every occurrence persists its dispatch
  * before it starts, so a miss means the lookup broke or the run settled.
  *
- * The coding worker has no persisted run of its own: its requests belong to
- * the run that delegated its task. The coordinator's task tool reads that
- * run from its own cell and stages it in the worker's object under the
- * submission the task's dispatch will run as (coding-worker-staging.ts).
- * This lookup reads the row for the attempt's own submission and returns it
- * as the attempt's run, and the grant names the same run, so the
- * interceptor's cell records the worker's requests under the delegating run.
- * Standalone binds the installation's current keys (today's live read),
- * under the staged run when there is one. On a deployment serving many
- * installations the coordinator also stages the worker's version 2 binding
- * beside it, carrying the credential its plan froze for the coding model,
- * and the attempt binds that, as a Slack turn binds its plan's; a worker with
- * no staged binding or no staged run fails closed.
+ * The coding worker has no persisted run of its own; its requests belong to
+ * the run that delegated the task. Before each dispatch the coordinator
+ * stages that run in the worker's object under the submission the dispatch
+ * runs as (coding-worker-staging.ts), and this lookup reads it back for the
+ * attempt's own submission. On a deployment serving many installations the
+ * coordinator also stages the worker's version 2 binding, carrying the
+ * credential its plan froze for the coding model, and a worker missing
+ * either fails closed. Standalone binds the installation's current keys.
  *
  * Routine intent has no dispatch site and no persisted run. Standalone keeps
  * today's live keys for it; a deployment serving many installations refuses
@@ -91,8 +86,7 @@ export const modelAccessInterceptor = createModelAccessInterceptor({
 
 /**
  * `agentEnv`: the attempt's own env (the agent object's scoped env on
- * Cloudflare). `stagedCodingWorkerBinding` and `stagedCodingWorkerRun`: the
- * binding and the delegating run staged in the attempt's own object.
+ * Cloudflare).
  */
 export async function lookupAttemptModelAccess(
   context: FlueExecutionContext,
@@ -113,8 +107,6 @@ export async function lookupAttemptModelAccess(
       break;
     case CHICKPEA_CODING_WORKER_AGENT_NAME: {
       const runId = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
-      // Standalone: the installation's current keys, read live. A worker
-      // dispatched before its run was staged still runs, under its own submission.
       if (!deploymentServesManyInstallations(env)) return runId ? { env, runId } : { env };
       if (!instanceId || !runId) {
         throw new ModelAccessError('scope_missing', 'No staged run binds model access for this coding worker.');

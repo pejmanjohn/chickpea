@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 
-import { prepareInstallationCodingWorker } from '../src/agents/coding-worker-task.ts';
+import { prepareCodingWorker } from '../src/agents/coding-worker-task.ts';
 import {
   codingWorkerCloudflareExtension,
   codingWorkerSubmissionId,
@@ -717,7 +717,7 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
   };
   const delegation = { taskKey: 'workspace_task:call-1', runId: 'sub_coordinator' };
   const standaloneId = codingWorkerInstanceId(codingWorkerBindingForPlan(plan(), THREAD_KEY));
-  await prepareInstallationCodingWorker(standaloneId, codingWorkerBindingForPlan(plan(), THREAD_KEY), delegation, dependencies);
+  await prepareCodingWorker(standaloneId, codingWorkerBindingForPlan(plan(), THREAD_KEY), delegation, dependencies);
   const standaloneSubmission = await codingWorkerSubmissionId(standaloneId, delegation.taskKey);
   assert.match(standaloneSubmission, /^sub_ik_[0-9a-f]{32}$/);
   assert.deepEqual(calls, [
@@ -728,7 +728,7 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
   calls.length = 0;
   const binding = codingWorkerBindingForPlan(plan({ installationId: INSTALLATION_A, codingCredential: true }), THREAD_KEY);
   const instanceId = codingWorkerInstanceId(binding);
-  await prepareInstallationCodingWorker(instanceId, binding, delegation, dependencies);
+  await prepareCodingWorker(instanceId, binding, delegation, dependencies);
   assert.deepEqual(calls, [
     'env',
     `record:coding_worker:${instanceId}`,
@@ -737,7 +737,7 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
   ]);
 
   calls.length = 0;
-  await assert.rejects(prepareInstallationCodingWorker(instanceId, binding, delegation, {
+  await assert.rejects(prepareCodingWorker(instanceId, binding, delegation, {
     ...dependencies,
     record: async () => { throw new Error('state store unavailable'); },
   }), /state store unavailable/);

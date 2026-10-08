@@ -16,21 +16,11 @@ import type { TurnInputSql } from './turn-input.ts';
  * worker's attempt before the agent renders (Flue keeps `initialData` to
  * itself until then).
  *
- * The binding, per instance: the attempt binds its frozen credential. Only a
- * binding of an installation of a deployment serving many is staged:
- * standalone workers read the installation's current keys. The instance ID
- * is a digest of the binding, so a staged binding that hashes to the
- * instance reading it is the one the coordinator dispatched; the first write
- * stays, as Flue keeps the first `initialData`.
- *
- * The parent run, per submission: the run the coordinator's own requests are
- * recorded under, staged for every worker. One worker instance serves every
- * task its binding names, across runs, so the run is keyed by the task's
- * submission, which the coordinator derives from the task key before
- * dispatching it (`codingWorkerSubmissionId`). The lookup reads the row for
- * its attempt's own submission and names that run on the attempt and its
- * grant, so the worker's requests are recorded under the run that delegated.
- * The first write stays, as the derived submission is the same on a retry.
+ * The binding is staged per instance. The instance ID is a digest of the
+ * binding, so a staged binding that hashes to the instance reading it is the
+ * one the coordinator dispatched; the first write stays, as Flue keeps the
+ * first `initialData`. The delegating run is staged per submission, since one
+ * worker serves tasks from many runs.
  */
 
 const STAGED_BINDING_TABLE = 'chickpea_coding_worker_binding';
@@ -86,9 +76,7 @@ function ensureStagedRunTable(sql: TurnInputSql): void {
   );
 }
 
-/** Worker-object side: keep the first parent run staged for this submission. */
 export function writeStagedCodingWorkerRun(sql: TurnInputSql, submissionId: unknown, runId: unknown, now: number): void {
-  // A run the request records would refuse would fail every one of the worker's records.
   if (!isStorableRequestText(submissionId) || !isStorableRequestText(runId)) {
     throw new Error('A staged coding worker run needs a submission ID and a run ID of at most 256 bytes.');
   }
@@ -100,7 +88,6 @@ export function writeStagedCodingWorkerRun(sql: TurnInputSql, submissionId: unkn
   );
 }
 
-/** The parent run staged for `submissionId`; undefined when none was staged. */
 export function readStagedCodingWorkerRunFrom(sql: TurnInputSql, submissionId: string): string | undefined {
   ensureStagedRunTable(sql);
   const row = sql.exec(
@@ -132,7 +119,6 @@ export const codingWorkerCloudflareExtension = {
         writeStagedCodingWorkerBinding(this.ctx.storage.sql, json, Date.now());
       }
 
-      /** Host RPC: stage the parent run of one of this instance's submissions before its dispatch. */
       chickpeaStageCodingWorkerRun(submissionId: string, runId: string): void {
         writeStagedCodingWorkerRun(this.ctx.storage.sql, submissionId, runId, Date.now());
       }
@@ -151,7 +137,6 @@ interface WorkerObjectNamespace {
   get(id: unknown): WorkerObjectStub;
 }
 
-/** Host side on Cloudflare: the worker's object, addressed the way Flue's dispatch does (by instance name). */
 async function workerObject(
   env: Record<string, unknown> | undefined,
   bindingName: string,
@@ -167,7 +152,6 @@ async function workerObject(
   return stub;
 }
 
-/** Host side: stage the worker's binding in its object. */
 export async function stageCodingWorkerBinding(
   env: Record<string, unknown> | undefined,
   bindingName: string,
@@ -180,7 +164,6 @@ export async function stageCodingWorkerBinding(
   await (await workerObject(env, bindingName, instanceId)).chickpeaStageCodingWorkerBinding(JSON.stringify(binding));
 }
 
-/** Host side: stage, in the worker's object, the run its submission `submissionId` works for. */
 export async function stageCodingWorkerRun(
   env: Record<string, unknown> | undefined,
   bindingName: string,
@@ -198,7 +181,6 @@ export async function readStagedCodingWorkerBinding(instanceId: string): Promise
   return readStagedCodingWorkerBindingFrom(getCloudflareContext().storage.sql, instanceId);
 }
 
-/** The parent run staged for this worker's own `submissionId` (Cloudflare only). */
 export async function readStagedCodingWorkerRun(submissionId: string): Promise<string | undefined> {
   if (!isCloudflareTarget()) return undefined;
   const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
@@ -207,15 +189,13 @@ export async function readStagedCodingWorkerRun(submissionId: string): Promise<s
 
 /**
  * The submission ID Flue gives a dispatch that carries an idempotency key.
- * Flue documents this derivation as a frozen wire format; the coordinator
- * computes it to name the worker's submission before dispatching it.
+ * Flue documents this derivation as a frozen wire format.
  */
 async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
   const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
   return `sub_ik_${digest.slice(0, 32)}`;
 }
 
-/** The submission a coding task dispatched to `instanceId` under `taskKey` runs as. */
 export function codingWorkerSubmissionId(instanceId: string, taskKey: string): Promise<string> {
   return keyedSubmissionId(CHICKPEA_CODING_WORKER_AGENT_NAME, instanceId, taskKey);
 }

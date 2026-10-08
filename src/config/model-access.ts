@@ -117,10 +117,9 @@ interface BoundAccess {
 
 /**
  * One attempt's access by provider (empty when it has none), the instance it
- * was bound for, what its requests are for, and whether its deployment serves
- * many installations, which the proxy reads instead of any process-wide
- * setting. A hosted cell names its installation, whose admission each request
- * the proxy sends asks again.
+ * was bound for, and whether its deployment serves many installations, which
+ * the proxy reads instead of any process-wide setting. A hosted cell names
+ * its installation, whose admission each request the proxy sends asks again.
  */
 interface ModelAccessCell {
   readonly instanceId: string | undefined;
@@ -130,7 +129,6 @@ interface ModelAccessCell {
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
   readonly purpose: ModelRequestPurpose;
-  /** Compaction turns Flue announced whose model operation has not started; copies of a cell share it. */
   readonly compactionTurns: Set<string>;
 }
 
@@ -193,11 +191,7 @@ export function providerPrefix(model: string): string {
   return separator > 0 ? model.slice(0, separator) : model;
 }
 
-/**
- * What the trusted host knows about one attempt before its first model call.
- * `runId` names the run the attempt works for when that is not the attempt's
- * own submission: a coding worker's requests belong to the run that delegated.
- */
+/** What the trusted host knows about one attempt before its first model call. */
 export type AttemptModelAccess = { readonly runId?: string } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
@@ -273,16 +267,11 @@ const COMPACTION_TURN: Readonly<Record<LlmTurnPurpose, boolean>> = {
   compaction_prefix: true,
 };
 
-/**
- * Runs `fn` in the current attempt with its requests recorded under
- * `purpose`. Nested agent operations of the same instance keep it.
- */
 export function withModelRequestPurpose<T>(purpose: ModelRequestPurpose, fn: () => Promise<T>): Promise<T> {
   const cell = cells.getStore();
   return cell ? cells.run(Object.freeze({ ...cell, purpose }), fn) : fn();
 }
 
-/** The run the current attempt's requests are recorded under, if a cell is in scope. */
 export function currentModelAccessRunId(): string | undefined {
   return cells.getStore()?.attribution.runId;
 }

@@ -54,10 +54,9 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
     instanceId: codingWorkerInstanceId,
     prepareWorker: async (instanceId, binding, taskKey) => {
-      // The worker's requests belong to this run; without one they would be recorded under the worker's own.
       const runId = currentModelAccessRunId();
       if (!runId) throw new Error('No run is in scope to delegate a coding task from.');
-      await prepareInstallationCodingWorker(instanceId, binding, { taskKey, runId });
+      await prepareCodingWorker(instanceId, binding, { taskKey, runId });
     },
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
@@ -90,15 +89,7 @@ function threadCodingTaskRecords(conversationKey: () => string): CodingTaskRecor
   };
 }
 
-/**
- * Before anything names a coding worker, the run that delegates its task is
- * staged beside it under the submission the task's dispatch (keyed by
- * `taskKey`) runs as, for every worker. An installation's worker (a version
- * 2 binding, named under it) is first recorded in its object inventory, and
- * its binding staged for its model access; a standalone worker needs
- * neither.
- */
-export async function prepareInstallationCodingWorker(
+export async function prepareCodingWorker(
   instanceId: string,
   binding: CodingWorkerBinding,
   delegation: { taskKey: string; runId: string },
