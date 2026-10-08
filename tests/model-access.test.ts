@@ -540,7 +540,8 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.match(instanceId, /^i1~inst_a~codingworker_[a-f0-9]{40}$/, 'the worker is named under its installation');
     const staged = new Map<string, CodingWorkerBinding>([[instanceId, binding]]);
     const lookup = (context: FlueExecutionContext, env: PlatformEnv | undefined) =>
-      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id), async () => 'sub_coordinator');
+      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id),
+        async () => ({ runId: 'sub_coordinator', agentId: 'agent_lookup' }));
     const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
 
     const access = await lookup(worker(instanceId), envA);
@@ -590,7 +591,10 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.deepEqual(sent, [], 'no request left the process');
 
     // Standalone keeps today's live read for its workers.
-    assert.deepEqual(await lookup(worker('codingworker_standalone'), undefined), { env: undefined, runId: 'sub_coordinator' });
+    assert.deepEqual(
+      await lookup(worker('codingworker_standalone'), undefined),
+      { env: undefined, runId: 'sub_coordinator', agentId: 'agent_lookup' },
+    );
   });
 });
 
@@ -603,7 +607,10 @@ test('a coding worker\'s attempt and grant name the run that delegated its task,
     });
     const instanceId = codingWorkerInstanceId(binding);
     // One worker serves tasks from several runs; each task's submission names its own.
-    const runs = new Map([['sub_ik_task_1', 'sub_coordinator_1'], ['sub_ik_task_2', 'sub_coordinator_2']]);
+    const runs = new Map([
+      ['sub_ik_task_1', { runId: 'sub_coordinator_1', agentId: 'agent_lookup' }],
+      ['sub_ik_task_2', { runId: 'sub_coordinator_2', agentId: 'agent_lookup' }],
+    ]);
     const lookup = (instance: string, submissionId: string, env: PlatformEnv | undefined) => lookupAttemptModelAccess(
       { instanceId: instance, submissionId, agentName: 'chickpea-coding-worker-v1' },
       async () => env,
@@ -611,7 +618,7 @@ test('a coding worker\'s attempt and grant name the run that delegated its task,
       async (id) => runs.get(id),
     );
 
-    for (const [submissionId, runId] of runs) {
+    for (const [submissionId, { runId }] of runs) {
       const access = await lookup(instanceId, submissionId, envA);
       assert.equal(access.runId, runId);
       assert.equal('grant' in access && access.grant.runId, runId);
@@ -621,7 +628,10 @@ test('a coding worker\'s attempt and grant name the run that delegated its task,
       (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
 
     // Standalone runs under the staged run, or under its own submission when none was staged.
-    assert.deepEqual(await lookup('codingworker_x', 'sub_ik_task_1', undefined), { env: undefined, runId: 'sub_coordinator_1' });
+    assert.deepEqual(
+      await lookup('codingworker_x', 'sub_ik_task_1', undefined),
+      { env: undefined, runId: 'sub_coordinator_1', agentId: 'agent_lookup' },
+    );
     assert.deepEqual(await lookup('codingworker_x', 'sub_ik_task_3', undefined), { env: undefined });
   });
 });
@@ -646,7 +656,7 @@ test('a coding worker\'s request is recorded under the run that delegated it, no
         context,
         async () => envA,
         async (id) => (id === instanceId ? binding : undefined),
-        async (id) => (id === 'sub_ik_task' ? 'sub_coordinator' : undefined),
+        async (id) => (id === 'sub_ik_task' ? { runId: 'sub_coordinator', agentId: 'agent_lookup' } : undefined),
       ),
       installationGrants: async () => { throw new Error('an installation of many reads no live grants'); },
     });

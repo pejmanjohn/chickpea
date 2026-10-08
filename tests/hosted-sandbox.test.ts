@@ -652,23 +652,25 @@ test('the coordinator stages the binding beside its worker; only the binding of 
 
 test('the coordinator stages each worker submission\'s parent run in the worker\'s object; the first write stays', async () => {
   const storage = new FakeObjectStorage();
-  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_coordinator', 1);
-  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_retried_elsewhere', 2);
-  assert.equal(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_1'), 'sub_coordinator');
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_coordinator', 'agent_coder', 1);
+  writeStagedCodingWorkerRun(storage.sql, 'sub_ik_task_1', 'sub_retried_elsewhere', 'agent_other', 2);
+  assert.deepEqual(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_1'), { runId: 'sub_coordinator', agentId: 'agent_coder' });
   assert.equal(readStagedCodingWorkerRunFrom(storage.sql, 'sub_ik_task_2'), undefined);
-  for (const [submissionId, runId] of [
-    ['', 'sub_coordinator'],
-    ['sub_ik_task_3', ''],
-    ['sub_ik_task_4', 'r'.repeat(257)],
-    ['s'.repeat(257), 'sub_coordinator'],
-    ['sub_ik_task_5', 'sub_\u0007coordinator'],
-    ['sub_ik_task_6', 42],
+  for (const [submissionId, runId, agentId] of [
+    ['', 'sub_coordinator', 'agent_coder'],
+    ['sub_ik_task_3', '', 'agent_coder'],
+    ['sub_ik_task_4', 'r'.repeat(257), 'agent_coder'],
+    ['s'.repeat(257), 'sub_coordinator', 'agent_coder'],
+    ['sub_ik_task_5', 'sub_\u0007coordinator', 'agent_coder'],
+    ['sub_ik_task_6', 42, 'agent_coder'],
+    ['sub_ik_task_7', 'sub_coordinator', ''],
+    ['sub_ik_task_8', 'sub_coordinator', null],
   ] as const) {
-    assert.throws(() => writeStagedCodingWorkerRun(storage.sql, submissionId, runId, 3), /staged coding worker run/);
+    assert.throws(() => writeStagedCodingWorkerRun(storage.sql, submissionId, runId, agentId, 3), /staged coding worker run/);
   }
   assert.deepEqual(
-    storage.sql.exec('SELECT submission_id, run_id FROM chickpea_coding_worker_run').toArray(),
-    [{ submission_id: 'sub_ik_task_1', run_id: 'sub_coordinator' }],
+    storage.sql.exec('SELECT submission_id, run_id, agent_id FROM chickpea_coding_worker_run').toArray(),
+    [{ submission_id: 'sub_ik_task_1', run_id: 'sub_coordinator', agent_id: 'agent_coder' }],
     'a refused run stores nothing',
   );
 
@@ -678,7 +680,7 @@ test('the coordinator stages each worker submission\'s parent run in the worker\
   }
   const Worker = codingWorkerCloudflareExtension.base(FakeAgentBase) as unknown as new (
     ctx: { id: { name?: string }; storage: { sql: FakeObjectStorage['sql'] } }, env: unknown,
-  ) => { chickpeaStageCodingWorkerRun(submissionId: string, runId: string): void };
+  ) => { chickpeaStageCodingWorkerRun(submissionId: string, runId: string, agentId: string): void };
   const objects = new Map<string, FakeObjectStorage>();
   const namespace = {
     idFromName: (name: string) => name,
@@ -689,12 +691,13 @@ test('the coordinator stages each worker submission\'s parent run in the worker\
     },
   };
   const instanceId = codingWorkerInstanceId(codingWorkerBindingForPlan(plan(), THREAD_KEY));
-  await stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_1', 'sub_coordinator');
+  const run = { runId: 'sub_coordinator', agentId: 'agent_coder' };
+  await stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_1', run);
   assert.deepEqual([...objects.keys()], [instanceId]);
-  assert.equal(readStagedCodingWorkerRunFrom(objects.get(instanceId)!.sql, 'sub_ik_task_1'), 'sub_coordinator');
-  await assert.rejects(stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_2', ''),
+  assert.deepEqual(readStagedCodingWorkerRunFrom(objects.get(instanceId)!.sql, 'sub_ik_task_1'), run);
+  await assert.rejects(stageCodingWorkerRun({ WORKERS: namespace }, 'WORKERS', instanceId, 'sub_ik_task_2', { ...run, runId: '' }),
     /staged coding worker run/);
-  await assert.rejects(stageCodingWorkerRun({}, 'WORKERS', instanceId, 'sub_ik_task_1', 'sub_coordinator'),
+  await assert.rejects(stageCodingWorkerRun({}, 'WORKERS', instanceId, 'sub_ik_task_1', run),
     /binding WORKERS is unavailable/);
 });
 
@@ -710,9 +713,10 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
       calls.push(`stage:${bindingName}:${instanceId}`);
     },
     stageRun: async (
-      _env: Record<string, unknown> | undefined, bindingName: string, instanceId: string, submissionId: string, runId: string,
+      _env: Record<string, unknown> | undefined, bindingName: string, instanceId: string, submissionId: string,
+      run: { runId: string; agentId: string },
     ) => {
-      calls.push(`stage-run:${bindingName}:${instanceId}:${submissionId}:${runId}`);
+      calls.push(`stage-run:${bindingName}:${instanceId}:${submissionId}:${run.runId}:${run.agentId}`);
     },
   };
   const delegation = { taskKey: 'workspace_task:call-1', runId: 'sub_coordinator' };
@@ -722,7 +726,7 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
   assert.match(standaloneSubmission, /^sub_ik_[0-9a-f]{32}$/);
   assert.deepEqual(calls, [
     'env',
-    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${standaloneId}:${standaloneSubmission}:sub_coordinator`,
+    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${standaloneId}:${standaloneSubmission}:sub_coordinator:agent_coder`,
   ], 'standalone records nothing and stages only the run');
 
   calls.length = 0;
@@ -733,7 +737,7 @@ test('every coding worker gets its task\'s parent run staged; an installation\'s
     'env',
     `record:coding_worker:${instanceId}`,
     `stage:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${instanceId}`,
-    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${instanceId}:${await codingWorkerSubmissionId(instanceId, delegation.taskKey)}:sub_coordinator`,
+    `stage-run:FLUE_CHICKPEA_CODING_WORKER_V1_AGENT:${instanceId}:${await codingWorkerSubmissionId(instanceId, delegation.taskKey)}:sub_coordinator:agent_coder`,
   ]);
 
   calls.length = 0;

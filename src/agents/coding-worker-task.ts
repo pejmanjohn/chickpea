@@ -111,7 +111,7 @@ export async function prepareCodingWorker(
     bindingName,
     instanceId,
     await codingWorkerSubmissionId(instanceId, delegation.taskKey),
-    delegation.runId,
+    { runId: delegation.runId, agentId: binding.agentId },
   );
 }
 

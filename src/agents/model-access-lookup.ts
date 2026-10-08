@@ -39,7 +39,11 @@ import {
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
 } from './names.ts';
-import { readStagedCodingWorkerBinding, readStagedCodingWorkerRun } from './coding-worker-staging.ts';
+import {
+  readStagedCodingWorkerBinding,
+  readStagedCodingWorkerRun,
+  type StagedCodingWorkerRun,
+} from './coding-worker-staging.ts';
 import { parseRoutineExecutionInitialData } from './routine-execution-data.ts';
 import {
   assertRuntimePlanInstallation,
@@ -93,7 +97,8 @@ export async function lookupAttemptModelAccess(
   agentEnv: () => Promise<PlatformEnv | undefined> = currentPlatformEnv,
   stagedCodingWorkerBinding: (instanceId: string) => Promise<CodingWorkerBinding | undefined> =
     readStagedCodingWorkerBinding,
-  stagedCodingWorkerRun: (submissionId: string) => Promise<string | undefined> = readStagedCodingWorkerRun,
+  stagedCodingWorkerRun: (submissionId: string) => Promise<StagedCodingWorkerRun | undefined> =
+    readStagedCodingWorkerRun,
 ): Promise<AttemptModelAccess> {
   const env = await agentEnv();
   const { instanceId, submissionId } = context;
@@ -106,12 +111,12 @@ export async function lookupAttemptModelAccess(
       if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
       break;
     case CHICKPEA_CODING_WORKER_AGENT_NAME: {
-      const runId = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
-      if (!deploymentServesManyInstallations(env)) return runId ? { env, runId } : { env };
-      if (!instanceId || !runId) {
+      const staged = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
+      if (!deploymentServesManyInstallations(env)) return staged ? { env, ...staged } : { env };
+      if (!instanceId || !staged) {
         throw new ModelAccessError('scope_missing', 'No staged run binds model access for this coding worker.');
       }
-      return codingWorkerModelAccess(await stagedCodingWorkerBinding(instanceId), instanceId, runId, env);
+      return codingWorkerModelAccess(await stagedCodingWorkerBinding(instanceId), instanceId, staged.runId, env);
     }
     case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:
       if (deploymentServesManyInstallations(env)) {
