@@ -246,8 +246,8 @@ test('a credits installation with no saved key passes readiness and freezes plat
     assert.ok((await resolveRuntimeModel('agent', `anthropic/${SONNET}`, { settings, env })).model);
     const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
     assert.deepEqual(attribution, {
-      credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
-      label: 'Chickpea credits', scopeLabel: null, unknownRotation: false,
+      credentialRefId: 'platform:anthropic', version: 2, providerId: 'anthropic', sourceKind: 'platform',
+      label: "Chickpea's models", scopeLabel: null, unknownRotation: false,
     });
 
     const assignment: ResolvedAssignment = {
@@ -271,15 +271,47 @@ test('a credits installation with no saved key passes readiness and freezes plat
       memoryEpoch: 1,
     });
     assert.deepEqual(plan.modelCredential, {
-      credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', fundingSource: 'platform',
+      credentialRefId: 'platform:anthropic', version: 2, providerId: 'anthropic', fundingSource: 'platform',
     });
     const thawed = parseRuntimePlanModelCredential(JSON.parse(JSON.stringify(plan.modelCredential)));
     assert.equal(frozenModelAccessGrant(thawed, 'inst_no_key', 'run_frozen')?.fundingSource, 'platform');
     assert.deepEqual(await installationModelAccessGrant('anthropic', env, 'run_live', settings), {
       installationId: 'inst_no_key', providerId: 'anthropic', credentialRefId: 'platform:anthropic',
-      credentialVersion: 1, runId: 'run_live', fundingSource: 'platform',
+      credentialVersion: 2, runId: 'run_live', fundingSource: 'platform',
     });
   });
+});
+
+test('the platform credential registers under its new label beside a row saved under the old one', async (t) => {
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  await usageStore.putCredential({
+    credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
+    label: 'Chickpea credits', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+  });
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const env = hostedEnv('inst_relabelled');
+    for (const request of ['first', 'second']) {
+      const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
+      assert.deepEqual([attribution?.version, attribution?.label], [2, "Chickpea's models"], request);
+    }
+  });
+  assert.deepEqual(warnings, [], 'the registry raised no conflict');
+  assert.deepEqual(
+    (await usageStore.listCredentials('anthropic')).map(({ version, label }) => ({ version, label })),
+    [{ version: 1, label: 'Chickpea credits' }, { version: 2, label: "Chickpea's models" }],
+  );
 });
 
 test('a port that cannot say an installation\'s funding leaves it on its own key, never on platform funding', async (t) => {
@@ -612,7 +644,8 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.equal(failure.kind, 'credits-exhausted');
   assert.equal(failure.retryable, false);
   assert.equal(agentFailureText(failure),
-    "This workspace is out of Chickpea credits, so I can't continue. An admin can add credits in Chickpea.");
+    "This workspace has used all of its plan's usage, so I can't continue. " +
+    'An admin can add extra usage or upgrade in Chickpea.');
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
@@ -718,7 +751,7 @@ test('a credits installation with no saved key can choose a priced coding model,
     assert.equal(unpriced.status, 400);
     assert.deepEqual(await unpriced.json(), {
       error: 'invalid_request',
-      message: 'Not offered with Chickpea credits. Choose another model.',
+      message: "Not available on Chickpea's models. Choose another model.",
     });
 
     t.mock.timers.setTime(NOW);

@@ -767,10 +767,11 @@ function modelProviderKeyContext(
 function platformRegistration(id: ProviderKeyId): CredentialRegistration {
   return {
     credentialRefId: platformCredentialRefId(id),
-    version: 1,
+    // The registry refuses new metadata on an existing epoch, so the label change needs a new version.
+    version: 2,
     providerId: id,
     sourceKind: 'platform',
-    label: 'Chickpea credits',
+    label: "Chickpea's models",
     scopeLabel: null,
     unknownRotation: false,
     activeFrom: 0,

@@ -11,15 +11,15 @@ export const CREDITS_ASK_ADMIN_ACTION = 'chickpea.credits.v1.ask_admin';
 export const CREDITS_ASK_ADMIN_BLOCK = 'chickpea.credits.v1.ask_admin_block';
 
 export const CREDITS_ASK_ADMIN_LABEL = 'Ask an admin';
-export const CREDITS_OWNER_HINT_TEXT = "You're an Owner, so you can add credits in Chickpea.";
-export const CREDITS_ASK_CONFIRMATION_TEXT = "I asked this workspace's Owners to add credits.";
+export const CREDITS_OWNER_HINT_TEXT = "You're an Owner, so you can add extra usage or upgrade in Chickpea.";
+export const CREDITS_ASK_CONFIRMATION_TEXT = "I asked this workspace's Owners to add usage.";
 export const CREDITS_ASK_UNREACHABLE_TEXT =
   "I couldn't reach this workspace's Owners. Try again in a few minutes.";
 
 export function creditsAskOwnerDmText(clickerUserId: string, channelId: string): string {
   const where = channelId.startsWith('D') ? 'a direct message' : `<#${channelId}>`;
-  return `<@${clickerUserId}> asked you to add Chickpea credits. ` +
-    `A request in ${where} stopped because this workspace is out of credits.`;
+  return `<@${clickerUserId}> asked you to add usage to Chickpea. ` +
+    `A request in ${where} stopped because this workspace has used all of its plan's usage.`;
 }
 
 type CreditsIdentity = Pick<IdentityStore, 'resolveSlackIdentity' | 'listMemberships' | 'listExternalIdentities'>;
@@ -28,6 +28,11 @@ type SlackBlock = Record<string, unknown>;
 export interface CreditsAskClient {
   conversations: Pick<WebClient['conversations'], 'open'>;
   chat: Pick<WebClient['chat'], 'postMessage' | 'update' | 'postEphemeral'>;
+}
+
+export interface OwnerDmClient {
+  conversations: Pick<WebClient['conversations'], 'open'>;
+  chat: Pick<WebClient['chat'], 'postMessage'>;
 }
 
 export interface CreditsAskAction {
@@ -123,10 +128,10 @@ async function ask(action: CreditsAskAction, deps: CreditsAskDeps): Promise<Cred
     console.warn('[chickpea] The installation\'s Owners could not be read for a credits request');
     return [];
   });
-  const text = creditsAskOwnerDmText(action.userId, action.channelId);
+  const message = { text: creditsAskOwnerDmText(action.userId, action.channelId) };
   let delivered = 0;
   for (const owner of owners) {
-    if (await sendOwnerDm(deps.client, owner, text)) delivered += 1;
+    if (await sendOwnerDm(deps.client, owner, message)) delivered += 1;
   }
   if (delivered > 0) return 'asked';
   await release();
@@ -162,7 +167,10 @@ async function isActiveOwner(identity: CreditsIdentity, workspaceId: string, use
   return membership?.role === 'owner' && membership.status === 'active';
 }
 
-async function activeOwnerSlackUserIds(identity: CreditsIdentity, workspaceId: string): Promise<string[]> {
+export async function activeOwnerSlackUserIds(
+  identity: Pick<IdentityStore, 'listMemberships' | 'listExternalIdentities'>,
+  workspaceId: string,
+): Promise<string[]> {
   const [memberships, bindings] = await Promise.all([identity.listMemberships(), identity.listExternalIdentities()]);
   const owners = new Set(memberships
     .filter((membership) => membership.role === 'owner' && membership.status === 'active')
@@ -172,15 +180,23 @@ async function activeOwnerSlackUserIds(identity: CreditsIdentity, workspaceId: s
     .map((binding) => binding.slackUserId))];
 }
 
-async function sendOwnerDm(client: CreditsAskClient, ownerUserId: string, text: string): Promise<boolean> {
+export async function sendOwnerDm(
+  client: OwnerDmClient,
+  ownerUserId: string,
+  message: { text: string; blocks?: readonly SlackBlock[] },
+): Promise<boolean> {
   try {
     const opened = await client.conversations.open({ users: ownerUserId });
     const channel = opened.channel?.id;
     if (!channel) return false;
-    await client.chat.postMessage({ channel, text });
+    await client.chat.postMessage({
+      channel,
+      text: message.text,
+      ...(message.blocks ? { blocks: message.blocks } : {}),
+    } as unknown as Parameters<OwnerDmClient['chat']['postMessage']>[0]);
     return true;
   } catch {
-    console.warn('[chickpea] An Owner could not be messaged about credits');
+    console.warn('[chickpea] An Owner could not be messaged');
     return false;
   }
 }
