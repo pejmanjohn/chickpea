@@ -170,6 +170,49 @@ test('routine durable persistence waits past the interactive budget and links Wo
   }
 });
 
+test('routine terminal replay keeps the original observation identity', async () => {
+  const usage = new SqliteUsageStore(':memory:');
+  try {
+    const events: UsagePersistenceEvent[] = [];
+    const input = {
+      operationId: 'rrun_replay', executionId: 'exec_routine_replay', startedAt: 1_000,
+      workspaceId: routine.workspaceId, channelId: routine.channelId,
+      agentId: config.agentId, agentLabel: config.agent.name,
+      routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
+      credentialRefId: null, credentialVersion: null, store: usage,
+      onPersistence: (event: UsagePersistenceEvent) => events.push(event),
+    } as const;
+    const first = new RoutineUsageRecorder({ ...input, persistenceMode: 'durable', now: () => 2_000 });
+    await first.admit();
+    await first.recordTerminal({
+      status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 },
+    });
+
+    const replay = new RoutineUsageRecorder({
+      ...input,
+      persistenceMode: 'durable',
+      replaySettlementAt: 2_000,
+      now: () => 3_000,
+    });
+    await replay.admit();
+    await replay.recordTerminal({
+      status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 },
+    });
+
+    const detail = await usage.getOperation(input.operationId);
+    assert.equal(detail?.measurements.length, 1);
+    assert.equal(detail?.measurements[0]?.observedAt, 2_000);
+    assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
+      ['admission', 'recorded'],
+      ['terminal', 'recorded'],
+      ['admission', 'recorded'],
+      ['terminal', 'recorded'],
+    ]);
+  } finally {
+    usage.close();
+  }
+});
+
 test('routine reply metadata yields one bounded aggregate with returned-model evidence', () => {
   const usage = routineUsageFromAgentReply({
     submissionId: 'submission_usage', text: '', data: {},

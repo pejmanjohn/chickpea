@@ -356,6 +356,8 @@ interface RoutineUsageRecorderOptions {
   processEnv?: NodeJS.ProcessEnv;
   writeBudgetMs?: number;
   persistenceMode?: UsagePersistenceMode;
+  /** A saved routine settlement is being recorded again, not a new model call. */
+  replaySettlementAt?: number;
   /** Outer occurrence wall-time boundary for durable owner writes. */
   deadlineAt?: number;
   now?: () => number;
@@ -648,7 +650,7 @@ export class RoutineUsageRecorder {
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
     };
-    const terminalInput: RecordUsageTerminalInput = {
+    let terminalInput: RecordUsageTerminalInput = {
       ...terminal,
       ...estimateForRuntime(
         { ...terminal, cacheWrite1hTokens: usage?.cacheWrite1h ?? null },
@@ -656,6 +658,22 @@ export class RoutineUsageRecorder {
         this.options.processEnv,
       ),
     };
+    if (this.options.replaySettlementAt !== undefined) {
+      const detail = await this.options.store.getOperation(this.admission.operationId);
+      const original = detail?.measurements.find(
+        (measurement) => measurement.executionId === terminalInput.executionId,
+      );
+      if (original) {
+        terminalInput = {
+          ...terminalInput,
+          observedAt: original.observedAt,
+          finishedAt: original.observedAt,
+          ...(this.runExecutionId || original.runExecutionId
+            ? { runExecutionId: this.runExecutionId ?? original.runExecutionId }
+            : {}),
+        };
+      }
+    }
     this.terminalInput = terminalInput;
     const outcome = await persistUsage(
       () => this.options.store.recordTerminal(terminalInput),
