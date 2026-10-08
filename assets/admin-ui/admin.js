@@ -109,6 +109,7 @@
     billingBusy: "",
     billingPlansOpen: false,
     billingFundingConfirm: false,
+    planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
     teamNotice: "",
@@ -2474,6 +2475,23 @@
     });
   }
 
+  // The Plan page sends an Owner who needs a key to Model providers with
+  // ?return=plan, so the key they save there can finish the switch.
+  function planReturn() {
+    return BILLING_OFFERED && INSTALLATION_OWNER && typeof location !== "undefined" &&
+      new URLSearchParams(location.search || "").get("return") === "plan";
+  }
+
+  function finishOwnKeySwitch() {
+    postJson("/admin/api/billing/funding", "POST", { funding: "own_key" }).then(function (body) {
+      state.billing = body;
+      openBilling();
+    }).catch(function () {
+      state.planReturnSwitchFailed = true;
+      render();
+    });
+  }
+
   function openStripe(path, body, busy, at) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
@@ -2624,7 +2642,7 @@
         : '<div class="usage-contract"><p>With Chickpea&rsquo;s models, no API key is needed. Replies draw on your plan&rsquo;s usage.</p></div>' +
           '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea&rsquo;s models</button></div>';
     } else if (!next.ready && next.needs === "key") {
-      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
+      body = '<div class="billing-actions"><a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>' +
         '<p class="hint">' + (next.provider ? 'Your default model needs an ' + esc(providerMeta(next.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>';
     } else if (!open) {
       body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
@@ -9897,6 +9915,12 @@
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
       : "";
+    var planReturnCallout = planReturn()
+      ? '<div class="callout"><span>' + (state.planReturnSwitchFailed
+        ? 'Your key is saved, but the switch to your own key did not finish. Go back to Plan to try again.'
+        : 'Save a key for your default model&rsquo;s provider to switch to your own key.') +
+        '</span><a class="btn btn-primary btn-sm" href="/admin/plan">Back to Plan</a></div>'
+      : "";
     var workspaceDefaultSection = workspaceDefaultSectionHtml();
     var providerSection;
     if (state.settingsError) {
@@ -9913,7 +9937,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
+      settingsPanelHtml("providers", onboardingReturn + planReturnCallout + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "");
   }
@@ -12163,6 +12187,7 @@
       // suggestion source; the validate call primed the server model cache.
       return loadSettings().then(function () {
         refreshModels();
+        if (planReturn()) finishOwnKeySwitch();
         if (id === "openai") return refreshImageConfigurationAfterOpenAiConnection();
         render();
       });
