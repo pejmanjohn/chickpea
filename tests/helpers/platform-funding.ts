@@ -1,4 +1,5 @@
-import type { PlatformFundingPort, UsageMicros } from '../../src/config/platform-funding.ts';
+import type { PlatformFundingPort } from '../../src/config/platform-funding.ts';
+import type { UsageMicros } from '../../src/usage/usage-display.ts';
 
 export const NO_RUN_FEES = {
   postFee: async () => ({ kind: 'not_applicable' }),

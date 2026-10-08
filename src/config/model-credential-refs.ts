@@ -770,7 +770,7 @@ function platformRegistration(id: ProviderKeyId): CredentialRegistration {
     version: 1,
     providerId: id,
     sourceKind: 'platform',
-    label: 'Chickpea credits',
+    label: "Chickpea's models",
     scopeLabel: null,
     unknownRotation: false,
     activeFrom: 0,

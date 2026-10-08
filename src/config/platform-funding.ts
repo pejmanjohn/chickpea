@@ -17,6 +17,7 @@ import { requireInstallationScope } from './installation-scope.ts';
 import type { ModelAccessGrant } from './model-access.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
+import type { UsageMicros } from '../usage/usage-display.ts';
 
 export type PlatformFundingAdmission = 'admitted' | 'credits_exhausted';
 
@@ -25,9 +26,6 @@ export interface PlatformFundedModel {
   readonly provider: string;
   readonly model: string;
 }
-
-/** Millionths of a dollar of usage at metered rates: the unit the host's ledger and the customer read. */
-export type UsageMicros = number & { readonly __unit: 'usage_micros' };
 
 /** One run as the ledger keys it: the run ID its model request records carry. */
 export interface RunRef {

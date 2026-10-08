@@ -39,6 +39,7 @@ import {
 } from '../src/config/model-access.ts';
 import {
   resolveModelCredentialAttribution,
+  revalidateModelCredentialAttribution,
   rotateInstallationModelCredential,
 } from '../src/config/model-credential-refs.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
@@ -243,7 +244,7 @@ test('a credits installation with no saved key passes readiness and freezes plat
     const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
     assert.deepEqual(attribution, {
       credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
-      label: 'Chickpea credits', scopeLabel: null, unknownRotation: false,
+      label: "Chickpea's models", scopeLabel: null, unknownRotation: false,
     });
 
     const assignment: ResolvedAssignment = {
@@ -275,6 +276,62 @@ test('a credits installation with no saved key passes readiness and freezes plat
       installationId: 'inst_no_key', providerId: 'anthropic', credentialRefId: 'platform:anthropic',
       credentialVersion: 1, runId: 'run_live', fundingSource: 'platform',
     });
+  });
+});
+
+test('the platform credential keeps its version and relabels the row saved under the old label', async (t) => {
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  await usageStore.putCredential({
+    credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
+    label: 'Chickpea credits', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+  });
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const env = hostedEnv('inst_relabelled');
+    for (const request of ['first', 'second']) {
+      const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
+      assert.deepEqual([attribution?.version, attribution?.label], [1, "Chickpea's models"], request);
+    }
+  });
+  assert.deepEqual(warnings, [], 'the registry raised no conflict');
+  assert.deepEqual(
+    (await usageStore.listCredentials('anthropic')).map(({ version, label }) => ({ version, label })),
+    [{ version: 1, label: "Chickpea's models" }],
+  );
+});
+
+test('a plan frozen under the old label still revalidates after the relabel, so retries and resumes go on', async (t) => {
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  await usageStore.putCredential({
+    credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
+    label: 'Chickpea credits', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const frozenBeforeDeploy = { credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic' };
+    await revalidateModelCredentialAttribution(
+      `anthropic/${SONNET}`, frozenBeforeDeploy, hostedEnv('inst_in_flight'), settings, usageStore,
+    );
   });
 });
 
@@ -607,7 +664,8 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.equal(failure.kind, 'credits-exhausted');
   assert.equal(failure.retryable, false);
   assert.equal(agentFailureText(failure),
-    "This workspace is out of Chickpea credits, so I can't continue. An admin can add credits in Chickpea.");
+    "This workspace has used all of its plan's usage, so I can't continue. " +
+    'An admin can add extra usage or upgrade in Chickpea.');
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
@@ -713,7 +771,7 @@ test('a credits installation with no saved key can choose a priced coding model,
     assert.equal(unpriced.status, 400);
     assert.deepEqual(await unpriced.json(), {
       error: 'invalid_request',
-      message: 'Not offered with Chickpea credits. Choose another model.',
+      message: "Not available on Chickpea's models. Choose another model.",
     });
 
     t.mock.timers.setTime(NOW);
