@@ -25,6 +25,7 @@ import {
   resetPlatformFundingForTests,
   type FeeOutcome,
   type FeePost,
+  type RunRef,
 } from '../src/config/platform-funding.ts';
 import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
 import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
@@ -54,9 +55,22 @@ function ownKeyGrant(runId: string): ModelAccessGrant {
   };
 }
 
+/** Each run the port was asked to admit a task for. */
+const admissions: RunRef[] = [];
+/** Admission answers, fee posts and tool runs, in the order they happened. */
+const timeline: string[] = [];
+/** Long enough that parallel calls are all waiting on the answer when it arrives. */
+const ADMISSION_DELAY_MS = 20;
+
 function hostedPort(
   t: TestContext,
-  options: { refuse?: FeePost['tier']; fail?: FeePost['tier']; stall?: FeePost['tier']; port?: boolean } = {},
+  options: {
+    refuse?: FeePost['tier'];
+    fail?: FeePost['tier'];
+    stall?: FeePost['tier'];
+    admission?: 'refused' | 'stall' | 'fail';
+    port?: boolean;
+  } = {},
 ) {
   resetModelAccessForTests();
   resetPlatformFundingForTests();
@@ -64,12 +78,23 @@ function hostedPort(
   configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-run-fee-test-key' }) });
   const posts: Array<FeePost & { outcome: FeeOutcome['kind'] | 'failed' }> = [];
   const rows = new Set<string>();
+  admissions.length = 0;
+  timeline.length = 0;
   if (options.port !== false) {
     configurePlatformFunding({
       ...NO_RUN_FEES,
       funding: async () => 'customer',
       admit: async () => 'admitted',
       charge: async () => {},
+      admitTask: async (run) => {
+        admissions.push(run);
+        if (options.admission === 'stall') return new Promise<never>(() => {});
+        if (options.admission === 'fail') throw new Error('ledger unavailable');
+        await new Promise((resolve) => setTimeout(resolve, ADMISSION_DELAY_MS));
+        const answer = options.admission ?? 'admitted';
+        timeline.push(`admit:${answer}`);
+        return answer;
+      },
       postFee: async (post) => {
         if (post.tier === options.stall) {
           posts.push({ ...post, outcome: 'failed' });
@@ -83,6 +108,7 @@ function hostedPort(
         const outcome = post.tier === options.refuse ? 'refused' : rows.has(key) ? 'duplicate' : 'posted';
         if (outcome === 'posted') rows.add(key);
         posts.push({ ...post, outcome });
+        timeline.push(`${post.tier}:${outcome}`);
         return { kind: outcome };
       },
     });
@@ -121,6 +147,7 @@ function FeeProbe() {
       output: v.string(),
       run: () => {
         ran.push(name);
+        timeline.push(`tool:${name}`);
         return { output: JSON.stringify({ status: 'ok' }) };
       },
     });
@@ -204,13 +231,14 @@ async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise
 }
 
 const tiers = (posts: ReadonlyArray<{ tier: string; outcome: string }>) => posts.map(({ tier, outcome }) => `${tier}:${outcome}`);
+const admissionAnswers = () => timeline.filter((entry) => entry.startsWith('admit:'));
 const replyRun = (env: PlatformEnv | undefined, feeRun: FeeRun = { kind: 'interactive', repositoryShell: false }) =>
   (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', feeRun });
 
-test('an own-key task refused at zero runs its tool once, then ends the turn out of usage before another request is sent', { timeout: 20_000 }, async (t) => {
-  const posts = hostedPort(t, { refuse: 'task' });
+test('an own-key turn with nothing spendable runs no tool, not even a parallel one, and ends out of usage before another request is sent', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t, { admission: 'refused', refuse: 'task' });
   interceptors(t, replyRun(hostedEnv()));
-  const { sent } = scriptedProvider([callsTools('read_slack_channel'), callsTools('read_slack_channel'), answers]);
+  const { sent } = scriptedProvider([callsTools('read_slack_channel', 'read_slack_channel'), answers]);
   ran.length = 0;
 
   const failure = await slackTurn('fees-refused');
@@ -220,8 +248,38 @@ test('an own-key task refused at zero runs its tool once, then ends the turn out
   assert.equal(failure.retryable, false);
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sent.length, 1, 'no provider request after the refusal');
-  assert.deepEqual(ran, ['read_slack_channel'], 'the tool ran once');
-  assert.deepEqual(tiers(posts), ['chat:posted', 'task:refused']);
+  assert.deepEqual(ran, [], 'no tool ran');
+  assert.equal(admissions.length, 1);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('parallel qualifying calls wait on one admission, then both run and post one task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  const entered: FlueExecutionInterceptor = async (operation, _context, next) => {
+    if (operation.type === 'tool') timeline.push(`enter:${operation.toolCallId}`);
+    return next();
+  };
+  interceptors(t, replyRun(hostedEnv()), entered);
+  scriptedProvider([callsTools('read_slack_channel', 'read_slack_channel'), answers]);
+  ran.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-admission-shared'), { text: 'done' });
+  assert.deepEqual(timeline.filter((entry) => /^(enter|admit):/.test(entry)), [
+    'enter:call_0_read_slack_channel', 'enter:call_1_read_slack_channel', 'admit:admitted',
+  ], 'both calls were waiting when the one admission answered');
+  assert.equal(admissions.length, 1);
+  assert.deepEqual(ran, ['read_slack_channel', 'read_slack_channel']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
+test('an admitted task runs its qualifying call, then posts the task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('read_slack_channel'), answers]);
+
+  assert.deepEqual(await slackTurn('fees-admitted'), { text: 'done' });
+  assert.deepEqual(timeline, ['chat:posted', 'admit:admitted', 'tool:read_slack_channel', 'task:posted']);
+  assert.deepEqual(admissions, [{ installationId: INSTALLATION, runId: posts[0]!.runId }], 'the port is asked about the run alone');
 });
 
 test('after an own-key post is refused, a parallel qualifying call that starts later never runs', { timeout: 20_000 }, async (t) => {
@@ -271,6 +329,7 @@ test('a channel read the Slack read budget refuses posts no task row, and Slack 
   assert.deepEqual(await slackTurn('fees-read-refused', ChannelMentionProbe), { text: 'done' });
   assert.deepEqual(readBudgetDecisions, [false], 'the read budget refused the channel read');
   assert.deepEqual(slackHistoryCalls, []);
+  assert.deepEqual(admissionAnswers(), ['admit:admitted'], 'the read was admitted, then charged nothing');
   assert.deepEqual(tiers(posts), ['chat:posted']);
 });
 
@@ -286,6 +345,7 @@ test('a read of a channel this Agent was never added to posts no task row, and S
   assert.deepEqual(grantChecks, [UNGRANTED_CHANNEL], 'the Agent\'s channel access refused the read');
   assert.deepEqual(readBudgetDecisions, []);
   assert.deepEqual(slackHistoryCalls, []);
+  assert.deepEqual(admissionAnswers(), ['admit:admitted'], 'the read was admitted, then charged nothing');
   assert.deepEqual(tiers(posts), ['chat:posted']);
 });
 
@@ -304,6 +364,7 @@ test('a hosted reply run posts one chat row, keyed by its submission and Agent, 
   assert.equal(posts[0]!.installationId, INSTALLATION);
   assert.equal(posts[0]!.agentId, 'agent_fees');
   assert.match(posts[0]!.runId, /^sub_/, 'the run ID is the Flue submission the request records carry');
+  assert.deepEqual(admissions, [], 'a call that does not qualify asks no admission');
 });
 
 test('parallel qualifying tools in one attempt post one task row once they complete', { timeout: 20_000 }, async (t) => {
@@ -318,6 +379,7 @@ test('parallel qualifying tools in one attempt post one task row once they compl
   assert.deepEqual(ran.filter((name) => name === 'read_slack_channel').length, 3);
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
   assert.equal(new Set(posts.map(({ runId }) => runId)).size, 1);
+  assert.equal(admissions.length, 1, 'one admission for the attempt, across its model turns');
 });
 
 test('a scheduled run posts its chat row and never a task row for a tool, even a qualifying one', { timeout: 20_000 }, async (t) => {
@@ -329,6 +391,7 @@ test('a scheduled run posts its chat row and never a task row for a tool, even a
   assert.deepEqual(await slackTurn('fees-scheduled'), { text: 'done' });
   assert.deepEqual(ran, ['read_slack_channel']);
   assert.deepEqual(tiers(posts), ['chat:posted']);
+  assert.deepEqual(admissions, []);
 });
 
 test('an attempt with no reply run, such as a coding worker\'s, posts no fee row', { timeout: 20_000 }, async (t) => {
@@ -356,6 +419,24 @@ test('a task row the host cannot post lets the tool run, and the next qualifying
   assert.equal(logged.length, 2);
   assert.ok(logged.every((line) => !line.includes(INSTALLATION) && !line.includes('sub_')), 'the log names no installation or run');
 });
+
+for (const [admission, how] of [['stall', 'never answers'], ['fail', 'fails']] as const) {
+  test(`an admission the host ${how} admits the task: the tool runs and the task row posts`, { timeout: 20_000 }, async (t) => {
+    const posts = hostedPort(t, { admission });
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    interceptors(t, replyRun(hostedEnv()));
+    scriptedProvider([callsTools('read_slack_channel'), answers]);
+    ran.length = 0;
+
+    assert.deepEqual(await slackTurn(`fees-admission-${admission}`), { text: 'done' });
+    assert.equal(admissions.length, 1);
+    assert.deepEqual(ran, ['read_slack_channel']);
+    assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+    const logged = warn.mock.calls.map(({ arguments: [line] }) => String(line)).filter((line) => line.includes('task_admission_failed'));
+    assert.equal(logged.length, 1);
+    assert.ok(!logged[0]!.includes(INSTALLATION) && !logged[0]!.includes('sub_'), 'the log names no installation or run');
+  });
+}
 
 test('a chat row the host never answers does not delay the first model request', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t, { stall: 'chat' });
@@ -399,6 +480,7 @@ test('a retried attempt of the same run posts only duplicates', async (t) => {
   assert.equal(await attempt(), 'ran');
   assert.equal(await attempt(), 'ran');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted', 'chat:duplicate', 'task:duplicate']);
+  assert.equal(admissions.length, 2, 'each attempt asks again');
 });
 
 test('a channel read whose result has an unexpected shape posts the task row and keeps its result', async (t) => {
@@ -502,6 +584,7 @@ for (const [name, env, port] of [
     assert.deepEqual(ran, ['read_slack_channel']);
     assert.equal(sent.length, 2);
     assert.deepEqual(posts, []);
+    assert.deepEqual(admissions, [], 'nothing asked for admission');
     assert.equal(warn.mock.callCount(), 0, 'nothing tried to post');
   });
 }
