@@ -862,6 +862,34 @@ test('a scheduled run whose channel access changed after a tool call is not cred
   assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
 });
 
+test('a platform-funded scheduled run that called a tool and then failed as a whole is not credited back', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'failed_after_tool', {
+    platformFunded: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); throw PROVIDER_FAILED(); }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass, run?.toolCallCount], ['failed', 'unknown_external_outcome', 1]);
+  assert.deepEqual(creditBacks, []);
+  assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('a platform-funded scheduled run that ended without a valid result is credited back only if it called no tool', async (t) => {
+  const noResult = { ...successfulReply(), data: {} };
+  const quiet = await scheduledRunSettlement(t, 'no_result', {
+    platformFunded: true, handle: () => readingHandle(async () => noResult),
+  });
+  assert.deepEqual([quiet.run?.status, quiet.run?.failureClass], ['failed', 'result_invalid']);
+  assert.deepEqual(quiet.creditBacks, [{ run: { installationId: 'inst_no_result', runId: 'submission_test' }, reason: 'provider' }]);
+
+  const afterTool = await scheduledRunSettlement(t, 'no_result_after_tool', {
+    platformFunded: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); return noResult; }),
+  });
+  assert.deepEqual([afterTool.run?.status, afterTool.run?.failureClass, afterTool.run?.toolCallCount],
+    ['failed', 'unknown_external_outcome', 1]);
+  assert.deepEqual(afterTool.creditBacks, []);
+  assert.equal(JSON.stringify(afterTool.messages).includes(CREDITED_BACK), false);
+});
+
 test('a scheduled run whose task row is refused is not credited back', async (t) => {
   const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'task_refused', { platformFunded: true, fee: 'refused' });
   assert.deepEqual([run?.status, run?.failureClass], ['failed', 'spend_limited']);

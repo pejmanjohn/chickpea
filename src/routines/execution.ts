@@ -35,7 +35,7 @@ import {
 } from '../config/installation-admission.ts';
 import { isCredentialKeyringUnavailable } from '../slack/credential-keyring.ts';
 import { resolveModelCredentialAttribution } from '../config/model-credential-refs.ts';
-import { isCreditsExhausted, platformFundingConfigured, postRunFee } from '../config/platform-funding.ts';
+import { isCreditsExhausted, postRunFee } from '../config/platform-funding.ts';
 import { qualifiesAsTask } from '../usage/run-fees.ts';
 import {
   creditBackFailedRun,
@@ -79,9 +79,7 @@ import {
 } from '../usage/runtime-recorder.ts';
 import { opaqueId } from '../work/admission.ts';
 import {
-  deploymentServesManyInstallations,
   installationOwnershipOf,
-  installationScopeOf,
   scopedObjectName,
   type InstallationOwnership,
 } from '../config/installation-scope.ts';
@@ -266,7 +264,7 @@ export async function executeRoutineOccurrence(
     }
     const creditedBack = await creditBackFailedRun(
       hostedRun(input.env, admission.flueAgentReceipt?.submissionId),
-      creditBackReason(failure.failureClass, planFunding(undefined)),
+      creditBackReason(failure.failureClass, { funding: planFunding(undefined) }),
     );
     let terminalFailure = false;
     if (
@@ -966,7 +964,10 @@ async function finalizeSettlement(
     if (failure) {
       await creditBackFailedRun(
         hostedRun(prepared.env, submissionId),
-        creditBackReason(failure.failureClass, planFunding(executionInitialData(prepared.envelope).runtimePlan)),
+        creditBackReason(failure.failureClass, {
+          funding: planFunding(executionInitialData(prepared.envelope).runtimePlan),
+          toolCallCount: settlement.result.toolCallCount,
+        }),
       );
     }
     const usage = settlement.result.usage;
@@ -1003,7 +1004,10 @@ async function finalizeSettlement(
   }
   const creditedBack = await creditBackFailedRun(
     hostedRun(prepared.env, submissionId),
-    creditBackReason(cause ?? settlement.failureClass, planFunding(executionInitialData(prepared.envelope).runtimePlan)),
+    creditBackReason(cause ?? settlement.failureClass, {
+      funding: planFunding(executionInitialData(prepared.envelope).runtimePlan),
+      toolCallCount: settlement.toolCallCount,
+    }),
   );
   await prepared.workLifecycle?.settleWithoutDelivery({
     terminalDisposition: 'failed',
@@ -1040,14 +1044,9 @@ async function requireDeliveryTaskFee(
   prepared: PreparedExecution,
   submissionId: string | undefined,
 ): Promise<RoutineRuntimeError | undefined> {
-  const installationId = deploymentServesManyInstallations(prepared.env)
-    ? installationScopeOf(prepared.env)?.installationId
-    : undefined;
-  if (!installationId || !submissionId || !platformFundingConfigured()) return undefined;
-  if (!qualifiesAsTask({ kind: 'scheduled' }, { kind: 'post' })) return undefined;
-  const outcome = await postRunFee({
-    installationId, runId: submissionId, tier: 'task', agentId: prepared.access.config.agentId,
-  });
+  const run = hostedRun(prepared.env, submissionId);
+  if (!run || !qualifiesAsTask({ kind: 'scheduled' }, { kind: 'post' })) return undefined;
+  const outcome = await postRunFee({ ...run, tier: 'task', agentId: prepared.access.config.agentId });
   return outcome.kind === 'refused' ? new RoutineRuntimeError('spend_limited', CREDITS_EXHAUSTED_TEXT) : undefined;
 }
 

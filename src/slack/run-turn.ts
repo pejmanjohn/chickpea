@@ -1980,7 +1980,7 @@ async function runTurnAttempt(
           hostedRun(platformEnv, options.flueDispatch?.dispatchReceipt?.submissionId),
           creditBackReason(
             slackFailureKind(err, options.flueDispatch?.flueSettlement),
-            planFunding(runtimePlanDecision?.runtimePlan),
+            { funding: planFunding(runtimePlanDecision?.runtimePlan) },
           ),
         ));
         await statusTurn.prepareFinal();

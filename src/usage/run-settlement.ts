@@ -26,9 +26,12 @@ type NotOurs =
   | 'may_have_posted'
   | 'cause_unrecorded';
 
-type Owner = { readonly ours: CreditBackReason } | { readonly notOurs: NotOurs };
+type Owner =
+  | { readonly ours: CreditBackReason; readonly unlessToolCalled?: true }
+  | { readonly notOurs: NotOurs };
 
 const ours = (reason: CreditBackReason): Owner => ({ ours: reason });
+const oursUnlessToolCalled = (reason: CreditBackReason): Owner => ({ ours: reason, unlessToolCalled: true });
 const notOurs = (why: NotOurs): Owner => ({ notOurs: why });
 
 const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
@@ -55,22 +58,25 @@ const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
   workflow_interrupted: ours('chickpea'),
   internal_error: ours('chickpea'),
   deadline_exceeded: ours('timeout'),
-  tool_failed: ours('provider'),
+  tool_failed: oursUnlessToolCalled('provider'),
   unknown_external_outcome: notOurs('cause_unrecorded'),
-  result_invalid: ours('provider'),
+  result_invalid: oursUnlessToolCalled('provider'),
   slack_rate_limited: ours('chickpea'),
   direct_thread_unavailable: notOurs('customer_destination'),
   channel_destination_unavailable: notOurs('customer_destination'),
   delivery_unknown: notOurs('may_have_posted'),
 };
 
-export function creditBackReason(
-  kind: SlackFailureKind | RoutineFailureClass,
-  funding: ModelRequestFundingSource,
-): CreditBackReason | null {
+export interface FailedRun {
+  readonly funding: ModelRequestFundingSource;
+  readonly toolCallCount?: number;
+}
+
+export function creditBackReason(kind: SlackFailureKind | RoutineFailureClass, run: FailedRun): CreditBackReason | null {
   const owner = FAILURE_OWNERS[kind];
   if ('notOurs' in owner) return null;
-  return owner.ours === 'provider' && funding !== 'platform' ? null : owner.ours;
+  if (owner.unlessToolCalled && (run.toolCallCount ?? 0) > 0) return null;
+  return owner.ours === 'provider' && run.funding !== 'platform' ? null : owner.ours;
 }
 
 export function planFunding(plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined): ModelRequestFundingSource {
