@@ -49,6 +49,7 @@ import { startNodeGatewaySession } from './slack/gateway/node-runtime.ts';
 import { workModelInvocationInterceptor } from './work/model-invocation.ts';
 import { modelAccessInterceptor } from './agents/model-access-lookup.ts';
 import { runFeeInterceptor } from './config/run-fee-interceptor.ts';
+import { observeModelAccess } from './config/model-access.ts';
 import { workspaceRegistryInterceptor } from './sandbox/workspace-registry.ts';
 import {
   observeResponseMetadata,
@@ -154,7 +155,7 @@ instrument({
 instrument({
   key: Symbol.for('chickpea.model-access'),
   interceptor: modelAccessInterceptor,
-  observe() {},
+  observe: observeModelAccess,
   dispose() {},
 });
 

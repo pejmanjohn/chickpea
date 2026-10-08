@@ -4,20 +4,23 @@ import {
   parseCodingWorkerBinding,
   type CodingWorkerBinding,
 } from '../sandbox/coding-worker-binding.ts';
+import { sha256Hex } from '../security/digest.ts';
+import { isStorableRequestText } from '../usage/validation.ts';
 import { FLUE_CLOUDFLARE_EXTENSION_BRAND, installationAgentObject } from './cloudflare-extension.ts';
+import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
 import type { TurnInputSql } from './turn-input.ts';
 
 /**
- * The coding worker's binding, staged beside its instance by the coordinator
- * before the worker is dispatched, so the trusted model-access lookup can
- * bind the attempt to the binding's frozen credential before the agent
- * renders (Flue keeps `initialData` to itself until then). Only a binding of
- * an installation of a deployment serving many is staged: standalone workers
- * read the installation's current keys.
+ * What the coordinator stages in the coding worker's own object before it
+ * dispatches a task, so the trusted model-access lookup can bind the
+ * worker's attempt before the agent renders (Flue keeps `initialData` to
+ * itself until then).
  *
- * The instance ID is a digest of the binding, so a staged binding that hashes
- * to the instance reading it is the one the coordinator dispatched; the first
- * write stays, as Flue keeps the first `initialData`.
+ * The binding is staged per instance. The instance ID is a digest of the
+ * binding, so a staged binding that hashes to the instance reading it is the
+ * one the coordinator dispatched; the first write stays, as Flue keeps the
+ * first `initialData`. The delegating run and its Agent are staged per
+ * submission, since one worker serves tasks from many runs.
  */
 
 const STAGED_BINDING_TABLE = 'chickpea_coding_worker_binding';
@@ -61,6 +64,58 @@ export function readStagedCodingWorkerBindingFrom(
   return binding;
 }
 
+const STAGED_RUN_TABLE = 'chickpea_coding_worker_run';
+
+// A worker's budget starts after any queue wait, so a run stays staged well past it.
+export const STAGED_RUN_RETENTION_MS = 24 * 60 * 60_000;
+
+function ensureStagedRunTable(sql: TurnInputSql): void {
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS ${STAGED_RUN_TABLE} (
+      submission_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      staged_at INTEGER NOT NULL
+    )`,
+  );
+}
+
+/** The run a coding worker's submission works for, and the Agent that run belongs to. */
+export interface StagedCodingWorkerRun {
+  readonly runId: string;
+  readonly agentId: string;
+}
+
+export function writeStagedCodingWorkerRun(
+  sql: TurnInputSql,
+  submissionId: unknown,
+  runId: unknown,
+  agentId: unknown,
+  now: number,
+): void {
+  if (!isStorableRequestText(submissionId) || !isStorableRequestText(runId) || !isStorableRequestText(agentId)) {
+    throw new Error('A staged coding worker run needs a submission ID, a run ID and an Agent ID of at most 256 bytes.');
+  }
+  ensureStagedRunTable(sql);
+  sql.exec(`DELETE FROM ${STAGED_RUN_TABLE} WHERE staged_at < ?`, now - STAGED_RUN_RETENTION_MS);
+  sql.exec(
+    `INSERT INTO ${STAGED_RUN_TABLE} (submission_id, run_id, agent_id, staged_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(submission_id) DO NOTHING`,
+    submissionId, runId, agentId, now,
+  );
+}
+
+export function readStagedCodingWorkerRunFrom(sql: TurnInputSql, submissionId: string): StagedCodingWorkerRun | undefined {
+  ensureStagedRunTable(sql);
+  const row = sql.exec(
+    `SELECT run_id, agent_id FROM ${STAGED_RUN_TABLE} WHERE submission_id = ?`,
+    submissionId,
+  ).toArray()[0];
+  return typeof row?.run_id === 'string' && typeof row.agent_id === 'string'
+    ? { runId: row.run_id, agentId: row.agent_id }
+    : undefined;
+}
+
 interface WorkerObjectInstance {
   ctx: { id: { name?: string }; storage: { sql: TurnInputSql } };
 }
@@ -82,22 +137,40 @@ export const codingWorkerCloudflareExtension = {
         }
         writeStagedCodingWorkerBinding(this.ctx.storage.sql, json, Date.now());
       }
+
+      chickpeaStageCodingWorkerRun(submissionId: string, runId: string, agentId: string): void {
+        writeStagedCodingWorkerRun(this.ctx.storage.sql, submissionId, runId, agentId, Date.now());
+      }
     },
   [FLUE_CLOUDFLARE_EXTENSION_BRAND]: true as const,
 };
 
-interface WorkerObjectNamespace {
-  idFromName(name: string): unknown;
-  get(id: unknown): {
-    setName?(name: string): Promise<void>;
-    chickpeaStageCodingWorkerBinding(json: string): Promise<void>;
-  };
+interface WorkerObjectStub {
+  setName?(name: string): Promise<void>;
+  chickpeaStageCodingWorkerBinding(json: string): Promise<void>;
+  chickpeaStageCodingWorkerRun(submissionId: string, runId: string, agentId: string): Promise<void>;
 }
 
-/**
- * Host side on Cloudflare: address the worker's object the way Flue's
- * dispatch does (by instance name) and stage its binding there.
- */
+interface WorkerObjectNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): WorkerObjectStub;
+}
+
+async function workerObject(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+  instanceId: string,
+): Promise<WorkerObjectStub> {
+  const namespace = env?.[bindingName] as WorkerObjectNamespace | undefined;
+  if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') {
+    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
+  }
+  const stub = namespace.get(namespace.idFromName(instanceId));
+  // A staging call is the worker's first contact; Flue's addressing names the object first.
+  await stub.setName?.(instanceId);
+  return stub;
+}
+
 export async function stageCodingWorkerBinding(
   env: Record<string, unknown> | undefined,
   bindingName: string,
@@ -107,14 +180,18 @@ export async function stageCodingWorkerBinding(
   if (codingWorkerInstanceId(binding) !== instanceId) {
     throw new Error('The coding worker binding belongs to another instance.');
   }
-  const namespace = env?.[bindingName] as WorkerObjectNamespace | undefined;
-  if (!namespace || typeof namespace.idFromName !== 'function' || typeof namespace.get !== 'function') {
-    throw new Error(`Agent object binding ${bindingName} is unavailable.`);
-  }
-  const stub = namespace.get(namespace.idFromName(instanceId));
-  // A staging call is the worker's first contact; Flue's addressing names the object first.
-  await stub.setName?.(instanceId);
-  await stub.chickpeaStageCodingWorkerBinding(JSON.stringify(binding));
+  await (await workerObject(env, bindingName, instanceId)).chickpeaStageCodingWorkerBinding(JSON.stringify(binding));
+}
+
+export async function stageCodingWorkerRun(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+  instanceId: string,
+  submissionId: string,
+  run: StagedCodingWorkerRun,
+): Promise<void> {
+  await (await workerObject(env, bindingName, instanceId))
+    .chickpeaStageCodingWorkerRun(submissionId, run.runId, run.agentId);
 }
 
 /** The binding staged in this worker's own object (Cloudflare only). */
@@ -122,4 +199,23 @@ export async function readStagedCodingWorkerBinding(instanceId: string): Promise
   if (!isCloudflareTarget()) return undefined;
   const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
   return readStagedCodingWorkerBindingFrom(getCloudflareContext().storage.sql, instanceId);
+}
+
+export async function readStagedCodingWorkerRun(submissionId: string): Promise<StagedCodingWorkerRun | undefined> {
+  if (!isCloudflareTarget()) return undefined;
+  const { getCloudflareContext } = await import('@flue/runtime/cloudflare');
+  return readStagedCodingWorkerRunFrom(getCloudflareContext().storage.sql, submissionId);
+}
+
+/**
+ * The submission ID Flue gives a dispatch that carries an idempotency key.
+ * Flue documents this derivation as a frozen wire format.
+ */
+async function keyedSubmissionId(agentName: string, instanceId: string, idempotencyKey: string): Promise<string> {
+  const digest = await sha256Hex(`flue-submission-key\n${agentName}\n${instanceId}\n${idempotencyKey}`);
+  return `sub_ik_${digest.slice(0, 32)}`;
+}
+
+export function codingWorkerSubmissionId(instanceId: string, taskKey: string): Promise<string> {
+  return keyedSubmissionId(CHICKPEA_CODING_WORKER_AGENT_NAME, instanceId, taskKey);
 }

@@ -165,7 +165,7 @@ export interface WorkspaceTaskToolOptions {
    * record is written, and so before its dispatch. A failure refuses the
    * task as an unavailable workspace.
    */
-  prepareWorker?: (instanceId: string, binding: CodingWorkerBinding) => Promise<void>;
+  prepareWorker?: (instanceId: string, binding: CodingWorkerBinding, taskKey: string) => Promise<void>;
   client: CodingWorkerClient;
   /** This response's bookkeeping; one object for the whole response. */
   responseState: () => WorkspaceTaskResponseState;
@@ -322,7 +322,7 @@ export function createWorkspaceTaskTool(options: WorkspaceTaskToolOptions) {
         };
         if (options.prepareWorker) {
           try {
-            await options.prepareWorker(instanceId, binding);
+            await options.prepareWorker(instanceId, binding, taskKey);
           } catch {
             console.warn('[chickpea] coding worker could not be prepared');
             milestones.stop('workspace_unavailable');

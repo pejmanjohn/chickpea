@@ -41,6 +41,7 @@ import {
 import {
   ModelAccessError,
   configureModelAccessResolver,
+  configureModelRequestRecorder,
   createModelAccessInterceptor,
   resetModelAccessForTests,
   withDeploymentLane,
@@ -312,11 +313,11 @@ test('a grant is resolved only through the env of its own installation', async (
   const { envA, envB, grant } = await twoInstallations(t);
   const grantA = await grant(envA, 'run');
   await assert.rejects(
-    withModelAccess(grantA, envB, async () => undefined),
+    withModelAccess(grantA, envB, 'reply', async () => undefined),
     (error: unknown) => error instanceof ModelAccessError && error.code === 'installation_mismatch',
   );
   await assert.rejects(
-    withModelAccess({ ...grantA, fundingSource: 'platform' as never }, envA, async () => undefined),
+    withModelAccess({ ...grantA, fundingSource: 'platform' as never }, envA, 'reply', async () => undefined),
     (error: unknown) => error instanceof ModelAccessError && error.code === 'funding_not_offered',
   );
 });
@@ -337,7 +338,7 @@ test('a deployment serving many installations refuses calls without scope, deplo
         (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing', model.provider);
     }
     // Inside a grant of this deployment, a lane with its own credential is refused by the cell itself.
-    await withModelAccess(grantA, envA, async () => {
+    await withModelAccess(grantA, envA, 'reply', async () => {
       for (const model of lanes) {
         assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, { messages: [] }, {}),
           (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered', model.provider);
@@ -345,15 +346,15 @@ test('a deployment serving many installations refuses calls without scope, deplo
       assert.throws(() => registeredPiProvider('local-stub')!.streamSimple(localStub, { messages: [] }, {}),
         (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_mismatch');
     });
-    await assert.rejects(withDeploymentLane(envA, 'lane', async () => undefined),
+    await assert.rejects(withDeploymentLane(envA, 'lane', 'reply', async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
-    await assert.rejects(withStatelessModelAccess('cloudflare-workers-ai/@cf/model', { env: envA, runId: 'classifier' }, async () => undefined),
+    await assert.rejects(withStatelessModelAccess('cloudflare-workers-ai/@cf/model', { env: envA, runId: 'classifier', purpose: 'intent' }, async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
     // The stub has no credential here even with its URL set, and its grant cannot be resolved.
     await withEnv({ LOCAL_STUB_URL: 'http://127.0.0.1:9/v1' }, async () => {
       assert.equal(await installationModelAccessGrant('local-stub', envA, 'run'), undefined);
       await assert.rejects(withModelAccess({ ...grantA, providerId: 'local-stub', credentialRefId: 'cred_local-stub_custom', credentialVersion: 1 }, envA,
-        async () => undefined), ModelCredentialRevisionError);
+        'reply', async () => undefined), ModelCredentialRevisionError);
     });
     // The runtime refuses those lanes before any binding.
     const settings = new SqliteSettingsStore(':memory:');
@@ -381,8 +382,8 @@ test('a deployment serving many installations refuses calls without scope, deplo
     // A deployment-level provider key makes every model call refuse, even one with a grant.
     await withEnv({ ANTHROPIC_API_KEY: 'sk-ant-deployment-environment' }, async () => {
       for (const refused of [
-        () => withModelAccess(grantA, envA, async () => undefined),
-        () => withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, runId: 'classifier' }, async () => undefined),
+        () => withModelAccess(grantA, envA, 'reply', async () => undefined),
+        () => withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, runId: 'classifier', purpose: 'intent' }, async () => undefined),
         () => installationModelAccessGrant('anthropic', envA, 'run'),
       ]) {
         await assert.rejects(refused, (error: unknown) =>
@@ -447,7 +448,7 @@ test('standalone resolves the deployment environment key first, then the key sav
     const sent: SentRequest[] = [];
     const model = recordingProvider('anthropic', sent);
     const call = (step: string) =>
-      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: undefined, settings, runId: step }, () => modelCall(model, step));
+      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: undefined, settings, runId: step, purpose: 'reply' }, () => modelCall(model, step));
 
     // No credential: the existing actionable readiness error, and no request.
     await assert.rejects(call('missing'), (error: unknown) =>
@@ -473,7 +474,7 @@ test('standalone resolves the deployment environment key first, then the key sav
     // A lane that brings its own deployment credential runs as before, inside a standalone cell.
     const workersAi = recordingProvider('cloudflare-workers-ai', sent);
     sent.length = 0;
-    await withStatelessModelAccess('cloudflare-workers-ai/probe-model', { env: undefined, runId: 'classifier' },
+    await withStatelessModelAccess('cloudflare-workers-ai/probe-model', { env: undefined, runId: 'classifier', purpose: 'intent' },
       () => modelCall(workersAi, 'workers-ai'));
     assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['workers-ai', undefined]]);
   });
@@ -540,14 +541,15 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.match(instanceId, /^i1~inst_a~codingworker_[a-f0-9]{40}$/, 'the worker is named under its installation');
     const staged = new Map<string, CodingWorkerBinding>([[instanceId, binding]]);
     const lookup = (context: FlueExecutionContext, env: PlatformEnv | undefined) =>
-      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id));
+      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id),
+        async () => ({ runId: 'sub_coordinator', agentId: 'agent_lookup' }));
     const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
 
     const access = await lookup(worker(instanceId), envA);
     assert.equal(access.feeRun, undefined, 'its coordinator posts the run\'s fees; a worker posts none');
     assert.deepEqual('grant' in access && access.grant, {
       installationId: 'inst_a', providerId: 'anthropic', credentialRefId: frozen.credentialRefId,
-      credentialVersion: frozen.credentialVersion, runId: `sub_${instanceId}`, fundingSource: 'customer',
+      credentialVersion: frozen.credentialVersion, runId: 'sub_coordinator', fundingSource: 'customer',
     });
 
     const sent: SentRequest[] = [];
@@ -591,7 +593,97 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.deepEqual(sent, [], 'no request left the process');
 
     // Standalone keeps today's live read for its workers.
-    assert.deepEqual(await lookup(worker('codingworker_standalone'), undefined), { env: undefined });
+    assert.deepEqual(
+      await lookup(worker('codingworker_standalone'), undefined),
+      { env: undefined, runId: 'sub_coordinator', agentId: 'agent_lookup' },
+    );
+  });
+});
+
+test('a coding worker\'s attempt and grant name the run that delegated its task, staged for its own submission', async (t) => {
+  const { envA, grant } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const frozen = await grant(envA, 'freeze');
+    const binding = hostedWorkerBinding('inst_a', {
+      credentialRefId: frozen.credentialRefId, version: frozen.credentialVersion, providerId: 'anthropic',
+    });
+    const instanceId = codingWorkerInstanceId(binding);
+    // One worker serves tasks from several runs; each task's submission names its own.
+    const runs = new Map([
+      ['sub_ik_task_1', { runId: 'sub_coordinator_1', agentId: 'agent_lookup' }],
+      ['sub_ik_task_2', { runId: 'sub_coordinator_2', agentId: 'agent_lookup' }],
+    ]);
+    const lookup = (instance: string, submissionId: string, env: PlatformEnv | undefined) => lookupAttemptModelAccess(
+      { instanceId: instance, submissionId, agentName: 'chickpea-coding-worker-v1' },
+      async () => env,
+      async (id) => (id === instanceId ? binding : undefined),
+      async (id) => runs.get(id),
+    );
+
+    for (const [submissionId, { runId }] of runs) {
+      const access = await lookup(instanceId, submissionId, envA);
+      assert.equal(access.runId, runId);
+      assert.equal('grant' in access && access.grant.runId, runId);
+    }
+    // A submission Flue re-drives across a deploy has no staged run: its binding still
+    // decides the key, and it runs under its own submission with one warning.
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    const redriven = await lookup(instanceId, 'sub_ik_task_3', envA);
+    assert.equal(redriven.runId, 'sub_ik_task_3');
+    assert.deepEqual('grant' in redriven && [redriven.grant.runId, redriven.grant.credentialRefId],
+      ['sub_ik_task_3', frozen.credentialRefId]);
+    assert.deepEqual(warn.mock.calls.map((call) => call.arguments),
+      [['[chickpea] coding worker submission has no staged run', { submissionId: 'sub_ik_task_3', instanceId }]]);
+    // Without its binding the same submission still fails closed, and the binding check comes first.
+    await assert.rejects(lookup(`${instanceId}0`, 'sub_ik_task_3', envA),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+    assert.equal(warn.mock.calls.length, 1);
+    warn.mock.restore();
+
+    // Standalone runs under the staged run, or under its own submission when none was staged.
+    assert.deepEqual(
+      await lookup('codingworker_x', 'sub_ik_task_1', undefined),
+      { env: undefined, runId: 'sub_coordinator_1', agentId: 'agent_lookup' },
+    );
+    assert.deepEqual(await lookup('codingworker_x', 'sub_ik_task_3', undefined), { env: undefined });
+  });
+});
+
+test('a coding worker\'s request is recorded under the run that delegated it, not the worker\'s submission', async (t) => {
+  const { envA, grant, usage } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const frozen = await grant(envA, 'freeze');
+    const binding = hostedWorkerBinding('inst_a', {
+      credentialRefId: frozen.credentialRefId, version: frozen.credentialVersion, providerId: 'anthropic',
+    });
+    const instanceId = codingWorkerInstanceId(binding);
+    const recorded: string[] = [];
+    configureModelRequestRecorder(async (record) => {
+      recorded.push(record.requestId);
+      return usage.recordModelRequest(record);
+    });
+    const sent: SentRequest[] = [];
+    const anthropic = recordingProvider('anthropic', sent);
+    const interceptor = createModelAccessInterceptor({
+      lookup: (context) => lookupAttemptModelAccess(
+        context,
+        async () => envA,
+        async (id) => (id === instanceId ? binding : undefined),
+        async (id) => (id === 'sub_ik_task' ? { runId: 'sub_coordinator', agentId: 'agent_lookup' } : undefined),
+      ),
+      installationGrants: async () => { throw new Error('an installation of many reads no live grants'); },
+    });
+
+    await interceptor(AGENT_OPERATION, { instanceId, submissionId: 'sub_ik_task', agentName: 'chickpea-coding-worker-v1' },
+      () => modelCall(anthropic, 'worker'));
+
+    assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['worker', KEY_A1]]);
+    assert.equal(recorded.length, 1);
+    const record = await usage.getModelRequest(recorded[0]!);
+    assert.deepEqual(
+      [record?.installationId, record?.runId, record?.agentId, record?.purpose],
+      ['inst_a', 'sub_coordinator', 'agent_lookup', 'reply'],
+    );
   });
 });
 
@@ -747,7 +839,7 @@ test('a provider error that echoes the injected key never records it', async (t)
     credentialVersion: 1, runId: 'run', fundingSource: 'customer',
   };
   const events: string[] = [];
-  const result = await withModelAccess(grant, undefined, async () => {
+  const result = await withModelAccess(grant, undefined, 'reply', async () => {
     const stream = registeredPiProvider('anthropic')!.streamSimple(model, { messages: [] }, {});
     for await (const event of stream) events.push(JSON.stringify(event));
     return stream.result();

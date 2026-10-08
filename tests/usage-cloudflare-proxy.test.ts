@@ -68,7 +68,7 @@ test('Cloudflare usage proxy records and reads a model request record through it
   } as unknown as TagStateRpc;
   const store = new CfUsageStore(stub);
   const record: ModelRequestRecord = {
-    requestId: 'request-cf', installationId: 'installation', runId: 'run-cf', attemptId: 'attempt-cf',
+    requestId: 'request-cf', purpose: 'intent', installationId: 'installation', runId: 'run-cf', attemptId: 'attempt-cf',
     agentId: null, provider: 'openai', model: 'gpt-4.1-mini', fundingSource: 'customer', outcome: 'stopped',
     inputTokens: 10, outputTokens: { total: 2, reasoning: 1 }, cacheReadTokens: 0,
     cacheWriteTokens: { total: 0, oneHour: null }, priceVersionId: null, listPriceUsdMicros: null, priceUnknownReason: 'price_unknown',

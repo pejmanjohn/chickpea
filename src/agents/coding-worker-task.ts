@@ -1,5 +1,6 @@
 import { init, type AgentInstanceHandle } from '@flue/runtime';
 
+import { currentModelAccessRunId } from '../config/model-access.ts';
 import { agentObjectBindingName, createCloudflareBoundedAgentReplyReader } from '../slack/bounded-agent-observation.ts';
 import { publishActivityStatus } from '../slack/activity-publisher.ts';
 import type { SandboxCodingTaskStub } from '../sandbox/coding-task-record.ts';
@@ -21,7 +22,7 @@ import {
   type WorkspaceTaskResponseState,
   type WorkspaceTaskToolOptions,
 } from '../sandbox/workspace-task.ts';
-import { stageCodingWorkerBinding } from './coding-worker-staging.ts';
+import { codingWorkerSubmissionId, stageCodingWorkerBinding, stageCodingWorkerRun } from './coding-worker-staging.ts';
 import { CHICKPEA_CODING_WORKER_AGENT_NAME } from './names.ts';
 import type {
   CodingWorkerRunRecord,
@@ -52,7 +53,11 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
     resolve: input.resolve,
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
     instanceId: codingWorkerInstanceId,
-    prepareWorker: (instanceId, binding) => prepareInstallationCodingWorker(instanceId, binding),
+    prepareWorker: async (instanceId, binding, taskKey) => {
+      const runId = currentModelAccessRunId();
+      if (!runId) throw new Error('No run is in scope to delegate a coding task from.');
+      await prepareCodingWorker(instanceId, binding, { taskKey, runId });
+    },
     client: cloudflareCodingWorkerClient(),
     responseState: () => responseState(currentWorkspaceRegistry()),
     onWorkerStarted: (model) => input.onWorkerStarted({ schemaVersion: 1, model }),
@@ -84,28 +89,29 @@ function threadCodingTaskRecords(conversationKey: () => string): CodingTaskRecor
   };
 }
 
-/**
- * An installation's coding worker (a version 2 binding, named under it) is
- * recorded in its object inventory, and its binding staged beside it for its
- * model access, before anything names it. A standalone worker needs neither.
- */
-export async function prepareInstallationCodingWorker(
+export async function prepareCodingWorker(
   instanceId: string,
   binding: CodingWorkerBinding,
+  delegation: { taskKey: string; runId: string },
   dependencies: {
     env?: () => Promise<Record<string, unknown>>;
     record?: typeof recordWorkspaceObject;
     stage?: typeof stageCodingWorkerBinding;
+    stageRun?: typeof stageCodingWorkerRun;
   } = {},
 ): Promise<void> {
-  if (binding.schemaVersion !== 2) return;
   const env = await (dependencies.env ?? coordinatorEnv)();
-  await (dependencies.record ?? recordWorkspaceObject)(env, { kind: 'coding_worker', name: instanceId });
-  await (dependencies.stage ?? stageCodingWorkerBinding)(
+  const bindingName = agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME);
+  if (binding.schemaVersion === 2) {
+    await (dependencies.record ?? recordWorkspaceObject)(env, { kind: 'coding_worker', name: instanceId });
+    await (dependencies.stage ?? stageCodingWorkerBinding)(env, bindingName, instanceId, binding);
+  }
+  await (dependencies.stageRun ?? stageCodingWorkerRun)(
     env,
-    agentObjectBindingName(CHICKPEA_CODING_WORKER_AGENT_NAME),
+    bindingName,
     instanceId,
-    binding,
+    await codingWorkerSubmissionId(instanceId, delegation.taskKey),
+    { runId: delegation.runId, agentId: binding.agentId },
   );
 }
 

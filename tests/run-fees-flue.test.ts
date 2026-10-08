@@ -15,6 +15,7 @@ import {
   createModelAccessInterceptor,
   resetModelAccessForTests,
   withModelAccess,
+  withModelRequestPurpose,
   type AttemptModelAccess,
   type ModelAccessGrant,
 } from '../src/config/model-access.ts';
@@ -315,6 +316,25 @@ test('an unlisted tool qualifies by the family its render registered for it', as
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
+test('a qualifying tool inside an absorbed purpose, such as reading an attachment, posts no task row', async (t) => {
+  const posts = hostedPort(t);
+  const modelAccess = createModelAccessInterceptor({
+    lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
+    installationGrants: async () => [],
+  });
+  const context = { instanceId: 'fees-attachment', submissionId: 'sub_attachment' };
+  const read = () => runFeeInterceptor(
+    { type: 'tool', toolCallId: 'call_read', toolName: 'read_slack_channel' }, context, async () => 'ran',
+  );
+
+  await modelAccess({ type: 'agent', operationId: 'op_attachment', operationKind: 'prompt' }, context, async () => {
+    assert.equal(await withModelRequestPurpose('attachment', read), 'ran');
+    assert.deepEqual(tiers(posts), ['chat:posted']);
+    assert.equal(await read(), 'ran');
+  });
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
 test('a stateless call, such as the intent check, posts no fee row', async (t) => {
   const posts = hostedPort(t);
   const { sent, model } = scriptedProvider([answers]);
@@ -322,7 +342,7 @@ test('a stateless call, such as the intent check, posts no fee row', async (t) =
     systemPrompt: 'probe', messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
   }, {}).result();
 
-  const reply = await withModelAccess(ownKeyGrant('slack-interaction-intent'), hostedEnv(), call);
+  const reply = await withModelAccess(ownKeyGrant('slack-interaction-intent'), hostedEnv(), 'intent', call);
 
   assert.equal(reply.stopReason, 'stop');
   assert.equal(sent.length, 1);

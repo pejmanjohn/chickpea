@@ -114,13 +114,14 @@ test('a streamed OpenRouter request records the cost OpenRouter reported, its re
     return recordedResponse();
   };
 
-  const result = await withModelAccess(grant('customer'), undefined, () => call(deepseek(), { fetch: network }));
+  const result = await withModelAccess(grant('customer'), undefined, 'reply', () => call(deepseek(), { fetch: network }));
 
   assert.equal(result.stopReason, 'length');
   assert.deepEqual(sent, [ENDPOINT]);
   assert.equal(recorded.length, 1);
   assert.deepEqual(await store.getModelRequest(recorded[0]!.requestId), {
     requestId: recorded[0]!.requestId,
+    purpose: 'reply',
     installationId: 'chickpea',
     runId: 'run_customer',
     attemptId: recorded[0]!.attemptId,
@@ -156,7 +157,7 @@ test('a platform-funded OpenRouter request is charged with the cost OpenRouter r
   const network = t.mock.method(globalThis, 'fetch', async () => recordedResponse());
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_credits' }) as PlatformEnv;
 
-  const result = await withModelAccess(grant('platform', 'inst_credits'), env, () => call(deepseek()));
+  const result = await withModelAccess(grant('platform', 'inst_credits'), env, 'reply', () => call(deepseek()));
 
   assert.equal(result.stopReason, 'length');
   assert.equal(network.mock.callCount(), 1, 'the request reaches the network fetch looked up when it is sent');
@@ -186,7 +187,7 @@ test('the library returns the same message through the proxy as it does called d
   proxiedOpenRouter(t);
   const model = deepseek();
 
-  const proxied = await withModelAccess(grant('customer'), undefined, () =>
+  const proxied = await withModelAccess(grant('customer'), undefined, 'reply', () =>
     call(model, { fetch: async () => recordedResponse() }));
   const direct = await openrouterProvider().streamSimple(model, CONTEXT, {
     apiKey: API_KEY, fetch: async () => recordedResponse(),

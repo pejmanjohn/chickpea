@@ -133,7 +133,7 @@ async function send(
   const provider = registeredPiProvider(route.registeredId);
   const model = provider?.getModels().find((candidate) => candidate.id === route.model);
   assert.ok(provider && model, `${route.registeredId} lists ${route.model}`);
-  const result = await withModelAccess(access, env, () =>
+  const result = await withModelAccess(access, env, 'reply', () =>
     provider.streamSimple(model, CONTEXT, { fetch: network, ...(onPayload ? { onPayload } : {}) }).result());
   return { result, sent };
 }

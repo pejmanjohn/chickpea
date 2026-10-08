@@ -342,7 +342,7 @@ test('stateless calls and requests inside an attempt, such as compaction, are re
     ['agent_a', { env: ENV_A, grant: grant('inst_a', 'sub_agent_a') }],
   ]));
   // A classifier at a host boundary, and a request Flue sends without a model step.
-  assert.equal((await withModelAccess(grant('inst_a', 'classifier'), ENV_A, () => modelCall(model, 'C1'))).stopReason, 'stop');
+  assert.equal((await withModelAccess(grant('inst_a', 'classifier'), ENV_A, 'intent', () => modelCall(model, 'C1'))).stopReason, 'stop');
   await attempt('agent_a', async () => {
     assert.equal((await modelCall(model, 'compaction-1')).stopReason, 'stop');
     host.statuses.set('inst_a', 'refused');
@@ -351,7 +351,7 @@ test('stateless calls and requests inside an attempt, such as compaction, are re
     assert.equal(compaction.stopReason, 'error');
     assert.match(compaction.errorMessage ?? '', /installation_not_admitted/);
   });
-  const classifier = await withModelAccess(grant('inst_a', 'classifier'), ENV_A, () => modelCall(model, 'C2'));
+  const classifier = await withModelAccess(grant('inst_a', 'classifier'), ENV_A, 'intent', () => modelCall(model, 'C2'));
   assert.equal(classifier.stopReason, 'error');
   assert.deepEqual(sent.map(({ step }) => step), ['C1', 'compaction-1'], 'nothing was sent once refused');
 });
