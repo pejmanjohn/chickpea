@@ -27,7 +27,6 @@ const config: EffectiveSlackConfig = {
   provider: 'anthropic',
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.\nRuntime guardrail.',
-  instructionLayers: [],
 };
 
 const routine = {

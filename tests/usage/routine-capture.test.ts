@@ -61,7 +61,6 @@ const config = {
   provider: 'anthropic',
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
   instructions: 'Be useful.',
-  instructionLayers: [],
 } satisfies EffectiveSlackConfig;
 
 test('routine recorder captures success, no-op-style zero usage, failure, and interruption honestly', async () => {

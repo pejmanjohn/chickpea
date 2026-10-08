@@ -38,6 +38,8 @@ export interface SlackRequestVariant {
   model?: string;
   funding?: 'platform' | 'customer';
   progressiveStreamingOffered?: boolean;
+  progressiveStreamingMode?: 'early' | 'final_answer';
+  conversationKind?: 'channel' | 'im' | 'mpim';
   /** False renders a requester with no workspace membership. */
   member?: boolean;
   /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
@@ -96,6 +98,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   current = variant;
   captured = undefined;
   const agent = currentAgent();
+  const conversationKind = variant.conversationKind ?? 'channel';
   const messageTs = (Number(variant.thread) + 0.0001).toFixed(6);
   const assignment = {
     workspaceId: variant.workspace, channelId: variant.channel, agentId: agent.id, agent, model: agent.model,
@@ -104,7 +107,8 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const turn = {
     workspaceId: variant.workspace, channelId: variant.channel, eventId: `E_${variant.thread}`, text: variant.text,
     userId: variant.user, ...(variant.member === false ? {} : { actorMembershipId: 'member' }), messageTs,
-    threadTs: variant.thread, source: 'app_mention', contextMode: 'thread',
+    threadTs: variant.thread, contextMode: 'thread',
+    ...(conversationKind === 'channel' ? { source: 'app_mention' } : { source: 'dm_message', channelType: conversationKind }),
   };
   const { decision } = await freezeRuntimePlanForTurn({
     turn, assignment, platformEnv: undefined, settingsStore: getSettingsStore(), memoryEpoch: Promise.resolve(1),
@@ -116,9 +120,10 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   });
   const body = serializeCurrentRequestEnvelope(variant.text, false, variant.user, messageTs, {
     schemaVersion: 2, progressiveStreamingOffered: variant.progressiveStreamingOffered ?? true,
+    ...(variant.progressiveStreamingMode ? { progressiveStreamingMode: variant.progressiveStreamingMode } : {}),
   });
   const attributes = {
-    workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread,
+    workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread, conversationKind,
     slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}`,
   };
   const signal = variant.delivery === 'file_delivery_check'

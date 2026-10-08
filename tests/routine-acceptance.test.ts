@@ -51,7 +51,7 @@ const config: EffectiveSlackConfig = {
   },
   model: 'anthropic/claude-haiku-4-5', provider: 'anthropic',
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
-  instructions: 'Use current channel authority.', instructionLayers: [],
+  instructions: 'Use current channel authority.',
 };
 function executionDependencies(now: () => number) {
   return {

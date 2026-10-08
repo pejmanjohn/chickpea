@@ -1,10 +1,10 @@
 /**
  * The prompt prefix every platform-funded Slack turn on one model and Agent
  * kind shares across workspaces and channels: the universal tools, ending at
- * `present_details`, then one constant system block. The Agent's own
- * instructions, its identity, and everything conditional follow as the tenant
- * block, so a new thread in any workspace reads the prefix from the provider's
- * prompt cache.
+ * `present_details`, the interactive tools a channel or DM turn mounts after
+ * them, then one constant system block. The Agent's own instructions, its
+ * identity, and everything conditional follow as the tenant block, so a new
+ * thread in any workspace reads the prefix from the provider's prompt cache.
  *
  * The platform payload hook in model access sets the cache breakpoints with
  * `sharePromptPrefix`. Any per-workspace text placed before the boundary, or
@@ -83,6 +83,9 @@ export function slackSystemBase(input: {
   ].join(PART_SEPARATOR);
 }
 
+export const SHARED_PREFIX_SHAPES = ['interactive', 'interactive_streaming'] as const;
+export type SharedPrefixShape = typeof SHARED_PREFIX_SHAPES[number];
+
 const sharedBlocks = new Map<AgentKind, string>();
 
 /** The constant system block every platform-funded Slack turn of `kind` opens with: breakpoint B. */
@@ -93,6 +96,16 @@ export function sharedSystemBlock(kind: AgentKind): string {
     sharedBlocks.set(kind, block);
   }
   return block;
+}
+
+let unsharedBlocks: readonly string[] | undefined;
+
+function unsharedSystemBlocks(): readonly string[] {
+  unsharedBlocks ??= AGENT_KINDS.flatMap((kind) => [
+    slackSystemBase({ kind, managementMounted: true, memberToolsMounted: false }),
+    slackSystemBase({ kind, managementMounted: false, memberToolsMounted: false }),
+  ]);
+  return unsharedBlocks;
 }
 
 /**
@@ -143,24 +156,21 @@ function withoutCacheControl(block: unknown): unknown {
 }
 
 /**
- * Set breakpoints so the request shares its prefix: A on the last universal
- * tool (1 hour), B on the constant system block (1 hour, or 5 minutes when
- * capability tools sit between A and B and key it to this tool set), C on
- * the tenant block (5 minutes), and D on pi-ai's last user block (5 minutes,
- * whatever retention pi-ai chose, since a 1-hour marker may not follow a
- * 5-minute one). A request that carries the anchor tool or a shared block
- * but not both, or universal tools other than the rendered ones, goes out
- * exactly as built and counts as a miss; any other request (an intent check,
- * a routine) is not a Slack turn and goes out unchanged.
+ * Set breakpoints A on the last universal tool and B on the constant system
+ * block, then C on the tenant block and D on the last user block (5 minutes).
+ * B lasts an hour only when every tool between A and B is one a shared shape
+ * sends: a tenant tool there keys B to one workspace, where an hour's write
+ * premium buys nothing. A Slack turn that carries the anchor tool or a shared
+ * block but not both, or other universal tools, goes out as built and counts
+ * a miss.
  */
 export function sharePromptPrefix(payload: Payload): Payload {
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const anchor = tools.findIndex((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
   const text = singleSystemText(payload);
-  const constant = text === undefined
-    ? undefined
-    : AGENT_KINDS.map(sharedSystemBlock).find((block) => text.startsWith(block + PART_SEPARATOR));
-  if (anchor < 0 && constant === undefined) return payload;
+  const opensWith = (block: string) => text !== undefined && text.startsWith(block + PART_SEPARATOR);
+  const constant = AGENT_KINDS.map(sharedSystemBlock).find(opensWith);
+  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return payload;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
   const miss = anchor < 0
     ? 'universal_tools_missing'
@@ -181,13 +191,14 @@ export function sharePromptPrefix(payload: Payload): Payload {
       ? { ...(withoutCacheControl(tool) as Payload), cache_control: ONE_HOUR }
       : withoutCacheControl(tool)),
     system: [
-      { type: 'text', text: constant, cache_control: anchor === tools.length - 1 ? ONE_HOUR : FIVE_MINUTES },
+      { type: 'text', text: constant, cache_control: tools.slice(anchor + 1).every(isShapeTool) ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
     ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
   };
 }
 
+/** Whatever retention pi-ai chose: a 1-hour marker may not follow a 5-minute one. */
 function withFiveMinuteMarkers(message: unknown): unknown {
   if (!isRecord(message) || !Array.isArray(message.content)) return message;
   return {
@@ -200,6 +211,7 @@ function withFiveMinuteMarkers(message: unknown): unknown {
 
 type RenderedPrefix = {
   tools: Payload[];
+  shapes: Record<SharedPrefixShape, Payload[]>;
   models: Record<string, Payload>;
 };
 
@@ -209,26 +221,40 @@ function renderedToolsJson(): string {
   return toolsJson;
 }
 
+let shapeToolsJson: ReadonlySet<string> | undefined;
+function isShapeTool(tool: unknown): boolean {
+  shapeToolsJson ??= new Set(Object.values((rendered as RenderedPrefix).shapes).flat().map((shaped) => JSON.stringify(shaped)));
+  return shapeToolsJson.has(JSON.stringify(withoutCacheControl(tool)));
+}
+
 const PREWARM_TURN = 'Reply with one word.';
 
+export interface SharedPrefixRequest {
+  kind: AgentKind;
+  shape: SharedPrefixShape;
+  request: Payload;
+}
+
 /**
- * The request that writes or refreshes the shared prefix of `kind` on
- * `model`: the universal tools and the constant system block with markers A
- * and B (1 hour), the request settings real traffic sends, a placeholder turn,
- * and `max_tokens: 0`. The tools and settings are the bytes a rendered
- * platform-funded turn sends, kept in shared-prefix-tools.json; the test pins
- * that file to a fresh render.
+ * One request per Agent kind and shape that writes or refreshes that shared
+ * prefix on `model`. Its bytes are a rendered turn's, kept in
+ * shared-prefix-tools.json, which the test pins to a fresh render.
  */
-export function sharedPrefixRequest(model: string, kind: AgentKind): Payload {
-  const { tools, models } = rendered as RenderedPrefix;
+export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
+  const { tools, shapes, models } = rendered as RenderedPrefix;
   const settings = models[model];
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
-  return {
-    model,
-    max_tokens: 0,
-    ...settings,
-    system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
-    tools: tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool),
-    messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],
-  };
+  const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
+  return AGENT_KINDS.flatMap((kind) => SHARED_PREFIX_SHAPES.map((shape) => ({
+    kind,
+    shape,
+    request: {
+      model,
+      max_tokens: 0,
+      ...settings,
+      system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
+      tools: [...universal, ...shapes[shape]],
+      messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],
+    },
+  })));
 }

@@ -31,7 +31,6 @@ function config(model: string, modelAttribution: AgentModelAttribution): Effecti
     provider: modelAttribution.providerId,
     modelAttribution,
     instructions: 'Help.',
-    instructionLayers: [],
   };
 }
 

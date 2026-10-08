@@ -232,7 +232,7 @@ const config = {
     id: 'agent_default', kind: 'user', revision: 1, name: 'Chickpea', instructions: 'Be useful.', enabled: true,
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
   },
-  model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.', instructionLayers: [],
+  model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.',
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } satisfies EffectiveSlackConfig;
 
