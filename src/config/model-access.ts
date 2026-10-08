@@ -146,7 +146,7 @@ interface ModelAccessCell {
  * One attempt's fee rows. The host's key absorbs a row another attempt of
  * the same run already posted, so each attempt posts its own.
  */
-export class RunFees {
+class RunFees {
   readonly runKind: RunKind;
   readonly #run: Omit<FeePost, 'tier'>;
   #task: Promise<void> | undefined;
