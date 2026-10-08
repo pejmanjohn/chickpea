@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
-import { init, instrument, useModel, useTool } from '@flue/runtime';
+import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
@@ -32,11 +32,15 @@ import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
 import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '../src/slack/flue-dispatch.ts';
+import { createSlackReadGate } from '../src/slack/read-budget.ts';
+import { SlackReadError } from '../src/slack/reading/errors.ts';
+import { SlackReadingService } from '../src/slack/reading/service.ts';
+import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { FeeRun } from '../src/usage/run-fees.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
-import { answers, callsTools, SCRIPTED_MODEL, scriptedProvider } from './helpers/scripted-provider.ts';
+import { answers, callsTools, SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
 const INSTALLATION = 'inst_fees';
 
@@ -92,16 +96,23 @@ function hostedPort(
   return posts;
 }
 
-function interceptors(t: TestContext, lookup: (runId: string | undefined) => AttemptModelAccess) {
+function interceptors(
+  t: TestContext,
+  lookup: (runId: string | undefined) => AttemptModelAccess,
+  beforeRunFees?: FlueExecutionInterceptor,
+) {
   const modelAccess = createModelAccessInterceptor({
     lookup: async (context) => lookup(context.submissionId),
     installationGrants: async () => [],
   });
   t.after(instrument({ key: Symbol('model-access'), interceptor: modelAccess, observe() {}, dispose() {} }));
+  if (beforeRunFees) t.after(instrument({ key: Symbol('before-run-fees'), interceptor: beforeRunFees, observe() {}, dispose() {} }));
   t.after(instrument({ key: Symbol('run-fees'), interceptor: runFeeInterceptor, observe() {}, dispose() {} }));
 }
 
 const ran: string[] = [];
+/** Errors the next synthetic read_slack_channel calls throw before doing any work, one per call. */
+const channelReadRefusals: Error[] = [];
 
 function FeeProbe() {
   useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
@@ -112,21 +123,65 @@ function FeeProbe() {
       input: v.object({}),
       output: v.string(),
       run: () => {
+        const refusal = name === 'read_slack_channel' ? channelReadRefusals.shift() : undefined;
+        if (refusal) throw refusal;
         ran.push(name);
         return { output: 'ok' };
       },
     });
   }
+  useTool({
+    name: 'read_slack_list',
+    description: 'The synthetic read_slack_list, which fails after it does its work.',
+    input: v.object({}),
+    output: v.string(),
+    run: () => {
+      ran.push('read_slack_list');
+      throw new Error('Slack answered with an unreadable response.');
+    },
+  });
   return 'Use the scripted tools.';
 }
 
-async function slackTurn(id: string): Promise<{ text: string } | unknown> {
+const MENTION = { workspaceId: 'T0FEES', channelId: 'C0FEES', threadTs: '1000.000100', messageTs: '1000.000100' };
+const slackHistoryCalls: unknown[] = [];
+const readBudgetDecisions: boolean[] = [];
+
+/** The real Slack read tools on a shared app, paced at one read a minute. */
+function ChannelMentionProbe() {
+  useModel(`${ANTHROPIC_COMPAT_PROVIDER_ID}/${SCRIPTED_MODEL}`);
+  const budget = createSlackReadGate({ state: undefined, workspaceId: MENTION.workspaceId, gated: true });
+  const service = new SlackReadingService({
+    client: { conversations: { history: async (args: unknown) => { slackHistoryCalls.push(args); return { ok: true, messages: [] }; } } } as never,
+    gate: {
+      ...budget,
+      reserve: async (method) => {
+        const decision = await budget.reserve(method);
+        readBudgetDecisions.push(decision.ok);
+        return decision;
+      },
+    },
+    authority: {
+      workspaceId: MENTION.workspaceId, managementAgent: false, requesterSlackUserId: 'U_REQUESTER', current: MENTION,
+      assertActive: async () => {}, conversation: async () => undefined, isMember: async () => true, hasActiveGrant: async () => true,
+    },
+    self: { botUserId: 'U_BOT' },
+  });
+  for (const tool of createSlackReadingTools(async () => service)) useTool(tool);
+  return 'Read the channel.';
+}
+
+const readsMentionChannel = (model: Parameters<typeof answers>[0]) => scriptedMessage(model, [
+  { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel: MENTION.channelId } },
+], 'toolUse');
+
+async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise<{ text: string } | unknown> {
   const runtime = await start({
-    agents: [{ agent: FeeProbe, name: 'fee-probe' }],
+    agents: [{ agent: probe, name: 'fee-probe' }],
     providers: [registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!],
   });
   try {
-    const agent = init(FeeProbe, { id });
+    const agent = init(probe, { id });
     const receipt = await agent.dispatch('Hello');
     return await promptSlackThreadAgent({
       handle: agent, message: 'unused saved dispatch', turnId: id,
@@ -151,10 +206,10 @@ const tiers = (posts: ReadonlyArray<{ tier: string; outcome: string }>) => posts
 const replyRun = (env: PlatformEnv | undefined, feeRun: FeeRun = { kind: 'interactive', repositoryShell: false }) =>
   (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', feeRun });
 
-test('an own-key task refused at zero ends the turn out of usage, before the tool runs or another request is sent', { timeout: 20_000 }, async (t) => {
+test('an own-key task refused at zero runs its tool once, then ends the turn out of usage before another request is sent', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t, { refuse: 'task' });
   interceptors(t, replyRun(hostedEnv()));
-  const { sent } = scriptedProvider([callsTools('read_slack_channel'), answers]);
+  const { sent } = scriptedProvider([callsTools('read_slack_channel'), callsTools('read_slack_channel'), answers]);
   ran.length = 0;
 
   const failure = await slackTurn('fees-refused');
@@ -164,8 +219,84 @@ test('an own-key task refused at zero ends the turn out of usage, before the too
   assert.equal(failure.retryable, false);
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sent.length, 1, 'no provider request after the refusal');
-  assert.deepEqual(ran, [], 'the refused tool never ran');
+  assert.deepEqual(ran, ['read_slack_channel'], 'the tool ran once');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:refused']);
+});
+
+test('after an own-key post is refused, a parallel qualifying call that starts later never runs', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t, { refuse: 'task' });
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+  const secondStartsAfterRefusal: FlueExecutionInterceptor = async (operation, _context, next) => {
+    if (operation.type === 'tool' && operation.toolCallId === 'call_1_read_slack_channel') {
+      while (!posts.some(({ outcome }) => outcome === 'refused')) await tick();
+      await tick();
+    }
+    return next();
+  };
+  interceptors(t, replyRun(hostedEnv()), secondStartsAfterRefusal);
+  const { sent } = scriptedProvider([callsTools('read_slack_channel', 'read_slack_channel'), answers]);
+  ran.length = 0;
+
+  const failure = await slackTurn('fees-refused-parallel');
+
+  assert.ok(failure instanceof AgentPromptFailure, String(failure));
+  assert.equal(failure.kind, 'credits-exhausted');
+  assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
+  assert.equal(sent.length, 1, 'no provider request after the refusal');
+  assert.deepEqual(ran, ['read_slack_channel'], 'only the call that started before the refusal ran');
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:refused']);
+});
+
+test('a qualifying tool that throws after doing its work posts one task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('read_slack_list'), answers]);
+  ran.length = 0;
+
+  assert.deepEqual(await slackTurn('fees-thrown-after-work'), { text: 'done' });
+  assert.deepEqual(ran, ['read_slack_list']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
+for (const code of ['rate_limited', 'read_limit'] as const) {
+  test(`a Slack read that throws ${code} before doing any work posts no task row`, { timeout: 20_000 }, async (t) => {
+    const posts = hostedPort(t);
+    interceptors(t, replyRun(hostedEnv()));
+    scriptedProvider([callsTools('read_slack_channel'), answers]);
+    ran.length = 0;
+    channelReadRefusals.splice(0, Infinity, new SlackReadError(code));
+
+    assert.deepEqual(await slackTurn(`fees-thrown-${code}`), { text: 'done' });
+    assert.deepEqual(ran, []);
+    assert.deepEqual(tiers(posts), ['chat:posted']);
+  });
+}
+
+test('a run whose first Slack read is refused posts one task row when a second qualifying tool completes', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('read_slack_channel'), callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+  channelReadRefusals.splice(0, Infinity, new SlackReadError('rate_limited'));
+
+  assert.deepEqual(await slackTurn('fees-refused-then-done'), { text: 'done' });
+  assert.deepEqual(ran, ['read_slack_channel']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
+test('a channel read the Slack read budget refuses posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([readsMentionChannel, answers]);
+  slackHistoryCalls.length = 0;
+  readBudgetDecisions.length = 0;
+  const preRead = await createSlackReadGate({ state: undefined, workspaceId: MENTION.workspaceId, gated: true }).reserve('conversations.history');
+  assert.equal(preRead.ok, true, 'the mention\'s history pre-read spent the minute\'s read');
+
+  assert.deepEqual(await slackTurn('fees-read-refused', ChannelMentionProbe), { text: 'done' });
+  assert.deepEqual(readBudgetDecisions, [false], 'the read budget refused the channel read');
+  assert.deepEqual(slackHistoryCalls, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
 });
 
 test('a hosted reply run posts one chat row, keyed by its submission and Agent, and no task row without a qualifying tool', { timeout: 20_000 }, async (t) => {
@@ -185,7 +316,7 @@ test('a hosted reply run posts one chat row, keyed by its submission and Agent, 
   assert.match(posts[0]!.runId, /^sub_/, 'the run ID is the Flue submission the request records carry');
 });
 
-test('parallel qualifying tools in one attempt post one task row, before either runs', { timeout: 20_000 }, async (t) => {
+test('parallel qualifying tools in one attempt post one task row once they complete', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
   interceptors(t, replyRun(hostedEnv()));
   scriptedProvider([callsTools('read_slack_channel', 'read_slack_channel', 'read_slack_thread'), callsTools('read_slack_channel'), answers]);
