@@ -22,6 +22,7 @@ import {
   configureModelAccessResolver,
   configureModelRequestRecorder,
   createModelAccessInterceptor,
+  observeModelAccess,
   resetModelAccessForTests,
   withModelAccess,
   type AttemptModelAccess,
@@ -33,6 +34,7 @@ import { ANTHROPIC_COMPAT_PROVIDER_ID, OPENAI_PLATFORM_COMPAT_PROVIDER_ID } from
 import { createCloudflareBindingProvider } from '../../src/cloudflare-provider.ts';
 import { createChickpeaPiProvider } from '../../src/config/pi-provider.ts';
 import { runStatelessVisionCall } from '../../src/images/inspect-output.ts';
+import { createSlackAttachmentAnalysis } from '../../src/slack/attachment-context.ts';
 import { promptSlackThreadAgent } from '../../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1 } from '../../src/slack/turn-job-types.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
@@ -575,7 +577,7 @@ function instrumentedLane(agentId: string) {
     lookup: async () => ({ env: undefined, deploymentLane: true, agentId }),
     installationGrants: async () => [],
   });
-  const dispose = instrument({ key: Symbol(agentId), interceptor, observe() {}, dispose() {} });
+  const dispose = instrument({ key: Symbol(agentId), interceptor, observe: observeModelAccess, dispose() {} });
   return { dispose };
 }
 
@@ -649,11 +651,12 @@ test('a real Flue overflow compaction writes one record per provider call, the c
       ['completed', 10, 'cloudflare', modelId, 'agent_compact'],
     ],
   );
+  assert.deepEqual(records.map((record) => record!.purpose), ['reply', 'reply', 'reply', 'compaction', 'reply']);
   assert.equal(records[3]!.attemptId, records[2]!.attemptId, 'the compaction runs in the overflowing attempt');
   assert.equal(new Set(records.map((record) => record!.requestId)).size, 5);
 });
 
-test('an attachment analysis prompt from agent start records under the same attempt and Agent as the reply', { timeout: 20_000 }, async (t) => {
+test('an attachment analysis from agent start records its own purpose under the same attempt and Agent as the reply', { timeout: 20_000 }, async (t) => {
   const { store, written } = recordingAccess(t);
   const lane = instrumentedLane('agent_attachments');
   t.after(lane.dispose);
@@ -675,11 +678,22 @@ test('an attachment analysis prompt from agent start records under the same atte
     },
   });
   registerPiProvider(provider);
-  let analysis = '';
+  let observations: string | undefined;
   function AttachmentProbe() {
     useModel('records-attachment-lane/probe');
     useAgentStart(async ({ harness }) => {
-      analysis = (await harness.prompt('Describe the attached file.')).text;
+      ({ observations } = await createSlackAttachmentAnalysis({
+        intake: { kind: 'ready', request: 'What is in the file?', count: 1, fileIds: ['F_FIXTURE_1'] },
+        gateway: { async readAttachment() { throw new Error('normalization is scripted'); } },
+        normalize: async () => ({
+          attachments: [{
+            kind: 'text', ordinal: 1, fileId: 'F_FIXTURE_1', filename: 'notes.txt', label: 'Attachment 1 - notes.txt',
+            representation: 'text_original', contentType: 'text/plain', text: 'synthetic notes',
+          }],
+          failures: [], totalBytes: 15, totalCharacters: 15,
+        }),
+        prompt: async (text, options) => ({ text: (await harness.prompt(text, options)).text }),
+      }));
     });
     return 'Answer with the attachment in mind.';
   }
@@ -694,10 +708,11 @@ test('an attachment analysis prompt from agent start records under the same atte
     await runtime.stop();
   }
 
-  assert.equal(analysis, 'ok');
+  assert.equal(observations, 'ok');
   const [analyzed, answered] = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
   assert.equal(written.length, 2);
   assert.deepEqual([analyzed!.inputTokens, answered!.inputTokens], [300, 120]);
+  assert.deepEqual([analyzed!.purpose, answered!.purpose], ['attachment', 'reply']);
   assert.equal(analyzed!.attemptId, answered!.attemptId);
   assert.equal(analyzed!.runId, answered!.runId);
   assert.deepEqual([analyzed!.agentId, answered!.agentId], ['agent_attachments', 'agent_attachments']);
@@ -724,7 +739,7 @@ test('a stateless vision check inside an attempt records one request under that 
   assert.equal(written.length, 1);
   const record = await store.getModelRequest(written[0]!.record.requestId);
   assert.deepEqual(
-    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId, record!.outcome],
-    ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed'],
+    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId, record!.outcome, record!.purpose],
+    ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed', 'vision'],
   );
 });

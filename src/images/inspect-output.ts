@@ -1,5 +1,6 @@
 import type { UserMessage } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
+import { withModelRequestPurpose } from '../config/model-access.ts';
 import { providerStreamsForModel } from '../config/pi-provider.ts';
 import * as v from 'valibot';
 import type { ImageInput } from './openai-images-client.ts';
@@ -52,7 +53,7 @@ export async function runStatelessVisionCall(
   const model = resolveModel(runtimeModel);
   if (!model.input.includes('image')) throw new VisionUnavailableError();
   const timeout = AbortSignal.timeout(VISION_CALL_TIMEOUT_MS);
-  const response = await providerStreamsForModel(model).streamSimple(model, {
+  const response = await withModelRequestPurpose('vision', () => providerStreamsForModel(model).streamSimple(model, {
     systemPrompt: call.systemPrompt,
     tools: [],
     messages: [{ role: 'user', timestamp: Date.now(), content: call.content }],
@@ -60,7 +61,7 @@ export async function runStatelessVisionCall(
     maxTokens: call.maxTokens ?? 1024,
     maxRetries: 0,
     signal: call.signal ? AbortSignal.any([timeout, call.signal]) : timeout,
-  }).result();
+  }).result());
   if (response.stopReason === 'error' || response.stopReason === 'aborted' || response.content.some((part) => part.type === 'toolCall')) {
     throw new Error('The configured chat model could not complete the visual check.');
   }

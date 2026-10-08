@@ -29,7 +29,7 @@ import {
   type OpenAICompletionsCompat,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
-import type { FlueExecutionContext, FlueExecutionInterceptor } from '@flue/runtime';
+import type { FlueExecutionContext, FlueExecutionInterceptor, FlueObservation } from '@flue/runtime';
 
 import { requireInstallationAdmitted } from './installation-admission.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from './installation-scope.ts';
@@ -130,6 +130,8 @@ interface ModelAccessCell {
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
   readonly purpose: ModelRequestPurpose;
+  /** Compaction turns Flue announced whose model operation has not started; copies of a cell share it. */
+  readonly compactionTurns: Set<string>;
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
@@ -230,7 +232,8 @@ export function createModelAccessInterceptor(
       if (!cell || (cell.hosted && cell.bound.size === 0)) {
         throw new ModelAccessError('scope_missing', 'No model access is in scope for this model call.');
       }
-      return next();
+      if (!cell.compactionTurns.delete(operation.turnId)) return next();
+      return cells.run(Object.freeze({ ...cell, purpose: 'compaction' }), next);
     }
     if (operation.type !== 'agent') return next();
     const active = cells.getStore();
@@ -252,6 +255,25 @@ export function createModelAccessInterceptor(
     );
     return cells.run(cell, next);
   };
+}
+
+/**
+ * Flue's model operation does not say a turn is a compaction; its
+ * `turn_request` observation does, emitted synchronously in the attempt's
+ * context just before that turn's model operation.
+ */
+export function observeModelAccess(event: FlueObservation): void {
+  if (event.type !== 'turn_request' || event.purpose === 'agent') return;
+  cells.getStore()?.compactionTurns.add(event.turnId);
+}
+
+/**
+ * Runs `fn` in the current attempt with its requests recorded under
+ * `purpose`. Nested agent operations of the same instance keep it.
+ */
+export function withModelRequestPurpose<T>(purpose: ModelRequestPurpose, fn: () => Promise<T>): Promise<T> {
+  const cell = cells.getStore();
+  return cell ? cells.run(Object.freeze({ ...cell, purpose }), fn) : fn();
 }
 
 /** The run the current attempt's requests are recorded under, if a cell is in scope. */
@@ -376,7 +398,9 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution, purpose });
+  return Object.freeze({
+    instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(),
+  });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
