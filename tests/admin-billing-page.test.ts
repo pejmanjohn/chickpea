@@ -58,8 +58,6 @@ const FROZEN: BillingSummary = {
   extraUsage: { remainingMicros: usd(40), frozen: true, expiresAt: new Date('2027-10-07T17:00:00Z') },
 };
 const TRIAL: BillingSummary = { ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } };
-const OWN_KEY_GRACE: BillingSummary = { ...NO_PLAN, funding: 'own_key', ownKeyGraceUntil: new Date('2030-12-01T17:00:00Z') };
-const OWN_KEY_GRACE_PAST: BillingSummary = { ...OWN_KEY_GRACE, ownKeyGraceUntil: new Date('2025-06-01T17:00:00Z') };
 const OWN_KEY_TEAM: BillingSummary = { ...TEAM_PLAN, funding: 'own_key' };
 const UNREADABLE: BillingSummary = { ...TEAM_PLAN, offers: { ...TEAM_PLAN.offers, ownKeyMinimumPlanKey: 'retired_pro' } };
 
@@ -393,15 +391,25 @@ test('a trial shows what is left and until when, as the card without a plan and 
   assert.equal(lede(noPeriod), PLAN_LEDE, 'a plan outranks the trial without a period too');
 });
 
-test('an own key in its grace says until when, which plans an own key can choose, and offers Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE });
+test('on their own key with no plan, an Owner and a Member read only that it needs the $100 plan or higher', async () => {
+  for (const owner of [true, false]) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_AT_LAUNCH })).html();
+    const role = owner ? 'an Owner' : 'a Member';
+    assert.equal(html.split('<div class="callout"><span>Your own API key needs the $100 plan or higher.</span></div>').length, 2, `${role} reads the sentence once`);
+    assert.doesNotMatch(html, /charges/i, `${role} reads nothing about charges`);
+  }
+});
+
+test('an own key with no plan shows which plans an own key can choose, and offers Chickpea\'s models', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH });
   const html = page.html();
-  assert.match(html, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges until Dec 1, 2030\. After that, your Agents need a plan to keep replying\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.match(html, /<p class="hint">Your workspace pays for models with its own API key\.<\/p>/, 'no plan, so no plan covers tasks');
+  assert.equal(lede(html), 'Your workspace pays for models with its own API key.', 'no plan, so no plan covers tasks');
   assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
   assert.doesNotMatch(html, /usage-card-primary/, 'no meter, trial or plan card on an own key without them');
   assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>/);
+  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
+  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
+  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
   assertShows(html, 'With Chickpea’s models, no API key is needed. Replies draw on your plan’s usage.');
   assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
 
@@ -412,34 +420,6 @@ test('an own key in its grace says until when, which plans an own key can choose
     Solo: '<span class="hint">Chickpea’s models only</span>',
     Starter: '<span class="hint">Chickpea’s models only</span>',
     Plus: 'choose', Team: 'choose', Growth: 'choose', Business: 'choose',
-  });
-
-  const past = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST });
-  assert.match(past.html(), /<div class="usage-contract"><p>Your Agents need a plan to keep replying\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assertHides(past.html(), 'no Chickpea charges');
-});
-
-test('an own key at launch, with no plan and no date for charges, still shows the plan to choose and Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH });
-  const html = page.html();
-  assert.match(html, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.equal(lede(html), 'Your workspace pays for models with its own API key.');
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
-  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
-  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
-  assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
-
-  await page.click({ 'data-action': 'billing-change-plan' });
-  const rows = Object.fromEntries([...page.html().matchAll(/<div class="billing-plan"><div><strong>([^<]+)<\/strong><p class="hint">([^<]+)<\/p>.*?<\/div>(.*?)<\/div>/g)]
-    .map((row) => [row[2], /data-action="billing-choose-plan"/.test(row[3]!) ? 'choose' : decoded(row[3]!)]));
-  assert.deepEqual(rows, {
-    '$25 a month includes $30 of usage': '<span class="hint">Chickpea’s models only</span>',
-    '$50 a month includes $60 of usage': '<span class="hint">Chickpea’s models only</span>',
-    '$100 a month includes $120 of usage': 'choose',
-    '$200 a month includes $240 of usage': 'choose',
-    '$300 a month includes $360 of usage': 'choose',
-    '$500 a month includes $600 of usage': 'choose',
   });
 });
 
@@ -498,15 +478,9 @@ test('a Member sees the plan\'s usage and that an Owner changes it, with no butt
   assert.doesNotMatch(html, /<h2 class="section-title">(Plan|Extra usage|Usage this period)<\/h2>|<th>Agent<\/th>|<th>Person<\/th>/);
   assertHides(html, 'Use your own key instead');
 
-  const ownKey = await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_GRACE });
-  assertShows(ownKey.html(), 'Your workspace uses its own API key with no Chickpea charges until Dec 1, 2030.');
-  assertShows(ownKey.html(), 'An Owner can change the plan and how your workspace pays for models.');
-  assert.doesNotMatch(ownKey.html(), /data-action="billing-/);
-
-  const atLaunch = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH })).html();
-  assert.match(atLaunch, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.match(atLaunch, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
-  assert.doesNotMatch(atLaunch, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH })).html();
+  assert.match(ownKey, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
+  assert.doesNotMatch(ownKey, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
 });
 
 test('the meter\'s dollar figures give its percentage', async () => {
@@ -545,10 +519,6 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
     summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
   })).html();
   assertShows(frozen, 'available when you renew, until Oct 7, 2027');
-  const grace = (await harness({
-    path: '/admin/plan', billingOffered: true, summary: { ...OWN_KEY_AT_LAUNCH, ownKeyGraceUntil: new Date('2030-12-01T00:30:00Z') },
-  })).html();
-  assertShows(grace, 'no Chickpea charges until Dec 1, 2030.');
 });
 
 test('a plan the host cannot read says so, with a retry', async () => {
@@ -669,10 +639,8 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
     ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
     ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
-    ['grace', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
-    ['grace ended', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST }, []],
-    ['own key at launch', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
-    ['member, own key at launch', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH }, []],
+    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
+    ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH }, []],
     ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, [{ 'data-action': 'billing-use-own-key' }]],
     ['no plan', { path: '/admin/plan', billingOffered: true, summary: NO_PLAN }, []],
     ['member', { path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN }, []],

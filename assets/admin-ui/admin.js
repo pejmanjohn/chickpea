@@ -2518,14 +2518,7 @@
 
   function billingStatusHtml(billing) {
     var own = billing.ownKeyWithoutPlan;
-    var notice = own
-      ? '<div class="usage-contract"><p>' + (own.charges === "not_yet"
-        ? 'Your workspace uses its own API key with no Chickpea charges for now.'
-        : own.charges === "from"
-          ? 'Your workspace uses its own API key with no Chickpea charges until ' + esc(own.from) + '. After that, your Agents need a plan to keep replying.'
-          : 'Your Agents need a plan to keep replying.') +
-        ' Plans for your own key start at ' + esc(own.minimumPrice) + ' a month.</p></div>'
-      : '';
+    var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
     var meter = billing.meter;
     var card = meter
       ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
