@@ -16,7 +16,7 @@ import {
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, OWN_KEY_AT_LAUNCH, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -103,15 +103,11 @@ async function harness(options: {
   path: string;
   billingOffered: boolean;
   summary?: BillingSummary;
-  /** Defaults to standalone exactly where billing is not offered. */
   selfHosted?: boolean;
   owner?: boolean;
   ownKey?: OwnKeyFacts;
-  /** The onboarding response the page first reads; Choose provider by default. */
   onboarding?: Record<string, unknown>;
-  /** How many requests to put the workspace on Chickpea's models fail before one reaches Try. */
   platformFailures?: number;
-  /** Holds that request open until the test releases it. */
   platformHeld?: boolean;
   switchFails?: boolean;
   stripeFails?: boolean;
@@ -393,7 +389,7 @@ test('a trial shows what is left and until when, as the card without a plan and 
 
 test('on their own key with no plan, an Owner and a Member read only that it needs the $100 plan or higher', async () => {
   for (const owner of [true, false]) {
-    const html = (await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_AT_LAUNCH })).html();
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_NO_PLAN })).html();
     const role = owner ? 'an Owner' : 'a Member';
     assert.equal(html.split('<div class="callout"><span>Your own API key needs the $100 plan or higher.</span></div>').length, 2, `${role} reads the sentence once`);
     assert.doesNotMatch(html, /charges/i, `${role} reads nothing about charges`);
@@ -401,7 +397,7 @@ test('on their own key with no plan, an Owner and a Member read only that it nee
 });
 
 test('an own key with no plan shows which plans an own key can choose, and offers Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH });
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN });
   const html = page.html();
   assert.equal(lede(html), 'Your workspace pays for models with its own API key.', 'no plan, so no plan covers tasks');
   assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
@@ -478,7 +474,7 @@ test('a Member sees the plan\'s usage and that an Owner changes it, with no butt
   assert.doesNotMatch(html, /<h2 class="section-title">(Plan|Extra usage|Usage this period)<\/h2>|<th>Agent<\/th>|<th>Person<\/th>/);
   assertHides(html, 'Use your own key instead');
 
-  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH })).html();
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN })).html();
   assert.match(ownKey, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
   assert.doesNotMatch(ownKey, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
 });
@@ -639,8 +635,8 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
     ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
     ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
-    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
-    ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH }, []],
+    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
+    ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN }, []],
     ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, [{ 'data-action': 'billing-use-own-key' }]],
     ['no plan', { path: '/admin/plan', billingOffered: true, summary: NO_PLAN }, []],
     ['member', { path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN }, []],
@@ -683,9 +679,8 @@ test('standalone shows nothing new: no billing request, no page, and onboarding 
   assert.equal(platformRequests(onboarding.requests), 0);
 });
 
-/** The onboarding progress list, as rendered. */
 function progress(html: string): string {
-  const start = html.indexOf('<ol class="onboarding-orientation"');
+  const start = html.indexOf('<ol class="onboarding-orientation');
   assert.ok(start >= 0, 'the page shows the onboarding progress');
   return html.slice(start, html.indexOf('</ol>', start) + '</ol>'.length);
 }

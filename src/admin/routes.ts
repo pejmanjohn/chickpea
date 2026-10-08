@@ -10281,9 +10281,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   const PLATFORM_DEFAULT_MODEL = { providerId: 'anthropic', modelId: 'anthropic/claude-opus-5-5' } as const;
 
-  // Where the host sells Chickpea's models, onboarding puts the workspace on
-  // them and their default model, then goes straight to Try. A journey that
-  // already reached Try, as after a reload or another Owner, changes nothing.
   app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
     if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);

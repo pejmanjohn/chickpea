@@ -420,11 +420,6 @@ test('an installation on Chickpea\'s models chooses a provider with no key; one 
   assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
 });
 
-/**
- * The host's billing and funding ports as the host installs them: what an
- * Owner chooses is what funding then reads. A new installation starts on its
- * own key here, so nothing reads as Chickpea's models until it is chosen.
- */
 function hostPorts(t: TestContext) {
   const host = { funding: 'own_key' as BillingFunding, chosen: [] as BillingFunding[], down: false };
   configurePlatformBilling({
@@ -472,7 +467,6 @@ test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 
   assert.equal(journey.selectedModelId, 'anthropic/claude-opus-5-5');
   assert.equal(body.revision, revision);
 
-  // A reload, and another Owner, find the journey at Try and change nothing.
   const anotherOwner = signup.admin(principalFor('owner', { userId: 'user_second_owner', membershipId: 'membership_second_owner' }));
   for (const as of [admin, anotherOwner]) {
     const again = await json<{ stage: string; revision: string }>(startOnPlatform(as));

@@ -15,7 +15,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
-import { NO_PLAN, OWN_KEY_AT_LAUNCH, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
 const INSTALLATION = 'inst_billing';
@@ -152,8 +152,8 @@ test('the status leaves out what is empty: no zero rollover or extra usage', asy
 test('only an own key with no plan reads the price of the lowest plan an own key needs', async (t) => {
   const ownKeyWithoutPlan = async (summary: BillingSummary) =>
     (await (await admin(t, { port: fakePort(summary).port, role: 'member' })('/admin/api/billing')).json() as Record<string, unknown>).ownKeyWithoutPlan;
-  assert.deepEqual(await ownKeyWithoutPlan(OWN_KEY_AT_LAUNCH), { minimumPrice: '$100' });
-  assert.deepEqual(await ownKeyWithoutPlan({ ...OWN_KEY_AT_LAUNCH, offers: { ...OWN_KEY_AT_LAUNCH.offers, ownKeyMinimumPlanKey: 'team' } }),
+  assert.deepEqual(await ownKeyWithoutPlan(OWN_KEY_NO_PLAN), { minimumPrice: '$100' });
+  assert.deepEqual(await ownKeyWithoutPlan({ ...OWN_KEY_NO_PLAN, offers: { ...OWN_KEY_NO_PLAN.offers, ownKeyMinimumPlanKey: 'team' } }),
     { minimumPrice: '$200' }, 'the price is the lowest own-key plan\'s, not a fixed one');
   assert.equal(await ownKeyWithoutPlan({ ...TEAM_PLAN, funding: 'own_key' }), null, 'a plan already meets it');
   assert.equal(await ownKeyWithoutPlan(NO_PLAN), null, 'Chickpea\'s models need no own-key plan');
@@ -166,7 +166,7 @@ test('a Member reads the plan\'s name when the plan has no recorded period, and 
 });
 
 test('an Owner of an own-key workspace with no plan reads no plan, the lowest plan for an own key, and the switch to Chickpea\'s models', async (t) => {
-  const { port } = fakePort(OWN_KEY_AT_LAUNCH);
+  const { port } = fakePort(OWN_KEY_NO_PLAN);
   const view = await (await admin(t, { port })('/admin/api/billing')).json() as Record<string, unknown>;
   assert.deepEqual(
     { funding: view.funding, meter: view.meter, plan: view.plan, period: view.period, ownKeyWithoutPlan: view.ownKeyWithoutPlan, switchFunding: view.switchFunding },

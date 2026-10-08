@@ -2737,9 +2737,6 @@
     return '<img class="onboarding-provider-logo" src="' + esc(MODEL_PROVIDER_LOGOS[provider.id] || "") + '" alt="">';
   }
 
-  // Where the host sells Chickpea's models, onboarding chooses them and their
-  // default model itself: Connect Slack, then Try Chickpea. A journey whose
-  // Owner chose their own key keeps today's provider and model steps.
   function onboardingOnChickpeaModels() {
     return BILLING_OFFERED && INSTALLATION_OWNER && !(state.onboarding && state.onboarding.funding === "own_key");
   }
@@ -2757,8 +2754,6 @@
     var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
     var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
     var configured = selected ? onboardingProviderConfigured(selected.id) : false;
-    // Workers AI exists only where the deployment has the binding; Node
-    // installs never see it.
     var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
       return provider.id !== "cloudflare" || onboardingProviderConfigured("cloudflare");
     }).map(function (provider) {
@@ -2922,7 +2917,7 @@
     var current = onboardingStepNumber();
     var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
     var labels = onboardingStepLabels();
-    return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
+    return '<ol class="onboarding-orientation' + (labels.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
       var step = index + 1;
       var isComplete = journeyComplete || step < current;
       var isActive = !journeyComplete && step === current;
@@ -13155,10 +13150,7 @@
       !onboardingOnChickpeaModels() || state.onboardingBusy || state.onboardingError
     ) return;
     state.onboardingBusy = true;
-    // After this render, not inside it.
-    Promise.resolve().then(function () {
-      return postJson("/admin/api/onboarding/platform", "POST", {});
-    }).then(function (body) {
+    postJson("/admin/api/onboarding/platform", "POST", {}).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
       state.onboardingNotice = "";

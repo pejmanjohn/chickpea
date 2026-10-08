@@ -62,7 +62,6 @@ interface BillingStatus {
   rollover: string | null;
   extraUsage: { remaining: string; frozen: boolean; until: string } | null;
   trial: { remaining: string; until: string } | null;
-  /** Own key with no plan: the price of the lowest plan an own key needs. */
   ownKeyWithoutPlan: { minimumPrice: string } | null;
 }
 

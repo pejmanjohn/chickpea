@@ -34,8 +34,7 @@ export const NO_PLAN: BillingSummary = {
   offers: OFFERS,
 };
 
-/** An own-key workspace with no plan, as after a cancelled plan. */
-export const OWN_KEY_AT_LAUNCH: BillingSummary = { ...NO_PLAN, funding: 'own_key' };
+export const OWN_KEY_NO_PLAN: BillingSummary = { ...NO_PLAN, funding: 'own_key' };
 
 /** The Team plan part-way through its period, with usage carried over and extra usage on hand. */
 export const TEAM_PLAN: BillingSummary = {
