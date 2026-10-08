@@ -32,6 +32,8 @@ import {
   type FeeOutcome,
   type FeePost,
 } from '../src/config/platform-funding.ts';
+import { buildSemanticActivityContext, registerActivityContext } from '../src/activity/status.ts';
+import { genericSemanticDescriptor } from '../src/activity/semantic.ts';
 import { runFeeInterceptor } from '../src/config/run-fee-interceptor.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../src/model-catalog/provider-alias.ts';
@@ -327,6 +329,27 @@ test('a retried attempt of the same run posts only duplicates', async (t) => {
   assert.equal(await attempt(), 'ran');
   assert.equal(await attempt(), 'ran');
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted', 'chat:duplicate', 'task:duplicate']);
+});
+
+test('an unlisted tool qualifies by the family its render registered for it', async (t) => {
+  const posts = hostedPort(t);
+  registerActivityContext('fees-descriptor', buildSemanticActivityContext([
+    { toolName: 'custom_lookup', descriptor: genericSemanticDescriptor('custom_connection') },
+    { toolName: 'custom_note', descriptor: genericSemanticDescriptor('memory') },
+  ]));
+  const modelAccess = createModelAccessInterceptor({
+    lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
+    installationGrants: async () => [],
+  });
+  const context = { instanceId: 'fees-descriptor', submissionId: 'sub_descriptor' };
+  const call = (toolName: string) => runFeeInterceptor({ type: 'tool', toolCallId: `call_${toolName}`, toolName }, context, async () => toolName);
+
+  await modelAccess({ type: 'agent', operationId: 'op_descriptor', operationKind: 'prompt' }, context, async () => {
+    assert.equal(await call('custom_note'), 'custom_note');
+    assert.deepEqual(tiers(posts), ['chat:posted']);
+    assert.equal(await call('custom_lookup'), 'custom_lookup');
+  });
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
 test('a stateless call, such as the intent check, posts no fee row', async (t) => {
