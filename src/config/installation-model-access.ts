@@ -46,6 +46,7 @@ import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
 import type { ModelCredentialAttribution } from './types.ts';
 import { nonEmpty, trimmedNonEmpty } from '../security/content-validation.ts';
 import type { CredentialKeyring } from '../slack/secret-envelope.ts';
+import type { ModelRequestPurpose } from '../usage/model-requests.ts';
 
 export class RuntimeModelReadinessError extends Error {
   readonly repairPath = '/admin/settings#model-providers';
@@ -222,14 +223,14 @@ export async function installationModelAccessGrants(
  */
 export async function withStatelessModelAccess<T>(
   runtimeModel: string,
-  input: { env: PlatformEnv | undefined; settings?: SettingsStore; runId: string },
+  input: { env: PlatformEnv | undefined; settings?: SettingsStore; runId: string; purpose: ModelRequestPurpose },
   fn: () => Promise<T>,
 ): Promise<T> {
   const providerId = modelAccessProviderId(providerPrefix(runtimeModel));
-  if (!providerId) return withDeploymentLane(input.env, input.runId, fn);
+  if (!providerId) return withDeploymentLane(input.env, input.runId, input.purpose, fn);
   const grant = await installationModelAccessGrant(providerId, input.env, input.runId, input.settings);
   if (!grant) throw providerSetupRequired(providerId);
-  return withModelAccess(grant, input.env, fn);
+  return withModelAccess(grant, input.env, input.purpose, fn);
 }
 
 /**

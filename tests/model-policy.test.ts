@@ -21,6 +21,7 @@ import { currentImagePrice } from '../src/images/request-record.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID } from '../src/model-catalog/image-profiles.ts';
 
 function agent(overrides: Partial<CustomAgentConfig> = {}): CustomAgentConfig {
@@ -534,7 +535,7 @@ function hostedInstallation(t: TestContext, funding: () => Promise<'platform' | 
     funding,
     admit: async () => 'admitted',
     charge: async () => {},
-    priceMultiplier: async () => 1,
+    ...NO_RUN_FEES,
   });
   const env = scopeInstallationEnv(
     { CHICKPEA_TENANCY: 'installation' },

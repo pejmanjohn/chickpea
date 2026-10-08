@@ -23,6 +23,7 @@ import type { PlatformEnv } from '../../src/config/state-backend.ts';
 import { ANTHROPIC_COMPAT_PROVIDER_ID, registerModelCompatibilityApis } from '../../src/model-compat/provider.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
+import { NO_RUN_FEES } from '../helpers/platform-funding.ts';
 
 const NOW = Date.UTC(2026, 9, 7, 12);
 const API_KEY = 'sk-provider-modes-test-key';
@@ -98,7 +99,7 @@ function proxied(t: TestContext) {
     charge: async (record) => {
       charged.push(record);
     },
-    priceMultiplier: async () => 1.5,
+    ...NO_RUN_FEES,
   });
   const warn = t.mock.method(console, 'warn', () => undefined);
   t.after(() => {
@@ -132,7 +133,7 @@ async function send(
   const provider = registeredPiProvider(route.registeredId);
   const model = provider?.getModels().find((candidate) => candidate.id === route.model);
   assert.ok(provider && model, `${route.registeredId} lists ${route.model}`);
-  const result = await withModelAccess(access, env, () =>
+  const result = await withModelAccess(access, env, 'reply', () =>
     provider.streamSimple(model, CONTEXT, { fetch: network, ...(onPayload ? { onPayload } : {}) }).result());
   return { result, sent };
 }

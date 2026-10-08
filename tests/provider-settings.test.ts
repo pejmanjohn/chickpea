@@ -519,7 +519,7 @@ test('built-in provider requests honor explicit OpenAI-compatible base URLs', as
       ] as const) {
         const catalog = resolveModel(model);
         assert.notEqual(catalog.baseUrl, baseUrl, 'the registered metadata keeps the provider endpoint');
-        const request = await withStatelessModelAccess(model, { env: undefined, runId: 'base-url-test' }, async () =>
+        const request = await withStatelessModelAccess(model, { env: undefined, runId: 'base-url-test', purpose: 'reply' }, async () =>
           modelAccessRequest(providerId, catalog, {} as { apiKey?: string }));
         assert.equal(request.model.baseUrl, baseUrl);
         assert.equal(request.options.apiKey, apiKey);
