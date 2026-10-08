@@ -27,7 +27,7 @@ const EXPECTED: Record<
 > = {
   agent: { platform: 'chickpea', customer: 'chickpea', platformAfterToolCall: 'chickpea' },
   provider: { platform: 'provider', customer: null, platformAfterToolCall: 'provider' },
-  'invalid-output': { platform: 'provider', customer: null, platformAfterToolCall: 'provider' },
+  'invalid-output': { platform: 'provider', customer: null, platformAfterToolCall: null },
   'openai-subscription-reconnect': { platform: null, customer: null, platformAfterToolCall: null },
   'openai-subscription-quota': { platform: null, customer: null, platformAfterToolCall: null },
   'openai-subscription-policy': { platform: null, customer: null, platformAfterToolCall: null },

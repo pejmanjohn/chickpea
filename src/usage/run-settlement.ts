@@ -37,7 +37,7 @@ const notOurs = (why: NotOurs): Owner => ({ notOurs: why });
 const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
   agent: ours('chickpea'),
   provider: ours('provider'),
-  'invalid-output': ours('provider'),
+  'invalid-output': oursUnlessToolCalled('provider'),
   'openai-subscription-reconnect': notOurs('customer_account'),
   'openai-subscription-quota': notOurs('customer_account'),
   'openai-subscription-policy': notOurs('customer_account'),
@@ -69,7 +69,7 @@ const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
 
 export interface FailedRun {
   readonly funding: ModelRequestFundingSource;
-  readonly toolCallCount?: number;
+  readonly toolCallCount?: number | undefined;
 }
 
 export function creditBackReason(kind: SlackFailureKind | RoutineFailureClass, run: FailedRun): CreditBackReason | null {
