@@ -62,12 +62,8 @@ interface BillingStatus {
   rollover: string | null;
   extraUsage: { remaining: string; frozen: boolean; until: string } | null;
   trial: { remaining: string; until: string } | null;
-  /** Own key with no plan: when Chickpea charges begin, and the lowest plan price for an own key. */
-  ownKeyWithoutPlan:
-    | { charges: 'not_yet'; minimumPrice: string } // no grace date set
-    | { charges: 'from'; from: string; minimumPrice: string } // grace date in the future, long format
-    | { charges: 'due'; minimumPrice: string } // grace date passed
-    | null;
+  /** Own key with no plan: the price of the lowest plan an own key needs. */
+  ownKeyWithoutPlan: { minimumPrice: string } | null;
 }
 
 /** Whether an Owner can switch funding from the page, and what is missing when not. */
@@ -106,11 +102,11 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
 
   const view = async (c: Context, port: PlatformBillingPort, installationId: string): Promise<BillingView> => {
     const summary = await port.summary(installationId);
-    if (!isOwner(c)) return billingView(summary, null, new Date());
+    if (!isOwner(c)) return billingView(summary, null);
     const [agentNames, personNames, ownKey] = await Promise.all([
       options.agentNames(c), options.personNames(c), options.ownKeyFacts(c),
     ]);
-    return billingView(summary, { agentNames, personNames, ownKey }, new Date());
+    return billingView(summary, { agentNames, personNames, ownKey });
   };
 
   app.get('/billing', (c) => withBilling(c, async (port, installationId) =>
@@ -144,9 +140,9 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
   return app;
 }
 
-function billingView(summary: BillingSummary, owner: OwnerFacts | null, now: Date): BillingView {
+function billingView(summary: BillingSummary, owner: OwnerFacts | null): BillingView {
   const minimum = ownKeyMinimumPlan(summary);
-  const status = billingStatus(summary, minimum, now);
+  const status = billingStatus(summary, minimum);
   if (!owner) return { manage: false, ...status };
   const planOffer = summary.plan && summary.offers.plans.find((offer) => offer.key === summary.plan?.key);
   return {
@@ -183,7 +179,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null, now: Dat
   };
 }
 
-function billingStatus(summary: BillingSummary, minimum: PlanOffer, now: Date): BillingStatus {
+function billingStatus(summary: BillingSummary, minimum: PlanOffer): BillingStatus {
   const { planUsage, period, rollover, extraUsage, trial } = summary;
   return {
     funding: summary.funding,
@@ -201,14 +197,9 @@ function billingStatus(summary: BillingSummary, minimum: PlanOffer, now: Date): 
       : null,
     trial: trial && { remaining: formatUsageDollars(trial.remainingMicros), until: SHORT_DATE.format(trial.expiresAt) },
     ownKeyWithoutPlan: summary.funding === 'own_key' && summary.plan === null
-      ? ownKeyCharges(summary.ownKeyGraceUntil, formatPriceCents(minimum.priceCents), now)
+      ? { minimumPrice: formatPriceCents(minimum.priceCents) }
       : null,
   };
-}
-
-function ownKeyCharges(graceUntil: Date | null, minimumPrice: string, now: Date): NonNullable<BillingStatus['ownKeyWithoutPlan']> {
-  if (!graceUntil) return { charges: 'not_yet', minimumPrice };
-  return graceUntil > now ? { charges: 'from', from: LONG_DATE.format(graceUntil), minimumPrice } : { charges: 'due', minimumPrice };
 }
 
 /** The port answered inconsistent data when the lowest plan for an own key is not on sale; `withBilling` makes that a 503. */

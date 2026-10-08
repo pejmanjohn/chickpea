@@ -58,7 +58,6 @@ export interface BillingSummary {
   readonly extraUsage: { readonly remainingMicros: UsageMicros; readonly frozen: boolean; readonly expiresAt: Date } | null;
   readonly trial: { readonly remainingMicros: UsageMicros; readonly expiresAt: Date } | null;
   readonly debtMicros: UsageMicros;
-  readonly ownKeyGraceUntil: Date | null;
   readonly autoUpgrade: { readonly enabled: boolean; readonly usedThisPeriod: boolean } | null;
   readonly use: {
     /** Each row's `id` is an Agent ID. */
