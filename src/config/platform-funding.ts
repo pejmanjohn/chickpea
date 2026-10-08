@@ -111,7 +111,7 @@ export class PlatformFundingUnavailableError extends Error {
 }
 
 export const PLATFORM_ADMISSION_TTL_MS = 30_000;
-const FEE_POST_BUDGET_MS = 2_000;
+const PORT_CALL_BUDGET_MS = 2_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 const LOG_INTERVAL_MS = 60_000;
 
@@ -216,25 +216,41 @@ export async function chargePlatformRequest(grant: ModelAccessGrant, record: Mod
 export const FEE_UNANSWERED = { kind: 'unanswered' } as const;
 
 export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE_UNANSWERED> {
+  return (await askWithinBudget((current) => current.postFee(post), { event: 'fee_post_failed', tier: post.tier }))
+    ?? FEE_UNANSWERED;
+}
+
+export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
+  return askWithinBudget((current) => current.creditBack(run, reason), { event: 'credit_back_failed', reason });
+}
+
+export function readRunCost(run: RunRef): Promise<RunCost | undefined> {
+  return askWithinBudget((current) => current.runCost(run), { event: 'run_cost_failed' });
+}
+
+const UNANSWERED_IN_TIME = Symbol('unanswered in time');
+
+async function askWithinBudget<T>(
+  ask: (current: PlatformFundingPort) => Promise<T>,
+  failure: { readonly event: string } & Readonly<Record<string, string>>,
+): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const budget = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => resolve('timeout'), FEE_POST_BUDGET_MS);
+  const budget = new Promise<typeof UNANSWERED_IN_TIME>((resolve) => {
+    timer = setTimeout(() => resolve(UNANSWERED_IN_TIME), PORT_CALL_BUDGET_MS);
   });
+  let error: string;
   try {
     if (!port) throw new Error('No platform funding port is configured.');
-    const outcome = await Promise.race([port.postFee(post), budget]);
-    if (outcome !== 'timeout') return outcome;
-    logFeePostFailure(post.tier, 'timeout');
-  } catch (error) {
-    logFeePostFailure(post.tier, error instanceof Error ? error.name : typeof error);
+    const answer = await Promise.race([ask(port), budget]);
+    if (answer !== UNANSWERED_IN_TIME) return answer;
+    error = 'timeout';
+  } catch (caught) {
+    error = caught instanceof Error ? caught.name : typeof caught;
   } finally {
     clearTimeout(timer);
   }
-  return FEE_UNANSWERED;
-}
-
-function logFeePostFailure(tier: FeeTier, error: string): void {
-  console.warn(JSON.stringify({ component: 'platform_funding', event: 'fee_post_failed', tier, error }));
+  console.warn(JSON.stringify({ component: 'platform_funding', ...failure, error }));
+  return undefined;
 }
 
 function forgetAdmission(installationId: string): void {

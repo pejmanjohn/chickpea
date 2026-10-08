@@ -95,6 +95,15 @@ import { abandonTerminalSlackPresentationBestEffort } from './presentation-repai
 import { defaultSlackStatusRegistry, type SlackStatusRegistry } from './status-registry.ts';
 import { createCodingTaskProgress } from './coding-task-progress.ts';
 import { creditsExhaustedComponents } from './credits-ask.ts';
+import {
+  creditBackFailedRun,
+  creditBackReason,
+  hostedRun,
+  planFunding,
+  runCostLine,
+  withCreditedBack,
+  type SlackFailureKind,
+} from '../usage/run-settlement.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
@@ -111,6 +120,7 @@ import {
   type SlackInstallationExecutionContext,
 } from './installation-execution.ts';
 import type {
+  FlueSettlementCheckpointV1,
   FrozenRuntimePlanDecision,
   SlackThreadContinuation,
   TurnPreviousStop,
@@ -1966,11 +1976,18 @@ async function runTurnAttempt(
               userId: turn.userId,
             })
           : undefined;
+        const failureText = withCreditedBack(agentFailureText(err), await creditBackFailedRun(
+          hostedRun(platformEnv, options.flueDispatch?.dispatchReceipt?.submissionId),
+          creditBackReason(
+            slackFailureKind(err, options.flueDispatch?.flueSettlement),
+            { funding: planFunding(runtimePlanDecision?.runtimePlan) },
+          ),
+        ));
         await statusTurn.prepareFinal();
         // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.
         await (components
-          ? presenter.deliverFinal(agentFailureText(err), 'markdown', 'error', { components })
-          : presenter.deliverFinal(agentFailureText(err), 'plain_text', 'error'));
+          ? presenter.deliverFinal(failureText, 'markdown', 'error', { components })
+          : presenter.deliverFinal(failureText, 'plain_text', 'error'));
         await finishStatus('failure');
         await finishDelivery('failed');
         return;
@@ -2168,6 +2185,13 @@ async function runTurnAttempt(
       return;
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
+    if (agentResult) {
+      const usageLine = await runCostLine(hostedRun(platformEnv, options.flueDispatch?.dispatchReceipt?.submissionId));
+      if (usageLine) {
+        presenter.setFooterUsageLine(usageLine);
+        agentViewPresentation?.setFooterUsageLine(usageLine);
+      }
+    }
     await statusTurn.prepareFinal();
     // Files publish only with the model's own lease-valid answer. A recovered
     // or replaced text never adopts staged files.
@@ -2483,6 +2507,11 @@ async function createSlackShadowLifecycle(input: {
     console.warn('[work] shadow lifecycle initialization failed; legacy execution will continue');
     return undefined;
   }
+}
+
+function slackFailureKind(error: unknown, settlement: FlueSettlementCheckpointV1 | undefined): SlackFailureKind {
+  if (settlement && settlement.outcome !== 'completed') return settlement.failureKind;
+  return error instanceof AgentPromptFailure ? error.kind : 'agent';
 }
 
 function agentFailureSafeCode(error: unknown): string {

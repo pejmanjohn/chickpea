@@ -309,6 +309,10 @@ export class SlackAgentViewPresentation {
     this.options.footer = { ...this.options.footer, modelLabel };
   }
 
+  setFooterUsageLine(usageLine: string): void {
+    this.options.footer = { ...this.options.footer, usageLine };
+  }
+
   /** Set the footer's memory items, known only once the turn's memory is prepared. */
   setFooterMemoryItems(memoryItems: readonly string[] | undefined): void {
     this.options.footer = { ...this.options.footer, memoryItems };

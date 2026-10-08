@@ -135,6 +135,7 @@ export async function deliverRoutineResult(
     message: string;
     changeKeyHash: string | null;
     artifacts?: readonly SlackArtifactReceipt[];
+    usageLine?: string;
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;
     sleep?: (delayMs: number) => Promise<void>;
@@ -155,7 +156,10 @@ export async function deliverRoutineResult(
   const message = completedFiles.length < files.length
     ? `${ARTIFACT_UNDELIVERED_NOTE}\n\n${input.message}`
     : input.message;
-  const footer = routineReplyFooter(input.access, input.routine);
+  const footer = {
+    ...routineReplyFooter(input.access, input.routine),
+    ...(input.usageLine ? { usageLine: input.usageLine } : {}),
+  };
   const rendered = completedFiles.length > 0
     ? renderSlackArtifactMessage(message, 'markdown', {
       ...footer,

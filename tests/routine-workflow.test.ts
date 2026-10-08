@@ -31,9 +31,12 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
+  platformCredentialRefId,
   resetPlatformFundingForTests,
+  type CreditBackReason,
   type FeeOutcome,
   type FeePost,
+  type RunRef,
 } from '../src/config/platform-funding.ts';
 import {
   executeRoutineOccurrence,
@@ -63,6 +66,7 @@ import {
 import { settleCancelledOccurrences } from '../src/state/pending-work.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import type { UsageMicros } from '../src/usage/usage-display.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { SqliteWorkStore } from '../src/work/store.ts';
 import type { RunExecutionId, RunId, WorkStore } from '../src/work/types.ts';
@@ -636,6 +640,409 @@ test('a standalone scheduled run, or one with no host port, posts its result wit
   const noPort = await scheduledRunWithFees(t, 'fee_no_port', { outcome: 'refused', port: false });
   assert.equal(noPort.run?.status, 'succeeded');
   assert.deepEqual(noPort.events, ['slack-post']);
+});
+
+const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
+const TOOL_CALL = { type: 'tool-input', toolName: 'post_message', toolCallId: 'call_post' } as never;
+const OUT_OF_USAGE = () => new AgentRunError({
+  outcome: 'failed',
+  submissionId: 'submission_test',
+  cause: { type: 'operation_failed', message: 'dispatch(submission_test) failed: This installation is out of Chickpea credits (credits_exhausted).' },
+});
+const PROVIDER_FAILED = () => new AgentRunError({
+  outcome: 'failed',
+  submissionId: 'submission_test',
+  cause: { type: 'operation_failed', message: 'dispatch(submission_test) failed: the model provider returned an error.' },
+});
+
+/**
+ * One hosted scheduled run against a host port that records its fee posts,
+ * credit-backs and cost reads in `events`, beside each Slack post. A
+ * `platformFunded` run's plan freezes Chickpea's credential for its provider.
+ */
+async function scheduledRunSettlement(
+  t: TestContext,
+  suffix: string,
+  input: {
+    handle?: (clock: { at: number }) => AgentInstanceHandle;
+    platformFunded?: boolean;
+    fee?: FeeOutcome['kind'];
+    shown?: boolean;
+    /** Slack refuses every post with this error code; `unknown` loses the connection instead. */
+    rejection?: string;
+    env?: Record<string, unknown>;
+    port?: false;
+    /** Runs the occurrence once first, as an earlier heartbeat did, and moves the clock past its deadline. */
+    deadlinePassesBeforeReattach?: boolean;
+    /** The channel's membership changed while the run worked, so its memory lease no longer holds. */
+    accessChanged?: boolean;
+  } = {},
+) {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  resetInstallationAdmissionForTests();
+  resetPlatformFundingForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  t.after(() => {
+    store.close();
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+  });
+  const events: string[] = [];
+  const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  const statusesAtCreditBack: Array<string | undefined> = [];
+  let occurrenceId: string | undefined;
+  const messages: Array<{ text: string; blocks: Array<Record<string, unknown>> }> = [];
+  if (input.port !== false) {
+    configurePlatformFunding({
+      ...NO_RUN_FEES,
+      funding: async () => 'customer',
+      admit: async () => 'admitted',
+      charge: async () => {},
+      postFee: async (post) => {
+        events.push(`fee:${post.tier}`);
+        return { kind: input.fee ?? 'posted' };
+      },
+      creditBack: async (run, reason) => {
+        events.push(`credit-back:${reason}`);
+        creditBacks.push({ run, reason });
+        statusesAtCreditBack.push((await store.getRun(occurrenceId!))?.status);
+        return { kind: 'credited', usageMicros: 90_000 as UsageMicros };
+      },
+      runCost: async () => {
+        events.push('run-cost');
+        return { usageMicros: 305_000 as UsageMicros, shown: input.shown ?? true };
+      },
+    });
+  }
+  const client = {
+    chat: {
+      postMessage: async (message: { text?: string; blocks?: Array<Record<string, unknown>> }) => {
+        events.push('slack-post');
+        messages.push({ text: message.text ?? '', blocks: message.blocks ?? [] });
+        if (input.rejection === 'unknown') throw new Error('socket hang up');
+        if (input.rejection) throw { data: { ok: false, error: input.rejection } };
+        return { ok: true, channel: 'C_TEST', ts: '1785153600.000000' };
+      },
+    },
+  } as unknown as WebClient;
+  const fixture = await admittedFixture(store, suffix);
+  occurrenceId = fixture.run.id;
+  const clock = { at: NOW + 1 };
+  const base = dependencies();
+  const env = input.env ?? scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${suffix}` });
+  const deps = {
+    ...base,
+    now: () => clock.at,
+    resolveAccess: async (...args: Parameters<typeof base.resolveAccess>) => ({ ...await base.resolveAccess(...args), client }),
+    ...(input.platformFunded
+      ? {
+          resolveCredential: async () => ({
+            credentialRefId: platformCredentialRefId('anthropic'), version: 1, providerId: 'anthropic',
+            sourceKind: 'platform' as const, label: 'Chickpea', scopeLabel: null, unknownRotation: false,
+          }),
+        }
+      : {}),
+    ...(input.accessChanged
+      ? {
+          preparePrompt: async (...args: Parameters<typeof base.preparePrompt>) => ({
+            ...await base.preparePrompt(...args), validateMemoryLease: async () => false,
+          }),
+        }
+      : {}),
+    handle: input.handle?.(clock) ?? fakeHandle({ reply: successfulReply() }),
+  };
+  const occurrence = { env, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+  if (input.deadlinePassesBeforeReattach) {
+    assert.equal(await executeRoutineOccurrence(occurrence, deps), 'resumable');
+    clock.at = NOW + 120_000;
+  }
+  assert.equal(await executeRoutineOccurrence(occurrence, deps), 'completed');
+  return { run: await store.getRun(fixture.run.id), events, creditBacks, statusesAtCreditBack, messages };
+}
+
+/** A handle whose read reports what the Agent did, then ends as told. */
+function readingHandle(read: (options?: { onEvent?: (event: never) => void }) => Promise<AgentReply>): AgentInstanceHandle {
+  return { ...fakeHandle({}), read: async (_receipt, options) => read(options) };
+}
+
+function routineFooter(message: { blocks: Array<Record<string, unknown>> } | undefined): string[] | undefined {
+  return message?.blocks
+    .flatMap((block) => block.type === 'context' ? block.elements as Array<{ text?: string }> : [])
+    .map((element) => String(element.text))
+    .find((text) => text.includes('Scheduled'))
+    ?.split(' | ');
+}
+
+test('a delivered scheduled result ends its footer with what the run used, read after its task row', async (t) => {
+  const shown = await scheduledRunSettlement(t, 'cost_shown');
+  assert.equal(shown.run?.status, 'succeeded');
+  assert.deepEqual(shown.events, ['fee:task', 'run-cost', 'slack-post']);
+  assert.equal(routineFooter(shown.messages[0])?.at(-1), 'This reply used $0.31');
+
+  const hidden = await scheduledRunSettlement(t, 'cost_hidden', { shown: false });
+  assert.deepEqual(hidden.events, ['fee:task', 'run-cost', 'slack-post']);
+  assert.equal(routineFooter(hidden.messages[0])?.at(-1), 'Scheduled');
+  assert.equal(JSON.stringify(hidden.messages).includes('This reply used'), false);
+});
+
+test('a platform-funded scheduled run that failed as a whole is credited back, and its notice says so', async (t) => {
+  const { run, creditBacks, statusesAtCreditBack, messages } = await scheduledRunSettlement(t, 'failed_platform', {
+    platformFunded: true, handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'tool_failed']);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_failed_platform', runId: 'submission_test' }, reason: 'provider' }]);
+  assert.deepEqual(statusesAtCreditBack, ['running'], 'credited back before the run turns failed, so a crash retries it');
+  assert.equal(messages.length, 1);
+  assert.ok(messages[0]!.text.includes(`${run?.publicError} ${CREDITED_BACK}`), messages[0]!.text);
+  assert.equal(run?.publicError?.includes(CREDITED_BACK), false, 'the stored error stays as it was');
+  assert.equal(JSON.stringify(messages).includes('This reply used'), false);
+});
+
+test('an own-key scheduled run that failed as a whole is not credited back', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'failed_own_key', {
+    handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'tool_failed']);
+  assert.deepEqual(creditBacks, []);
+  assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('an own-key scheduled run that ran past its deadline after a tool call is credited back as a timeout', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'deadline_live', {
+    handle: (clock) => readingHandle(async (options) => {
+      options?.onEvent?.(TOOL_CALL);
+      clock.at = NOW + 120_000;
+      throw new DOMException('The read timed out.', 'TimeoutError');
+    }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'unknown_external_outcome']);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_deadline_live', runId: 'submission_test' }, reason: 'timeout' }]);
+  assert.ok(messages.some(({ text }) => text.includes(CREDITED_BACK)));
+});
+
+test('a dispatched scheduled run whose deadline passes before it reattaches is credited back as a timeout', async (t) => {
+  const { run, creditBacks, statusesAtCreditBack, messages } = await scheduledRunSettlement(t, 'deadline_reattach', {
+    deadlinePassesBeforeReattach: true,
+    handle: (clock) => readingHandle(async () => {
+      if (clock.at < NOW + 120_000) throw new DOMException('The read timed out.', 'TimeoutError');
+      throw new Error('reattached after the deadline');
+    }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'deadline_exceeded']);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_deadline_reattach', runId: 'submission_test' }, reason: 'timeout' }]);
+  assert.deepEqual(statusesAtCreditBack, ['running'], 'credited back before the run turns failed, so a crash retries it');
+  assert.equal(messages.length, 1);
+  assert.ok(messages[0]!.text.includes(`${run?.publicError} ${CREDITED_BACK}`), messages[0]!.text);
+});
+
+test('a scheduled run that ran out of usage, before or after a tool call, is not credited back', async (t) => {
+  const before = await scheduledRunSettlement(t, 'usage_before_tool', {
+    platformFunded: true, handle: () => fakeHandle({ readError: OUT_OF_USAGE() }),
+  });
+  assert.deepEqual([before.run?.status, before.run?.failureClass], ['failed', 'spend_limited']);
+  const after = await scheduledRunSettlement(t, 'usage_after_tool', {
+    platformFunded: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); throw OUT_OF_USAGE(); }),
+  });
+  assert.deepEqual([after.run?.status, after.run?.failureClass], ['failed', 'unknown_external_outcome']);
+  for (const { creditBacks, messages } of [before, after]) {
+    assert.deepEqual(creditBacks, []);
+    assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+  }
+});
+
+test('a scheduled run whose channel access changed after a tool call is not credited back', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'access_changed', {
+    platformFunded: true,
+    accessChanged: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); return successfulReply(); }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'unknown_external_outcome']);
+  assert.deepEqual(creditBacks, []);
+  assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('a platform-funded scheduled run that called a tool and then failed as a whole is not credited back', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'failed_after_tool', {
+    platformFunded: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); throw PROVIDER_FAILED(); }),
+  });
+  assert.deepEqual([run?.status, run?.failureClass, run?.toolCallCount], ['failed', 'unknown_external_outcome', 1]);
+  assert.deepEqual(creditBacks, []);
+  assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('a platform-funded scheduled run that ended without a valid result is credited back only if it called no tool', async (t) => {
+  const noResult = { ...successfulReply(), data: {} };
+  const quiet = await scheduledRunSettlement(t, 'no_result', {
+    platformFunded: true, handle: () => readingHandle(async () => noResult),
+  });
+  assert.deepEqual([quiet.run?.status, quiet.run?.failureClass], ['failed', 'result_invalid']);
+  assert.deepEqual(quiet.creditBacks, [{ run: { installationId: 'inst_no_result', runId: 'submission_test' }, reason: 'provider' }]);
+
+  const afterTool = await scheduledRunSettlement(t, 'no_result_after_tool', {
+    platformFunded: true,
+    handle: () => readingHandle(async (options) => { options?.onEvent?.(TOOL_CALL); return noResult; }),
+  });
+  assert.deepEqual([afterTool.run?.status, afterTool.run?.failureClass, afterTool.run?.toolCallCount],
+    ['failed', 'unknown_external_outcome', 1]);
+  assert.deepEqual(afterTool.creditBacks, []);
+  assert.equal(JSON.stringify(afterTool.messages).includes(CREDITED_BACK), false);
+});
+
+test('a scheduled run whose task row is refused is not credited back', async (t) => {
+  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'task_refused', { platformFunded: true, fee: 'refused' });
+  assert.deepEqual([run?.status, run?.failureClass], ['failed', 'spend_limited']);
+  assert.deepEqual(creditBacks, []);
+  assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+});
+
+test('a result Slack could not take is credited back only when Slack refused it for load', async (t) => {
+  const cases = [
+    ['ratelimited', 'slack_rate_limited', 'chickpea'],
+    ['channel_not_found', 'channel_destination_unavailable', undefined],
+    ['unknown', 'delivery_unknown', undefined],
+  ] as const;
+  for (const [rejection, failureClass, reason] of cases) {
+    const { run, creditBacks, messages } = await scheduledRunSettlement(t, `undelivered_${failureClass}`, {
+      platformFunded: true, rejection,
+    });
+    assert.deepEqual([run?.status, run?.failureClass], ['failed', failureClass], rejection);
+    assert.deepEqual(creditBacks.map((call) => call.reason), reason ? [reason] : [], rejection);
+    assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false, 'nothing posted says so');
+  }
+});
+
+test('a private schedule whose thread can no longer take its result is not credited back', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-direct-thread-credit-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const configStore = new SqliteConfigStore(path, { agents: [] });
+  resetInstallationAdmissionForTests();
+  configureInstallationAdmission(async () => 'admitted');
+  const creditBacks: CreditBackReason[] = [];
+  configurePlatformFunding({
+    ...NO_RUN_FEES,
+    funding: async () => 'customer',
+    admit: async () => 'admitted',
+    charge: async () => {},
+    creditBack: async (_run, reason) => {
+      creditBacks.push(reason);
+      return { kind: 'credited', usageMicros: 90_000 as UsageMicros };
+    },
+  });
+  t.after(() => {
+    configStore.close();
+    store.close();
+    resetInstallationAdmissionForTests();
+    resetPlatformFundingForTests();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_DIRECT',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_direct',
+  };
+  await configStore.createAgent({
+    id: 'agent_direct', name: 'Direct Agent', instructions: 'Run private work.', enabled: true,
+    lifecycle: 'active', creatorMembershipId: destination.ownerMembershipId,
+    editPolicy: 'creator_and_admins', model: config.model,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  const pending = await store.save({
+    actorId: 'U_DIRECT', actorClass: 'member', workspaceId: 'T_TEST',
+    channelId: destination.conversationId, destination,
+    draft: {
+      action: 'create', routineId: 'routine_direct_credit',
+      definition: {
+        name: 'Direct fixture', description: '', taskText: 'Inspect current state.',
+        triggerKind: 'schedule', scheduleInput: '0 * * * *',
+        scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+        timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+      },
+      nextRunAt: NOW, projectedDailyStarts: 1,
+      reservations: [{ windowStart: NOW, count: 1 }],
+    },
+    idempotencyKey: 'create:direct-credit', sourceVisibility: 'private',
+  });
+  const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+  const reference = await configStore.putAgentScheduleReference({
+    boundRoutineVersion: pending.authorityBindingVersion ?? pending.version,
+    scheduleId: pending.id, agentId: 'agent_direct', workspaceId: pending.workspaceId,
+    channelId: destination.conversationId, destinationKind: 'direct_thread',
+    destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+    runsAsMembershipId: destination.ownerMembershipId,
+    authorityReceiptId: 'receipt_direct', requiredConnectionAccountIds: [], state: 'active',
+  });
+  const routine = await store.activateDirectRoutine({
+    routineId: pending.id, expectedVersion: pending.version,
+    expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+  });
+  const run = await store.createOccurrence({
+    runId: 'rrun_direct_credit', idempotencyKey: 'run:direct-credit',
+    routineId: routine.id, routineVersion: routine.version, scheduledFor: NOW,
+    triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+  });
+  const attempt = await store.startAdmissionAttempt({
+    occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+  });
+  const client = {
+    conversations: { open: async () => ({ ok: true, channel: { id: destination.conversationId, is_im: true } }) },
+    chat: {
+      postMessage: async (input: Record<string, unknown>) => {
+        if ('thread_ts' in input) throw { data: { error: 'cannot_reply_to_message' } };
+        return { ok: true, channel: destination.conversationId, ts: '1787853828.000100' };
+      },
+    },
+  };
+  await executeRoutineOccurrence({
+    env: scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_direct_credit' }),
+    store, occurrenceId: run.id, attempt: attempt.attempt,
+  }, {
+    ...dependencies(),
+    resolveCredential: async () => ({
+      credentialRefId: platformCredentialRefId('anthropic'), version: 1, providerId: 'anthropic',
+      sourceKind: 'platform' as const, label: 'Chickpea', scopeLabel: null, unknownRotation: false,
+    }),
+    resolveAccess: async () => ({
+      config: {
+        ...config,
+        channelId: destination.conversationId,
+        agentId: 'agent_direct',
+        agent: { ...config.agent, id: 'agent_direct', name: 'Direct Agent' },
+      },
+      accessHash: 'a'.repeat(64),
+      botToken: 'xoxb-test',
+      botUserId: 'UBOT',
+      actorSlackUserId: 'U_DIRECT',
+      actorMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_direct',
+      client: client as never,
+    }),
+    handle: fakeHandle({ reply: successfulReply() }),
+  });
+  assert.equal((await store.getRun(run.id))?.failureClass, 'direct_thread_unavailable');
+  assert.deepEqual(creditBacks, []);
+});
+
+test('standalone, and hosted with no port, a scheduled run asks the host nothing and posts what it posted before', async (t) => {
+  const standalone = await scheduledRunSettlement(t, 'settle_standalone', { env: {} });
+  resetPlatformFundingForTests();
+  const standaloneNoPort = await scheduledRunSettlement(t, 'settle_standalone', { env: {}, port: false });
+  assert.deepEqual(standalone.events, ['slack-post']);
+  assert.deepEqual(standalone.messages, standaloneNoPort.messages);
+  assert.deepEqual(routineFooter(standalone.messages[0]), ['Chickpea', 'anthropic/claude-sonnet-4-6', 'Scheduled']);
+
+  const failed = await scheduledRunSettlement(t, 'settle_standalone_failed', {
+    env: {}, platformFunded: true, handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
+  });
+  assert.deepEqual(failed.creditBacks, []);
+  assert.equal(JSON.stringify(failed.messages).includes(CREDITED_BACK), false);
+
+  const portless = await scheduledRunSettlement(t, 'settle_portless', { port: false });
+  assert.deepEqual(portless.events, ['slack-post']);
+  assert.deepEqual(routineFooter(portless.messages[0]), ['Chickpea', 'anthropic/claude-sonnet-4-6', 'Scheduled']);
 });
 
 test('a scheduled run refused for credits after a tool call still pauses for its unknown outcome', async () => {

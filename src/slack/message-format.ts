@@ -89,6 +89,7 @@ export interface SlackReplyFooter {
   modelRepair?: boolean | undefined;
   memoryItems?: readonly string[] | undefined;
   scheduled?: boolean | undefined;
+  usageLine?: string | undefined;
 }
 
 export function renderSlackMessage(
@@ -934,6 +935,7 @@ export function renderSlackReplyFooterBlock(footer: SlackReplyFooter): SlackCont
   for (const item of footer.memoryItems ?? []) {
     segments.push(escapeSlackControlCharacters(item));
   }
+  if (footer.usageLine) segments.push(escapeSlackControlCharacters(footer.usageLine));
   return {
     type: 'context',
     elements: [{ type: 'mrkdwn', text: segments.join(' | ') }],
