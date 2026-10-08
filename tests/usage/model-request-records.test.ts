@@ -10,7 +10,9 @@ import {
   type StreamOptions,
   type Usage,
 } from '@earendil-works/pi-ai';
-import { init, instrument, useAgentStart, useModel, useTool, type FlueExecutionContext } from '@flue/runtime';
+import {
+  GeneralSubagent, init, instrument, useAgentStart, useModel, useSubagent, useTool, type FlueExecutionContext,
+} from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
 import {
@@ -581,10 +583,10 @@ function instrumentedLane(agentId: string) {
   return { dispose };
 }
 
-function workersAiResponse(content: string, input = 10, tool = false): Response {
+function workersAiResponse(content: string, input = 10, tool?: { name: string; args: unknown }): Response {
   return new Response(`data: ${JSON.stringify({
-    choices: [{ index: 0, delta: tool ? { tool_calls: [{ index: 0, id: 'call_read', type: 'function',
-      function: { name: 'read_fixture', arguments: '{}' } }] } : { content }, finish_reason: tool ? 'tool_calls' : 'stop' }],
+    choices: [{ index: 0, delta: tool ? { tool_calls: [{ index: 0, id: `call_${tool.name}`, type: 'function',
+      function: { name: tool.name, arguments: JSON.stringify(tool.args) } }] } : { content }, finish_reason: tool ? 'tool_calls' : 'stop' }],
     usage: { prompt_tokens: input, completion_tokens: 3, total_tokens: input + 3 },
   })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
 }
@@ -603,7 +605,7 @@ test('a real Flue overflow compaction writes one record per provider call, the c
   const provider = createCloudflareBindingProvider({ run: async () => {
     calls++;
     if (calls === 1) return workersAiResponse('First answer.');
-    if (calls === 2) return workersAiResponse('', 10, true);
+    if (calls === 2) return workersAiResponse('', 10, { name: 'read_fixture', args: {} });
     if (calls === 3) return workersAiResponse('Partial answer.', 40_000);
     if (calls === 4) return workersAiResponse('Compacted synthetic context.', 20);
     if (calls === 5) return workersAiResponse('Recovered answer.');
@@ -716,6 +718,54 @@ test('an attachment analysis from agent start records its own purpose under the 
   assert.equal(analyzed!.attemptId, answered!.attemptId);
   assert.equal(analyzed!.runId, answered!.runId);
   assert.deepEqual([analyzed!.agentId, answered!.agentId], ['agent_attachments', 'agent_attachments']);
+});
+
+test('a sub-agent task records its request under the parent attempt\'s run as a reply', { timeout: 20_000 }, async (t) => {
+  const { store, written } = recordingAccess(t);
+  const lane = instrumentedLane('agent_delegating');
+  t.after(lane.dispose);
+  const modelId = '@cf/zai-org/glm-5.3-flash';
+  const responses = [
+    () => workersAiResponse('', 50, { name: 'task', args: { agent: 'flue-general', prompt: 'Summarize the synthetic fixture.' } }),
+    () => workersAiResponse('Child answer.', 30),
+    () => workersAiResponse('Parent answer.', 70),
+  ];
+  const provider = createCloudflareBindingProvider({ run: async () => {
+    const respond = responses.shift();
+    if (!respond) throw new Error('Unexpected additional model call.');
+    return respond();
+  } });
+  registerPiProvider(provider);
+  function DelegatingProbe() {
+    useModel(`cloudflare/${modelId}`);
+    useSubagent(GeneralSubagent);
+    return 'Delegate the synthetic fixture.';
+  }
+  const runtime = await start({
+    agents: [{ agent: DelegatingProbe, name: 'records-subagent-probe' }],
+    providers: [registeredPiProvider(provider.id)!],
+  });
+  let submissionId = '';
+  try {
+    const agent = init(DelegatingProbe, { id: 'records-subagent' });
+    const receipt = await agent.dispatch('Delegate the fixture.');
+    submissionId = receipt.submissionId;
+    await agent.read(receipt);
+  } finally {
+    await runtime.stop();
+  }
+
+  assert.equal(responses.length, 0, 'the parent delegated, the child answered, then the parent answered');
+  const records = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
+  assert.deepEqual(
+    records.map((record) => [record!.inputTokens, record!.runId, record!.purpose, record!.agentId]),
+    [
+      [50, submissionId, 'reply', 'agent_delegating'],
+      [30, submissionId, 'reply', 'agent_delegating'],
+      [70, submissionId, 'reply', 'agent_delegating'],
+    ],
+  );
+  assert.equal(new Set(records.map((record) => record!.attemptId)).size, 1, 'the child runs in the parent attempt');
 });
 
 test('a stateless vision check inside an attempt records one request under that attempt', async (t) => {

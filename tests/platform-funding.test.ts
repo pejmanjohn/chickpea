@@ -461,6 +461,29 @@ test('each finished platform-funded request is charged once with its record, a s
   assert.equal(new Set(calls.charge.map((record) => record.requestId)).size, 2);
 });
 
+test('a charge names what its request was for: an attempt\'s request a reply, a stateless call its own purpose', async (t) => {
+  const { env } = hostedProxy(t);
+  const calls = fakePort();
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [completes(), completes()]);
+  const interceptor = createModelAccessInterceptor({
+    lookup: async () => ({ env, grant: grant('inst_credits', 'platform'), agentId: 'agent_credits' }),
+    installationGrants: async () => [],
+  });
+
+  await interceptor(
+    { type: 'agent', operationId: 'op', operationKind: 'prompt' },
+    { instanceId: 'credits', submissionId: 'sub_credits', agentName: 'chickpea-slack-v2' },
+    () => modelCall(model),
+  );
+  const intent = { ...grant('inst_credits', 'platform'), runId: 'slack-interaction-intent' };
+  await withModelAccess(intent, env, 'intent', () => modelCall(model));
+
+  assert.deepEqual(calls.charge.map(({ purpose, runId, agentId }) => ({ purpose, runId, agentId })), [
+    { purpose: 'reply', runId: 'sub_credits', agentId: 'agent_credits' },
+    { purpose: 'intent', runId: 'slack-interaction-intent', agentId: null },
+  ]);
+});
+
 test('a failed charge is tried once more under the same request ID, and a charge that succeeds then logs nothing', async (t) => {
   const { env, recorded } = hostedProxy(t);
   let failures = 1;

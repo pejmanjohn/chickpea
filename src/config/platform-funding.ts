@@ -37,8 +37,9 @@ export interface PlatformFundingPort {
   admit(grant: ModelAccessGrant, model: PlatformFundedModel): Promise<PlatformFundingAdmission>;
   /**
    * Once per finished platform-funded request, and once more if that fails;
-   * `record.requestId` is the idempotency key. `listPriceUsdMicros` is null
-   * when Core could not price the usage, and `priceUnknownReason` says why.
+   * `record.requestId` is the idempotency key. `record.purpose` names what
+   * the request was for. `listPriceUsdMicros` is null when Core could not
+   * price the usage, and `priceUnknownReason` says why.
    */
   charge(record: ModelRequestRecord): Promise<void>;
   /** What a platform-funded request is charged per unit of list price, from the host's rate card. */

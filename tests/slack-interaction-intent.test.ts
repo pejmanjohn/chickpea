@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { resolveEffectiveSlackConfig } from '../src/config/effective-config.ts';
+import { configureModelRequestRecorder, resetModelAccessForTests } from '../src/config/model-access.ts';
 import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
@@ -20,6 +21,7 @@ import {
   slackBrowserActionReply,
   slackSteeringCommand,
 } from '../src/slack/interaction-intent.ts';
+import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
 
 const baseContext = {
   workspaceId: 'T_TEST',
@@ -191,7 +193,7 @@ test('classifier failures use quiet owned-thread and written guaranteed fallback
   );
 });
 
-test('subscription interaction classification omits unsupported temperature', async (t) => {
+async function subscriptionClassifier(t: TestContext) {
   const settings = new SqliteSettingsStore(':memory:');
   await saveOpenAiAuthMethod(settings, 'subscription');
   await commitOpenAiSubscriptionCredentials({
@@ -257,6 +259,11 @@ test('subscription interaction classification omits unsupported temperature', as
     globalThis.fetch = originalFetch;
     settings.close();
   });
+  return { settings, requestBody: () => requestBody };
+}
+
+test('subscription interaction classification omits unsupported temperature', async (t) => {
+  const { settings, requestBody } = await subscriptionClassifier(t);
 
   const classification = await classifySlackInteraction({
     ...baseContext,
@@ -269,8 +276,26 @@ test('subscription interaction classification omits unsupported temperature', as
     disposition: 'reply',
     reason: 'substantive_request',
   });
-  assert.equal(requestBody?.model, 'gpt-5.6-terra');
-  assert.equal(Object.hasOwn(requestBody ?? {}, 'temperature'), false);
+  assert.equal(requestBody()?.model, 'gpt-5.6-terra');
+  assert.equal(Object.hasOwn(requestBody() ?? {}, 'temperature'), false);
+});
+
+test('the interaction intent check records its request as an intent, outside any run or Agent', async (t) => {
+  const { settings } = await subscriptionClassifier(t);
+  const written: ModelRequestRecord[] = [];
+  configureModelRequestRecorder(async (record) => { written.push(record); });
+  t.after(resetModelAccessForTests);
+
+  const classification = await classifySlackInteraction({
+    ...baseContext,
+    text: 'Is this result significant?',
+    requestedModel: 'openai/gpt-5.6-terra',
+  }, undefined, undefined, undefined, { settings });
+
+  assert.equal(classification.failed, false);
+  assert.deepEqual(written.map(({ purpose, runId, agentId }) => ({ purpose, runId, agentId })), [
+    { purpose: 'intent', runId: 'slack-interaction-intent', agentId: null },
+  ]);
 });
 
 test('high-confidence acknowledgments stay reaction-only even when a small model chooses prose', async () => {
