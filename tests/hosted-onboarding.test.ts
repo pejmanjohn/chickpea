@@ -437,7 +437,7 @@ function hostPorts(t: TestContext) {
     funding: async () => host.funding === 'platform' ? 'platform' : 'customer',
     admit: async () => 'admitted',
     charge: async () => undefined,
-    priceMultiplier: async () => 1,
+    ...NO_RUN_FEES,
   });
   t.after(() => {
     configurePlatformBilling(undefined);
