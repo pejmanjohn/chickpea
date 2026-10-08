@@ -123,7 +123,7 @@ export async function lookupAttemptModelAccess(
         staged?.runId ?? submissionId ?? instanceId,
         env,
       );
-      if (!staged) console.warn('[chickpea] coding worker submission has no staged run', { submissionId });
+      if (!staged) console.warn('[chickpea] coding worker submission has no staged run', { submissionId, instanceId });
       return access;
     }
     case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:

@@ -631,7 +631,7 @@ test('a coding worker\'s attempt and grant name the run that delegated its task,
     assert.deepEqual('grant' in redriven && [redriven.grant.runId, redriven.grant.credentialRefId],
       ['sub_ik_task_3', frozen.credentialRefId]);
     assert.deepEqual(warn.mock.calls.map((call) => call.arguments),
-      [['[chickpea] coding worker submission has no staged run', { submissionId: 'sub_ik_task_3' }]]);
+      [['[chickpea] coding worker submission has no staged run', { submissionId: 'sub_ik_task_3', instanceId }]]);
     // Without its binding the same submission still fails closed, and the binding check comes first.
     await assert.rejects(lookup(`${instanceId}0`, 'sub_ik_task_3', envA),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
