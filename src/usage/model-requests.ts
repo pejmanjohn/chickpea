@@ -40,6 +40,7 @@ export interface OutputTokens {
 
 export interface ModelRequestRecord extends ModelRequestAttribution {
   readonly requestId: string;
+  readonly purpose: ModelRequestPurpose;
   readonly provider: string;
   readonly model: string;
   readonly fundingSource: ModelRequestFundingSource;
@@ -58,8 +59,14 @@ export interface ModelRequestRecord extends ModelRequestAttribution {
   readonly finishedAt: number;
 }
 
+/** A record as the store reads it back: one written before requests named their purpose has none. */
+export type StoredModelRequestRecord = Omit<ModelRequestRecord, 'purpose'> & {
+  readonly purpose: ModelRequestPurpose | null;
+};
+
 export interface ModelRequestEnd extends ProviderReport {
   readonly requestId: string;
+  readonly purpose: ModelRequestPurpose;
   readonly attribution: ModelRequestAttribution;
   /** The registered provider the request was sent through, an alias route included. */
   readonly route: string;
@@ -100,6 +107,7 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
   const priced = price.estimateCompleteness === 'complete';
   return {
     requestId: end.requestId,
+    purpose: end.purpose,
     installationId: end.attribution.installationId,
     runId: end.attribution.runId,
     attemptId: end.attribution.attemptId,

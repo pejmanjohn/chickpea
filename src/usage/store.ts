@@ -11,7 +11,7 @@ import {
   usageWhere,
 } from './rollups.ts';
 import { UsageStateError } from './store-error.ts';
-import type { ModelRequestRecord } from './model-requests.ts';
+import type { ModelRequestRecord, StoredModelRequestRecord } from './model-requests.ts';
 import { installReleasePriceCatalogs } from './pricing/catalog.ts';
 import { estimateUsage } from './pricing/estimate.ts';
 import type {
@@ -175,6 +175,7 @@ interface ModelRequestRow {
   run_id: string;
   attempt_id: string;
   agent_id: string | null;
+  purpose: StoredModelRequestRecord['purpose'];
   provider: string;
   model: string;
   funding_source: ModelRequestRecord['fundingSource'];
@@ -196,7 +197,7 @@ interface ModelRequestRow {
 }
 
 const MODEL_REQUEST_COLUMNS = `
-  request_id, installation_id, run_id, attempt_id, agent_id, provider, model,
+  request_id, installation_id, run_id, attempt_id, agent_id, purpose, provider, model,
   funding_source, outcome, input_tokens, output_tokens, output_tokens_reasoning,
   cache_read_tokens, cache_write_tokens, cache_write_tokens_one_hour, price_version_id,
   list_price_usd_micros, price_unknown_reason, provider_cost_usd_micros, provider_response_id,
@@ -454,17 +455,18 @@ export class UsageStoreLogic {
     });
   }
 
-  recordModelRequest(raw: ModelRequestRecord): ModelRequestRecord {
+  recordModelRequest(raw: ModelRequestRecord): StoredModelRequestRecord {
     const record = normalizeModelRequestRecord(raw);
     this.db.run(
       `INSERT INTO usage_model_requests (${MODEL_REQUEST_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(request_id) DO NOTHING`,
       record.requestId,
       record.installationId,
       record.runId,
       record.attemptId,
       record.agentId,
+      record.purpose,
       record.provider,
       record.model,
       record.fundingSource,
@@ -487,7 +489,7 @@ export class UsageStoreLogic {
     return this.getModelRequest(record.requestId)!;
   }
 
-  getModelRequest(requestId: string): ModelRequestRecord | undefined {
+  getModelRequest(requestId: string): StoredModelRequestRecord | undefined {
     const row = this.db.get(
       `SELECT ${MODEL_REQUEST_COLUMNS} FROM usage_model_requests WHERE request_id = ?`,
       requestId,
@@ -1395,6 +1397,7 @@ export class UsageStoreLogic {
         run_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL,
         agent_id TEXT,
+        purpose TEXT,
         provider TEXT NOT NULL,
         model TEXT NOT NULL,
         funding_source TEXT NOT NULL,
@@ -1461,6 +1464,7 @@ export class UsageStoreLogic {
     addColumnIfMissing(this.db, 'usage_model_requests', 'provider_response_id', 'TEXT');
     addColumnIfMissing(this.db, 'usage_model_requests', 'provider_service_tier', 'TEXT');
     addColumnIfMissing(this.db, 'usage_model_requests', 'provider_inference_geo', 'TEXT');
+    addColumnIfMissing(this.db, 'usage_model_requests', 'purpose', 'TEXT');
     addColumnIfMissing(
       this.db,
       'usage_connector_daily_rollups',
@@ -1574,9 +1578,10 @@ export class SqliteUsageStore {
   }
 }
 
-function mapModelRequest(row: ModelRequestRow): ModelRequestRecord {
+function mapModelRequest(row: ModelRequestRow): StoredModelRequestRecord {
   return {
     requestId: row.request_id,
+    purpose: row.purpose,
     installationId: row.installation_id,
     runId: row.run_id,
     attemptId: row.attempt_id,

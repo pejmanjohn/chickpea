@@ -33,7 +33,7 @@ import type {
 } from './state-rpc.ts';
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
-import type { ModelRequestRecord } from '../usage/model-requests.ts';
+import type { ModelRequestRecord, StoredModelRequestRecord } from '../usage/model-requests.ts';
 import type { SlackInteractionIntent } from '../slack/interaction-intent.ts';
 import type { SlackReadMethod, SlackRunPresentation } from '../slack/run-presentations.ts';
 import type {
@@ -2795,13 +2795,13 @@ export class CfUsageStore implements UsageStore {
     return response.usage;
   }
 
-  async recordModelRequest(record: ModelRequestRecord): Promise<ModelRequestRecord> {
+  async recordModelRequest(record: ModelRequestRecord): Promise<StoredModelRequestRecord> {
     const response = await this.execute({ kind: 'record_model_request', record });
     if (response.kind !== 'model_request' || !response.record) throw unexpectedUsageResponse();
     return response.record;
   }
 
-  async getModelRequest(requestId: string): Promise<ModelRequestRecord | undefined> {
+  async getModelRequest(requestId: string): Promise<StoredModelRequestRecord | undefined> {
     const response = await this.execute({ kind: 'get_model_request', requestId });
     if (response.kind !== 'model_request') throw unexpectedUsageResponse();
     return orUndefined(response.record);

@@ -49,6 +49,7 @@ import {
   type ModelRequestAttribution,
   type ModelRequestEnd,
   type ModelRequestFundingSource,
+  type ModelRequestPurpose,
   type ModelRequestRecord,
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
@@ -116,9 +117,10 @@ interface BoundAccess {
 
 /**
  * One attempt's access by provider (empty when it has none), the instance it
- * was bound for, and whether its deployment serves many installations, which
- * the proxy reads instead of any process-wide setting. A hosted cell names
- * its installation, whose admission each request the proxy sends asks again.
+ * was bound for, what its requests are for, and whether its deployment serves
+ * many installations, which the proxy reads instead of any process-wide
+ * setting. A hosted cell names its installation, whose admission each request
+ * the proxy sends asks again.
  */
 interface ModelAccessCell {
   readonly instanceId: string | undefined;
@@ -127,6 +129,7 @@ interface ModelAccessCell {
   readonly bound: ReadonlyMap<ModelAccessProviderId, BoundAccess>;
   readonly env: PlatformEnv | undefined;
   readonly attribution: ModelRequestAttribution;
+  readonly purpose: ModelRequestPurpose;
 }
 
 export type ModelRequestRecorder = (record: ModelRequestRecord, env: PlatformEnv | undefined) => Promise<unknown>;
@@ -244,7 +247,9 @@ export function createModelAccessInterceptor(
     } else if (!('deploymentLane' in attempt) && !hosted) {
       grants = await options.installationGrants(attempt.env, runId);
     }
-    const cell = await resolveCell(grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null);
+    const cell = await resolveCell(
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply',
+    );
     return cells.run(cell, next);
   };
 }
@@ -258,10 +263,11 @@ export function currentModelAccessRunId(): string | undefined {
 export async function withModelAccess<T>(
   grant: ModelAccessGrant,
   env: PlatformEnv | undefined,
+  purpose: ModelRequestPurpose,
   fn: () => Promise<T>,
 ): Promise<T> {
   const hosted = deploymentServesManyInstallations(env);
-  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null), fn);
+  return cells.run(await resolveCell([grant], env, hosted, undefined, grant.runId, null, purpose), fn);
 }
 
 /**
@@ -271,10 +277,11 @@ export async function withModelAccess<T>(
 export async function withDeploymentLane<T>(
   env: PlatformEnv | undefined,
   runId: string,
+  purpose: ModelRequestPurpose,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (deploymentServesManyInstallations(env)) throw providerNotOffered('this provider');
-  return cells.run(await resolveCell([], env, false, undefined, runId, null), fn);
+  return cells.run(await resolveCell([], env, false, undefined, runId, null, purpose), fn);
 }
 
 export type ImageEndpointFetch = (
@@ -355,6 +362,7 @@ async function resolveCell(
   instanceId: string | undefined,
   runId: string,
   agentId: string | null,
+  purpose: ModelRequestPurpose,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -368,7 +376,7 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution });
+  return Object.freeze({ instanceId, hosted, installationId, bound, env, attribution, purpose });
 }
 
 function providerNotOffered(provider: string): ModelAccessError {
@@ -559,7 +567,9 @@ function settleRequest(
   return (final) => settleRecord(cell.env, request, platformGrant, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
-    const record = modelRequestRecord({ ...request, attribution: cell.attribution, message: final, ...report, finishedAt });
+    const record = modelRequestRecord({
+      ...request, attribution: cell.attribution, purpose: cell.purpose, message: final, ...report, finishedAt,
+    });
     const offListPrice = mode &&
       (offList(record.providerServiceTier, mode.listPricedServiceTiers) ||
         offList(record.providerInferenceGeo, mode.listPricedInferenceGeos));

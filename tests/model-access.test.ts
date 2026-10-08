@@ -312,11 +312,11 @@ test('a grant is resolved only through the env of its own installation', async (
   const { envA, envB, grant } = await twoInstallations(t);
   const grantA = await grant(envA, 'run');
   await assert.rejects(
-    withModelAccess(grantA, envB, async () => undefined),
+    withModelAccess(grantA, envB, 'reply', async () => undefined),
     (error: unknown) => error instanceof ModelAccessError && error.code === 'installation_mismatch',
   );
   await assert.rejects(
-    withModelAccess({ ...grantA, fundingSource: 'platform' as never }, envA, async () => undefined),
+    withModelAccess({ ...grantA, fundingSource: 'platform' as never }, envA, 'reply', async () => undefined),
     (error: unknown) => error instanceof ModelAccessError && error.code === 'funding_not_offered',
   );
 });
@@ -337,7 +337,7 @@ test('a deployment serving many installations refuses calls without scope, deplo
         (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing', model.provider);
     }
     // Inside a grant of this deployment, a lane with its own credential is refused by the cell itself.
-    await withModelAccess(grantA, envA, async () => {
+    await withModelAccess(grantA, envA, 'reply', async () => {
       for (const model of lanes) {
         assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, { messages: [] }, {}),
           (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered', model.provider);
@@ -345,15 +345,15 @@ test('a deployment serving many installations refuses calls without scope, deplo
       assert.throws(() => registeredPiProvider('local-stub')!.streamSimple(localStub, { messages: [] }, {}),
         (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_mismatch');
     });
-    await assert.rejects(withDeploymentLane(envA, 'lane', async () => undefined),
+    await assert.rejects(withDeploymentLane(envA, 'lane', 'reply', async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
-    await assert.rejects(withStatelessModelAccess('cloudflare-workers-ai/@cf/model', { env: envA, runId: 'classifier' }, async () => undefined),
+    await assert.rejects(withStatelessModelAccess('cloudflare-workers-ai/@cf/model', { env: envA, runId: 'classifier', purpose: 'intent' }, async () => undefined),
       (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered');
     // The stub has no credential here even with its URL set, and its grant cannot be resolved.
     await withEnv({ LOCAL_STUB_URL: 'http://127.0.0.1:9/v1' }, async () => {
       assert.equal(await installationModelAccessGrant('local-stub', envA, 'run'), undefined);
       await assert.rejects(withModelAccess({ ...grantA, providerId: 'local-stub', credentialRefId: 'cred_local-stub_custom', credentialVersion: 1 }, envA,
-        async () => undefined), ModelCredentialRevisionError);
+        'reply', async () => undefined), ModelCredentialRevisionError);
     });
     // The runtime refuses those lanes before any binding.
     const settings = new SqliteSettingsStore(':memory:');
@@ -381,8 +381,8 @@ test('a deployment serving many installations refuses calls without scope, deplo
     // A deployment-level provider key makes every model call refuse, even one with a grant.
     await withEnv({ ANTHROPIC_API_KEY: 'sk-ant-deployment-environment' }, async () => {
       for (const refused of [
-        () => withModelAccess(grantA, envA, async () => undefined),
-        () => withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, runId: 'classifier' }, async () => undefined),
+        () => withModelAccess(grantA, envA, 'reply', async () => undefined),
+        () => withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: envA, runId: 'classifier', purpose: 'intent' }, async () => undefined),
         () => installationModelAccessGrant('anthropic', envA, 'run'),
       ]) {
         await assert.rejects(refused, (error: unknown) =>
@@ -447,7 +447,7 @@ test('standalone resolves the deployment environment key first, then the key sav
     const sent: SentRequest[] = [];
     const model = recordingProvider('anthropic', sent);
     const call = (step: string) =>
-      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: undefined, settings, runId: step }, () => modelCall(model, step));
+      withStatelessModelAccess('anthropic/claude-haiku-4-5', { env: undefined, settings, runId: step, purpose: 'reply' }, () => modelCall(model, step));
 
     // No credential: the existing actionable readiness error, and no request.
     await assert.rejects(call('missing'), (error: unknown) =>
@@ -473,7 +473,7 @@ test('standalone resolves the deployment environment key first, then the key sav
     // A lane that brings its own deployment credential runs as before, inside a standalone cell.
     const workersAi = recordingProvider('cloudflare-workers-ai', sent);
     sent.length = 0;
-    await withStatelessModelAccess('cloudflare-workers-ai/probe-model', { env: undefined, runId: 'classifier' },
+    await withStatelessModelAccess('cloudflare-workers-ai/probe-model', { env: undefined, runId: 'classifier', purpose: 'intent' },
       () => modelCall(workersAi, 'workers-ai'));
     assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['workers-ai', undefined]]);
   });
@@ -804,7 +804,7 @@ test('a provider error that echoes the injected key never records it', async (t)
     credentialVersion: 1, runId: 'run', fundingSource: 'customer',
   };
   const events: string[] = [];
-  const result = await withModelAccess(grant, undefined, async () => {
+  const result = await withModelAccess(grant, undefined, 'reply', async () => {
     const stream = registeredPiProvider('anthropic')!.streamSimple(model, { messages: [] }, {});
     for await (const event of stream) events.push(JSON.stringify(event));
     return stream.result();

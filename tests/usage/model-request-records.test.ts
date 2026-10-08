@@ -47,6 +47,7 @@ const NOW = Date.UTC(2026, 9, 7, 12);
 function storedRecord(overrides: Partial<ModelRequestRecord> = {}): ModelRequestRecord {
   return {
     requestId: 'request-1',
+    purpose: 'reply',
     installationId: 'installation-1',
     runId: 'submission-1',
     attemptId: 'attempt-1',
@@ -98,6 +99,8 @@ test('a request record is validated where the store receives it', async () => {
       storedRecord({ requestId: '' }),
       storedRecord({ outcome: 'cancelled' as ModelRequestRecord['outcome'] }),
       storedRecord({ fundingSource: 'sponsor' as ModelRequestRecord['fundingSource'] }),
+      storedRecord({ purpose: 'billing' as ModelRequestRecord['purpose'] }),
+      storedRecord({ purpose: undefined as unknown as ModelRequestRecord['purpose'] }),
       storedRecord({ listPriceUsdMicros: null }),
       storedRecord({ priceUnknownReason: 'price_unknown' }),
       storedRecord({ priceVersionId: null, listPriceUsdMicros: null }),
@@ -110,6 +113,9 @@ test('a request record is validated where the store receives it', async () => {
     }
     const platform = storedRecord({ requestId: 'request-platform', fundingSource: 'platform' });
     assert.deepEqual(await store.recordModelRequest(platform), platform);
+    const compaction = storedRecord({ requestId: 'request-compaction', purpose: 'compaction' });
+    assert.deepEqual(await store.recordModelRequest(compaction), compaction);
+    assert.deepEqual(await store.getModelRequest('request-compaction'), compaction);
     const unpriced = storedRecord({
       requestId: 'request-unpriced',
       priceVersionId: null,
@@ -160,7 +166,7 @@ test('a request record keeps what its provider reported, and refuses unusable va
   }
 });
 
-test('a request table from before provider reports gains their columns, and its rows read back with nulls', () => {
+test('a request table from before provider reports and purposes gains their columns, and its rows read back with nulls', () => {
   const db = openStateDb(':memory:');
   db.exec(
     `CREATE TABLE usage_model_requests (
@@ -197,10 +203,10 @@ test('a request table from before provider reports gains their columns, and its 
   const store = new UsageStoreLogic(db, () => NOW);
 
   const columns = db.all('PRAGMA table_info(usage_model_requests)').map((row) => row.name);
-  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo']) {
+  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo', 'purpose']) {
     assert.ok(columns.includes(column), `${column} in ${String(columns)}`);
   }
-  assert.deepEqual(store.getModelRequest('request-old'), old);
+  assert.deepEqual(store.getModelRequest('request-old'), { ...old, purpose: null });
   const billed = storedRecord({
     requestId: 'request-new', providerCostUsdMicros: 13, providerResponseId: 'gen-fixture-0002',
     providerServiceTier: 'default', providerInferenceGeo: null,
@@ -385,6 +391,7 @@ test('a completed request writes one record with its attempt, Agent, canonical p
   assert.match(priced!.attemptId, UUID);
   assert.deepEqual(priced, {
     requestId: priced!.requestId,
+    purpose: 'reply',
     installationId: 'inst_records',
     runId: 'sub_records',
     attemptId: priced!.attemptId,
@@ -455,7 +462,7 @@ test('a stream stopped part way records its partial usage as stopped', async (t)
     fails(partial)(output);
   }]);
 
-  const result = await withModelAccess(grant('stateless_stop'), undefined, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_stop'), undefined, 'reply', () => modelCall(model));
 
   assert.deepEqual(result, partial);
   const record = await store.getModelRequest(written[0]!.record.requestId);
@@ -471,7 +478,7 @@ test('a request refused admission on a hosted cell sends nothing and writes no r
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_refused' });
   const { model, sent } = scriptedAnthropic([]);
 
-  const result = await withModelAccess(grant('stateless_refused', 'inst_refused'), env, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_refused', 'inst_refused'), env, 'reply', () => modelCall(model));
 
   assert.equal(result.stopReason, 'error');
   assert.equal(sent(), 0);
@@ -490,7 +497,7 @@ test('a failing record write leaves the model result unchanged and logs one cont
   const second = reply('stop', { input: 4, output: 1 });
   const { model } = scriptedAnthropic([completes(first), completes(second)]);
 
-  const results = await withModelAccess(grant('stateless_failing'), undefined, async () =>
+  const results = await withModelAccess(grant('stateless_failing'), undefined, 'reply', async () =>
     [await modelCall(model), await modelCall(model)]);
 
   assert.deepEqual(results, [first, second]);
@@ -506,7 +513,7 @@ test('a hanging record write lets the stream end after its budget', { timeout: 1
   const { model } = scriptedAnthropic([completes(message)]);
   const started = Date.now();
 
-  const result = await withModelAccess(grant('stateless_hanging'), undefined, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_hanging'), undefined, 'reply', () => modelCall(model));
 
   const elapsed = Date.now() - started;
   assert.deepEqual(result, message);
@@ -522,7 +529,7 @@ test('the record is in the store when the caller reads the request result', asyn
   });
   const { model } = scriptedAnthropic([completes(reply('stop', { input: 7, output: 3 }))]);
 
-  await withModelAccess(grant('stateless_ordered'), undefined, async () => {
+  await withModelAccess(grant('stateless_ordered'), undefined, 'reply', async () => {
     await modelCall(model);
     assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
   });
@@ -541,11 +548,11 @@ test('an Anthropic or OpenAI request records no provider cost and its usable res
     api: 'openai-responses', provider: OPENAI_PLATFORM_COMPAT_PROVIDER_ID, model: openaiModel, responseId: 'resp_fixture',
   })]);
 
-  await withModelAccess(grant('stateless_anthropic'), undefined, async () => {
+  await withModelAccess(grant('stateless_anthropic'), undefined, 'reply', async () => {
     await modelCall(anthropic.model, 'streamSimple', { fetch: callerFetch });
     await modelCall(anthropic.model, 'stream', { fetch: callerFetch });
   });
-  await withModelAccess(grant('stateless_openai', 'chickpea', 'openai'), undefined, () =>
+  await withModelAccess(grant('stateless_openai', 'chickpea', 'openai'), undefined, 'reply', () =>
     modelCall(openai.model, 'streamSimple', { fetch: callerFetch }));
 
   assert.deepEqual([...anthropic.received, ...openai.received].map((options) => options?.fetch),
