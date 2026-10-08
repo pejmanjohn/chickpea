@@ -15,73 +15,74 @@ import { formatUsageDollars } from './usage-display.ts';
 
 export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to your plan.';
 
-/** A Slack turn's failure as its settlement records it. */
 export type SlackFailureKind = Extract<FlueSettlementCheckpointV1, { outcome: 'failed' | 'aborted' }>['failureKind'];
 
-// Only failures on Chickpea's side, never one the customer's destination,
-// permissions, key or provider account caused. Keyed by both failure unions:
-// a kind added to either fails to compile until it is classified here.
-const CREDIT_BACK_REASONS: Record<SlackFailureKind | RoutineFailureClass, CreditBackReason | null> = {
-  agent: 'chickpea',
-  provider: 'provider',
-  'invalid-output': 'provider',
-  'openai-subscription-reconnect': null,
-  'openai-subscription-quota': null,
-  'openai-subscription-policy': null,
-  'credits-exhausted': null,
-  sandbox: 'sandbox',
-  // A workspace limit, like running out of usage.
-  'sandbox-session-cap': null,
+type NotOurs =
+  | 'out_of_usage'
+  | 'workspace_limit'
+  | 'customer_account'
+  | 'customer_setup'
+  | 'customer_destination'
+  | 'may_have_posted'
+  | 'cause_unrecorded';
 
-  creator_ineligible: null,
-  channel_ineligible: null,
-  assignment_missing: null,
-  access_denied: null,
-  credential_unavailable: null,
-  policy_denied: null,
-  capacity_limited: null,
-  spend_limited: null,
-  schedule_invalid: null,
-  admission_unknown: 'chickpea',
-  workflow_interrupted: 'chickpea',
-  internal_error: 'chickpea',
-  deadline_exceeded: 'timeout',
-  // The run failed as a whole, most often at the model provider; the class cannot tell.
-  tool_failed: 'provider',
-  // A recorded class that hides its cause; a live attempt classifies the cause instead.
-  unknown_external_outcome: null,
-  result_invalid: 'provider',
-  // Slack refused a completed run's result for load: the customer got nothing.
-  slack_rate_limited: 'chickpea',
-  // The customer's destination is gone.
-  direct_thread_unavailable: null,
-  channel_destination_unavailable: null,
-  // The result may have been posted.
-  delivery_unknown: null,
+type Owner = { readonly ours: CreditBackReason } | { readonly notOurs: NotOurs };
+
+const ours = (reason: CreditBackReason): Owner => ({ ours: reason });
+const notOurs = (why: NotOurs): Owner => ({ notOurs: why });
+
+const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
+  agent: ours('chickpea'),
+  provider: ours('provider'),
+  'invalid-output': ours('provider'),
+  'openai-subscription-reconnect': notOurs('customer_account'),
+  'openai-subscription-quota': notOurs('customer_account'),
+  'openai-subscription-policy': notOurs('customer_account'),
+  'credits-exhausted': notOurs('out_of_usage'),
+  sandbox: ours('sandbox'),
+  'sandbox-session-cap': notOurs('workspace_limit'),
+
+  creator_ineligible: notOurs('customer_setup'),
+  channel_ineligible: notOurs('customer_setup'),
+  assignment_missing: notOurs('customer_setup'),
+  access_denied: notOurs('customer_setup'),
+  schedule_invalid: notOurs('customer_setup'),
+  credential_unavailable: notOurs('customer_account'),
+  policy_denied: notOurs('customer_account'),
+  capacity_limited: notOurs('customer_account'),
+  spend_limited: notOurs('out_of_usage'),
+  admission_unknown: ours('chickpea'),
+  workflow_interrupted: ours('chickpea'),
+  internal_error: ours('chickpea'),
+  deadline_exceeded: ours('timeout'),
+  tool_failed: ours('provider'),
+  unknown_external_outcome: notOurs('cause_unrecorded'),
+  result_invalid: ours('provider'),
+  slack_rate_limited: ours('chickpea'),
+  direct_thread_unavailable: notOurs('customer_destination'),
+  channel_destination_unavailable: notOurs('customer_destination'),
+  delivery_unknown: notOurs('may_have_posted'),
 };
 
-/** On the workspace's own key the provider is the customer's, so its failures are not credited back. */
 export function creditBackReason(
   kind: SlackFailureKind | RoutineFailureClass,
   funding: ModelRequestFundingSource,
 ): CreditBackReason | null {
-  const reason = CREDIT_BACK_REASONS[kind];
-  return reason === 'provider' && funding !== 'platform' ? null : reason;
+  const owner = FAILURE_OWNERS[kind];
+  if ('notOurs' in owner) return null;
+  return owner.ours === 'provider' && funding !== 'platform' ? null : owner.ours;
 }
 
-/** The funding a run's frozen plan names; a plan without a platform credential runs on the workspace's key. */
 export function planFunding(plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined): ModelRequestFundingSource {
   return plan?.modelCredential?.fundingSource ?? 'customer';
 }
 
-/** The ledger's run on a hosted installation with a funding port; undefined standalone, without a port, or before dispatch. */
 export function hostedRun(env: PlatformEnv | undefined, runId: string | undefined): RunRef | undefined {
   if (!runId || !platformFundingConfigured() || !deploymentServesManyInstallations(env)) return undefined;
   const installationId = installationScopeOf(env)?.installationId;
   return installationId ? { installationId, runId } : undefined;
 }
 
-/** Whether the host restored what the run used: credited now, or already. */
 export async function creditBackFailedRun(run: RunRef | undefined, reason: CreditBackReason | null): Promise<boolean> {
   if (!run || !reason) return false;
   const outcome = await creditBackRun(run, reason);
@@ -92,7 +93,6 @@ export function withCreditedBack(text: string, creditedBack: boolean): string {
   return creditedBack ? `${text} ${CREDITED_BACK_TEXT}` : text;
 }
 
-/** "This reply used $0.31" when the host shows the run's cost; undefined otherwise. */
 export async function runCostLine(run: RunRef | undefined): Promise<string | undefined> {
   const cost = run && await readRunCost(run);
   return cost?.shown ? `This reply used ${formatUsageDollars(cost.usageMicros)}` : undefined;

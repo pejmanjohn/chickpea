@@ -2509,11 +2509,6 @@ async function createSlackShadowLifecycle(input: {
   }
 }
 
-/**
- * A failed turn's kind as its settlement recorded it; anything else that ended
- * it is Chickpea's. The checkpoint comes first because only it keeps the
- * sandbox kinds, which the live classifier and the replay both report as `agent`.
- */
 function slackFailureKind(error: unknown, settlement: FlueSettlementCheckpointV1 | undefined): SlackFailureKind {
   if (settlement && settlement.outcome !== 'completed') return settlement.failureKind;
   return error instanceof AgentPromptFailure ? error.kind : 'agent';

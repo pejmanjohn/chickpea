@@ -135,7 +135,6 @@ export async function deliverRoutineResult(
     message: string;
     changeKeyHash: string | null;
     artifacts?: readonly SlackArtifactReceipt[];
-    /** What the run used, when the host shows it. */
     usageLine?: string;
     workLifecycle?: ShadowWorkLifecycle;
     now?: () => number;

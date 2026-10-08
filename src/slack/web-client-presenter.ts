@@ -1118,7 +1118,6 @@ export class WebClientPresenter {
     this.target.modelLabel = modelLabel;
   }
 
-  /** Add what the reply's run used, known only once it settles. */
   setFooterUsageLine(usageLine: string): void {
     this.target.usageLine = usageLine;
   }

@@ -220,19 +220,16 @@ export async function postRunFee(post: FeePost): Promise<FeeOutcome | typeof FEE
     ?? FEE_UNANSWERED;
 }
 
-/** Credits back a run that failed on Chickpea's side; undefined when the host did not answer in time. */
 export function creditBackRun(run: RunRef, reason: CreditBackReason): Promise<CreditBackOutcome | undefined> {
   return askWithinBudget((current) => current.creditBack(run, reason), { event: 'credit_back_failed', reason });
 }
 
-/** What a settled run used; undefined when the host did not answer in time. */
 export function readRunCost(run: RunRef): Promise<RunCost | undefined> {
   return askWithinBudget((current) => current.runCost(run), { event: 'run_cost_failed' });
 }
 
 const UNANSWERED_IN_TIME = Symbol('unanswered in time');
 
-/** No port, a failure, or no answer within the budget is logged and answers undefined. */
 async function askWithinBudget<T>(
   ask: (current: PlatformFundingPort) => Promise<T>,
   failure: { readonly event: string } & Readonly<Record<string, string>>,

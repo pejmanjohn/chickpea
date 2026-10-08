@@ -264,11 +264,9 @@ export async function executeRoutineOccurrence(
         }).catch(() => undefined),
       ]);
     }
-    // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
-    // No plan was prepared to say whose key the run used, so a provider failure is taken as the workspace's.
     const creditedBack = await creditBackFailedRun(
       hostedRun(input.env, admission.flueAgentReceipt?.submissionId),
-      creditBackReason(failure.failureClass, 'customer'),
+      creditBackReason(failure.failureClass, planFunding(undefined)),
     );
     let terminalFailure = false;
     if (
@@ -330,7 +328,6 @@ export async function executeRoutineOccurrence(
   let modelSettled = false;
   // Why the attempt ended without a result to post: refused, or an outage.
   let withoutResult: SkipReason | undefined;
-  // What ended the attempt, unmasked: after a tool call the settlement records only an unknown outcome.
   let failureCause: RoutineFailureClass | undefined;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
@@ -1004,7 +1001,6 @@ async function finalizeSettlement(
     if (failure) await deliverPauseNoticeBestEffort(prepared);
     return 'completed';
   }
-  // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
   const creditedBack = await creditBackFailedRun(
     hostedRun(prepared.env, submissionId),
     creditBackReason(cause ?? settlement.failureClass, planFunding(executionInitialData(prepared.envelope).runtimePlan)),

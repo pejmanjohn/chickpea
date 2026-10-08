@@ -309,7 +309,6 @@ export class SlackAgentViewPresentation {
     this.options.footer = { ...this.options.footer, modelLabel };
   }
 
-  /** Add what the reply's run used, known only once it settles. */
   setFooterUsageLine(usageLine: string): void {
     this.options.footer = { ...this.options.footer, usageLine };
   }

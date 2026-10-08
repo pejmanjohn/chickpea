@@ -89,7 +89,6 @@ export interface SlackReplyFooter {
   modelRepair?: boolean | undefined;
   memoryItems?: readonly string[] | undefined;
   scheduled?: boolean | undefined;
-  /** What the reply's run used, when the host shows it. */
   usageLine?: string | undefined;
 }
 

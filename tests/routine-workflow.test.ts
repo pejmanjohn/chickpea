@@ -689,6 +689,8 @@ async function scheduledRunSettlement(
   });
   const events: string[] = [];
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  const statusesAtCreditBack: Array<string | undefined> = [];
+  let occurrenceId: string | undefined;
   const messages: Array<{ text: string; blocks: Array<Record<string, unknown>> }> = [];
   if (input.port !== false) {
     configurePlatformFunding({
@@ -703,6 +705,7 @@ async function scheduledRunSettlement(
       creditBack: async (run, reason) => {
         events.push(`credit-back:${reason}`);
         creditBacks.push({ run, reason });
+        statusesAtCreditBack.push((await store.getRun(occurrenceId!))?.status);
         return { kind: 'credited', usageMicros: 90_000 as UsageMicros };
       },
       runCost: async () => {
@@ -723,6 +726,7 @@ async function scheduledRunSettlement(
     },
   } as unknown as WebClient;
   const fixture = await admittedFixture(store, suffix);
+  occurrenceId = fixture.run.id;
   const clock = { at: NOW + 1 };
   const base = dependencies();
   const env = input.env ?? scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: `inst_${suffix}` });
@@ -753,7 +757,7 @@ async function scheduledRunSettlement(
     clock.at = NOW + 120_000;
   }
   assert.equal(await executeRoutineOccurrence(occurrence, deps), 'completed');
-  return { run: await store.getRun(fixture.run.id), events, creditBacks, messages };
+  return { run: await store.getRun(fixture.run.id), events, creditBacks, statusesAtCreditBack, messages };
 }
 
 /** A handle whose read reports what the Agent did, then ends as told. */
@@ -782,11 +786,12 @@ test('a delivered scheduled result ends its footer with what the run used, read 
 });
 
 test('a platform-funded scheduled run that failed as a whole is credited back, and its notice says so', async (t) => {
-  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'failed_platform', {
+  const { run, creditBacks, statusesAtCreditBack, messages } = await scheduledRunSettlement(t, 'failed_platform', {
     platformFunded: true, handle: () => fakeHandle({ readError: PROVIDER_FAILED() }),
   });
   assert.deepEqual([run?.status, run?.failureClass], ['failed', 'tool_failed']);
   assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_failed_platform', runId: 'submission_test' }, reason: 'provider' }]);
+  assert.deepEqual(statusesAtCreditBack, ['running'], 'credited back before the run turns failed, so a crash retries it');
   assert.equal(messages.length, 1);
   assert.ok(messages[0]!.text.includes(`${run?.publicError} ${CREDITED_BACK}`), messages[0]!.text);
   assert.equal(run?.publicError?.includes(CREDITED_BACK), false, 'the stored error stays as it was');
@@ -816,7 +821,7 @@ test('an own-key scheduled run that ran past its deadline after a tool call is c
 });
 
 test('a dispatched scheduled run whose deadline passes before it reattaches is credited back as a timeout', async (t) => {
-  const { run, creditBacks, messages } = await scheduledRunSettlement(t, 'deadline_reattach', {
+  const { run, creditBacks, statusesAtCreditBack, messages } = await scheduledRunSettlement(t, 'deadline_reattach', {
     deadlinePassesBeforeReattach: true,
     handle: (clock) => readingHandle(async () => {
       if (clock.at < NOW + 120_000) throw new DOMException('The read timed out.', 'TimeoutError');
@@ -825,6 +830,7 @@ test('a dispatched scheduled run whose deadline passes before it reattaches is c
   });
   assert.deepEqual([run?.status, run?.failureClass], ['failed', 'deadline_exceeded']);
   assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_deadline_reattach', runId: 'submission_test' }, reason: 'timeout' }]);
+  assert.deepEqual(statusesAtCreditBack, ['running'], 'credited back before the run turns failed, so a crash retries it');
   assert.equal(messages.length, 1);
   assert.ok(messages[0]!.text.includes(`${run?.publicError} ${CREDITED_BACK}`), messages[0]!.text);
 });
