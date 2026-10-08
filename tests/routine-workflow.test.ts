@@ -656,9 +656,9 @@ const PROVIDER_FAILED = () => new AgentRunError({
 });
 
 /**
- * One hosted scheduled run against a host port that records its fee posts,
- * credit-backs and cost reads in `events`, beside each Slack post. A
- * `platformFunded` run's plan freezes Chickpea's credential for its provider.
+ * One hosted scheduled run against a host port that records its fee posts
+ * and credit-backs in `events`, beside each Slack post. A `platformFunded`
+ * run's plan freezes Chickpea's credential for its provider.
  */
 async function scheduledRunSettlement(
   t: TestContext,
@@ -667,7 +667,6 @@ async function scheduledRunSettlement(
     handle?: (clock: { at: number }) => AgentInstanceHandle;
     platformFunded?: boolean;
     fee?: FeeOutcome['kind'];
-    shown?: boolean;
     /** Slack refuses every post with this error code; `unknown` loses the connection instead. */
     rejection?: string;
     env?: Record<string, unknown>;
@@ -707,10 +706,6 @@ async function scheduledRunSettlement(
         creditBacks.push({ run, reason });
         statusesAtCreditBack.push((await store.getRun(occurrenceId!))?.status);
         return { kind: 'credited', usageMicros: 90_000 as UsageMicros };
-      },
-      runCost: async () => {
-        events.push('run-cost');
-        return { usageMicros: 305_000 as UsageMicros, shown: input.shown ?? true };
       },
     });
   }
@@ -773,16 +768,13 @@ function routineFooter(message: { blocks: Array<Record<string, unknown>> } | und
     ?.split(' | ');
 }
 
-test('a delivered scheduled result ends its footer with what the run used, read after its task row', async (t) => {
-  const shown = await scheduledRunSettlement(t, 'cost_shown');
-  assert.equal(shown.run?.status, 'succeeded');
-  assert.deepEqual(shown.events, ['fee:task', 'run-cost', 'slack-post']);
-  assert.equal(routineFooter(shown.messages[0])?.at(-1), 'This reply used $0.31');
-
-  const hidden = await scheduledRunSettlement(t, 'cost_hidden', { shown: false });
-  assert.deepEqual(hidden.events, ['fee:task', 'run-cost', 'slack-post']);
-  assert.equal(routineFooter(hidden.messages[0])?.at(-1), 'Scheduled');
-  assert.equal(JSON.stringify(hidden.messages).includes('This reply used'), false);
+test('a delivered scheduled result posts its task row, then a footer that says nothing of what it used', async (t) => {
+  for (const platformFunded of [false, true]) {
+    const delivered = await scheduledRunSettlement(t, `delivered_${platformFunded}`, { platformFunded });
+    assert.equal(delivered.run?.status, 'succeeded');
+    assert.deepEqual(delivered.events, ['fee:task', 'slack-post']);
+    assert.deepEqual(routineFooter(delivered.messages[0]), ['Chickpea', 'anthropic/claude-sonnet-4-6', 'Scheduled']);
+  }
 });
 
 test('a platform-funded scheduled run that failed as a whole is credited back, and its notice says so', async (t) => {
@@ -795,7 +787,7 @@ test('a platform-funded scheduled run that failed as a whole is credited back, a
   assert.equal(messages.length, 1);
   assert.ok(messages[0]!.text.includes(`${run?.publicError} ${CREDITED_BACK}`), messages[0]!.text);
   assert.equal(run?.publicError?.includes(CREDITED_BACK), false, 'the stored error stays as it was');
-  assert.equal(JSON.stringify(messages).includes('This reply used'), false);
+  assert.equal(JSON.stringify(messages).includes('used $'), false);
 });
 
 test('an own-key scheduled run that failed as a whole is not credited back', async (t) => {

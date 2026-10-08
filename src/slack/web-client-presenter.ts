@@ -164,7 +164,6 @@ export interface SlackPresenterTarget {
   memoryFooterItems?: readonly string[];
   /** The reply is a model-key repair reply (see SlackReplyFooter.modelRepair). */
   modelRepair?: boolean;
-  usageLine?: string;
 }
 
 export interface SlackArtifactInput {
@@ -1118,10 +1117,6 @@ export class WebClientPresenter {
     this.target.modelLabel = modelLabel;
   }
 
-  setFooterUsageLine(usageLine: string): void {
-    this.target.usageLine = usageLine;
-  }
-
   /** Set the footer's memory items, known only once the turn's memory is prepared. */
   setMemoryFooterItems(memoryItems: readonly string[]): void {
     this.target.memoryFooterItems = memoryItems;
@@ -1140,7 +1135,6 @@ export class WebClientPresenter {
       publicUrl: this.target.publicUrl,
       memoryItems: this.target.memoryFooterItems,
       ...(this.target.modelRepair ? { modelRepair: true } : {}),
-      ...(this.target.usageLine ? { usageLine: this.target.usageLine } : {}),
     };
   }
 

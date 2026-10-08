@@ -3,7 +3,6 @@ import { deploymentServesManyInstallations, installationScopeOf } from '../confi
 import {
   creditBackRun,
   platformFundingConfigured,
-  readRunCost,
   type CreditBackReason,
   type RunRef,
 } from '../config/platform-funding.ts';
@@ -11,7 +10,6 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutineFailureClass } from '../routines/types.ts';
 import type { FlueSettlementCheckpointV1 } from '../slack/turn-job-types.ts';
 import type { ModelRequestFundingSource } from './model-requests.ts';
-import { formatUsageDollars } from './usage-display.ts';
 
 export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to your plan.';
 
@@ -97,9 +95,4 @@ export async function creditBackFailedRun(run: RunRef | undefined, reason: Credi
 
 export function withCreditedBack(text: string, creditedBack: boolean): string {
   return creditedBack ? `${text} ${CREDITED_BACK_TEXT}` : text;
-}
-
-export async function runCostLine(run: RunRef | undefined): Promise<string | undefined> {
-  const cost = run && await readRunCost(run);
-  return cost?.shown ? `This reply used ${formatUsageDollars(cost.usageMicros)}` : undefined;
 }

@@ -100,7 +100,6 @@ import {
   creditBackReason,
   hostedRun,
   planFunding,
-  runCostLine,
   withCreditedBack,
   type SlackFailureKind,
 } from '../usage/run-settlement.ts';
@@ -2188,13 +2187,6 @@ async function runTurnAttempt(
       return;
     }
     const terminalResult = options.replayTerminalResult ?? 'answer';
-    if (agentResult) {
-      const usageLine = await runCostLine(hostedRun(platformEnv, options.flueDispatch?.dispatchReceipt?.submissionId));
-      if (usageLine) {
-        presenter.setFooterUsageLine(usageLine);
-        agentViewPresentation?.setFooterUsageLine(usageLine);
-      }
-    }
     await statusTurn.prepareFinal();
     // Files publish only with the model's own lease-valid answer. A recovered
     // or replaced text never adopts staged files.

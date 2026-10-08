@@ -42,7 +42,6 @@ import {
   creditBackReason,
   hostedRun,
   planFunding,
-  runCostLine,
   withCreditedBack,
 } from '../usage/run-settlement.ts';
 import {
@@ -932,14 +931,12 @@ async function finalizeSettlement(
           safeFailureCode: routineLifecycleFailureCode(refusedTask.failureClass),
         });
       } else if (prepared.run.deliveryStatus === 'none') {
-        const usageLine = await runCostLine(hostedRun(prepared.env, submissionId));
         try {
           await deliverRoutineResult({
             store: prepared.store, run: prepared.run, routine: prepared.routine,
             access: prepared.access, message: settlement.result.message,
             changeKeyHash: settlement.result.changeKeyHash,
             ...(settlement.result.artifacts ? { artifacts: settlement.result.artifacts } : {}),
-            ...(usageLine ? { usageLine } : {}),
             ...(prepared.workLifecycle ? { workLifecycle: prepared.workLifecycle } : {}),
           }, prepared.access.client);
         } catch (error) {
