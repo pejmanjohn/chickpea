@@ -5452,6 +5452,414 @@
    }
   }
  ],
+ "shapes": {
+  "interactive": [
+   {
+    "name": "ask_user",
+    "description": "Ask the person to choose between options you already know (which environment, which of two records they meant, approve an exception or not, delete or keep), or to pick a person, channel or date; they answer with one click. Never use it to confirm what they explicitly asked for (\"delete the 12 duplicates\", \"send it\", \"deploy to staging\"): do that instead. Offer only choices you found; when the answer is something they must type (an email, dates, a name), ask in prose. It ends your reply.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "question": {
+       "type": "string",
+       "maxLength": 200
+      },
+      "options": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "label": {
+          "type": "string",
+          "maxLength": 75
+         },
+         "description": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "recommended": {
+          "type": "boolean"
+         },
+         "destructive": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "label"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 25
+      },
+      "pick": {
+       "enum": [
+        "person",
+        "channel",
+        "date"
+       ],
+       "type": "string"
+      },
+      "multiSelect": {
+       "type": "boolean"
+      },
+      "answerFrom": {
+       "enum": [
+        "requester",
+        "thread"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "question"
+     ]
+    }
+   },
+   {
+    "name": "offer_actions",
+    "description": "Offer one to three buttons under your reply: a link to open, or an obvious next step someone can start with one click (the label is the whole request). Only when the next step is clear and likely.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "actions": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "label": {
+          "type": "string",
+          "maxLength": 30
+         },
+         "url": {
+          "type": "string",
+          "maxLength": 3000
+         },
+         "recommended": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "label"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 3
+      }
+     },
+     "required": [
+      "actions"
+     ]
+    }
+   },
+   {
+    "name": "request_form",
+    "description": "Collect three or more structured values at once (or exact dates, people or channels) with a short form. For one or two values ask in prose or with ask_user; it ends your reply.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string",
+       "maxLength": 24
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 300
+      },
+      "submitLabel": {
+       "type": "string",
+       "maxLength": 24
+      },
+      "answerFrom": {
+       "enum": [
+        "requester",
+        "thread"
+       ],
+       "type": "string"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "key": {
+          "type": "string",
+          "maxLength": 32
+         },
+         "label": {
+          "type": "string",
+          "maxLength": 48
+         },
+         "type": {
+          "enum": [
+           "text",
+           "long_text",
+           "number",
+           "email",
+           "url",
+           "date",
+           "time",
+           "datetime",
+           "choice",
+           "choices",
+           "person",
+           "people",
+           "channel"
+          ],
+          "type": "string"
+         },
+         "required": {
+          "type": "boolean"
+         },
+         "placeholder": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "hint": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "options": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "maxLength": 75
+          },
+          "maxItems": 50
+         },
+         "initial": {
+          "type": "string",
+          "maxLength": 2000
+         }
+        },
+        "required": [
+         "key",
+         "label",
+         "type"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 10
+      }
+     },
+     "required": [
+      "title",
+      "fields"
+     ]
+    }
+   }
+  ],
+  "interactive_streaming": [
+   {
+    "name": "ask_user",
+    "description": "Ask the person to choose between options you already know (which environment, which of two records they meant, approve an exception or not, delete or keep), or to pick a person, channel or date; they answer with one click. Never use it to confirm what they explicitly asked for (\"delete the 12 duplicates\", \"send it\", \"deploy to staging\"): do that instead. Offer only choices you found; when the answer is something they must type (an email, dates, a name), ask in prose. It ends your reply.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "question": {
+       "type": "string",
+       "maxLength": 200
+      },
+      "options": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "label": {
+          "type": "string",
+          "maxLength": 75
+         },
+         "description": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "recommended": {
+          "type": "boolean"
+         },
+         "destructive": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "label"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 25
+      },
+      "pick": {
+       "enum": [
+        "person",
+        "channel",
+        "date"
+       ],
+       "type": "string"
+      },
+      "multiSelect": {
+       "type": "boolean"
+      },
+      "answerFrom": {
+       "enum": [
+        "requester",
+        "thread"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "question"
+     ]
+    }
+   },
+   {
+    "name": "offer_actions",
+    "description": "Offer one to three buttons under your reply: a link to open, or an obvious next step someone can start with one click (the label is the whole request). Only when the next step is clear and likely.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "actions": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "label": {
+          "type": "string",
+          "maxLength": 30
+         },
+         "url": {
+          "type": "string",
+          "maxLength": 3000
+         },
+         "recommended": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "label"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 3
+      }
+     },
+     "required": [
+      "actions"
+     ]
+    }
+   },
+   {
+    "name": "request_form",
+    "description": "Collect three or more structured values at once (or exact dates, people or channels) with a short form. For one or two values ask in prose or with ask_user; it ends your reply.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "title": {
+       "type": "string",
+       "maxLength": 24
+      },
+      "description": {
+       "type": "string",
+       "maxLength": 300
+      },
+      "submitLabel": {
+       "type": "string",
+       "maxLength": 24
+      },
+      "answerFrom": {
+       "enum": [
+        "requester",
+        "thread"
+       ],
+       "type": "string"
+      },
+      "fields": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "key": {
+          "type": "string",
+          "maxLength": 32
+         },
+         "label": {
+          "type": "string",
+          "maxLength": 48
+         },
+         "type": {
+          "enum": [
+           "text",
+           "long_text",
+           "number",
+           "email",
+           "url",
+           "date",
+           "time",
+           "datetime",
+           "choice",
+           "choices",
+           "person",
+           "people",
+           "channel"
+          ],
+          "type": "string"
+         },
+         "required": {
+          "type": "boolean"
+         },
+         "placeholder": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "hint": {
+          "type": "string",
+          "maxLength": 150
+         },
+         "options": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "maxLength": 75
+          },
+          "maxItems": 50
+         },
+         "initial": {
+          "type": "string",
+          "maxLength": 2000
+         }
+        },
+        "required": [
+         "key",
+         "label",
+         "type"
+        ],
+        "additionalProperties": false
+       },
+       "maxItems": 10
+      }
+     },
+     "required": [
+      "title",
+      "fields"
+     ]
+    }
+   },
+   {
+    "name": "stream_answer",
+    "description": "Declare before answer text that progressive delivery would improve this direct response.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {},
+     "required": []
+    }
+   }
+  ]
+ },
  "models": {
   "claude-opus-5-5": {
    "thinking": {

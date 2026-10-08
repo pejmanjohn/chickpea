@@ -12,10 +12,12 @@ import test from 'node:test';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
+  SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
-  sharedPrefixRequest,
+  sharedPrefixRequests,
   sharedSystemBlock,
+  type SharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
@@ -39,7 +41,20 @@ const ALPHA: SlackRequestVariant = {
 };
 const ALPHA_OTHER_CHANNEL = { ...ALPHA, channel: 'C0SALES0001', thread: '1787000900.000100' };
 const BRAVO = { ...ALPHA, workspace: 'T0BRAVO0001', channel: 'C0GENERAL02', user: 'U0CAROL0001' };
-const TENANT_IDS = [ALPHA.workspace, BRAVO.workspace, ALPHA.channel, ALPHA_OTHER_CHANNEL.channel, BRAVO.channel, USER_AGENT_ID];
+const ALPHA_DM: SlackRequestVariant = { ...ALPHA, conversationKind: 'im', channel: 'D0ALICE0001', thread: '1787001800.000100' };
+const ALPHA_GROUP_DM: SlackRequestVariant = { ...ALPHA, conversationKind: 'mpim', channel: 'G0GROUP0001' };
+const TENANT_IDS = [
+  ALPHA.workspace, BRAVO.workspace, ALPHA.channel, ALPHA_OTHER_CHANNEL.channel, BRAVO.channel, ALPHA_DM.channel, USER_AGENT_ID,
+];
+
+const SHAPE_VARIANTS: Record<SharedPrefixShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered'>> = {
+  interactive: { progressiveStreamingOffered: false },
+  interactive_streaming: { progressiveStreamingOffered: true },
+};
+const SHAPE_TOOLS: Record<SharedPrefixShape, string[]> = {
+  interactive: ['ask_user', 'offer_actions', 'request_form'],
+  interactive_streaming: ['ask_user', 'offer_actions', 'request_form', 'stream_answer'],
+};
 
 const UNCONDITIONAL_INSTRUCTIONS = [
   SLACK_INTERACTION_DEFAULTS,
@@ -61,9 +76,8 @@ function anchorIndex(request: RenderedRequest): number {
   return index;
 }
 
-/** Everything before breakpoint B: the universal tools and the constant system block. */
-function sharedPrefix(request: RenderedRequest): string {
-  return JSON.stringify({ tools: request.tools.slice(0, anchorIndex(request) + 1), system: request.system[0] });
+function throughB(request: RenderedRequest): string {
+  return JSON.stringify({ tools: request.tools, system: request.system[0] });
 }
 
 function markers(request: RenderedRequest): string[] {
@@ -92,20 +106,6 @@ function render(variant: SlackRequestVariant): Promise<RenderedRequest> {
 }
 
 for (const agentKind of ['system', 'user'] as const) {
-  test(`${agentKind} Agent: two workspaces and two channels send one shared prefix`, async () => {
-    const alpha = await render({ ...ALPHA, agentKind });
-    const otherChannel = await render({ ...ALPHA_OTHER_CHANNEL, agentKind });
-    const bravo = await render({ ...BRAVO, agentKind });
-    assert.equal(sharedPrefix(otherChannel), sharedPrefix(alpha), 'two channels share tools and system[0]');
-    assert.equal(sharedPrefix(bravo), sharedPrefix(alpha), 'two workspaces share tools and system[0]');
-    assert.equal(alpha.system[0].text, sharedSystemBlock(agentKind));
-    assert.notEqual(alpha.system[1].text, bravo.system[1].text, 'the tenant block names the workspace');
-    const prefix = sharedPrefix(alpha);
-    for (const id of TENANT_IDS) assert.ok(!prefix.includes(id), `${id} is not before breakpoint B`);
-    assert.doesNotMatch(prefix, /Date: |You are assigned to Slack workspace|Your Agent ID is/);
-    assert.deepEqual(blockedNetworkCalls(), []);
-  });
-
   test(`${agentKind} Agent: unconditional instructions sit in the shared block, never after it`, async () => {
     const [constant, tenant] = (await render({ ...ALPHA, agentKind })).system.map((block: any) => block.text);
     for (const instruction of UNCONDITIONAL_INSTRUCTIONS) {
@@ -117,23 +117,53 @@ for (const agentKind of ['system', 'user'] as const) {
   });
 }
 
-test('markers sit at A, B, C and D with the design TTLs', async () => {
-  const streaming = await render(ALPHA);
-  const anchor = anchorIndex(streaming);
-  assert.ok(anchor < streaming.tools.length - 1, 'stream_answer is a capability tool after A');
-  assert.deepEqual(streaming.tools[anchor].cache_control, ONE_HOUR);
-  assert.deepEqual(streaming.system.map((block: any) => block.cache_control), [FIVE_MINUTES, FIVE_MINUTES]);
-  assert.deepEqual(markers(streaming), [
-    `tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m',
-  ]);
-  assert.deepEqual(streaming.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
+for (const agentKind of ['system', 'user'] as const) {
+  for (const shape of SHARED_PREFIX_SHAPES) {
+    test(`${agentKind} Agent, ${shape}: channels, workspaces and DMs send the same bytes through B, cached for an hour`, async () => {
+      const alpha = await render({ ...ALPHA, agentKind, ...SHAPE_VARIANTS[shape] });
+      const anchor = anchorIndex(alpha);
+      assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name), SHAPE_TOOLS[shape]);
+      assert.deepEqual(markers(alpha), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+      assert.equal(alpha.system[0].text, sharedSystemBlock(agentKind));
+      for (const variant of [ALPHA_OTHER_CHANNEL, BRAVO, ALPHA_DM]) {
+        const other = await render({ ...variant, agentKind, ...SHAPE_VARIANTS[shape] });
+        assert.equal(throughB(other), throughB(alpha), `${variant.workspace} ${variant.channel} sends the same bytes through B`);
+        assert.notEqual(other.system[1].text, alpha.system[1].text, 'the tenant block names the workspace and channel');
+      }
+      const prefix = throughB(alpha);
+      for (const id of TENANT_IDS) assert.ok(!prefix.includes(id), `${id} is not before breakpoint B`);
+      assert.doesNotMatch(prefix, /Date: |You are assigned to Slack workspace|Your Agent ID is/);
+      assert.equal(alpha.service_tier, 'standard_only');
+      assert.deepEqual(blockedNetworkCalls(), []);
+    });
+  }
+}
 
-  const universalOnly = await render({ ...ALPHA, progressiveStreamingOffered: false });
-  assert.equal(anchorIndex(universalOnly), universalOnly.tools.length - 1, 'no capability tool follows A');
-  assert.deepEqual(markers(universalOnly), [
-    `tools[${universalOnly.tools.length - 1}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m',
-  ]);
-  assert.equal(universalOnly.service_tier, 'standard_only');
+test('a group DM, which mounts no interactive tools, also caches B for an hour', async () => {
+  for (const [progressiveStreamingOffered, after] of [[false, []], [true, ['stream_answer']]] as const) {
+    const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered });
+    const anchor = anchorIndex(group);
+    assert.deepEqual(group.tools.slice(anchor + 1).map((tool: any) => tool.name), after);
+    assert.deepEqual(markers(group), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+  }
+});
+
+test('a tool between A and B that no shared shape sends keeps A and caches B for five minutes', async () => {
+  const finalAnswer = await render({ ...ALPHA, progressiveStreamingMode: 'final_answer' });
+  const anchor = anchorIndex(finalAnswer);
+  assert.equal(finalAnswer.tools.at(-1).name, 'stream_answer', 'the effect-capable stream_answer follows the interactive tools');
+  assert.deepEqual(markers(finalAnswer), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
+
+  const withConnector = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
+  withConnector.tools.push({
+    name: 'mcp__conn_crm__search_accounts', description: 'Search accounts in the CRM.',
+    input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  });
+  const before = sharedPrefixMisses();
+  const shared = sharePromptPrefix(withConnector) as RenderedRequest;
+  assert.equal(sharedPrefixMisses(), before, 'a tenant tool is not a miss');
+  assert.equal(shared.system[0].text, sharedSystemBlock('system'), 'the constant block still opens the system prompt');
+  assert.deepEqual(markers(shared), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
 });
 
 test('a customer-funded request goes out exactly as pi-ai builds it', async () => {
@@ -184,8 +214,10 @@ for (const [name, variant, unmounted] of [
   ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread']],
   ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'inspect_workspace']],
 ] as const) {
-  test(`${name} gets guidance only for the tools it mounts, and does not share`, async () => {
-    const request = await render(variant);
+  test(`${name} gets guidance only for the tools it mounts, and goes out unchanged without counting a miss`, async () => {
+    const before = sharedPrefixMisses();
+    const request = await renderSlackRequest(variant);
+    assert.equal(sharedPrefixMisses(), before, 'an expected non-shared turn is not a miss');
     const toolNames = new Set(request.tools.map((tool: any) => tool.name));
     for (const tool of unmounted) assert.ok(!toolNames.has(tool), `${tool} is not mounted`);
     assert.equal(request.system.length, 1, 'the system block does not match a shared block, so it goes out as built');
@@ -197,28 +229,39 @@ for (const [name, variant, unmounted] of [
   });
 }
 
-test('sharedPrefixRequest sends the bytes a rendered request sends, and its tools match a fresh render', async () => {
+test('sharedPrefixRequests sends the bytes rendered turns send, and its tools match a fresh render', async () => {
   const update = process.env.UPDATE_SHARED_PREFIX === '1';
-  const snapshot: { tools: unknown[]; models: Record<string, unknown> } = { tools: [], models: {} };
+  const snapshot: { tools: unknown[]; shapes: Record<string, unknown>; models: Record<string, unknown> } = {
+    tools: [], shapes: {}, models: {},
+  };
   for (const model of SNAPSHOT_MODELS) {
+    const prewarms = update ? [] : sharedPrefixRequests(model);
+    if (!update) {
+      assert.deepEqual(prewarms.map(({ kind, shape }) => `${kind} ${shape}`),
+        ['system interactive', 'system interactive_streaming', 'user interactive', 'user interactive_streaming']);
+    }
     for (const agentKind of ['system', 'user'] as AgentKind[]) {
-      const real = await render({ ...ALPHA, model, agentKind, progressiveStreamingOffered: false });
-      const { model: _model, max_tokens: _max, stream: _stream, system: _system, tools, messages: _messages, ...settings } = real;
-      assert.deepEqual(Object.keys(settings).sort(), ['output_config', 'service_tier', 'thinking']);
-      snapshot.tools = withoutMarkers(tools) as unknown[];
-      snapshot.models[model] = settings;
-      if (update) continue;
-      const prewarm = sharedPrefixRequest(model, agentKind);
-      assert.equal(JSON.stringify(prewarm.tools), JSON.stringify(real.tools), `${model} ${agentKind}: tools`);
-      assert.deepEqual(prewarm.system, [real.system[0]], `${model} ${agentKind}: shared system block`);
-      for (const [key, value] of Object.entries(settings)) assert.deepEqual(prewarm[key], value, `${model}: ${key}`);
-      assert.equal(prewarm.max_tokens, 0);
-      assert.equal(prewarm.stream, undefined);
+      for (const shape of SHARED_PREFIX_SHAPES) {
+        const real = await render({ ...ALPHA, model, agentKind, ...SHAPE_VARIANTS[shape] });
+        const { model: _model, max_tokens: _max, stream: _stream, system: _system, tools, messages: _messages, ...settings } = real;
+        assert.deepEqual(Object.keys(settings).sort(), ['output_config', 'service_tier', 'thinking']);
+        const anchor = anchorIndex(real);
+        snapshot.tools = withoutMarkers(tools.slice(0, anchor + 1)) as unknown[];
+        snapshot.shapes[shape] = withoutMarkers(tools.slice(anchor + 1));
+        snapshot.models[model] = settings;
+        if (update) continue;
+        const { request } = prewarms.find((prewarm) => prewarm.kind === agentKind && prewarm.shape === shape)!;
+        assert.equal(JSON.stringify(request.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
+        assert.deepEqual(request.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
+        for (const [key, value] of Object.entries(settings)) assert.deepEqual(request[key], value, `${model}: ${key}`);
+        assert.equal(request.max_tokens, 0);
+        assert.equal(request.stream, undefined);
+      }
     }
   }
   const stored = JSON.stringify(snapshot, null, 1) + '\n';
   if (update) writeFileSync(SNAPSHOT, stored);
   assert.equal(readFileSync(SNAPSHOT, 'utf8'), stored,
     'src/agents/shared-prefix-tools.json is stale: run UPDATE_SHARED_PREFIX=1 node --import tsx --test tests/shared-prefix.test.ts');
-  assert.throws(() => sharedPrefixRequest('claude-haiku-4-5', 'system'), /No shared prompt prefix is rendered/);
+  assert.throws(() => sharedPrefixRequests('claude-haiku-4-5'), /No shared prompt prefix is rendered/);
 });
