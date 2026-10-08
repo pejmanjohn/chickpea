@@ -533,7 +533,7 @@ test('a journey whose Owner already chose their own key keeps its provider and m
   assert.equal(trying.funding, 'own_key', 'Try still knows the journey is on its own key');
 });
 
-test('a finished journey, no host port, or an Owner\'s absence changes nothing; the Plan page still switches after onboarding', async (t) => {
+test('a Member, an Admin, a finished journey, or a host with no billing port changes nothing; the Plan page still switches after onboarding', async (t) => {
   const host = hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
