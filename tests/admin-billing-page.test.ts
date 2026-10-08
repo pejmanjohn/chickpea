@@ -69,6 +69,10 @@ const CHOOSE_PROVIDER = {
   workspace: { id: 'TACME', name: 'Acme' }, channel: null, providerId: null, modelId: null, models: [],
   slackAppId: 'AACME', tryStartedAt: null, completedAt: null,
 };
+const TRY = {
+  ...CHOOSE_PROVIDER, stage: 'try', revision: 'revision_try', agentId: 'agent_chickpea',
+  providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-5-5', tryStartedAt: 1_800_000_000_000,
+};
 
 function fakePort(initial: BillingSummary, fails: { switch?: boolean; stripe?: boolean }) {
   const calls: unknown[][] = [];
@@ -102,8 +106,12 @@ async function harness(options: {
   path: string;
   billingOffered: boolean;
   summary?: BillingSummary;
+  /** Defaults to standalone exactly where billing is not offered. */
+  selfHosted?: boolean;
   owner?: boolean;
   ownKey?: OwnKeyFacts;
+  /** The onboarding response the page first reads; Choose provider by default. */
+  onboarding?: Record<string, unknown>;
   /** The funding choice the onboarding journey already holds, as after a reload. */
   savedFunding?: BillingFunding;
   switchFails?: boolean;
@@ -115,7 +123,7 @@ async function harness(options: {
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const assigned: string[] = [];
   let onboarding: Record<string, unknown> = {
-    ...CHOOSE_PROVIDER, ...(options.savedFunding ? { funding: options.savedFunding } : {}),
+    ...(options.onboarding ?? CHOOSE_PROVIDER), ...(options.savedFunding ? { funding: options.savedFunding } : {}),
   };
   const location = {
     pathname: options.path, search: '',
@@ -186,12 +194,14 @@ async function harness(options: {
     workspaceAdminUi: owner,
     installationOwner: owner,
     browserOffered: !options.billingOffered,
-    selfHosted: !options.billingOffered,
+    selfHosted: options.selfHosted ?? !options.billingOffered,
     billingOffered: options.billingOffered,
   }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   vm.runInNewContext(script, {
-    console, Date, document, fetch, setTimeout, clearTimeout,
+    console, Date, document, fetch, clearTimeout,
+    // Try polls the journey; an unref'd timer lets the file's process exit.
+    setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     history: {
       pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
       replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
@@ -748,4 +758,31 @@ test('a reload continues from the saved choice: Chickpea\'s models to keyless pr
   await ownKey.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' });
   assert.match(ownKey.html(), /id="onboarding-provider-key"/);
   assert.equal(ownKey.requests.some((request) => request.path === '/admin/api/onboarding/funding'), false);
+});
+
+/** The onboarding progress list, as rendered. */
+function progress(html: string): string {
+  const start = html.indexOf('<ol class="onboarding-orientation"');
+  assert.ok(start >= 0, 'the page shows the onboarding progress');
+  return html.slice(start, html.indexOf('</ol>', start) + '</ol>'.length);
+}
+
+const TODAY_AT_CHOOSE_PROVIDER = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li>' +
+  '<li class=""><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li>' +
+  '<li class=""><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
+const TODAY_AT_TRY = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose provider</span></li>' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose model</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
+
+test('standalone, and hosted where Chickpea\'s models are not offered, keep today\'s four onboarding steps byte for byte', async () => {
+  for (const [mode, selfHosted] of [['standalone', true], ['hosted without Chickpea\'s models', false]] as const) {
+    const choosing = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted });
+    assert.equal(progress(choosing.html()), TODAY_AT_CHOOSE_PROVIDER, `${mode} at Choose provider`);
+    const trying = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted, onboarding: TRY });
+    assert.equal(progress(trying.html()), TODAY_AT_TRY, `${mode} at Try`);
+  }
 });
