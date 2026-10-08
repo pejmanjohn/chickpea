@@ -215,5 +215,10 @@ export const AGENT_AUTHORING_PACKAGE = Object.freeze({
 /** Mount product-owned authoring intelligence only in interactive Agents. */
 export function useAgentAuthoring(): void {
   useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+  useAgentAuthoringSkill();
+}
+
+/** The authoring skill alone, for a Slack turn whose shared system block carries the router. */
+export function useAgentAuthoringSkill(): void {
   useSkill(agentAuthoringSkill);
 }

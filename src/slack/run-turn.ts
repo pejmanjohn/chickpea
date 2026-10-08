@@ -9,7 +9,8 @@ import {
   type RuntimePlanCodingModelV1,
   type RuntimePlanV2,
 } from '../agents/runtime-plan.ts';
-import { agentTeammateHandles, agentTeammateInstructions, effectiveSlackInstructions } from '../config/effective-config.ts';
+import { agentTeammateHandles } from '../config/effective-config.ts';
+import { slackTenantInstructions } from '../agents/shared-prefix.ts';
 import { CHICKPEA_AGENT_NAME } from '../config/agent-id.ts';
 import {
   codingOnAgentModel,
@@ -189,7 +190,6 @@ import {
 } from './agent-view-presentation.ts';
 import { createSlackWebClient } from './web-client.ts';
 import {
-  externalActionAuthorityInstructions,
   resolveConnectionAccountContext,
   selectConnectionsForRequest,
 } from '../connections/runtime.ts';
@@ -2604,7 +2604,7 @@ async function readThreadContinuation(
   }
 }
 
-async function freezeRuntimePlanForTurn(input: {
+export async function freezeRuntimePlanForTurn(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
   platformEnv: PlatformEnv | undefined;
@@ -2656,16 +2656,9 @@ async function freezeRuntimePlanForTurn(input: {
         )
       : undefined,
   ]);
-  const baseInstructions =
-    'instructions' in input.assignment && typeof input.assignment.instructions === 'string'
-      ? input.assignment.instructions
-      : effectiveSlackInstructions(input.assignment);
-  const teammates = agentTeammateInstructions(input.assignment);
-  const instructions = [
-    baseInstructions,
-    externalActionAuthorityInstructions(input.assignment.agent.instructions),
-    ...(teammates ? [teammates] : []),
-  ].join('\n');
+  // The constant guidance opens the agent's system prompt in code
+  // (shared-prefix.ts); the plan carries only what names this Agent.
+  const instructions = slackTenantInstructions(input.assignment);
   const allEffectiveConnections = connectionContext?.effective ?? [];
   const connectionAuthorizations = connectionContext?.authorizations;
   const teamReconnects = connectionContext?.teamReconnects;

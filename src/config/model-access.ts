@@ -494,6 +494,8 @@ type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fund
 
 interface ListPriceMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
+  /** Sets the cache breakpoints that let a Slack turn read a prefix other workspaces wrote. */
+  sharePrefix?(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
   readonly listPricedServiceTiers: readonly string[];
   readonly listPricedInferenceGeos: readonly string[];
 }
@@ -501,6 +503,15 @@ interface ListPriceMode {
 const LIST_PRICE_MODES = {
   anthropic: {
     pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
+    // Loaded on first use: every module the shared instructions come from
+    // imports this one. Without it the request goes out as built.
+    sharePrefix: async (payload) => {
+      const shared = await import('../agents/shared-prefix.ts').catch((error: unknown) => {
+        console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
+        return undefined;
+      });
+      return shared ? shared.sharePromptPrefix(payload) : payload;
+    },
     listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
     listPricedInferenceGeos: ['global', 'not_available'],
@@ -687,7 +698,8 @@ function listPricedPayload(
     const returned = await callerHook?.(payload, model);
     const composed = returned === undefined ? payload : returned;
     if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
-    return mode.pin(composed);
+    const pinned = mode.pin(composed);
+    return mode.sharePrefix ? mode.sharePrefix(pinned) : pinned;
   };
 }
 

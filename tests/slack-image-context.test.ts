@@ -489,7 +489,7 @@ test('the Slack Agent mounts every tool registration seam on an attachment turn'
   );
   // No attachment-derived flag narrows the turn's capabilities any more (R17).
   assert.doesNotMatch(source, /attachmentReadOnly|slackAttachmentTurnIsReadOnly/);
-  assert.match(source, /useAgentAuthoring\(\);[\s\S]*useWorkspaceManagementSlackTools[\s\S]*usePersonalConnectionAuthorizationSlackTool[\s\S]*useTool\(presentationIntent\.tool\)/);
+  assert.match(source, /useAgentAuthoringSkill\(\);[\s\S]*useWorkspaceManagementSlackTools[\s\S]*useTool\(presentationIntent\.tool\)[\s\S]*usePersonalConnectionAuthorizationSlackTool/);
   assert.match(source, /resolveProfileSkills\([\s\S]*useSkill\(skill\)/);
   // No option narrows the mounted tool set any more: the sandbox and artifact
   // tools mount unconditionally for every turn, attachment-bearing or not.
