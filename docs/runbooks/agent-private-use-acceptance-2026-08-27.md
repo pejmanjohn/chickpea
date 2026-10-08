@@ -2,8 +2,9 @@
 
 ## Scope
 
-This record covers the placement-derived private-use contract in
-`docs/plans/2026-08-27-2025-feat-agent-private-use-permissions-plan.md`.
+This record covers the placement-derived private-use contract reviewed for the
+2026-08-27 permissions plan. The private planning document was not part of the
+public repository and is not available as a tracked reference here.
 It distinguishes automated authorization proof, browser-visible Admin proof,
 and the narrower facts established by the shared Acme Slack canaries.
 
