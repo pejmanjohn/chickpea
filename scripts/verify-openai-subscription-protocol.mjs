@@ -146,7 +146,7 @@ try {
     tools: [tool],
   };
 
-  const first = await withDeploymentLane(undefined, () => collect(provider.stream(model, context, {
+  const first = await withDeploymentLane(undefined, 'subscription-protocol', 'reply', () => collect(provider.stream(model, context, {
     maxTokens: 128,
     signal: AbortSignal.timeout(requestTimeoutMs),
   })));
@@ -175,7 +175,7 @@ try {
     isError: false,
     timestamp: Date.now(),
   });
-  const second = await withDeploymentLane(undefined, () => collect(provider.stream(model, context, {
+  const second = await withDeploymentLane(undefined, 'subscription-protocol', 'reply', () => collect(provider.stream(model, context, {
     maxTokens: 128,
     signal: AbortSignal.timeout(requestTimeoutMs),
   })));

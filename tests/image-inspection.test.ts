@@ -31,7 +31,7 @@ test('visual inspection uses one configured-model call with no tools and validat
     references: [{ bytes: png, mimeType: 'image/png' }] };
   // A provider that brings its own key; inside a turn the cell is already in scope.
   const inspect = (inspected: typeof input) =>
-    withDeploymentLane(undefined, 'image-inspection', () => inspectImageOutput(`${model.provider}/${model.id}`, inspected));
+    withDeploymentLane(undefined, 'image-inspection', 'reply', () => inspectImageOutput(`${model.provider}/${model.id}`, inspected));
   const result = await inspect(input);
   assert.equal(result.verdict, 'needs_changes');
   assert.equal(calls.length, 1);

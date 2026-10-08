@@ -10,7 +10,9 @@ import {
   type StreamOptions,
   type Usage,
 } from '@earendil-works/pi-ai';
-import { init, instrument, useAgentStart, useModel, useTool, type FlueExecutionContext } from '@flue/runtime';
+import {
+  GeneralSubagent, init, instrument, useAgentStart, useModel, useSubagent, useTool, type FlueExecutionContext,
+} from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
 import {
@@ -22,6 +24,7 @@ import {
   configureModelAccessResolver,
   configureModelRequestRecorder,
   createModelAccessInterceptor,
+  observeModelAccess,
   resetModelAccessForTests,
   withModelAccess,
   type AttemptModelAccess,
@@ -33,6 +36,7 @@ import { ANTHROPIC_COMPAT_PROVIDER_ID, OPENAI_PLATFORM_COMPAT_PROVIDER_ID } from
 import { createCloudflareBindingProvider } from '../../src/cloudflare-provider.ts';
 import { createChickpeaPiProvider } from '../../src/config/pi-provider.ts';
 import { runStatelessVisionCall } from '../../src/images/inspect-output.ts';
+import { createSlackAttachmentAnalysis } from '../../src/slack/attachment-context.ts';
 import { promptSlackThreadAgent } from '../../src/slack/flue-dispatch.ts';
 import type { FlueDispatchEnvelopeV1 } from '../../src/slack/turn-job-types.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
@@ -47,6 +51,7 @@ const NOW = Date.UTC(2026, 9, 7, 12);
 function storedRecord(overrides: Partial<ModelRequestRecord> = {}): ModelRequestRecord {
   return {
     requestId: 'request-1',
+    purpose: 'reply',
     installationId: 'installation-1',
     runId: 'submission-1',
     attemptId: 'attempt-1',
@@ -98,6 +103,8 @@ test('a request record is validated where the store receives it', async () => {
       storedRecord({ requestId: '' }),
       storedRecord({ outcome: 'cancelled' as ModelRequestRecord['outcome'] }),
       storedRecord({ fundingSource: 'sponsor' as ModelRequestRecord['fundingSource'] }),
+      storedRecord({ purpose: 'billing' as ModelRequestRecord['purpose'] }),
+      storedRecord({ purpose: undefined as unknown as ModelRequestRecord['purpose'] }),
       storedRecord({ listPriceUsdMicros: null }),
       storedRecord({ priceUnknownReason: 'price_unknown' }),
       storedRecord({ priceVersionId: null, listPriceUsdMicros: null }),
@@ -110,6 +117,9 @@ test('a request record is validated where the store receives it', async () => {
     }
     const platform = storedRecord({ requestId: 'request-platform', fundingSource: 'platform' });
     assert.deepEqual(await store.recordModelRequest(platform), platform);
+    const compaction = storedRecord({ requestId: 'request-compaction', purpose: 'compaction' });
+    assert.deepEqual(await store.recordModelRequest(compaction), compaction);
+    assert.deepEqual(await store.getModelRequest('request-compaction'), compaction);
     const unpriced = storedRecord({
       requestId: 'request-unpriced',
       priceVersionId: null,
@@ -160,7 +170,7 @@ test('a request record keeps what its provider reported, and refuses unusable va
   }
 });
 
-test('a request table from before provider reports gains their columns, and its rows read back with nulls', () => {
+test('a request table from before provider reports and purposes gains their columns, and its rows read back with nulls', () => {
   const db = openStateDb(':memory:');
   db.exec(
     `CREATE TABLE usage_model_requests (
@@ -197,10 +207,10 @@ test('a request table from before provider reports gains their columns, and its 
   const store = new UsageStoreLogic(db, () => NOW);
 
   const columns = db.all('PRAGMA table_info(usage_model_requests)').map((row) => row.name);
-  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo']) {
+  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo', 'purpose']) {
     assert.ok(columns.includes(column), `${column} in ${String(columns)}`);
   }
-  assert.deepEqual(store.getModelRequest('request-old'), old);
+  assert.deepEqual(store.getModelRequest('request-old'), { ...old, purpose: null });
   const billed = storedRecord({
     requestId: 'request-new', providerCostUsdMicros: 13, providerResponseId: 'gen-fixture-0002',
     providerServiceTier: 'default', providerInferenceGeo: null,
@@ -385,6 +395,7 @@ test('a completed request writes one record with its attempt, Agent, canonical p
   assert.match(priced!.attemptId, UUID);
   assert.deepEqual(priced, {
     requestId: priced!.requestId,
+    purpose: 'reply',
     installationId: 'inst_records',
     runId: 'sub_records',
     attemptId: priced!.attemptId,
@@ -455,7 +466,7 @@ test('a stream stopped part way records its partial usage as stopped', async (t)
     fails(partial)(output);
   }]);
 
-  const result = await withModelAccess(grant('stateless_stop'), undefined, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_stop'), undefined, 'reply', () => modelCall(model));
 
   assert.deepEqual(result, partial);
   const record = await store.getModelRequest(written[0]!.record.requestId);
@@ -471,7 +482,7 @@ test('a request refused admission on a hosted cell sends nothing and writes no r
   const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_refused' });
   const { model, sent } = scriptedAnthropic([]);
 
-  const result = await withModelAccess(grant('stateless_refused', 'inst_refused'), env, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_refused', 'inst_refused'), env, 'reply', () => modelCall(model));
 
   assert.equal(result.stopReason, 'error');
   assert.equal(sent(), 0);
@@ -490,7 +501,7 @@ test('a failing record write leaves the model result unchanged and logs one cont
   const second = reply('stop', { input: 4, output: 1 });
   const { model } = scriptedAnthropic([completes(first), completes(second)]);
 
-  const results = await withModelAccess(grant('stateless_failing'), undefined, async () =>
+  const results = await withModelAccess(grant('stateless_failing'), undefined, 'reply', async () =>
     [await modelCall(model), await modelCall(model)]);
 
   assert.deepEqual(results, [first, second]);
@@ -506,7 +517,7 @@ test('a hanging record write lets the stream end after its budget', { timeout: 1
   const { model } = scriptedAnthropic([completes(message)]);
   const started = Date.now();
 
-  const result = await withModelAccess(grant('stateless_hanging'), undefined, () => modelCall(model));
+  const result = await withModelAccess(grant('stateless_hanging'), undefined, 'reply', () => modelCall(model));
 
   const elapsed = Date.now() - started;
   assert.deepEqual(result, message);
@@ -522,7 +533,7 @@ test('the record is in the store when the caller reads the request result', asyn
   });
   const { model } = scriptedAnthropic([completes(reply('stop', { input: 7, output: 3 }))]);
 
-  await withModelAccess(grant('stateless_ordered'), undefined, async () => {
+  await withModelAccess(grant('stateless_ordered'), undefined, 'reply', async () => {
     await modelCall(model);
     assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
   });
@@ -541,11 +552,11 @@ test('an Anthropic or OpenAI request records no provider cost and its usable res
     api: 'openai-responses', provider: OPENAI_PLATFORM_COMPAT_PROVIDER_ID, model: openaiModel, responseId: 'resp_fixture',
   })]);
 
-  await withModelAccess(grant('stateless_anthropic'), undefined, async () => {
+  await withModelAccess(grant('stateless_anthropic'), undefined, 'reply', async () => {
     await modelCall(anthropic.model, 'streamSimple', { fetch: callerFetch });
     await modelCall(anthropic.model, 'stream', { fetch: callerFetch });
   });
-  await withModelAccess(grant('stateless_openai', 'chickpea', 'openai'), undefined, () =>
+  await withModelAccess(grant('stateless_openai', 'chickpea', 'openai'), undefined, 'reply', () =>
     modelCall(openai.model, 'streamSimple', { fetch: callerFetch }));
 
   assert.deepEqual([...anthropic.received, ...openai.received].map((options) => options?.fetch),
@@ -568,14 +579,14 @@ function instrumentedLane(agentId: string) {
     lookup: async () => ({ env: undefined, deploymentLane: true, agentId }),
     installationGrants: async () => [],
   });
-  const dispose = instrument({ key: Symbol(agentId), interceptor, observe() {}, dispose() {} });
+  const dispose = instrument({ key: Symbol(agentId), interceptor, observe: observeModelAccess, dispose() {} });
   return { dispose };
 }
 
-function workersAiResponse(content: string, input = 10, tool = false): Response {
+function workersAiResponse(content: string, input = 10, tool?: { name: string; args: unknown }): Response {
   return new Response(`data: ${JSON.stringify({
-    choices: [{ index: 0, delta: tool ? { tool_calls: [{ index: 0, id: 'call_read', type: 'function',
-      function: { name: 'read_fixture', arguments: '{}' } }] } : { content }, finish_reason: tool ? 'tool_calls' : 'stop' }],
+    choices: [{ index: 0, delta: tool ? { tool_calls: [{ index: 0, id: `call_${tool.name}`, type: 'function',
+      function: { name: tool.name, arguments: JSON.stringify(tool.args) } }] } : { content }, finish_reason: tool ? 'tool_calls' : 'stop' }],
     usage: { prompt_tokens: input, completion_tokens: 3, total_tokens: input + 3 },
   })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
 }
@@ -594,7 +605,7 @@ test('a real Flue overflow compaction writes one record per provider call, the c
   const provider = createCloudflareBindingProvider({ run: async () => {
     calls++;
     if (calls === 1) return workersAiResponse('First answer.');
-    if (calls === 2) return workersAiResponse('', 10, true);
+    if (calls === 2) return workersAiResponse('', 10, { name: 'read_fixture', args: {} });
     if (calls === 3) return workersAiResponse('Partial answer.', 40_000);
     if (calls === 4) return workersAiResponse('Compacted synthetic context.', 20);
     if (calls === 5) return workersAiResponse('Recovered answer.');
@@ -642,11 +653,12 @@ test('a real Flue overflow compaction writes one record per provider call, the c
       ['completed', 10, 'cloudflare', modelId, 'agent_compact'],
     ],
   );
+  assert.deepEqual(records.map((record) => record!.purpose), ['reply', 'reply', 'reply', 'compaction', 'reply']);
   assert.equal(records[3]!.attemptId, records[2]!.attemptId, 'the compaction runs in the overflowing attempt');
   assert.equal(new Set(records.map((record) => record!.requestId)).size, 5);
 });
 
-test('an attachment analysis prompt from agent start records under the same attempt and Agent as the reply', { timeout: 20_000 }, async (t) => {
+test('an attachment analysis from agent start records its own purpose under the same attempt and Agent as the reply', { timeout: 20_000 }, async (t) => {
   const { store, written } = recordingAccess(t);
   const lane = instrumentedLane('agent_attachments');
   t.after(lane.dispose);
@@ -668,11 +680,22 @@ test('an attachment analysis prompt from agent start records under the same atte
     },
   });
   registerPiProvider(provider);
-  let analysis = '';
+  let observations: string | undefined;
   function AttachmentProbe() {
     useModel('records-attachment-lane/probe');
     useAgentStart(async ({ harness }) => {
-      analysis = (await harness.prompt('Describe the attached file.')).text;
+      ({ observations } = await createSlackAttachmentAnalysis({
+        intake: { kind: 'ready', request: 'What is in the file?', count: 1, fileIds: ['F_FIXTURE_1'] },
+        gateway: { async readAttachment() { throw new Error('normalization is scripted'); } },
+        normalize: async () => ({
+          attachments: [{
+            kind: 'text', ordinal: 1, fileId: 'F_FIXTURE_1', filename: 'notes.txt', label: 'Attachment 1 - notes.txt',
+            representation: 'text_original', contentType: 'text/plain', text: 'synthetic notes',
+          }],
+          failures: [], totalBytes: 15, totalCharacters: 15,
+        }),
+        prompt: async (text, options) => ({ text: (await harness.prompt(text, options)).text }),
+      }));
     });
     return 'Answer with the attachment in mind.';
   }
@@ -687,13 +710,62 @@ test('an attachment analysis prompt from agent start records under the same atte
     await runtime.stop();
   }
 
-  assert.equal(analysis, 'ok');
+  assert.equal(observations, 'ok');
   const [analyzed, answered] = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
   assert.equal(written.length, 2);
   assert.deepEqual([analyzed!.inputTokens, answered!.inputTokens], [300, 120]);
+  assert.deepEqual([analyzed!.purpose, answered!.purpose], ['attachment', 'reply']);
   assert.equal(analyzed!.attemptId, answered!.attemptId);
   assert.equal(analyzed!.runId, answered!.runId);
   assert.deepEqual([analyzed!.agentId, answered!.agentId], ['agent_attachments', 'agent_attachments']);
+});
+
+test('a sub-agent task records its request under the parent attempt\'s run as a reply', { timeout: 20_000 }, async (t) => {
+  const { store, written } = recordingAccess(t);
+  const lane = instrumentedLane('agent_delegating');
+  t.after(lane.dispose);
+  const modelId = '@cf/zai-org/glm-5.3-flash';
+  const responses = [
+    () => workersAiResponse('', 50, { name: 'task', args: { agent: 'flue-general', prompt: 'Summarize the synthetic fixture.' } }),
+    () => workersAiResponse('Child answer.', 30),
+    () => workersAiResponse('Parent answer.', 70),
+  ];
+  const provider = createCloudflareBindingProvider({ run: async () => {
+    const respond = responses.shift();
+    if (!respond) throw new Error('Unexpected additional model call.');
+    return respond();
+  } });
+  registerPiProvider(provider);
+  function DelegatingProbe() {
+    useModel(`cloudflare/${modelId}`);
+    useSubagent(GeneralSubagent);
+    return 'Delegate the synthetic fixture.';
+  }
+  const runtime = await start({
+    agents: [{ agent: DelegatingProbe, name: 'records-subagent-probe' }],
+    providers: [registeredPiProvider(provider.id)!],
+  });
+  let submissionId = '';
+  try {
+    const agent = init(DelegatingProbe, { id: 'records-subagent' });
+    const receipt = await agent.dispatch('Delegate the fixture.');
+    submissionId = receipt.submissionId;
+    await agent.read(receipt);
+  } finally {
+    await runtime.stop();
+  }
+
+  assert.equal(responses.length, 0, 'the parent delegated, the child answered, then the parent answered');
+  const records = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
+  assert.deepEqual(
+    records.map((record) => [record!.inputTokens, record!.runId, record!.purpose, record!.agentId]),
+    [
+      [50, submissionId, 'reply', 'agent_delegating'],
+      [30, submissionId, 'reply', 'agent_delegating'],
+      [70, submissionId, 'reply', 'agent_delegating'],
+    ],
+  );
+  assert.equal(new Set(records.map((record) => record!.attemptId)).size, 1, 'the child runs in the parent attempt');
 });
 
 test('a stateless vision check inside an attempt records one request under that attempt', async (t) => {
@@ -717,7 +789,7 @@ test('a stateless vision check inside an attempt records one request under that 
   assert.equal(written.length, 1);
   const record = await store.getModelRequest(written[0]!.record.requestId);
   assert.deepEqual(
-    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId, record!.outcome],
-    ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed'],
+    [record!.provider, record!.model, record!.inputTokens, record!.outputTokens.total, record!.runId, record!.agentId, record!.outcome, record!.purpose],
+    ['records-vision-lane', 'vision', 900, 4, 'sub_vision', 'agent_vision', 'completed', 'vision'],
   );
 });

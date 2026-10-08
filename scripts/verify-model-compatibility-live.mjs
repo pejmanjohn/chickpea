@@ -119,7 +119,7 @@ try {
   assert.ok(piProvider, `Pi provider ${model.provider} must be registered`);
   const marker = 'CHICKPEA_MODEL_COMPATIBILITY_OK';
   // An API-key lane sends only inside model access, which reads the key from env.
-  const result = await withStatelessModelAccess(route.model, { env: undefined, settings, runId: 'live-model-compatibility' }, () =>
+  const result = await withStatelessModelAccess(route.model, { env: undefined, settings, runId: 'live-model-compatibility', purpose: 'reply' }, () =>
     piProvider.stream(
       model,
       {

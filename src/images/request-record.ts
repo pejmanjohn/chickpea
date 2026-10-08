@@ -34,6 +34,7 @@ export function sentImageRequestRecord(end: ImageRequestEnd): ModelRequestRecord
   const price = imageUsagePrice(end, billed);
   return {
     requestId: end.requestId,
+    purpose: 'image',
     installationId: end.attribution.installationId,
     runId: end.attribution.runId,
     attemptId: end.attribution.attemptId,

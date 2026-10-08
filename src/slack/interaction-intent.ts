@@ -484,7 +484,7 @@ async function promptSlackInteractionIntentAgent(
   // A host boundary: the call carries this installation's current key.
   const response = await withStatelessModelAccess(
     runtimeModel.model,
-    { env, settings, runId: 'slack-interaction-intent' },
+    { env, settings, runId: 'slack-interaction-intent', purpose: 'intent' },
     () => providerStreamsForModel(model).streamSimple(
       model,
       interactionClassifierContext(context),

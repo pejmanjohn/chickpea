@@ -6,6 +6,7 @@ import {
 } from '@flue/runtime';
 
 import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
+import { withModelRequestPurpose } from '../config/model-access.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { currentRequestEnvelopeText } from '../memory/tool-policy.ts';
 import type { PlatformEnvResolver } from '../management/slack-tools.ts';
@@ -191,10 +192,13 @@ export async function createSlackAttachmentAnalysis(
     return resultFromNormalization(normalized);
   }
 
+  const prompt: SlackAttachmentAnalysisInput['prompt'] = (text, options) =>
+    withModelRequestPurpose('attachment', () => input.prompt(text, options));
+
   try {
     const response = await runWithAttachmentModelContext(
       normalized.attachments,
-      () => input.prompt(
+      () => prompt(
         buildSlackAttachmentAnalysisPrompt(intake.request),
         {
           tools: [],
@@ -230,7 +234,7 @@ export async function createSlackAttachmentAnalysis(
         try {
           const response = await runWithAttachmentModelContext(
             compatible,
-            () => input.prompt(
+            () => prompt(
               buildSlackAttachmentAnalysisPrompt(intake.request),
               {
                 tools: [],

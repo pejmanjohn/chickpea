@@ -546,7 +546,7 @@ const ADDRESSING_SITES: Record<string, { covered: string; sites: readonly string
     sites: ['const stub = binding.get(binding.idFromName(instanceId));'],
   },
   'agents/coding-worker-staging.ts': {
-    covered: 'coding_worker, recorded by the coordinator just before it stages the binding',
+    covered: 'coding_worker, recorded by the coordinator just before it stages the binding and the run',
     sites: ['const stub = namespace.get(namespace.idFromName(instanceId));'],
   },
   'agents/coding-worker-task.ts': {
