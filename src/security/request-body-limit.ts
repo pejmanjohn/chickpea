@@ -60,9 +60,7 @@ export async function readBoundedRequestBody(
 async function cancelRequestBody(request: Request): Promise<void> {
   try {
     await request.body?.cancel();
-  } catch {
-    // The body is being discarded; a cancellation failure changes nothing.
-  }
+  } catch {}
 }
 
 export function requestWithBufferedBody(request: Request, body: Uint8Array): Request {
