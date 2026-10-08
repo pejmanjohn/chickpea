@@ -14,6 +14,7 @@ import {
 import { installationOwnershipOf, scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
+  platformCredentialRefId,
   resetPlatformFundingForTests,
   type CreditBackOutcome,
   type CreditBackReason,
@@ -62,6 +63,15 @@ const ASSIGNMENT: ResolvedAssignment = {
   agent: {
     id: 'agent_settlement', kind: 'user', revision: 1, name: 'Settlement Agent', instructions: 'Answer directly.',
     enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  },
+};
+
+/** An Agent whose runs Chickpea pays its provider for, from the workspace's plan. */
+const PLATFORM_ASSIGNMENT: ResolvedAssignment = {
+  ...ASSIGNMENT,
+  modelCredential: {
+    credentialRefId: platformCredentialRefId('local-stub'), version: 1, providerId: 'local-stub',
+    sourceKind: 'platform', label: 'Chickpea', scopeLabel: null, unknownRotation: false,
   },
 };
 
@@ -161,14 +171,17 @@ async function settledTurn(
     receipt?: boolean;
     /** No durable presentation: the presenter renders the final itself. */
     legacy?: boolean;
+    /** Chickpea pays the run's provider; otherwise the workspace's own key does. */
+    platformFunded?: boolean;
     extra?: Partial<RunTurnOptions>;
   } = {},
 ) {
   turnCount += 1;
+  const assignment = options.platformFunded ? PLATFORM_ASSIGNMENT : ASSIGNMENT;
   const turn = dmTurn(options.messageTs ?? `18100000${String(turnCount).padStart(2, '0')}.000100`);
   const work = new SqliteWorkStore(':memory:');
   const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
-    turn, assignment: ASSIGNMENT, sourceVisibility: 'private', admittedAt: Date.now(),
+    turn, assignment, sourceVisibility: 'private', admittedAt: Date.now(),
   }));
   const runId = admitted.run.id;
   const db = openStateDb(':memory:');
@@ -222,13 +235,13 @@ async function settledTurn(
   const installation = installationOwnershipOf(env);
   const runtimePlan = compileRuntimePlanV2({
     ...(installation ? { installation } : {}),
-    turn, assignment: ASSIGNMENT, instructions: 'Answer directly.', memoryEpoch: 1,
+    turn, assignment, instructions: 'Answer directly.', memoryEpoch: 1,
   });
   const receipt = () => ({ submissionId: `sub_${name}`, acceptedAt: new Date().toISOString(), uid: `uid_${name}` });
   // runTurn reads only the dispatch's checkpoints; the prompt fake writes them as the real dispatch does.
   const flueDispatch = (options.receipt ? { dispatchReceipt: receipt() } : {}) as SlackFlueDispatchState;
   let prompted = false;
-  await runTurn(turn, ASSIGNMENT, env, {
+  await runTurn(turn, assignment, env, {
     client, turnId: `turn_${runId}`, statusRegistry: new SlackStatusRegistry(),
     ...(options.legacy ? {} : { runId, presentationState: state }),
     workStore: work, usageRecordingEnabled: false,
@@ -293,12 +306,12 @@ const OURS: Array<{ name: string; ending: Ending; error: unknown; reason: Credit
 ];
 
 for (const { name, ending, error, reason } of OURS) {
-  test(`a hosted turn that failed on our side (${name}) is credited back once, as ${reason}, and says so`, async (t) => {
+  test(`a platform-funded turn that failed on our side (${name}) is credited back once, as ${reason}, and says so`, async (t) => {
     await turnState(t);
     const port = fundingPort();
     for (const legacy of [false, true]) {
       port.creditBacks.length = 0;
-      const calls = await settledTurn(t, HOSTED_ENV, `${name}_${legacy}`, ending, { legacy });
+      const calls = await settledTurn(t, HOSTED_ENV, `${name}_${legacy}`, ending, { legacy, platformFunded: true });
       assert.deepEqual(port.creditBacks, [{ run: { installationId: INSTALLATION, runId: `sub_${name}_${legacy}` }, reason }]);
       assert.ok(visibleTexts(calls).includes(`${agentFailureText(error)} ${CREDITED_BACK}`), JSON.stringify(calls));
       assert.deepEqual(port.runCosts, [], 'a failed run reads no cost');
@@ -332,12 +345,27 @@ for (const { name, ending, error } of NOT_OURS) {
   test(`a hosted turn that failed for a reason not ours (${name}) credits nothing back and says nothing of it`, async (t) => {
     await turnState(t);
     const port = fundingPort();
-    const calls = await settledTurn(t, HOSTED_ENV, name, ending);
+    const calls = await settledTurn(t, HOSTED_ENV, name, ending, { platformFunded: true });
     assert.deepEqual(port.creditBacks, []);
     assert.ok(visibleTexts(calls).includes(agentFailureText(error)), 'the failure is still told, as before');
     assert.equal(JSON.stringify(calls).includes(CREDITED_BACK), false);
   });
 }
+
+test('on the workspace\'s own key a provider failure is the customer\'s: nothing is credited back', async (t) => {
+  await turnState(t);
+  const port = fundingPort();
+  for (const kind of ['provider', 'invalid-output'] as const) {
+    const calls = await settledTurn(t, HOSTED_ENV, `own_key_${kind}`, failureEnding(kind));
+    assert.ok(visibleTexts(calls).includes(agentFailureText(new AgentPromptFailure(kind))), 'the failure is still told');
+    assert.equal(JSON.stringify(calls).includes(CREDITED_BACK), false);
+  }
+  assert.deepEqual(port.creditBacks, []);
+
+  const agent = await settledTurn(t, HOSTED_ENV, 'own_key_agent', failureEnding('agent'));
+  assert.deepEqual(port.creditBacks, [{ run: { installationId: INSTALLATION, runId: 'sub_own_key_agent' }, reason: 'chickpea' }]);
+  assert.ok(visibleTexts(agent).includes(`${agentFailureText(new AgentPromptFailure('agent'))} ${CREDITED_BACK}`));
+});
 
 const STOP_FACTS = { stopperUserId: 'USTOPPER', unread: 0, pullRequests: [], windingDown: false };
 
@@ -346,7 +374,7 @@ test('a requester\'s stop credits nothing back and shows no cost', async (t) => 
   const port = fundingPort();
   const calls = await settledTurn(t, HOSTED_ENV, 'stopped', {
     kind: 'failure', recorded: 'agent', outcome: 'aborted', thrown: new AgentRunAborted(),
-  }, { extra: { stopEnding: { finish: async () => STOP_FACTS } } });
+  }, { platformFunded: true, extra: { stopEnding: { finish: async () => STOP_FACTS } } });
   assert.ok(visibleTexts(calls).some((text) => text.startsWith('Stopped by <@USTOPPER>.')), JSON.stringify(calls));
   assert.deepEqual(port.creditBacks, []);
   assert.deepEqual(port.runCosts, []);
@@ -358,7 +386,7 @@ test('a suspended installation\'s failed turn credits nothing back and posts not
   await turnState(t);
   configureInstallationAdmission(async () => 'refused');
   const port = fundingPort();
-  const calls = await settledTurn(t, HOSTED_ENV, 'suspended', failureEnding('provider'));
+  const calls = await settledTurn(t, HOSTED_ENV, 'suspended', failureEnding('provider'), { platformFunded: true });
   assert.equal(calls.prompted, true, 'the run was dispatched before the refusal ended it');
   assert.deepEqual([...calls], []);
   assert.deepEqual(port.creditBacks, []);
@@ -367,12 +395,12 @@ test('a suspended installation\'s failed turn credits nothing back and posts not
 test('a run the host already credited back says so; one with nothing to credit says nothing and still delivers', async (t) => {
   await turnState(t);
   const duplicate = fundingPort({ creditBack: async () => ({ kind: 'duplicate', usageMicros: 120_000 as UsageMicros }) });
-  const repeated = await settledTurn(t, HOSTED_ENV, 'duplicate', failureEnding('provider'));
+  const repeated = await settledTurn(t, HOSTED_ENV, 'duplicate', failureEnding('provider'), { platformFunded: true });
   assert.equal(duplicate.creditBacks.length, 1);
   assert.ok(visibleTexts(repeated).includes(`${agentFailureText(new AgentPromptFailure('provider'))} ${CREDITED_BACK}`));
 
   const nothing = fundingPort({ creditBack: async () => ({ kind: 'nothing' }) });
-  const empty = await settledTurn(t, HOSTED_ENV, 'nothing', failureEnding('provider'));
+  const empty = await settledTurn(t, HOSTED_ENV, 'nothing', failureEnding('provider'), { platformFunded: true });
   assert.equal(nothing.creditBacks.length, 1);
   assert.ok(visibleTexts(empty).includes(agentFailureText(new AgentPromptFailure('provider'))), 'the failure is delivered');
   assert.equal(JSON.stringify(empty).includes(CREDITED_BACK), false);
@@ -387,7 +415,7 @@ test('a host that answers too late holds the failure reply for no more than the 
     }),
   });
   const startedAt = performance.now();
-  const calls = await settledTurn(t, HOSTED_ENV, 'late', failureEnding('provider'));
+  const calls = await settledTurn(t, HOSTED_ENV, 'late', failureEnding('provider'), { platformFunded: true });
   const elapsedMs = performance.now() - startedAt;
   t.diagnostic(`failure reply with a host that never answers in time: ${Math.round(elapsedMs)} ms`);
   assert.equal(port.creditBacks.length, 1);

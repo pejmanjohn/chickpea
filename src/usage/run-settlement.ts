@@ -1,3 +1,4 @@
+import type { RuntimePlanV2 } from '../agents/runtime-plan.ts';
 import { deploymentServesManyInstallations, installationScopeOf } from '../config/installation-scope.ts';
 import {
   creditBackRun,
@@ -9,6 +10,7 @@ import {
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutineFailureClass } from '../routines/types.ts';
 import type { FlueSettlementCheckpointV1 } from '../slack/turn-job-types.ts';
+import type { ModelRequestFundingSource } from './model-requests.ts';
 import { formatUsageDollars } from './usage-display.ts';
 
 export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to your plan.';
@@ -16,8 +18,9 @@ export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to you
 /** A Slack turn's failure as its settlement records it. */
 export type SlackFailureKind = Extract<FlueSettlementCheckpointV1, { outcome: 'failed' | 'aborted' }>['failureKind'];
 
-// Keyed by both failure unions: a kind added to either fails to compile until
-// it is classified here.
+// Only failures on Chickpea's side, never one the customer's destination,
+// permissions, key or provider account caused. Keyed by both failure unions:
+// a kind added to either fails to compile until it is classified here.
 const CREDIT_BACK_REASONS: Record<SlackFailureKind | RoutineFailureClass, CreditBackReason | null> = {
   agent: 'chickpea',
   provider: 'provider',
@@ -43,19 +46,32 @@ const CREDIT_BACK_REASONS: Record<SlackFailureKind | RoutineFailureClass, Credit
   workflow_interrupted: 'chickpea',
   internal_error: 'chickpea',
   deadline_exceeded: 'timeout',
-  // The run failed as a whole: the class does not say whose model, sandbox or code.
-  tool_failed: 'chickpea',
-  unknown_external_outcome: 'chickpea',
+  // The run failed as a whole, most often at the model provider; the class cannot tell.
+  tool_failed: 'provider',
+  // A recorded class that hides its cause; a live attempt classifies the cause instead.
+  unknown_external_outcome: null,
   result_invalid: 'provider',
-  // A completed run whose result could not be posted: the customer got nothing.
+  // Slack refused a completed run's result for load: the customer got nothing.
   slack_rate_limited: 'chickpea',
-  direct_thread_unavailable: 'chickpea',
-  channel_destination_unavailable: 'chickpea',
-  delivery_unknown: 'chickpea',
+  // The customer's destination is gone.
+  direct_thread_unavailable: null,
+  channel_destination_unavailable: null,
+  // The result may have been posted.
+  delivery_unknown: null,
 };
 
-export function creditBackReason(kind: SlackFailureKind | RoutineFailureClass): CreditBackReason | null {
-  return CREDIT_BACK_REASONS[kind];
+/** On the workspace's own key the provider is the customer's, so its failures are not credited back. */
+export function creditBackReason(
+  kind: SlackFailureKind | RoutineFailureClass,
+  funding: ModelRequestFundingSource,
+): CreditBackReason | null {
+  const reason = CREDIT_BACK_REASONS[kind];
+  return reason === 'provider' && funding !== 'platform' ? null : reason;
+}
+
+/** The funding a run's frozen plan names; a plan without a platform credential runs on the workspace's key. */
+export function planFunding(plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined): ModelRequestFundingSource {
+  return plan?.modelCredential?.fundingSource ?? 'customer';
 }
 
 /** The ledger's run on a hosted installation with a funding port; undefined standalone, without a port, or before dispatch. */

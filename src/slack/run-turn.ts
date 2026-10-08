@@ -99,6 +99,7 @@ import {
   creditBackFailedRun,
   creditBackReason,
   hostedRun,
+  planFunding,
   runCostLine,
   withCreditedBack,
   type SlackFailureKind,
@@ -1977,7 +1978,10 @@ async function runTurnAttempt(
           : undefined;
         const failureText = withCreditedBack(agentFailureText(err), await creditBackFailedRun(
           hostedRun(platformEnv, options.flueDispatch?.dispatchReceipt?.submissionId),
-          creditBackReason(slackFailureKind(err, options.flueDispatch?.flueSettlement)),
+          creditBackReason(
+            slackFailureKind(err, options.flueDispatch?.flueSettlement),
+            planFunding(runtimePlanDecision?.runtimePlan),
+          ),
         ));
         await statusTurn.prepareFinal();
         // A plain_text final drops its text when it carries blocks; this text has no markdown syntax.

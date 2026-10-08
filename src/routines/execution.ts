@@ -41,6 +41,7 @@ import {
   creditBackFailedRun,
   creditBackReason,
   hostedRun,
+  planFunding,
   runCostLine,
   withCreditedBack,
 } from '../usage/run-settlement.ts';
@@ -264,9 +265,10 @@ export async function executeRoutineOccurrence(
       ]);
     }
     // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
+    // No plan was prepared to say whose key the run used, so a provider failure is taken as the workspace's.
     const creditedBack = await creditBackFailedRun(
       hostedRun(input.env, admission.flueAgentReceipt?.submissionId),
-      creditBackReason(failure.failureClass),
+      creditBackReason(failure.failureClass, 'customer'),
     );
     let terminalFailure = false;
     if (
@@ -328,8 +330,8 @@ export async function executeRoutineOccurrence(
   let modelSettled = false;
   // Why the attempt ended without a result to post: refused, or an outage.
   let withoutResult: SkipReason | undefined;
-  // A credits refusal after a tool call settles as an unknown external outcome; it is still not ours to credit back.
-  let outOfUsage = false;
+  // What ended the attempt, unmasked: after a tool call the settlement records only an unknown outcome.
+  let failureCause: RoutineFailureClass | undefined;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
   // Only model execution and result validation belong to this catch. Once a
@@ -424,7 +426,7 @@ export async function executeRoutineOccurrence(
     };
   } catch (error) {
     const toolCallCount = toolCalls.count;
-    outOfUsage = isCreditsExhausted(error);
+    failureCause = runtimeFailure(error, false).failureClass;
     // A model request the installation's admission refused, or the deployment
     // keyring not loading, ended the attempt: not the routine's failure.
     withoutResult = isInstallationRefusal(error) ? REFUSED_SKIP
@@ -462,7 +464,7 @@ export async function executeRoutineOccurrence(
     // is skipped, and nothing is posted or counted against the routine.
     withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
     if (withoutResult) return await skipWithoutResult(prepared, withoutResult, now());
-    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId, outOfUsage);
+    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId, failureCause);
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
     prepared.persistence.emit();
@@ -914,7 +916,7 @@ async function finalizeSettlement(
   settlement: RoutineAgentSettlementV1,
   at: number,
   submissionId: string | undefined,
-  outOfUsage = false,
+  cause?: RoutineFailureClass,
 ): Promise<RoutineExecutionOutcome> {
   if (settlement.outcome === 'completed') {
     prepared.run = await prepared.store.getRun(prepared.run.id) ?? prepared.run;
@@ -964,7 +966,12 @@ async function finalizeSettlement(
     } else {
       await prepared.workLifecycle?.settleWithoutDelivery({ terminalDisposition: 'no_op' });
     }
-    if (failure) await creditBackFailedRun(hostedRun(prepared.env, submissionId), creditBackReason(failure.failureClass));
+    if (failure) {
+      await creditBackFailedRun(
+        hostedRun(prepared.env, submissionId),
+        creditBackReason(failure.failureClass, planFunding(executionInitialData(prepared.envelope).runtimePlan)),
+      );
+    }
     const usage = settlement.result.usage;
     prepared.run = await prepared.store.transitionRun({
       occurrenceId: prepared.run.id,
@@ -1000,7 +1007,7 @@ async function finalizeSettlement(
   // Before the run turns failed, so a crash retries the idempotent call instead of skipping it.
   const creditedBack = await creditBackFailedRun(
     hostedRun(prepared.env, submissionId),
-    creditBackReason(outOfUsage ? 'spend_limited' : settlement.failureClass),
+    creditBackReason(cause ?? settlement.failureClass, planFunding(executionInitialData(prepared.envelope).runtimePlan)),
   );
   await prepared.workLifecycle?.settleWithoutDelivery({
     terminalDisposition: 'failed',
