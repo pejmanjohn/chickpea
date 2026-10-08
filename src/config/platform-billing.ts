@@ -8,8 +8,9 @@
  * installation's own key.
  */
 
-/** Millionths of a dollar of usage at metered rates. */
-export type UsageMicros = number & { readonly __unit: 'usage_micros' };
+import type { UsageMicros } from '../usage/usage-display.ts';
+
+export type { UsageMicros };
 
 /** How an installation pays for its model requests. */
 export type BillingFunding = 'platform' | 'own_key';

@@ -9,11 +9,11 @@ import {
   type BillingSummary,
   type PlanOffer,
   type PlatformBillingPort,
-  type UsageMicros,
   type UsageRow,
 } from '../config/platform-billing.ts';
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
+import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
 import { invalidRequest, readJson } from './api-support.ts';
 
 export const PLAN_PATH = '/admin/plan';
@@ -304,29 +304,6 @@ function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>):
 // UTC, so a date reads the same here as in Chickpea's Slack messages about the plan.
 const SHORT_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
 const LONG_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
-
-// Same signatures as src/usage/usage-display.ts, which replaces these once it is on main.
-const MICROS_PER_CENT = 10_000;
-const WHOLE_DOLLARS = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
-
-/** `down` is for an amount used beside a percent, so the two never disagree at the plan's edge. */
-function formatUsageDollars(micros: UsageMicros, rounding: 'half_up' | 'down' = 'half_up'): string {
-  const half = rounding === 'half_up' ? MICROS_PER_CENT / 2 : 0;
-  const cents = Math.floor((Math.abs(micros) + half) / MICROS_PER_CENT);
-  return formatPriceCents(micros < 0 ? -cents : cents);
-}
-
-function formatPriceCents(cents: number): string {
-  const magnitude = Math.abs(cents);
-  const dollars = WHOLE_DOLLARS.format(Math.floor(magnitude / 100));
-  const remainder = magnitude % 100;
-  const amount = remainder === 0 ? `$${dollars}` : `$${dollars}.${String(remainder).padStart(2, '0')}`;
-  return cents < 0 ? `-${amount}` : amount;
-}
-
-function usagePercent(used: UsageMicros, included: UsageMicros): number {
-  return included > 0 ? Math.floor(used * 100 / included) : 0;
-}
 
 async function noStore(c: Context, next: () => Promise<void>): Promise<void> {
   c.header('Cache-Control', 'no-store');
