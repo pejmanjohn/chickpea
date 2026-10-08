@@ -13,13 +13,21 @@
  *
  * A Slack or routine attempt whose run is not found fails closed: every turn
  * is staged before its dispatch, and every occurrence persists its dispatch
- * before it starts, so a miss means the lookup broke or the run settled. The
- * coding worker has no persisted run of its own. Standalone binds the
- * installation's current keys for it (today's live read). On a deployment
- * serving many installations the coordinator stages the worker's version 2
- * binding beside it before dispatching (coding-worker-staging.ts), carrying
- * the credential its plan froze for the coding model, and the attempt binds
- * that, as a Slack turn binds its plan's.
+ * before it starts, so a miss means the lookup broke or the run settled.
+ *
+ * The coding worker has no persisted run of its own: its requests belong to
+ * the run that delegated its task. The coordinator's task tool reads that
+ * run from its own cell and stages it in the worker's object under the
+ * submission the task's dispatch will run as (coding-worker-staging.ts).
+ * This lookup reads the row for the attempt's own submission and returns it
+ * as the attempt's run, and the grant names the same run, so the
+ * interceptor's cell records the worker's requests under the delegating run.
+ * Standalone binds the installation's current keys (today's live read),
+ * under the staged run when there is one. On a deployment serving many
+ * installations the coordinator also stages the worker's version 2 binding
+ * beside it, carrying the credential its plan froze for the coding model,
+ * and the attempt binds that, as a Slack turn binds its plan's; a worker with
+ * no staged binding or no staged run fails closed.
  *
  * Routine intent has no dispatch site and no persisted run. Standalone keeps
  * today's live keys for it; a deployment serving many installations refuses
@@ -36,7 +44,7 @@ import {
   CHICKPEA_ROUTINE_INTENT_AGENT_NAME,
   CHICKPEA_SLACK_AGENT_NAME,
 } from './names.ts';
-import { readStagedCodingWorkerBinding } from './coding-worker-staging.ts';
+import { readStagedCodingWorkerBinding, readStagedCodingWorkerRun } from './coding-worker-staging.ts';
 import { parseRoutineExecutionInitialData } from './routine-execution-data.ts';
 import {
   assertRuntimePlanInstallation,
@@ -83,14 +91,15 @@ export const modelAccessInterceptor = createModelAccessInterceptor({
 
 /**
  * `agentEnv`: the attempt's own env (the agent object's scoped env on
- * Cloudflare). `stagedCodingWorkerBinding`: the binding staged in the
- * attempt's own object.
+ * Cloudflare). `stagedCodingWorkerBinding` and `stagedCodingWorkerRun`: the
+ * binding and the delegating run staged in the attempt's own object.
  */
 export async function lookupAttemptModelAccess(
   context: FlueExecutionContext,
   agentEnv: () => Promise<PlatformEnv | undefined> = currentPlatformEnv,
   stagedCodingWorkerBinding: (instanceId: string) => Promise<CodingWorkerBinding | undefined> =
     readStagedCodingWorkerBinding,
+  stagedCodingWorkerRun: (submissionId: string) => Promise<string | undefined> = readStagedCodingWorkerRun,
 ): Promise<AttemptModelAccess> {
   const env = await agentEnv();
   const { instanceId, submissionId } = context;
@@ -102,16 +111,16 @@ export async function lookupAttemptModelAccess(
     case CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME:
       if (instanceId) plan = await routineOccurrencePlan(instanceId, env);
       break;
-    case CHICKPEA_CODING_WORKER_AGENT_NAME:
-      // Standalone: the installation's current keys, read live.
-      if (!deploymentServesManyInstallations(env)) return { env };
-      if (!instanceId) break;
-      return codingWorkerModelAccess(
-        await stagedCodingWorkerBinding(instanceId),
-        instanceId,
-        submissionId ?? instanceId,
-        env,
-      );
+    case CHICKPEA_CODING_WORKER_AGENT_NAME: {
+      const runId = submissionId ? await stagedCodingWorkerRun(submissionId) : undefined;
+      // Standalone: the installation's current keys, read live. A worker
+      // dispatched before its run was staged still runs, under its own submission.
+      if (!deploymentServesManyInstallations(env)) return runId ? { env, runId } : { env };
+      if (!instanceId || !runId) {
+        throw new ModelAccessError('scope_missing', 'No staged run binds model access for this coding worker.');
+      }
+      return codingWorkerModelAccess(await stagedCodingWorkerBinding(instanceId), instanceId, runId, env);
+    }
     case CHICKPEA_ROUTINE_INTENT_AGENT_NAME:
       if (deploymentServesManyInstallations(env)) {
         throw new ModelAccessError(
@@ -195,7 +204,7 @@ async function runModelAccess(
 ): Promise<AttemptModelAccess> {
   assertInstallationOwnership(run.installation, env);
   const providerId = modelAccessProviderId(providerPrefix(run.runtimeModel));
-  if (!providerId) return { env, deploymentLane: true, agentId: run.agentId };
+  if (!providerId) return { env, deploymentLane: true, agentId: run.agentId, runId };
   const credential = run.credential;
   if (credential && credential.providerId !== providerId) {
     throw new ModelAccessError(
@@ -207,7 +216,7 @@ async function runModelAccess(
     ? frozenModelAccessGrant(credential, modelAccessInstallationId(env), runId)
     : await installationModelAccessGrant(providerId, env, runId);
   if (!grant) throw providerSetupRequired(providerId);
-  return { env, grant, agentId: run.agentId };
+  return { env, grant, agentId: run.agentId, runId };
 }
 
 /** The plan the host staged for this attempt's TurnJob, as the turn's render reads it. */

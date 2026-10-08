@@ -41,6 +41,7 @@ import {
 import {
   ModelAccessError,
   configureModelAccessResolver,
+  configureModelRequestRecorder,
   createModelAccessInterceptor,
   resetModelAccessForTests,
   withDeploymentLane,
@@ -539,13 +540,13 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.match(instanceId, /^i1~inst_a~codingworker_[a-f0-9]{40}$/, 'the worker is named under its installation');
     const staged = new Map<string, CodingWorkerBinding>([[instanceId, binding]]);
     const lookup = (context: FlueExecutionContext, env: PlatformEnv | undefined) =>
-      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id));
+      lookupAttemptModelAccess(context, async () => env, async (id) => staged.get(id), async () => 'sub_coordinator');
     const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
 
     const access = await lookup(worker(instanceId), envA);
     assert.deepEqual('grant' in access && access.grant, {
       installationId: 'inst_a', providerId: 'anthropic', credentialRefId: frozen.credentialRefId,
-      credentialVersion: frozen.credentialVersion, runId: `sub_${instanceId}`, fundingSource: 'customer',
+      credentialVersion: frozen.credentialVersion, runId: 'sub_coordinator', fundingSource: 'customer',
     });
 
     const sent: SentRequest[] = [];
@@ -589,7 +590,74 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     assert.deepEqual(sent, [], 'no request left the process');
 
     // Standalone keeps today's live read for its workers.
-    assert.deepEqual(await lookup(worker('codingworker_standalone'), undefined), { env: undefined });
+    assert.deepEqual(await lookup(worker('codingworker_standalone'), undefined), { env: undefined, runId: 'sub_coordinator' });
+  });
+});
+
+test('a coding worker\'s attempt and grant name the run that delegated its task, staged for its own submission', async (t) => {
+  const { envA, grant } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const frozen = await grant(envA, 'freeze');
+    const binding = hostedWorkerBinding('inst_a', {
+      credentialRefId: frozen.credentialRefId, version: frozen.credentialVersion, providerId: 'anthropic',
+    });
+    const instanceId = codingWorkerInstanceId(binding);
+    // One worker serves tasks from several runs; each task's submission names its own.
+    const runs = new Map([['sub_ik_task_1', 'sub_coordinator_1'], ['sub_ik_task_2', 'sub_coordinator_2']]);
+    const lookup = (instance: string, submissionId: string, env: PlatformEnv | undefined) => lookupAttemptModelAccess(
+      { instanceId: instance, submissionId, agentName: 'chickpea-coding-worker-v1' },
+      async () => env,
+      async (id) => (id === instanceId ? binding : undefined),
+      async (id) => runs.get(id),
+    );
+
+    for (const [submissionId, runId] of runs) {
+      const access = await lookup(instanceId, submissionId, envA);
+      assert.equal(access.runId, runId);
+      assert.equal('grant' in access && access.grant.runId, runId);
+    }
+    // A submission with no staged run binds nothing on a deployment serving many.
+    await assert.rejects(lookup(instanceId, 'sub_ik_task_3', envA),
+      (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing');
+
+    // Standalone runs under the staged run, or under its own submission when none was staged.
+    assert.deepEqual(await lookup('codingworker_x', 'sub_ik_task_1', undefined), { env: undefined, runId: 'sub_coordinator_1' });
+    assert.deepEqual(await lookup('codingworker_x', 'sub_ik_task_3', undefined), { env: undefined });
+  });
+});
+
+test('a coding worker\'s request is recorded under the run that delegated it, not the worker\'s submission', async (t) => {
+  const { envA, grant, usage } = await withEnv(NO_DEPLOYMENT_KEYS, () => twoInstallations(t));
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const frozen = await grant(envA, 'freeze');
+    const binding = hostedWorkerBinding('inst_a', {
+      credentialRefId: frozen.credentialRefId, version: frozen.credentialVersion, providerId: 'anthropic',
+    });
+    const instanceId = codingWorkerInstanceId(binding);
+    const recorded: string[] = [];
+    configureModelRequestRecorder(async (record) => {
+      recorded.push(record.requestId);
+      return usage.recordModelRequest(record);
+    });
+    const sent: SentRequest[] = [];
+    const anthropic = recordingProvider('anthropic', sent);
+    const interceptor = createModelAccessInterceptor({
+      lookup: (context) => lookupAttemptModelAccess(
+        context,
+        async () => envA,
+        async (id) => (id === instanceId ? binding : undefined),
+        async (id) => (id === 'sub_ik_task' ? 'sub_coordinator' : undefined),
+      ),
+      installationGrants: async () => { throw new Error('an installation of many reads no live grants'); },
+    });
+
+    await interceptor(AGENT_OPERATION, { instanceId, submissionId: 'sub_ik_task', agentName: 'chickpea-coding-worker-v1' },
+      () => modelCall(anthropic, 'worker'));
+
+    assert.deepEqual(sent.map(({ step, apiKey }) => [step, apiKey]), [['worker', KEY_A1]]);
+    assert.equal(recorded.length, 1);
+    const record = await usage.getModelRequest(recorded[0]!);
+    assert.deepEqual([record?.installationId, record?.runId, record?.agentId], ['inst_a', 'sub_coordinator', 'agent_lookup']);
   });
 });
 
