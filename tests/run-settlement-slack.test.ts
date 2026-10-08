@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
+import type { AgentInstanceHandle, ConversationStreamChunk } from '@flue/runtime';
 import type { WebClient } from '@slack/web-api';
 
 import { compileRuntimePlanV2, deriveRuntimePlanInstanceId } from '../src/agents/runtime-plan.ts';
@@ -28,13 +29,15 @@ import {
   AgentPromptFailure,
   AgentRunAborted,
   agentFailureText,
+  promptSlackThreadAgent,
   type AgentDispatchResult,
   type SlackFlueDispatchState,
 } from '../src/slack/flue-dispatch.ts';
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from '../src/slack/presentation-intent.ts';
 import { SlackRunPresentationStoreLogic } from '../src/slack/run-presentations.ts';
 import { runTurn, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { SlackStatusRegistry } from '../src/slack/status-registry.ts';
-import type { FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
+import type { FlueDispatchEnvelopeV1, FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { DURABLE_RECOVERY_FAILURE_TEXT } from '../src/slack/web-client-presenter.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
@@ -365,6 +368,89 @@ test('on the workspace\'s own key a provider failure is the customer\'s: nothing
   const agent = await settledTurn(t, HOSTED_ENV, 'own_key_agent', failureEnding('agent'));
   assert.deepEqual(port.creditBacks, [{ run: { installationId: INSTALLATION, runId: 'sub_own_key_agent' }, reason: 'chickpea' }]);
   assert.ok(visibleTexts(agent).includes(`${agentFailureText(new AgentPromptFailure('agent'))} ${CREDITED_BACK}`));
+});
+
+/**
+ * The real dispatch over an Agent whose reply calls these tools and then
+ * answers with 1,500 question marks, which Core rejects as unusable.
+ */
+function unusableReplyAfter(name: string, toolNames: readonly string[]): Partial<RunTurnOptions> {
+  const submissionId = `sub_${name}`;
+  let instanceId = '';
+  const flueDispatch: SlackFlueDispatchState = {
+    prepare: async (message) => ({
+      schemaVersion: 1, agentName: 'chickpea-slack-v2', instanceId, uid: null,
+      message: { kind: 'user', body: message }, initialData: { schemaVersion: 2 }, idempotencyKey: `turn_${name}`,
+    }) as unknown as FlueDispatchEnvelopeV1,
+    reconcileExistingInstance: async () => { throw new Error('the first dispatch is admitted'); },
+    recordReceipt: async (receipt) => receipt,
+    recordSettlement: async (settlement) => settlement,
+    markRecoveryRequired: async () => {},
+  };
+  const receipt = { submissionId, acceptedAt: new Date().toISOString(), uid: `uid_${name}` };
+  const handle = {
+    dispatch: async () => receipt,
+    read: async (_receipt: unknown, options?: { onEvent?: (chunk: ConversationStreamChunk) => void }) => {
+      let index = 0;
+      const emit = (chunk: Record<string, unknown>) => options?.onEvent?.({
+        conversationId: 'c', position: { batch: 1, index: index++ }, ...chunk,
+      } as ConversationStreamChunk);
+      emit({ type: 'message-started', messageId: 'response', submissionId });
+      toolNames.forEach((toolName, call) => emit({
+        type: 'tool-input', messageId: 'response', toolCallId: `call_${call}`, toolName, input: {},
+      }));
+      return { text: '?'.repeat(1_500), data: {}, submissionId };
+    },
+    abort: async () => {},
+  } as unknown as AgentInstanceHandle;
+  return {
+    flueDispatch,
+    agentPrompt: (input) => {
+      instanceId = deriveRuntimePlanInstanceId(input.runtimePlan!);
+      return promptSlackThreadAgent({ ...input, handle });
+    },
+  };
+}
+
+const UNUSABLE = agentFailureText(new AgentPromptFailure('invalid-output'));
+
+test('a platform-funded reply that called a tool and then came back unusable is not credited back', async (t) => {
+  await turnState(t);
+  t.mock.method(console, 'error', () => undefined);
+  const port = fundingPort();
+  const calls = await settledTurn(t, HOSTED_ENV, 'unusable_after_read', { kind: 'answer' }, {
+    platformFunded: true, extra: unusableReplyAfter('unusable_after_read', ['read_slack_channel']),
+  });
+  assert.deepEqual(port.creditBacks, []);
+  assert.ok(visibleTexts(calls).includes(UNUSABLE), JSON.stringify(calls));
+  assert.equal(JSON.stringify(calls).includes(CREDITED_BACK), false);
+});
+
+test('an unusable reply that called no tool, or only declared its answer, is credited back and says so', async (t) => {
+  await turnState(t);
+  t.mock.method(console, 'error', () => undefined);
+  const port = fundingPort();
+  for (const [name, tools] of [['unusable_no_tool', []], ['unusable_declared', [SLACK_STREAM_ANSWER_TOOL_NAME]]] as const) {
+    port.creditBacks.length = 0;
+    const calls = await settledTurn(t, HOSTED_ENV, name, { kind: 'answer' }, {
+      platformFunded: true, extra: unusableReplyAfter(name, tools),
+    });
+    assert.deepEqual(port.creditBacks, [{ run: { installationId: INSTALLATION, runId: `sub_${name}` }, reason: 'provider' }]);
+    assert.ok(visibleTexts(calls).includes(`${UNUSABLE} ${CREDITED_BACK}`), JSON.stringify(calls));
+  }
+});
+
+test('a provider error after the Agent called a tool is still credited back', async (t) => {
+  await turnState(t);
+  const port = fundingPort();
+  const error = Object.assign(new AgentPromptFailure('provider'), { toolCallCount: 2 });
+  const calls = await settledTurn(t, HOSTED_ENV, 'provider_after_tools', failureEnding('provider', error), {
+    platformFunded: true,
+  });
+  assert.deepEqual(port.creditBacks, [{
+    run: { installationId: INSTALLATION, runId: 'sub_provider_after_tools' }, reason: 'provider',
+  }]);
+  assert.ok(visibleTexts(calls).includes(`${agentFailureText(error)} ${CREDITED_BACK}`), JSON.stringify(calls));
 });
 
 const STOP_FACTS = { stopperUserId: 'USTOPPER', unread: 0, pullRequests: [], windingDown: false };
