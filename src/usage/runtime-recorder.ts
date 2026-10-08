@@ -356,7 +356,6 @@ interface RoutineUsageRecorderOptions {
   processEnv?: NodeJS.ProcessEnv;
   writeBudgetMs?: number;
   persistenceMode?: UsagePersistenceMode;
-  /** A saved routine settlement is being recorded again, not a new model call. */
   replaySettlementAt?: number;
   /** Outer occurrence wall-time boundary for durable owner writes. */
   deadlineAt?: number;
@@ -625,7 +624,7 @@ export class RoutineUsageRecorder {
     const usageCompleteness: RecordUsageTerminalInput['usageCompleteness'] = usage
       ? 'complete'
       : 'not_reported';
-    const finishedAt = this.now();
+    const finishedAt = this.options.replaySettlementAt ?? this.now();
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,

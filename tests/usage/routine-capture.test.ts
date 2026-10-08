@@ -182,7 +182,9 @@ test('routine terminal replay keeps the original observation identity', async ()
       credentialRefId: null, credentialVersion: null, store: usage,
       onPersistence: (event: UsagePersistenceEvent) => events.push(event),
     } as const;
-    const first = new RoutineUsageRecorder({ ...input, persistenceMode: 'durable', now: () => 2_000 });
+    const first = new RoutineUsageRecorder({
+      ...input, persistenceMode: 'durable', runExecutionId: 'execution_routine_replay_1', now: () => 2_000,
+    });
     await first.admit();
     await first.recordTerminal({
       status: 'completed', usage: { input: 10, output: 5, totalTokens: 15 },
@@ -191,7 +193,7 @@ test('routine terminal replay keeps the original observation identity', async ()
     const replay = new RoutineUsageRecorder({
       ...input,
       persistenceMode: 'durable',
-      replaySettlementAt: 2_000,
+      replaySettlementAt: 1_990,
       now: () => 3_000,
     });
     await replay.admit();
@@ -202,6 +204,7 @@ test('routine terminal replay keeps the original observation identity', async ()
     const detail = await usage.getOperation(input.operationId);
     assert.equal(detail?.measurements.length, 1);
     assert.equal(detail?.measurements[0]?.observedAt, 2_000);
+    assert.equal(detail?.measurements[0]?.runExecutionId, 'execution_routine_replay_1');
     assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
       ['admission', 'recorded'],
       ['terminal', 'recorded'],
@@ -213,14 +216,16 @@ test('routine terminal replay keeps the original observation identity', async ()
   }
 });
 
-test('routine replay records a missing measurement once at its observation time', async () => {
+test('routine replay records missing usage at the saved settlement time', async () => {
   const usage = new SqliteUsageStore(':memory:');
+  const events: UsagePersistenceEvent[] = [];
   const options = {
     operationId: 'rrun_missing_replay', executionId: 'exec_missing_replay', startedAt: 1_000,
     workspaceId: routine.workspaceId, channelId: routine.channelId,
     agentId: config.agentId, agentLabel: config.agent.name,
     routineId: routine.id, routineLabel: routine.name, requestedModel: config.model,
     credentialRefId: null, credentialVersion: null, store: usage, replaySettlementAt: 2_000,
+    onPersistence: (event: UsagePersistenceEvent) => events.push(event),
   };
   try {
     for (const at of [3_000, 4_000]) {
@@ -230,7 +235,13 @@ test('routine replay records a missing measurement once at its observation time'
     }
     const detail = await usage.getOperation(options.operationId);
     assert.equal(detail?.measurements.length, 1);
-    assert.equal(detail?.measurements[0]?.observedAt, 3_000);
+    assert.equal(detail?.measurements[0]?.observedAt, 2_000);
+    assert.deepEqual(events.map(({ phase, outcome }) => [phase, outcome]), [
+      ['admission', 'recorded'],
+      ['terminal', 'recorded'],
+      ['admission', 'recorded'],
+      ['terminal', 'recorded'],
+    ]);
   } finally { usage.close(); }
 });
 
