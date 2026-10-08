@@ -21,7 +21,8 @@ import * as v from 'valibot';
 
 import {
   AGENT_AUTHORING_GUIDE_VERSION,
-  useAgentAuthoring,
+  AGENT_AUTHORING_ROUTER_INSTRUCTION,
+  useAgentAuthoringSkill,
 } from '../src/management/agent-authoring/index.ts';
 import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 import {
@@ -345,7 +346,8 @@ const SYSTEM_CHICKPEA_EVAL_INSTRUCTION = [
 function CurrentGuideEvalAgent() {
   useModel(selectedModel);
   useInstruction(USER_AGENT_EVAL_INSTRUCTION);
-  useAgentAuthoring();
+  useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+  useAgentAuthoringSkill();
   useEvaluationTools();
   useEvalResponseMetadata();
   return 'Apply the mounted product guidance when it matches. Do not activate it for ordinary work.';
@@ -364,7 +366,8 @@ BaselineEvalAgent.agentName = 'agent-authoring-eval-baseline';
 function CurrentGuideSystemEvalAgent() {
   useModel(selectedModel);
   useInstruction(SYSTEM_CHICKPEA_EVAL_INSTRUCTION);
-  useAgentAuthoring();
+  useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+  useAgentAuthoringSkill();
   useEvaluationTools();
   useEvalResponseMetadata();
   return 'Apply the mounted product guidance when it matches. Do not activate it for ordinary work.';
