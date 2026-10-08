@@ -7,6 +7,7 @@ import {
   type AssistantMessage,
   type AssistantMessageEventStream,
   type Model,
+  type StreamOptions,
   type Usage,
 } from '@earendil-works/pi-ai';
 import { init, instrument, useAgentStart, useModel, useTool, type FlueExecutionContext } from '@flue/runtime';
@@ -28,7 +29,7 @@ import {
 } from '../../src/config/model-access.ts';
 import { registerPiProvider, registeredPiProvider } from '../../src/config/pi-provider-registry.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
-import { ANTHROPIC_COMPAT_PROVIDER_ID } from '../../src/model-catalog/provider-alias.ts';
+import { ANTHROPIC_COMPAT_PROVIDER_ID, OPENAI_PLATFORM_COMPAT_PROVIDER_ID } from '../../src/model-catalog/provider-alias.ts';
 import { createCloudflareBindingProvider } from '../../src/cloudflare-provider.ts';
 import { createChickpeaPiProvider } from '../../src/config/pi-provider.ts';
 import { runStatelessVisionCall } from '../../src/images/inspect-output.ts';
@@ -37,7 +38,8 @@ import type { FlueDispatchEnvelopeV1 } from '../../src/slack/turn-job-types.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { USAGE_RAW_RETENTION_DAYS } from '../../src/usage/retention.ts';
-import { SqliteUsageStore, UsageStateError } from '../../src/usage/store.ts';
+import { openStateDb } from '../../src/state/node-state-db.ts';
+import { SqliteUsageStore, UsageStateError, UsageStoreLogic } from '../../src/usage/store.ts';
 
 const DAY = 24 * 60 * 60 * 1_000;
 const NOW = Date.UTC(2026, 9, 7, 12);
@@ -60,6 +62,10 @@ function storedRecord(overrides: Partial<ModelRequestRecord> = {}): ModelRequest
     priceVersionId: 'anthropic-sonnet-5-5_2026-10-06',
     listPriceUsdMicros: 8_400,
     priceUnknownReason: null,
+    providerCostUsdMicros: null,
+    providerResponseId: null,
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: NOW,
     ...overrides,
   };
@@ -114,6 +120,92 @@ test('a request record is validated where the store receives it', async () => {
   } finally {
     store.close();
   }
+});
+
+test('a request record keeps what its provider reported, and refuses unusable values', async () => {
+  const store = new SqliteUsageStore(':memory:', () => NOW);
+  try {
+    const billed = storedRecord({
+      requestId: 'request-billed', providerCostUsdMicros: 8, providerResponseId: 'gen-fixture-0001',
+      providerServiceTier: 'standard', providerInferenceGeo: 'global',
+    });
+    assert.deepEqual(await store.recordModelRequest(billed), billed);
+    assert.deepEqual(await store.getModelRequest('request-billed'), billed);
+    for (const invalid of [
+      storedRecord({ providerCostUsdMicros: -1 }),
+      storedRecord({ providerCostUsdMicros: 7.5 }),
+      storedRecord({ providerResponseId: '' }),
+      storedRecord({ providerResponseId: 'gen-\u0007' }),
+      storedRecord({ providerResponseId: 'g'.repeat(257) }),
+      storedRecord({ providerServiceTier: 1 as unknown as string }),
+      storedRecord({ providerServiceTier: 'standard\u0007' }),
+      storedRecord({ providerInferenceGeo: ['us'] as unknown as string }),
+      storedRecord({ providerInferenceGeo: 'u\u0000s' }),
+    ]) {
+      await assert.rejects(
+        store.recordModelRequest(invalid),
+        (error: unknown) => error instanceof UsageStateError && error.code === 'usage_invalid_input',
+      );
+    }
+    const {
+      providerCostUsdMicros: _cost, providerResponseId: _id, providerServiceTier: _tier, providerInferenceGeo: _geo, ...older
+    } = storedRecord({ requestId: 'request-older' });
+    assert.deepEqual(
+      await store.recordModelRequest(older as ModelRequestRecord),
+      storedRecord({ requestId: 'request-older' }),
+      'a record from a caller that predates these fields writes them as null',
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a request table from before provider reports gains their columns, and its rows read back with nulls', () => {
+  const db = openStateDb(':memory:');
+  db.exec(
+    `CREATE TABLE usage_model_requests (
+      request_id TEXT PRIMARY KEY,
+      installation_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      agent_id TEXT,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      funding_source TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      output_tokens_reasoning INTEGER,
+      cache_read_tokens INTEGER NOT NULL,
+      cache_write_tokens INTEGER NOT NULL,
+      cache_write_tokens_one_hour INTEGER,
+      price_version_id TEXT,
+      list_price_usd_micros INTEGER,
+      price_unknown_reason TEXT,
+      finished_at INTEGER NOT NULL
+    )`,
+  );
+  const old = storedRecord({ requestId: 'request-old' });
+  db.run(
+    `INSERT INTO usage_model_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    old.requestId, old.installationId, old.runId, old.attemptId, old.agentId, old.provider, old.model,
+    old.fundingSource, old.outcome, old.inputTokens, old.outputTokens.total, old.outputTokens.reasoning,
+    old.cacheReadTokens, old.cacheWriteTokens.total, old.cacheWriteTokens.oneHour, old.priceVersionId,
+    old.listPriceUsdMicros, old.priceUnknownReason, old.finishedAt,
+  );
+
+  const store = new UsageStoreLogic(db, () => NOW);
+
+  const columns = db.all('PRAGMA table_info(usage_model_requests)').map((row) => row.name);
+  for (const column of ['provider_cost_usd_micros', 'provider_response_id', 'provider_service_tier', 'provider_inference_geo']) {
+    assert.ok(columns.includes(column), `${column} in ${String(columns)}`);
+  }
+  assert.deepEqual(store.getModelRequest('request-old'), old);
+  const billed = storedRecord({
+    requestId: 'request-new', providerCostUsdMicros: 13, providerResponseId: 'gen-fixture-0002',
+    providerServiceTier: 'default', providerInferenceGeo: null,
+  });
+  assert.deepEqual(store.recordModelRequest(billed), billed);
 });
 
 test('retention deletes request records past the raw cutoff and keeps fresh ones', async () => {
@@ -185,15 +277,21 @@ const fails = (message: AssistantMessage): Script => (output) => {
   output.end();
 };
 
-function scriptedAnthropic(scripts: Script[]): { model: Model<'anthropic-messages'>; sent: () => number } {
+function scriptedAnthropic(scripts: Script[]) {
+  return scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, 'anthropic-messages', SONNET, scripts);
+}
+
+function scriptedProvider(id: string, api: 'anthropic-messages' | 'openai-responses', modelId: string, scripts: Script[]) {
   const model = {
-    id: SONNET, name: 'Sonnet', api: 'anthropic-messages', provider: ANTHROPIC_COMPAT_PROVIDER_ID,
+    id: modelId, name: modelId, api, provider: id,
     baseUrl: 'https://provider.invalid', reasoning: true, input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
-  } as Model<'anthropic-messages'>;
+  } as Model<typeof api>;
   let sent = 0;
-  const stream = () => {
+  const received: Array<StreamOptions | undefined> = [];
+  const stream = (_model: Model<string>, _context: unknown, options?: StreamOptions) => {
     sent += 1;
+    received.push(options);
     const output = createAssistantMessageEventStream();
     const script = scripts.shift();
     assert.ok(script, 'a scripted reply remains for every request sent');
@@ -201,24 +299,32 @@ function scriptedAnthropic(scripts: Script[]): { model: Model<'anthropic-message
     return output;
   };
   registerPiProvider(createProvider({
-    id: ANTHROPIC_COMPAT_PROVIDER_ID,
+    id,
     auth: { apiKey: { name: 'probe', resolve: async () => ({ auth: {} }) } },
     models: [model],
     api: { stream, streamSimple: stream },
   }));
-  return { model, sent: () => sent };
+  return { model, sent: () => sent, received };
 }
 
-function modelCall(model: Model<string>, method: 'stream' | 'streamSimple' = 'streamSimple'): Promise<AssistantMessage> {
+function modelCall(
+  model: Model<string>,
+  method: 'stream' | 'streamSimple' = 'streamSimple',
+  options: { fetch?: typeof fetch } = {},
+): Promise<AssistantMessage> {
   return registeredPiProvider(model.provider)![method](model, {
     systemPrompt: 'probe',
     messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
-  }, {}).result();
+  }, options).result();
 }
 
-function grant(runId: string, installationId = 'chickpea'): ModelAccessGrant {
+function grant(
+  runId: string,
+  installationId = 'chickpea',
+  providerId: ModelAccessGrant['providerId'] = 'anthropic',
+): ModelAccessGrant {
   return {
-    installationId, providerId: 'anthropic', credentialRefId: 'cred_anthropic', credentialVersion: 1,
+    installationId, providerId, credentialRefId: `cred_${providerId}`, credentialVersion: 1,
     runId, fundingSource: 'customer',
   };
 }
@@ -295,6 +401,10 @@ test('a completed request writes one record with its attempt, Agent, canonical p
     listPriceUsdMicros: Math.round((1_000 * rate.inputMicrosPerUnit + 500 * rate.outputMicrosPerUnit +
       2_000 * rate.cacheReadMicrosPerUnit! + 400 * rate.cacheWriteMicrosPerUnit!) / rate.unitScale),
     priceUnknownReason: null,
+    providerCostUsdMicros: null,
+    providerResponseId: null,
+    providerServiceTier: null,
+    providerInferenceGeo: null,
     finishedAt: NOW,
   });
   assert.notEqual(oneHour!.requestId, priced!.requestId);
@@ -416,6 +526,41 @@ test('the record is in the store when the caller reads the request result', asyn
     await modelCall(model);
     assert.equal((await store.getModelRequest(written[0]!.record.requestId))?.inputTokens, 7);
   });
+});
+
+test('an Anthropic or OpenAI request records no provider cost and its usable response ID, and its provider gets the caller fetch', async (t) => {
+  const { store, written } = recordingAccess(t);
+  const callerFetch: typeof fetch = async () => { throw new Error('a scripted provider sends nothing'); };
+  const anthropic = scriptedAnthropic([
+    completes({ ...reply('stop', { input: 5, output: 2 }), responseId: 'msg_01Fixture' }),
+    completes({ ...reply('stop', { input: 6, output: 3 }), responseId: 'msg_\u0007bell' }),
+  ]);
+  const openaiModel = 'gpt-5.6-terra';
+  const openai = scriptedProvider(OPENAI_PLATFORM_COMPAT_PROVIDER_ID, 'openai-responses', openaiModel, [completes({
+    ...reply('stop', { input: 7, output: 4 }),
+    api: 'openai-responses', provider: OPENAI_PLATFORM_COMPAT_PROVIDER_ID, model: openaiModel, responseId: 'resp_fixture',
+  })]);
+
+  await withModelAccess(grant('stateless_anthropic'), undefined, async () => {
+    await modelCall(anthropic.model, 'streamSimple', { fetch: callerFetch });
+    await modelCall(anthropic.model, 'stream', { fetch: callerFetch });
+  });
+  await withModelAccess(grant('stateless_openai', 'chickpea', 'openai'), undefined, () =>
+    modelCall(openai.model, 'streamSimple', { fetch: callerFetch }));
+
+  assert.deepEqual([...anthropic.received, ...openai.received].map((options) => options?.fetch),
+    [callerFetch, callerFetch, callerFetch]);
+  assert.deepEqual(written.map(({ record }) => record.providerCostUsdMicros), [null, null, null],
+    'the recorder and a charge receive null, not a missing cost');
+  const records = await Promise.all(written.map(({ record }) => store.getModelRequest(record.requestId)));
+  assert.deepEqual(
+    records.map((record) => [record?.provider, record?.inputTokens, record?.providerCostUsdMicros, record?.providerResponseId]),
+    [
+      ['anthropic', 5, null, 'msg_01Fixture'],
+      ['anthropic', 6, null, null],
+      ['openai', 7, null, 'resp_fixture'],
+    ],
+  );
 });
 
 function instrumentedLane(agentId: string) {

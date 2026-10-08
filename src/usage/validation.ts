@@ -183,6 +183,10 @@ export function normalizeModelRequestRecord(input: ModelRequestRecord): ModelReq
     priceVersionId: optionalId(input.priceVersionId, 'price version ID'),
     listPriceUsdMicros: optionalMoney(input.listPriceUsdMicros),
     priceUnknownReason: optionalEnum(input.priceUnknownReason, PRICE_UNKNOWN_REASONS, 'price unknown reason'),
+    providerCostUsdMicros: optionalMoney(input.providerCostUsdMicros),
+    providerResponseId: optionalRequestText(input.providerResponseId, 'provider response ID'),
+    providerServiceTier: optionalRequestText(input.providerServiceTier, 'provider service tier'),
+    providerInferenceGeo: optionalRequestText(input.providerInferenceGeo, 'provider inference region'),
     finishedAt: timestamp(input.finishedAt, 'finished time'),
   };
   const priced = normalized.priceVersionId !== null;
@@ -423,16 +427,20 @@ function tokenPart(value: unknown, total: number, label: string): number | null 
   return part;
 }
 
+export function isStorableRequestText(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length > 0 &&
+    byteLength(value) <= MAX_REQUEST_TEXT_BYTES &&
+    !hasDisallowedControlCharacter(value);
+}
+
 function requestText(value: unknown, label: string): string {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    byteLength(value) > MAX_REQUEST_TEXT_BYTES ||
-    hasDisallowedControlCharacter(value)
-  ) {
-    invalid(`${label} is invalid.`);
-  }
-  return value as string;
+  if (!isStorableRequestText(value)) invalid(`${label} is invalid.`);
+  return value;
+}
+
+function optionalRequestText(value: unknown, label: string): string | null {
+  return value === null || value === undefined ? null : requestText(value, label);
 }
 
 function optionalTokenCount(value: unknown, label: string): number | null {

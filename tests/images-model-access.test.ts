@@ -146,6 +146,11 @@ test('a customer-funded image generation returns its images as before and writes
     assert.equal(sent[0]!.url, `${BASE_URL}/images/generations`);
     assert.equal((sent[0]!.init.headers as Record<string, string>).authorization, 'Bearer sk-customer-images');
     assert.equal(recorded.length, 1);
+    assert.deepEqual(
+      [recorded[0]!.providerCostUsdMicros, recorded[0]!.providerResponseId],
+      [null, null],
+      'an image request has no provider-billed cost or response ID',
+    );
     assert.deepEqual(await store.getModelRequest(recorded[0]!.requestId), {
       requestId: recorded[0]!.requestId,
       installationId: 'chickpea',
@@ -163,6 +168,10 @@ test('a customer-funded image generation returns its images as before and writes
       priceVersionId: FLARE_PRICE_VERSION,
       listPriceUsdMicros: USAGE_PRICE_MICROS,
       priceUnknownReason: null,
+      providerCostUsdMicros: null,
+      providerResponseId: null,
+      providerServiceTier: null,
+      providerInferenceGeo: null,
       finishedAt: NOW,
     });
   });
@@ -335,6 +344,7 @@ test('image usage the image rates cannot price records its tokens with no price'
   });
   const priced = sentImageRequestRecord({ ...end, result: completed(USAGE) });
   assert.equal(priced.listPriceUsdMicros, USAGE_PRICE_MICROS);
+  assert.deepEqual([priced.providerCostUsdMicros, priced.providerResponseId], [null, null]);
   for (const [why, usage] of [
     ['no usage reported', undefined],
     ['input parts that do not add up', { ...USAGE, input_tokens_details: { text_tokens: 40 } }],

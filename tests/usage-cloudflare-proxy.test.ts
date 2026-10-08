@@ -72,6 +72,7 @@ test('Cloudflare usage proxy records and reads a model request record through it
     agentId: null, provider: 'openai', model: 'gpt-4.1-mini', fundingSource: 'customer', outcome: 'stopped',
     inputTokens: 10, outputTokens: { total: 2, reasoning: 1 }, cacheReadTokens: 0,
     cacheWriteTokens: { total: 0, oneHour: null }, priceVersionId: null, listPriceUsdMicros: null, priceUnknownReason: 'price_unknown',
+    providerCostUsdMicros: 13, providerResponseId: 'resp_cf', providerServiceTier: 'default', providerInferenceGeo: null,
     finishedAt: 1_000,
   };
 
