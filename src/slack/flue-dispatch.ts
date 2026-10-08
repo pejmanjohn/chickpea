@@ -1,4 +1,5 @@
 import { SLACK_MEMORY_UPDATE_DATA_NAME, parseSlackMemoryUpdate, type SlackMemoryUpdate } from './memory-update-terminal.ts';
+import { SLACK_STREAM_ANSWER_TOOL_NAME } from './presentation-intent.ts';
 import { SLACK_INTERACTIVE_QUESTION_DATA_NAME } from './ui/interactive-tools.ts';
 import { parseDisplayComponents, SLACK_DISPLAY_COMPONENTS_DATA_NAME } from './ui/display-tools.ts';
 import type { DisplaySurfaceSpec } from './ui/surface.ts';
@@ -142,6 +143,8 @@ export interface AgentDispatchResult {
 }
 
 export class AgentPromptFailure extends Error {
+  /** Tools the settled submission called, as this attempt observed them; a replayed settlement has none. */
+  toolCallCount?: number;
   constructor(
     readonly kind: AgentPromptFailureKind,
     readonly status = 500,
@@ -504,11 +507,13 @@ export async function promptSlackThreadAgent(
         (record) => onWorkspaceMilestone(record, milestoneTarget),
       )
     : undefined;
+  const toolCalls = new SubmissionToolCalls(receipt.submissionId);
   let reply: AgentReply;
   const onEvent = (chunk: ConversationStreamChunk) => {
     terminalText.onEvent(chunk);
     progressiveRelay?.onEvent(chunk);
     milestones?.onEvent(chunk);
+    toolCalls.onEvent(chunk);
   };
   input.onObservationStarted?.();
   const signal = input.observationSignal;
@@ -583,7 +588,9 @@ export async function promptSlackThreadAgent(
     // ending seals it there, a failure final corrects it.
     await progressiveRelay?.invalidateAndDrain('run_failed');
     await input.beforeResult?.();
-    throw checkpoint.outcome === 'aborted' ? new AgentRunAborted(kind) : new AgentPromptFailure(kind);
+    throw checkpoint.outcome === 'aborted'
+      ? new AgentRunAborted(kind)
+      : Object.assign(new AgentPromptFailure(kind), { toolCallCount: toolCalls.count });
   }
 
   milestones?.replay(reply.data?.[WORKSPACE_MILESTONE_DATA_NAME]);
@@ -610,7 +617,7 @@ export async function promptSlackThreadAgent(
     input.state.flueSettlement = checkpoint;
     await progressiveRelay?.invalidateAndDrain('invalid_result');
     await input.beforeResult?.();
-    throw new AgentPromptFailure(failureKind);
+    throw Object.assign(new AgentPromptFailure(failureKind), { toolCallCount: toolCalls.count });
   }
 
   const { displayComponents, ...settled } = completed;
@@ -657,6 +664,46 @@ const REGENERATION_PROBE_CHARS = 64;
 /** The canonical Slack markdown of an answer prefix, as a plain stream shows it. */
 function canonicalStreamPrefix(text: string): string {
   return streamableSlackMarkdownPrefix(text) || canonicalSlackMarkdownText(text);
+}
+
+type ConversationMessage = Extract<ConversationStreamChunk, { type: 'message-appended' }>['message'];
+
+/**
+ * The distinct tools one submission called, its answer declaration aside. A
+ * re-attached read replays the whole conversation, so only this submission's
+ * messages count.
+ */
+class SubmissionToolCalls {
+  readonly #ids = new Set<string>();
+  readonly #messageIds = new Set<string>();
+  constructor(private readonly submissionId: string) {}
+
+  get count(): number {
+    return this.#ids.size;
+  }
+
+  onEvent(chunk: ConversationStreamChunk): void {
+    if (chunk.type === 'message-started') {
+      if (chunk.submissionId === this.submissionId) this.#messageIds.add(chunk.messageId);
+    } else if (chunk.type === 'tool-input') {
+      if (this.#messageIds.has(chunk.messageId)) this.#add(chunk.toolName, chunk.toolCallId);
+    } else if (chunk.type === 'conversation-reset') {
+      for (const message of chunk.snapshot.messages) this.#observe(message);
+    } else if (chunk.type === 'message-appended') {
+      this.#observe(chunk.message);
+    }
+  }
+
+  #observe(message: ConversationMessage): void {
+    if (message.submissionId !== this.submissionId) return;
+    for (const part of message.parts) {
+      if (part.type === 'dynamic-tool') this.#add(part.toolName, part.toolCallId);
+    }
+  }
+
+  #add(toolName: string, toolCallId: string): void {
+    if (toolName !== SLACK_STREAM_ANSWER_TOOL_NAME) this.#ids.add(toolCallId);
+  }
 }
 
 /** Slack presents the final self-contained assistant step, not working narration. */
