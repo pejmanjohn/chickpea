@@ -45,6 +45,7 @@ import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * Hosted guided onboarding: the person who signs up becomes the first Owner
@@ -400,7 +401,7 @@ test('an installation on Chickpea\'s models chooses a provider with no key; one 
     funding: async () => funding,
     admit: async () => 'admitted',
     charge: async () => undefined,
-    priceMultiplier: async () => 1.5,
+    ...NO_RUN_FEES,
   });
   t.after(() => resetPlatformFundingForTests());
   const signup = await signUp(t);
