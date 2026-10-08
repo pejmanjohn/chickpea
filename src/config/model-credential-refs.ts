@@ -767,7 +767,7 @@ function modelProviderKeyContext(
 function platformRegistration(id: ProviderKeyId): CredentialRegistration {
   return {
     credentialRefId: platformCredentialRefId(id),
-    version: 2,
+    version: 1,
     providerId: id,
     sourceKind: 'platform',
     label: "Chickpea's models",

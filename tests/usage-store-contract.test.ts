@@ -405,3 +405,29 @@ test('usage schema initialization is additive beside existing application data',
     after.close();
   }
 });
+
+test('a credential epoch takes a new label in place but refuses any other change', async () => {
+  const store = new SqliteUsageStore(':memory:');
+  try {
+    const epoch = {
+      credentialRefId: 'platform:openai', version: 1, providerId: 'openai', sourceKind: 'platform' as const,
+      label: 'Old label', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+    };
+    await store.putCredential(epoch);
+    const relabelled = await store.putCredential({ ...epoch, label: 'New label', scopeLabel: 'Project' });
+    assert.deepEqual([relabelled.version, relabelled.label, relabelled.scopeLabel], [1, 'New label', 'Project']);
+    assert.deepEqual(
+      (await store.listCredentials('openai')).map(({ version, label, scopeLabel }) => ({ version, label, scopeLabel })),
+      [{ version: 1, label: 'New label', scopeLabel: 'Project' }],
+    );
+    for (const changed of [{ sourceKind: 'stored' as const }, { unknownRotation: true }, { activeFrom: 1 }]) {
+      await assert.rejects(
+        store.putCredential({ ...epoch, ...changed }),
+        (error: unknown) => error instanceof UsageStateError && error.code === 'usage_credential_conflict',
+        JSON.stringify(changed),
+      );
+    }
+  } finally {
+    store.close();
+  }
+});

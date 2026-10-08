@@ -39,6 +39,7 @@ import {
 } from '../src/config/model-access.ts';
 import {
   resolveModelCredentialAttribution,
+  revalidateModelCredentialAttribution,
   rotateInstallationModelCredential,
 } from '../src/config/model-credential-refs.ts';
 import { registerPiProvider, registeredPiProvider } from '../src/config/pi-provider-registry.ts';
@@ -246,7 +247,7 @@ test('a credits installation with no saved key passes readiness and freezes plat
     assert.ok((await resolveRuntimeModel('agent', `anthropic/${SONNET}`, { settings, env })).model);
     const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
     assert.deepEqual(attribution, {
-      credentialRefId: 'platform:anthropic', version: 2, providerId: 'anthropic', sourceKind: 'platform',
+      credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
       label: "Chickpea's models", scopeLabel: null, unknownRotation: false,
     });
 
@@ -271,18 +272,18 @@ test('a credits installation with no saved key passes readiness and freezes plat
       memoryEpoch: 1,
     });
     assert.deepEqual(plan.modelCredential, {
-      credentialRefId: 'platform:anthropic', version: 2, providerId: 'anthropic', fundingSource: 'platform',
+      credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', fundingSource: 'platform',
     });
     const thawed = parseRuntimePlanModelCredential(JSON.parse(JSON.stringify(plan.modelCredential)));
     assert.equal(frozenModelAccessGrant(thawed, 'inst_no_key', 'run_frozen')?.fundingSource, 'platform');
     assert.deepEqual(await installationModelAccessGrant('anthropic', env, 'run_live', settings), {
       installationId: 'inst_no_key', providerId: 'anthropic', credentialRefId: 'platform:anthropic',
-      credentialVersion: 2, runId: 'run_live', fundingSource: 'platform',
+      credentialVersion: 1, runId: 'run_live', fundingSource: 'platform',
     });
   });
 });
 
-test('the platform credential registers under its new label beside a row saved under the old one', async (t) => {
+test('the platform credential keeps its version and relabels the row saved under the old label', async (t) => {
   resetPlatformFundingForTests();
   invalidateProviderKeyCache();
   const settings = new SqliteSettingsStore(':memory:');
@@ -304,14 +305,38 @@ test('the platform credential registers under its new label beside a row saved u
     const env = hostedEnv('inst_relabelled');
     for (const request of ['first', 'second']) {
       const attribution = await resolveModelCredentialAttribution(`anthropic/${SONNET}`, env, settings, usageStore);
-      assert.deepEqual([attribution?.version, attribution?.label], [2, "Chickpea's models"], request);
+      assert.deepEqual([attribution?.version, attribution?.label], [1, "Chickpea's models"], request);
     }
   });
   assert.deepEqual(warnings, [], 'the registry raised no conflict');
   assert.deepEqual(
     (await usageStore.listCredentials('anthropic')).map(({ version, label }) => ({ version, label })),
-    [{ version: 1, label: 'Chickpea credits' }, { version: 2, label: "Chickpea's models" }],
+    [{ version: 1, label: "Chickpea's models" }],
   );
+});
+
+test('a plan frozen under the old label still revalidates after the relabel, so retries and resumes go on', async (t) => {
+  resetPlatformFundingForTests();
+  invalidateProviderKeyCache();
+  const settings = new SqliteSettingsStore(':memory:');
+  const usageStore = new SqliteUsageStore(':memory:');
+  t.after(() => {
+    settings.close();
+    usageStore.close();
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+  });
+  await usageStore.putCredential({
+    credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
+    label: 'Chickpea credits', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const frozenBeforeDeploy = { credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic' };
+    await revalidateModelCredentialAttribution(
+      `anthropic/${SONNET}`, frozenBeforeDeploy, hostedEnv('inst_in_flight'), settings, usageStore,
+    );
+  });
 });
 
 test('a port that cannot say an installation\'s funding leaves it on its own key, never on platform funding', async (t) => {
