@@ -421,6 +421,8 @@ export interface ManagementAgentCreatedWelcome {
   agentId: string;
   agentName: string;
   agentHandle?: string;
+  /** Requested handle Slack already had, when agentHandle is its published variation. */
+  takenHandle?: string;
   agentDescription?: string;
   requesterMembershipId: string;
   surface: 'channel' | 'direct';

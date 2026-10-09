@@ -725,6 +725,9 @@ function isChickpeaIntroduction(
 }
 
 function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): string {
+  const incomplete = receipt.publication?.incomplete ?? [];
+  // Without a published handle the welcome always posts as Chickpea.
+  if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt);
   const description = receipt.agentDescription
     ? boundedSlackText(receipt.agentDescription, 400)
     : undefined;
@@ -732,8 +735,13 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   const lines = [
     `Hi — I’m *${boundedSlackText(receipt.agentName, 80)}*${handle}.${description ? ` ${description}` : ''}`,
   ];
-  const publicationIssue = agentWelcomePublicationIssue(receipt);
-  if (publicationIssue) lines.push(publicationIssue);
+  const handleChange = takenHandleText(receipt, 'my');
+  if (handleChange) lines.push(handleChange);
+  if (incomplete.includes('source_channel')) {
+    lines.push(`I’m not in this Channel yet, so people here can’t mention me.${
+      viewAgentLinkUrl(receipt) ? ' Open View Agent to add me.' : ''
+    }`);
+  }
   if (receipt.connectorNotices?.length) {
     lines.push(...receipt.connectorNotices.map(({ text }) => boundedSlackText(text, 500)));
   }
@@ -764,34 +772,49 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
 }
 
 function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
-  const handle = receipt.agentHandle ? ` (@${boundedSlackText(receipt.agentHandle, 80)})` : '';
-  const issue = agentWelcomePublicationIssue(receipt)
-    ?? 'Slack would not let me post its welcome under the Agent’s identity. The creation thread remains with Chickpea.';
+  const name = boundedSlackText(receipt.agentName, 80);
+  const handle = receipt.agentHandle ? `@${boundedSlackText(receipt.agentHandle, 80)}` : undefined;
+  const incomplete = receipt.publication?.incomplete ?? [];
+  const handleMissing = incomplete.includes('slack_presence');
+  const channelMissing = incomplete.includes('source_channel');
+  const viewAgentUrl = viewAgentLinkUrl(receipt);
+  const openViewAgent = (purpose: string) => viewAgentUrl ? ` Open View Agent to ${purpose}.` : '';
+  const created = `I created *${name}*`;
+  const lead = handleMissing && channelMissing
+    ? `${created}, but Slack wouldn’t create its handle${handle ? `, ${handle},` : ''} and I couldn’t add it to this Channel. People can’t mention it until that’s fixed.${openViewAgent('fix it')}`
+    : handleMissing
+    ? `${created}, but Slack wouldn’t create its handle${handle ? `, ${handle}` : ''}, so people can’t mention it yet.${openViewAgent('fix it')}`
+    : channelMissing
+    ? `${created}${handle ? ` (${handle})` : ''}, but I couldn’t add it to this Channel yet, so people here can’t mention it.${openViewAgent('add it')}`
+    : `${created}${handle ? ` (${handle})` : ''}. Slack wouldn’t let me post its welcome as ${name}, so I’m posting it here.${handle ? ` Mention ${handle} to talk to it.` : ''}`;
+  const handleChange = handleMissing ? undefined : takenHandleText(receipt, 'its');
   const lines = [
-    `Created *${boundedSlackText(receipt.agentName, 80)}*${handle}, but ${issue}`,
+    lead,
+    ...(handleChange ? [handleChange] : []),
     ...(receipt.connectorNotices ?? []).map(({ text }) => boundedSlackText(text, 500)),
     ...(receipt.connectorActions ?? []).map(({ label, setupUrl }) =>
       renderSlackActionLink(setupUrl, `Connect ${boundedSlackText(label, 80)}`)
     ),
     ...(receipt.followOnNotices ?? []).map(boundedFollowOnNoticeText),
-    ...(receipt.viewAgentUrl
-      ? [renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL)]
-      : receipt.setupUrl
-      ? [renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL)]
-      : []),
+    ...(viewAgentUrl ? [renderSlackActionLink(viewAgentUrl, VIEW_AGENT_LINK_LABEL)] : []),
   ];
   return lines.join('\n\n');
 }
 
-function agentWelcomePublicationIssue(
+// Compatibility proposal welcomes carry their View Agent link as setupUrl.
+function viewAgentLinkUrl(receipt: ManagementAgentCreatedWelcome): string | undefined {
+  return receipt.viewAgentUrl ?? receipt.setupUrl;
+}
+
+function takenHandleText(
   receipt: ManagementAgentCreatedWelcome,
+  owner: 'my' | 'its',
 ): string | undefined {
-  const incomplete = receipt.publication?.incomplete ?? [];
-  return incomplete.length > 0
-    ? `I couldn’t finish ${incomplete.map((part) =>
-        part === 'slack_presence' ? 'its Slack identity' : 'its source-Channel availability'
-      ).join(' or ')}.`
-    : undefined;
+  if (!receipt.takenHandle || !receipt.agentHandle) return undefined;
+  const changeHint = viewAgentLinkUrl(receipt)
+    ? ' You can change it any time from View Agent.'
+    : '';
+  return `@${boundedSlackText(receipt.takenHandle, 80)} was already taken in this Slack workspace, so ${owner} handle is @${boundedSlackText(receipt.agentHandle, 80)}.${changeHint}`;
 }
 
 function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {

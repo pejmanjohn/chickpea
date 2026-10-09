@@ -7,6 +7,8 @@ import {
   type ConnectorCatalogPreset,
 } from '../src/config/presets.ts';
 import { selectAgentCreationConnectors } from '../src/management/agent-creation-welcome.ts';
+import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
+import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import {
   managementActorOriginKey,
@@ -432,6 +434,97 @@ test('a rejecting managed-connector availability check still queues the welcome'
       label: 'Notion',
       text: 'Notion isn’t available to connect right now.',
     }]);
+  } finally {
+    f.close();
+  }
+});
+
+test('a creation that took a handle variation tells the requester both handles', async () => {
+  const attempts: string[] = [];
+  const f = await createManagementAdapterFixture('welcome-taken-handle', {
+    publishAgentPresence: async ({ agentId }) => {
+      const current = await f.config.getAgent(agentId);
+      const handle = current.slackPresence!.normalizedHandle;
+      attempts.push(handle);
+      if (handle === 'support') {
+        throw new AgentPresenceError('handle_collision', '@support is already in use.', {
+          suggestions: ['support-team', 'support-2', 'support-3'],
+        });
+      }
+      return {
+        agent: await f.config.updateAgent(agentId, {
+          slackPresence: {
+            ...current.slackPresence!,
+            desiredState: 'active',
+            health: 'healthy',
+            userGroupId: 'S_SUPPORT_TEAM',
+          },
+        }, current.revision),
+      };
+    },
+  });
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_TAKEN_HANDLE',
+        threadTs: '900.3',
+        messageTs: '900.3',
+        requestText: 'create me a support agent',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-support-taken-handle',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_support_taken',
+          name: 'Support',
+          requestedHandle: 'support',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Draft customer replies.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    assert.deepEqual(attempts, ['support', 'support-team']);
+
+    const finalized = await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: 'agent_support_taken',
+      connectorMentions: [],
+      followOnNotices: [],
+      turnJobId: 'turn_taken_handle',
+    });
+    const receipt = finalized.outbox.receipt;
+    if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected Agent welcome receipt');
+    }
+    assert.deepEqual(receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(receipt.agentHandle, 'support-team');
+    assert.equal(receipt.takenHandle, 'support');
+    const text = formatManagementSetupReceipt(receipt);
+    assert.match(text, /^Hi — I’m \*Support\* \(@support-team\)\./);
+    assert.match(
+      text,
+      /@support was already taken in this Slack workspace, so my handle is @support-team\. You can change it any time from View Agent\./,
+    );
   } finally {
     f.close();
   }

@@ -1330,6 +1330,7 @@ export class WorkspaceManagementService {
       agentId: agent.id,
       agentName: agent.name,
       ...(handle ? { agentHandle: handle } : {}),
+      ...(creation.handleChange ? { takenHandle: creation.handleChange.requested } : {}),
       ...(agent.description ? { agentDescription: agent.description } : {}),
       requesterMembershipId: actor.membershipId,
       surface: actor.origin.conversationKind === 'channel' ? 'channel' : 'direct',
