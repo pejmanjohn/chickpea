@@ -14,7 +14,9 @@ import {
 } from '../src/management/slack-memory-actions.ts';
 import { createSlackManagementTurnGuard, invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 test('memory tool has a portable optional summary and rejects model-selected authority', () => {
   const input = { expectedRevision: 0, body: 'The warehouse opens at nine.' };
@@ -204,5 +206,53 @@ test('memory receipts only claim preserved context for a verbatim addition to th
   assert.deepEqual(parseSlackMemoryUpdate([{ ...receipt, preservesContext: true }]), { ...receipt, preservesContext: true });
   for (const preservesContext of [false, 'true', 1, null]) {
     assert.equal(parseSlackMemoryUpdate([{ ...receipt, preservesContext }]), undefined, 'only an explicit true claim is accepted');
+  }
+});
+
+test('an ask turn writes memory immediately, exactly as a person\'s turn does, without requester text', async () => {
+  const f = await createManagementAdapterFixture('memory-ask');
+  try {
+    const save = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
+      const agent = await f.config.createAgent({
+        ...createDemoStarterAgent(), id: `agent_memory_${name}`,
+        creatorMembershipId: f.admin.membership.id, editPolicy: 'creator_and_admins',
+      });
+      const signal = slackTurnSignal({
+        turn: { ...turn, eventId: `Ev_memory_${name}`, messageTs: '600.2' },
+        agentId: agent.id,
+        conversation: { workspaceId: f.admin.binding.slackTeamId, channelId: 'C_MEMORY_ASK', threadTs: '600.1' },
+        conversationKind: 'channel',
+        slackUserId: f.admin.binding.slackUserId,
+      });
+      const saved = await invokeSlackWorkspaceManagementTool({
+        signal, identity: f.identity, service: f.service, name: 'apply_workspace_changes',
+        args: slackMemoryUpdateArguments(signal, { expectedRevision: 0, body: 'The warehouse opens at nine.' }),
+      });
+      assert.ok(saved.ok);
+      const hint = appliedMemoryReceipt(saved.result, agent.id);
+      assert.ok(hint, `${name}: the write applied immediately`);
+      const actor = await resolveSlackManagementActor(signal, f.identity);
+      const acknowledged = await verifyMemoryUpdateAcknowledgement({
+        hint, agentId: agent.id, turnJobId: signal.turnJobId,
+        getOperation: (id) => f.service.getOperation(actor, id),
+        validateReceiptLease: async (revision) => revision === (await f.memory.getAgentMemory(agent.id)).revision,
+      });
+      const memory = await f.memory.getAgentMemory(agent.id);
+      return { origin: actor.origin, acknowledged, body: memory.body, revision: memory.revision };
+    };
+    const words = 'Remember that the warehouse opens at nine.';
+    const person = await save('person', { text: words });
+    const ask = await save('ask', {
+      text: words,
+      agentAsk: { fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '600.1' },
+    });
+    assert.equal(person.origin.kind === 'slack' && person.origin.requestText, words);
+    assert.equal(ask.origin.kind === 'slack' && 'requestText' in ask.origin, false);
+    const { origin: _personOrigin, ...personWrite } = person;
+    const { origin: _askOrigin, ...askWrite } = ask;
+    assert.deepEqual(personWrite, { acknowledged: true, body: 'The warehouse opens at nine.', revision: 1 });
+    assert.deepEqual(askWrite, personWrite);
+  } finally {
+    f.close();
   }
 });

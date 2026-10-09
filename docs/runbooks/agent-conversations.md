@@ -13,13 +13,14 @@ needs a number only Finance has, so its reply says:
 > Checking the charge history. @finance what did we bill order 4821 in Q3?
 
 1. **The mention is the ask.** When an Agent's delivered reply mentions the
-   handle of another Agent that can work in the Channel, that Agent gets a
-   turn in the same thread. The mention renders as a live Slack mention of
-   that Agent; Agent handles have no members, so it notifies nobody. Mentions inside code, email addresses, and URLs
-   do not count, nor does a mention copied from a Slack message, for example
-   in a quote. An Agent never asks itself. The built-in Chickpea never
-   asks: it lists and describes Agents, so a handle in its reply is not a live
-   mention and asks nobody.
+   handle of another Agent it can ask here (see
+   [Who may be asked](#who-may-be-asked)), that Agent gets a turn in the same
+   thread. The mention renders as a live Slack mention of that Agent; Agent
+   handles have no members, so it notifies nobody. Mentions inside code,
+   email addresses, and URLs do not count, nor does a mention copied from a
+   Slack message, for example in a quote. An Agent never asks itself. The
+   built-in Chickpea never asks: it lists and describes Agents, so a handle in
+   its reply is not a live mention and asks nobody.
 2. **The asked Agent answers in the thread.** It sees the whole thread,
    including the asking Agent's message, and knows which Agent asked and which
    person started the exchange.
@@ -37,44 +38,80 @@ needs a number only Finance has, so its reply says:
    Agent. A person mentioning a different Agent still hands the thread over,
    as before.
 
-Each user Agent is told which other Agents work in the Channel and their
-handles, and when to ask: only when it needs a teammate's answer, never in
-passing or to say thanks.
+Each user Agent is told which other Agents it can ask here and their
+handles: in a Channel, the Agents granted there; in a direct message, the
+Agents in that thread. It is also told when to ask: only when it needs a
+teammate's answer, never in passing or to say thanks.
 
 ## Mentioning several Agents at once
 
-A person can mention several Agents in one message, for example
+A person can mention several Agents in one message, in a Channel or in a
+direct message with Chickpea, for example
 `@pm @design @eng what do you think of this idea?`. Each Agent answers in
 turn, in the order the message named them, and each sees the answers before
 its own. The first Agent keeps the thread: a later reply that mentions nobody
-goes to it. The others answer as guests, as when an Agent asks them, which
-only a Channel thread has: a direct message that mentions several Agents is
-asked to mention one at a time.
+goes to it. The others answer as guests, as when an Agent asks them.
 
-Every mentioned Agent must be available to that person in the Channel. If one
-is not, nobody answers and the person gets the usual private note that the
-Agent is not available here. One message addresses at most 6 Agents. Approve,
-stop, and other commands in such a message apply to the first Agent only.
-These answers are a person's request, so they do not count toward the limit
-on asks between Agents.
+Every mentioned Agent must be available to that person where they wrote: in
+a Channel, granted there; in a direct message, one they may use privately.
+If one is not, nobody answers and the person gets the usual note that the
+Agent is not available here, once per message. One message addresses at most
+6 Agents. Approve, stop, and other commands in such a message apply to the
+first Agent only. These answers are a person's request, so they do not count
+toward the limit on asks between Agents, and only the person's message sets
+the thread's title in Slack.
+
+When the person asks the Agents to discuss something or go back and forth,
+the last Agent ends its answer by mentioning the first. The first Agent then
+keeps the discussion going by mentioning the teammate it wants to hear from
+next, and each answer that mentions nobody comes back to it. Once the
+discussion covers what the person asked, it says where they landed. Each
+turn after the Agents' first answers is an ask and counts toward the limit
+on asks, so a long discussion pauses until the person replies. An Agent
+mentioned while its own answer to the message is still waiting gets no
+second turn: the waiting turn reads the mention when it runs.
 
 ## Who may be asked
 
 An ask is admitted like a message from the person whose message started the
 exchange, in that thread:
 
-- The asked Agent needs an active grant in the Channel, and the person must
-  be a full member who is in the Channel.
+- In a Channel, the asked Agent needs an active grant there, and the person
+  must be a full member who is in the Channel. In a direct message, see
+  [In a direct message](#in-a-direct-message).
 - The asked Agent works with that person's access and its own connected
   accounts. The asking Agent's words cannot grant anything.
 - Only people approve, stop, check in, or run memory and schedule commands.
   An Agent's message never counts as one of those, whatever it says.
-- Asks happen only in Channel threads on the current runtime. A DM has one
-  Agent, and Agents never ask each other there.
+- Asks happen only on the current runtime.
 
 An ask that cannot be admitted, for example to an Agent without a grant in
 the Channel, is not answered, and nothing is posted about it. The asking
 Agent's list of teammates names only Agents it can reach.
+
+## In a direct message
+
+These Agents are in a thread of a person's direct message with Chickpea:
+
+- The Agent that owns the thread.
+- Every Agent that answered in the thread.
+- Every Agent the person's message mentioned, once routing accepted that
+  message. A mention in a message that was refused brings nobody in.
+
+An Agent in the thread may ask only the others in it. An Agent the person
+could use privately, but that is not in the thread, is not asked. Each Agent
+is reached with the person's private access, checked at the time of each
+turn: the same check as when the person mentions that Agent alone. The
+thread's Agents are read from the thread's record, never stored with the
+thread, and the list an Agent is told names only Agents already in the
+thread, so no Agent's name reaches a person who cannot see it there.
+
+Every answer is posted in the conversation, so only the people in it read
+it. Each Agent has one memory across Channels and direct messages, so an
+Agent that reads another Agent's answer is told not to save it to memory
+unless the person asks. An ask carries no request text from the person: a
+check that needs the person's own words, such as a schedule change or a
+skill import, does not take the asking Agent's words as theirs.
 
 ## Limits
 
@@ -129,7 +166,7 @@ every other answer.
 
 | Line | Meaning |
 |---|---|
-| `[chickpea] host-addressed turn not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, or `not_eligible` when admission could not authorize it. |
+| `[chickpea] host-addressed turn not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, or, in a direct message, one not in the thread; `not_eligible` when admission could not authorize it. |
 | `[chickpea] agent ask limit reached; exchange paused` | The exchange used its asks and the pause line was posted. |
 | `[chickpea] agent ask was not admitted: <error>` | Admission failed after its retries. The asked Agent does not answer. |
 | `[chickpea] agent ask dispatch failed: <name>` | The executor could not hand the reply's asks over. |

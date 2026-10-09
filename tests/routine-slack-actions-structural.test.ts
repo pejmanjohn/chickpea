@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { invokeSlackScheduleAction } from '../src/management/slack-schedule-actions.ts';
+import { personRequestText } from '../src/slack/agent-asks.ts';
 
 const base = { kind: 'save_routine', requiredConnectionAccountIds: [], itemId: 'schedule', agentId: 'agent_test', workspaceId: 'T_TEST', destination: { kind: 'current_dm_thread' }, name: 'TOEFL update', description: 'Bookings update', taskText: 'Report current TOEFL bookings using SQL Dash.', schedule: { kind: 'in', minutes: 5 }, timezone: 'UTC', outputPolicy: 'post' };
 const previous = { id: 'routine_test', workspaceId: 'T_TEST', channelId: 'D_TEST', destination: { kind: 'direct_thread' }, deletedAt: null, name: 'Original', description: 'Original description', taskText: 'Report TOEFL bookings using SQL Dash.', timezone: 'America/Los_Angeles', outputPolicy: 'post_on_change', triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', version: 2 };
-async function admitted(requesterText: string, patch: Record<string, unknown> = {}, timezone?: string, stored: unknown = previous) {
+async function admitted(requesterText: string | undefined, patch: Record<string, unknown> = {}, timezone?: string, stored: unknown = previous) {
   let captured: any;
   const stop = new Error('before reservation');
-  const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1788987692.474889', conversationKind: 'im', slackUserId: 'U_TEST', eventId: 'Ev_test', messageTs: '1788988012.030979', turnJobId: 'turn_test', requesterText, requesterTimezone: timezone };
+  const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1788987692.474889', conversationKind: 'im', slackUserId: 'U_TEST', eventId: 'Ev_test', messageTs: '1788988012.030979', turnJobId: 'turn_test', ...(requesterText === undefined ? {} : { requesterText }), requesterTimezone: timezone };
   // Only the real pre-admission path runs. Persistence is verified separately with stores.
   const input: any = { signal, operation: { ...base, ...patch }, context: { organizationId: 'org_test', userId: 'user_test', membershipId: 'member_test', origin: { kind: 'slack', ...signal } }, dependencies: { now: () => Date.UTC(2030, 5, 10), routines: { getRoutine: async () => stored, listRevisions: async () => [{ version: 2, definition: previous }], listRoutines: async () => [stored] }, management: { reserveRequest: async (request: any) => { captured = request.operations[0]; throw stop; } } } };
   try { await invokeSlackScheduleAction(input); } catch (error) { if (error !== stop) throw error; }
@@ -52,4 +53,16 @@ test('partial edit replay resolves omitted fields from the expected revision', a
 test('missing control IDs and unavailable expected revisions produce fixed validation errors', async () => {
   await assert.rejects(admitted('pause it', { kind: 'control_routine', routineId: undefined, expectedVersion: 2, action: 'pause' }), /not found/);
   await assert.rejects(admitted('change it', { routineId: 'routine_test', expectedVersion: 99, taskText: undefined }), /Inspect it again/);
+});
+
+test('an ask cannot schedule, control, or run work with the asking Agent\'s words', async () => {
+  const words = 'give me an update on TOEFL bookings in 5 minutes and pause the old one';
+  const control = { kind: 'control_routine', routineId: 'routine_test', expectedVersion: 2, action: 'pause' };
+  const run = { kind: 'run_routine', routineId: 'routine_test' };
+  const person = { text: words };
+  const ask = { text: words, agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1788988000.000001' } };
+  for (const patch of [{}, control, run]) {
+    assert.ok(await admitted(personRequestText(person), patch));
+    await assert.rejects(admitted(personRequestText(ask), patch), /requires the trusted current Slack request/);
+  }
 });

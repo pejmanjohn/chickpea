@@ -6,7 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
-import { agentSlackHandle } from './agent-asks.ts';
+import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
@@ -28,7 +28,6 @@ type AgentRouteSource =
 
 type AgentRoutingDenialReason =
   | 'not_available'
-  | 'several_agents'
   | 'member_required'
   | 'installation_unavailable'
   | 'temporarily_unavailable';
@@ -185,19 +184,33 @@ export async function resolveAgentRoute(
   );
   const activeGrants = channelGrants.filter((grant) => grant.status === 'active');
   const available = await availableAlternatives(activeGrants, agentsById);
-  const withTeammates = (
+  let answered: Promise<string[]> | undefined;
+  // A person's row never counts: a refused mention is recorded too.
+  const answeredInThread = () => answered ??= Promise.resolve(
+    config.listSlackPublicContext(turn.workspaceId, turn.channelId, turn.threadTs),
+  ).then((rows) => rows.flatMap((row) => row.role === 'agent' && row.agentId ? [row.agentId] : []));
+  const askableAgentIds = async (addressedIds: readonly string[]): Promise<ReadonlySet<string>> =>
+    new Set(surface === 'channel'
+      ? activeGrants.map(({ agentId }) => agentId)
+      : [...(currentRoute ? [currentRoute.agentId, ...await answeredInThread()] : []), ...addressedIds]);
+  const withTeammates = async (
     routed: Extract<AgentRoutingResult, { kind: 'routed' }>,
-  ): Extract<AgentRoutingResult, { kind: 'routed' }> => {
-    if (surface !== 'channel' || installation.runtimeContract !== 'chickpea-v1') return routed;
-    const teammates = channelTeammates(activeGrants, agentsById, routed.assignment.agentId);
+    addressedIds: readonly string[],
+  ): Promise<Extract<AgentRoutingResult, { kind: 'routed' }>> => {
+    if (installation.runtimeContract !== 'chickpea-v1') return routed;
+    if (!agentMayAskTeammates(routed.assignment.agent)) return routed;
+    const teammates = teammatesAmong(await askableAgentIds(addressedIds), agentsById, routed.assignment.agentId);
     return teammates.length
-      ? { ...routed, assignment: { ...routed.assignment, channelTeammates: teammates } }
+      ? { ...routed, assignment: { ...routed.assignment, teammates } }
       : routed;
   };
 
   if (input.askAgentId !== undefined) {
-    // An ask continues a thread its asker is part of; it never opens one.
-    if (surface !== 'channel' || !currentRoute) return denied('not_available', []);
+    // An ask continues a thread its asker is part of; it never opens one. A
+    // later Agent a person's message mentioned is in the thread by that message.
+    if (!currentRoute) return denied('not_available', []);
+    const addressedIds = turn.coAddressed?.agents.map(({ agentId }) => agentId) ?? [];
+    if (!(await askableAgentIds(addressedIds)).has(input.askAgentId)) return denied('not_available', []);
     const asked = agentsById.get(input.askAgentId);
     const access = await agentAccess({
       agent: asked,
@@ -223,7 +236,7 @@ export async function resolveAgentRoute(
       route: currentRoute,
       handoff: false,
       routeChanged: false,
-    });
+    }, addressedIds);
   }
 
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
@@ -265,12 +278,11 @@ export async function resolveAgentRoute(
     if (repair.kind === 'temporarily_unavailable') return denied('temporarily_unavailable', []);
   }
   // Several handles address each of those Agents, in order: the first takes
-  // the thread and the rest answer after it, as guests, which only a Channel
-  // thread has. Every one must be reachable by this person here, or none is
-  // asked; the first is checked below as the routed Agent.
+  // the thread and the rest answer after it, as guests. Every one must be
+  // reachable by this person here, or none is asked; the first is checked
+  // below as the routed Agent.
   const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
   if (addressed.length > 1 && !input.appHomeAgentId) {
-    if (surface !== 'channel') return denied('several_agents', []);
     for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
@@ -331,7 +343,7 @@ export async function resolveAgentRoute(
     return refusal(selected, access, available, source === 'agent_handle');
   }
 
-  const routed = withTeammates(await commitSelectedAgentRoute({
+  const routed = await withTeammates(await commitSelectedAgentRoute({
     turn,
     surface,
     config,
@@ -340,7 +352,7 @@ export async function resolveAgentRoute(
     source,
     activeGrants,
     currentRoute,
-  }));
+  }), addressed.map(({ id }) => id));
   return source === 'agent_handle' && addressed.length > 1
     ? { ...routed, coAddressed: { agents: addressed.map(addressedAgent), position: 0 } }
     : routed;
@@ -597,29 +609,26 @@ function addressedAgent(agent: CustomAgentConfig): SlackCoAddressed['agents'][nu
 }
 
 /** Most teammates one Agent is told about. */
-const MAX_CHANNEL_TEAMMATES = 20;
+const MAX_TEAMMATES = 20;
 
 /**
- * The other active user Agents with a grant in this Channel and a Slack
- * handle: whom `agentId` can ask here. Ordered by name.
+ * The active user Agents among `agentIds` with a Slack handle, other than
+ * `selfId`: whom that Agent can ask here. Ordered by name.
  */
-function channelTeammates(
-  grants: AgentChannelGrant[],
+function teammatesAmong(
+  agentIds: Iterable<string>,
   agentsById: Map<string, CustomAgentConfig>,
-  agentId: string,
+  selfId: string,
 ): AgentTeammate[] {
-  const seen = new Set<string>();
-  return grants
-    .flatMap((grant) => {
-      const agent = agentsById.get(grant.agentId);
+  return [...new Set(agentIds)]
+    .flatMap((agentId) => {
+      const agent = agentsById.get(agentId);
       const presence = agent && agentSlackHandle(agent);
-      if (!agent || !presence || agent.id === agentId || agent.kind !== 'user' || !agentIsActive(agent)) return [];
-      if (seen.has(agent.id)) return [];
-      seen.add(agent.id);
+      if (!agent || !presence || agent.id === selfId || agent.kind !== 'user' || !agentIsActive(agent)) return [];
       return [{ name: agent.name, ...presence }];
     })
     .sort((left, right) => left.name.localeCompare(right.name))
-    .slice(0, MAX_CHANNEL_TEAMMATES);
+    .slice(0, MAX_TEAMMATES);
 }
 
 function assignmentForAgent(

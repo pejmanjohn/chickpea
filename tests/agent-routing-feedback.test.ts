@@ -70,12 +70,12 @@ test('an ambient Channel denial remains silent', async () => {
   assert.deepEqual(calls, []);
 });
 
-test('a direct message that named several Agents is told to name one', async () => {
+test('a direct message refusal is posted in its thread and names no Agent', async () => {
   const posts: unknown[] = [];
   await postAgentRoutingFeedback({
     turn: turn({ channelId: 'D1', source: 'dm_message', channelType: 'im', contextMode: 'dm_history' }),
     surface: 'direct',
-    result: { kind: 'denied', reason: 'several_agents', alternatives: [] },
+    result: { kind: 'denied', reason: 'not_available', alternatives: [] },
     client: {
       chat: {
         async postMessage(input: unknown) {
@@ -85,7 +85,7 @@ test('a direct message that named several Agents is told to name one', async () 
       },
     } as never,
   });
-  assert.deepEqual(posts, [{ channel: 'D1', thread_ts: '100.1', text: 'Mention one Agent at a time here.' }]);
+  assert.deepEqual(posts, [{ channel: 'D1', thread_ts: '100.1', text: 'That Agent is not available here.' }]);
 });
 
 test('a thread reply that names an Agent does not need an existing Agent thread', async () => {

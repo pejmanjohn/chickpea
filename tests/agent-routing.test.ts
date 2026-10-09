@@ -951,20 +951,261 @@ test('one message addresses at most six Agents, in mention order', async () => {
   }
 });
 
-test('a direct message that mentions several Agents is asked for one at a time', async () => {
-  const { store } = await fixture();
+const DM_ACTOR = { channelMember: false, fullMember: true };
+
+function dmTurn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
+  return turn({
+    channelId: 'D1', source: 'dm_message', channelType: 'im', contextMode: 'dm_history', ...patch,
+  });
+}
+
+function dmAskTurn(messageTs: string, text: string): NormalizedSlackTurn {
+  return dmTurn({
+    eventId: `agent-ask:${messageTs}`, messageTs, text, source: 'agent_mention', contextMode: 'thread',
+    agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support', originMessageTs: '100.1' },
+  });
+}
+
+async function supportDmThread() {
+  const routes = await fixture();
+  await activateChickpea(routes.store);
+  const legal = await routes.store.createAgent({
+    id: 'agent_legal', name: 'Legal', instructions: 'Legal.', enabled: true, lifecycle: 'active',
+    creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+    model: 'local-stub/legal', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    slackPresence: {
+      requestedHandle: 'legal', normalizedHandle: 'legal', desiredState: 'active',
+      health: 'healthy', userGroupId: 'SLEGAL',
+      avatar: { kind: 'generated', revision: 1, seed: 'legal' },
+    },
+  });
+  const opened = await resolveAgentRoute({
+    turn: dmTurn({ text: '<!subteam^SSUPPORT|@support> can we refund order 4821?' }),
+    surface: 'direct', actor: DM_ACTOR, config: routes.store, authorizeUserAgent: allowUserAgent,
+  });
+  assert.equal(opened.kind === 'routed' && opened.assignment.agentId, routes.support.id);
+  return { ...routes, legal };
+}
+
+function answeredInDm(store: SqliteConfigStore, agentId: string, messageTs: string) {
+  return store.putSlackPublicContext({
+    workspaceId: 'T1', channelId: 'D1', rootTs: '100.1', messageTs, role: 'agent', agentId,
+    text: `${agentId} answered.`,
+  });
+}
+
+function countingRecordReads(store: SqliteConfigStore) {
+  const reads: string[] = [];
+  const config = new Proxy(store, {
+    get(target, key) {
+      if (key === 'listSlackPublicContext') {
+        return (...args: Parameters<SqliteConfigStore['listSlackPublicContext']>) => {
+          reads.push(args[2]);
+          return target.listSlackPublicContext(...args);
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { config, reads };
+}
+
+test('a direct message that mentions several usable Agents routes to the first, and the rest answer after it', async () => {
+  const { store, support, finance } = await fixture();
   try {
     await activateChickpea(store);
-    const denied = await resolveAgentRoute({
-      turn: turn({
-        channelId: 'D1', text: '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> hey',
-        source: 'dm_message', channelType: 'im', contextMode: 'dm_history',
-      }),
-      surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+    const routed = await resolveAgentRoute({
+      turn: dmTurn({ text: '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> go back and forth on this' }),
+      surface: 'direct', actor: DM_ACTOR, config: store, authorizeUserAgent: allowUserAgent,
+    });
+    assert.equal(routed.kind, 'routed');
+    if (routed.kind !== 'routed') return;
+    assert.equal(routed.assignment.agentId, support.id);
+    assert.deepEqual(routed.coAddressed, {
+      agents: [
+        { agentId: support.id, name: 'Support', handle: 'support' },
+        { agentId: finance.id, name: 'Finance', handle: 'finance' },
+      ],
+      position: 0,
+    });
+    assert.deepEqual(routed.assignment.teammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+    assert.equal((await store.getAgentThreadRoute('T1', 'D1', '100.1'))?.agentId, support.id);
+  } finally {
+    store.close();
+  }
+});
+
+test('a direct message that mentions an Agent this person cannot use privately asks none of them and names none', async () => {
+  const { store, support } = await fixture();
+  try {
+    await activateChickpea(store);
+    const authorized: string[] = [];
+    const result = await resolveAgentRoute({
+      turn: dmTurn({ text: '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> compare notes' }),
+      surface: 'direct', actor: DM_ACTOR, config: store,
+      authorizeUserAgent: async (agent) => {
+        authorized.push(agent.id);
+        return agent.id === support.id
+          ? { status: 'allowed' as const, audience: 'workspace_members' as const }
+          : { status: 'denied' as const, audience: 'private_channel_members' as const };
+      },
+    });
+    assert.deepEqual(result, { kind: 'denied', reason: 'not_available', alternatives: [] });
+    assert.ok(authorized.includes('agent_finance'), 'the later Agent was checked as the person may use it here');
+    assert.equal(await store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('a later Agent a direct message mentioned answers in the first Agent\'s thread as a guest', async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    await activateChickpea(store);
+    const text = '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> go back and forth on this';
+    const first = await resolveAgentRoute({
+      turn: dmTurn({ text }), surface: 'direct', actor: DM_ACTOR, config: store,
       authorizeUserAgent: allowUserAgent,
     });
-    assert.deepEqual(denied, { kind: 'denied', reason: 'several_agents', alternatives: [] });
-    assert.equal(await store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
+    assert.equal(first.kind, 'routed');
+    if (first.kind !== 'routed') return;
+    const later = await resolveAgentRoute({
+      turn: dmTurn({
+        eventId: `co-addressed:D1:100.1:${finance.id}`, text, contextMode: 'thread',
+        coAddressed: { ...first.coAddressed!, position: 1 },
+      }),
+      surface: 'direct', actor: DM_ACTOR, config: store, askAgentId: finance.id,
+      authorizeUserAgent: allowUserAgent,
+    });
+    assert.equal(later.kind, 'routed');
+    if (later.kind !== 'routed') return;
+    assert.equal(later.assignment.agentId, finance.id);
+    assert.equal(later.assignment.threadGuest, true);
+    assert.deepEqual(later.assignment.teammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
+    assert.equal((await store.getAgentThreadRoute('T1', 'D1', '100.1'))?.agentId, support.id);
+  } finally {
+    store.close();
+  }
+});
+
+test('in a direct thread an Agent can ask only an Agent that answered there', async () => {
+  const { store, legal } = await supportDmThread();
+  try {
+    const ask = () => resolveAgentRoute({
+      turn: dmAskTurn('100.2', '@legal may we refund?'), surface: 'direct', actor: DM_ACTOR, config: store,
+      askAgentId: legal.id, authorizeUserAgent: allowUserAgent,
+    });
+    assert.deepEqual(await ask(), { kind: 'denied', reason: 'not_available', alternatives: [] });
+
+    await answeredInDm(store, legal.id, '100.15');
+    const asked = await ask();
+    assert.equal(asked.kind, 'routed');
+    if (asked.kind !== 'routed') return;
+    assert.equal(asked.source, 'agent_ask');
+    assert.equal(asked.assignment.agentId, legal.id);
+    assert.equal(asked.assignment.threadGuest, true);
+    assert.deepEqual(asked.assignment.teammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
+  } finally {
+    store.close();
+  }
+});
+
+test('an Agent in a direct thread is asked only while this person may still use it privately', async () => {
+  const { store, finance } = await supportDmThread();
+  try {
+    await answeredInDm(store, finance.id, '100.15');
+    const ask = (financeAccess: 'allowed' | 'denied') => resolveAgentRoute({
+      turn: dmAskTurn('100.2', '@finance what was charged?'), surface: 'direct', actor: DM_ACTOR, config: store,
+      askAgentId: finance.id,
+      authorizeUserAgent: async (agent) => ({
+        status: agent.id === finance.id ? financeAccess : 'allowed' as const,
+        audience: 'private_channel_members' as const,
+      }),
+    });
+    assert.equal((await ask('allowed')).kind, 'routed');
+    assert.deepEqual(await ask('denied'), { kind: 'denied', reason: 'not_available', alternatives: [] });
+  } finally {
+    store.close();
+  }
+});
+
+test('a person\'s message that mentioned an Agent does not bring it into a direct thread', async () => {
+  const { store, finance, legal } = await supportDmThread();
+  try {
+    await store.putSlackPublicContext({
+      workspaceId: 'T1', channelId: 'D1', rootTs: '100.1', messageTs: '100.12', role: 'human',
+      authorId: 'U1', text: '<!subteam^SLEGAL|@legal> join us',
+    });
+    await answeredInDm(store, finance.id, '100.15');
+    const asked = await resolveAgentRoute({
+      turn: dmAskTurn('100.2', '@legal may we refund?'), surface: 'direct', actor: DM_ACTOR, config: store,
+      askAgentId: legal.id, authorizeUserAgent: allowUserAgent,
+    });
+    assert.deepEqual(asked, { kind: 'denied', reason: 'not_available', alternatives: [] });
+    const reply = await resolveAgentRoute({
+      turn: dmTurn({ eventId: 'Ev3', messageTs: '100.3', text: 'any update?', contextMode: 'thread' }),
+      surface: 'direct', actor: DM_ACTOR, config: store, authorizeUserAgent: allowUserAgent,
+    });
+    assert.equal(reply.kind, 'routed');
+    if (reply.kind !== 'routed') return;
+    assert.deepEqual(reply.assignment.teammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+  } finally {
+    store.close();
+  }
+});
+
+test('a plain reply in a direct thread keeps the Agents that answered there as teammates, with no Slack lookup', async () => {
+  const { store, support, finance } = await supportDmThread();
+  try {
+    await answeredInDm(store, finance.id, '100.15');
+    const authorized: string[] = [];
+    const lookups: string[] = [];
+    const reply = await resolveAgentRoute({
+      turn: dmTurn({ eventId: 'Ev3', messageTs: '100.3', text: 'what do you both think?', contextMode: 'thread' }),
+      surface: 'direct', actor: DM_ACTOR, config: store,
+      authorizeUserAgent: async (agent) => {
+        authorized.push(agent.id);
+        return { status: 'allowed' as const, audience: 'workspace_members' as const };
+      },
+      transport: { lookupUserGroup: async (groupId: string) => { lookups.push(groupId); return undefined; } },
+    });
+    assert.equal(reply.kind, 'routed');
+    if (reply.kind !== 'routed') return;
+    assert.equal(reply.source, 'thread_owner');
+    assert.equal(reply.assignment.agentId, support.id);
+    assert.deepEqual(reply.assignment.teammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+    assert.deepEqual(authorized, [support.id], 'only the routed Agent is checked');
+    assert.deepEqual(lookups, []);
+  } finally {
+    store.close();
+  }
+});
+
+test('a direct thread\'s record is read once per routing, and only for an existing thread a user Agent or an ask needs', async () => {
+  const { store, finance } = await fixture();
+  try {
+    await activateChickpea(store);
+    const { config, reads } = countingRecordReads(store);
+    const route = (patch: Partial<NormalizedSlackTurn>, askAgentId?: string) => resolveAgentRoute({
+      turn: dmTurn(patch), surface: 'direct', actor: DM_ACTOR, config,
+      ...(askAgentId ? { askAgentId } : {}), authorizeUserAgent: allowUserAgent,
+    });
+
+    const opened = await route({ text: '<!subteam^SSUPPORT|@support> hi' });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind === 'routed') assert.equal(opened.assignment.teammates, undefined);
+    await route({ eventId: 'Ev-cp1', messageTs: '200.1', threadTs: '200.1', text: 'hello' });
+    await route({ eventId: 'Ev-cp2', messageTs: '200.2', threadTs: '200.1', text: 'and more', contextMode: 'thread' });
+    assert.deepEqual(reads, []);
+
+    await answeredInDm(store, finance.id, '100.15');
+    const asked = await route(
+      { eventId: 'Ev-ask', messageTs: '100.2', text: '@finance hi', source: 'agent_mention', contextMode: 'thread' },
+      finance.id,
+    );
+    assert.equal(asked.kind, 'routed');
+    assert.deepEqual(reads, ['100.1']);
   } finally {
     store.close();
   }

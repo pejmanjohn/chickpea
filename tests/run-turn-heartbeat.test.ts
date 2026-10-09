@@ -52,7 +52,7 @@ import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { withEnv } from './helpers/env.ts';
 import { activityStatus } from '../src/activity/semantic.ts';
-import { setObservedSlackStatus } from '../src/slack/status-registry.ts';
+import { setObservedSlackStatus, SlackStatusRegistry } from '../src/slack/status-registry.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -865,6 +865,131 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
     assert.equal(promptCalls, 2);
     assert.equal(deferred, 1);
     assert.equal(delivered, 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('a creation answered on an Agent\'s ask hands the welcome no requester text', async () => {
+  const f = await createManagementAdapterFixture('run-turn-ask-creation');
+  try {
+    const chickpea = await f.config.materializeChickpeaAgent();
+    const bootstrapAgent = await f.config.createAgent({
+      id: 'agent_ask_creation_bootstrap', name: 'Bootstrap',
+      instructions: 'Provide the initial Workspace routing target.', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.admin.binding.slackTeamId, transportMode: 'direct',
+      defaultAgentId: bootstrapAgent.id, teamId: f.admin.binding.slackTeamId, botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(
+      f.admin.binding.slackTeamId,
+      { runtimeContract: 'chickpea-v1', health: 'healthy' },
+      installation.revision,
+    );
+    type WelcomeInput = Parameters<typeof f.service.finalizeSlackAgentCreationWelcome>[0];
+    const received: WelcomeInput[] = [];
+    const finalize = f.service.finalizeSlackAgentCreationWelcome.bind(f.service);
+    f.service.finalizeSlackAgentCreationWelcome = async (input) => {
+      received.push(input);
+      return finalize(input);
+    };
+
+    const create = async (name: 'PERSON' | 'ASK', agentAsk?: NormalizedSlackTurn['agentAsk']) => {
+      const channelId = `D_ASK_CREATION_${name}`;
+      const turn: NormalizedSlackTurn = {
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId,
+        eventId: `Ev_ASK_CREATION_${name}`,
+        text: 'Create a Deck Agent using Linear.',
+        userId: f.admin.binding.slackUserId,
+        actorMembershipId: f.admin.membership.id,
+        messageTs: '215.2',
+        threadTs: '215.2',
+        source: 'dm_message',
+        channelType: 'im',
+        contextMode: 'dm_history',
+        interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+        ...(agentAsk ? { agentAsk } : {}),
+      };
+      const assignment: ResolvedAssignment = {
+        workspaceId: turn.workspaceId, channelId, agentId: CHICKPEA_AGENT_ID,
+        runtimeContract: 'chickpea-v1', model: 'local-stub/management',
+        modelAttribution: { source: 'pinned', providerId: 'local-stub' }, agent: chickpea,
+      };
+      const agentId = `agent_ask_creation_${name.toLowerCase()}`;
+      const applied = await f.service.applyWorkspaceChanges({
+        context: {
+          userId: f.admin.user.id, membershipId: f.admin.membership.id,
+          organizationId: f.admin.membership.organizationId, actingAgentId: CHICKPEA_AGENT_ID,
+          origin: {
+            kind: 'slack', workspaceId: turn.workspaceId, channelId, threadTs: turn.threadTs,
+            messageTs: turn.messageTs, conversationKind: 'im', agentId: CHICKPEA_AGENT_ID,
+          },
+        },
+        idempotencyKey: `ask-creation-${name}`,
+        operations: [{
+          itemId: 'create', kind: 'create_agent',
+          agent: {
+            id: agentId, name: `Deck ${name.toLowerCase()}`,
+            description: 'Creates polished presentations.',
+            requestedHandle: `ask-creation-deck-${name.toLowerCase()}`,
+            editPolicy: 'creator_and_admins',
+            instructions: 'Create polished presentations.',
+            enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+          },
+        }],
+      });
+      if (!('operationId' in applied)) assert.fail('expected applied creation');
+      const client = {
+        conversations: { history: async () => ({ ok: true, messages: [] }) },
+        chat: {
+          startStream: async () => ({ ok: true, ts: '216.1' }),
+          stopStream: async () => ({ ok: true }),
+          postMessage: async () => ({ ok: true, channel: channelId, ts: '216.1' }),
+        },
+      } as unknown as WebClient;
+      await runTurn(turn, assignment, { SLACK_TAG_PUBLIC_URL: 'https://chickpea.example' }, {
+        client,
+        turnId: `turn_ASK_CREATION_${name}`,
+        agentPrompt: async (): Promise<AgentDispatchResult> => ({
+          text: 'This text must stay hidden.',
+          agentCreationTerminal: {
+            schemaVersion: 1, operationId: applied.operationId, creationItemId: 'create',
+            agentId, connectorMentions: ['Linear'], followOnNotices: [],
+          },
+          requestedModel: 'local-stub/management',
+          returnedModel: { provider: 'local-stub', id: 'management' },
+          reportedUsage: null,
+          usageCompleteness: 'not_reported',
+        }),
+        appStores: {
+          config: f.config, identity: f.identity, memory: f.memory, management: f.management,
+        } as never,
+        managementApproval: { identity: f.identity, config: f.config, management: f.management, service: f.service },
+        usageRecordingEnabled: false,
+      });
+      const outbox = await f.management.getOutboxForOperation(applied.operationId);
+      if (!outbox || !('kind' in outbox.receipt) || outbox.receipt.kind !== 'agent_created_welcome') {
+        assert.fail('expected a deferred Agent welcome');
+      }
+      const input = received.find(({ operationId }) => operationId === applied.operationId);
+      assert.ok(input, 'the welcome reached the service');
+      return { origin: input.context.origin, receipt: outbox.receipt };
+    };
+
+    const person = await create('PERSON');
+    assert.equal(person.origin.kind === 'slack' && person.origin.requestText, 'Create a Deck Agent using Linear.');
+    assert.deepEqual(person.receipt.connectorActions?.map(({ presetId }) => presetId), ['linear']);
+
+    const ask = await create('ASK', {
+      fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
+      originMessageTs: '215.1',
+    });
+    assert.equal(ask.origin.kind === 'slack' && 'requestText' in ask.origin, false);
+    assert.deepEqual(ask.receipt.connectorActions, []);
+    assert.deepEqual(ask.receipt.connectorNotices, []);
   } finally {
     f.close();
   }
@@ -2315,6 +2440,69 @@ test('the thread\'s Agent, handed an answer, can end silently: nothing posts and
   // Only the thread's own Agent may stay silent: a guest's NO_REPLY is its answer.
   const guest = await run(answeredBack('Ev_GUEST_NO_REPLY'), 'NO_REPLY', { ...assignment, threadGuest: true });
   assert.ok(guest.effects.includes('post'));
+});
+
+test('only a person\'s own message titles the thread; an ask or a later co-addressed turn never does', async () => {
+  const titled = async (turn: NormalizedSlackTurn, runAssignment = assignment) => {
+    const work = new SqliteWorkStore(':memory:');
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn, assignment: runAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    }));
+    const runId = admitted.run.id;
+    const h = v3PresentationHarness(turn, runId);
+    const titles: string[] = [];
+    const client = {
+      apiCall: async () => ({ ok: true }),
+      assistant: { threads: {
+        setStatus: async () => ({ ok: true }),
+        setTitle: async (input: { title: string }) => { titles.push(input.title); return { ok: true }; },
+      } },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async () => ({ ok: true, ts: '1785509000.000300' }),
+        appendStream: async () => ({ ok: true }),
+        stopStream: async () => ({ ok: true }),
+        postMessage: async () => ({ ok: true, ts: '1785509000.000300' }),
+      },
+    } as unknown as WebClient;
+    try {
+      await runTurn(turn, runAssignment, undefined, {
+        client, runId, presentationState: h.state, workStore: work, usageRecordingEnabled: false,
+        statusRegistry: new SlackStatusRegistry(),
+        async agentPrompt(): Promise<AgentDispatchResult> {
+          return {
+            text: 'Done.', requestedModel: runAssignment.model ?? null, returnedModel: null,
+            reportedUsage: null, usageCompleteness: 'not_reported',
+          };
+        },
+      });
+      return titles;
+    } finally { h.db.close(); work.close(); }
+  };
+  const asked: NormalizedSlackTurn = {
+    ...workTurn('Ev_TITLE_ASK'),
+    messageTs: '1785509000.000200',
+    text: 'What did Finance decide about the refund?',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    agentAsk: {
+      fromAgentId: 'agent_finance', fromAgentName: 'Finance', fromAgentHandle: 'finance',
+      originMessageTs: '1785509000.000100',
+    },
+  };
+  const agents = [
+    { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+    { agentId: assignment.agentId, name: 'Heartbeat', handle: 'heartbeat' },
+  ];
+  const coAddressed: NormalizedSlackTurn = {
+    ...workTurn('Ev_TITLE_CO_ADDRESSED'),
+    text: 'Plan the refund policy together',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    coAddressed: { agents, position: 1 },
+  };
+  assert.deepEqual(await titled(asked, { ...assignment, threadGuest: true }), []);
+  assert.deepEqual(await titled(coAddressed, { ...assignment, threadGuest: true }), []);
+  assert.deepEqual(await titled({ ...coAddressed, eventId: 'Ev_TITLE_FIRST', coAddressed: { agents, position: 0 } }),
+    ['Plan the refund policy together']);
 });
 
 test('a rejected custom status falls back to the native processing indicator', async () => {

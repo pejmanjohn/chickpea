@@ -187,6 +187,55 @@ test('activated direct-message dispatch preserves DM kind without channel_type',
   }
 });
 
+test('a Flue Slack signal carries requester text only for a person\'s own message', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    const dispatchAttributes = (id: string, signalTurn: NormalizedSlackTurn) => {
+      turns.enqueue({ id, evtKey: `evt_${id}`, msgKey: `msg_${id}`, turn: signalTurn, assignment: assignment() });
+      turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+        turn: signalTurn, assignment: assignment(), instructions: 'Frozen instructions.', memoryEpoch: 1,
+      }));
+      const envelope = turns.prepareFlueDispatch(id, 'Answer the message.', { generation: id });
+      if (envelope.schemaVersion !== 2) throw new Error('expected a signal dispatch');
+      assert.deepEqual(turns.getDispatchEnvelope(id), envelope, 'a retry dispatches the same signal');
+      return envelope.message.attributes;
+    };
+    const ask = {
+      fromAgentId: 'agent_finance', fromAgentName: 'Finance', fromAgentHandle: 'finance',
+      originMessageTs: '100.001',
+    };
+
+    assert.equal(dispatchAttributes('turn_person-signal', turn()).requesterText, turn().text);
+    const long = dispatchAttributes('turn_long-signal', {
+      ...turn(), eventId: 'Ev_canary_long', messageTs: '100.004', text: 'x'.repeat(40_001),
+    });
+    assert.equal(long.requesterText, 'x'.repeat(40_000));
+    const coAddressed = dispatchAttributes('turn_co-addressed-signal', {
+      ...turn(), eventId: 'Ev_canary_co', messageTs: '100.005',
+      coAddressed: {
+        agents: [
+          { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+          { agentId: 'agent_canary', name: 'Canary', handle: 'canary' },
+        ],
+        position: 1,
+      },
+    });
+    assert.equal(coAddressed.requesterText, turn().text);
+    const asked = dispatchAttributes('turn_ask-signal', {
+      ...turn(), eventId: 'Ev_canary_ask', messageTs: '100.002', source: 'agent_mention', agentAsk: ask,
+    });
+    assert.equal('requesterText' in asked, false);
+    const handedBack = dispatchAttributes('turn_handed-back-signal', {
+      ...turn(), eventId: 'Ev_canary_back', messageTs: '100.003', source: 'agent_mention',
+      agentAsk: { ...ask, threadOwnerAgentId: 'agent_canary', handedBack: true },
+    });
+    assert.equal('requesterText' in handedBack, false);
+  } finally {
+    db.close();
+  }
+});
+
 test('existing Flue instance reconciliation compares the exact persisted Slack envelope', () => {
   const db = openStateDb(':memory:');
   try {
