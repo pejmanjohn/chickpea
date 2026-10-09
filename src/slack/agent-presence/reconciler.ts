@@ -9,6 +9,8 @@ import {
   type SlackTransport,
   type SlackUserGroup,
 } from '../transport/types.ts';
+import { agentSlackHandle } from '../agent-asks.ts';
+import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
   classifyAgentPresenceError,
@@ -18,6 +20,7 @@ import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } fro
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
+  announce: AgentPresenceAnnouncements | null;
   now?: () => number;
 }
 
@@ -371,11 +374,30 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
+    if (pendingGrant.status !== 'active') {
+      await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        channelIsPrivate: channel.private,
+        agent: published,
+        grantRevision: grant.revision,
+      }));
+    }
     return { agent: published, grant };
   }
 
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
-  async reconcile(agentId: string, attempt = 0): Promise<CustomAgentConfig> {
+  async reconcile(agentId: string): Promise<CustomAgentConfig> {
+    const before = await this.dependencies.config.getAgent(agentId);
+    const wasLive = handleIsLive(before);
+    const reconciled = await this.reconcileOnce(agentId, 0);
+    if (!wasLive) {
+      await this.announceBestEffort('handleWentLive', reconciled.id, (announce) => announce.handleWentLive(reconciled));
+    }
+    return reconciled;
+  }
+
+  private async reconcileOnce(agentId: string, attempt: number): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     if (agent.lifecycle === 'archived') {
@@ -500,7 +522,7 @@ export class AgentPresenceReconciler {
           { retryable: true },
         );
       }
-      return this.reconcile(current.id, attempt + 1);
+      return this.reconcileOnce(current.id, attempt + 1);
     }
     return config.updateAgent(
       current.id,
@@ -665,6 +687,25 @@ export class AgentPresenceReconciler {
     });
   }
 
+  private async announceBestEffort(
+    transition: keyof AgentPresenceAnnouncements,
+    agentId: string,
+    run: (announce: AgentPresenceAnnouncements) => Promise<void>,
+  ): Promise<void> {
+    const { announce } = this.dependencies;
+    if (!announce) return;
+    try {
+      await run(announce);
+    } catch (error) {
+      console.warn('[chickpea] Agent presence announcement failed', JSON.stringify({
+        transition,
+        agentId,
+        error: error instanceof Error ? error.name : 'unknown',
+        ...(error instanceof SlackTransportError ? { code: error.code } : {}),
+      }));
+    }
+  }
+
   private async recordFailure(
     agent: CustomAgentConfig,
     error: AgentPresenceError,
@@ -722,6 +763,10 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
     if (error instanceof SlackTransportError && error.code === 'already_enabled') return;
     throw error;
   }
+}
+
+function handleIsLive(agent: CustomAgentConfig): boolean {
+  return agent.slackPresence?.health === 'healthy' && agentSlackHandle(agent) !== undefined;
 }
 
 function suggestedHandles(handle: string, groups: readonly SlackUserGroup[]): string[] {

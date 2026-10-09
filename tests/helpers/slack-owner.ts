@@ -3,7 +3,7 @@ import type { IdentityResolution, IdentityStore } from '../../src/identity/types
 export async function createSlackOwner(
   identity: IdentityStore,
   options: {
-    now?: number; teamId?: string; userId?: string; suffix?: string;
+    now?: number; teamId?: string; userId?: string; suffix?: string; organizationId?: string;
     betterAuthUserId?: string; betterAuthOrganizationId?: string;
     betterAuthMembershipId?: string;
   } = {},
@@ -37,7 +37,7 @@ export async function createSlackOwner(
   });
   return identity.claimOwner({
     operationId: operation.id,
-    organizationId: 'org_oss',
+    organizationId: options.organizationId ?? 'org_oss',
     slackTeamId: teamId,
     slackUserId: userId,
     displayName: 'Owner',

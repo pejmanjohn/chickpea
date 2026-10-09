@@ -148,7 +148,7 @@ async function fixture(options: {
     botUserId: 'U_BOT',
     defaultAgentId: 'agent_chickpea',
   });
-  const reconciler = new AgentPresenceReconciler({ config, transport, now: () => now });
+  const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => now });
   const service = new PrivateChannelSetupService({
     config,
     management,

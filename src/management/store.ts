@@ -9,6 +9,9 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
+  type ManagementAgentCreatedWelcome,
+  type OwedAgentWelcomeInput,
+  type OwedAgentWelcomeResult,
   type ClaimAgentCreationWelcomeInput,
   type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
@@ -290,6 +293,7 @@ export interface ManagementStore {
   claimIntroduction(
     input: ClaimManagementIntroductionInput,
   ): Promise<ClaimManagementIntroductionResult>;
+  queueOwedAgentWelcome(input: OwedAgentWelcomeInput): Promise<OwedAgentWelcomeResult>;
   getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
   claimDueOutbox(
     at: number,
@@ -491,6 +495,8 @@ export class ManagementStoreLogic {
         return { kind: 'outbox', outbox: this.putOutbox(request.record) };
       case 'claim_introduction':
         return { kind: 'introduction_claim', result: this.claimIntroduction(request.input) };
+      case 'queue_owed_agent_welcome':
+        return { kind: 'owed_agent_welcome', result: this.queueOwedAgentWelcome(request.input) };
       case 'get_outbox_for_operation':
         return {
           kind: 'outbox',
@@ -1317,7 +1323,12 @@ export class ManagementStoreLogic {
   }
 
   putOutbox(record: ManagementReceiptOutboxRecord): ManagementReceiptOutboxRecord {
-    this.db.run(
+    this.insertOutboxIfAbsent(record);
+    return this.requireOutbox(record.outboxId);
+  }
+
+  private insertOutboxIfAbsent(record: ManagementReceiptOutboxRecord): boolean {
+    return this.db.run(
       `INSERT OR IGNORE INTO management_receipt_outbox (
         outbox_id, operation_id, destination_json, receipt_json, status,
         attempts, next_attempt_at, delivery_ref, failure_code, created_at, updated_at
@@ -1333,8 +1344,72 @@ export class ManagementStoreLogic {
       record.failureCode ?? null,
       record.createdAt,
       record.updatedAt,
-    );
-    return this.requireOutbox(record.outboxId);
+    ).changes === 1;
+  }
+
+  queueOwedAgentWelcome(input: OwedAgentWelcomeInput): OwedAgentWelcomeResult {
+    return this.db.transaction(() => {
+      const row = this.db.get(
+        `SELECT * FROM management_receipt_outbox
+         WHERE (status IN ('pending', 'delivering')
+             OR (status = 'delivered' AND json_extract(receipt_json, '$.deliveryPersona') = 'chickpea'))
+           AND json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+           AND json_extract(receipt_json, '$.agentId') = ?
+           AND json_extract(receipt_json, '$.fallbackOutboxId') IS NULL
+           AND EXISTS (
+             SELECT 1 FROM json_each(receipt_json, '$.publication.incomplete')
+             WHERE json_each.value = 'slack_presence'
+           )
+         ORDER BY created_at DESC, outbox_id DESC LIMIT 1`,
+        input.agentId,
+      ) as unknown as ManagementOutboxRow | undefined;
+      if (!row) return { outcome: 'none' };
+      const fallback = outboxFromRow(row);
+      if (!('kind' in fallback.receipt) || fallback.receipt.kind !== 'agent_created_welcome') {
+        return { outcome: 'none' };
+      }
+      const { takenHandle, ...rest } = fallback.receipt;
+      const incomplete = (rest.publication?.incomplete ?? []).filter((part) => part !== 'slack_presence');
+      const live: ManagementAgentCreatedWelcome = {
+        ...rest,
+        agentName: input.agentName,
+        agentHandle: input.agentHandle,
+        persona: { ...rest.persona, name: input.agentName },
+        ...(takenHandle && input.agentHandle === rest.agentHandle ? { takenHandle } : {}),
+        publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
+      };
+      if (fallback.status === 'pending') {
+        this.db.run(
+          `UPDATE management_receipt_outbox SET receipt_json = ?, updated_at = ?
+           WHERE outbox_id = ? AND status = 'pending'`,
+          JSON.stringify(live),
+          input.at,
+          fallback.outboxId,
+        );
+        return { outcome: 'upgraded' };
+      }
+      const {
+        presentationRunId: _presentationRunId,
+        turnJobId: _turnJobId,
+        deliveryPersona: _deliveryPersona,
+        connectorNotices: _connectorNotices,
+        followOnNotices: _followOnNotices,
+        ...followUp
+      } = live;
+      const outboxId = `${fallback.outboxId}_published`;
+      const created = this.insertOutboxIfAbsent({
+        outboxId,
+        operationId: outboxId,
+        destination: fallback.destination,
+        receipt: { ...followUp, fallbackOutboxId: fallback.outboxId },
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: input.at,
+        createdAt: input.at,
+        updatedAt: input.at,
+      });
+      return { outcome: created ? 'queued' : 'none' };
+    });
   }
 
   claimIntroduction(input: ClaimManagementIntroductionInput): ClaimManagementIntroductionResult {

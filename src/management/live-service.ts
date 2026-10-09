@@ -30,6 +30,7 @@ import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { livePresenceAnnouncements } from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { publishGeneratedAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
@@ -108,10 +109,15 @@ export function createLiveWorkspaceManagementService(
     }
     return user;
   };
-  const presenceReconciler = async (workspaceId: string) => new AgentPresenceReconciler({
-    config: config as ConfigStore,
-    transport: await slackTransport(workspaceId),
-  });
+  const management = getManagementStore(env);
+  const presenceReconciler = async (workspaceId: string) => {
+    const transport = await slackTransport(workspaceId);
+    return new AgentPresenceReconciler({
+      config: config as ConfigStore,
+      transport,
+      announce: await livePresenceAnnouncements({ env, settings, identity, management, transport }),
+    });
+  };
   const productTelemetry = overrides.productTelemetry ?? createPlatformProductTelemetry({
     ...(env ? { env } : {}),
     settings,
@@ -120,7 +126,7 @@ export function createLiveWorkspaceManagementService(
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
-    management: getManagementStore(env),
+    management,
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
     work: getWorkStore(env),

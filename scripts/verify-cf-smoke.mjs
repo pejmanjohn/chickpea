@@ -925,7 +925,8 @@ async function renderAdminWithWorkerdState(baseUrl, path = '/admin') {
     if (
       app.innerHTML.length > 0 &&
       !app.innerHTML.includes('Loading setup&hellip;') &&
-      !app.innerHTML.includes('Loading Slack setup&hellip;')
+      !app.innerHTML.includes('Loading Slack setup&hellip;') &&
+      !app.innerHTML.includes('aria-busy="true"')
     ) {
       return { html: app.innerHTML, listeners };
     }

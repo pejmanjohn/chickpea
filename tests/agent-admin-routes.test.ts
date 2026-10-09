@@ -10,6 +10,7 @@ import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import { SqliteManagementStore } from '../src/management/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
@@ -580,6 +581,7 @@ function harness(
   app.route('/', createAdminRoutes({
     store,
     settings,
+    management: new SqliteManagementStore(':memory:'),
     snapshots,
     slackTransport: transport,
     knownProviders: new Set(['local-stub']),
