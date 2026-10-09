@@ -128,7 +128,7 @@ const REASON_TOKENS = new Set([
   'archive_agent_reach', 'restore_agent_reach',
   'schedule_agent_reassignment',
   'paid_plan_required', 'user_group_policy_denied', 'two_factor_required',
-  'handle_collision', 'invalid_handle', 'channel_membership_required',
+  'handle_collision', 'name_collision', 'invalid_handle', 'channel_membership_required',
   'private_channel_invite_required', 'rate_limited', 'user_group_create_ambiguous',
   'slack_unavailable', 'slack_operation_failed',
 ]);
