@@ -237,7 +237,7 @@ export function agentPresenceRecovery(
   if (error.code === 'name_collision') {
     return {
       title: `A Slack user group is already named “${agent.name}”`,
-      explanation: 'Rename this Agent, then press Retry.',
+      explanation: 'Press Retry and Chickpea will pick a free name for its Slack group.',
       steps: [],
       actionLabel: 'Retry',
     };
