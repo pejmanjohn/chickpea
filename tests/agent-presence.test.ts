@@ -174,7 +174,7 @@ test('Slack name and handle collisions each name their own fix', () => {
   );
   assert.equal(name.code, 'name_collision');
   assert.equal(name.slackCode, 'name_already_exists');
-  assert.equal(name.message, 'A Slack user group already has this Agent’s name. Rename the Agent, then retry.');
+  assert.equal(name.message, 'A Slack user group already has this Agent’s name. Retry picks a free name for its Slack group.');
   assert.deepEqual(agentPresenceRecovery(name, qa), {
     title: 'A Slack user group is already named “QA fixtures”',
     explanation: 'Press Retry and Chickpea will pick a free name for its Slack group.',

@@ -108,7 +108,7 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
   if (error.code === 'name_already_exists') {
     return new AgentPresenceError(
       'name_collision',
-      'A Slack user group already has this Agent’s name. Rename the Agent, then retry.',
+      'A Slack user group already has this Agent’s name. Retry picks a free name for its Slack group.',
       common,
     );
   }
