@@ -1,5 +1,4 @@
 import { isRecord } from '../security/content-validation.ts';
-import type { BillingFunding } from './platform-billing.ts';
 import type { SettingsPatch, SettingsStore } from './settings-store.ts';
 import { modelBelongsToProvider as providerOwnsModel } from './provider-impact.ts';
 
@@ -22,8 +21,6 @@ export interface OnboardingJourney {
   selectedWorkspaceId?: string;
   selectedChannelId?: string;
   selectedChannelName?: string;
-  /** Where the host sells Chickpea's models: how the Owner chose to pay for models. */
-  selectedFunding?: BillingFunding;
   selectedProviderId?: OnboardingProviderId;
   selectedModelId?: string;
   trySlackUserId?: string;
@@ -107,16 +104,6 @@ export async function selectOnboardingProvider(
   delete journey.githubStepAt;
   delete journey.completedAt;
   return writeJourney(settings, input.expectedRevision, journey);
-}
-
-/** Records how the Owner chose to pay for models, so a reload continues from that choice. */
-export async function selectOnboardingFunding(
-  settings: SettingsStore,
-  input: { expectedRevision: string; funding: BillingFunding },
-): Promise<OnboardingSnapshot> {
-  const current = parseOnboardingJourney(input.expectedRevision);
-  if (current.state !== 'active') throw new Error('Onboarding cannot record funding after it is complete.');
-  return writeJourney(settings, input.expectedRevision, { ...current, selectedFunding: funding(input.funding) });
 }
 
 export async function startOnboardingTry(
@@ -214,7 +201,6 @@ export function parseOnboardingJourney(raw: string): OnboardingJourney {
     ...(typeof value.selectedChannelName === 'string'
       ? { selectedChannelName: channelName(value.selectedChannelName) }
       : {}),
-    ...(typeof value.selectedFunding === 'string' ? { selectedFunding: funding(value.selectedFunding) } : {}),
     ...(hasRawProvider
       ? { selectedProviderId: providerId(String(value.selectedProviderId)) }
       : {}),
@@ -261,11 +247,6 @@ function hasSelectedChannel(journey: OnboardingJourney): boolean {
   return Boolean(
     journey.agentId && journey.selectedWorkspaceId && journey.selectedChannelId && journey.selectedChannelName,
   );
-}
-
-function funding(value: string): BillingFunding {
-  if (value !== 'platform' && value !== 'own_key') throw new Error('funding is invalid.');
-  return value;
 }
 
 function providerId(value: string): OnboardingProviderId {

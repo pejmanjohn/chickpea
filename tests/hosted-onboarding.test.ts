@@ -421,57 +421,110 @@ test('an installation on Chickpea\'s models chooses a provider with no key; one 
   assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
 });
 
-test('the Owner\'s choice between Chickpea\'s models and their own key is the host\'s to record and the journey\'s to keep; after onboarding, the Plan page switches', async (t) => {
-  const chosen: BillingFunding[] = [];
+function hostPorts(t: TestContext) {
+  const host = { funding: 'own_key' as BillingFunding, chosen: [] as BillingFunding[], down: false };
   configurePlatformBilling({
-    summary: async () => ({ ...NO_PLAN, funding: 'own_key' }),
+    summary: async () => ({ ...NO_PLAN, funding: host.funding }),
     checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
     portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
-    chooseFunding: async (_installationId, funding) => { chosen.push(funding); },
+    chooseFunding: async (_installationId, funding) => {
+      host.chosen.push(funding);
+      if (host.down) throw new Error('The host is down.');
+      host.funding = funding;
+    },
   });
-  t.after(() => configurePlatformBilling(undefined));
+  configurePlatformFunding({
+    funding: async () => host.funding === 'platform' ? 'platform' : 'customer',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+  });
+  t.after(() => {
+    configurePlatformBilling(undefined);
+    resetPlatformFundingForTests();
+  });
+  return host;
+}
+
+const startOnPlatform = (as: ReturnType<Awaited<ReturnType<typeof signUp>>['admin']>) =>
+  as('/admin/api/onboarding/platform', { method: 'POST' });
+
+test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 5.5 once, and goes straight to Try', async (t) => {
+  const host = hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
   const admin = signup.admin(await signup.ownerPrincipal());
-  const choose = async (funding: BillingFunding, expectedRevision?: string, as = admin) => as('/admin/api/onboarding/funding', {
-    method: 'POST',
-    body: JSON.stringify({ expectedRevision: expectedRevision ?? (await signup.journey())!.revision, funding }),
-  });
-  assert.equal((await json(admin('/admin/api/onboarding'))).funding, undefined, 'nothing chosen yet');
+  const started = await startOnPlatform(admin);
+  assert.equal(started.status, 200, await started.clone().text());
+  const body = await started.json() as { stage: string; providerId: string; modelId: string; revision: string };
+  assert.equal(body.stage, 'try');
+  assert.equal(body.providerId, 'anthropic');
+  assert.equal(body.modelId, 'anthropic/claude-opus-5-5');
+  assert.deepEqual(host.chosen, ['platform']);
+  const workspaceDefault = (await signup.config.getWorkspaceModelDefault(TEAM))!;
+  assert.equal(workspaceDefault.modelId, 'anthropic/claude-opus-5-5');
+  const { journey, revision } = (await signup.journey())!;
+  assert.equal(journey.agentId, 'agent_chickpea');
+  assert.equal(journey.selectedModelId, 'anthropic/claude-opus-5-5');
+  assert.equal(body.revision, revision);
 
-  const ownKey = await json(choose('own_key'));
-  assert.equal(ownKey.funding, 'own_key');
-  assert.equal(ownKey.stage, 'choose_provider');
-  assert.equal((await json(admin('/admin/api/onboarding'))).funding, 'own_key', 'a reload continues from the choice');
-  assert.equal((await signup.journey())!.journey.selectedFunding, 'own_key');
+  const anotherOwner = signup.admin(principalFor('owner', { userId: 'user_second_owner', membershipId: 'membership_second_owner' }));
+  for (const as of [admin, anotherOwner]) {
+    const again = await json<{ stage: string; revision: string }>(startOnPlatform(as));
+    assert.equal(again.stage, 'try');
+    assert.equal(again.revision, revision);
+  }
+  assert.deepEqual(host.chosen, ['platform'], 'the host is asked once');
+  assert.equal((await signup.journey())!.revision, revision);
+  assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))!.revision, workspaceDefault.revision);
+});
 
-  assert.equal((await choose('platform', ownKey.revision as string)).status, 200);
-  assert.equal((await choose('own_key', ownKey.revision as string)).status, 409, 'a stale revision changes nothing');
-  assert.equal((await choose('platform', undefined, signup.admin(principalFor('admin')))).status, 403);
-  assert.equal((await choose('platform', undefined, signup.admin(principalFor('member')))).status, 403);
-  assert.deepEqual(chosen, ['own_key', 'platform']);
+test('when the host cannot record Chickpea\'s models, onboarding changes nothing, and trying again finishes', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const before = (await signup.journey())!.revision;
+  const defaultBefore = await signup.config.getWorkspaceModelDefault(TEAM);
+  host.down = true;
+  const failed = await startOnPlatform(admin);
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: 'internal_error' });
+  assert.equal((await signup.journey())!.revision, before);
+  assert.deepEqual(await signup.config.getWorkspaceModelDefault(TEAM), defaultBefore);
+  host.down = false;
+  assert.equal((await json(startOnPlatform(admin))).stage, 'try');
+  assert.deepEqual(host.chosen, ['platform', 'platform']);
+  assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))?.modelId, 'anthropic/claude-opus-5-5');
+});
 
-  const platform = (await signup.journey())!;
+test('a Member, an Admin, a finished journey, or a host with no billing port changes nothing; the Plan page still switches after onboarding', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  for (const role of ['admin', 'member'] as const) {
+    assert.equal((await startOnPlatform(signup.admin(principalFor(role)))).status, 403, role);
+  }
+  const begun = (await signup.journey())!;
   const provider = await selectOnboardingProvider(signup.settings, {
-    expectedRevision: platform.revision, workspaceId: TEAM, providerId: 'anthropic',
+    expectedRevision: begun.revision, workspaceId: TEAM, providerId: 'anthropic',
   });
-  assert.equal(provider.journey.selectedFunding, 'platform', 'choosing a provider keeps the choice');
   const trying = await startOnboardingTry(signup.settings, {
     expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER,
   });
-  await completeOnboardingJourney(signup.settings, trying.revision);
-  const refused = await choose('own_key');
-  assert.equal(refused.status, 409);
-  assert.deepEqual(await refused.json(), { error: 'onboarding_complete' });
-  assert.deepEqual(chosen, ['own_key', 'platform'], 'onboarding\'s own route is closed once it is complete');
+  const complete = await completeOnboardingJourney(signup.settings, trying.revision);
+  assert.equal((await json(startOnPlatform(admin))).stage, 'complete');
+  assert.equal((await signup.journey())!.revision, complete.revision);
+  assert.deepEqual(host.chosen, [], 'nothing is asked of the host');
   const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'platform' }) });
   assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
-  assert.deepEqual(chosen, ['own_key', 'platform', 'platform']);
+  assert.deepEqual(host.chosen, ['platform']);
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
   await beginOnboardingJourney(signup.settings);
-  assert.equal((await choose('platform')).status, 404, 'no port, no choice');
+  assert.equal((await startOnPlatform(admin)).status, 404, 'no port, nothing to choose');
 });
 
 test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {

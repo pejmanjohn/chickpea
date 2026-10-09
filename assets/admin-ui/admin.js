@@ -109,10 +109,7 @@
     billingBusy: "",
     billingPlansOpen: false,
     billingFundingConfirm: false,
-    // The onboarding journey keeps how the Owner chose to pay for models;
-    // "Change how you pay" shows the choice again until they answer.
-    onboardingFundingChanging: false,
-    onboardingFundingBusy: false,
+    planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
     teamNotice: "",
@@ -223,6 +220,7 @@
     onboardingError: "",
     onboardingBusy: false,
     onboardingNotice: "",
+    onboardingPlatformErrorCode: "",
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
@@ -1222,6 +1220,7 @@
     syncOnboardingActivity();
     settleOnboardingGithubReturn();
     leaveHostedSlackStep();
+    startOnboardingOnChickpeaModels();
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
@@ -2477,6 +2476,23 @@
     });
   }
 
+  // The Plan page sends an Owner who needs a key to Model providers with
+  // ?return=plan, so the key they save there can finish the switch.
+  function planReturn() {
+    return BILLING_OFFERED && INSTALLATION_OWNER && typeof location !== "undefined" &&
+      new URLSearchParams(location.search || "").get("return") === "plan";
+  }
+
+  function finishOwnKeySwitch() {
+    postJson("/admin/api/billing/funding", "POST", { funding: "own_key" }).then(function (body) {
+      state.billing = body;
+      openBilling();
+    }).catch(function () {
+      state.planReturnSwitchFailed = true;
+      render();
+    });
+  }
+
   function openStripe(path, body, busy, at) {
     if (state.billingBusy) return;
     state.billingBusy = busy;
@@ -2521,14 +2537,7 @@
 
   function billingStatusHtml(billing) {
     var own = billing.ownKeyWithoutPlan;
-    var notice = own
-      ? '<div class="usage-contract"><p>' + (own.charges === "not_yet"
-        ? 'Your workspace uses its own API key with no Chickpea charges for now.'
-        : own.charges === "from"
-          ? 'Your workspace uses its own API key with no Chickpea charges until ' + esc(own.from) + '. After that, your Agents need a plan to keep replying.'
-          : 'Your Agents need a plan to keep replying.') +
-        ' Plans for your own key start at ' + esc(own.minimumPrice) + ' a month.</p></div>'
-      : '';
+    var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
     var meter = billing.meter;
     var card = meter
       ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
@@ -2634,7 +2643,7 @@
         : '<div class="usage-contract"><p>With Chickpea&rsquo;s models, no API key is needed. Replies draw on your plan&rsquo;s usage.</p></div>' +
           '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea&rsquo;s models</button></div>';
     } else if (!next.ready && next.needs === "key") {
-      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="open-settings" data-section="providers">Use your own key instead</button></div>' +
+      body = '<div class="billing-actions"><a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>' +
         '<p class="hint">' + (next.provider ? 'Your default model needs an ' + esc(providerMeta(next.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>';
     } else if (!open) {
       body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
@@ -2747,75 +2756,32 @@
     return '<img class="onboarding-provider-logo" src="' + esc(MODEL_PROVIDER_LOGOS[provider.id] || "") + '" alt="">';
   }
 
-  // Where the host sells Chickpea's models, an Owner first chooses how to
-  // pay for models: Chickpea's, which need no key, or their own provider key.
-  function onboardingPlatformOffered() {
+  function onboardingOnChickpeaModels() {
     return BILLING_OFFERED && INSTALLATION_OWNER;
   }
 
-  function onboardingFundingChoice() {
-    return state.onboardingFundingChanging ? "" : (state.onboarding && state.onboarding.funding) || "";
-  }
-
-  function onboardingPaysWithPlatform() {
-    return onboardingPlatformOffered() && onboardingFundingChoice() === "platform";
-  }
-
-  function onboardingFundingHtml() {
-    var busy = state.onboardingFundingBusy;
-    var option = function (funding, title, detail) {
-      return '<button type="button" class="onboarding-funding-option" data-action="onboarding-funding" data-funding="' + funding + '"' + (busy ? ' disabled' : '') + '>' +
-        '<strong>' + title + '</strong><span>' + detail + '</span></button>';
-    };
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
-      '<h1 class="onboarding-title">Choose how to pay for models</h1>' +
-      '<p class="onboarding-lede">Use Chickpea&rsquo;s models, or connect a model provider with your own API key.</p>' +
-      '<div class="onboarding-funding-options" role="group" aria-label="How to pay for models">' +
-      option("platform", "Use Chickpea&rsquo;s models", "No API key needed. Replies draw on your workspace&rsquo;s usage.") +
-      option("own_key", "Use your own key", "Connect an Anthropic, OpenAI, or OpenRouter API key. The provider bills you directly.") +
-      '</div>' + (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') + '</section>';
-  }
-
-  function chooseOnboardingFunding(funding) {
-    state.onboardingFundingBusy = true;
-    state.onboardingError = "";
-    render();
-    postJson("/admin/api/onboarding/funding", "POST", {
-      expectedRevision: state.onboarding.revision,
-      funding: funding
-    }).then(function (body) {
-      state.onboarding = body;
-      state.onboardingFundingChanging = false;
-      state.onboardingFundingBusy = false;
-      state.onboardingProviderSelected = "";
-      state.onboardingProviderKey = "";
-      state.billing = null;
-      render();
-    }).catch(function () {
-      state.onboardingFundingBusy = false;
-      state.onboardingError = "Could not save your choice. Try again.";
-      render();
-    });
+  function onboardingPlatformSetupHtml() {
+    if (state.onboardingError) {
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+        '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
+        (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
+    }
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>';
   }
 
   function onboardingProviderHtml() {
-    if (onboardingPlatformOffered() && !onboardingFundingChoice()) return onboardingFundingHtml();
-    var platform = onboardingPaysWithPlatform();
     var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
     var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
-    var configured = selected ? platform || onboardingProviderConfigured(selected.id) : false;
-    // Workers AI exists only where the deployment has the binding; Node
-    // installs never see it, and Chickpea's models never include it.
+    var configured = selected ? onboardingProviderConfigured(selected.id) : false;
     var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
-      return provider.id !== "cloudflare" || (!platform && onboardingProviderConfigured("cloudflare"));
+      return provider.id !== "cloudflare" || onboardingProviderConfigured("cloudflare");
     }).map(function (provider) {
       var active = !!selected && provider.id === selected.id;
       var ready = onboardingProviderConfigured(provider.id);
-      var status = platform
-        ? '<span class="onboarding-provider-tab-status">No key needed</span>'
-        : ready
-          ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
-          : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" && SELF_HOSTED ? "Needs API key or subscription" : provider.sublabel) + '</span>';
+      var status = ready
+        ? '<span class="onboarding-provider-tab-status">' + (provider.id === "cloudflare" ? 'Ready, no key' : 'Ready') + '</span>'
+        : '<span class="onboarding-provider-tab-sub">' + esc(provider.id === "openai" && SELF_HOSTED ? "Needs API key or subscription" : provider.sublabel) + '</span>';
       return '<button type="button" class="onboarding-provider-tab' + (active ? ' selected' : '') + '" data-action="onboarding-provider-select" data-provider="' + esc(provider.id) + '" aria-pressed="' + String(active) + '">' +
         onboardingProviderLogoHtml(provider) + '<span class="onboarding-provider-tab-copy"><span>' + esc(provider.tabName || provider.name) + '</span>' + status + '</span></button>';
     }).join("");
@@ -2823,20 +2789,15 @@
     var description = selected && selected.id === "openai" && SELF_HOSTED
       ? "Use OpenAI models with a Platform API key or ChatGPT subscription."
       : selected && selected.description;
-    var panel = !selected
-      ? '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">' + (platform ? 'Choose the provider whose models Chickpea should use.' : 'Choose the provider you want Chickpea to use. Each option shows the setup it needs.') + '</p></div>'
-      : platform
-        ? '<div class="onboarding-provider-config"><h2>Use ' + esc(selected.name) + '</h2><p class="onboarding-provider-ready">' + esc(selected.name) + ' is ready to use.</p></div>'
-        : '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>';
-    var continueLabel = platform ? 'Continue' : 'Validate and Continue';
+    var panel = selected
+      ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
+      : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
-      '<p class="onboarding-lede">' + (platform ? 'Choose a provider. No API key is needed.' : 'Choose a provider, then finish the setup it needs.') + '</p>' +
+      '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
       (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? (platform ? 'Continuing&hellip;' : 'Validating&hellip;') : continueLabel) + '</button>' +
-      (onboardingPlatformOffered() ? '<button type="button" class="btn btn-ghost" data-action="onboarding-funding-change"' + (state.onboardingBusy ? ' disabled' : '') + '>Change how you pay</button>' : '') +
-      '</div></section>';
+      '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-provider-continue"' + (!canContinue || state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Validating&hellip;' : 'Validate and Continue') + '</button></div></section>';
   }
 
   // Hosted, OpenAI is an API key only: no ChatGPT subscription is offered there.
@@ -2924,6 +2885,11 @@
   }
 
   function onboardingStepLabels() {
+    if (onboardingOnChickpeaModels()) {
+      return onboardingGithubConnectPath()
+        ? ["Connect Slack", "Connect GitHub", "Try Chickpea"]
+        : ["Connect Slack", "Try Chickpea"];
+    }
     return onboardingGithubConnectPath()
       ? ["Connect Slack", "Choose provider", "Choose model", "Connect GitHub", "Try Chickpea"]
       : ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
@@ -2946,6 +2912,9 @@
     }
     if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
+    if ((state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") && onboardingOnChickpeaModels()) {
+      return onboardingPlatformSetupHtml();
+    }
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
     if (state.onboarding.stage === "connect_github" && onboardingGithubConnectPath()) return onboardingGithubHtml();
@@ -2955,6 +2924,8 @@
 
   function onboardingStepNumber() {
     var stage = state.onboarding && state.onboarding.stage;
+    if (onboardingOnChickpeaModels() && (stage === "choose_provider" || stage === "choose_model" ||
+        (stage === "connect_github" && onboardingGithubConnectPath()))) return 2;
     if (stage === "choose_provider") return 2;
     if (stage === "choose_model") return 3;
     if (stage === "connect_github" && onboardingGithubConnectPath()) return 4;
@@ -2966,7 +2937,7 @@
     var current = onboardingStepNumber();
     var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
     var labels = onboardingStepLabels();
-    return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
+    return '<ol class="onboarding-orientation' + (labels.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
       var step = index + 1;
       var isComplete = journeyComplete || step < current;
       var isActive = !journeyComplete && step === current;
@@ -9946,6 +9917,12 @@
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
       : "";
+    var planReturnCallout = planReturn()
+      ? '<div class="callout"><span>' + (state.planReturnSwitchFailed
+        ? 'Your key is saved, but the switch to your own key did not finish. Go back to Plan to try again.'
+        : 'Save a key for your default model&rsquo;s provider to switch to your own key.') +
+        '</span><a class="btn btn-primary btn-sm" href="/admin/plan">Back to Plan</a></div>'
+      : "";
     var workspaceDefaultSection = workspaceDefaultSectionHtml();
     var providerSection;
     if (state.settingsError) {
@@ -9962,7 +9939,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
+      settingsPanelHtml("providers", onboardingReturn + planReturnCallout + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "");
   }
@@ -12212,6 +12189,7 @@
       // suggestion source; the validate call primed the server model cache.
       return loadSettings().then(function () {
         refreshModels();
+        if (planReturn()) finishOwnKeySwitch();
         if (id === "openai") return refreshImageConfigurationAfterOpenAiConnection();
         render();
       });
@@ -13069,9 +13047,7 @@
     if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "choose_provider") return;
     var providerId = state.onboardingProviderSelected || initialOnboardingProviderId();
     if (!providerId) return;
-    // Chickpea's models need no key: the provider step only records the choice.
-    var platform = onboardingPaysWithPlatform() && providerId !== "cloudflare";
-    var configured = platform || onboardingProviderConfigured(providerId);
+    var configured = onboardingProviderConfigured(providerId);
     var addsOpenAiKey = providerId === "openai" && !configured;
     var key = String(state.onboardingProviderKey || "").trim();
     if (!configured && (providerId === "cloudflare" || !key)) {
@@ -13089,7 +13065,7 @@
       : postJson("/admin/api/providers/" + encodeURIComponent(providerId) + "/key", "POST", { key: key });
     validate.then(function () {
       var runtime = onboardingRuntimeProvider(providerId);
-      if (runtime && !platform) configured = runtime.configured = true;
+      if (runtime) configured = runtime.configured = true;
       return postJson("/admin/api/onboarding/provider", "POST", {
         expectedRevision: state.onboarding.revision,
         providerId: providerId
@@ -13181,6 +13157,28 @@
     }).catch(function (error) {
       state.onboardingBusy = false;
       state.onboardingError = onboardingMutationErrorText(error, "Could not load setup.");
+      render();
+    });
+  }
+
+  // Once per load, and again only from Try again: a failure never retries itself.
+  function startOnboardingOnChickpeaModels() {
+    var stage = state.onboarding && state.onboarding.stage;
+    if (
+      state.view !== "onboarding" || (stage !== "choose_provider" && stage !== "choose_model") ||
+      !onboardingOnChickpeaModels() || state.onboardingBusy || state.onboardingError
+    ) return;
+    state.onboardingBusy = true;
+    state.onboardingPlatformErrorCode = "";
+    postJson("/admin/api/onboarding/platform", "POST", {}).then(function (body) {
+      state.onboarding = body;
+      state.onboardingBusy = false;
+      state.onboardingNotice = "";
+      render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = "Chickpea could not finish setting up. Try again.";
+      state.onboardingPlatformErrorCode = error && error.payload && typeof error.payload.error === "string" ? error.payload.error : "";
       render();
     });
   }
@@ -13738,14 +13736,7 @@
     if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = null; render(); }
     if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = null; render(); }
     if (action === "billing-funding-confirm") switchFunding();
-    if (action === "onboarding-funding" && !state.onboardingFundingBusy) { chooseOnboardingFunding(target.getAttribute("data-funding") || ""); }
-    if (action === "onboarding-funding-change" && !state.onboardingBusy) {
-      state.onboardingFundingChanging = true;
-      state.onboardingProviderSelected = "";
-      state.onboardingProviderKey = "";
-      state.onboardingError = "";
-      render();
-    }
+    if (action === "onboarding-platform-retry" && !state.onboardingBusy) { state.onboardingError = ""; render(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit to the canonical Agent.
     if (action === "go-home") { openHome(); }

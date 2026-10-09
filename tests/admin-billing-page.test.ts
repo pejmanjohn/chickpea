@@ -10,14 +10,13 @@ import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformBilling,
-  type BillingFunding,
   type BillingSummary,
   type PlatformBillingPort,
   type UsageMicros,
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, OWN_KEY_AT_LAUNCH, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -37,9 +36,9 @@ function response(body: unknown, status = 200): FakeResponse {
   return { ok: status >= 200 && status < 300, status, async text() { return JSON.stringify(body); } };
 }
 
-function actionTarget(attributes: Record<string, string>) {
+function actionTarget(attributes: Record<string, string>, value?: string) {
   return {
-    value: undefined,
+    value,
     closest(selector: string) { return selector === '[data-action]' ? this : null; },
     getAttribute(name: string) { return attributes[name] ?? null; },
   };
@@ -53,14 +52,14 @@ const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' } as Record<
 
 /** The default model's Anthropic key is saved and no Agent pins another provider. */
 const KEYED: OwnKeyFacts = { savedKeys: new Set(['anthropic']), defaultModel: 'anthropic/claude-sonnet-5-5', agents: [] };
+/** The default model is Anthropic's and no key is saved. */
+const NEEDS_ANTHROPIC: OwnKeyFacts = { savedKeys: new Set(), defaultModel: 'anthropic/claude-sonnet-5-5', agents: [] };
 
 const FROZEN: BillingSummary = {
   ...NO_PLAN,
   extraUsage: { remainingMicros: usd(40), frozen: true, expiresAt: new Date('2027-10-07T17:00:00Z') },
 };
 const TRIAL: BillingSummary = { ...NO_PLAN, trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T17:00:00Z') } };
-const OWN_KEY_GRACE: BillingSummary = { ...NO_PLAN, funding: 'own_key', ownKeyGraceUntil: new Date('2030-12-01T17:00:00Z') };
-const OWN_KEY_GRACE_PAST: BillingSummary = { ...OWN_KEY_GRACE, ownKeyGraceUntil: new Date('2025-06-01T17:00:00Z') };
 const OWN_KEY_TEAM: BillingSummary = { ...TEAM_PLAN, funding: 'own_key' };
 const UNREADABLE: BillingSummary = { ...TEAM_PLAN, offers: { ...TEAM_PLAN.offers, ownKeyMinimumPlanKey: 'retired_pro' } };
 
@@ -68,6 +67,10 @@ const CHOOSE_PROVIDER = {
   stage: 'choose_provider', revision: 'revision_1', agentId: null, redirectTo: null,
   workspace: { id: 'TACME', name: 'Acme' }, channel: null, providerId: null, modelId: null, models: [],
   slackAppId: 'AACME', tryStartedAt: null, completedAt: null,
+};
+const TRY = {
+  ...CHOOSE_PROVIDER, stage: 'try', revision: 'revision_try', agentId: 'agent_chickpea',
+  providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-5-5', tryStartedAt: 1_800_000_000_000,
 };
 
 function fakePort(initial: BillingSummary, fails: { switch?: boolean; stripe?: boolean }) {
@@ -102,10 +105,15 @@ async function harness(options: {
   path: string;
   billingOffered: boolean;
   summary?: BillingSummary;
+  selfHosted?: boolean;
   owner?: boolean;
+  /** A workspace admin who is not the Owner, who reaches Settings but not the Owner's billing. */
+  admin?: boolean;
   ownKey?: OwnKeyFacts;
-  /** The funding choice the onboarding journey already holds, as after a reload. */
-  savedFunding?: BillingFunding;
+  onboarding?: Record<string, unknown>;
+  platformFailures?: number;
+  platformFailureBody?: unknown;
+  platformHeld?: boolean;
   switchFails?: boolean;
   stripeFails?: boolean;
 }) {
@@ -114,11 +122,13 @@ async function harness(options: {
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const assigned: string[] = [];
-  let onboarding: Record<string, unknown> = {
-    ...CHOOSE_PROVIDER, ...(options.savedFunding ? { funding: options.savedFunding } : {}),
-  };
+  let onboarding: Record<string, unknown> = options.onboarding ?? CHOOSE_PROVIDER;
+  let platformFailures = options.platformFailures ?? 0;
+  let releasePlatform = () => {};
+  const platformGate = options.platformHeld ? new Promise<void>((resolve) => { releasePlatform = resolve; }) : undefined;
+  const start = new URL(options.path, 'https://chickpea.example');
   const location = {
-    pathname: options.path, search: '',
+    pathname: start.pathname, search: start.search,
     assign(url: string) { assigned.push(url); },
   };
   const applyPath = (path: string) => {
@@ -135,15 +145,18 @@ async function harness(options: {
     querySelectorAll() { return []; },
     addEventListener(type: string, listener: Listener) { listeners[type] = listener; },
   };
-  const owner = options.owner ?? true;
+  const role = options.admin ? 'admin' : options.owner === false ? 'member' : 'owner';
+  const owner = role === 'owner';
   const principal: AuthPrincipal = {
-    userId: owner ? 'user_owner' : 'user_member', membershipId: owner ? 'membership_owner' : 'membership_member',
-    organizationId: 'org_page', role: owner ? 'owner' : 'member', authenticatorKind: 'test_slack_session',
+    userId: `user_${role}`, membershipId: `membership_${role}`,
+    organizationId: 'org_page', role, authenticatorKind: 'test_slack_session',
     credentialId: 'credential_page', correlationId: 'request_page', machine: false,
   };
   const billing = options.summary
     ? fakePort(options.summary, { ...(options.switchFails ? { switch: true } : {}), ...(options.stripeFails ? { stripe: true } : {}) })
     : undefined;
+  const ownKey = options.ownKey ?? KEYED;
+  const savedKeys = new Set(ownKey.savedKeys);
   const billingApi = new Hono();
   billingApi.use('*', async (c, next) => {
     setRequestPrincipal(c.req.raw, principal);
@@ -152,7 +165,7 @@ async function harness(options: {
   billingApi.route('/admin/api', createBillingAdminApi({
     agentNames: async () => new Map([['agent_chickpea', 'Chickpea'], ['agent_research', 'Research']]),
     personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
-    ownKeyFacts: async () => options.ownKey ?? KEYED,
+    ownKeyFacts: async () => ({ ...ownKey, savedKeys }),
   }));
   const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
@@ -170,8 +183,26 @@ async function harness(options: {
       return response({ providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, configured: false, suggestions: [] })) });
     }
     if (path === '/admin/api/slack-connection') return response({ connected: true, teamId: 'TACME', teamName: 'Acme' });
-    if (path === '/admin/api/onboarding/funding') {
-      onboarding = { ...onboarding, funding: body.funding, revision: 'revision_2' };
+    if (path === '/admin/api/providers') {
+      return response({ providers: (['anthropic', 'openai'] as const).map((id) => (
+        savedKeys.has(id) ? { id, status: 'stored', modelCount: 2 } : { id, status: 'missing', modelCount: null })) });
+    }
+    const keySave = /^\/admin\/api\/providers\/(anthropic|openai)\/key$/.exec(path);
+    if (keySave && method === 'POST') {
+      // Validation takes a turn, so a request sent alongside the save reads the keys from before it.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const id = keySave[1] as ProviderKeyId;
+      savedKeys.add(id);
+      return response({ ok: true, provider: { id, status: 'stored', modelCount: 2 }, models: [] });
+    }
+    if (path === '/admin/api/onboarding/platform') {
+      await platformGate;
+      if (platformFailures > 0) {
+        platformFailures -= 1;
+        return response(options.platformFailureBody ?? { error: 'internal_error' }, 500);
+      }
+      const github = onboarding.githubConnectPath ? { stage: 'connect_github', githubConnectPath: onboarding.githubConnectPath } : {};
+      onboarding = { ...TRY, modelId: 'anthropic/claude-opus-5-5', ...github };
       return response(onboarding);
     }
     if (path === '/admin/api/onboarding') return response(onboarding);
@@ -183,15 +214,17 @@ async function harness(options: {
   };
   const script = renderAdminPage({
     usageAdminUi: true,
-    workspaceAdminUi: owner,
+    workspaceAdminUi: role !== 'member',
     installationOwner: owner,
     browserOffered: !options.billingOffered,
-    selfHosted: !options.billingOffered,
+    selfHosted: options.selfHosted ?? !options.billingOffered,
     billingOffered: options.billingOffered,
   }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   vm.runInNewContext(script, {
-    console, Date, document, fetch, setTimeout, clearTimeout,
+    console, Date, document, fetch, clearTimeout,
+    // Try polls the journey; an unref'd timer lets the file's process exit.
+    setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     history: {
       pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
       replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
@@ -205,7 +238,15 @@ async function harness(options: {
     listeners.click!({ target: actionTarget(attributes), preventDefault() {} });
     await flush();
   };
-  return { html: () => html, requests, assigned, location, click, portCalls: billing?.calls ?? [] };
+  /** Pastes a key into a provider's field on Model providers and validates it. */
+  const saveKey = async (provider: ProviderKeyId) => {
+    listeners.input!({ target: actionTarget({ 'data-action': 'prov-key-input', 'data-provider': provider }, 'sk-test') });
+    await click({ 'data-action': 'prov-validate', 'data-provider': provider });
+  };
+  return {
+    html: () => html, requests, assigned, location, click, saveKey,
+    portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(),
+  };
 }
 
 /** The page's HTML with its entities decoded, so copy can be matched as a person reads it. */
@@ -375,15 +416,25 @@ test('a trial shows what is left and until when, as the card without a plan and 
   assert.equal(lede(noPeriod), PLAN_LEDE, 'a plan outranks the trial without a period too');
 });
 
-test('an own key in its grace says until when, which plans an own key can choose, and offers Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE });
+test('on their own key with no plan, an Owner and a Member read only that it needs the $100 plan or higher', async () => {
+  for (const owner of [true, false]) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, owner, summary: OWN_KEY_NO_PLAN })).html();
+    const role = owner ? 'an Owner' : 'a Member';
+    assert.equal(html.split('<div class="callout"><span>Your own API key needs the $100 plan or higher.</span></div>').length, 2, `${role} reads the sentence once`);
+    assert.doesNotMatch(html, /charges/i, `${role} reads nothing about charges`);
+  }
+});
+
+test('an own key with no plan shows which plans an own key can choose, and offers Chickpea\'s models', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN });
   const html = page.html();
-  assert.match(html, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges until Dec 1, 2030\. After that, your Agents need a plan to keep replying\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.match(html, /<p class="hint">Your workspace pays for models with its own API key\.<\/p>/, 'no plan, so no plan covers tasks');
+  assert.equal(lede(html), 'Your workspace pays for models with its own API key.', 'no plan, so no plan covers tasks');
   assert.match(html, /<span class="chan-meta">Own API key<\/span>/);
   assert.doesNotMatch(html, /usage-card-primary/, 'no meter, trial or plan card on an own key without them');
   assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>/);
+  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
+  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
+  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
   assertShows(html, 'With Chickpea’s models, no API key is needed. Replies draw on your plan’s usage.');
   assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
 
@@ -394,34 +445,6 @@ test('an own key in its grace says until when, which plans an own key can choose
     Solo: '<span class="hint">Chickpea’s models only</span>',
     Starter: '<span class="hint">Chickpea’s models only</span>',
     Plus: 'choose', Team: 'choose', Growth: 'choose', Business: 'choose',
-  });
-
-  const past = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST });
-  assert.match(past.html(), /<div class="usage-contract"><p>Your Agents need a plan to keep replying\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assertHides(past.html(), 'no Chickpea charges');
-});
-
-test('an own key at launch, with no plan and no date for charges, still shows the plan to choose and Chickpea\'s models', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH });
-  const html = page.html();
-  assert.match(html, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.equal(lede(html), 'Your workspace pays for models with its own API key.');
-  assert.match(html, /<h2 class="section-title">Plan<\/h2><p class="hint">No plan<\/p>/);
-  assert.match(html, /data-action="billing-change-plan">Choose a plan<\/button>/);
-  assert.doesNotMatch(html, /<h2 class="section-title">Extra usage<\/h2>|billing-add-extra-usage/);
-  assert.match(html, /<h2 class="section-title">Usage<\/h2><\/div>[\s\S]*<th>Agent<\/th>/);
-  assert.match(html, /data-action="billing-use-platform">Use Chickpea&rsquo;s models<\/button>/);
-
-  await page.click({ 'data-action': 'billing-change-plan' });
-  const rows = Object.fromEntries([...page.html().matchAll(/<div class="billing-plan"><div><strong>([^<]+)<\/strong><p class="hint">([^<]+)<\/p>.*?<\/div>(.*?)<\/div>/g)]
-    .map((row) => [row[2], /data-action="billing-choose-plan"/.test(row[3]!) ? 'choose' : decoded(row[3]!)]));
-  assert.deepEqual(rows, {
-    '$25 a month includes $30 of usage': '<span class="hint">Chickpea’s models only</span>',
-    '$50 a month includes $60 of usage': '<span class="hint">Chickpea’s models only</span>',
-    '$100 a month includes $120 of usage': 'choose',
-    '$200 a month includes $240 of usage': 'choose',
-    '$300 a month includes $360 of usage': 'choose',
-    '$500 a month includes $600 of usage': 'choose',
   });
 });
 
@@ -480,15 +503,9 @@ test('a Member sees the plan\'s usage and that an Owner changes it, with no butt
   assert.doesNotMatch(html, /<h2 class="section-title">(Plan|Extra usage|Usage this period)<\/h2>|<th>Agent<\/th>|<th>Person<\/th>/);
   assertHides(html, 'Use your own key instead');
 
-  const ownKey = await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_GRACE });
-  assertShows(ownKey.html(), 'Your workspace uses its own API key with no Chickpea charges until Dec 1, 2030.');
-  assertShows(ownKey.html(), 'An Owner can change the plan and how your workspace pays for models.');
-  assert.doesNotMatch(ownKey.html(), /data-action="billing-/);
-
-  const atLaunch = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH })).html();
-  assert.match(atLaunch, /<div class="usage-contract"><p>Your workspace uses its own API key with no Chickpea charges for now\. Plans for your own key start at \$100 a month\.<\/p><\/div>/);
-  assert.match(atLaunch, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
-  assert.doesNotMatch(atLaunch, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
+  const ownKey = (await harness({ path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN })).html();
+  assert.match(ownKey, /<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models\.<\/p><\/div>/);
+  assert.doesNotMatch(ownKey, /data-action="billing-|<h2 class="section-title">Plan<\/h2>/);
 });
 
 test('the meter\'s dollar figures give its percentage', async () => {
@@ -527,10 +544,6 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
     summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
   })).html();
   assertShows(frozen, 'available when you renew, until Oct 7, 2027');
-  const grace = (await harness({
-    path: '/admin/plan', billingOffered: true, summary: { ...OWN_KEY_AT_LAUNCH, ownKeyGraceUntil: new Date('2030-12-01T00:30:00Z') },
-  })).html();
-  assertShows(grace, 'no Chickpea charges until Dec 1, 2030.');
 });
 
 test('a plan the host cannot read says so, with a retry', async () => {
@@ -589,12 +602,18 @@ test('a switch to your own key the host refuses shows its error beside the open 
   assert.ok(error > confirm, 'the error follows the confirmation, not the Stripe buttons');
 });
 
+const KEY_LINK = '<a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>';
+const BEFORE_KEY = 'Save a key for your default model’s provider to switch to your own key.';
+const SWITCH_UNFINISHED = 'Your key is saved, but the switch to your own key did not finish. Go back to Plan to try again.';
+const BACK_TO_PLAN = '<a class="btn btn-primary btn-sm" href="/admin/plan">Back to Plan</a></div>';
+const OWN_KEY_LEDE = 'Your workspace pays for models with its own API key. Your plan covers tasks.';
+
 test('an Owner on the plan whose default model has no key is told which key to add', async () => {
   const page = await harness({
     path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
     ownKey: { savedKeys: new Set(['openrouter']), defaultModel: 'anthropic/claude-sonnet-5-5', agents: [] },
   });
-  assert.match(page.html(), /data-action="open-settings" data-section="providers">Use your own key instead<\/button><\/div><p class="hint">Your default model needs an Anthropic API key\. Add one in Settings first\.<\/p>/);
+  assert.ok(page.html().includes(`${KEY_LINK}<p class="hint">Your default model needs an Anthropic API key. Add one in Settings first.</p>`));
   assert.doesNotMatch(page.html(), /billing-use-own-key/);
 });
 
@@ -603,11 +622,59 @@ test('an Owner on the plan with no saved key is sent to Model providers to add o
     path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN,
     ownKey: { savedKeys: new Set(), defaultModel: undefined, agents: [] },
   });
-  assert.match(page.html(), /data-action="open-settings" data-section="providers">Use your own key instead<\/button><\/div><p class="hint">Add a provider API key in Settings first\.<\/p>/);
+  assert.ok(page.html().includes(`${KEY_LINK}<p class="hint">Add a provider API key in Settings first.</p>`));
   assert.doesNotMatch(page.html(), /billing-use-own-key/);
-  await page.click({ 'data-action': 'open-settings', 'data-section': 'providers' });
-  assert.equal(page.location.pathname, '/admin/settings/providers');
   assert.deepEqual(billingWrites(page.requests), []);
+});
+
+test('sent from Plan, saving the default model\'s key switches to the own key once and returns to Plan', async () => {
+  const page = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  assert.ok(page.html().includes(`<div class="callout"><span>Save a key for your default model&rsquo;s provider to switch to your own key.</span>${BACK_TO_PLAN}`));
+  assert.deepEqual(billingWrites(page.requests), [], 'nothing switches before a key is saved');
+
+  await page.saveKey('anthropic');
+  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
+  assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']]);
+  assert.equal(`${page.location.pathname}${page.location.search}`, '/admin/plan');
+  assert.equal(lede(page.html()), OWN_KEY_LEDE);
+});
+
+test('sent from Plan, a key the switch cannot use stays on Settings, says the switch did not finish, and tries nothing more', async () => {
+  const page = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  await page.saveKey('openai');
+  assert.deepEqual(billingWrites(page.requests), [['POST', '/admin/api/billing/funding', { funding: 'own_key' }]]);
+  assert.deepEqual(page.portCalls, [], 'the funding is unchanged');
+  assert.equal(`${page.location.pathname}${page.location.search}`, '/admin/settings/providers?return=plan');
+  assert.ok(page.html().includes(`<div class="callout"><span>${SWITCH_UNFINISHED}</span>${BACK_TO_PLAN}`));
+  assertHides(page.html(), BEFORE_KEY);
+  assert.doesNotMatch(page.html(), /own_key_missing/);
+  await flush();
+  assert.equal(fundingWrites(page.requests).length, 1, 'no retry by itself');
+});
+
+test('a key saved in Settings without the Plan marker switches nothing', async () => {
+  const page = await harness({ path: '/admin/settings/providers', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  assertHides(page.html(), BEFORE_KEY);
+  await page.saveKey('anthropic');
+  assert.deepEqual(billingWrites(page.requests), []);
+  assert.equal(page.location.pathname, '/admin/settings/providers');
+});
+
+test('a workspace admin who is not the Owner, sent with the Plan marker, sees no callout and switches nothing', async () => {
+  const page = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: true, admin: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  assert.match(page.html(), /data-settings-panel="providers">/, 'an admin reaches Model providers');
+  assertHides(page.html(), BEFORE_KEY);
+  await page.saveKey('anthropic');
+  assert.deepEqual(billingWrites(page.requests), []);
+  assertHides(page.html(), SWITCH_UNFINISHED);
+});
+
+test('standalone with the Plan marker typed shows no callout and makes no billing request', async () => {
+  const page = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: false, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  assertHides(page.html(), BEFORE_KEY);
+  await page.saveKey('anthropic');
+  assert.equal(page.requests.some((request) => request.path.startsWith('/admin/api/billing')), false);
+  assertHides(page.html(), SWITCH_UNFINISHED);
 });
 
 test('an Owner on their own key finds the page and switches to Chickpea\'s models only after confirming', async () => {
@@ -651,15 +718,14 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
     ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
     ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
-    ['grace', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
-    ['grace ended', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_GRACE_PAST }, []],
-    ['own key at launch', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_AT_LAUNCH }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
-    ['member, own key at launch', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_AT_LAUNCH }, []],
+    ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
+    ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN }, []],
     ['below the minimum', { path: '/admin/plan', billingOffered: true, summary: STARTER_PLAN }, [{ 'data-action': 'billing-use-own-key' }]],
     ['no plan', { path: '/admin/plan', billingOffered: true, summary: NO_PLAN }, []],
     ['member', { path: '/admin/plan', billingOffered: true, owner: false, summary: TEAM_PLAN }, []],
     ['own key on a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM }, [{ 'data-action': 'billing-use-platform' }]],
     ['unreadable', { path: '/admin/plan', billingOffered: true, summary: UNREADABLE }, []],
+    ['needs a key', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC }, []],
   ];
   for (const [label, options, clicks] of states) {
     const page = await harness(options);
@@ -669,19 +735,25 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
       assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, `${label} after ${target['data-action']}`);
     }
   }
-  const onboarding = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE });
-  const steps: Array<[string, Record<string, string> | null]> = [
-    ['the funding choice', null],
-    ['the provider step on Chickpea\'s models', { 'data-action': 'onboarding-funding', 'data-funding': 'platform' }],
-    ['a provider chosen', { 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' }],
-    ['the funding choice again', { 'data-action': 'onboarding-funding-change' }],
-    ['the provider step on your own key', { 'data-action': 'onboarding-funding', 'data-funding': 'own_key' }],
+  const onboarding: Array<[string, Parameters<typeof harness>[0], Array<Record<string, string>>]> = [
+    ['onboarding on Chickpea\'s models', { path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN }, []],
+    ['onboarding setup that did not finish', { path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1 },
+      [{ 'data-action': 'onboarding-platform-retry' }]],
   ];
-  for (const [label, target] of steps) {
-    if (target) await onboarding.click(target);
-    assert.doesNotMatch(onboarding.html(), FORBIDDEN_WORDS, `onboarding: ${label}`);
+  for (const [label, options, clicks] of onboarding) {
+    const page = await harness(options);
+    assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, label);
+    for (const target of clicks) {
+      await page.click(target);
+      assert.doesNotMatch(page.html(), FORBIDDEN_WORDS, `${label} after ${target['data-action']}`);
+    }
   }
-  assert.match(onboarding.html(), /Choose your model provider/, 'the walk reached the own-key provider step');
+  const settings = await harness({ path: '/admin/settings/providers?return=plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC });
+  assertShows(settings.html(), BEFORE_KEY);
+  assert.doesNotMatch(settings.html(), FORBIDDEN_WORDS, 'Settings on the way to an own key');
+  await settings.saveKey('openai');
+  assertShows(settings.html(), SWITCH_UNFINISHED);
+  assert.doesNotMatch(settings.html(), FORBIDDEN_WORDS, 'Settings after a switch that did not finish');
 });
 
 test('standalone shows nothing new: no billing request, no page, and onboarding goes straight to providers', async () => {
@@ -692,60 +764,107 @@ test('standalone shows nothing new: no billing request, no page, and onboarding 
 
   const onboarding = await harness({ path: '/admin/onboarding', billingOffered: false });
   assert.match(onboarding.html(), /Choose your model provider/);
-  assert.doesNotMatch(onboarding.html(), /Chickpea&rsquo;s models|onboarding-funding|Change how you pay/);
+  assert.equal(platformRequests(onboarding.requests), 0);
 });
 
-test('hosted onboarding offers Chickpea\'s models first; choosing them skips the key', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE });
-  const offer = page.html();
-  assert.match(offer, /Choose how to pay for models/);
-  const platform = offer.indexOf('data-funding="platform"');
-  const ownKey = offer.indexOf('data-funding="own_key"');
-  assert.ok(platform >= 0 && ownKey > platform, 'Chickpea\'s models come first, your own key second');
-  assertShows(offer, 'Use Chickpea’s models, or connect a model provider with your own API key.');
-  assertShows(offer, '<strong>Use Chickpea’s models</strong><span>No API key needed. Replies draw on your workspace’s usage.</span>');
-  assertShows(offer, '<strong>Use your own key</strong><span>Connect an Anthropic, OpenAI, or OpenRouter API key. The provider bills you directly.</span>');
+function progress(html: string): string {
+  const start = html.indexOf('<ol class="onboarding-orientation');
+  assert.ok(start >= 0, 'the page shows the onboarding progress');
+  return html.slice(start, html.indexOf('</ol>', start) + '</ol>'.length);
+}
 
-  await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'platform' });
-  assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
-    JSON.stringify(request.body) === JSON.stringify({ expectedRevision: 'revision_1', funding: 'platform' })));
-  assert.match(page.html(), /<span class="onboarding-provider-tab-status">No key needed<\/span>/);
-  assert.match(page.html(), /<p class="onboarding-lede">Choose a provider\. No API key is needed\.<\/p>/);
-  assert.match(page.html(), /Choose the provider whose models Chickpea should use\./);
-  assert.doesNotMatch(page.html(), /finish the setup it needs|shows the setup it needs/);
-  assert.doesNotMatch(page.html(), /onboarding-provider-key|Paste your key|Workers AI/);
+const TODAY_AT_CHOOSE_PROVIDER = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li>' +
+  '<li class=""><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li>' +
+  '<li class=""><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
+const TODAY_AT_TRY = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose provider</span></li>' +
+  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose model</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
 
-  await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
-  assert.match(page.html(), /<h2>Use Anthropic<\/h2><p class="onboarding-provider-ready">Anthropic is ready to use\.<\/p>/);
-  await page.click({ 'data-action': 'onboarding-provider-continue' });
-  assert.equal(page.requests.some((request) => request.path.startsWith('/admin/api/providers/')), false, 'no key is saved or validated');
-  assert.ok(page.requests.some((request) => request.path === '/admin/api/onboarding/provider' &&
-    (request.body as { providerId: string }).providerId === 'anthropic'));
-  assert.match(page.html(), /Choose your model/);
+test('standalone, and hosted where Chickpea\'s models are not offered, keep today\'s four onboarding steps byte for byte', async () => {
+  for (const [mode, selfHosted] of [['standalone', true], ['hosted without Chickpea\'s models', false]] as const) {
+    const choosing = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted });
+    assert.equal(progress(choosing.html()), TODAY_AT_CHOOSE_PROVIDER, `${mode} at Choose provider`);
+    const trying = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted, onboarding: TRY });
+    assert.equal(progress(trying.html()), TODAY_AT_TRY, `${mode} at Try`);
+  }
 });
 
-test('choosing your own key in hosted onboarding keeps the key step', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE });
-  await page.click({ 'data-action': 'onboarding-funding', 'data-funding': 'own_key' });
-  assert.ok(page.requests.some((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/funding' &&
-    (request.body as { funding: string }).funding === 'own_key'));
-  await page.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'anthropic' });
-  assert.match(page.html(), /Needs API key/);
-  assert.match(page.html(), /id="onboarding-provider-key"/);
-  assert.doesNotMatch(page.html(), /onboarding-provider-tab-status">No key needed/);
+const platformRequests = (requests: Array<{ path: string; method: string }>) =>
+  requests.filter((request) => request.method === 'POST' && request.path === '/admin/api/onboarding/platform').length;
+const stepLabels = (html: string) =>
+  [...progress(html).matchAll(/<span class="onboarding-step-label">([^<]*)<\/span>/g)].map((match) => match[1]);
+
+test('hosted onboarding on Chickpea\'s models goes from Connect Slack to Try Chickpea, setting up once', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN });
+  assert.equal(platformRequests(page.requests), 1);
+  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Try Chickpea']);
+  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Try Chickpea<\/span><\/li><\/ol>$/);
+  assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Meet Chickpea in Slack<\/h1>/);
+  assert.doesNotMatch(page.html(), /Choose your model provider|Choose your model/);
+
+  const reload = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY });
+  assert.match(reload.html(), /Meet Chickpea in Slack/);
+  assert.deepEqual(stepLabels(reload.html()), ['Connect Slack', 'Try Chickpea']);
+  assert.equal(platformRequests(reload.requests), 0, 'a journey at Try sets nothing up again');
 });
 
-test('a reload continues from the saved choice: Chickpea\'s models to keyless providers, your own key to the key step', async () => {
-  const platform = await harness({ path: '/admin/onboarding', billingOffered: true, summary: TEAM_PLAN, savedFunding: 'platform' });
-  assert.match(platform.html(), /onboarding-provider-tab-status">No key needed/);
-  assert.doesNotMatch(platform.html(), /Choose how to pay for models/);
-  assert.match(platform.html(), /data-action="onboarding-funding-change"[^>]*>Change how you pay<\/button>/);
-  await platform.click({ 'data-action': 'onboarding-funding-change' });
-  assert.match(platform.html(), /Choose how to pay for models/);
-
-  const ownKey = await harness({ path: '/admin/onboarding', billingOffered: true, summary: OWN_KEY_GRACE, savedFunding: 'own_key' });
-  assert.doesNotMatch(ownKey.html(), /Choose how to pay for models|onboarding-provider-tab-status">No key needed/);
-  await ownKey.click({ 'data-action': 'onboarding-provider-select', 'data-provider': 'openai' });
-  assert.match(ownKey.html(), /id="onboarding-provider-key"/);
-  assert.equal(ownKey.requests.some((request) => request.path === '/admin/api/onboarding/funding'), false);
+test('while Chickpea sets up, the card says so, and nothing else asks again', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true });
+  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>'));
+  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Try Chickpea']);
+  await page.click({ 'data-action': 'copy-onboarding-prompt' });
+  assert.equal(platformRequests(page.requests), 1, 'a render while it runs sends nothing more');
+  page.releasePlatform();
+  await flush();
+  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.equal(platformRequests(page.requests), 1);
 });
+
+test('with Connect GitHub offered, it is the step between Connect Slack and Try Chickpea', async () => {
+  const github = { ...CHOOSE_PROVIDER, githubConnectPath: '/github/connect' };
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: github });
+  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Connect GitHub', 'Try Chickpea']);
+  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li>/);
+  assert.match(page.html(), /Let Agents work on your code/);
+});
+
+test('setup that does not finish offers Try again, never the provider steps, and Try again reaches Try', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1 });
+  assert.equal(platformRequests(page.requests), 1);
+  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+    '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
+    '<p class="hint">Code: internal_error</p>' +
+    '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>'));
+  assert.doesNotMatch(page.html(), /Choose your model provider|onboarding-provider-tab/);
+  await flush();
+  assert.equal(platformRequests(page.requests), 1, 'a failure waits for Try again');
+
+  await page.click({ 'data-action': 'onboarding-platform-retry' });
+  assert.equal(platformRequests(page.requests), 2);
+  assert.match(page.html(), /Meet Chickpea in Slack/);
+});
+
+test('the failed setup card names the route\'s error code, and shows no code line when the response has none', async () => {
+  const coded = await harness({
+    path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1, platformFailureBody: { error: 'workspace_mismatch' },
+  });
+  assert.ok(coded.html().includes('Chickpea could not finish setting up. Try again.</p><p class="hint">Code: workspace_mismatch</p>'));
+  const uncoded = await harness({
+    path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1, platformFailureBody: 'Bad gateway',
+  });
+  assert.match(uncoded.html(), /Setup did not finish/);
+  assert.doesNotMatch(uncoded.html(), /Code:/);
+  await uncoded.click({ 'data-action': 'onboarding-platform-retry' });
+  assert.match(uncoded.html(), /Meet Chickpea in Slack/);
+});
+
+test('a journey already past the provider step sets up the same way', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...CHOOSE_PROVIDER, stage: 'choose_model', providerId: 'openai' } });
+  assert.equal(platformRequests(page.requests), 1, 'a journey already past the provider sets up too');
+  assert.match(page.html(), /Meet Chickpea in Slack/);
+});
+
