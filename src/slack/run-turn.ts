@@ -2873,7 +2873,7 @@ function resolveMemoryDeliveryText(
  * no frozen presentation. A `chickpea` owner posts as the installation's
  * bot: no custom name or avatar reaches Slack, and its footer names Chickpea.
  */
-function turnReplySender(
+export function turnReplySender(
   assignment: ResolvedAssignment,
   visibleOwner: SlackPresentationOwner | undefined,
   agentAvatarUrl: string | undefined,
@@ -2881,6 +2881,7 @@ function turnReplySender(
   if (visibleOwner?.kind === 'selected_agent') {
     return { agentName: visibleOwner.persona.name, agentAvatarUrl: visibleOwner.persona.avatarUrl };
   }
+  if (visibleOwner?.kind === 'agent_app') return { agentName: visibleOwner.agentName };
   if (visibleOwner?.kind === 'chickpea') return { agentName: CHICKPEA_AGENT_NAME };
   return { agentName: assignment.agent.name, ...(agentAvatarUrl ? { agentAvatarUrl } : {}) };
 }

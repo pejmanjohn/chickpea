@@ -1,4 +1,5 @@
 import { GatewayInboxConflictError } from './slack/gateway/inbox.ts';
+import { withAgentAppExecution } from './slack/agent-apps/index.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState, verifyHttpDelivery, httpDeliveryReceipt, HttpDeliveryError } from './slack/gateway/http-delivery.ts';
 import { GATEWAY_BINDING_SETTING } from './slack/gateway/client.ts';
 import type { GatewayAdmissionResult, GatewayInboundDelivery, GatewayWorkspaceBinding } from './slack/gateway/protocol.ts';
@@ -2699,7 +2700,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   }
 
   private createAlarmIdentityResolver(stores: TagStateStores): SlackInstallationExecutionResolver {
-    return cacheSlackInstallationExecutionContexts(
+    return withAgentAppExecution(cacheSlackInstallationExecutionContexts(
       (workspaceId) => resolveSlackInstallationExecutionContext(
           workspaceId,
           this.env as PlatformEnv,
@@ -2725,7 +2726,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
             },
           },
         ),
-    );
+    ), this.env as PlatformEnv);
   }
 
   /**

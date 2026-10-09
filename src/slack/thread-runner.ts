@@ -1,5 +1,6 @@
 import { DurableObject, type DurableObjectState } from 'cloudflare:workers';
 
+import { withAgentAppExecution } from './agent-apps/index.ts';
 import { activityStatus, isSafeTypedActivityStatus, type TypedActivityStatus } from '../activity/status.ts';
 import { CfTurnJobsForRunner } from '../config/cf-state-proxies.ts';
 import { cloudflareWorkerVersionId } from '../config/cloudflare-version.ts';
@@ -385,7 +386,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
     // is observed by the next alarm. A turn's own resolution reuses what its
     // `begin` round trip already read (the installation, gateway settings).
     const installations = new Map<string, RunnerTurnBegin>();
-    const resolveInstallation = cacheSlackInstallationExecutionContexts((workspaceId) => {
+    const resolveInstallation = withAgentAppExecution(cacheSlackInstallationExecutionContexts((workspaceId) => {
       const start = installations.get(workspaceId);
       const settings = getSettingsStore(env);
       return resolveSlackInstallationExecutionContext(workspaceId, env, {
@@ -398,7 +399,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
         settings: start ? prefetchedSettings(settings, start.settings) : settings,
         credentialDependencies: { state: getIdentityStore(env), env },
       });
-    });
+    }), env);
     const config = {
       // Thread context for a delivered message; the answer is already out,
       // so a store that cannot be reached only loses this context entry.

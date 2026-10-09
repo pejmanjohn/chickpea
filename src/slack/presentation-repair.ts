@@ -83,7 +83,9 @@ export async function acknowledgeDeferredTerminalSlackDelivery(input: {
   if (presentation?.schemaVersion !== 3) return undefined;
   const agentName = presentation.owner.kind === 'selected_agent'
     ? presentation.owner.persona.name
-    : 'Chickpea';
+    : presentation.owner.kind === 'agent_app'
+      ? presentation.owner.agentName
+      : 'Chickpea';
   const agentView = new SlackAgentViewPresentation({
     client: input.client,
     state: input.state,
@@ -271,7 +273,9 @@ export async function repairTerminalSlackPresentation(
     : 'answer';
   const agentName = presentation.owner.kind === 'selected_agent'
     ? presentation.owner.persona.name
-    : 'Chickpea';
+    : presentation.owner.kind === 'agent_app'
+      ? presentation.owner.agentName
+      : 'Chickpea';
   const agentView = new SlackAgentViewPresentation({
     client,
     state,

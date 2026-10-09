@@ -139,6 +139,7 @@ export function selectSlackPresentationOwner(input: {
   conversationKind?: 'im' | 'mpim' | 'channel';
   avatarUrl?: string;
   slackPresence?: {
+    kind?: 'user_group' | 'agent_app';
     desiredState: 'unpublished' | 'active' | 'disabled';
     health: 'unpublished' | 'pending' | 'healthy' | 'needs_attention';
     avatar: { revision: number };
@@ -146,6 +147,8 @@ export function selectSlackPresentationOwner(input: {
 }): SlackPresentationOwner {
   if (input.agentId === CHICKPEA_AGENT_ID) return { kind: 'chickpea' };
   const presence = input.slackPresence;
+  // A live Agent app posts as its own bot, which already carries the Agent's name and icon.
+  if (presence?.kind === 'agent_app' && presence.health === 'healthy') return { kind: 'agent_app', agentName: input.agentName };
   // A routed creator-private DM does not need a published Slack user group.
   // Admission has already checked private use; retain Channel publication gates.
   const privateUnpublished = input.conversationKind === 'im' &&
