@@ -7,6 +7,7 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import type { ManagementActorContext } from '../src/management/types.ts';
 import {
   agentAvatarInstallation,
   agentAvatarUrl,
@@ -21,6 +22,7 @@ import {
 } from '../src/slack/installation-credentials.ts';
 import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const TOKEN = 'hosted-admin-slack-token';
 const ORIGIN = 'https://hosted.example';
@@ -196,4 +198,55 @@ test('a new hosted installation\'s Slack card is healthy before any event arrive
     { headers: testAdminHeaders(TOKEN) }, ENV_A)).json() as { connected: boolean; health: string; healthDetail: string | null };
   assert.deepEqual({ connected: card.connected, health: card.health, healthDetail: card.healthDetail },
     { connected: true, health: 'healthy', healthDetail: null });
+});
+
+test('Admin presents a management-created Agent\'s avatar at the URL Slack posts, hosted and standalone', async (t) => {
+  const f = await createManagementAdapterFixture('hosted-admin-avatar');
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => {
+    f.close();
+    settings.close();
+  });
+  const context: ManagementActorContext = {
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'hosted-admin-avatar' },
+  };
+  const created = await f.service.applyWorkspaceChanges({
+    context,
+    idempotencyKey: 'hosted-admin-avatar-create',
+    operations: [{
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_support', name: 'Support Triage', requestedHandle: 'support',
+        instructions: 'Triage support requests.', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      },
+    }],
+  });
+  assert.equal(created.status, 'completed');
+  const stored = await f.config.getAgent('agent_support');
+  assert.equal(stored.slackPresence?.avatar.kind, 'generated');
+  assert.equal(stored.slackPresence?.avatar.url, undefined, 'the store leaves the URL to presentation');
+
+  const app = createAdminRoutes({ store: f.config, settings, ...testAdminAuthority(TOKEN, ORIGIN, f.identity) });
+  for (const { env, expected } of [
+    { env: ENV_A, expected: `${ORIGIN}/assets/i/inst_tenant_a/agents/agent_support/avatar/1` },
+    { env: {}, expected: `${ORIGIN}/assets/agents/agent_support/avatar/1` },
+  ]) {
+    const listed = await app.request(`${ORIGIN}/admin/api/agents`, { headers: testAdminHeaders(TOKEN) }, env);
+    assert.equal(listed.status, 200);
+    const { agents } = await listed.json() as {
+      agents: Array<{ id: string; slackPresence?: { avatar: { url?: string } } }>;
+    };
+    const presented = agents.find(({ id }) => id === 'agent_support')?.slackPresence?.avatar.url;
+    assert.equal(presented, expected);
+    assert.equal(presented, agentAvatarUrlForPresentation(stored, ORIGIN, agentAvatarInstallation(env)),
+      'Slack posts the same image');
+    const image = await app.request(expected, {}, env);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+  }
 });

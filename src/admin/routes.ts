@@ -559,6 +559,7 @@ import {
   AgentAvatarError,
   agentAvatarInstallation,
   agentAvatarUrl,
+  agentAvatarUrlForPresentation,
   readAgentAvatarAsset,
   uploadAgentAvatar,
 } from '../slack/agent-presence/avatar-assets.ts';
@@ -2530,6 +2531,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return 'unavailable';
     }
   };
+  const agentAvatarOrigin = (c: Context) => ({
+    publicOrigin: requestOrigin(c),
+    installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
+  });
   const agentAdminProjectionForRequest = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -2543,7 +2548,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await memberVisibleAgentChannels(c, agentGrants)
         : new Map<string, SlackChannel>()
       : undefined;
-    return agentAdminProjection(agent, store(c), snapshots(c), undefined, {
+    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), undefined, {
       canEdit: principal ? canEditAgent(principal, agent) : true,
       ...extraAccess,
       ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
@@ -6574,12 +6579,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       listedWorkspaceIds.map(async (workspaceId) =>
         [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
     ));
+    const avatarOrigin = agentAvatarOrigin(c);
     return c.json({
       // The connected workspace, when unambiguous. Admin loads Agent
       // connections against it without first waiting for Slack status.
       workspaceId: installations.length === 1 ? installations[0]!.workspaceId : null,
       agents: await Promise.all(agents.map((agent, index) =>
-        agentAdminProjection(agent, configStore, snapshots(c), {
+        agentAdminProjection(agent, configStore, snapshots(c), avatarOrigin, {
           references: {
             agentId: agent.id,
             channelGrants: [...new Map(
@@ -13164,6 +13170,7 @@ async function agentAdminProjection(
   agent: CustomAgentConfig,
   configStore: ConfigStore,
   snapshotStore: AgentSnapshotStore,
+  avatarOrigin: { publicOrigin: string; installationId: string | undefined },
   preloaded?: {
     references: AgentReferenceSummary;
     grants: AgentChannelGrant[];
@@ -13237,8 +13244,19 @@ async function agentAdminProjection(
     ({ defaultAgentId, runtimeContract }) =>
       runtimeContract === 'legacy' && defaultAgentId === agent.id,
   );
+  const avatarUrl = agentAvatarUrlForPresentation(
+    agent, avatarOrigin.publicOrigin, avatarOrigin.installationId,
+  );
   return {
     ...agent,
+    ...(agent.slackPresence && avatarUrl
+      ? {
+          slackPresence: {
+            ...agent.slackPresence,
+            avatar: { ...agent.slackPresence.avatar, url: avatarUrl },
+          },
+        }
+      : {}),
     canEdit: access.canEdit,
     modelPolicy: {
       source: agent.model ? 'pinned' : 'workspace_default',

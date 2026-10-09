@@ -1666,10 +1666,7 @@
 
   function agentAvatarUrlForAdmin(agent) {
     var avatar = agent && agent.slackPresence && agent.slackPresence.avatar;
-    if (!avatar) return "";
-    if (avatar.url) return avatar.url;
-    if (avatar.kind !== "generated" || !agent.id || !Number.isSafeInteger(avatar.revision) || avatar.revision < 1) return "";
-    return "/assets/agents/" + encodeURIComponent(agent.id) + "/avatar/" + avatar.revision;
+    return (avatar && avatar.url) || "";
   }
 
   function agentRosterAvatarHtml(agent) {
