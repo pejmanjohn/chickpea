@@ -171,6 +171,8 @@ import {
   renderManagedConnectionSuccessPage,
   renderManagedConnectionUnavailablePage,
   renderManagedConnectionWaitingPage,
+  renderSetupClaimPage,
+  renderSetupPanelPage,
 } from './connector-landing-page.ts';
 
 const CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -270,7 +272,7 @@ export function createManagementSetupRoutes(
       }
       if (principal && !authorized) return managedUnavailablePage(c);
       if (!principal || !session || !managedSetupSessionMatches(setup, session)) {
-        return c.html(renderClaimPage(setupId, true));
+        return c.html(renderSetupClaimPage({ setupId, reusable: true }));
       }
       if (setup.status !== 'pending') return managedUnavailablePage(c);
       const page = await managedConnectionPageInput(c, setup, dependencies, options);
@@ -296,7 +298,7 @@ export function createManagementSetupRoutes(
         principal && session && sessionMatches(setup, session),
       );
       if (!principal || !session || !browserMatches) {
-        return c.html(renderClaimPage(setupId));
+        return c.html(renderSetupClaimPage({ setupId, reusable: false }));
       }
       if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
         return terminalPage(c, setup);
@@ -324,7 +326,7 @@ export function createManagementSetupRoutes(
       return unavailablePage(c);
     }
     if (!setup || !principal || !session || !browserMatches) {
-      return c.html(renderClaimPage(setupId));
+      return c.html(renderSetupClaimPage({ setupId, reusable: false }));
     }
     if (!['claimed', 'failed', 'authorizing'].includes(setup.status)) {
       return terminalPage(c, setup);
@@ -634,10 +636,13 @@ export function createManagementSetupRoutes(
             'catalog_setup_required',
             now(),
           );
-          return c.html(pageShell('Connect Meta Ads from Admin', `
-            <main><h1>Use the Meta Ads connector setup</h1>
+          return c.html(renderSetupPanelPage({
+            title: 'Connect Meta Ads from Admin',
+            surface: 'setup-meta-ads-admin',
+            content: `<h1>Use the Meta Ads connector setup</h1>
             <p>Meta Ads needs an ad account and tool access review before this Agent can use it.</p>
-            <p><a href="/admin/agents/${encodeURIComponent(agent.id)}">Return to ${escapeHtml(agent.name)} in Admin</a> and add Meta Ads from the connection catalog.</p></main>`), 422);
+            <p><a href="/admin/agents/${encodeURIComponent(agent.id)}">Return to ${escapeHtml(agent.name)} in Admin</a> and add Meta Ads from the connection catalog.</p>`,
+          }), 422);
         }
         const started = await startMcpOAuthAuthorization({
           ref: { agentId: agent.id, connectionId: connection.id },
@@ -2839,27 +2844,6 @@ async function markSetupFailure(
   });
 }
 
-function renderClaimPage(setupId: string, reusable = false): string {
-  const exchangePath = `/setup/${encodeURIComponent(setupId)}/exchange`;
-  const storageKey = `chickpea.management-setup.${setupId}`;
-  const signInPath = `/auth/slack/sign-in?destination=${encodeURIComponent(`/setup/${setupId}`)}`;
-  return pageShell('Secure Chickpea setup', `
-    <main><h1>Secure Chickpea setup</h1>
-    <p id="status">Checking this ${reusable ? 'secure' : 'one-use'} setup link…</p></main>
-    <script nonce="setup">(function(){"use strict";
-      var token="";
-      try{var f=new URLSearchParams(location.hash.slice(1));token=f.get("setup")||"";
-      if(/^[A-Za-z0-9_-]{43}$/.test(token))sessionStorage.setItem(${JSON.stringify(storageKey)},token);
-      if(location.hash)history.replaceState(null,"",location.pathname+location.search);
-      if(!token)token=sessionStorage.getItem(${JSON.stringify(storageKey)})||"";}catch(_){}
-      if(!/^[A-Za-z0-9_-]{43}$/.test(token)){document.getElementById("status").textContent="This setup link is unavailable. Ask the person who created it for a new link.";return;}
-      fetch(${JSON.stringify(exchangePath)},{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify({capability:token})})
-      .then(function(r){if(r.status===401){location.replace(${JSON.stringify(signInPath)});return null;}token="";if(!r.ok)throw new Error();return r.json();})
-      .then(function(result){if(!result)return;try{sessionStorage.removeItem(${JSON.stringify(storageKey)});}catch(_){}location.replace(location.pathname);})
-      .catch(function(){token="";document.getElementById("status").textContent="This setup link is unavailable. Ask the person who created it for a new link.";});
-    })();</script>`);
-}
-
 async function renderSetupSummary(
   setup: ManagementSetupRecord,
   failureCode?: string,
@@ -2871,8 +2855,10 @@ async function renderSetupSummary(
   const fields = setup.action === 'repository_access'
     ? '<label>GitHub organization (optional)<input name="organization" autocomplete="organization"></label>'
     : (setup.target.formFields ?? []).map((field) => setupField(field)).join('');
-  return pageShell(`Connect ${setup.target.targetLabel}`, `
-    <main><p class="eyebrow">Chickpea delegated setup</p>
+  return renderSetupPanelPage({
+    title: `Connect ${setup.target.targetLabel}`,
+    surface: 'setup-summary',
+    content: `<p class="eyebrow">Chickpea delegated setup</p>
     <h1>Connect ${escapeHtml(setup.target.targetLabel)}</h1>
     <dl><div><dt>Provider</dt><dd>${escapeHtml(setup.target.provider)}</dd></div>
     <div><dt>Target</dt><dd>${escapeHtml(setup.target.agentName ?? setup.target.targetLabel)}</dd></div>
@@ -2881,7 +2867,8 @@ async function renderSetupSummary(
     ${failureCode || setup.status === 'failed' ? '<p class="error">Setup did not complete. Secret fields were cleared; follow the steps and try again.</p>' : ''}
     <form method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/${action}" autocomplete="off">
       ${fields}<button type="submit">Continue</button>
-    </form></main>`);
+    </form>`,
+  });
 }
 
 function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
@@ -2889,7 +2876,11 @@ function terminalPage(c: Context, setup: ManagementSetupRecord): Response {
     return managedUnavailablePage(c);
   }
   if (setup.status === 'completed') {
-    return c.html(pageShell('Setup complete', '<main><h1>Connected</h1><p>This setup is complete. You can close this window.</p></main>'));
+    return c.html(renderSetupPanelPage({
+      title: 'Setup complete',
+      surface: 'setup-complete',
+      content: '<h1>Connected</h1><p>This setup is complete. You can close this window.</p>',
+    }));
   }
   return unavailablePage(c);
 }
@@ -2899,7 +2890,11 @@ function managedUnavailablePage(c: Context): Response {
 }
 
 function unavailablePage(c: Context): Response {
-  return c.html(pageShell('Setup unavailable', '<main><h1>Setup link unavailable</h1><p>Ask the person who created this link to issue a new one.</p></main>'), 410);
+  return c.html(renderSetupPanelPage({
+    title: 'Setup unavailable',
+    surface: 'setup-unavailable',
+    content: '<h1>Setup link unavailable</h1><p>Ask the person who created this link to issue a new one.</p>',
+  }), 410);
 }
 
 async function formFailure(
@@ -2910,12 +2905,12 @@ async function formFailure(
   return c.html(await renderSetupSummary(setup, code), 422);
 }
 
-function pageShell(title: string, content: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:16px/1.5 ui-sans-serif,system-ui;background:#f7f7f4;color:#172018;margin:0}main{max-width:680px;margin:10vh auto;padding:32px;background:#fff;border:1px solid #dfe4dc;border-radius:18px}h1{line-height:1.15}dl{display:grid;gap:12px}dl div{display:grid;grid-template-columns:140px 1fr;gap:12px}dt{color:#677064}dd{margin:0}form{display:grid;gap:16px;margin-top:28px}label{display:grid;gap:6px}input{font:inherit;padding:12px;border:1px solid #bbc5b8;border-radius:9px}button{font:inherit;padding:12px 18px;border:0;border-radius:9px;background:#315d3c;color:#fff;justify-self:start}.eyebrow{color:#50705a;font-size:13px;text-transform:uppercase;letter-spacing:.08em}.warning,.error{padding:12px;border-radius:9px;background:#fff4df}.error{background:#ffefec}</style></head><body>${content}</body></html>`;
-}
-
 function renderGithubManifestPost(target: string, manifest: unknown): string {
-  return pageShell('Continue to GitHub', `<main><h1>Continue to GitHub</h1><p>GitHub will ask which account and repositories Chickpea may use.</p><form method="post" action="${escapeHtml(target)}"><input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}"><button type="submit">Open GitHub</button></form></main>`);
+  return renderSetupPanelPage({
+    title: 'Continue to GitHub',
+    surface: 'setup-github',
+    content: `<h1>Continue to GitHub</h1><p>GitHub will ask which account and repositories Chickpea may use.</p><form method="post" action="${escapeHtml(target)}"><input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}"><button type="submit">Open GitHub</button></form>`,
+  });
 }
 
 function setupField(field: string): string {
