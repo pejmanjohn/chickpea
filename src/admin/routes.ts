@@ -16,6 +16,7 @@ import { supportReport, type InstallationDetails } from '../release/support-repo
 import { isRecord } from '../security/content-validation.ts';
 import {
   renderAdminPage,
+  type AdminOnboardingPage,
   renderSlackAccessDeniedPage,
   renderSlackAuthorizationHandoffPage,
   renderSlackInvitationCompletePage,
@@ -457,7 +458,7 @@ import {
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
+import { hasShownOnboardingReply } from './onboarding-proof.ts';
 import type {
   AuthControl,
   HumanIdentityDirectory,
@@ -6162,7 +6163,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  const adminPage = async (c: Context): Promise<Response> => {
+  const adminPage = async (c: Context, onboarding?: AdminOnboardingPage): Promise<Response> => {
     const legacyTarget = legacyAgentAdminRedirect(c.req.url);
     if (legacyTarget) return c.redirect(legacyTarget, 302);
     // The shell pins the application script by content hash. Never let a
@@ -6180,6 +6181,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
       assetVersion: await adminUiAssetVersion(),
+      onboarding,
     }));
   };
 
@@ -6239,18 +6241,27 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // Hosted, an unfinished journey whose Slack connection ended would stop at
   // Connect Slack: onboarding opens Admin instead.
   app.get('/admin/onboarding', async (c) => {
-    let waitsOnSlack = false;
-    if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation') {
-      try {
-        const snapshot = await readOnboardingJourney(settings(c));
-        waitsOnSlack = snapshot?.journey.state === 'active' && !await hostedSlackConnected(c);
-      } catch {
-        console.warn('[chickpea] Hosted onboarding state unavailable');
+    const principal = principalByContext.get(c);
+    let initial: AdminOnboardingPage['initial'] = null;
+    try {
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
+          snapshot?.journey.state === 'active' && !await hostedSlackConnected(c)) {
+        c.header('Cache-Control', 'no-store');
+        return c.redirect('/admin', 302);
       }
+      if (snapshot && principal && permissionForRole(principal.role).has('admin.configure')) {
+        initial = await onboardingView(c, snapshot);
+      }
+    } catch {
+      console.warn('[chickpea] Onboarding state unavailable');
     }
-    if (!waitsOnSlack) return adminPage(c);
-    c.header('Cache-Control', 'no-store');
-    return c.redirect('/admin', 302);
+    return adminPage(c, {
+      initial,
+      githubConnectPath: await onboardingGithubConnectPath(c),
+      githubReturned: deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
+        c.req.query('github') === 'connected',
+    });
   });
 
   app.post('/admin/logout', async (c) => {
@@ -10066,11 +10077,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const onboardingGithubConnectPath = async (c: Context): Promise<string | null> =>
     deploymentServesManyInstallations(c.env as PlatformEnv | undefined) ? hostedGithubConnectPath() : null;
 
-  const onboardingResponse = async (
-    c: Context,
-    initial: OnboardingSnapshot,
-  ): Promise<Response> => {
+  const onboardingResponse = async (c: Context, snapshot: OnboardingSnapshot): Promise<Response> => {
     c.header('Cache-Control', 'no-store');
+    return c.json(await onboardingView(c, snapshot));
+  };
+
+  async function onboardingView(c: Context, initial: OnboardingSnapshot) {
     let snapshot = initial;
     const { journey } = snapshot;
     const githubConnectPath = await onboardingGithubConnectPath(c);
@@ -10079,7 +10091,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const installation = journey.selectedWorkspaceId
         ? await store(c).getWorkspaceInstallation(journey.selectedWorkspaceId)
         : undefined;
-      return c.json({
+      return {
         ...githubStep,
         stage: 'complete',
         revision: snapshot.revision,
@@ -10097,12 +10109,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackAppId: installation?.appId ?? null,
         tryStartedAt: journey.tryStartedAt ?? null,
         completedAt: journey.completedAt ?? null,
-      });
+      };
     }
 
     const slack = await onboardingSlackContext(c);
     if (!slack.connected || !slack.teamId) {
-      return c.json({
+      return {
         ...githubStep,
         stage: 'connect_slack',
         revision: snapshot.revision,
@@ -10116,16 +10128,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackAppId: null,
         tryStartedAt: null,
         completedAt: null,
-      });
+      };
     }
 
     if (journey.selectedWorkspaceId && journey.selectedProviderId &&
         journey.selectedModelId && journey.trySlackUserId && journey.tryStartedAt) {
-      const delivered = await hasDeliveredOnboardingReply(work(c), {
+      const presentations = slackState(c);
+      const delivered = await hasShownOnboardingReply(work(c), {
           workspaceId: journey.selectedWorkspaceId,
           slackUserId: journey.trySlackUserId,
           tryStartedAt: journey.tryStartedAt,
-        });
+        }, presentations.getRunPresentation?.bind(presentations));
       if (delivered) {
         try {
           snapshot = await completeOnboardingJourney(settings(c), snapshot.revision);
@@ -10138,7 +10151,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const stage = snapshot.journey.state === 'complete'
         ? 'complete'
         : githubConnectPath && snapshot.journey.githubStepAt === undefined ? 'connect_github' : 'try';
-      return c.json({
+      return {
         ...githubStep,
         stage,
         revision: snapshot.revision,
@@ -10155,10 +10168,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         slackAppId: slack.appId ?? null,
         tryStartedAt: journey.tryStartedAt,
         completedAt: snapshot.journey.completedAt ?? null,
-      });
+      };
     }
 
-    return c.json({
+    return {
       ...githubStep,
       stage: journey.selectedProviderId ? 'choose_model' : 'choose_provider',
       revision: snapshot.revision,
@@ -10179,8 +10192,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       slackAppId: slack.appId ?? null,
       tryStartedAt: null,
       completedAt: null,
-    });
-  };
+    };
+  }
 
   app.get('/admin/api/onboarding', async (c) => {
     try {

@@ -41,12 +41,16 @@ import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import type { UsageStore } from '../src/usage/types.ts';
+import type { SlackStateStore } from '../src/slack/claim-store.ts';
+import { opaqueId } from '../src/work/admission.ts';
+import type { WorkStore } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { onboardingRunFixture } from './helpers/onboarding-runs.ts';
 
 /**
  * Hosted guided onboarding: the person who signs up becomes the first Owner
@@ -118,9 +122,13 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
     const membership = (await identity.getMembership(claim.membershipId!))!;
     return principalFor('owner', { userId: membership.userId, membershipId: membership.id, organizationId: membership.organizationId });
   };
-  const admin = (principal: AuthPrincipal, stores: { config?: ConfigStore; settings?: SettingsStore } = {}) => {
+  const admin = (
+    principal: AuthPrincipal,
+    stores: { config?: ConfigStore; settings?: SettingsStore; work?: WorkStore; slackState?: SlackStateStore } = {},
+  ) => {
     const app = createAdminRoutes({
       store: stores.config ?? config, settings: stores.settings ?? settings, usage, slackCredentials: credentials,
+      work: stores.work, slackState: stores.slackState,
       ...testAdminAuthority(TOKEN, ORIGIN, identity, principal),
     });
     return (path: string, init: RequestInit = {}) => app.request(`${ORIGIN}${path}`, {
@@ -185,6 +193,19 @@ async function warnings(request: () => Promise<void>): Promise<unknown[][]> {
 
 async function json<T = Record<string, unknown>>(response: Response | Promise<Response>): Promise<T> {
   return await (await response).json() as T;
+}
+
+interface OnboardingPageEntry {
+  initial: Record<string, unknown> | null;
+  githubConnectPath: string | null;
+  steps: Array<{ id: string; label: string }>;
+}
+
+async function adminPageEntry(response: Response | Promise<Response>): Promise<{ html: string; onboarding: OnboardingPageEntry | undefined }> {
+  const html = await (await response).text();
+  const config = html.match(/<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(config, 'the page carries its config island');
+  return { html, onboarding: (JSON.parse(config) as { onboarding?: OnboardingPageEntry }).onboarding };
 }
 
 test('a new hosted sign-up starts guided onboarding as the person signing up becomes the first Owner, at Choose provider with Slack connected', async (t) => {
@@ -258,10 +279,43 @@ test('when the journey or Slack cannot be read, Admin and onboarding open as usu
   const slackUnread = signup.admin(owner, { config: failing(signup.config, 'listWorkspaceInstallations') });
   assert.deepEqual(await warnings(async () => {
     assert.equal((await slackUnread('/admin')).status, 200);
-    const page = await slackUnread('/admin/onboarding');
-    assert.equal(page.status, 200);
-    assert.match(await page.text(), /<html/);
-  }), [['[chickpea] Hosted onboarding state unavailable'], ['[chickpea] Hosted onboarding state unavailable']]);
+    const page = await adminPageEntry(slackUnread('/admin/onboarding'));
+    assert.match(page.html, /<html/);
+    assert.deepEqual(page.onboarding?.initial, null, 'the page serves without the journey, which it then asks for');
+  }), [['[chickpea] Hosted onboarding state unavailable'], ['[chickpea] Onboarding state unavailable']]);
+  assert.deepEqual(await warnings(async () => {
+    const page = await adminPageEntry(journeyUnread('/admin/onboarding'));
+    assert.deepEqual(page.onboarding?.initial, null);
+    assert.deepEqual(page.onboarding?.steps.map(({ label }) => label), ['Add to Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
+  }), [['[chickpea] Onboarding state unavailable']]);
+});
+
+test('the onboarding page arrives with the journey and its steps, painted as onboarding with nothing loading', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  for (const principal of [await signup.ownerPrincipal(), principalFor('admin')]) {
+    const admin = signup.admin(principal);
+    const page = await adminPageEntry(admin('/admin/onboarding'));
+    assert.deepEqual(page.onboarding?.initial, await json(admin('/admin/api/onboarding')), `${principal.role} gets the journey the API returns`);
+    assert.equal(page.onboarding?.githubConnectPath, null);
+    assert.match(page.html, /<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand"><span class="avatar">/);
+    assert.doesNotMatch(page.html, /Loading|cloudflare · workers|local · node|aria-label="Admin navigation"|class="topbar"/);
+  }
+  const owner = await adminPageEntry(signup.admin(await signup.ownerPrincipal())('/admin/onboarding'));
+  assert.deepEqual(owner.onboarding?.steps, [{ id: 'slack', label: 'Add to Slack' }, { id: 'try', label: 'Try Chickpea' }],
+    'an Owner where the host sells Chickpea\'s models');
+  assert.ok(owner.html.slice(0, owner.html.indexOf('<script')).includes('</div><ol class="onboarding-orientation onboarding-orientation-short" role="list" aria-label="Onboarding progress">' +
+    '<li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Add to Slack</span></li>' +
+    '<li class=""><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Try Chickpea</span></li></ol></div></main>'),
+    'the step bar is in the server\'s first paint, before the script runs');
+  const admin = await adminPageEntry(signup.admin(principalFor('admin'))('/admin/onboarding'));
+  assert.deepEqual(admin.onboarding?.steps.map(({ id }) => id), ['slack', 'provider', 'model', 'try'], 'an Admin chooses no funding');
+  assert.deepEqual(host.chosen, [], 'opening the page sets nothing up');
+
+  const plain = await adminPageEntry(signup.admin(await signup.ownerPrincipal())('/admin?slack=updated'));
+  assert.equal(plain.onboarding, undefined, 'only the onboarding page carries the journey');
+  assert.match(plain.html, /<div id="app" class="frame primary-admin-shell" aria-busy="true">[\s\S]*Loading Chickpea&hellip;/);
 });
 
 test('the hosted journey runs Choose provider, Choose model and Try; finishing opens Admin as usual', async (t) => {
@@ -302,6 +356,35 @@ test('the hosted journey runs Choose provider, Choose model and Try; finishing o
     assert.equal(finished.redirectTo, '/admin/agents');
     assert.equal((await admin('/admin')).status, 200);
   });
+});
+
+test('Try finishes as soon as Chickpea\'s answer shows in the Owner\'s DM, before its run settles', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const begun = (await signup.journey())!;
+  const provider = await selectOnboardingProvider(signup.settings, { expectedRevision: begun.revision, workspaceId: TEAM, providerId: 'anthropic' });
+  await startOnboardingTry(signup.settings, {
+    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER, tryStartedAt: 100,
+  });
+  const streaming = onboardingRunFixture({
+    run: {
+      actorRef: opaqueId('actor', `slack:${TEAM}:${INSTALLER}`), status: 'executing', terminalDisposition: null,
+      deliveryStatus: 'pending', deliveryRef: null, settledAt: null,
+    },
+    binding: { externalAccountId: opaqueId('account', `slack:${TEAM}`) },
+  });
+  const work = { listRuns: async () => ({ items: [streaming], nextCursor: null }) } as unknown as WorkStore;
+  let acknowledgedByteLength = 0;
+  const slackState = {
+    getRunPresentation: async (runId: string) => runId === streaming.run.id
+      ? { root: { channelId: 'DOWNER' }, stream: { acknowledgedByteLength } }
+      : undefined,
+  } as unknown as SlackStateStore;
+  const admin = signup.admin(await signup.ownerPrincipal(), { work, slackState });
+  assert.equal((await json(admin('/admin/api/onboarding'))).stage, 'try', 'a stream showing only its plan is not a reply yet');
+  acknowledgedByteLength = 24;
+  assert.equal((await json(admin('/admin/api/onboarding'))).stage, 'complete');
+  assert.equal((await signup.journey())?.journey.state, 'complete');
 });
 
 test('a finished or skipped journey opens Admin as usual', async (t) => {
@@ -728,5 +811,9 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   // Without Slack, its onboarding opens at its own Connect Slack step.
   const onboarding = await json(app.request(`${ORIGIN}/admin/api/onboarding`, { headers: testAdminHeaders(TOKEN) }));
   assert.equal(onboarding.stage, 'connect_slack');
-  assert.equal((await app.request(`${ORIGIN}/admin/onboarding`, { headers: testAdminHeaders(TOKEN) })).status, 200);
+  const page = await adminPageEntry(app.request(`${ORIGIN}/admin/onboarding`, { headers: testAdminHeaders(TOKEN) }));
+  assert.deepEqual(page.onboarding?.initial, onboarding);
+  assert.equal(page.onboarding?.githubConnectPath, null);
+  assert.deepEqual(page.onboarding?.steps.map(({ label }) => label), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
+  assert.match(page.html, /<span class="onboarding-environment">local · node<\/span>/, 'standalone keeps its label');
 });
