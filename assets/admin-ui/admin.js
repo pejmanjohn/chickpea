@@ -29,6 +29,7 @@
   // Hosted: where Settings › GitHub lives, and what it says until an account is connected.
   var GITHUB_SETTINGS_PATH = "/admin/settings/github";
   var GITHUB_INSTALL_COPY = "Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.";
+  var NOT_OFFERED_HINT_HTML = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -356,6 +357,7 @@
     // the static suggestions for it (offline).
     modelPickerOpen: false,
     modelPickerFilter: "",
+    modelReadiness: null,
     // The Agent image field reuses the combobox shape with its own open/filter
     // state so the two pickers can never share or cross-populate options.
     imageModelPickerOpen: false,
@@ -797,6 +799,7 @@
     state.websiteLoginDialog = null;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
+    state.modelReadiness = null;
     state.imageModelPickerOpen = false;
     state.imageModelPickerFilter = "";
     state.agentScheduleDeleteConfirm = null;
@@ -4849,7 +4852,6 @@
     if (draft.canEdit === false) {
       return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
     }
-    var warning = modelWarning(model);
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
     // or focusing it opens the grouped options popover below, and typing filters.
@@ -4861,7 +4863,7 @@
       (open ? modelPickerHtml(model) : "") +
       '</div>' +
       '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
-      (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
+      modelWarningHtml(model) +
       '</div>';
   }
 
@@ -10228,7 +10230,7 @@
     var repair = health.status !== "repair_required"
       ? ""
       : health.code === "funding_not_offered"
-        ? '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>'
+        ? NOT_OFFERED_HINT_HTML
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
     var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
@@ -12764,8 +12766,33 @@
     return copy;
   }
 
-  function modelWarning(model) {
+  function modelWarningHtml(model) {
     if (!model || model.indexOf("/") < 1) return "";
+    var unavailable = modelUnavailable(model);
+    if (unavailable === "funding_not_offered") return NOT_OFFERED_HINT_HTML;
+    var warning = modelWarning(model, unavailable === "credential_missing");
+    return warning ? '<p class="field-error">' + esc(warning) + '</p>' : "";
+  }
+
+  function modelUnavailable(model) {
+    var slot = state.modelReadiness;
+    if (slot && slot.model === model) return slot.unavailable;
+    // Skip while the picker is open, since a request per keystroke would flash the warning.
+    if (state.modelPickerOpen) return undefined;
+    slot = state.modelReadiness = { model: model, unavailable: undefined };
+    api("/admin/api/models/readiness?modelId=" + encodeURIComponent(model)).then(function (body) {
+      return (body && body.unavailable) || null;
+    }).catch(function () {
+      return null;
+    }).then(function (unavailable) {
+      if (state.modelReadiness !== slot) return;
+      slot.unavailable = unavailable;
+      if (unavailable) renderPreservingPagePosition();
+    });
+    return undefined;
+  }
+
+  function modelWarning(model, credentialMissing) {
     var provider = model.slice(0, model.indexOf("/"));
     var entry = state.models.providers.find(function (item) { return item.id === provider; });
     if (!entry) return "Free text accepted; provider not detected in this install.";
@@ -12773,15 +12800,13 @@
       if ((entry.suggestions || []).indexOf(model) < 0) {
         return "This OpenAI model is not available through the selected ChatGPT subscription.";
       }
-      if (!entry.configured) {
-        return "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings.";
-      }
-      return "";
+      return credentialMissing
+        ? "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings."
+        : "";
     }
     // Known provider, no key: the pin will save, but every reply fails with a
     // sanitized provider error — say so here instead of letting it surprise.
-    if (!entry.configured) return "No key for this provider yet — replies with this model will fail until one is added in Settings.";
-    return "";
+    return credentialMissing ? "No key for this provider yet — replies with this model will fail until one is added in Settings." : "";
   }
 
   function slugId(name) {
