@@ -39,7 +39,7 @@ const ALLOWED = new Map<string, string>([
   ['src/config/runtime-model.ts', 'Readiness: checks that a key exists before a run starts; sends nothing.'],
   ['src/config/provider-models.ts',
     'Admin key validation and model discovery: lists the provider\'s models with the key; no model request.'],
-  ['src/admin/routes.ts', 'Reports whether the Workers AI token is set; sends nothing.'],
+  ['src/config/model-readiness.ts', 'Reports whether the Workers AI token is set; sends nothing.'],
   ['src/runtime-bootstrap.ts',
     'Registers the standalone Workers AI lane with its deployment token; its requests pass the proxy, which ' +
     'refuses the lane on a deployment serving many installations.'],

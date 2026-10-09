@@ -974,7 +974,7 @@ test('an Agent imported into another deployment carries no installation ID: each
   await source.createAgent(exported);
   const recipe = await exportWorkspaceRecipe(source, {});
   assert.doesNotMatch(JSON.stringify(recipe), /installationId|accountLogin|101/);
-  const preview = await previewWorkspaceRecipe(target, async () => 'stored', { recipe });
+  const preview = await previewWorkspaceRecipe(target, async () => undefined, { recipe });
   const created = preview.operations.find((operation) => operation.kind === 'create_agent') as { agent: { repositories: RepositoryGrant[] } };
   assert.deepEqual(created.agent.repositories.map(({ installationId, fullName }) => ({ installationId, fullName })), [
     { installationId: null, fullName: 'acme-a/app' },
@@ -982,7 +982,7 @@ test('an Agent imported into another deployment carries no installation ID: each
   // A recipe that names an installation is refused outright.
   const named = structuredClone(recipe) as unknown as { agents: Array<{ repositoryRequirements: Array<Record<string, unknown>> }> };
   named.agents[0]!.repositoryRequirements[0]!.installationId = GITHUB_B;
-  await assert.rejects(previewWorkspaceRecipe(target, async () => 'stored', { recipe: named }), /non-portable|unsupported|invalid/i);
+  await assert.rejects(previewWorkspaceRecipe(target, async () => undefined, { recipe: named }), /non-portable|unsupported|invalid/i);
 });
 
 test('Core declares the GitHub platform gate in hosted-capabilities.json, and ships it', () => {
