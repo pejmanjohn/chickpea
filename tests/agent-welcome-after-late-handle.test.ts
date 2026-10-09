@@ -178,7 +178,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     assert.equal(f.posts[0]!.username, undefined, 'the fallback posts as Chickpea');
     assert.match(
       String(f.posts[0]!.text),
-      /^Created \*Support\* \(@support\), but I couldn’t finish its Slack identity\./,
+      /^I created \*Support\*, but Slack wouldn’t create its handle, @support, so people can’t mention it yet\./,
     );
     assert.equal(
       await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', CREATION_THREAD.threadTs),
@@ -210,7 +210,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     assert.equal(welcome.channel, 'D_PEJ');
     assert.equal(welcome.thread_ts, CREATION_THREAD.threadTs);
     assert.match(String(welcome.text), /^Hi — I’m \*Support\* \(@help\)\. Answers support questions\./);
-    assert.doesNotMatch(String(welcome.text), /couldn’t finish/);
+    assert.doesNotMatch(String(welcome.text), /wouldn’t create its handle/);
     assert.ok(String(welcome.text).endsWith('<https://example.test/admin/agents/agent_help|View Agent>'));
     const settled = await f.management.getOutboxForOperation('agent_welcome_op_help_published');
     assert.equal(settled?.status, 'delivered');

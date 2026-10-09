@@ -17,7 +17,10 @@ import {
   type RoutineScheduleAction,
 } from '../src/routines/types.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
-import type { ManagementReceiptOutboxRecord } from '../src/management/types.ts';
+import type {
+  ManagementAgentCreatedWelcome,
+  ManagementReceiptOutboxRecord,
+} from '../src/management/types.ts';
 
 const ACKNOWLEDGEMENT: ManagementReceiptOutboxRecord = {
   outboxId: 'routine_ack_test',
@@ -350,7 +353,10 @@ test('Agent welcome uses its persona and falls back to Chickpea when customize s
     ].join('\n\n'),
   );
   assert.equal(calls[1]?.username, undefined);
-  assert.match(String(calls[1]?.text), /would not let me post its welcome/);
+  assert.match(
+    String(calls[1]?.text),
+    /^I created \*Paid Marketing\*\. Slack wouldn’t let me post its welcome as Paid Marketing, so I’m posting it here\./,
+  );
   assert.doesNotMatch(String(calls[1]?.text), /Hi — I’m/);
   assert.match(
     String(calls[1]?.text),
@@ -531,12 +537,192 @@ test('source-Channel-only partial creation still posts with the Agent persona an
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.username, 'Deck');
   assert.equal(calls[0]?.icon_url, 'https://example.test/deck-avatar.png');
-  assert.match(String(calls[0]?.text), /source-Channel availability/);
+  assert.match(
+    String(calls[0]?.text),
+    /I’m not in this Channel yet, so people here can’t mention me\. Open View Agent to add me\./,
+  );
   assert.match(String(calls[0]?.text), /\|Connect Google Slides>/);
   assert.ok(String(calls[0]?.text).endsWith(
     '<https://example.test/admin/agents/agent_deck_partial|View Agent>',
   ));
   assert.deepEqual(delivered.map(({ persona }) => persona), ['agent']);
+});
+
+const SUPPORT_WELCOME: ManagementAgentCreatedWelcome = {
+  kind: 'agent_created_welcome',
+  creationOperationId: 'management_support_welcome',
+  agentId: 'agent_support',
+  agentName: 'Support',
+  agentHandle: 'support',
+  requesterMembershipId: 'membership_support',
+  surface: 'channel',
+  persona: { name: 'Support' },
+  publication: { status: 'complete', incomplete: [] },
+  viewAgentUrl: 'https://example.test/admin/agents/agent_support',
+};
+const SUPPORT_VIEW_AGENT = '<https://example.test/admin/agents/agent_support|View Agent>';
+const { viewAgentUrl: _viewAgentUrl, ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT } = SUPPORT_WELCOME;
+
+async function postedAgentWelcome(
+  receipt: ManagementAgentCreatedWelcome,
+  options: { refusePersona?: boolean } = {},
+): Promise<{ text: string; persona: 'agent' | 'chickpea' }> {
+  const calls: Array<Record<string, unknown>> = [];
+  await deliverManagementReceiptToSlack({
+    outboxId: `agent_welcome_${receipt.creationOperationId}`,
+    operationId: receipt.creationOperationId!,
+    destination: {
+      kind: 'thread',
+      workspaceId: 'T_WELCOME',
+      channelId: 'C_WELCOME',
+      threadTs: '1800000000.000100',
+    },
+    receipt,
+    status: 'delivering',
+    attempts: 1,
+    nextAttemptAt: 1_800_000_000_000,
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  }, {
+    identity: { async listExternalIdentities() { return []; } },
+    resolveInstallation: async (workspaceId) => ({
+      workspaceId,
+      transportMode: 'direct',
+      sharedAppReads: false,
+      botUserId: 'U_BOT',
+      client: {
+        chat: {
+          async postMessage(input: Record<string, unknown>) {
+            calls.push(input);
+            if (options.refusePersona && input.username) {
+              throw new SlackTransportError('chat.postMessage', 'missing_scope');
+            }
+            return { ok: true, ts: `1800000000.00070${calls.length}` };
+          },
+        },
+      } as unknown as WebClient,
+    }),
+  });
+  const posted = calls.at(-1)!;
+  return {
+    text: String(posted.text),
+    persona: posted.username === undefined ? 'chickpea' : 'agent',
+  };
+}
+
+test('Agent welcomes say in plain words what happened to the handle and the Channel', async () => {
+  const cases: Array<{
+    name: string;
+    receipt: ManagementAgentCreatedWelcome;
+    refusePersona?: boolean;
+    persona: 'agent' | 'chickpea';
+    paragraphs: string[];
+  }> = [
+    {
+      name: 'taken handle in the Agent persona',
+      receipt: { ...SUPPORT_WELCOME, agentHandle: 'support-team', takenHandle: 'support' },
+      persona: 'agent',
+      paragraphs: [
+        'Hi — I’m *Support* (@support-team).',
+        '@support was already taken in this Slack workspace, so my handle is @support-team. You can change it any time from View Agent.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'Channel grant incomplete in the Agent persona',
+      receipt: { ...SUPPORT_WELCOME, publication: { status: 'partial', incomplete: ['source_channel'] } },
+      persona: 'agent',
+      paragraphs: [
+        'Hi — I’m *Support* (@support).',
+        'I’m not in this Channel yet, so people here can’t mention me. Open View Agent to add me.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'Channel grant incomplete without a View Agent link',
+      receipt: {
+        ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT,
+        publication: { status: 'partial', incomplete: ['source_channel'] },
+      },
+      persona: 'agent',
+      paragraphs: [
+        'Hi — I’m *Support* (@support).',
+        'I’m not in this Channel yet, so people here can’t mention me.',
+        'Tell me what you’d like to work on first.',
+      ],
+    },
+    {
+      name: 'handle not published',
+      receipt: { ...SUPPORT_WELCOME, publication: { status: 'partial', incomplete: ['slack_presence'] } },
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support*, but Slack wouldn’t create its handle, @support, so people can’t mention it yet. Open View Agent to fix it.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'handle not published without a View Agent link',
+      receipt: {
+        ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT,
+        publication: { status: 'partial', incomplete: ['slack_presence'] },
+      },
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support*, but Slack wouldn’t create its handle, @support, so people can’t mention it yet.',
+      ],
+    },
+    {
+      name: 'Channel grant incomplete after Slack refused the persona',
+      receipt: { ...SUPPORT_WELCOME, publication: { status: 'partial', incomplete: ['source_channel'] } },
+      refusePersona: true,
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support* (@support), but I couldn’t add it to this Channel yet, so people here can’t mention it. Open View Agent to add it.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'handle and Channel grant both incomplete',
+      receipt: {
+        ...SUPPORT_WELCOME,
+        publication: { status: 'partial', incomplete: ['slack_presence', 'source_channel'] },
+      },
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support*, but Slack wouldn’t create its handle, @support, and I couldn’t add it to this Channel. People can’t mention it until that’s fixed. Open View Agent to fix it.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'Slack refused the persona with nothing incomplete',
+      receipt: SUPPORT_WELCOME,
+      refusePersona: true,
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support* (@support). Slack wouldn’t let me post its welcome as Support, so I’m posting it here. Mention @support to talk to it.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+    {
+      name: 'taken handle after Slack refused the persona',
+      receipt: { ...SUPPORT_WELCOME, agentHandle: 'support-team', takenHandle: 'support' },
+      refusePersona: true,
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support* (@support-team). Slack wouldn’t let me post its welcome as Support, so I’m posting it here. Mention @support-team to talk to it.',
+        '@support was already taken in this Slack workspace, so its handle is @support-team. You can change it any time from View Agent.',
+        SUPPORT_VIEW_AGENT,
+      ],
+    },
+  ];
+  for (const scenario of cases) {
+    const posted = await postedAgentWelcome(scenario.receipt, {
+      refusePersona: scenario.refusePersona ?? false,
+    });
+    assert.equal(posted.persona, scenario.persona, scenario.name);
+    assert.equal(posted.text, scenario.paragraphs.join('\n\n'), scenario.name);
+    assert.doesNotMatch(posted.text, /identity|source-Channel/i, scenario.name);
+  }
 });
 
 test('an acknowledged Agent welcome is not retried when post-delivery bookkeeping fails', async () => {

@@ -300,6 +300,7 @@ export interface ManagementItemOutcome {
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
+  handleChange?: { requested: string; used: string };
 }
 
 type ManagementSetupAction =
@@ -420,6 +421,7 @@ export interface ManagementAgentCreatedWelcome {
   agentId: string;
   agentName: string;
   agentHandle?: string;
+  takenHandle?: string;
   agentDescription?: string;
   requesterMembershipId: string;
   surface: 'channel' | 'direct';
