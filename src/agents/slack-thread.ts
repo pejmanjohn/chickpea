@@ -164,13 +164,13 @@ import {
   workspaceReservationId,
   type WorkspaceSandboxStub,
 } from '../sandbox/workspace-session.ts';
-import { createWorkspaceTools, type WorkspaceResolver } from '../sandbox/workspace-tools.ts';
+import type { WorkspaceResolver } from '../sandbox/workspace-tools.ts';
 import { SandboxUnavailableError } from '../sandbox/errors.ts';
 import { reconnectingSandboxStub } from '../sandbox/reconnect.ts';
 import {
   CHICKPEA_SUBMISSION_DURABILITY,
   WORKSPACE_TASK_INSTRUCTION,
-  createRuntimePlanWorkspaceTaskTool,
+  createRuntimePlanCodingTools,
   workspaceTaskRunning,
 } from './coding-worker-task.ts';
 import {
@@ -1390,18 +1390,13 @@ export function useRuntimePlanAgent(
   });
   const workspaceToolsMounted = runtimePlanWorkspaceToolsMounted(plan, fileCompletion.repairing);
   if (workspaceToolsMounted) {
-    for (const tool of createWorkspaceTools({
-      resolve: resolveWorkspace,
-      roster: workspaceRoster,
-      taskRunning: workspaceTaskRunning,
-    })) {
-      tenantTools.push(tool);
-    }
-    tenantTools.push(createRuntimePlanWorkspaceTaskTool({
+    tenantTools.push(...createRuntimePlanCodingTools({
       plan,
       coordinatorId: id,
       ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
       resolve: resolveWorkspace,
+      roster: workspaceRoster,
+      taskRunning: workspaceTaskRunning,
       onWorkerStarted: writeCodingWorkerRun,
       onWorkerUsage: writeCodingWorkerUsage,
       onMilestone: writeWorkspaceMilestone,

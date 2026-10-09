@@ -3,6 +3,7 @@ import {
   blockedNetworkCalls,
   chargedSharedPrefix,
   renderSlackRequest,
+  renderToolPayloads,
   type RenderedRequest,
   type SlackRequestVariant,
 } from './helpers/render-slack-request.ts';
@@ -13,6 +14,7 @@ import test from 'node:test';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
+  SHARED_PREFIX_SHAPES,
   WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
@@ -30,6 +32,10 @@ import { SLACK_LISTS_INSTRUCTION } from '../src/slack/lists/tools.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../src/slack/message-format.ts';
 import { SLACK_READING_INSTRUCTION } from '../src/slack/reading/tools.ts';
 import { SLACK_PRESENT_TABLE_INSTRUCTION } from '../src/slack/table-presentation.ts';
+import { createRuntimePlanCodingTools } from '../src/agents/coding-worker-task.ts';
+import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { EMPTY_WORKSPACE_ROSTER, createWorkspaceRoster } from '../src/sandbox/workspace-limits.ts';
+import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 
 const SNAPSHOT = new URL('../src/agents/shared-prefix-tools.json', import.meta.url);
 const SNAPSHOT_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'] as const;
@@ -255,6 +261,102 @@ test('a new image in the thread leaves the tools and system prompt unchanged, so
   assert.deepEqual(after.system.map((block: any) => block.text), before.system.map((block: any) => block.text));
 });
 
+interface CodingTenant {
+  workspace: string;
+  channel: string;
+  agentId: string;
+  agentName: string;
+  repository: string;
+  coordinatorId: string;
+  conversationKey: string;
+  openWorkspace?: string;
+}
+
+/** A coordinator plan with a repository and a coding workspace, which only the Cloudflare target compiles. */
+function codingPlan(tenant: CodingTenant) {
+  const agent = {
+    id: tenant.agentId, kind: 'user', revision: 1, name: tenant.agentName, instructions: 'Code.', enabled: true,
+    model: 'anthropic/claude-opus-5-5', skills: [], mcpServers: [], apiConnections: [],
+    repositories: [{ id: 'repo_1', installationId: 7, accountLogin: tenant.repository.split('/')[0], fullName: tenant.repository, enabled: true }],
+  };
+  return compileRuntimePlanV2({
+    turn: {
+      workspaceId: tenant.workspace, channelId: tenant.channel, eventId: 'E_CODING', text: 'Fix the build.', userId: 'U0ALICE0001',
+      actorMembershipId: 'member', messageTs: '1787004500.000200', threadTs: '1787004500.000100', source: 'app_mention', contextMode: 'thread',
+    },
+    assignment: {
+      workspaceId: tenant.workspace, channelId: tenant.channel, agentId: agent.id, agent, runtimeContract: 'chickpea-v1', model: agent.model,
+      modelAttribution: { source: 'pinned', providerId: 'anthropic' },
+    },
+    instructions: 'Code.', memoryEpoch: 1, codingWorkspace: true,
+  } as never);
+}
+
+/** The coding-workspace tools one tenant's coordinator mounts, as its request carries them. */
+async function renderCodingTools(tenant: CodingTenant): Promise<unknown[]> {
+  const roster = createWorkspaceRoster(tenant.openWorkspace
+    ? { schemaVersion: 1, workspaces: { [tenant.openWorkspace]: { generation: 2, open: true, lastUsedAt: 1_787_004_000_000 } } }
+    : EMPTY_WORKSPACE_ROSTER, () => {});
+  const definitions = createRuntimePlanCodingTools({
+    plan: codingPlan(tenant), coordinatorId: tenant.coordinatorId, sandboxConversationKey: tenant.conversationKey,
+    resolve: () => undefined, roster, taskRunning: () => false,
+    onWorkerStarted() {}, onWorkerUsage() {}, onMilestone() {},
+  });
+  const names = new Set(definitions.map(({ name }) => name));
+  const tools = (await renderToolPayloads(definitions)).filter((tool: any) => names.has(tool.name));
+  assert.equal(tools.length, definitions.length, 'every coding tool renders');
+  return withoutMarkers(tools) as unknown[];
+}
+
+const CODING_ALPHA: CodingTenant = {
+  workspace: ALPHA.workspace, channel: ALPHA.channel, agentId: 'support', agentName: 'Support', repository: 'acme/support-portal',
+  coordinatorId: 'coordinator_alpha', conversationKey: `${ALPHA.workspace}:${ALPHA.channel}:1787004500.000100`,
+};
+const CODING_BRAVO: CodingTenant = {
+  workspace: BRAVO.workspace, channel: BRAVO.channel, agentId: USER_AGENT_ID, agentName: 'Brief Writer', repository: 'globex/billing-ledger',
+  coordinatorId: 'coordinator_bravo', conversationKey: `${BRAVO.workspace}:${BRAVO.channel}:1787009000.000100`, openWorkspace: 'ledger-fix',
+};
+
+test('shapes compose the capability segments in mount order, and only interactive shapes without coding are warmed', () => {
+  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 16);
+  for (const [shape, segments] of Object.entries(SHARED_PREFIX_SHAPES)) {
+    assert.equal(shape, segments.join('_') || 'bare');
+  }
+  assert.deepEqual([...WARMED_SHARED_PREFIX_SHAPES], ['interactive', 'interactive_streaming', 'interactive_image', 'interactive_streaming_image']);
+});
+
+test('the coding-workspace tools render the same in every workspace and name none of its tenants', async () => {
+  const alpha = await renderCodingTools(CODING_ALPHA);
+  const bravo = await renderCodingTools(CODING_BRAVO);
+  assert.deepEqual(alpha.map((tool: any) => tool.name), [...WORKSPACE_TOOL_NAMES]);
+  assert.equal(JSON.stringify(bravo), JSON.stringify(alpha));
+  const rendered = JSON.stringify(alpha);
+  for (const tenant of [CODING_ALPHA, CODING_BRAVO]) {
+    for (const id of [tenant.workspace, tenant.channel, tenant.agentId, tenant.agentName, tenant.coordinatorId, tenant.conversationKey,
+      ...tenant.repository.split('/'), 'repo_1', ...(tenant.openWorkspace ? [`"${tenant.openWorkspace}"`] : [])]) {
+      assert.ok(!rendered.includes(id), `${id} is not in a coding-workspace tool`);
+    }
+  }
+});
+
+const REPOSITORY = { repositories: [{ id: 'repo_1', installationId: 7, accountLogin: 'acme', fullName: 'acme/support-portal', enabled: true }] };
+
+for (const [name, variant, expected] of [
+  ['a user Agent', { ...ALPHA, agentKind: 'user' }, 'user/interactive_streaming_coding'],
+  ['a user Agent with an image model', { ...ALPHA, agentKind: 'user', imageModel: IMAGE_MODEL }, 'user/interactive_streaming_coding_image'],
+  ['Chickpea', ALPHA, 'system/interactive_streaming_coding'],
+] as const) {
+  test(`${name} with a repository's coding workspace carries a shared prefix and caches B for an hour`, async () => {
+    const before = sharedPrefixMisses();
+    const request = await render({ ...variant, thread: '1787005400.000100', codingWorkspace: true, agentOverrides: REPOSITORY });
+    assert.equal(sharedPrefixMisses(), before);
+    const names = request.tools.map((tool: any) => tool.name);
+    assert.ok(WORKSPACE_TOOL_NAMES.every((tool) => names.includes(tool)), 'the coordinator mounts its coding tools');
+    assert.equal(chargedSharedPrefix(request), expected);
+    assert.deepEqual(request.system[0].cache_control, ONE_HOUR, 'breakpoint B is cached for an hour');
+  });
+}
+
 test('a customer-funded request goes out exactly as pi-ai builds it', async () => {
   const platform = await render(ALPHA);
   const customer = await render({ ...ALPHA, funding: 'customer' });
@@ -369,6 +471,8 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
       }
     }
   }
+  // A Node render never mounts a coding workspace; the segment comes from the tools a coordinator mounts.
+  snapshot.segments.coding = await renderCodingTools(CODING_ALPHA);
   const stored = JSON.stringify(snapshot, null, 1) + '\n';
   if (update) writeFileSync(SNAPSHOT, stored);
   assert.equal(readFileSync(SNAPSHOT, 'utf8'), stored,
