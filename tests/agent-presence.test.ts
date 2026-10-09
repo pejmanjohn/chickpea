@@ -34,8 +34,18 @@ test('Agent handles normalize predictably and suggest collision-free alternative
   assert.equal(normalizeAgentHandle('!!!'), 'agent');
   assert.deepEqual(
     alternativeAgentHandles('support', new Set(['support', 'support-2', 'support-4'])),
-    ['support-3', 'support-5', 'support-6'],
+    ['support-team', 'support-3', 'support-5'],
   );
+  assert.deepEqual(
+    alternativeAgentHandles('support', new Set(['support', 'support-team'])),
+    ['support-2', 'support-3', 'support-4'],
+  );
+  assert.deepEqual(
+    alternativeAgentHandles('sales-team', new Set(['sales-team'])),
+    ['sales-team-2', 'sales-team-3', 'sales-team-4'],
+  );
+  const long = 'a'.repeat(80);
+  assert.ok(alternativeAgentHandles(long, new Set([long])).every((handle) => handle.length <= 80));
 });
 
 test('Slack create-time handle collisions retain safe alternative suggestions', async () => {
@@ -56,7 +66,7 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
         actorSlackUserId: 'UADA',
       }),
       (error: unknown) => error instanceof AgentPresenceError &&
-        error.code === 'handle_collision' && error.suggestions[0] === 'support-2' &&
+        error.code === 'handle_collision' && error.suggestions[0] === 'support-team' &&
         error.message === 'That Slack handle is already in use.',
     );
   } finally {
