@@ -297,18 +297,52 @@ test('an ask a stop holds is not joined; released, it is again', () => {
     const queuedAsk = job('ask', '102', { agentAsk });
     turns.enqueue(queuedAsk);
     const laterAsk = job('later', '120', { agentAsk });
-    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), true);
-    assert.equal(turns.hasQueuedAgentAsk(laterAsk, '1800000000.000999'), false, 'another exchange');
-    assert.equal(turns.hasQueuedAgentAsk(
+    assert.equal(turns.hasQueuedExchangeTurn(laterAsk, THREAD_TS), true);
+    assert.equal(turns.hasQueuedExchangeTurn(laterAsk, '1800000000.000999'), false, 'another exchange');
+    assert.equal(turns.hasQueuedExchangeTurn(
       { ...laterAsk, assignment: assignment({ agentId: 'agent_else' }) }, THREAD_TS,
     ), false, 'another Agent');
 
     assert.equal(turns.steer(stop('110')).outcome, 'stopped');
-    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), false, 'held: its ending may drop it');
+    assert.equal(turns.hasQueuedExchangeTurn(laterAsk, THREAD_TS), false, 'held: its ending may drop it');
     turns.finishStop('running', 'released');
-    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), true, 'released: an ordinary queued turn');
+    assert.equal(turns.hasQueuedExchangeTurn(laterAsk, THREAD_TS), true, 'released: an ordinary queued turn');
     turns.recordAttempt('ask', 1);
-    assert.equal(turns.hasQueuedAgentAsk(laterAsk, THREAD_TS), false, 'started: it has read the thread');
+    assert.equal(turns.hasQueuedExchangeTurn(laterAsk, THREAD_TS), false, 'started: it has read the thread');
+  } finally {
+    db.close();
+  }
+});
+
+test('an ask joins the asked Agent\'s waiting turn as one of the Agents the person\'s message mentioned', () => {
+  const { db, turns } = store();
+  try {
+    const origin = '1800000000.000101';
+    const agents = [
+      { agentId: 'agent_first', name: 'First', handle: 'first' },
+      { agentId: 'agent_stop', name: 'Stop', handle: 'stop' },
+    ];
+    const first = { ...job('first', '101', { coAddressed: { agents, position: 0 } }), assignment: assignment({ agentId: 'agent_first' }) };
+    turns.enqueue(first);
+    dispatch(turns, first);
+    turns.enqueue(job('second', '101', { coAddressed: { agents, position: 1 } }));
+    const agentAsk = { fromAgentId: 'agent_first', fromAgentName: 'First', originMessageTs: origin };
+    const ask = job('ask', '120', { agentAsk });
+    assert.equal(turns.hasQueuedExchangeTurn(ask, origin), true);
+    assert.equal(turns.hasQueuedExchangeTurn(ask, '1800000000.000999'), false, 'another person message');
+    assert.equal(turns.hasQueuedExchangeTurn(
+      { ...ask, assignment: assignment({ agentId: 'agent_else' }) }, origin,
+    ), false, 'another Agent');
+    turns.enqueue(job('plain', '130'));
+    assert.equal(turns.hasQueuedExchangeTurn(job('ask2', '140', { agentAsk: { ...agentAsk, originMessageTs: '1800000000.000130' } }),
+      '1800000000.000130'), false);
+
+    assert.equal(turns.steer(stop('110')).outcome, 'stopped');
+    assert.equal(turns.hasQueuedExchangeTurn(ask, origin), false, 'held: its ending may drop it');
+    turns.finishStop('first', 'released');
+    assert.equal(turns.hasQueuedExchangeTurn(ask, origin), true, 'released');
+    turns.recordAttempt('second', 1);
+    assert.equal(turns.hasQueuedExchangeTurn(ask, origin), false, 'started: it has read the thread');
   } finally {
     db.close();
   }

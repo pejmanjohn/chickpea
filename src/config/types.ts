@@ -833,10 +833,11 @@ export interface ResolvedAssignment {
    */
   threadGuest?: true;
   /**
-   * Other Agents a person in this Channel can reach here, so this Agent
-   * knows whom it may ask and by which handle. Channel turns only.
+   * The other Agents this Agent may ask here, and by which handle: in a
+   * Channel, the active user Agents granted there; in a direct thread, the
+   * Agents in that thread.
    */
-  channelTeammates?: AgentTeammate[];
+  teammates?: AgentTeammate[];
   // Optional pre-resolved model label. Set only when the assignment is served
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.

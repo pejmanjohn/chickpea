@@ -113,7 +113,12 @@ import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
 } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { isAgentAskSilentReply, isHandedBackTurn, isLaterCoAddressedTurn } from './agent-asks.ts';
+import {
+  isAgentAskSilentReply,
+  isHandedBackTurn,
+  isLaterCoAddressedTurn,
+  personRequestText,
+} from './agent-asks.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -644,7 +649,7 @@ async function runTurnAttempt(
   const skipMemory = Boolean(memoryCommand) || Boolean(turn.managementApprovalProposalId) ||
     options.replayText !== undefined || stoppedBeforeDispatch || abortedReplay;
   let onNativeStarted = async (): Promise<void> => {};
-  // A reply mentions its Channel teammates live; each mention asks that Agent.
+  // A reply mentions its teammates live; each mention asks that Agent.
   const liveAgentHandles = agentTeammateHandles(assignment);
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
@@ -1417,9 +1422,10 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    // A click or form answers inside the conversation; its host-authored
-    // text never becomes the thread's title.
-    if (!turn.uiResponse) {
+    // A click's or form's text is host-authored, and an ask or a later
+    // co-addressed turn joins a thread a person's message already titled.
+    const personTypedText = typedByPerson && !turn.uiResponse;
+    if (personTypedText) {
       await agentViewPresentation?.setTitle(turn.text).catch(() => {
         console.warn('[chickpea] Slack Agent View title could not be recorded');
       });
@@ -2032,6 +2038,7 @@ async function runTurnAttempt(
         };
       });
       const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      const requesterText = personRequestText(turn);
       const signal = {
         agentId: assignment.agent.id,
         workspaceId: turn.workspaceId,
@@ -2042,7 +2049,7 @@ async function runTurnAttempt(
         eventId: turn.eventId,
         messageTs: turn.messageTs,
         turnJobId,
-        requesterText: turn.text,
+        ...(requesterText === undefined ? {} : { requesterText }),
         ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
       } as const;
       const actor = await resolveSlackManagementActor(signal, dependencies.identity);
@@ -2115,6 +2122,7 @@ async function runTurnAttempt(
           };
         });
         const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+        const requesterText = personRequestText(turn);
         const signal = {
           agentId: assignment.agent.id,
           workspaceId: turn.workspaceId,
@@ -2125,8 +2133,8 @@ async function runTurnAttempt(
           eventId: turn.eventId,
           messageTs: turn.messageTs,
           turnJobId,
-          requesterText: turn.text,
-        ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
+          ...(requesterText === undefined ? {} : { requesterText }),
+          ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
         } as const;
         const actor = await resolveSlackManagementActor(signal, dependencies.identity);
         acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({
