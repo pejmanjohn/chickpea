@@ -21,10 +21,12 @@ import {
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { ensureTriggerMessage, slackContextWatermark } from '../src/slack/thread-context.ts';
+import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import {
   memoryEpochThreadKey,
   slackAgentContinuityKey,
   slackAgentThreadKey,
+  slackConversationKind,
 } from '../src/slack/thread-key.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
 import { normalizeSlackTurn } from '../src/slack/turn-normalization.ts';
@@ -89,8 +91,11 @@ test('an ask exchange is bounded by the person message it started from', () => {
   })), '100.5');
 });
 
-test('the collector hands over handle-bearing replies once, after delivery, and only from Channel threads', async () => {
-  const assignment = { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' } } as ResolvedAssignment;
+test('the collector hands over handle-bearing replies once, after delivery, and only from a turn with teammates', async () => {
+  const assignment = {
+    agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' },
+    teammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
+  } as ResolvedAssignment;
   const requests: SlackAgentAskRequest[] = [];
   const collector = createAgentAskCollector({
     turn: turn({ requesterTimezone: 'America/New_York' }),
@@ -113,14 +118,28 @@ test('the collector hands over handle-bearing replies once, after delivery, and 
     deliveries: [{ messageTs: '100.4', text: '@finance what is Q3?' }],
   });
 
-  for (const [ineligibleTurn, contract] of [
-    [turn({ source: 'dm_message', channelType: 'im' }), 'chickpea-v1'],
-    [turn(), 'legacy'],
+  // A direct thread with teammates asks them as a Channel thread does.
+  const direct: SlackAgentAskRequest[] = [];
+  const dm = createAgentAskCollector({
+    turn: turn({ channelId: 'D1', source: 'dm_message', channelType: 'im' }),
+    assignment,
+    dispatch: async (request) => { direct.push(request); },
+  });
+  dm.note({ messageTs: '100.4', text: '@finance hi' });
+  await dm.flush();
+  assert.equal(direct.length, 1);
+  assert.equal(direct[0]?.turn.channelType, 'im');
+
+  const { teammates: _teammates, ...alone } = assignment;
+  for (const [ineligibleTurn, ineligible] of [
+    [turn({ channelId: 'D1', source: 'dm_message', channelType: 'im' }), alone],
+    [turn(), { ...assignment, teammates: [] }],
+    [turn(), { ...assignment, runtimeContract: 'legacy' }],
   ] as const) {
     const skipped: SlackAgentAskRequest[] = [];
     const other = createAgentAskCollector({
       turn: ineligibleTurn,
-      assignment: { ...assignment, runtimeContract: contract } as ResolvedAssignment,
+      assignment: ineligible as ResolvedAssignment,
       dispatch: async (request) => { skipped.push(request); },
     });
     other.note({ messageTs: '100.4', text: '@finance hi' });
@@ -142,7 +161,8 @@ test('a guest in a chain the thread\'s own Agent started hands its answer back; 
     fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
     originMessageTs: '100.1', threadOwnerAgentId: 'agent_support',
   };
-  const guest = { agentId: 'agent_finance', runtimeContract: 'chickpea-v1', threadGuest: true, agent: { kind: 'user' } } as ResolvedAssignment;
+  const teammates = [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }];
+  const guest = { agentId: 'agent_finance', runtimeContract: 'chickpea-v1', threadGuest: true, agent: { kind: 'user' }, teammates } as ResolvedAssignment;
   const collect = async (
     askTurn: NormalizedSlackTurn,
     assignment: ResolvedAssignment,
@@ -169,7 +189,7 @@ test('a guest in a chain the thread\'s own Agent started hands its answer back; 
   assert.deepEqual(await collect(turn({ agentAsk: guestAsk }), guest), []);
   assert.deepEqual(await collect(turn(), guest), []);
   assert.deepEqual(
-    await collect(turn({ agentAsk: ownerAsk }), { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' } } as ResolvedAssignment),
+    await collect(turn({ agentAsk: ownerAsk }), { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' }, teammates } as ResolvedAssignment),
     [],
   );
 });
@@ -801,6 +821,68 @@ test('a message that mentions several Agents asks each in order, and the first o
   });
 });
 
+/** A person's DM to the app, as Slack may send it: without a channel type. */
+function directMessage(eventId: string, ts: string, text: string) {
+  return {
+    workspaceId: 'T1', eventId, eventTime: Math.floor(Number(ts)),
+    event: { type: 'message' as const, channel: 'D1', user: 'U1', ts, text },
+  };
+}
+
+test('a direct message that mentions several Agents asks each in order, and the first owns the thread', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
+    await processGatewaySlackEnvelope(directMessage('Ev9000', '9000.000100',
+      '<!subteam^SFINANCE|@finance> <!subteam^SSUPPORT|@support> go back and forth on refunds a few times',
+    ), undefined, gateway, { stores, enqueueTurn });
+    assert.deepEqual(jobs.map(({ id, assignment }) => [id, assignment.agentId, assignment.threadGuest]), [
+      ['msg:D1:9000.000100', 'agent_finance', undefined],
+      ['msg:D1:9000.000100:ask-agent_support', 'agent_support', true],
+    ]);
+    for (const job of jobs) {
+      assert.equal(job.turn.channelType, 'im');
+      assert.equal(slackConversationKind(job.turn), 'im');
+    }
+    assert.deepEqual(jobs[0]!.assignment.teammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
+    assert.deepEqual(jobs[1]!.assignment.teammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+    assert.equal(jobs[1]!.turn.coAddressed?.position, 1);
+    assert.equal((await stores.config.getAgentThreadRoute('T1', 'D1', '9000.000100'))?.agentId, 'agent_finance');
+    assert.equal(posts.length, 0);
+  });
+});
+
+test('in a direct thread an Agent\'s reply asks only the Agents in that thread', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
+    await processGatewaySlackEnvelope(directMessage('Ev9100', '9100.000100',
+      '<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> can we refund order 4821?',
+    ), undefined, gateway, { stores, enqueueTurn });
+    const [supportJob, financeJob] = jobs;
+    assert.equal(jobs.length, 2);
+    const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+    for (const job of jobs) await state.recordTurnAttempt(job.id, 1);
+    await recordDeliveredSlackAgentMessage(stores.config, financeJob!.turn, financeJob!.assignment, {
+      messageTs: '9100.000200', text: 'Order 4821 was charged twice.',
+    });
+    // Support asks Finance, which answered here, and mentions Legal, which never did.
+    await processSlackAgentAsks({
+      turn: supportJob!.turn,
+      fromAgentId: 'agent_support',
+      fromThreadOwner: true,
+      deliveries: [{ messageTs: '9100.000300', text: '@finance which card was it? @legal may we refund?' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.deepEqual(jobs.slice(2).map(({ id, assignment }) => [id, assignment.agentId, assignment.threadGuest]), [
+      ['msg:D1:9100.000300:ask-agent_finance', 'agent_finance', true],
+    ]);
+    assert.equal(jobs[2]!.turn.channelType, 'im');
+    assert.equal(slackConversationKind(jobs[2]!.turn), 'im');
+    assert.equal(posts.length, 0, 'an ask that cannot run is not announced');
+
+    // Legal is one this person may use privately: mentioned by them, it answers.
+    await processGatewaySlackEnvelope(directMessage('Ev9200', '9200.000100', '<!subteam^SLEGAL|@legal> may we refund?'),
+      undefined, gateway, { stores, enqueueTurn });
+    assert.equal(jobs.at(-1)?.assignment.agentId, 'agent_legal');
+  });
+});
+
 test('each Agent a message mentioned is told who else was asked and its place', () => {
   const agents = [
     { agentId: 'agent_pm', name: 'PM', handle: 'pm' },
@@ -816,7 +898,7 @@ test('each Agent a message mentioned is told who else was asked and its place', 
   assert.match(second, /The Agents before you have answered above/);
 });
 
-test('a reply mentions its Channel teammates live and every other user group stays inert', () => {
+test('a reply mentions its teammates live and every other user group stays inert', () => {
   const live = new Map([['a2a-finance', 'SFIN'], ['legal', 'SLEGAL']]);
   const joiner = '⁠';
   assert.equal(
