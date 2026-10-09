@@ -13934,7 +13934,9 @@ test('Settings tells a credits workspace to choose another model when its defaul
 });
 
 const OFFERED_MODEL = 'anthropic/claude-opus-5-5';
+const UNOFFERED_MODEL = 'anthropic/claude-opus-4-1';
 const NO_KEY_WARNING = '<p class="field-error">No key for this provider yet — replies with this model will fail until one is added in Settings.</p>';
+const NOT_OFFERED_HINT = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
 const ANTHROPIC_WITHOUT_KEY: ModelProviderFixture = {
   id: 'anthropic',
   configured: false,
@@ -13968,6 +13970,26 @@ async function agentModelTab(options: {
   await flushAsync();
   return harness;
 }
+
+test('on Chickpea\'s models an Agent pinned to an offered model shows no key warning', async () => {
+  const harness = await agentModelTab({ model: OFFERED_MODEL, hosted: true, modelReadiness: { [OFFERED_MODEL]: null } });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.match(field, /<span class="badge-src">Pinned<\/span><span class="mono hint">anthropic\/claude-opus-5-5<\/span>/);
+  assert.doesNotMatch(field, /field-error|No key|Not available/);
+});
+
+test('on Chickpea\'s models an Agent pinned to a model Chickpea does not offer shows the default card\'s hint', async () => {
+  const harness = await agentModelTab({
+    model: UNOFFERED_MODEL,
+    hosted: true,
+    modelReadiness: { [UNOFFERED_MODEL]: 'funding_not_offered' },
+  });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.includes(NOT_OFFERED_HINT), field);
+  assert.doesNotMatch(field, /field-error|No key/);
+});
 
 test('an own-key workspace with no key keeps the No key warning on a pinned Agent', async () => {
   const harness = await agentModelTab({ model: OFFERED_MODEL, hosted: true });
@@ -14016,6 +14038,29 @@ test('standalone keeps every Agent model warning it shows today', async () => {
     const field = agentModelField(harness.app.innerHTML);
     assert.ok(field.endsWith(`Settings &nearr;</button></p>${warning}</div>`), `${model}: ${field}`);
   }
+});
+
+test('the Agent Model field asks about a typed model once its picker closes', async () => {
+  const harness = await agentModelTab({
+    model: OFFERED_MODEL,
+    hosted: true,
+    modelReadiness: { [OFFERED_MODEL]: null, [UNOFFERED_MODEL]: 'funding_not_offered' },
+  });
+  const { click, input, keydown } = harness.listeners;
+  assert.ok(click && input && keydown);
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL]);
+
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'anthropic/claude-opus-4') });
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, UNOFFERED_MODEL) });
+  await flushAsync();
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL], 'nothing is asked while the picker is open');
+  assert.doesNotMatch(agentModelField(harness.app.innerHTML), /Not available/);
+
+  keydown({ key: 'Escape', target: actionTarget({ 'data-action': 'profile-model' }), preventDefault() {} });
+  await flushAsync();
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL, UNOFFERED_MODEL]);
+  assert.ok(agentModelField(harness.app.innerHTML).includes(NOT_OFFERED_HINT));
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
