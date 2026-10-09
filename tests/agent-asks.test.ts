@@ -883,6 +883,36 @@ test('in a direct thread an Agent\'s reply asks only the Agents in that thread',
   });
 });
 
+test('a mention of a later Agent the person\'s message addressed joins that Agent\'s waiting turn', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev4100', eventTime: 4100,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '4100.000100',
+        text: '<!subteam^SFINANCE|@finance> <!subteam^SSUPPORT|@support> go back and forth on refunds',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const [financeJob, supportJob] = jobs;
+    assert.equal(supportJob?.turn.coAddressed?.position, 1);
+    const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+    await state.recordTurnAttempt(financeJob!.id, 1);
+    const financeMentionsSupport = (messageTs: string) => processSlackAgentAsks({
+      turn: financeJob!.turn, fromAgentId: 'agent_finance', fromThreadOwner: true,
+      deliveries: [{ messageTs, text: '@support what would you refund?' }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    // Support's own turn on the message has not started: it reads Finance's reply when it runs.
+    await financeMentionsSupport('4100.000200');
+    assert.equal(jobs.length, 2);
+    // Once it has started, a mention asks Support again.
+    await state.recordTurnAttempt(supportJob!.id, 1);
+    await financeMentionsSupport('4100.000300');
+    assert.deepEqual(jobs.slice(2).map(({ id, assignment }) => [id, assignment.agentId]), [
+      ['msg:C1:4100.000300:ask-agent_support', 'agent_support'],
+    ]);
+    assert.equal(posts.length, 0);
+  });
+});
+
 test('each Agent a message mentioned is told who else was asked and its place', () => {
   const agents = [
     { agentId: 'agent_pm', name: 'PM', handle: 'pm' },
