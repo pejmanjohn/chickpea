@@ -151,11 +151,10 @@ function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
 }
 
 /**
- * Whom this Agent can ask in this Channel, and how asking works: a plain
- * `@handle` in its reply asks that Agent, which answers in the thread after
- * it. The thread's own Agent gets a turn once its teammates answer; a guest
- * only when it asks to be mentioned back. Absent when no other Agent with a
- * handle works in the Channel.
+ * Whom this Agent can ask here, and how asking works: a plain `@handle` in
+ * its reply asks that Agent, which answers in the thread after it. The
+ * thread's own Agent gets a turn once its teammates answer; a guest only
+ * when it asks to be mentioned back. Absent when it has no teammates here.
  */
 export function agentTeammateInstructions(
   assignment: TeammateAssignment & Pick<ResolvedAssignment, 'threadGuest'>,
@@ -165,7 +164,7 @@ export function agentTeammateInstructions(
   const example = teammates[0]!.handle;
   const guest = assignment.threadGuest === true;
   return [
-    `Teammates: other Chickpea Agents work in this Slack Channel. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
+    `Teammates: you can ask other Chickpea Agents here. To ask one of them something, mention their handle as plain text in your reply, for example @${example}. They answer in this thread after your reply, and everyone in the thread sees the exchange. ${guest
       ? 'You get no turn after their answer unless you ask them to mention you: when you must use the answer yourself, end the ask with "Mention me when you have it." (never your own handle).'
       : 'Once they have answered, you get a turn to finish the person\'s request with their answers.'}`,
     '- Ask only when the person\'s request needs that teammate\'s answer or work, with one clear question.',
