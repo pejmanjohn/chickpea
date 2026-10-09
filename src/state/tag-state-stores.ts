@@ -62,9 +62,24 @@ export function buildTagStateStores(
     identity: new IdentityStoreLogic(db, {
       installation: () => storeInstallationIdentity(installationBinding, env),
       // A hosted sign-up's guided onboarding starts as the person signing up
-      // becomes the first Owner, with Slack already connected by the host.
+      // becomes the first Owner, with Slack already connected by the host,
+      // and Chickpea's introduction waits in their DM before they write.
+      // claimIntroduction's transaction nests here as a savepoint
+      // (do-state-db.ts), so both commit with the claim or not at all.
       ...(deploymentServesManyInstallations(env)
-        ? { ownerClaimed: (at: number) => { stores.settings.applySettingsPatch(onboardingJourneyStart(at).patch); } }
+        ? {
+            ownerClaimed: ({ at, resolution }) => {
+              stores.settings.applySettingsPatch(onboardingJourneyStart(at).patch);
+              stores.management.claimIntroduction({
+                organizationId: resolution.membership.organizationId,
+                userId: resolution.user.id,
+                workspaceId: resolution.binding.slackTeamId,
+                slackUserId: resolution.binding.slackUserId,
+                trigger: 'first_owner',
+                at,
+              });
+            },
+          }
         : {}),
     }),
     config: new ConfigStoreLogic(db),
