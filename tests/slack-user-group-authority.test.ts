@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict';
+import { test, type TestContext } from 'node:test';
+
+import { SLACK_USER_GROUP_SCOPES } from '../src/slack/scopes.ts';
+import { withUserGroupAuthority } from '../src/slack/user-group-authority.ts';
+
+const OWNER = 'xoxp-w16-owner-secret';
+const BOT = 'xoxb-w16-bot-secret';
+const CALLER_REFUSALS = [
+  'token_revoked', 'invalid_auth', 'not_authed', 'token_expired', 'account_inactive', 'missing_scope',
+  'permission_denied', 'not_allowed', 'restricted_action', 'two_factor_setup_required', 'two_factor_required',
+];
+
+/** Slack answering each token with a fixed code, `ok` for success. */
+function slack(answers: Record<string, string>) {
+  const calls: string[] = [];
+  const log: Array<Record<string, unknown>> = [];
+  return {
+    calls,
+    log,
+    run: (owner: string | undefined) => withUserGroupAuthority({
+      operation: 'usergroups.disable',
+      owner,
+      bot: BOT,
+      call: async (token: string) => {
+        calls.push(token);
+        return answers[token]!;
+      },
+      refusal: (code) => code === 'ok' ? undefined : code,
+      log: (entry) => { log.push(entry); },
+    }),
+  };
+}
+
+function assertNoToken(text: string): void {
+  assert.equal(text.includes(OWNER), false, 'the Owner token never appears');
+  assert.equal(text.includes(BOT), false, 'the bot token never appears');
+}
+
+test('a hosted install asks the installing Owner for exactly the user-group scopes', () => {
+  assert.deepEqual(SLACK_USER_GROUP_SCOPES, ['usergroups:read', 'usergroups:write']);
+  assert.ok(Object.isFrozen(SLACK_USER_GROUP_SCOPES));
+});
+
+test('without an Owner token a user-group call is the bot\'s alone and logs nothing', async () => {
+  const denied = slack({ [BOT]: 'permission_denied' });
+  assert.deepEqual(await denied.run(undefined), { outcome: 'permission_denied', answeredBy: 'bot' });
+  assert.deepEqual(denied.calls, [BOT]);
+  assert.deepEqual(denied.log, []);
+});
+
+test('an Owner token answers user-group calls and the bot is never asked', async () => {
+  const ok = slack({ [OWNER]: 'ok', [BOT]: 'ok' });
+  assert.deepEqual(await ok.run(OWNER), { outcome: 'ok', answeredBy: 'owner' });
+  assert.deepEqual(ok.calls, [OWNER]);
+  assert.deepEqual(ok.log, [
+    { event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable', answeredBy: 'owner', code: 'ok' },
+  ]);
+});
+
+test('each refusal of the Owner as caller asks the bot exactly once, and the bot\'s answer stands', async () => {
+  for (const ownerCode of CALLER_REFUSALS) {
+    for (const botCode of ['ok', 'permission_denied']) {
+      const fallback = slack({ [OWNER]: ownerCode, [BOT]: botCode });
+      assert.deepEqual(await fallback.run(OWNER), { outcome: botCode, answeredBy: 'bot' }, `${ownerCode} -> ${botCode}`);
+      assert.deepEqual(fallback.calls, [OWNER, BOT], ownerCode);
+      assert.deepEqual(fallback.log, [{
+        event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable',
+        answeredBy: 'bot', code: botCode, ownerCode,
+      }], ownerCode);
+      assertNoToken(JSON.stringify(fallback.log));
+    }
+  }
+});
+
+test('a rate limit, an unreachable Slack, or a refusal of the request itself never reaches the bot', async () => {
+  for (const code of ['ratelimited', 'slack_unreachable', 'slack_webapi_request_error', 'no_such_subteam',
+    'already_disabled', 'name_already_exists', 'paid_teams_only', 'invalid_response']) {
+    const kept = slack({ [OWNER]: code, [BOT]: 'ok' });
+    assert.deepEqual(await kept.run(OWNER), { outcome: code, answeredBy: 'owner' }, code);
+    assert.deepEqual(kept.calls, [OWNER], code);
+    assert.deepEqual(kept.log, [
+      { event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable', answeredBy: 'owner', code },
+    ], code);
+  }
+});
+
+test('by default the one line per call goes to console.warn as JSON without any token', async (t: TestContext) => {
+  const lines: string[] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  const result = await withUserGroupAuthority({
+    operation: 'usergroups.enable',
+    owner: OWNER,
+    bot: BOT,
+    call: async (token: string) => token === OWNER ? 'token_revoked' : 'ok',
+    refusal: (code) => code === 'ok' ? undefined : code,
+  });
+  assert.equal(result.answeredBy, 'bot');
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]!), {
+    event: 'chickpea.slack_user_groups.call', operation: 'usergroups.enable',
+    answeredBy: 'bot', code: 'ok', ownerCode: 'token_revoked',
+  });
+  assertNoToken(lines.join('\n'));
+});
