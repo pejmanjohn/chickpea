@@ -21,6 +21,7 @@ const { createFlueContext, resolveModel } = await import('@flue/runtime/internal
 const { useModel, useTool } = await import('@flue/runtime');
 const { ChickpeaSlack } = await import('../../src/agents/slack-thread.ts');
 const { freezeRuntimePlanForTurn } = await import('../../src/slack/run-turn.ts');
+const { compileRuntimePlanV2 } = await import('../../src/agents/runtime-plan.ts');
 const { FILE_DELIVERY_SIGNAL_TAG, FILE_DELIVERY_SIGNAL_TYPE } = await import('../../src/slack/file-delivery-completion.ts');
 const { getConfigStore, getIdentityStore, getSettingsStore } = await import('../../src/config/state-backend.ts');
 const { createChickpeaAgent } = await import('../../src/config/seed.ts');
@@ -57,6 +58,11 @@ export interface SlackRequestVariant {
   connections?: { accounts: unknown[]; bindings: unknown[] };
   /** Images already in the thread, as the host hands them to the dispatch. */
   threadImages?: ThreadImageRecord[];
+  /**
+   * The plan has a coding workspace and the Agent renders as the Worker build
+   * does. Only the Cloudflare target compiles or mounts one.
+   */
+  codingWorkspace?: true;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -109,6 +115,30 @@ configurePlatformFunding({
   },
 } as any);
 
+/**
+ * `agent` with the Cloudflare target on while its function runs, so it mounts
+ * what the Worker build mounts. Work outside the function (sandbox, model
+ * access) stays on Node, and so does the staged turn input, which only the
+ * agent's Durable Object can read: the render runs its creation plan.
+ */
+function renderedOnWorker<T extends (...args: any[]) => unknown>(agent: T): T {
+  const onWorker = ((...args: any[]) => {
+    const node = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const nodeNavigator = node?.get ? node.get.call(globalThis) : node?.value;
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      get: () => new Error().stack?.includes('readStagedSlackTurnInput') ? nodeNavigator : { userAgent: 'Cloudflare-Workers' },
+    });
+    try {
+      return agent(...args);
+    } finally {
+      if (node) Object.defineProperty(globalThis, 'navigator', node);
+      else Reflect.deleteProperty(globalThis, 'navigator');
+    }
+  }) as T;
+  return Object.assign(onWorker, agent);
+}
+
 /** Network requests the renders attempted; empty unless egress leaked. */
 export function blockedNetworkCalls(): readonly string[] {
   return blockedUrls;
@@ -140,7 +170,15 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const { decision } = await freezeRuntimePlanForTurn({
     turn, assignment, platformEnv: undefined, settingsStore: getSettingsStore(), memoryEpoch: Promise.resolve(1),
   } as any);
-  const plan = decision.runtimePlan;
+  const plan = variant.codingWorkspace
+    ? compileRuntimePlanV2({
+        turn, assignment, instructions: decision.runtimePlan.instructions, memoryEpoch: decision.runtimePlan.memoryEpoch,
+        runtimeModel: decision.runtimePlan.runtimeModel,
+        ...(decision.runtimePlan.runtimeModelRoute ? { runtimeModelRoute: decision.runtimePlan.runtimeModelRoute } : {}),
+        ...(decision.runtimePlan.imageCapability ? { imageCapability: decision.runtimePlan.imageCapability } : {}),
+        codingWorkspace: true,
+      } as any)
+    : decision.runtimePlan;
   const context = createFlueContext({
     id: `render-${variant.workspace}-${variant.channel}-${variant.thread}`,
     agentName: 'chickpea-slack-v2', env: {}, agentConfig: { resolveModel } as any,
@@ -160,7 +198,8 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
         attributes: { ...attributes, boundThreadTs: variant.thread, originalType: 'slack.message' },
       }
     : { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body, attributes };
-  const harness: any = await context.initializeRootHarness(ChickpeaSlack, signal as any, plan);
+  const harness: any = await context.initializeRootHarness(
+    variant.codingWorkspace ? renderedOnWorker(ChickpeaSlack) : ChickpeaSlack, signal as any, plan);
   const grant = {
     installationId: `inst_${variant.workspace}`, providerId: 'anthropic', runId: `run_${variant.thread}`,
     fundingSource: variant.funding ?? 'platform', credentialRefId: 'platform:anthropic', credentialVersion: 1,
