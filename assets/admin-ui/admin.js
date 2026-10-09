@@ -23,8 +23,6 @@
   // The host sells Chickpea's models: Admin has the Plan page, and
   // onboarding offers them.
   var BILLING_OFFERED = CONFIG.billingOffered === true;
-  // Only /admin/onboarding carries this: the journey as the server read it,
-  // where Connect GitHub posts, and the steps, fixed for the life of the page.
   var ONBOARDING_PAGE = CONFIG.onboarding || { initial: null, githubConnectPath: null, steps: [] };
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
@@ -228,7 +226,6 @@
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
-    // The active GitHub accounts the connected GitHub step names; null until read.
     onboardingGithubAccounts: null,
     // Set from a just-completed connect (POST result carries team + botName);
     // drives the dismissable success toast in the connected funnel.
@@ -1570,8 +1567,6 @@
     return bar ? main.replace(/^<main class="main"><div class="main-inner[^"]*">/, function (open) { return open + bar; }) : main;
   }
 
-  // Hosted only: once, on the Admin page a GitHub connect returned to.
-  // Onboarding's GitHub step shows the connection itself.
   function githubConnectedNoticeHtml() {
     return !SELF_HOSTED && state.githubConnected
       ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
@@ -2894,7 +2889,6 @@
       onboardingIllustrationHtml("try") + '</section>';
   }
 
-  // Empty until onboarding has its art; the stylesheet hides an empty slot.
   function onboardingIllustrationHtml(name) {
     return '<div class="onboarding-illustration" data-illustration="' + name + '" aria-hidden="true"></div>';
   }
@@ -2909,12 +2903,10 @@
     connect_slack: "slack", choose_provider: "provider", choose_model: "model", connect_github: "github", try: "try"
   };
 
-  // The journey's place in the page's steps; past the last once it is complete.
   function onboardingStepIndex() {
     var steps = ONBOARDING_PAGE.steps;
     var stage = state.onboarding && state.onboarding.stage;
     if (stage === "complete") return steps.length;
-    // Setting up Chickpea's models is part of adding Chickpea to Slack.
     var id = (stage === "choose_provider" || stage === "choose_model") && onboardingOnChickpeaModels()
       ? "slack"
       : ONBOARDING_STAGE_STEPS[stage] || "slack";
@@ -2926,8 +2918,6 @@
     return "Step " + (onboardingStepIndex() + 1) + " of " + ONBOARDING_PAGE.steps.length;
   }
 
-  // Connected when the host just returned with `?github=connected`, or
-  // already holds an active account (a reload drops the return flag).
   function onboardingGithubConnected() {
     return !!state.onboarding && state.onboarding.stage === "connect_github" &&
       (state.githubConnected || (state.onboardingGithubAccounts || []).length > 0);
@@ -13195,7 +13185,6 @@
     });
   }
 
-  // Skip for now, or Next once connected: the journey moves on to Try.
   function settleOnboardingGithub() {
     if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "connect_github") return;
     state.onboardingBusy = true;
@@ -13235,7 +13224,6 @@
     });
   }
 
-  // Read once per page, when the GitHub step first shows.
   var onboardingGithubAccountsRequested = false;
   function loadOnboardingGithubAccounts() {
     if (onboardingGithubAccountsRequested || state.view !== "onboarding" || !state.onboarding ||
@@ -13409,8 +13397,6 @@
     });
   }
 
-  // Once the page holds the journey, only onboarding's own requests move it:
-  // setup may already have moved it on while the boot's requests ran.
   function applyBootOnboarding(result) {
     if (!result || state.onboarding) return;
     state.onboarding = result.body;
@@ -17674,7 +17660,6 @@
   var initialRoute = canNavigate ? location.pathname : "/admin";
   if (initialRoute === "/admin/onboarding") {
     state.view = "onboarding";
-    // The page carries the journey: paint its step before any request settles.
     render();
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");

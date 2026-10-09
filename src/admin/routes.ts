@@ -6185,7 +6185,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.redirect('/admin/onboarding', 302);
   });
 
-  // The page carries the journey, so its first paint is the real step.
   // Hosted, an unfinished journey whose Slack connection ended would stop at
   // Connect Slack: onboarding opens Admin instead.
   app.get('/admin/onboarding', async (c) => {
@@ -6202,7 +6201,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         initial = await onboardingView(c, snapshot);
       }
     } catch {
-      // The client asks for the journey itself when the page has none.
       console.warn('[chickpea] Onboarding state unavailable');
     }
     return adminPage(c, { initial, githubConnectPath: await onboardingGithubConnectPath(c) });
@@ -10050,7 +10048,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json(await onboardingView(c, snapshot));
   };
 
-  /** The journey as onboarding shows it; a delivered first reply completes it. */
   async function onboardingView(c: Context, initial: OnboardingSnapshot) {
     let snapshot = initial;
     const { journey } = snapshot;

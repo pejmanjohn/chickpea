@@ -52,7 +52,6 @@ export function adminUiConfig(input: {
   selfHosted?: boolean;
   /** True where the host sells Chickpea's models: Admin has the Plan page and onboarding offers them. */
   billingOffered?: boolean;
-  /** Standalone only: the runtime this deployment runs on, shown beside onboarding's brand. */
   targetChip?: string | undefined;
   onboarding?: (AdminOnboardingPage & { steps: OnboardingStep[] }) | undefined;
 }): Record<string, unknown> {
@@ -85,11 +84,8 @@ function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
   return JSON.stringify(adminUiConfig(input)).replace(/</g, '\\u003c');
 }
 
-/** What `/admin/onboarding` serves beside the shell, so its first paint is the real step. */
 export interface AdminOnboardingPage {
-  /** The journey as `GET /admin/api/onboarding` returns it; null when it could not be read here. */
   initial: Readonly<Record<string, unknown>> | null;
-  /** Where Connect GitHub posts; null when the host cannot start one, and on standalone. */
   githubConnectPath: string | null;
 }
 
@@ -224,8 +220,6 @@ export function renderSlackJourneyPage(input: {
 ${progress ? SLACK_JOURNEY_PROGRESS_CSS : ''}${badge ? SLACK_JOURNEY_BADGE_CSS : ''}</style></head><body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}${progress}${badge}<p class="auth-eyebrow">${escapeHtml(input.eyebrow)}</p>${title}${intro}${alert}${status}${input.body}</main></body></html>`;
 }
 
-// Only pages that show the step bar or the badge carry their rules, so every
-// other journey page keeps its exact bytes.
 const SLACK_JOURNEY_PROGRESS_CSS = '.auth-progress{display:grid;grid-auto-columns:minmax(0,1fr);grid-auto-flow:column;isolation:isolate;list-style:none;margin:0 0 30px;padding:0}.auth-progress li{min-width:0;position:relative;text-align:center}.auth-progress li+li::before{background:var(--line);content:"";height:2px;position:absolute;right:50%;top:13px;width:100%;z-index:-1}.auth-progress .auth-progress-done+li::before{background:var(--gold)}.auth-progress-dot{background:var(--card);border:2px solid var(--line);border-radius:50%;color:var(--muted);display:grid;font-size:.78rem;font-weight:800;height:28px;margin:0 auto 6px;place-items:center;width:28px}.auth-progress-done .auth-progress-dot{background:var(--gold);border-color:var(--gold);color:var(--ink)}.auth-progress-current .auth-progress-dot{border-color:var(--gold);box-shadow:0 0 0 4px color-mix(in srgb,var(--gold) 22%,transparent);color:var(--ink)}.auth-progress-label{color:var(--muted);display:block;font-size:.76rem;font-weight:750;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.auth-progress-done .auth-progress-label,.auth-progress-current .auth-progress-label{color:var(--ink)}@media(max-width:440px){.auth-progress-label{font-size:.68rem}}\n';
 const SLACK_JOURNEY_BADGE_CSS = '.auth-badge{align-items:center;background:color-mix(in srgb,var(--success) 14%,var(--card));border-radius:999px;color:var(--success);display:inline-flex;font-size:.9rem;font-weight:750;gap:8px;line-height:1.3;margin:0 0 16px;padding:6px 14px 6px 6px}.auth-badge-check{align-items:center;background:var(--success);border-radius:50%;color:#fff;display:inline-flex;flex:0 0 auto;font-size:.75rem;height:22px;justify-content:center;width:22px}\n';
 

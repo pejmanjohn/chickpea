@@ -112,9 +112,7 @@ async function harness(options: {
   admin?: boolean;
   ownKey?: OwnKeyFacts;
   onboarding?: Record<string, unknown>;
-  /** False serves `/admin/onboarding` as when its route could not read the journey. */
   onboardingEmbedded?: boolean;
-  /** Holds the boot's model catalog until `releaseBoot()`. */
   bootHeld?: boolean;
   platformFailures?: number;
   platformFailureBody?: unknown;

@@ -536,10 +536,6 @@ function runAdminPageHarness(
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
-    /**
-     * `/admin/onboarding` carries the journey the way its route reads it. False
-     * serves the page as when that read failed, so the client asks for it.
-     */
     onboardingEmbedded?: boolean;
     onboardingProviderError?: { status: number; error: string; message?: string };
     onboardingTryError?: { status: number; error: string; message?: string; workspaceDefault?: WorkspaceDefaultFixture };
@@ -4470,7 +4466,6 @@ test('Add to channels lets publication reconcile public app membership', async (
   assert.doesNotMatch(harness.app.innerHTML, /Invite it to #new-channel in Slack/);
 });
 
-/** A success callout: a check icon (not the warning triangle), the success tint, announced as status. */
 function isSuccessNotice(html: string, text: string): boolean {
   const notice = html.match(new RegExp(`<div class="callout callout-success" role="status"><svg[^>]*><path d="([^"]*)"\\/></svg><span>${text.replace(/[.#]/g, '\\$&')}</span></div>`));
   return Boolean(notice?.[1]!.startsWith('M12.416 3.376') &&
@@ -19740,7 +19735,6 @@ test('standalone onboarding has no GitHub step, even with a connect path in its 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-model-continue' }) });
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /Let Agents work on your code|Skip for now|github-connect-form/);
-  // Hosted without a connect path: standalone's four steps, starting at Add to Slack.
   const hostedWithout = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders, onboarding: onboardingAt('try'),
   });

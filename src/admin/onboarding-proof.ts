@@ -7,17 +7,11 @@ interface OnboardingReplyTarget {
   tryStartedAt: number;
 }
 
-/** How a run's reply shows in Slack, as the thread runner last published it. */
 export type OnboardingPresentationReader = (runId: string) => Promise<{
   root: { channelId: string };
   stream: { acknowledgedByteLength: number };
 } | undefined>;
 
-/**
- * Whether Chickpea has answered the Owner's DM since Try started: a run that
- * settled with its reply delivered, or one whose answer text already shows
- * in the DM while it streams.
- */
 export async function hasDeliveredOnboardingReply(
   work: WorkStore,
   target: OnboardingReplyTarget,
@@ -50,7 +44,6 @@ export function isDeliveredOnboardingReply(
     run.deliveryRef?.startsWith('slack:D') === true;
 }
 
-/** The Owner messaged Chickpea in this workspace since Try started. */
 function isOwnerTryMessage(item: WorkRunListItem, target: OnboardingReplyTarget): boolean {
   const { run, binding } = item;
   return run.createdAt >= target.tryStartedAt &&
@@ -61,8 +54,6 @@ function isOwnerTryMessage(item: WorkRunListItem, target: OnboardingReplyTarget)
     binding.externalAccountId === opaqueId('account', `slack:${target.workspaceId}`);
 }
 
-// A stream that shows only its task plan already has a message, but no
-// acknowledged answer bytes; only answer text counts as a reply.
 async function showsAnswerInDm(runId: string, readPresentation: OnboardingPresentationReader | undefined): Promise<boolean> {
   if (!readPresentation) return false;
   try {
@@ -70,7 +61,6 @@ async function showsAnswerInDm(runId: string, readPresentation: OnboardingPresen
     return presentation !== undefined && presentation.root.channelId.startsWith('D') &&
       presentation.stream.acknowledgedByteLength > 0;
   } catch {
-    // The proof is polled: a reply that cannot be read now counts on a later poll.
     return false;
   }
 }

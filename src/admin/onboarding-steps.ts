@@ -8,16 +8,9 @@ export interface OnboardingStep {
   label: string;
 }
 
-/**
- * The steps a person sees from adding Chickpea to Slack to its first reply.
- * One plan serves the host's Add to Slack page and Admin's onboarding, so the
- * step bar never changes between them.
- */
 export function onboardingSteps(input: {
   selfHosted: boolean;
-  /** Chickpea's models are set up for the workspace: no provider or model to choose. */
   chickpeaModels: boolean;
-  /** The host can start a GitHub connect. Standalone never offers it. */
   github: boolean;
 }): OnboardingStep[] {
   return [
@@ -31,7 +24,6 @@ export function onboardingSteps(input: {
   ];
 }
 
-/** The plan for a host's Add to Slack page, where the person becomes the first Owner. */
 export async function hostedSignUpOnboardingSteps(): Promise<OnboardingStep[]> {
   return onboardingSteps({
     selfHosted: false,

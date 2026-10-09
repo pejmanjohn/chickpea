@@ -201,7 +201,6 @@ interface OnboardingPageEntry {
   steps: Array<{ id: string; label: string }>;
 }
 
-/** The page's HTML and the onboarding entry its config island carries, if any. */
 async function adminPageEntry(response: Response | Promise<Response>): Promise<{ html: string; onboarding: OnboardingPageEntry | undefined }> {
   const html = await (await response).text();
   const config = html.match(/<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/)?.[1];

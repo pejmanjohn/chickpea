@@ -1,10 +1,6 @@
 import { opaqueId } from '../../src/work/admission.ts';
 import type { WorkRunListItem } from '../../src/work/types.ts';
 
-/**
- * The installer's DM to Chickpea in workspace T123 after Try started at 100,
- * settled with its reply delivered; `override` changes any field.
- */
 export function onboardingRunFixture(
   override: {
     run?: Partial<WorkRunListItem['run']>;
