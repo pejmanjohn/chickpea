@@ -195,7 +195,6 @@ export function createAgentAskCollector(input: {
   };
 }
 
-/** The person's own words a turn carries for checks that need them; an Agent's ask carries none. */
 export function personRequestText(turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>): string | undefined {
   return turn.agentAsk ? undefined : turn.text;
 }

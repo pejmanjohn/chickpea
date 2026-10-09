@@ -956,7 +956,6 @@ function dmTurn(patch: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn {
   });
 }
 
-/** A turn the host built from an Agent's reply in the D1 thread that asks `text`. */
 function dmAskTurn(messageTs: string, text: string): NormalizedSlackTurn {
   return dmTurn({
     eventId: `agent-ask:${messageTs}`, messageTs, text, source: 'agent_mention', contextMode: 'thread',
@@ -964,7 +963,6 @@ function dmAskTurn(messageTs: string, text: string): NormalizedSlackTurn {
   });
 }
 
-/** Support owns the D1 thread a person opened by mentioning it, and Legal exists with a handle. */
 async function supportDmThread() {
   const routes = await fixture();
   await activateChickpea(routes.store);
@@ -986,7 +984,6 @@ async function supportDmThread() {
   return { ...routes, legal };
 }
 
-/** A reply `agentId` delivered in the D1 thread, as its record keeps it. */
 function answeredInDm(store: SqliteConfigStore, agentId: string, messageTs: string) {
   return store.putSlackPublicContext({
     workspaceId: 'T1', channelId: 'D1', rootTs: '100.1', messageTs, role: 'agent', agentId,
@@ -994,7 +991,6 @@ function answeredInDm(store: SqliteConfigStore, agentId: string, messageTs: stri
   });
 }
 
-/** The store, with every read of a thread's record counted. */
 function countingRecordReads(store: SqliteConfigStore) {
   const reads: string[] = [];
   const config = new Proxy(store, {
@@ -1097,7 +1093,6 @@ test('in a direct thread an Agent can ask only an Agent that answered there', as
       turn: dmAskTurn('100.2', '@legal may we refund?'), surface: 'direct', actor: DM_ACTOR, config: store,
       askAgentId: legal.id, authorizeUserAgent: allowUserAgent,
     });
-    // Legal is one this person may use privately, but it is not in this thread.
     assert.deepEqual(await ask(), { kind: 'denied', reason: 'not_available', alternatives: [] });
 
     await answeredInDm(store, legal.id, '100.15');
@@ -1135,7 +1130,6 @@ test('an Agent in a direct thread is asked only while this person may still use 
 test('a person\'s message that mentioned an Agent does not bring it into a direct thread', async () => {
   const { store, finance, legal } = await supportDmThread();
   try {
-    // A message is recorded before routing decides, a refused mention included.
     await store.putSlackPublicContext({
       workspaceId: 'T1', channelId: 'D1', rootTs: '100.1', messageTs: '100.12', role: 'human',
       authorId: 'U1', text: '<!subteam^SLEGAL|@legal> join us',
@@ -1195,16 +1189,13 @@ test('a direct thread\'s record is read once per routing, and only for an existi
       ...(askAgentId ? { askAgentId } : {}), authorizeUserAgent: allowUserAgent,
     });
 
-    // A new root has no record yet.
     const opened = await route({ text: '<!subteam^SSUPPORT|@support> hi' });
     assert.equal(opened.kind, 'routed');
     if (opened.kind === 'routed') assert.equal(opened.assignment.teammates, undefined);
-    // Chickpea never asks, so its plain DM turns need no record.
     await route({ eventId: 'Ev-cp1', messageTs: '200.1', threadTs: '200.1', text: 'hello' });
     await route({ eventId: 'Ev-cp2', messageTs: '200.2', threadTs: '200.1', text: 'and more', contextMode: 'thread' });
     assert.deepEqual(reads, []);
 
-    // An ask in Support's thread reads it once, for whom it may reach and its teammates alike.
     await answeredInDm(store, finance.id, '100.15');
     const asked = await route(
       { eventId: 'Ev-ask', messageTs: '100.2', text: '@finance hi', source: 'agent_mention', contextMode: 'thread' },

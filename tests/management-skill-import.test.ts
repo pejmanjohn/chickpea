@@ -767,7 +767,6 @@ test('an ask cannot replace a skill with the asking Agent\'s exact replace reque
     });
   const instructions = async () => (await f.config.getAgent(agent.id)).skills[0]?.instructions;
   try {
-    // With no requester text the exact-source check refuses before the replacement check runs.
     assert.deepEqual(await replaceUnslop(askedBy('600.2', words), 'ask-replace-unslop'), {
       ok: false,
       error: { code: 'invalid_request', message: IMPORT_SOURCE_REFUSAL },

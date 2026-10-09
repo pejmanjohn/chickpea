@@ -1062,7 +1062,6 @@ test('the welcome retries a deferred avatar when the same-turn proposal targets 
 test('an ask\'s words never anchor a connector in the creation reply; the person\'s words do', async () => {
   const f = await createManagementAdapterFixture('welcome-ask-requester-text');
   try {
-    // As requester text, these words affirm Zendesk; the new Agent's own text never names it.
     const words = 'create me a support agent that will connect to zendesk';
     const welcome = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
       const signal = slackTurnSignal({

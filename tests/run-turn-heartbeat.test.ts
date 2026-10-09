@@ -901,7 +901,6 @@ test('a creation answered on an Agent\'s ask hands the welcome no requester text
         workspaceId: f.admin.binding.slackTeamId,
         channelId,
         eventId: `Ev_ASK_CREATION_${name}`,
-        // As requester text these words would offer Connect Linear.
         text: 'Create a Deck Agent using Linear.',
         userId: f.admin.binding.slackUserId,
         actorMembershipId: f.admin.membership.id,

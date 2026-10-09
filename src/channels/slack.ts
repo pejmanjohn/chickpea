@@ -1186,10 +1186,6 @@ export async function postAgentRoutingFeedback(input: {
   });
 }
 
-/**
- * Answers a message routing refused once, however often Slack delivers it.
- * A reply that fails gives its claim back, so the delivery's retry says it.
- */
 async function replyToRefusedMessageOnce(
   state: SlackStateStore,
   msgKey: string,

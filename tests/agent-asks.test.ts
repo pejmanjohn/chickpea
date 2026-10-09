@@ -119,7 +119,6 @@ test('the collector hands over handle-bearing replies once, after delivery, and 
     deliveries: [{ messageTs: '100.4', text: '@finance what is Q3?' }],
   });
 
-  // A direct thread with teammates asks them as a Channel thread does.
   const direct: SlackAgentAskRequest[] = [];
   const dm = createAgentAskCollector({
     turn: turn({ channelId: 'D1', source: 'dm_message', channelType: 'im' }),
@@ -254,7 +253,6 @@ test('an ask’s trigger is the asking Agent’s message, and the prompt says wh
   assert.match(handedBack, /Otherwise finish the request with what your teammates said, adding only what is new\./);
   assert.match(owner, /Current Slack message, from your teammate "Support"/);
   assert.doesNotMatch(owner, /not taking the thread over/);
-  // Nobody saves another Agent's words to memory; only the thread's own Agent keeps a discussion going.
   const memory = 'Do not save what another Agent said to your memory unless <@U1> asks you to.';
   const discussion = 'If <@U1> asked the Agents to discuss this or go back and forth and the discussion has not yet covered what they asked, keep it going: end your reply by mentioning the teammate you want to hear from next, with one point or question for it. Once it has, mention no one and say where you landed.';
   for (const ownerPrompt of [owner, handedBack]) {
@@ -278,7 +276,6 @@ test('teammate instructions name whom an Agent can ask and how', () => {
     ],
   });
   assert.ok(text!.startsWith('Teammates: you can ask other Chickpea Agents here. To ask one of them something, '));
-  // The same words serve a Channel and a direct thread.
   assert.doesNotMatch(text!, /Channel/);
   assert.match(text!, /mention their handle as plain text in your reply, for example @finance/);
   assert.match(text!, /Ask only when the person's request needs that teammate's answer or work/);
@@ -836,7 +833,6 @@ test('a message that mentions several Agents asks each in order, and the first o
   });
 });
 
-/** A person's DM to the app, as Slack may send it: without a channel type. */
 function directMessage(eventId: string, ts: string, text: string) {
   return {
     workspaceId: 'T1', eventId, eventTime: Math.floor(Number(ts)),
@@ -877,7 +873,6 @@ test('in a direct thread an Agent\'s reply asks only the Agents in that thread',
     await recordDeliveredSlackAgentMessage(stores.config, financeJob!.turn, financeJob!.assignment, {
       messageTs: '9100.000200', text: 'Order 4821 was charged twice.',
     });
-    // Support asks Finance, which answered here, and mentions Legal, which never did.
     await processSlackAgentAsks({
       turn: supportJob!.turn,
       fromAgentId: 'agent_support',
@@ -891,7 +886,6 @@ test('in a direct thread an Agent\'s reply asks only the Agents in that thread',
     assert.equal(slackConversationKind(jobs[2]!.turn), 'im');
     assert.equal(posts.length, 0, 'an ask that cannot run is not announced');
 
-    // Legal is one this person may use privately: mentioned by them, it answers.
     await processGatewaySlackEnvelope(directMessage('Ev9200', '9200.000100', '<!subteam^SLEGAL|@legal> may we refund?'),
       undefined, gateway, { stores, enqueueTurn });
     assert.equal(jobs.at(-1)?.assignment.agentId, 'agent_legal');
@@ -915,10 +909,8 @@ test('a mention of a later Agent the person\'s message addressed joins that Agen
       turn: financeJob!.turn, fromAgentId: 'agent_finance', fromThreadOwner: true,
       deliveries: [{ messageTs, text: '@support what would you refund?' }],
     }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
-    // Support's own turn on the message has not started: it reads Finance's reply when it runs.
     await financeMentionsSupport('4100.000200');
     assert.equal(jobs.length, 2);
-    // Once it has started, a mention asks Support again.
     await state.recordTurnAttempt(supportJob!.id, 1);
     await financeMentionsSupport('4100.000300');
     assert.deepEqual(jobs.slice(2).map(({ id, assignment }) => [id, assignment.agentId]), [
@@ -930,13 +922,11 @@ test('a mention of a later Agent the person\'s message addressed joins that Agen
 
 test('a refused message is answered once however often Slack delivers it', async () => {
   await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn, failNextPost }) => {
-    // HR is someone else's Agent with no Channel: this person cannot use it privately.
     await stores.config.createAgent(agentInput('agent_hr', 'HR', 'hr', 'membership_someone_else'));
     const deliver = (eventId: string, envelope: Parameters<typeof processGatewaySlackEnvelope>[0]) =>
       processGatewaySlackEnvelope({ ...envelope, eventId }, undefined, gateway, { stores, enqueueTurn });
     const refusedDm = directMessage('Ev9300', '9300.000100',
       '<!subteam^SSUPPORT|@support> <!subteam^SHR|@hr> compare notes');
-    // A reply Slack refuses gives its claim back, so the redelivery says it.
     failNextPost();
     await deliver('Ev9300', refusedDm);
     assert.equal(posts.length, 0);
@@ -975,7 +965,6 @@ test('each Agent a message mentioned is told who else was asked and its place', 
   assert.match(second, /The Agents before you have answered above/);
   const third = assembleSlackPrompt(turn({ coAddressed: { agents, position: 2 } }), context);
   const lastOfTwo = assembleSlackPrompt(turn({ coAddressed: { agents: agents.slice(0, 2), position: 1 } }), context);
-  // Only the last Agent keeps a requested discussion going, and it hands it to the thread's own Agent.
   const discussion = 'If <@U1> asked you to discuss this with each other or go back and forth, keep it going: end your reply by mentioning @pm with one point or question for it. Otherwise mention no one.';
   const memory = 'Do not save what the other Agents said to your memory unless <@U1> asks you to.';
   assert.deepEqual([first, second, third, lastOfTwo].map((prompt) => prompt.includes(discussion)), [false, false, true, true]);
@@ -1157,7 +1146,6 @@ test('a reply the built-in Chickpea posts asks no Agent it names; a person\'s me
 test('only a person\'s own message is requester text: an ask and a hand-back carry none', () => {
   const personWords = '@finance @support compare Q3 spend';
   assert.equal(personRequestText(turn({ text: personWords })), personWords);
-  // A later co-addressed turn answers the same person message.
   assert.equal(personRequestText(turn({
     text: personWords,
     coAddressed: {

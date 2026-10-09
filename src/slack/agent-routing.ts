@@ -6,7 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
-import { agentSlackHandle } from './agent-asks.ts';
+import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
@@ -189,11 +189,6 @@ export async function resolveAgentRoute(
   const answeredInThread = () => answered ??= Promise.resolve(
     config.listSlackPublicContext(turn.workspaceId, turn.channelId, turn.threadTs),
   ).then((rows) => rows.flatMap((row) => row.role === 'agent' && row.agentId ? [row.agentId] : []));
-  /**
-   * The Agents an Agent may ask here: in a Channel, those granted there; in
-   * a direct thread, its owner, the Agents that answered in it, and the
-   * Agents this message addressed (`addressedIds`).
-   */
   const askableAgentIds = async (addressedIds: readonly string[]): Promise<ReadonlySet<string>> =>
     new Set(surface === 'channel'
       ? activeGrants.map(({ agentId }) => agentId)
@@ -203,8 +198,7 @@ export async function resolveAgentRoute(
     addressedIds: readonly string[],
   ): Promise<Extract<AgentRoutingResult, { kind: 'routed' }>> => {
     if (installation.runtimeContract !== 'chickpea-v1') return routed;
-    // Chickpea never asks: its direct turns need no teammates, nor the record read.
-    if (surface === 'direct' && routed.assignment.agent.kind !== 'user') return routed;
+    if (!agentMayAskTeammates(routed.assignment.agent)) return routed;
     const teammates = teammatesAmong(await askableAgentIds(addressedIds), agentsById, routed.assignment.agentId);
     return teammates.length
       ? { ...routed, assignment: { ...routed.assignment, teammates } }

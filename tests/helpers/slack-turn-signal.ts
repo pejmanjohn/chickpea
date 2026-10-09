@@ -4,7 +4,6 @@ import { parseSlackManagementSignal, type SlackManagementSignal } from '../../sr
 import { personRequestText } from '../../src/slack/agent-asks.ts';
 import type { NormalizedSlackTurn } from '../../src/slack/types.ts';
 
-/** A turn's management signal as the Agent parses it, with requester text chosen by the host's rule. */
 export function slackTurnSignal(input: {
   turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>;
   agentId: string;

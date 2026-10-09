@@ -333,7 +333,6 @@ test('an ask joins the asked Agent\'s waiting turn as one of the Agents the pers
     assert.equal(turns.hasQueuedExchangeTurn(
       { ...ask, assignment: assignment({ agentId: 'agent_else' }) }, origin,
     ), false, 'another Agent');
-    // A person's own message to the Agent is no exchange turn: an ask from it is a new turn.
     turns.enqueue(job('plain', '130'));
     assert.equal(turns.hasQueuedExchangeTurn(job('ask2', '140', { agentAsk: { ...agentAsk, originMessageTs: '1800000000.000130' } }),
       '1800000000.000130'), false);
