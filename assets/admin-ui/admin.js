@@ -2462,6 +2462,21 @@
     loadBilling();
   }
 
+  var BILLING_REFUSALS = {
+    plan_required: function () {
+      return "Choose a plan first. Extra usage is available while your workspace has a plan. Choose a plan, then add extra usage.";
+    },
+    own_key_plan_required: function (billing) {
+      var minimum = billing.offers.plans.find(function (plan) { return plan.ownKeyMinimum; });
+      return "Your own API key needs the " + minimum.price + " plan or higher.";
+    }
+  };
+
+  function billingFailureText(error, fallback) {
+    var refused = error && error.status === 409 && Object.prototype.hasOwnProperty.call(BILLING_REFUSALS, error.message);
+    return refused ? BILLING_REFUSALS[error.message](state.billing) : fallback;
+  }
+
   // The page offers one switch: away from how the workspace pays now.
   function switchFunding() {
     if (state.billingBusy) return;
@@ -2472,8 +2487,8 @@
     postJson("/admin/api/billing/funding", "POST", { funding: next }).then(function (body) {
       state.billing = body;
       state.billingFundingConfirm = false;
-    }).catch(function () {
-      state.billingError = { at: "switch", text: next === "platform" ? "Could not switch to Chickpea’s models. Try again." : "Could not switch to your own key. Try again." };
+    }).catch(function (error) {
+      state.billingError = { at: "switch", text: billingFailureText(error, next === "platform" ? "Could not switch to Chickpea’s models. Try again." : "Could not switch to your own key. Try again.") };
     }).then(function () {
       state.billingBusy = "";
       render();
@@ -2504,9 +2519,9 @@
     render();
     postJson(path, "POST", body).then(function (response) {
       location.assign(response.url);
-    }).catch(function () {
+    }).catch(function (error) {
       state.billingBusy = "";
-      state.billingError = { at: at, text: "Stripe could not be opened. Try again." };
+      state.billingError = { at: at, text: billingFailureText(error, "Stripe could not be opened. Try again.") };
       render();
     });
   }
