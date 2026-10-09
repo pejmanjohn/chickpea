@@ -67,7 +67,7 @@ import type { WorkStore } from '../work/types.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
-import { stripLeadingUserMentions } from '../slack/command-address.ts';
+import { stripResolvedSlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -557,7 +557,8 @@ export class WorkspaceManagementService {
         import: { ...metadata, replacedExisting: true },
       };
     }
-    if (existing && !explicitSkillReplacementRequest(actor, skill)) {
+    if (existing &&
+        !explicitSkillReplacementRequest(await this.routedSlackRequestText(actor), skill)) {
       throw new ManagementError(
         'invalid_request',
         `Replacement needs a new requester message that says \`replace ${skill.name} from ${skill.sourceUrl}\`. No change was made.`,
@@ -2515,7 +2516,7 @@ export class WorkspaceManagementService {
     }
     await this.assertRevisionMap(undo.resultingRevisions);
     const explicitSlackUndo = actor.origin.kind === 'slack' &&
-      requesterExplicitlyRequestsUndo(actor.origin.requestText);
+      requesterExplicitlyRequestsUndo(await this.routedSlackRequestText(actor));
     const originalRequest = actor.origin.kind === 'mcp'
       ? await this.stores.management.getRequest(input.operationId)
       : undefined;
@@ -3061,10 +3062,25 @@ export class WorkspaceManagementService {
           name.trim().toLowerCase() === targetAgent.name.trim().toLowerCase()).length !== 1) {
       return false;
     }
-    return explicitRequesterSkillChange(actor, change, {
+    return explicitRequesterSkillChange(actor, await this.routedSlackRequestText(actor), change, {
       targetAgentName: targetAgent.name,
       installedSkillNames: targetAgent.skills.map(({ name }) => name),
       editableAgentNames,
+    });
+  }
+
+  private async routedSlackRequestText(
+    actor: LiveManagementActor,
+  ): Promise<string | undefined> {
+    const { origin } = actor;
+    if (origin.kind !== 'slack' || !origin.requestText) return undefined;
+    const [installation, agent] = await Promise.all([
+      this.stores.config.getWorkspaceInstallation(origin.workspaceId),
+      origin.agentId ? optionalAgent(this.stores.config, origin.agentId) : undefined,
+    ]);
+    return stripResolvedSlackCommandAddress(origin.requestText, {
+      botUserId: installation?.botUserId,
+      agentUserGroupId: agent?.slackPresence?.userGroupId,
     });
   }
 
@@ -6133,6 +6149,7 @@ function reversibleLocalSkillChange(
 
 function explicitRequesterSkillChange(
   actor: LiveManagementActor,
+  requestText: string | undefined,
   change: ReversibleSkillChange,
   context: {
     targetAgentName: string;
@@ -6140,9 +6157,9 @@ function explicitRequesterSkillChange(
     editableAgentNames: readonly string[];
   },
 ): boolean {
-  if (actor.origin.kind !== 'slack' || !actor.origin.requestText) return false;
+  if (actor.origin.kind !== 'slack' || !requestText) return false;
   const systemSlackRoute = actor.origin.agentId === CHICKPEA_AGENT_ID;
-  const request = normalizedRequesterText(actor.origin.requestText.replace(/\r?\n/g, ';'));
+  const request = normalizedRequesterText(requestText.replace(/\r?\n/g, ';'));
   const actionText = maskExactWord(
     maskExactWord(request, change.name),
     context.targetAgentName,
@@ -6236,16 +6253,16 @@ function assertExplicitSkillImportRequest(
 }
 
 function explicitSkillReplacementRequest(
-  actor: LiveManagementActor,
+  requestText: string | undefined,
   skill: SkillResolution['skills'][number],
 ): boolean {
-  if (actor.origin.kind !== 'slack' || !actor.origin.requestText) return false;
+  if (!requestText) return false;
   const expected = normalizedRequesterText(`replace ${skill.name} from ${skill.sourceUrl}`);
-  return normalizedRequesterText(actor.origin.requestText).includes(expected);
+  return normalizedRequesterText(requestText).includes(expected);
 }
 
 function normalizedRequesterText(value: string): string {
-  return stripLeadingUserMentions(value)
+  return value
     .replace(/<((?:https?:\/\/)[^>|]+)(?:\|[^>]*)?>/gi, '$1')
     .replace(/&amp;/gi, '&')
     .trim()
