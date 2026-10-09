@@ -141,13 +141,13 @@ export function runtimeIdentityInstruction(
   return parts.join(' ');
 }
 
-type TeammateAssignment = Pick<ResolvedAssignment, 'channelTeammates'> & {
+type TeammateAssignment = Pick<ResolvedAssignment, 'teammates'> & {
   agent: Pick<CustomAgentConfig, 'kind'>;
 };
 
 /** The Channel teammates this Agent may ask: none for the built-in Chickpea. */
 function askableTeammates(assignment: TeammateAssignment): AgentTeammate[] {
-  return agentMayAskTeammates(assignment.agent) ? assignment.channelTeammates ?? [] : [];
+  return agentMayAskTeammates(assignment.agent) ? assignment.teammates ?? [] : [];
 }
 
 /**

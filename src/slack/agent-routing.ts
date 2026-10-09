@@ -191,7 +191,7 @@ export async function resolveAgentRoute(
     if (surface !== 'channel' || installation.runtimeContract !== 'chickpea-v1') return routed;
     const teammates = channelTeammates(activeGrants, agentsById, routed.assignment.agentId);
     return teammates.length
-      ? { ...routed, assignment: { ...routed.assignment, channelTeammates: teammates } }
+      ? { ...routed, assignment: { ...routed.assignment, teammates } }
       : routed;
   };
 

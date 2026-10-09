@@ -137,7 +137,7 @@ function unsharedSystemBlocks(): readonly string[] {
  * external-action boundary, and the Channel teammates it may ask.
  */
 export function slackTenantInstructions(
-  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'channelTeammates' | 'threadGuest'>,
+  assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'teammates' | 'threadGuest'>,
 ): string {
   const teammates = agentTeammateInstructions(assignment);
   return [

@@ -2564,8 +2564,8 @@ async function processSlackEvent(
           ? { interactionMode: routedAssignment.interactionMode }
           : {}),
         ...(routedAssignment.threadGuest ? { threadGuest: true as const } : {}),
-        ...(routedAssignment.channelTeammates?.length
-          ? { channelTeammates: routedAssignment.channelTeammates }
+        ...(routedAssignment.teammates?.length
+          ? { teammates: routedAssignment.teammates }
           : {}),
       };
   } catch (err) {

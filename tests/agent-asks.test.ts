@@ -241,7 +241,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
   assert.equal(agentTeammateInstructions({ agent: { kind: 'user' } }), undefined);
   const text = agentTeammateInstructions({
     agent: { kind: 'user' },
-    channelTeammates: [
+    teammates: [
       { name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' },
       { name: 'Legal', handle: 'legal', userGroupId: 'SLEGAL' },
     ],
@@ -260,7 +260,7 @@ test('teammate instructions name whom an Agent can ask and how', () => {
   const guest = agentTeammateInstructions({
     agent: { kind: 'user' },
     threadGuest: true,
-    channelTeammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
+    teammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
   });
   assert.match(guest!, /You get no turn after their answer unless you ask them to mention you: when you must use the answer yourself, end the ask with "Mention me when you have it\." \(never your own handle\)\./);
   assert.match(guest!, /To combine their results, ask only the last one to mention you: its reply comes after all the others/);
@@ -302,7 +302,7 @@ test('an ask routes to the asked Agent without taking the thread over', async ()
   assert.equal(routed.assignment.agentId, finance.id);
   assert.equal(routed.assignment.threadGuest, true);
   assert.equal(routed.assignment.ownerIncarnation, 2);
-  assert.deepEqual(routed.assignment.channelTeammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
+  assert.deepEqual(routed.assignment.teammates, [{ name: 'Support', handle: 'support', userGroupId: 'SSUPPORT' }]);
   const route = await store.getAgentThreadRoute('T1', 'C1', '100.1');
   assert.equal(route?.agentId, support.id);
   assert.equal(route?.ownerIncarnation, 2);
@@ -446,7 +446,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       assert.equal(jobs.length, 1);
       const supportJob = jobs[0]!;
       assert.equal(supportJob.assignment.agentId, 'agent_support');
-      assert.deepEqual(supportJob.assignment.channelTeammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
+      assert.deepEqual(supportJob.assignment.teammates, [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }]);
 
       // Support's reply asks Finance (and mentions Legal, who cannot be asked here).
       // Each asked turn has started before the next ask, so none joins another.
