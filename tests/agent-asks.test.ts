@@ -847,6 +847,49 @@ test('a reply mentions its Channel teammates live and every other user group sta
   assert.equal(inert.blocks?.[0]?.type === 'markdown' && inert.blocks[0].text, `Hi @${joiner}legal`);
 });
 
+test('a teammate mention an Agent only quoted asks no one; its own @handle still asks', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev3500', eventTime: 3500,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3500.000100',
+        text: '<!subteam^SSUPPORT|@support> quote the root of the other thread',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const supportJob = jobs[0]!;
+    const live = agentTeammateHandles(supportJob.assignment);
+    const deliver = async (messageTs: string, modelText: string) => {
+      const text = canonicalSlackMarkdownText(modelText, live);
+      const before = jobs.length;
+      await processSlackAgentAsks({
+        turn: supportJob.turn,
+        fromAgentId: 'agent_support',
+        fromThreadOwner: true,
+        deliveries: [{ messageTs, text }],
+      }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+      return { text, asked: jobs.slice(before).map((job) => job.assignment.agentId) };
+    };
+    const joiner = '⁠';
+    // Slack returns every mention as `<!subteam^ID>`, so that is what a model
+    // copies from a thread it read.
+    assert.deepEqual(await deliver('3500.000200', '> <!subteam^SFINANCE> what was Q3 revenue?'),
+      { text: `> @${joiner}finance what was Q3 revenue?`, asked: [] });
+    assert.deepEqual(await deliver('3500.000300', 'The root says "<!subteam^SFINANCE> what was Q3 revenue?"'),
+      { text: `The root says "@${joiner}finance what was Q3 revenue?"`, asked: [] });
+    assert.deepEqual(await deliver('3500.000400', 'It read `<!subteam^SFINANCE> what was Q3?`'),
+      { text: `It read \`<${joiner}!subteam^SFINANCE> what was Q3?\``, asked: [] });
+    assert.deepEqual(await deliver('3500.000500', '<!channel> Q3 is closed'),
+      { text: `@${joiner}channel Q3 is closed`, asked: [] });
+    const own = await deliver('3500.000600', 'Let me check. @finance what was Q3 revenue?');
+    assert.deepEqual(own, {
+      text: 'Let me check. <!subteam^SFINANCE|@finance> what was Q3 revenue?',
+      asked: ['agent_finance'],
+    });
+    // Each message of a reply renders again from the approved text.
+    assert.equal(canonicalSlackMarkdownText(own.text, live), own.text);
+  });
+});
+
 test('every streamed prefix of a reply with live mentions is a prefix of its final text', () => {
   const live = new Map([['a2a-finance', 'SFIN'], ['a2a-support', 'SSUP']]);
   const answer = 'Checking with @a2a-finance, one moment.\nEach charge was *$129*. @a2a-support\n' +
