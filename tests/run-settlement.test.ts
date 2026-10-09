@@ -21,7 +21,6 @@ import { NO_RUN_FEES } from './helpers/platform-funding.ts';
  * run can fail, and what is credited back when Chickpea pays the run's
  * provider (`platform`), when the workspace's own key does (`customer`), and
  * when Chickpea pays and the run had already called a tool (`platformAfterToolCall`).
- * The executor giving up on a turn is its own kind, `recovery-failure`.
  */
 const EXPECTED: Record<
   SlackFailureKind | RoutineFailureClass | RecoveryFailure,

@@ -15,7 +15,7 @@ export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to you
 
 export type SlackFailureKind = Extract<FlueSettlementCheckpointV1, { outcome: 'failed' | 'aborted' }>['failureKind'];
 
-/** The executor gave the turn up: an eviction or wall-time yield, or a reconciliation it could not settle. */
+/** The executor gave the turn up after an eviction or wall-time yield, or a reconciliation it could not settle. */
 export type RecoveryFailure = 'recovery-failure';
 
 type FailureKind = SlackFailureKind | RoutineFailureClass | RecoveryFailure;
