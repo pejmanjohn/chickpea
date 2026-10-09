@@ -3,6 +3,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 
 import { adminUiStylesheet, renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
+import type { AdminOnboardingPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
@@ -253,8 +254,9 @@ function inlineScript(
   installationOwner = false,
   browserOffered = true,
   selfHosted = true,
+  onboarding?: AdminOnboardingPage,
 ): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted })
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -534,6 +536,11 @@ function runAdminPageHarness(
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
+    /**
+     * `/admin/onboarding` carries the journey the way its route reads it. False
+     * serves the page as when that read failed, so the client asks for it.
+     */
+    onboardingEmbedded?: boolean;
     onboardingProviderError?: { status: number; error: string; message?: string };
     onboardingTryError?: { status: number; error: string; message?: string; workspaceDefault?: WorkspaceDefaultFixture };
     slackChannelFailures?: number;
@@ -3088,6 +3095,10 @@ function runAdminPageHarness(
       options.installationOwner ?? false,
       options.browserOffered ?? true,
       options.selfHosted ?? true,
+      (options.initialPath ?? '/admin/channels') === '/admin/onboarding' ? {
+        initial: options.onboardingEmbedded === false || options.workspaceAdminUi === false ? null : options.onboarding ?? null,
+        githubConnectPath: options.selfHosted === false ? options.onboarding?.githubConnectPath ?? null : null,
+      } : undefined,
     ),
     {
       document,
@@ -3363,15 +3374,16 @@ function inlineScriptFor(
   installationOwner = false,
   browserOffered = true,
   selfHosted = true,
+  onboarding?: AdminOnboardingPage,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -19448,6 +19460,57 @@ function onboardingLabels(html: string): string[] {
   return [...rail.matchAll(/<span class="onboarding-step-label">([^<]*)<\/span>/g)].map((match) => match[1]!);
 }
 
+test('the step bar shows the same steps from the first paint to the end, whatever the journey\'s stage', async () => {
+  const modes: Array<[string, Partial<Parameters<typeof runAdminPageHarness>[0]>, string | undefined, string[]]> = [
+    ['hosted with GitHub', HOSTED_ADMIN, '/github/connect', ['Add to Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']],
+    ['hosted without GitHub', HOSTED_ADMIN, undefined, ['Add to Slack', 'Choose provider', 'Choose model', 'Try Chickpea']],
+    ['standalone', {}, undefined, ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']],
+  ];
+  for (const [mode, base, githubConnectPath, steps] of modes) {
+    const visits: Array<[string, OnboardingFixture, string]> = [
+      ['choosing a provider', { ...onboardingAt('choose_model', githubConnectPath), stage: 'choose_provider', providerId: null, modelId: null }, ''],
+      ['choosing a model', onboardingAt('choose_model', githubConnectPath), ''],
+      ...(githubConnectPath ? [
+        ['on the GitHub step', onboardingAt('connect_github', githubConnectPath), ''],
+        ['back from GitHub', onboardingAt('connect_github', githubConnectPath), '?github=connected'],
+      ] as Array<[string, OnboardingFixture, string]> : []),
+      ['on Try', onboardingAt('try', githubConnectPath), ''],
+      ['when ready', onboardingAt('complete', githubConnectPath), ''],
+    ];
+    for (const [moment, onboarding, initialSearch] of visits) {
+      const harness = runAdminPageHarness({ ...base, ...hostedOnboardingProviders, initialPath: '/admin/onboarding', initialSearch, onboarding });
+      assert.deepEqual(onboardingLabels(harness.renderHistory[0]!), steps, `${mode}, ${moment}: the first paint`);
+      await flushAsync();
+      await flushAsync();
+      harness.renderHistory.forEach((html, index) => assert.deepEqual(onboardingLabels(html), steps, `${mode}, ${moment}: render ${index}`));
+    }
+  }
+});
+
+test('the onboarding page paints its real step first, and a provider step waits quietly for the providers', async () => {
+  const trying = runAdminPageHarness({ ...HOSTED_ADMIN, ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try') });
+  assert.match(trying.renderHistory[0]!, /Meet Chickpea in Slack/);
+  assert.doesNotMatch(trying.renderHistory.join(''), /Loading setup/);
+  await flushAsync();
+  assert.equal(trying.fetchCalls.filter(({ path }) => path === '/admin/api/onboarding').length, 0, 'the page already carries the journey');
+
+  const choosing = runAdminPageHarness({
+    ...hostedOnboardingProviders, initialPath: '/admin/onboarding',
+    onboarding: { ...onboardingAt('choose_model'), stage: 'choose_provider', providerId: null, modelId: null },
+  });
+  const first = choosing.renderHistory[0]!;
+  assert.ok(first.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel onboarding-panel-wide" aria-busy="true"></section></div>'), 'an empty panel until the providers load');
+  assert.doesNotMatch(first, /Loading setup|onboarding-provider-tab/);
+  await flushAsync();
+  assert.match(choosing.app.innerHTML, /<p class="onboarding-eyebrow">Step 2 of 4<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
+  assert.match(choosing.app.innerHTML, /<span>Anthropic<\/span><span class="onboarding-provider-tab-status">Ready<\/span>/);
+
+  const unread = runAdminPageHarness({ ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try'), onboardingEmbedded: false });
+  assert.match(unread.renderHistory[0]!, /Loading setup&hellip;/, 'a page without the journey says it is loading it');
+  await flushAsync();
+  assert.match(unread.app.innerHTML, /Meet Chickpea in Slack/);
+});
+
 test('hosted pages carry no deployment environment label; standalone keeps it on onboarding', async () => {
   const config = (script: string) => script.match(/window\.__chickpeaAdminConfig = (.*);\n/)![1]!;
   for (const cloudflare of [false, true]) {
@@ -19472,7 +19535,7 @@ test('hosted onboarding offers Connect GitHub (optional) after the model; Skip f
     onboarding: onboardingAt('choose_model', '/github/connect'),
   });
   await flushAsync();
-  assert.deepEqual(onboardingLabels(harness.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
+  assert.deepEqual(onboardingLabels(harness.app.innerHTML), ['Add to Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
   assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 3 of 5<\/p>/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-model-continue' }) });
   await flushAsync();
@@ -19525,8 +19588,8 @@ test('hosted onboarding opens at Choose provider with Slack done, offering API k
   });
   await flushAsync();
   const html = harness.app.innerHTML;
-  assert.deepEqual(onboardingLabels(html), ['Connect Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
-  assert.match(html, /<li class="complete"><span class="onboarding-step-dot">&#10003;<\/span><span class="onboarding-step-label">Connect Slack<\/span><\/li>/);
+  assert.deepEqual(onboardingLabels(html), ['Add to Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
+  assert.match(html, /<li class="complete"><span class="onboarding-step-dot">&#10003;<\/span><span class="onboarding-step-label">Add to Slack<\/span><\/li>/);
   assert.match(html, /<p class="onboarding-eyebrow">Step 2 of 5<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
   assert.deepEqual([...html.matchAll(/data-action="onboarding-provider-select" data-provider="([^"]+)"/g)].map((match) => match[1]),
     ['openai', 'anthropic', 'openrouter']);
@@ -19571,12 +19634,12 @@ test('standalone onboarding has no GitHub step, even with a connect path in its 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-model-continue' }) });
   await flushAsync();
   assert.doesNotMatch(harness.app.innerHTML, /Let Agents work on your code|Skip for now|github-connect-form/);
-  // Hosted without a connect path: the four standalone steps.
+  // Hosted without a connect path: standalone's four steps, starting at Add to Slack.
   const hostedWithout = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders, onboarding: onboardingAt('try'),
   });
   await flushAsync();
-  assert.deepEqual(onboardingLabels(hostedWithout.app.innerHTML), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
+  assert.deepEqual(onboardingLabels(hostedWithout.app.innerHTML), ['Add to Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
   assert.match(hostedWithout.app.innerHTML, /Step 4 of 4/);
 });
 

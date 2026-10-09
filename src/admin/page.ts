@@ -21,7 +21,7 @@ import {
   CHICKPEA_WORDMARK_HTML,
 } from '../brand/chickpea-mark.ts';
 import type { SlackSetupTransaction } from '../identity/types.ts';
-import type { OnboardingStep, OnboardingStepId } from './onboarding-steps.ts';
+import { onboardingSteps, type OnboardingStep, type OnboardingStepId } from './onboarding-steps.ts';
 import type { SlackAppManifest } from '../slack/app-manifest.ts';
 import {
   ADMIN_UI_SCRIPT_PATH,
@@ -54,6 +54,7 @@ export function adminUiConfig(input: {
   billingOffered?: boolean;
   /** Standalone only: the runtime this deployment runs on, shown beside onboarding's brand. */
   targetChip?: string | undefined;
+  onboarding?: (AdminOnboardingPage & { steps: OnboardingStep[] }) | undefined;
 }): Record<string, unknown> {
   return {
     isCloudflare: input.isCloudflare,
@@ -64,6 +65,7 @@ export function adminUiConfig(input: {
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
     ...(input.targetChip ? { targetChip: input.targetChip } : {}),
+    ...(input.onboarding ? { onboarding: input.onboarding } : {}),
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
     managedConnectorPresets: MANAGED_CONNECTOR_PRESETS,
@@ -83,6 +85,14 @@ function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
   return JSON.stringify(adminUiConfig(input)).replace(/</g, '\\u003c');
 }
 
+/** What `/admin/onboarding` serves beside the shell, so its first paint is the real step. */
+export interface AdminOnboardingPage {
+  /** The journey as `GET /admin/api/onboarding` returns it; null when it could not be read here. */
+  initial: Readonly<Record<string, unknown>> | null;
+  /** Where Connect GitHub posts; null when the host cannot start one, and on standalone. */
+  githubConnectPath: string | null;
+}
+
 export function renderAdminPage(
   options: {
     usageAdminUi?: boolean;
@@ -92,6 +102,7 @@ export function renderAdminPage(
     selfHosted?: boolean;
     billingOffered?: boolean;
     assetVersion?: string;
+    onboarding?: AdminOnboardingPage | undefined;
   } = {},
 ): string {
   // Target-aware setup and provider copy differs between the Node and
@@ -107,6 +118,14 @@ export function renderAdminPage(
   // Tests and fixtures render without a build; the authenticated route passes
   // the content hash so browsers never pair a new shell with a cached script.
   const assetVersion = options.assetVersion ?? 'dev';
+  const onboarding = options.onboarding && {
+    ...options.onboarding,
+    steps: onboardingSteps({
+      selfHosted,
+      chickpeaModels: options.billingOffered === true && options.installationOwner === true,
+      github: options.onboarding.githubConnectPath !== null,
+    }),
+  };
   // No referrer policy: the browser default sends other sites only Admin's
   // origin, never a path. `same-origin` or `no-referrer` would also send
   // `Origin: null` on cross-origin form POSTs, such as the GitHub App manifest
@@ -122,7 +141,7 @@ ${CHICKPEA_FAVICON_HTML}
 <link rel="stylesheet" href="${adminUiAssetUrl(ADMIN_UI_STYLESHEET_PATH, assetVersion)}">
 </head>
 <body>
-<div id="app" class="frame primary-admin-shell" aria-busy="true">
+${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand">${CHICKPEA_MARK_HTML}${CHICKPEA_WORDMARK_HTML}</div>${targetChip ? `<span class="onboarding-environment">${escapeHtml(targetChip)}</span>` : ''}</div></div></main></div>` : `<div id="app" class="frame primary-admin-shell" aria-busy="true">
   <header class="topbar">
     <div class="brand">
       ${CHICKPEA_MARK_HTML}
@@ -138,11 +157,11 @@ ${CHICKPEA_FAVICON_HTML}
     </nav>
     <main class="main"><div class="main-inner"><div class="empty" role="status"><h1 class="page-title">Loading Chickpea&hellip;</h1><p class="hint">Reading your workspace configuration.</p></div></div></main>
   </div>
-</div>
+</div>`}
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
     browserOffered: options.browserOffered !== false, selfHosted,
-    billingOffered: options.billingOffered === true, targetChip,
+    billingOffered: options.billingOffered === true, targetChip, onboarding,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>

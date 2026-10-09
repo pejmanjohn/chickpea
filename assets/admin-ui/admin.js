@@ -23,6 +23,9 @@
   // The host sells Chickpea's models: Admin has the Plan page, and
   // onboarding offers them.
   var BILLING_OFFERED = CONFIG.billingOffered === true;
+  // Only /admin/onboarding carries this: the journey as the server read it,
+  // where Connect GitHub posts, and the steps, fixed for the life of the page.
+  var ONBOARDING_PAGE = CONFIG.onboarding || { initial: null, githubConnectPath: null, steps: [] };
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
   var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox"];
@@ -54,12 +57,13 @@
   var GOOGLE_WORKSPACE_SCOPES = CONFIG.googleWorkspaceScopes;
   var ONBOARDING_PROMPT = "Hi Chickpea. I'm on the marketing team. What's a good first teammate for us?";
   var MCP_CLIENTS_LOAD_ERROR = "Couldn’t load client settings. Reopen Settings to retry.";
+  var MODELS_NOT_LOADED = { providers: [] };
   var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
   var state = {
     agents: [],
     grants: [],
     environmentStatus: null,
-    models: { providers: [] },
+    models: MODELS_NOT_LOADED,
     active: null,
     effective: null,
     effectiveError: "",
@@ -218,7 +222,7 @@
     mobileAgentRosterOpen: false,
     mobileAgentRosterFocus: "",
     slack: null,
-    onboarding: null,
+    onboarding: ONBOARDING_PAGE.initial,
     onboardingError: "",
     onboardingBusy: false,
     onboardingNotice: "",
@@ -1730,7 +1734,6 @@
   }
 
   function railHtml() {
-    if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
     if (state.view === "billing") return billingRailHtml();
     if (state.view === "team") return teamRailHtml();
@@ -1743,20 +1746,6 @@
 
   function primaryShellBrandHtml() {
     return '<div class="primary-shell-brand"><button type="button" class="brand-home" data-action="go-home" aria-label="Home">' + peaMarkHtml() + wordmarkHtml() + '</button>' + environmentStatusHtml('rail') + '</div>';
-  }
-
-  function onboardingRailHtml() {
-    var stage = state.onboarding && state.onboarding.stage;
-    var current = onboardingStepNumber() - 1;
-    var labels = onboardingStepLabels();
-    return '<nav class="rail" aria-label="Setup progress"><div class="rail-context">' +
-      '<div class="rail-head"><span class="section-eyebrow">Get started</span></div>' +
-      labels.map(function (label, index) {
-        var done = index < current || stage === "complete";
-        var active = index === current && stage !== "complete";
-        return '<div class="chan-item' + (active ? ' active' : '') + '"' + (active ? ' aria-current="step"' : '') + '>' +
-          '<span class="chan-name">' + (done ? '&#10003; ' : (index + 1) + '. ') + esc(label) + '</span></div>';
-      }).join("") + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
 
   function channelsRailHtml() {
@@ -2820,7 +2809,7 @@
     var panel = selected
       ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
       : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 2 of ' + onboardingStepLabels().length + '</p>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
       '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
@@ -2870,7 +2859,7 @@
       if (recommendation && model === recommendation.model) label += recommendation.caveat ? " \u00b7 free default" : " \u00b7 recommended";
       return '<option value="' + esc(model) + '"' + (model === state.onboardingModelSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
     }).join("");
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 3 of ' + onboardingStepLabels().length + '</p>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
       '<h1 class="onboarding-title">Choose your model</h1>' +
       '<p class="onboarding-lede">Pick the ' + esc(provider.name) + ' model Chickpea should use for replies. You can change this later.</p>' +
       '<div class="onboarding-model-provider"><span class="onboarding-model-provider-identity">' + onboardingProviderLogoHtml(provider) + '<span class="onboarding-model-provider-copy"><span>' + esc(provider.name) + '</span><span class="onboarding-model-provider-status">Connected</span></span></span><button type="button" class="btn btn-soft" data-action="onboarding-change-provider">Change provider</button></div>' +
@@ -2894,7 +2883,7 @@
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide">' + githubConnectedNoticeHtml() + '<div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
-      '<p class="onboarding-eyebrow">Step ' + onboardingStepLabels().length + ' of ' + onboardingStepLabels().length + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
+      '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
       '<p class="onboarding-prompt-hint">Swap in your own team before you send it.</p>' +
@@ -2909,18 +2898,28 @@
   // Hosted onboarding offers Connect GitHub (optional) between the model and
   // Try Chickpea while the host can start its connect flow; standalone never.
   function onboardingGithubConnectPath() {
-    return SELF_HOSTED || !state.onboarding ? "" : sameOriginPath(state.onboarding.githubConnectPath);
+    return sameOriginPath(ONBOARDING_PAGE.githubConnectPath);
   }
 
-  function onboardingStepLabels() {
-    if (onboardingOnChickpeaModels()) {
-      return onboardingGithubConnectPath()
-        ? ["Connect Slack", "Connect GitHub", "Try Chickpea"]
-        : ["Connect Slack", "Try Chickpea"];
-    }
-    return onboardingGithubConnectPath()
-      ? ["Connect Slack", "Choose provider", "Choose model", "Connect GitHub", "Try Chickpea"]
-      : ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
+  var ONBOARDING_STAGE_STEPS = {
+    connect_slack: "slack", choose_provider: "provider", choose_model: "model", connect_github: "github", try: "try"
+  };
+
+  // The journey's place in the page's steps; past the last once it is complete.
+  function onboardingStepIndex() {
+    var steps = ONBOARDING_PAGE.steps;
+    var stage = state.onboarding && state.onboarding.stage;
+    if (stage === "complete") return steps.length;
+    // Setting up Chickpea's models is part of adding Chickpea to Slack.
+    var id = (stage === "choose_provider" || stage === "choose_model") && onboardingOnChickpeaModels()
+      ? "slack"
+      : ONBOARDING_STAGE_STEPS[stage] || "slack";
+    var index = steps.findIndex(function (step) { return step.id === id; });
+    return index >= 0 ? index : steps.length - 1;
+  }
+
+  function onboardingStepEyebrow() {
+    return "Step " + (onboardingStepIndex() + 1) + " of " + ONBOARDING_PAGE.steps.length;
   }
 
   // Connecting returns here with `?github=connected`, landing on Try.
@@ -2940,8 +2939,9 @@
     }
     if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
-    if ((state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") && onboardingOnChickpeaModels()) {
-      return onboardingPlatformSetupHtml();
+    if (state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") {
+      if (onboardingOnChickpeaModels()) return onboardingPlatformSetupHtml();
+      if (state.models === MODELS_NOT_LOADED) return '<section class="onboarding-panel onboarding-panel-wide" aria-busy="true"></section>';
     }
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
@@ -2950,27 +2950,12 @@
     return onboardingTryHtml(true);
   }
 
-  function onboardingStepNumber() {
-    var stage = state.onboarding && state.onboarding.stage;
-    if (onboardingOnChickpeaModels() && (stage === "choose_provider" || stage === "choose_model" ||
-        (stage === "connect_github" && onboardingGithubConnectPath()))) return 2;
-    if (stage === "choose_provider") return 2;
-    if (stage === "choose_model") return 3;
-    if (stage === "connect_github" && onboardingGithubConnectPath()) return 4;
-    if (stage === "connect_github" || stage === "try" || stage === "complete") return onboardingStepLabels().length;
-    return 1;
-  }
-
   function onboardingOrientationHtml() {
-    var current = onboardingStepNumber();
-    var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
-    var labels = onboardingStepLabels();
-    return '<ol class="onboarding-orientation' + (labels.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
-      var step = index + 1;
-      var isComplete = journeyComplete || step < current;
-      var isActive = !journeyComplete && step === current;
-      var className = isComplete ? "complete" : isActive ? "active" : "";
-      return '<li class="' + className + '"' + (isActive ? ' aria-current="step"' : '') + '><span class="onboarding-step-dot">' + (isComplete ? '&#10003;' : step) + '</span><span class="onboarding-step-label">' + esc(label) + '</span></li>';
+    var current = onboardingStepIndex();
+    var steps = ONBOARDING_PAGE.steps;
+    return '<ol class="onboarding-orientation' + (steps.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + steps.map(function (step, index) {
+      var className = index < current ? "complete" : index === current ? "active" : "";
+      return '<li class="' + className + '"' + (index === current ? ' aria-current="step"' : '') + '><span class="onboarding-step-dot">' + (index < current ? '&#10003;' : index + 1) + '</span><span class="onboarding-step-label">' + esc(step.label) + '</span></li>';
     }).join("") + '</ol>';
   }
 
@@ -2982,9 +2967,6 @@
   }
 
   function mainHtml() {
-    if (state.view === "onboarding") {
-      return '<main class="main"><div class="main-inner">' + onboardingMainHtml() + '</div></main>';
-    }
     if (state.view === "usage") {
       return '<main class="main"><div class="main-inner usage-main">' + usageMainHtml() + '</div></main>';
     }
@@ -13326,7 +13308,7 @@
         auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
         auxiliary(requests.imageModels, function (body) { applyImageModels(body); });
         auxiliary(requests.slack, function (body) { state.slack = body; state.slackStatusAt = Date.now(); });
-        auxiliary(requests.onboarding, function (result) { state.onboarding = result.body; state.onboardingError = result.error; });
+        auxiliary(requests.onboarding, applyBootOnboarding);
         auxiliary(requests.workspaceDefault, function (body) {
           if (body && body.workspaceDefault) applyWorkspaceDefault(body.workspaceDefault, false);
         });
@@ -13384,8 +13366,7 @@
       state.models = parts[1];
       state.slack = parts[2];
       state.slackStatusAt = Date.now();
-      state.onboarding = parts[3].body;
-      state.onboardingError = parts[3].error;
+      applyBootOnboarding(parts[3]);
       state.channelIndex = parts[4].channels;
       state.channelIndex.forEach(function (channel) {
         (channel.grants || []).forEach(function (grant) {
@@ -13408,12 +13389,20 @@
     });
   }
 
+  // Once the page holds the journey, only onboarding's own requests move it:
+  // setup may already have moved it on while the boot's requests ran.
+  function applyBootOnboarding(result) {
+    if (!result || state.onboarding) return;
+    state.onboarding = result.body;
+    state.onboardingError = result.error;
+  }
+
   // The boot requests other than the Agent inventory.
   function createBootAuxiliaryRequests() {
     var slackRequest = WORKSPACE_ADMIN_UI
       ? requestSlackStatus().catch(function () { return null; })
       : Promise.resolve(null);
-    var onboardingRequest = WORKSPACE_ADMIN_UI
+    var onboardingRequest = WORKSPACE_ADMIN_UI && !state.onboarding
       ? api("/admin/api/onboarding").then(function (body) {
           return { body: body, error: "" };
         }).catch(function (error) {
@@ -13424,7 +13413,7 @@
               : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
           };
         })
-      : Promise.resolve({ body: null, error: "" });
+      : Promise.resolve(null);
     var channelsRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/channels").then(function (body) {
           return { channels: body.channels || [], error: "" };
@@ -17666,10 +17655,7 @@
   var initialRoute = canNavigate ? location.pathname : "/admin";
   if (initialRoute === "/admin/onboarding") {
     state.view = "onboarding";
-    // Paint the dedicated setup shell before any API request settles. The
-    // server HTML contains the normal Admin skeleton, so waiting for
-    // refreshData() would briefly expose post-setup navigation after the owner
-    // form redirects here.
+    // The page carries the journey: paint its step before any request settles.
     render();
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
