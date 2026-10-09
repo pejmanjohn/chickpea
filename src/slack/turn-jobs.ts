@@ -39,6 +39,7 @@ import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
+import { personRequestText } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
@@ -1544,6 +1545,7 @@ export class TurnJobStoreLogic {
       // different Durable Objects.
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
+      const requesterText = personRequestText(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -1563,7 +1565,7 @@ export class TurnJobStoreLogic {
             eventId: turn.eventId,
             messageTs: turn.messageTs,
             turnJobId: id,
-            requesterText: turn.text.slice(0, 40_000),
+            ...(requesterText === undefined ? {} : { requesterText: requesterText.slice(0, 40_000) }),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }

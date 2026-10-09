@@ -113,7 +113,12 @@ import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
 } from './public-context.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { isAgentAskSilentReply, isHandedBackTurn, isLaterCoAddressedTurn } from './agent-asks.ts';
+import {
+  isAgentAskSilentReply,
+  isHandedBackTurn,
+  isLaterCoAddressedTurn,
+  personRequestText,
+} from './agent-asks.ts';
 import {
   effectiveTurnSlackInstallationId,
   resolveSlackInstallationExecutionContext,
@@ -2033,6 +2038,7 @@ async function runTurnAttempt(
         };
       });
       const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+      const requesterText = personRequestText(turn);
       const signal = {
         agentId: assignment.agent.id,
         workspaceId: turn.workspaceId,
@@ -2043,7 +2049,7 @@ async function runTurnAttempt(
         eventId: turn.eventId,
         messageTs: turn.messageTs,
         turnJobId,
-        requesterText: turn.text,
+        ...(requesterText === undefined ? {} : { requesterText }),
         ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
       } as const;
       const actor = await resolveSlackManagementActor(signal, dependencies.identity);
@@ -2116,6 +2122,7 @@ async function runTurnAttempt(
           };
         });
         const turnJobId = options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`;
+        const requesterText = personRequestText(turn);
         const signal = {
           agentId: assignment.agent.id,
           workspaceId: turn.workspaceId,
@@ -2126,8 +2133,8 @@ async function runTurnAttempt(
           eventId: turn.eventId,
           messageTs: turn.messageTs,
           turnJobId,
-          requesterText: turn.text,
-        ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
+          ...(requesterText === undefined ? {} : { requesterText }),
+          ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
         } as const;
         const actor = await resolveSlackManagementActor(signal, dependencies.identity);
         acknowledgeMemoryUpdate = await verifyMemoryUpdateAcknowledgement({

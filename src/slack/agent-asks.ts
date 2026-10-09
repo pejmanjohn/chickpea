@@ -194,3 +194,8 @@ export function createAgentAskCollector(input: {
     },
   };
 }
+
+/** The request text a turn carries for checks that need it. */
+export function personRequestText(turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>): string | undefined {
+  return turn.text;
+}
