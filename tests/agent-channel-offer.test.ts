@@ -6,6 +6,7 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
+import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /** The Slack button that adds a mentioned Agent; the gateway forwards it by this prefix. */
@@ -91,12 +92,18 @@ async function withLane(
     const gateway = {
       workspaceId: 'T1',
       async loadBinding() { return binding; },
+      async publishAvatar({ agentId }: { agentId: string }) { return `https://example.com/${agentId}.png`; },
       async call(operation: string, args: Record<string, unknown>) {
         if (operation === 'users.info') return { user: slackUser(String(args.user)) };
         if (operation === 'conversations.info') return { channel: liveChannel };
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'UBOT'] };
         if (operation === 'users.conversations') return { channels: [liveChannel] };
         if (operation === 'usergroups.list') return { usergroups: groups };
+        if (operation === 'usergroups.update') {
+          const group = groups.find(({ id }) => id === args.usergroup)!;
+          Object.assign(group, { name: args.name, handle: args.handle, description: args.description });
+          return { usergroup: group };
+        }
         if (operation === 'chat.postMessage') {
           posts.push(args);
           return { ok: true, ts: `9000.00000${posts.length}`, channel: args.channel };
@@ -162,7 +169,10 @@ test('only the Chickpea that owns a mentioned Agent answers it; another Chickpea
   // The installation whose Agent @help is.
   await withLane([HELP], async ({ jobs, posts, send }) => {
     await send(mention);
-    assert.deepEqual(jobs.map(({ assignment }) => assignment.agentId), [HELP.id]);
+    // One mention is one run, in the mention's own thread, and nothing else is posted.
+    assert.deepEqual(jobs.map(({ assignment, turn }) => [assignment.agentId, turn.channelId, turn.threadTs]), [
+      [HELP.id, 'C1', mention.ts],
+    ]);
     assert.deepEqual(posts, []);
   });
   // A second Chickpea in the same Channel, whose Agents do not include @help.
@@ -223,5 +233,48 @@ test('a person who may not add the Agent is told who can, and a forged click add
     );
     assert.equal(posts.at(-1)?.user, 'U2');
     assert.equal(posts.at(-1)?.text, 'Ask a workspace Owner or Admin, such as <@U1>, to add @legal to this channel.');
+  });
+});
+
+test('on a direct install, as hosted runs, the Add button adds the Agent through Slack\'s signed click', async () => {
+  const group = { id: 'SLEGAL', name: 'Legal', handle: 'legal', description: 'Legal Agent', date_delete: 0, date_update: 1 };
+  await withDirectSlackInstall({
+    answer: (method, body) => {
+      if (method === 'users.info') return { ok: true, user: slackUser(body.get('user') ?? 'U1') };
+      if (method === 'conversations.info') {
+        return { ok: true, channel: { id: 'C1', name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false } };
+      }
+      if (method === 'conversations.members') return { ok: true, members: ['U1', 'UBOT'] };
+      if (method === 'usergroups.list') return { ok: true, usergroups: [group] };
+      return undefined;
+    },
+  }, async ({ stores, ownerMembershipId, calls, deliver }) => {
+    await stores.config.createAgent({
+      id: LEGAL.id, name: 'Legal', instructions: 'Help as Legal.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: ownerMembershipId, editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'legal', normalizedHandle: 'legal', desiredState: 'active', health: 'healthy',
+        userGroupId: 'SLEGAL', avatar: { kind: 'generated', revision: 1, seed: 'legal' },
+      },
+    });
+    const response = await deliver('interactions', {
+      type: 'block_actions', api_app_id: 'A1', team: { id: 'T1' }, user: { id: 'U1' },
+      channel: { id: 'C1' }, trigger_id: 'trigger1',
+      container: { type: 'message', channel_id: 'C1', message_ts: '1800000000.000200', is_ephemeral: true },
+      actions: [{
+        type: 'button', action_id: ADD_ACTION, block_id: ADD_ACTION, value: LEGAL.id,
+        action_ts: '1800000001.000100',
+      }],
+    });
+    assert.equal(response.status, 200);
+    let notice: URLSearchParams | undefined;
+    for (let tries = 0; tries < 200 && !notice; tries += 1) {
+      notice = calls.find(({ method }) => method === 'chat.postEphemeral')?.body;
+      if (!notice) await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(notice?.get('text'), '@legal is ready in this channel. Mention @legal to start a conversation.');
+    const grant = (await stores.config.listAgentChannelGrants('T1', 'C1')).find(({ agentId }) => agentId === LEGAL.id);
+    assert.equal(grant?.status, 'active');
   });
 });
