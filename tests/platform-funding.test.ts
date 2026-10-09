@@ -61,7 +61,7 @@ import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '..
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
-import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
+import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
@@ -883,6 +883,42 @@ test('on a credits installation Admin lists the models Chickpea\'s models serve 
     assert.notEqual(ownKey.source, 'Chickpea’s models');
     assert.ok(ownKey.suggestions.includes(`anthropic/${SONNET}`));
     assert.ok((await cards()).every((card) => !('platformFunded' in card)));
+  });
+});
+
+test('on a credits installation Admin lists the OpenRouter models Chickpea\'s models price, with no key or starred model', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    return (await response.json()) as T;
+  };
+  type Listed = { id: string; configured: boolean; suggestions: string[] };
+  const listed = async () => (await read<{ providers: Listed[] }>('/admin/api/models')).providers;
+  const marked = async () =>
+    (await read<{ providers: Array<{ id: string; platformFunded?: boolean }> }>('/admin/api/providers')).providers
+      .filter(({ platformFunded }) => platformFunded).map(({ id }) => id);
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const openrouter = (await listed()).find(({ id }) => id === 'openrouter')!;
+    assert.equal(openrouter.configured, true);
+    for (const chosen of ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'moonshotai/kimi-k3']) {
+      assert.ok(openrouter.suggestions.includes(`openrouter/${chosen}`), `${chosen} is listed: ${openrouter.suggestions.join(', ')}`);
+    }
+    for (const model of openrouter.suggestions) {
+      const readiness = await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(model)}`);
+      assert.equal(readiness.unavailable, null, `${model} is listed only when the readiness rule serves it`);
+    }
+    assert.ok((await marked()).includes('openrouter'));
+
+    t.mock.timers.setTime(Math.max(...RELEASE_PRICE_CATALOGS.map(({ staleAfter }) => staleAfter)));
+    assert.deepEqual(
+      (await listed()).filter(({ configured, suggestions }) => configured || suggestions.length > 0).map(({ id }) => id),
+      [],
+      'with no current price Chickpea\'s models list nothing',
+    );
+    assert.deepEqual(await marked(), [], 'and mark no provider card');
   });
 });
 

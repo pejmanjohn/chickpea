@@ -14070,6 +14070,12 @@ const PLATFORM_ANTHROPIC: ModelProviderFixture = {
   source: 'Chickpea’s models',
   suggestions: [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
 };
+const PLATFORM_OPENROUTER: ModelProviderFixture = {
+  id: 'openrouter',
+  configured: true,
+  source: 'Chickpea’s models',
+  suggestions: ['openrouter/deepseek/deepseek-v4.1-flash', 'openrouter/z-ai/glm-5.3-flash', 'openrouter/moonshotai/kimi-k3'],
+};
 const HOSTED_PROVIDERS_WITHOUT_KEYS: ProviderSummaryFixture[] = ['anthropic', 'openai', 'openrouter'].map((id) => ({
   id,
   status: 'missing',
@@ -14082,8 +14088,9 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
     initialPath: '/admin/agents/agent_release',
     initialSearch: '?tab=model',
     agents: [{ ...releaseAgent, model: OFFERED_MODEL }],
-    modelProviders: [PLATFORM_ANTHROPIC],
+    modelProviders: [PLATFORM_ANTHROPIC, PLATFORM_OPENROUTER],
     anthropicModels: [{ id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }],
+    openrouterFavorites: [],
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
     selfHosted: false,
     browserOffered: false,
@@ -14094,9 +14101,11 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
 
   const list = harness.app.innerHTML.match(/<div class="combo-list" role="listbox">[\s\S]*?<div class="combo-settings">/)?.[0] ?? '';
   assert.match(list, /<div class="combo-group">anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">openrouter<span class="src">· Chickpea’s models<\/span><\/div>/);
   assert.deepEqual(
     [...list.matchAll(/data-action="pick-model" data-model="([^"]+)"/g)].map((match) => match[1]),
-    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
+    'OpenRouter lists the models Chickpea offers with no starred model',
   );
   assert.doesNotMatch(list, /no providers configured|Add or connect a provider/);
 });
@@ -14104,7 +14113,8 @@ test('on Chickpea\'s models the Agent model picker lists the models Chickpea off
 test('on Chickpea\'s models the Workspace default offers the same models as the Agent picker', async () => {
   const harness = runAdminPageHarness({
     initialPath: '/admin/settings/providers',
-    modelProviders: [PLATFORM_ANTHROPIC],
+    modelProviders: [PLATFORM_ANTHROPIC, PLATFORM_OPENROUTER],
+    openrouterFavorites: [],
     providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
     selfHosted: false,
     browserOffered: false,
@@ -14124,7 +14134,7 @@ test('on Chickpea\'s models the Workspace default offers the same models as the 
   const select = harness.app.innerHTML.match(/<select class="input mono" id="workspace-default-model"[\s\S]*?<\/select>/)?.[0] ?? '';
   assert.deepEqual(
     [...select.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
-    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
   );
 });
 
