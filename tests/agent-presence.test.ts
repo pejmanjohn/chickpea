@@ -265,7 +265,7 @@ test('Slack policy denial saves needs-attention state with the exact role recove
     assert.equal(saved.slackPresence?.errorCode, 'user_group_policy_denied');
     const recovery = agentPresenceRecovery(
       new AgentPresenceError('user_group_policy_denied', 'denied'),
-      'support',
+      agent('agent_support', 'Support', 'support'),
     );
     assert.match(recovery.explanation, /Reconnecting Slack will not change/);
     assert.deepEqual(recovery.steps, [
@@ -285,7 +285,7 @@ test('revoked or displaced shared-app authority gives reconnect, not generic Ret
       new SlackTransportError('usergroups.update', slackCode),
     );
     assert.equal(classified.code, 'slack_reconnect_required');
-    const recovery = agentPresenceRecovery(classified, 'support');
+    const recovery = agentPresenceRecovery(classified, agent('agent_support', 'Support', 'support'));
     assert.equal(recovery.actionLabel, 'Reconnect Slack');
     assert.equal(recovery.actionKind, 'reconnect');
     assert.match(recovery.explanation, /current Slack Owner or Admin/);
@@ -1013,8 +1013,7 @@ for (const externallyDisabled of [false, true]) {
       assert.equal(failed.slackPresence?.errorDetail,
         'Slack did not allow Chickpea to deactivate the @support user group. ' +
           'The Agent is not archived until that user group is deactivated.');
-      const recovery = agentPresenceRecovery(new AgentPresenceError('user_group_policy_denied', 'denied'),
-        'support', failed.slackPresence?.desiredState);
+      const recovery = agentPresenceRecovery(new AgentPresenceError('user_group_policy_denied', 'denied'), failed);
       assert.match(recovery.title, /archiving @support/);
       assert.match(recovery.explanation, /without reactivating/);
       assert.match(recovery.steps[0] ?? '', /deactivate the @support user group: in Slack, open Directories → User Groups, select @support/);

@@ -4913,7 +4913,6 @@ test('Slack policy failures preserve the Agent and return exact recovery steps',
   }
 });
 
-/** Slack refuses a user group whose name or handle is already taken in the workspace. */
 function enforceSlackUniqueness(transport: FakeTransport, memberHandles: string[] = []): string[] {
   const sentNames: string[] = [];
   const create = transport.createUserGroup.bind(transport);

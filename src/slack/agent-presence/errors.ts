@@ -1,11 +1,13 @@
-import type { AgentPresenceDesiredState } from '../../config/types.ts';
+import type { CustomAgentConfig } from '../../config/types.ts';
 import { SlackTransportError } from '../transport/types.ts';
+import { normalizeAgentHandle } from './handles.ts';
 
 type AgentPresenceErrorCode =
   | 'paid_plan_required'
   | 'user_group_policy_denied'
   | 'two_factor_required'
   | 'handle_collision'
+  | 'name_collision'
   | 'invalid_handle'
   | 'channel_membership_required'
   | 'private_channel_invite_required'
@@ -48,9 +50,8 @@ const TWO_FACTOR_ERRORS = new Set([
   'two_factor_setup_required',
   'two_factor_required',
 ]);
-const COLLISION_ERRORS = new Set([
+const HANDLE_COLLISION_ERRORS = new Set([
   'handle_already_exists',
-  'name_already_exists',
   'already_exists',
 ]);
 const INVALID_HANDLE_ERRORS = new Set([
@@ -104,7 +105,14 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
       common,
     );
   }
-  if (COLLISION_ERRORS.has(error.code)) {
+  if (error.code === 'name_already_exists') {
+    return new AgentPresenceError(
+      'name_collision',
+      'A Slack user group already has this Agent’s name. Rename the Agent, then retry.',
+      common,
+    );
+  }
+  if (HANDLE_COLLISION_ERRORS.has(error.code)) {
     return new AgentPresenceError(
       'handle_collision',
       'That Slack handle or user-group name is already in use.',
@@ -147,9 +155,10 @@ interface AgentPresenceRecovery {
 /** Atlas-quality explanation plus exact remediation instead of reconnect advice. */
 export function agentPresenceRecovery(
   error: Pick<AgentPresenceError, 'code' | 'message'>,
-  handle: string,
-  desiredState: AgentPresenceDesiredState = 'active',
+  agent: Pick<CustomAgentConfig, 'name' | 'slackPresence'>,
 ): AgentPresenceRecovery {
+  const handle = agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name);
+  const desiredState = agent.slackPresence?.desiredState ?? 'active';
   if (desiredState === 'disabled') {
     return {
       title: `Slack could not finish archiving @${handle}`,
@@ -215,6 +224,14 @@ export function agentPresenceRecovery(
       title: `@${handle} is already in use`,
       explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
       steps: ['Choose one of the suggested available handles or enter another handle.', 'Select Retry.'],
+      actionLabel: 'Retry',
+    };
+  }
+  if (error.code === 'name_collision') {
+    return {
+      title: `A Slack user group is already named “${agent.name}”`,
+      explanation: 'Rename this Agent, then press Retry.',
+      steps: [],
       actionLabel: 'Retry',
     };
   }
