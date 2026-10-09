@@ -379,7 +379,7 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
-    if (pendingGrant.status !== 'active') {
+    if (pendingGrant.status !== 'active' && published.slackPresence?.kind !== 'agent_app') {
       await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
         workspaceId: input.workspaceId,
         channelId: input.channelId,

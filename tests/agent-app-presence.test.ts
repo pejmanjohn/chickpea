@@ -176,7 +176,7 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
     assert.equal(published.grant.status, 'active');
     assert.deepEqual(published.agent.slackPresence, presence);
     assert.deepEqual(transport.calls, []);
-    assert.equal(announce.announced.includes('handleWentLive'), false, 'no handle went live');
+    assert.deepEqual(announce.announced, []);
   } finally {
     config.close();
   }
@@ -237,10 +237,11 @@ test('archiving an Agent app retires the app first, and refuses without a host f
         return { id, name: 'Support', handle: 'support', disabled: true, updatedAt: NOW / 1000 };
       },
     });
+    const announce = announcementRecorder();
     const archived = await new AgentPresenceReconciler({
       config,
       transport: withHost,
-      announce: null,
+      announce,
       now: () => NOW,
       agentApps: {
         async retire(current) {
@@ -255,6 +256,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
     assert.equal(archived.slackPresence?.userGroupId, 'S1');
     assert.equal(archived.slackPresence?.desiredState, 'disabled');
     assert.deepEqual(withHost.calls, []);
+    assert.deepEqual(announce.announced, []);
   } finally {
     config.close();
   }

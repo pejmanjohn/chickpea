@@ -31,8 +31,8 @@ import {
 export const SLACK_INSTALL_ATTEMPT_TTL_MS = 15 * 60_000;
 export const SLACK_INSTALL_PROCESSING_LEASE_MS = 10 * 60_000;
 const MAX_SLACK_INSTALL_RESPONSE_BYTES = 64 * 1_024;
-const SLACK_BOT_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
-const SLACK_BOT_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
+export const SLACK_BOT_AUTHORIZE_URL = 'https://slack.com/oauth/v2/authorize';
+export const SLACK_BOT_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
 type SlackInstallOAuthErrorCode =
