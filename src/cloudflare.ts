@@ -1133,7 +1133,17 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   async identityExecute(
     request: IdentityRpcRequest,
   ): Promise<StateRpcResult<IdentityRpcResponse>> {
-    return this.call((stores) => stores.identity.execute(request));
+    const result = this.call((stores) => stores.identity.execute(request));
+    // A hosted first-Owner claim queues Chickpea's introduction in the same
+    // transaction (tag-state-stores.ts). Nothing else would drain it until an
+    // unrelated wake.
+    if (result.ok && request.kind === 'claim_owner') {
+      const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
+      if (due.ok && due.value !== null) {
+        await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
+      }
+    }
+    return result;
   }
 
   async managementExecute(

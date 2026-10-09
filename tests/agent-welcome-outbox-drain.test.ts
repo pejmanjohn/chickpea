@@ -4,6 +4,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
+import { CfIdentityStore } from '../src/config/cf-state-proxies.ts';
+import type { TagStateRpc } from '../src/config/state-rpc.ts';
+import type { IdentityRpcRequest } from '../src/identity/types.ts';
 import { drainManagementReceiptOutbox } from '../src/management/receipts.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import type {
@@ -11,6 +14,8 @@ import type {
   ManagementRpcRequest,
 } from '../src/management/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { hostedInstallation } from './helpers/installation-objects.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 // Execute the production TagStateStore RPC method and its alarm helper (not a
 // copy of their arming rule) over a real management store. Under the thread
@@ -25,7 +30,7 @@ const source = ts.createSourceFile(
 const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
-const methods = ['managementExecute', 'armAlarmNoLaterThan'].map((name) => {
+const methods = ['identityExecute', 'managementExecute', 'armAlarmNoLaterThan'].map((name) => {
   const method = stateClass.members.find((member) =>
     ts.isMethodDeclaration(member) && member.name.getText(source) === name);
   assert.ok(method, `production method ${name} exists`);
@@ -40,6 +45,7 @@ type Result = { ok: true; value: unknown } | { ok: false; error: { code: string 
 type Probe = {
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   call: (callback: (stores: unknown) => unknown) => Result;
+  identityExecute(request: IdentityRpcRequest): Promise<Result>;
   managementExecute(request: ManagementRpcRequest): Promise<Result>;
 };
 const ProbeClass = vm.runInNewContext(compiled, { Date }) as new () => Probe;
@@ -158,4 +164,23 @@ test('a replayed welcome claim posts exactly one welcome and re-arms nothing onc
     assert.equal((await drain()).delivered, 0);
     assert.deepEqual(posted, ['agent_welcome_op_welcome'], 'exactly one welcome post');
   } finally { f.db.close(); }
+});
+
+test('a hosted first-Owner claim over the state RPC arms the outbox drain for Chickpea\'s introduction', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const tenant = hostedInstallation('inst_owner_introduction');
+  const probe = new ProbeClass();
+  let alarm: number | null = LATER_SWEEP;
+  const writes: number[] = [];
+  probe.call = (callback) => ({ ok: true, value: callback(tenant.stores) });
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { writes.push(at); alarm = at; },
+  } };
+  const identity = new CfIdentityStore({
+    identityExecute: (request: IdentityRpcRequest) => probe.identityExecute(request),
+  } as unknown as TagStateRpc);
+  await createSlackOwner(identity, { now: NOW, organizationId: tenant.organizationId });
+  assert.equal(tenant.stores.management.nextOutboxDueAt(), NOW);
+  assert.deepEqual(writes, [NOW], 'the introduction is drained now, not at the next unrelated wake');
 });
