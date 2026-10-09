@@ -11,7 +11,7 @@ import {
   type SlackRunPresentationV3,
 } from './run-presentations.ts';
 import { slackClientMessageId } from './transport/message-id.ts';
-import { DURABLE_RECOVERY_FAILURE_TEXT, WebClientPresenter } from './web-client-presenter.ts';
+import { WebClientPresenter } from './web-client-presenter.ts';
 
 interface SlackPresentationRepairDrainOptions {
   presentations: readonly SlackRunPresentationV3[];
@@ -179,6 +179,7 @@ export async function postRecoveryNoticeBestEffort(input: {
   turnId: string;
   channelId: string;
   threadTs: string;
+  text: string;
 }): Promise<boolean> {
   let presentation: Awaited<ReturnType<SlackPresentationStatePort['getRunPresentation']>>;
   try {
@@ -192,7 +193,7 @@ export async function postRecoveryNoticeBestEffort(input: {
     await input.client.chat.postMessage({
       channel: v3?.root.channelId ?? input.channelId,
       thread_ts: v3?.root.threadTs ?? input.threadTs,
-      text: DURABLE_RECOVERY_FAILURE_TEXT,
+      text: input.text,
       client_msg_id: slackClientMessageId(`recovery_notice:${input.runId ?? input.turnId}`),
       ...(v3?.owner.kind === 'selected_agent'
         ? { username: v3.owner.persona.name, icon_url: v3.owner.persona.avatarUrl }

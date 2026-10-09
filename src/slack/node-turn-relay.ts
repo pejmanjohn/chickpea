@@ -608,6 +608,7 @@ function createNodeThreadDrain(
               turnId: job.id,
               channelId: job.turn.channelId,
               threadTs: job.turn.threadTs,
+              text: DURABLE_RECOVERY_FAILURE_TEXT,
             });
           }
           await markTurnRecoveryRequired(job.id, reasonCode);

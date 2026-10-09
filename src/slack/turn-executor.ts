@@ -10,7 +10,13 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
-import { creditBackFailedRun, hostedRun, withCreditedBack } from '../usage/run-settlement.ts';
+import {
+  creditBackFailedRun,
+  givenUpReason,
+  hostedRun,
+  planFunding,
+  withCreditedBack,
+} from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
@@ -313,11 +319,11 @@ export async function executeTurnJob(
     ...options.latency,
   };
   const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
+    const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
+      hostedRun(ports.env, flueDispatch.dispatchReceipt?.submissionId),
+      givenUpReason(flueDispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
+    ));
     try {
-      const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
-        hostedRun(ports.env, flueDispatch.dispatchReceipt?.submissionId),
-        'evicted',
-      ));
       await ports.runTurn(job.turn, job.assignment, ports.env, {
         client,
         installationContext,
@@ -364,6 +370,7 @@ export async function executeTurnJob(
         turnId: job.id,
         channelId: job.turn.channelId,
         threadTs: job.turn.threadTs,
+        text: recoveryText,
       });
       await ports.turnJobs.markRecoveryRequired(job.id, reasonCode);
       if (activeWorkKey) await ports.slack.setActiveWork(activeWorkKey, job.id, false);

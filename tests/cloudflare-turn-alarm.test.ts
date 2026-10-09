@@ -35,7 +35,13 @@ import { installationOwnershipOf } from '../src/config/installation-scope.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.ts';
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
-import { creditBackFailedRun, hostedRun, withCreditedBack } from '../src/usage/run-settlement.ts';
+import {
+  creditBackFailedRun,
+  givenUpReason,
+  hostedRun,
+  planFunding,
+  withCreditedBack,
+} from '../src/usage/run-settlement.ts';
 
 // What the transplanted turn executor imports for stop records.
 const stopGlobals = { isTurnJobStopRefusal, TURN_STOP_HOLD_RETRY_MS, turnJobStopGate };
@@ -410,7 +416,9 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     MAX_DEPENDENCY_RETRY_AFTER_MS,
     DURABLE_RECOVERY_FAILURE_TEXT: 'recovery notice',
     creditBackFailedRun,
+    givenUpReason,
     hostedRun,
+    planFunding,
     withCreditedBack,
     AgentObservationYield,
     AgentPromptFailure,

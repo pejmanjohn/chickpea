@@ -8,7 +8,12 @@ import {
   type CreditBackReason,
 } from '../src/config/platform-funding.ts';
 import type { RoutineFailureClass } from '../src/routines/types.ts';
-import { creditBackReason, hostedRun, type SlackFailureKind } from '../src/usage/run-settlement.ts';
+import {
+  creditBackReason,
+  hostedRun,
+  type RecoveryFailure,
+  type SlackFailureKind,
+} from '../src/usage/run-settlement.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
@@ -18,7 +23,7 @@ import { NO_RUN_FEES } from './helpers/platform-funding.ts';
  * when Chickpea pays and the run had already called a tool (`platformAfterToolCall`).
  */
 const EXPECTED: Record<
-  SlackFailureKind | RoutineFailureClass,
+  SlackFailureKind | RoutineFailureClass | RecoveryFailure,
   {
     readonly platform: CreditBackReason | null;
     readonly customer: CreditBackReason | null;
@@ -34,6 +39,7 @@ const EXPECTED: Record<
   'credits-exhausted': { platform: null, customer: null, platformAfterToolCall: null },
   sandbox: { platform: 'sandbox', customer: 'sandbox', platformAfterToolCall: 'sandbox' },
   'sandbox-session-cap': { platform: null, customer: null, platformAfterToolCall: null },
+  'recovery-failure': { platform: 'evicted', customer: 'evicted', platformAfterToolCall: 'evicted' },
 
   creator_ineligible: { platform: null, customer: null, platformAfterToolCall: null },
   channel_ineligible: { platform: null, customer: null, platformAfterToolCall: null },

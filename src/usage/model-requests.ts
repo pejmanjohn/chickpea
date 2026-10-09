@@ -83,6 +83,13 @@ const OUTCOME_BY_STOP_REASON: Readonly<Record<StopReason, ModelRequestOutcome>> 
 export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
   const { usage } = end.message;
   const provider = canonicalPriceProviderId(end.route);
+  // Some providers report a part above the total it belongs to. The store
+  // refuses such a record, so the part is held to its total instead.
+  if ((usage.reasoning ?? 0) > usage.output || (usage.cacheWrite1h ?? 0) > usage.cacheWrite) {
+    console.warn('[chickpea] model request reported a token part above its total', { provider, model: end.model });
+  }
+  const reasoning = usage.reasoning === undefined ? null : Math.min(usage.reasoning, usage.output);
+  const oneHour = usage.cacheWrite1h === undefined ? null : Math.min(usage.cacheWrite1h, usage.cacheWrite);
   const price = estimateUsage({
     observedAt: end.finishedAt,
     providerRoute: provider,
@@ -95,7 +102,7 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     outputTokens: usage.output,
     cacheReadTokens: usage.cacheRead,
     cacheWriteTokens: usage.cacheWrite,
-    cacheWrite1hTokens: usage.cacheWrite1h ?? null,
+    cacheWrite1hTokens: oneHour,
     totalTokens: usage.totalTokens,
     singleRequest: true,
   });
@@ -112,9 +119,9 @@ export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {
     fundingSource: end.fundingSource,
     outcome: OUTCOME_BY_STOP_REASON[end.message.stopReason],
     inputTokens: usage.input,
-    outputTokens: { total: usage.output, reasoning: usage.reasoning ?? null },
+    outputTokens: { total: usage.output, reasoning },
     cacheReadTokens: usage.cacheRead,
-    cacheWriteTokens: { total: usage.cacheWrite, oneHour: usage.cacheWrite1h ?? null },
+    cacheWriteTokens: { total: usage.cacheWrite, oneHour },
     priceVersionId: priced ? price.priceVersionId : null,
     listPriceUsdMicros: priced ? price.estimateAmountMicros : null,
     priceUnknownReason: priced ? null : price.priceUnknownReason,
