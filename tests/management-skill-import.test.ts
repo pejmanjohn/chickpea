@@ -46,6 +46,13 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
       }]);
     },
   });
+  await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.user.slackTeamId,
+    transportMode: 'direct',
+    teamId: f.admin.user.slackTeamId,
+    appId: 'ASKILLIMPORT1',
+    botUserId: 'U_BOT',
+  });
   const agent = await f.config.createAgent({
     id: 'agent_sprout',
     name: 'Sprout',
