@@ -2,7 +2,7 @@ import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { withStatelessModelAccess } from '../config/installation-model-access.ts';
-import { providerStreamsForModel } from '../config/pi-provider.ts';
+import { providerStreamsForModel, sideCallOptions } from '../config/pi-provider.ts';
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -488,13 +488,8 @@ async function promptSlackInteractionIntentAgent(
     () => providerStreamsForModel(model).streamSimple(
       model,
       interactionClassifierContext(context),
-      {
-        maxTokens: 512,
-        // ChatGPT's Codex Responses endpoint rejects temperature for subscription
-        // models. Keep the established deterministic option on every other lane.
-        ...(runtimeModel.providerAuthRoute === 'openai_subscription' ? {} : { temperature: 0 }),
-        maxRetries: 0,
-      },
+      // No temperature: most catalog models refuse one.
+      { ...sideCallOptions(model, 512), maxRetries: 0 },
     ).result(),
   );
   if (response.stopReason === 'error') {

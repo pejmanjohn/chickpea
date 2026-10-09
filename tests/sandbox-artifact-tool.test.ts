@@ -4,12 +4,12 @@ import { test } from 'node:test';
 import type { Sandbox, SandboxFactory } from '@flue/runtime';
 
 import {
+  THREAD_IMAGE_LISTING_LOCATION,
   buildArtifactToolsInstruction,
   createWorkspaceArtifactTool,
   MAX_ARTIFACT_BYTES,
 } from '../src/sandbox/artifact-tool.ts';
 import { GENERATE_IMAGE_TOOL_NAME } from '../src/sandbox/image-tool.ts';
-import { buildThreadImageInventory } from '../src/slack/thread-images.ts';
 
 const TOOL_RUN_CONTEXT = {
   toolCallId: 'artifact-test-call',
@@ -425,17 +425,6 @@ test('the hook-agent artifact tool reads the in-memory sandbox through the harne
 });
 
 
-const MANIFEST = buildThreadImageInventory({
-  conversationKey: 'T_TEST:C_TEST:1787000000.000100',
-  threadRecords: [{
-    conversationKey: 'T_TEST:C_TEST:1787000000.000100',
-    fileId: 'F0IMAGE1',
-    origin: 'person',
-    filename: 'logo.png',
-    mimeType: 'image/png',
-    messageTs: '1787000000.000200',
-  }],
-}).manifest;
 
 test('the image-capable instruction names the tool, handles, and the call rules', () => {
   const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
@@ -553,11 +542,7 @@ test('the image-capable instruction names every failure reason honestly', () => 
 });
 
 test('a listed handle survives a failed attachment analysis in the instruction', () => {
-  const instruction = buildArtifactToolsInstruction({
-    imageTool: true,
-    canEdit: true,
-    imageManifest: MANIFEST,
-  });
+  const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
   // The live lane stopped at "the attachment failed" while img:1 was listed
   // and usable; the two rules have to compose.
   assert.match(
@@ -579,31 +564,9 @@ test('a listed handle survives a failed attachment analysis in the instruction',
   );
 });
 
-test('the image instruction renders the turn manifest, or says the thread has none', () => {
-  const withImages = buildArtifactToolsInstruction({
-    imageTool: true,
-    canEdit: true,
-    imageManifest: MANIFEST,
-  });
-  // The inventory owns the listing's own header lines; the instruction only
-  // introduces it and must keep the entries verbatim.
-  assert.match(withImages, /Images already in this conversation:\n/);
-  assert.ok(withImages.includes(MANIFEST));
-  assert.match(withImages, /- handle=img:1 \| origin=person/);
-  assert.match(withImages, /filename=.?logo\.png.? \| mime=image\/png/);
-  assert.doesNotMatch(withImages, /F0IMAGE1/);
-  assert.doesNotMatch(withImages, /No images are in this conversation yet/);
-
-  for (const empty of [undefined, '', '   ']) {
-    const withoutImages = buildArtifactToolsInstruction({
-      imageTool: true,
-      canEdit: true,
-      ...(empty === undefined ? {} : { imageManifest: empty }),
-    });
-    assert.match(
-      withoutImages,
-      /No images are in this conversation yet, so there is no handle to reference this turn\./,
-    );
-    assert.doesNotMatch(withoutImages, /Images already in this conversation:/);
-  }
+test('the image instruction points at the request listing and never carries one', () => {
+  // The listing grows with the thread; in the instruction it would rewrite the thread's cached history each time.
+  const instruction = buildArtifactToolsInstruction({ imageTool: true, canEdit: true });
+  assert.ok(instruction.includes(THREAD_IMAGE_LISTING_LOCATION));
+  assert.doesNotMatch(instruction, /handle=img:/);
 });

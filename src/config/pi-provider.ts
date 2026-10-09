@@ -282,6 +282,24 @@ const BUILTIN_API_STREAMS: Partial<Record<Api, () => ProviderStreams>> = {
   'openai-completions': openAICompletionsApi,
 };
 
+/** Output room for a low-effort thought; adaptive thinking takes no budget, and it shares the output cap with the answer. */
+export const SIDE_CALL_THINKING_HEADROOM = 8_192;
+
+/**
+ * Options for a stateless side call (the intent check, a visual check) that
+ * needs up to `answerTokens` of answer. It runs without thinking where the
+ * model allows it. A model that cannot turn thinking off (`off: null`) thinks
+ * at low effort instead of refusing the request, with room for the thought.
+ */
+export function sideCallOptions(
+  model: Model<Api>,
+  answerTokens: number,
+): { maxTokens: number; reasoning?: 'low' } {
+  return model.reasoning && model.thinkingLevelMap?.off === null
+    ? { reasoning: 'low', maxTokens: answerTokens + SIDE_CALL_THINKING_HEADROOM }
+    : { maxTokens: answerTokens };
+}
+
 /**
  * Streams for a resolved model without pi-ai's compat dispatcher. The
  * registered app provider wins (it carries Chickpea's model access and

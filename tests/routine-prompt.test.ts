@@ -308,7 +308,7 @@ test('an unattended occurrence renders the shared artifact instruction for its i
     buildArtifactToolsInstruction({ imageTool: true, canEdit: false }),
   ));
   assert.match(generateOnly, new RegExp(GENERATE_IMAGE_TOOL_NAME));
-  assert.match(generateOnly, /No images are in this conversation yet/);
+  assert.match(generateOnly, /When it lists none, there is no handle to reference/);
 
   const editing = await routineInstructions(t, { role: 'image', filled: true, acceptsImageInput: true });
   assert.ok(editing.includes(buildArtifactToolsInstruction({ imageTool: true, canEdit: true })));
