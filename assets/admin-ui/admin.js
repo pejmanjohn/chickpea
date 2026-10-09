@@ -2926,10 +2926,8 @@
     return "Step " + (onboardingStepIndex() + 1) + " of " + ONBOARDING_PAGE.steps.length;
   }
 
-  // Connecting returns here with `?github=connected`: the step shows the
-  // connection and waits for Next.
-  // Connected when the host just returned from a connect, or already holds an
-  // active account (a reload drops the return flag).
+  // Connected when the host just returned with `?github=connected`, or
+  // already holds an active account (a reload drops the return flag).
   function onboardingGithubConnected() {
     return !!state.onboarding && state.onboarding.stage === "connect_github" &&
       (state.githubConnected || (state.onboardingGithubAccounts || []).length > 0);
@@ -2958,8 +2956,6 @@
     return logo ? '<svg class="github-connect-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + logo.svg + '</svg>' : "";
   }
 
-  // "Connected to acme · 3 repositories", or "GitHub connected" until the
-  // accounts are read, or when none is active.
   function onboardingGithubAccountsText() {
     var accounts = state.onboardingGithubAccounts || [];
     if (!accounts.length) return "GitHub connected";
@@ -13239,7 +13235,7 @@
     });
   }
 
-  // Once, when the GitHub step first shows connected.
+  // Read once per page, when the GitHub step first shows.
   var onboardingGithubAccountsRequested = false;
   function loadOnboardingGithubAccounts() {
     if (onboardingGithubAccountsRequested || state.view !== "onboarding" || !state.onboarding ||
