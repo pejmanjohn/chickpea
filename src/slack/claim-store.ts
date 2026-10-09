@@ -500,10 +500,11 @@ export class SlackStateLogic {
       const { turnJob } = input;
       const ask = turnJob?.turn?.agentAsk;
       if (turnJob && ask && turnJobs) {
-        // The Agent's earlier ask here has not started: it reads this message
-        // when it runs, so it is not asked twice (one answer to both reports).
+        // The Agent's earlier turn in this exchange (an ask, or its turn on the
+        // person's message) has not started: it reads this message when it
+        // runs, so it is not asked twice (one answer to both reports).
         // Decided before the limit, which a joined ask never counts against.
-        if (turnJobs.hasQueuedAgentAsk(turnJob, ask.originMessageTs)) {
+        if (turnJobs.hasQueuedExchangeTurn(turnJob, ask.originMessageTs)) {
           return { claimed: true, agentAskCoalesced: true };
         }
         if (input.agentAskLimit !== undefined &&

@@ -218,7 +218,7 @@ export type SlackPresenterAgentView = Pick<
 export interface SlackPresenterOptions {
   deliverySafety?: 'legacy' | 'ledger';
   agentViewPresentation?: SlackPresenterAgentView;
-  /** Agent handles this turn's reply may mention live (its Channel teammates). */
+  /** Agent handles this turn's reply may mention live (its teammates). */
   liveAgentHandles?: SlackLiveAgentHandles;
   /** Successful non-ephemeral final, for the ownership handoff ledger. */
   onPublicDelivery?: (input: SlackPublicDelivery) => void | Promise<void>;

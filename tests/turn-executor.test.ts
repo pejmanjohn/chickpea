@@ -552,7 +552,10 @@ test('a delivered Channel reply hands its teammate asks over after the row is se
       messageTs: '1785900000.000100', userId: 'U1', text: 'question', source: 'agent_mention',
       eventId: 'Ev1', contextMode: 'thread',
     },
-    assignment: { agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' } } as never,
+    assignment: {
+      agentId: 'agent_support', runtimeContract: 'chickpea-v1', agent: { kind: 'user' },
+      teammates: [{ name: 'Finance', handle: 'finance', userGroupId: 'SFINANCE' }],
+    } as never,
   });
   // A stop that reached the run after it finished (raced) asks nobody either.
   const cases = [
