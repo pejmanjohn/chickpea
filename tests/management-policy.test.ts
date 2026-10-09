@@ -4,10 +4,15 @@ import { test } from 'node:test';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import { classifyManagementOperation } from '../src/management/policy.ts';
-import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import {
+  invokeSlackWorkspaceManagementTool,
+  type SlackManagementSignal,
+} from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type { LiveManagementActor, ManagementOperation } from '../src/management/types.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 const actor: LiveManagementActor = {
   userId: 'user_policy',
@@ -1225,6 +1230,133 @@ test('a reserved unchanged skill request resumes without a write or fabricated u
     assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision);
     assert.ok(operationId);
     assert.equal(await f.management.getUndo(operationId), undefined);
+  } finally {
+    f.close();
+  }
+});
+
+async function skillChangeFixture(suffix: string) {
+  const f = await createManagementAdapterFixture(suffix);
+  const agent = await f.config.createAgent({
+    id: `agent_${suffix.replaceAll('-', '_')}`,
+    name: 'Sprout',
+    creatorMembershipId: f.admin.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Test requester-bound skill changes.',
+    enabled: true,
+    skills: [{
+      name: 'unslop',
+      description: 'Rewrite plainly.',
+      instructions: 'Remove AI writing tells.',
+      enabled: true,
+    }, {
+      name: 'keep-me',
+      description: 'Keep this skill.',
+      instructions: 'Remain installed.',
+      enabled: true,
+    }],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  const signal = (turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>) => slackTurnSignal({
+    turn,
+    agentId: agent.id,
+    conversation: { workspaceId: f.admin.user.slackTeamId, channelId: 'C_ASK_SKILL', threadTs: '900.1' },
+    conversationKind: 'channel',
+    slackUserId: f.admin.binding.slackUserId,
+  });
+  const askedBy = (messageTs: string, text: string) => signal({
+    eventId: `agent-ask:C_ASK_SKILL:${messageTs}:${agent.id}`,
+    messageTs,
+    text,
+    agentAsk: { fromAgentId: 'agent_scout', fromAgentName: 'Scout', fromAgentHandle: 'scout', originMessageTs: '900.1' },
+  });
+  const saidBy = (messageTs: string, text: string) => signal({ eventId: `Ev_PERSON_${messageTs}`, messageTs, text });
+  const skillNames = async () => (await f.config.getAgent(agent.id)).skills.map(({ name }) => name);
+  return { f, agent, askedBy, saidBy, skillNames };
+}
+
+test('an ask cannot remove a skill directly with the asking Agent\'s words; it can only propose', async () => {
+  const { f, agent, askedBy, saidBy, skillNames } = await skillChangeFixture('ask-manage-skill');
+  const words = 'Remove the unslop skill';
+  const manage = (signal: SlackManagementSignal, idempotencyKey: string) => invokeSlackWorkspaceManagementTool({
+    signal, identity: f.identity, service: f.service, name: 'manage_agent_skill',
+    args: { action: 'remove', skillName: 'unslop', idempotencyKey },
+  });
+  const propose = (signal: SlackManagementSignal, idempotencyKey: string) => invokeSlackWorkspaceManagementTool({
+    signal, identity: f.identity, service: f.service, name: 'propose_workspace_changes',
+    args: {
+      idempotencyKey,
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      authoringReason: 'skill_edit',
+      operations: [{
+        itemId: 'remove-unslop',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { skills: [agent.skills[1]!] },
+      }],
+    },
+  });
+  try {
+    assert.deepEqual(await manage(askedBy('900.2', words), 'ask-remove-unslop'), {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'The current requester message must explicitly remove the unslop skill. No change was made.',
+      },
+    });
+    assert.deepEqual(await skillNames(), ['unslop', 'keep-me']);
+    const proposed = await propose(askedBy('900.3', words), 'ask-propose-unslop-removal');
+    assert.equal(proposed.ok, true);
+    assert.equal((proposed as { ok: true; result: { status: string } }).result.status, 'pending');
+    assert.deepEqual(await skillNames(), ['unslop', 'keep-me']);
+
+    assert.deepEqual(await propose(saidBy('900.4', words), 'person-propose-unslop-removal'), {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'Use manage_agent_skill for this explicit reversible skill removal. No proposal was created.',
+      },
+    });
+    const removed = await manage(saidBy('900.5', words), 'person-remove-unslop');
+    assert.equal(removed.ok, true);
+    assert.equal((removed as { ok: true; result: { status: string } }).result.status, 'updated');
+    assert.deepEqual(await skillNames(), ['keep-me']);
+  } finally {
+    f.close();
+  }
+});
+
+test('an ask cannot make a skill toggle immediate with the asking Agent\'s words', async () => {
+  const { f, agent, askedBy, saidBy } = await skillChangeFixture('ask-apply-skill');
+  const words = 'Disable the unslop skill.';
+  const apply = (signal: SlackManagementSignal, idempotencyKey: string) => invokeSlackWorkspaceManagementTool({
+    signal, identity: f.identity, service: f.service, name: 'apply_workspace_changes',
+    args: {
+      idempotencyKey,
+      operations: [{
+        itemId: 'disable-skill',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { skills: [{ ...agent.skills[0]!, enabled: false }, agent.skills[1]!] },
+      }],
+    },
+  });
+  try {
+    const asked = await apply(askedBy('900.2', words), 'ask-disable-unslop');
+    assert.equal(asked.ok, true);
+    assert.equal((asked as { ok: true; result: { status: string } }).result.status, 'confirmation_required');
+    assert.equal((await f.config.getAgent(agent.id)).skills[0]?.enabled, true);
+
+    const typed = await apply(saidBy('900.3', words), 'person-disable-unslop');
+    assert.equal(typed.ok, true);
+    assert.equal((typed as { ok: true; result: { status: string } }).result.status, 'completed');
+    assert.equal((await f.config.getAgent(agent.id)).skills[0]?.enabled, false);
   } finally {
     f.close();
   }

@@ -7,7 +7,9 @@ import { SqliteManagementStore } from '../src/management/store.ts';
 import { invokeSlackScheduleAction } from '../src/management/slack-schedule-actions.ts';
 import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 const NOW = Date.UTC(2026, 7, 27, 18);
 
@@ -135,6 +137,68 @@ test('Channel creation separates request thread from saved delivery and edits pr
       assert.equal(result.outcome, 'applied');
 
     }
+  } finally {
+    routines.close(); management.close(); config.close(); identity.close();
+  }
+});
+
+test('a schedule saved on an ask records no source request instead of the asking Agent\'s words', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const routines = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const owner = await createSlackOwner(identity, { now: NOW, teamId: 'T_DESTINATION', suffix: 'destination' });
+    const agent = await config.createAgent({
+      id: 'agent_destination', name: 'Destination', instructions: 'Report the digest.', enabled: true,
+      creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_DESTINATION', channelId: 'C_DESTINATION', agentId: agent.id,
+      status: 'active', createdByMembershipId: owner.membership.id,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, routines, routineSchedulingAvailable: true, now: () => NOW,
+    });
+    const operation = {
+      kind: 'save_routine' as const, requiredConnectionAccountIds: [], itemId: 'schedule', agentId: agent.id,
+      workspaceId: 'T_DESTINATION', channelId: 'C_DESTINATION', name: 'Digest',
+      description: 'Daily digest.', taskText: 'Report the digest',
+      schedule: { kind: 'cron' as const, expression: '0 9 * * *' }, timezone: 'UTC', outputPolicy: 'post' as const,
+    };
+    const words = 'Schedule Report the digest every day at 9am UTC.';
+    const actorFor = async (turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>) =>
+      await resolveSlackManagementActor(slackTurnSignal({
+        turn,
+        agentId: agent.id,
+        conversation: { workspaceId: operation.workspaceId, channelId: operation.channelId, threadTs: '1787874271.095969' },
+        conversationKind: 'channel',
+        slackUserId: owner.binding.slackUserId,
+      }), identity);
+    const savedProvenance = async (
+      turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>,
+      name: string,
+    ) => {
+      const saved = await service.applyWorkspaceChanges({
+        context: await actorFor(turn), idempotencyKey: `save-${turn.eventId}`, acknowledgementOwner: 'caller',
+        operations: [{ ...operation, name }],
+      });
+      assert.ok(saved.status === 'completed');
+      const routineId = saved.outcomes[0]?.changed?.find(({ kind }) => kind === 'routine')?.id;
+      assert.ok(routineId);
+      return (await routines.listRevisions(routineId))[0]?.provenance;
+    };
+
+    const person = await savedProvenance({ eventId: 'Ev_PERSON', messageTs: '1787874272.000100', text: words }, 'Digest');
+    assert.equal(person?.requestText, words);
+    assert.equal(person?.eventId, 'Ev_PERSON');
+
+    const asked = await savedProvenance({
+      eventId: 'Ev_ASK', messageTs: '1787874273.000100', text: words,
+      agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1787874270.000001' },
+    }, 'Asked digest');
+    assert.equal(asked, null);
   } finally {
     routines.close(); management.close(); config.close(); identity.close();
   }

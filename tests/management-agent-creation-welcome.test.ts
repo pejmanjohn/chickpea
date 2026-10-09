@@ -14,9 +14,12 @@ import {
   managementActorOriginKey,
   managementApprovalScopeKey,
 } from '../src/management/contracts.ts';
+import { resolveSlackManagementActor } from '../src/management/slack-tools.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 test('catalog aliases resolve to one canonical connector', () => {
   assert.equal(matchingConnectorCatalogPresets('Drive')[0]?.id, 'google-drive');
@@ -1051,6 +1054,72 @@ test('the welcome retries a deferred avatar when the same-turn proposal targets 
     const published = await f.config.getAgent(created.id);
     assert.equal(published.slackPresence?.avatar.url, avatarUrl);
     assert.equal(published.revision, created.revision + 1);
+  } finally {
+    f.close();
+  }
+});
+
+test('an ask\'s words never anchor a connector in the creation reply; the person\'s words do', async () => {
+  const f = await createManagementAdapterFixture('welcome-ask-requester-text');
+  try {
+    // As requester text, these words affirm Zendesk; the new Agent's own text never names it.
+    const words = 'create me a support agent that will connect to zendesk';
+    const welcome = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
+      const signal = slackTurnSignal({
+        turn: { ...turn, eventId: `Ev_WELCOME_${name}`, messageTs: '910.2' },
+        agentId: CHICKPEA_AGENT_ID,
+        conversation: { workspaceId: f.admin.binding.slackTeamId, channelId: `D_WELCOME_${name.toUpperCase()}`, threadTs: '910.1' },
+        conversationKind: 'im',
+        slackUserId: f.admin.binding.slackUserId,
+      });
+      const context = await resolveSlackManagementActor(signal, f.identity);
+      const agentId = `agent_support_${name}`;
+      const applied = await f.service.applyWorkspaceChanges({
+        context,
+        idempotencyKey: `create-support-${name}`,
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            id: agentId,
+            name: `Support ${name}`,
+            requestedHandle: `support-${name}`,
+            editPolicy: 'creator_and_admins',
+            instructions: 'Draft customer replies.',
+            enabled: true,
+            skills: [],
+            mcpServers: [],
+            apiConnections: [],
+            repositories: [],
+          },
+        }],
+      });
+      if (!('operationId' in applied)) assert.fail('expected applied creation');
+      const finalized = await f.service.finalizeSlackAgentCreationWelcome({
+        context,
+        operationId: applied.operationId,
+        creationItemId: 'create',
+        agentId,
+        connectorMentions: ['zendesk'],
+        followOnNotices: [],
+        turnJobId: signal.turnJobId,
+      });
+      const receipt = finalized.outbox.receipt;
+      if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome') {
+        assert.fail('expected Agent welcome receipt');
+      }
+      return receipt;
+    };
+
+    const person = await welcome('person', { text: words });
+    assert.deepEqual(person.connectorActions?.map(({ presetId }) => presetId), ['zendesk']);
+
+    const ask = await welcome('ask', {
+      text: words,
+      agentAsk: { fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '910.1' },
+    });
+    assert.deepEqual(ask.connectorActions, []);
+    assert.deepEqual(ask.connectorNotices, []);
   } finally {
     f.close();
   }

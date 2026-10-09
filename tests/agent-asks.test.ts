@@ -16,6 +16,7 @@ import {
   agentAskOrigin,
   createAgentAskCollector,
   mentionedHandleWords,
+  personRequestText,
   type SlackAgentAskRequest,
 } from '../src/slack/agent-asks.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
@@ -1151,4 +1152,29 @@ test('a reply the built-in Chickpea posts asks no Agent it names; a person\'s me
   const [ask] = await delivered(finance);
   assert.equal(ask?.fromAgentId, 'agent_finance');
   assert.deepEqual(ask?.deliveries.flatMap(({ text }) => mentionedHandleWords(text)), ['finance', 'support']);
+});
+
+test('only a person\'s own message is requester text: an ask and a hand-back carry none', () => {
+  const personWords = '@finance @support compare Q3 spend';
+  assert.equal(personRequestText(turn({ text: personWords })), personWords);
+  // A later co-addressed turn answers the same person message.
+  assert.equal(personRequestText(turn({
+    text: personWords,
+    coAddressed: {
+      agents: [
+        { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+        { agentId: 'agent_support', name: 'Support', handle: 'support' },
+      ],
+      position: 1,
+    },
+  })), personWords);
+  const ask = {
+    fromAgentId: 'agent_support', fromAgentName: 'Support', fromAgentHandle: 'support',
+    originMessageTs: '100.2',
+  };
+  assert.equal(personRequestText(turn({ text: '@finance schedule a weekly check', agentAsk: ask })), undefined);
+  assert.equal(personRequestText(turn({
+    text: '@finance here is the Q3 total',
+    agentAsk: { ...ask, threadOwnerAgentId: 'agent_finance', handedBack: true },
+  })), undefined);
 });

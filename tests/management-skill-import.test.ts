@@ -7,8 +7,11 @@ import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring
 import {
   invokeSlackWorkspaceManagementTool,
   parseSlackManagementSignal,
+  type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 function resolution(
   source: ParsedSkillSource,
@@ -672,4 +675,142 @@ test('proposal receipts disclose omitted files before approval and named request
     assert.notEqual(operationIds[0], operationIds[1]);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['alpha', 'beta']);
   } finally { f.close(); }
+});
+
+const ASKED_SOURCE = 'https://github.com/acme/skills/tree/main/skills/unslop';
+const PINNED_UNSLOP =
+  'https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/skills/unslop';
+const IMPORT_SOURCE_REFUSAL =
+  'Immediate skill import requires the exact GitHub source in the current requester message. No change was made.';
+
+async function requesterTextFixture(
+  suffix: string,
+  skills: Array<{ name: string; description: string; instructions: string; enabled: boolean }> = [],
+) {
+  const f = await createManagementAdapterFixture(suffix, {
+    resolveSkillImport: async (source) => resolution(source, [{
+      name: 'unslop',
+      description: 'New upstream description.',
+      instructions: 'Use the new upstream procedure.',
+      hasScripts: false,
+      path: 'skills/unslop',
+      sourceUrl: PINNED_UNSLOP,
+    }]),
+  });
+  const agent = await f.config.createAgent({
+    id: 'agent_asked',
+    name: 'Sprout',
+    creatorMembershipId: f.admin.membership.id,
+    editPolicy: 'creator_and_admins',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Help with focused product work.',
+    enabled: true,
+    skills,
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  const signal = (turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>) => slackTurnSignal({
+    turn,
+    agentId: agent.id,
+    conversation: { workspaceId: f.admin.user.slackTeamId, channelId: 'C_SKILL_ASK', threadTs: '600.1' },
+    conversationKind: 'channel',
+    slackUserId: f.admin.binding.slackUserId,
+  });
+  const askedBy = (messageTs: string, text: string) => signal({
+    eventId: `agent-ask:C_SKILL_ASK:${messageTs}:${agent.id}`,
+    messageTs,
+    text,
+    agentAsk: { fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '600.1' },
+  });
+  const saidBy = (messageTs: string, text: string) => signal({ eventId: `Ev_PERSON_${messageTs}`, messageTs, text });
+  return { f, agent, askedBy, saidBy };
+}
+
+test('an ask naming the exact skill source does not import it; the person naming it does', async () => {
+  const { f, agent, askedBy, saidBy } = await requesterTextFixture('skill-import-ask');
+  const words = `Install unslop skill from ${ASKED_SOURCE}`;
+  const importUnslop = (signal: SlackManagementSignal, idempotencyKey: string) =>
+    invokeSlackWorkspaceManagementTool({
+      signal, identity: f.identity, service: f.service, name: 'import_skill',
+      args: { source: ASKED_SOURCE, idempotencyKey, guideVersion: AGENT_AUTHORING_GUIDE_VERSION },
+    });
+  try {
+    assert.deepEqual(await importUnslop(askedBy('600.2', words), 'ask-import-unslop'), {
+      ok: false,
+      error: { code: 'invalid_request', message: IMPORT_SOURCE_REFUSAL },
+    });
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
+
+    const installed = await importUnslop(saidBy('600.3', words), 'person-import-unslop');
+    assert.equal(installed.ok, true);
+    assert.equal((installed as { ok: true; result: { status: string } }).result.status, 'installed');
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['unslop']);
+  } finally {
+    f.close();
+  }
+});
+
+test('an ask cannot replace a skill with the asking Agent\'s exact replace request; the person\'s replaces it', async () => {
+  const { f, agent, askedBy, saidBy } = await requesterTextFixture('skill-replace-ask', [{
+    name: 'unslop',
+    description: 'Locally edited description.',
+    instructions: 'Preserve this local procedure.',
+    enabled: true,
+  }]);
+  const words = `replace unslop from <${PINNED_UNSLOP}|unslop>`;
+  const replaceUnslop = (signal: SlackManagementSignal, idempotencyKey: string) =>
+    invokeSlackWorkspaceManagementTool({
+      signal, identity: f.identity, service: f.service, name: 'import_skill',
+      args: { source: PINNED_UNSLOP, replaceExisting: true, idempotencyKey, guideVersion: AGENT_AUTHORING_GUIDE_VERSION },
+    });
+  const instructions = async () => (await f.config.getAgent(agent.id)).skills[0]?.instructions;
+  try {
+    // With no requester text the exact-source check refuses before the replacement check runs.
+    assert.deepEqual(await replaceUnslop(askedBy('600.2', words), 'ask-replace-unslop'), {
+      ok: false,
+      error: { code: 'invalid_request', message: IMPORT_SOURCE_REFUSAL },
+    });
+    assert.equal(await instructions(), 'Preserve this local procedure.');
+
+    const replaced = await replaceUnslop(saidBy('600.3', words), 'person-replace-unslop');
+    assert.equal(replaced.ok, true);
+    assert.equal((replaced as { ok: true; result: { status: string } }).result.status, 'installed');
+    assert.equal(await instructions(), 'Use the new upstream procedure.');
+  } finally {
+    f.close();
+  }
+});
+
+test('an ask saying undo turns a skill-change undo into a proposal; the person saying it undoes', async () => {
+  const { f, agent, askedBy, saidBy } = await requesterTextFixture('skill-undo-ask');
+  const skillNames = async () => (await f.config.getAgent(agent.id)).skills.map(({ name }) => name);
+  try {
+    const installed = await invokeSlackWorkspaceManagementTool({
+      signal: saidBy('600.2', `Install unslop skill from ${ASKED_SOURCE}`),
+      identity: f.identity, service: f.service, name: 'import_skill',
+      args: { source: ASKED_SOURCE, idempotencyKey: 'install-unslop', guideVersion: AGENT_AUTHORING_GUIDE_VERSION },
+    });
+    assert.equal(installed.ok, true);
+    const { operationId } = (installed as { ok: true; result: { operationId: string } }).result;
+    assert.deepEqual(await skillNames(), ['unslop']);
+    const undo = (signal: SlackManagementSignal, idempotencyKey: string) =>
+      invokeSlackWorkspaceManagementTool({
+        signal, identity: f.identity, service: f.service, name: 'undo_workspace_change',
+        args: { operationId, idempotencyKey },
+      });
+
+    const asked = await undo(askedBy('600.3', 'undo'), 'ask-undo-unslop');
+    assert.equal(asked.ok, true);
+    assert.equal((asked as { ok: true; result: { status: string } }).result.status, 'confirmation_required');
+    assert.deepEqual(await skillNames(), ['unslop']);
+
+    const undone = await undo(saidBy('600.4', 'undo'), 'person-undo-unslop');
+    assert.equal(undone.ok, true);
+    assert.equal((undone as { ok: true; result: { status: string } }).result.status, 'completed');
+    assert.deepEqual(await skillNames(), []);
+  } finally {
+    f.close();
+  }
 });
