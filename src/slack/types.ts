@@ -269,11 +269,6 @@ export interface SlackAgentAsk {
   threadOwnerAgentId?: string;
   /** This turn is a teammate's answer handed back to the thread's own Agent. */
   handedBack?: true;
-  /**
-   * The person's message that started this exchange asked to remember or
-   * forget something. Only the hand-back to the thread's own Agent acts on it.
-   */
-  personAskedToRemember?: true;
 }
 
 export interface SlackUiResponse {

@@ -142,7 +142,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
   }
 });
 
-test('a schedule is saved with the person\'s request as its source, and an ask only proposes one', async () => {
+test('a schedule is saved with the person\'s request as its source, and an ask cannot save one directly', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
@@ -192,12 +192,10 @@ test('a schedule is saved with the person\'s request as its source, and an ask o
     assert.equal(person?.requestText, words);
     assert.equal(person?.eventId, 'Ev_PERSON');
 
-    const asked = await save({
+    await assert.rejects(save({
       eventId: 'Ev_ASK', messageTs: '1787874273.000100', text: words,
       agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1787874270.000001' },
-    }, 'Asked digest');
-    assert.ok(asked.status !== 'clarification_required');
-    assert.equal(asked.outcomes[0]?.disposition, 'confirmation_required');
+    }, 'Asked digest'), /only through a proposal the person approves/);
     assert.deepEqual((await routines.listRoutines()).map(({ name }) => name), ['Digest']);
   } finally {
     routines.close(); management.close(); config.close(); identity.close();

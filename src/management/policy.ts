@@ -17,8 +17,6 @@ interface ManagementPolicyFacts {
   reversibleLocalChange?: boolean;
   /** The service derived this grant from the Slack Channel where it created the Agent. */
   trustedSlackOriginGrant?: boolean;
-  /** Another Agent's ask started this Slack turn, and no request of the person's covers this write. */
-  withoutPersonRequest?: boolean;
 }
 
 type ManagementPolicyDecision =
@@ -58,11 +56,6 @@ export function classifyManagementOperation(
       };
     }
     return { allowed: true, posture: 'immediate', reason: 'base_agent_creation' };
-  }
-  if ((operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'run_routine' || operation.kind === 'update_agent_memory') &&
-      facts.withoutPersonRequest) {
-    return { allowed: true, posture: 'confirmation', reason: 'person_request_required' };
   }
   if (operation.kind === 'save_routine' || operation.kind === 'run_routine') {
     return { allowed: true, posture: 'immediate', reason: 'safe_reversible_schedule_change' };

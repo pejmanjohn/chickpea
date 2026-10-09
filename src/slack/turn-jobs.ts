@@ -39,7 +39,7 @@ import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
-import { handBackMayRemember, personRequestText } from './agent-asks.ts';
+import { personRequestText } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
@@ -1527,10 +1527,9 @@ export class TurnJobStoreLogic {
       }
       const binding = this.readAgentBinding(decision.runtimePlan.conversation.continuityKey);
       const continuing = binding?.instanceId === decision.instanceId ? binding : undefined;
-      const row = this.db.get('SELECT turn_json, assignment_json FROM turn_jobs WHERE id = ?', id);
+      const row = this.db.get('SELECT turn_json FROM turn_jobs WHERE id = ?', id);
       if (!row?.turn_json) throw new Error('TurnJob is unavailable for Flue dispatch.');
       const turn = JSON.parse(String(row.turn_json)) as NormalizedSlackTurn;
-      const assignment = JSON.parse(String(row.assignment_json)) as Pick<ResolvedAssignment, 'threadGuest'>;
       const signalThreadTs = decision.runtimePlan.conversation.threadTs;
       const signalThreadMatchesTurn = signalThreadTs === turn.threadTs ||
         signalThreadTs === turn.sessionThreadTs;
@@ -1567,7 +1566,6 @@ export class TurnJobStoreLogic {
             messageTs: turn.messageTs,
             turnJobId: id,
             ...(requesterText === undefined ? {} : { requesterText: requesterText.slice(0, 40_000) }),
-            ...(handBackMayRemember(turn, assignment) ? { personAskedToRemember: 'true' } : {}),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
@@ -2723,7 +2721,6 @@ function parseSlackSignalMessage(
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
     'conversationKind',
     'requesterText',
-    'personAskedToRemember',
     'requesterTimezone',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
@@ -2747,9 +2744,6 @@ function parseSlackSignalMessage(
     ...(attributes.requesterText === undefined
       ? {}
       : { requesterText: validateBoundedString(attributes.requesterText, 'Slack requester text', 40_000) }),
-    ...(attributes.personAskedToRemember === undefined ? {} : {
-      personAskedToRemember: validatePersonAskedToRemember(attributes.personAskedToRemember),
-    }),
     ...(attributes.attachmentFileIds === undefined
       ? {}
       : {
@@ -2807,11 +2801,6 @@ function validateAdmittedListIds(value: unknown): string {
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
   if (value === 'channel' || value === 'im' || value === 'mpim') return value;
   throw new Error('Slack conversation kind is invalid.');
-}
-
-function validatePersonAskedToRemember(value: unknown): 'true' {
-  if (value === 'true') return value;
-  throw new Error('Slack remember request is invalid.');
 }
 
 function validateAttachmentFileIds(value: unknown): string {

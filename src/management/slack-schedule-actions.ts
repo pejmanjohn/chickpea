@@ -1,4 +1,5 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 import { routineNextRunTime } from '../routines/message-format.ts';
 import { scheduleActionId } from '../routines/ids.ts';
 import { normalizeAuthorityText } from '../routines/provenance.ts';
@@ -46,7 +47,7 @@ export type SlackScheduleToolOperation =
 export type SlackScheduleActionOutcome =
   | RoutineScheduleActionResult
   | { outcome: 'pending'; actionId: string }
-  | { outcome: 'confirmation_required'; proposalId: string };
+  | { outcome: 'confirmation_required'; proposalId: string; preview: string };
 
 export interface SlackScheduleActionRpcRequest {
   signal: SlackManagementSignal;
@@ -75,7 +76,7 @@ export async function invokeSlackScheduleAction(input: {
   const digest = managementOperationDigest([validated]);
   const actionId = scheduleActionId(input.signal.turnJobId, digest);
   const publicIdempotencyKey = `schedule-action:${actionId}`;
-  if (!input.signal.requesterText?.trim()) {
+  if (input.signal.requesterText === undefined) {
     return proposeScheduleAction(input, validated, publicIdempotencyKey);
   }
   const storageIdempotencyKey = managementStorageIdempotencyKey(
@@ -145,27 +146,25 @@ export async function invokeSlackScheduleAction(input: {
 
 /**
  * Another Agent's ask started this turn, so no message of the person's asked
- * for this work. The service holds it as a proposal that only the person's
- * own reply approves; nothing enters the schedule-action ledger.
+ * for this work: it becomes a proposal the person approves, and nothing
+ * enters the schedule-action ledger.
  */
 async function proposeScheduleAction(
   input: Parameters<typeof invokeSlackScheduleAction>[0],
   operation: SlackScheduleManagementOperation,
   idempotencyKey: string,
 ): Promise<SlackScheduleActionOutcome> {
-  const result = await input.dependencies.service.applyWorkspaceChanges({
+  const proposal = await input.dependencies.service.proposeWorkspaceChanges({
     context: input.context,
     idempotencyKey,
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    authoringReason: 'agent_edit',
     operations: [operation],
-    acknowledgementOwner: 'caller',
   });
-  const outcome = result.status === 'clarification_required' ? undefined : result.outcomes[0];
-  if (outcome?.disposition === 'confirmation_required' && outcome.proposalId) {
-    return { outcome: 'confirmation_required', proposalId: outcome.proposalId };
-  }
   return {
-    outcome: 'failed',
-    code: safeFailureCode(outcome?.code ?? outcome?.disposition ?? 'schedule_failed'),
+    outcome: 'confirmation_required',
+    proposalId: proposal.proposalId,
+    preview: proposal.presentation.slack,
   };
 }
 
@@ -175,6 +174,9 @@ async function bindScheduleOperationToRequester(
   operation: SlackScheduleToolOperation,
   routines: Pick<RoutineStore, 'getRoutine' | 'listRevisions'>,
 ): Promise<SlackScheduleManagementOperation> {
+  if (signal.requesterText !== undefined && !signal.requesterText.trim()) {
+    throw new ManagementError('invalid_request', 'Scheduled work requires the trusted current Slack request.');
+  }
   let previous: RoutineDefinition | undefined;
   if (operation.kind !== 'save_routine' || operation.routineId) {
     if (typeof operation.routineId !== 'string' || !operation.routineId.trim()) {
@@ -314,7 +316,7 @@ async function applyClaimedScheduleAction(input: {
       idempotencyKey: input.publicIdempotencyKey,
       operations: [input.operation],
       acknowledgementOwner: 'caller',
-      // Admitted only on the person's own message (see invokeSlackScheduleAction).
+      // Admitted only on the person's own message, which a retry no longer carries.
       approvalBasis: 'explicit_requester_command',
     });
     if (result.status === 'clarification_required') {

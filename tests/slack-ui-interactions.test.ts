@@ -556,6 +556,50 @@ test('Cancel on a workspace-change card retires the proposal, so a later typed a
   assert.equal((await f.stores.management.getChangeSetProposal('proposal_cancel'))?.status, 'stale');
 }));
 
+test('a click on a guest Agent\'s workspace-change card reaches that Agent and approves its proposal', async () => withFixture(async (f) => {
+  const owner = await f.stores.identity.resolveSlackIdentity('T1', 'U1');
+  assert.ok(owner);
+  // Support owns the thread; Finance answered there as a guest and proposed a change.
+  await f.stores.config.createAgent({
+    id: 'agent_finance', name: 'finance', instructions: '', enabled: true, lifecycle: 'active',
+    model: 'local-stub/ui-click',
+    creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    slackPresence: {
+      requestedHandle: 'finance', normalizedHandle: 'finance', desiredState: 'active',
+      health: 'healthy', userGroupId: 'SFINANCE',
+      avatar: { kind: 'generated', revision: 1, seed: 'finance' },
+    },
+  });
+  await f.stores.config.putAgentChannelGrant({
+    workspaceId: 'T1', channelId: 'C1', agentId: 'agent_finance', status: 'active',
+    createdByMembershipId: owner.membership.id, channelLabel: 'ops', channelIsPrivate: false,
+  }, 0);
+  const scope = `slack:T1:C1:${THREAD_TS}:agent:agent_finance`;
+  await f.stores.management.putChangeSetProposal({
+    proposalId: 'proposal_guest', organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: 'proposal_guest',
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_finance', expectedRevision: 0,
+      body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'memory:agent_finance': 0 }, at: Date.now(),
+  });
+  const surface = await f.surface({
+    agentId: 'agent_finance',
+    spec: { kind: 'approval', approval: 'workspace_change', proposalId: 'proposal_guest' },
+  });
+  assert.equal(await f.click(surface.id), 'accepted');
+  assert.deepEqual(f.ephemerals(), []);
+  assert.equal(f.jobs.length, 2);
+  const approval = f.jobs[1]!;
+  assert.equal(approval.assignment.agentId, 'agent_finance');
+  assert.equal(approval.assignment.threadGuest, true, 'the guest answers without taking the thread over');
+  assert.equal(approval.turn.managementApprovalProposalId, 'proposal_guest');
+  assert.equal((await f.read(surface.id))?.status, 'resolved');
+}));
+
 test('a card request button starts a turn and never redraws the answer message it rides in', async () => withFixture(async (f) => {
   const surface = await f.surface({
     namespace: 'ui',

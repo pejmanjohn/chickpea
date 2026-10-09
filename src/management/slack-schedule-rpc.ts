@@ -7,6 +7,7 @@ import type { SlackScheduleActionOutcome } from './slack-schedule-actions.ts';
 const REQUEST_VALIDATION_MESSAGES = new Set([
   'A Channel schedule must use the current Channel.',
   'A DM schedule must use the current DM thread.',
+  'Scheduled work requires the trusted current Slack request.',
   'Scheduling in group DMs is not supported.',
   'The schedule destination must match this conversation.',
   'The schedule workspace must match this conversation.',

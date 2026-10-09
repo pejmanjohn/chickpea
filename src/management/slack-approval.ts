@@ -222,7 +222,7 @@ function slackManagementSignal(
     eventId: turn.eventId,
     messageTs: turn.messageTs,
     turnJobId,
-    // The host resolves an approval only from a message the person typed.
+    // The host resolves an approval only from the person's own message or click.
     requesterText: turn.text,
   };
 }

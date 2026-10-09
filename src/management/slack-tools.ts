@@ -39,7 +39,8 @@ import {
   revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
-import { WorkspaceManagementService } from './service.ts';
+import { PERSON_APPROVED_ON_ASK, WorkspaceManagementService } from './service.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -88,7 +89,6 @@ const SIGNAL_ATTRIBUTE_KEYS = [
 const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'conversationKind',
   'requesterText',
-  'personAskedToRemember',
   'requesterTimezone',
   'attachmentFileIds',
   'attachmentIntakeStatus',
@@ -149,11 +149,6 @@ export interface SlackManagementSignal {
   admittedListIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
-  /**
-   * A hand-back to the thread's own Agent in an exchange the person started
-   * by asking it to remember or forget something. Host-set, never model text.
-   */
-  personAskedToRemember?: true;
   /** Verified Slack profile timezone, supplied by the host. */
   requesterTimezone?: string;
 }
@@ -901,7 +896,6 @@ export function parseSlackManagementSignal(
     ...(delivery.attributes.requesterText
       ? { requesterText: boundedAttribute(delivery.attributes.requesterText, 'requesterText', 40_000) }
       : {}),
-    ...(delivery.attributes.personAskedToRemember === 'true' ? { personAskedToRemember: true as const } : {}),
     ...(delivery.attributes.requesterTimezone
       ? { requesterTimezone: boundedAttribute(delivery.attributes.requesterTimezone, 'requesterTimezone', 64) }
       : {}),
@@ -936,7 +930,6 @@ export async function resolveSlackManagementActor(
       messageTs: signal.messageTs,
       eventId: signal.eventId,
       ...(signal.requesterText ? { requestText: signal.requesterText } : {}),
-      ...(signal.personAskedToRemember ? { personAskedToRemember: true as const } : {}),
       ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
       agentId: signal.agentId,
     },
@@ -966,6 +959,11 @@ export async function invokeSlackWorkspaceManagementTool<
       },
     };
   }
+  const personApproves = input.name === 'apply_workspace_changes' &&
+    input.signal.requesterText === undefined &&
+    (input.args as WorkspaceManagementToolArguments['apply_workspace_changes']).operations
+      .some(({ kind }) => PERSON_APPROVED_ON_ASK.has(kind));
+  if (personApproves) return proposeAskTurnChanges(input);
   const result = await invokeWorkspaceManagementTool({
     service: input.service,
     resolveContext: () => resolveSlackManagementActor(input.signal, input.identity),
@@ -977,6 +975,34 @@ export async function invokeSlackWorkspaceManagementTool<
     });
   }
   return result;
+}
+
+const PERSON_APPROVAL_INSTRUCTION = 'Nothing was applied. Another Agent\'s ask started this turn, so the person who started the exchange approves these changes. Send presentation.slack verbatim and say what it would change. The person approves with the Approve button or by replying "approve"; do not call confirm_workspace_change yourself.';
+
+/**
+ * Another Agent's ask started this turn, so its schedule and memory writes
+ * wait for the person: the whole batch becomes one proposal, and the
+ * approval applies exactly what its preview shows.
+ */
+async function proposeAskTurnChanges(input: {
+  signal: SlackManagementSignal;
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  service: WorkspaceManagementService;
+  args: unknown;
+}): Promise<WorkspaceManagementToolResult> {
+  const { idempotencyKey, operations } = input.args as WorkspaceManagementToolArguments['apply_workspace_changes'];
+  const result = await invokeWorkspaceManagementTool({
+    service: input.service,
+    resolveContext: () => resolveSlackManagementActor(input.signal, input.identity),
+  }, 'propose_workspace_changes', {
+    idempotencyKey,
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    authoringReason: 'agent_edit',
+    operations,
+  });
+  return result.ok
+    ? { ...result, result: { ...(result.result as object), instruction: PERSON_APPROVAL_INSTRUCTION } }
+    : result;
 }
 
 async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
@@ -1365,7 +1391,8 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
     return {
       outcome: 'confirmation_required',
       proposalId: result.proposalId,
-      instruction: 'Nothing was scheduled or changed. Another Agent\'s ask started this turn, so the person who started the exchange must approve this scheduled work in their own reply. State exactly what would be scheduled or changed and ask them to approve it. Once they approve in their own reply, call confirm_workspace_change with proposalId.',
+      presentation: { slack: result.preview },
+      instruction: PERSON_APPROVAL_INSTRUCTION,
     };
   }
   return {

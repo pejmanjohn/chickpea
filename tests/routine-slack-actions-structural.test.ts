@@ -67,13 +67,16 @@ test('an ask cannot schedule, control, or run work with the asking Agent\'s word
   for (const patch of [{}, control, run]) {
     assert.ok(await admitted(personRequestText(person), patch));
     const management = { reserveRequest: async () => assert.fail('an ask never enters the schedule-action ledger') };
-    let applied: any;
-    const service = { applyWorkspaceChanges: async (request: any) => {
-      applied = request;
-      return { status: 'pending', outcomes: [{ itemId: request.operations[0].itemId, operationKind: request.operations[0].kind, disposition: 'confirmation_required', proposalId: 'proposal_test' }] };
-    } };
+    let proposed: any;
+    const service = {
+      applyWorkspaceChanges: async () => assert.fail('an ask never applies scheduled work'),
+      proposeWorkspaceChanges: async (request: any) => {
+        proposed = request;
+        return { proposalId: 'changeset_test', presentation: { slack: 'Preview', markdown: 'Preview' } };
+      },
+    };
     const result = await invokeSlackScheduleAction(scheduleInput(personRequestText(ask), patch, undefined, previous, management, service));
-    assert.deepEqual(result, { outcome: 'confirmation_required', proposalId: 'proposal_test' });
-    assert.equal(applied.approvalBasis, undefined, 'the service decides; nothing vouches for the Agent\'s words');
+    assert.deepEqual(result, { outcome: 'confirmation_required', proposalId: 'changeset_test', preview: 'Preview' });
+    assert.equal(proposed.operations[0].kind, (patch as { kind?: string }).kind ?? 'save_routine');
   }
 });

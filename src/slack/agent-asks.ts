@@ -36,7 +36,7 @@ export interface SlackAgentAskRequest {
   turn: Pick<
     NormalizedSlackTurn,
     'workspaceId' | 'channelId' | 'threadTs' | 'messageTs' | 'userId' | 'channelType' |
-    'requesterTimezone' | 'agentAsk' | 'text'
+    'requesterTimezone' | 'agentAsk'
   >;
   fromAgentId: string;
   /** The replying Agent is the thread's own, not a guest. */
@@ -179,7 +179,6 @@ export function createAgentAskCollector(input: {
             threadTs: turn.threadTs,
             messageTs: turn.messageTs,
             userId: turn.userId,
-            text: turn.text,
             ...(turn.channelType ? { channelType: turn.channelType } : {}),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.agentAsk ? { agentAsk: turn.agentAsk } : {}),
@@ -198,39 +197,4 @@ export function createAgentAskCollector(input: {
 
 export function personRequestText(turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>): string | undefined {
   return turn.agentAsk ? undefined : turn.text;
-}
-
-// Links and mentions are dropped first, so a URL or a handle that contains
-// one of these words asks nothing.
-const REMEMBER_REQUEST =
-  /\b(?:remember|memori[sz]e|memory|forget|keep (?:(?:it|this|that) )?in mind|(?:make|take) a note|note (?:it|this|that) down)\b/i;
-
-/** Whether a person's message asks to remember or forget something. */
-export function personAsksToRemember(text: string | undefined): boolean {
-  return text !== undefined && REMEMBER_REQUEST.test(text.replace(/<[^>]*>/g, ' '));
-}
-
-/**
- * Whether the person's message that started this exchange asked to remember
- * or forget something, read from the person's own words and carried along
- * the exchange's asks, never from an Agent's.
- */
-export function exchangePersonAskedToRemember(
-  turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>,
-): boolean {
-  return turn.agentAsk
-    ? turn.agentAsk.personAskedToRemember === true
-    : personAsksToRemember(personRequestText(turn));
-}
-
-/**
- * The one ask turn that may write memory without the person's approval: the
- * thread's own Agent, handed its teammates' answers, in an exchange the
- * person started by asking it to remember or forget something.
- */
-export function handBackMayRemember(
-  turn: Pick<NormalizedSlackTurn, 'agentAsk'>,
-  assignment: Pick<ResolvedAssignment, 'threadGuest'>,
-): boolean {
-  return isHandedBackTurn(turn, assignment) && turn.agentAsk?.personAskedToRemember === true;
 }

@@ -30,12 +30,6 @@ export type ManagementOrigin =
       eventId?: string;
       /** Trusted current requester text from the Slack delivery, never model-authored. */
       requestText?: string;
-      /**
-       * No requestText: another Agent's ask started this turn. Set only on the
-       * hand-back to the thread's own Agent when the person's message that
-       * started the exchange asked to remember or forget something.
-       */
-      personAskedToRemember?: true;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */

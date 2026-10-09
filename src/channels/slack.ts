@@ -194,7 +194,6 @@ import {
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   agentSlackHandle,
-  exchangePersonAskedToRemember,
   isHandedBackTurn,
   mentionedHandleWords,
   type SlackAgentAskRequest,
@@ -1476,7 +1475,6 @@ export async function processSlackAgentAsks(
     };
   }
   const originMessageTs = agentAskOrigin(asking);
-  const personAskedToRemember = exchangePersonAskedToRemember(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
     // The asked Agent reads the ask as a person's mention arrives, so quoting it asks nobody.
@@ -1501,7 +1499,6 @@ export async function processSlackAgentAsks(
         ...(handedBack
           ? { handedBack: true as const }
           : threadOwnerAgentId ? { threadOwnerAgentId } : {}),
-        ...(personAskedToRemember ? { personAskedToRemember: true as const } : {}),
       },
     };
     const payload: SlackEventFixture = {
@@ -2509,13 +2506,22 @@ async function processSlackEvent(
         transport: runtimeTransport,
         stores,
       });
+      // An Approve or Cancel click answers the Agent that posted the card. A
+      // guest's card is answered by that guest, as an ask is.
+      const cardAgentId = ui?.surface.namespace === 'host' && ui.surface.spec.kind === 'approval'
+        ? ui.surface.agentId
+        : undefined;
+      const threadAgentId = cardAgentId
+        ? (await store.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))?.agentId
+        : undefined;
+      const guestCardAgentId = threadAgentId && threadAgentId !== cardAgentId ? cardAgentId : undefined;
       const routed = await resolveAgentRoute({
         turn,
         surface,
         actor: agentRoutingActor.routing,
         config: store,
         transport: runtimeTransport,
-        ...(ask ? { askAgentId: ask.targetAgentId } : {}),
+        ...(ask ? { askAgentId: ask.targetAgentId } : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),
         authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
           agent,
           workspaceId: turn.workspaceId,
