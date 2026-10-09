@@ -83,6 +83,11 @@ export function creditBackReason(kind: FailureKind, run: FailedRun): CreditBackR
   return owner.ours === 'provider' && run.funding !== 'platform' ? null : owner.ours;
 }
 
+/** A given-up run that settled failed keeps its own failure's owner; any other give-up is ours. */
+export function givenUpReason(settlement: FlueSettlementCheckpointV1 | undefined, run: FailedRun): CreditBackReason | null {
+  return creditBackReason(settlement && settlement.outcome !== 'completed' ? settlement.failureKind : 'recovery-failure', run);
+}
+
 export function planFunding(plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined): ModelRequestFundingSource {
   return plan?.modelCredential?.fundingSource ?? 'customer';
 }

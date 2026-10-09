@@ -37,7 +37,7 @@ import { turnJob as maintenanceTurnJob } from './fixtures/state-db/maintenance.t
 import { createAgentAskCollector } from '../src/slack/agent-asks.ts';
 import {
   creditBackFailedRun,
-  creditBackReason,
+  givenUpReason,
   hostedRun,
   planFunding,
   withCreditedBack,
@@ -416,7 +416,7 @@ async function alarmHarness(initial: AlarmJob[], hooks: {
     MAX_DEPENDENCY_RETRY_AFTER_MS,
     DURABLE_RECOVERY_FAILURE_TEXT: 'recovery notice',
     creditBackFailedRun,
-    creditBackReason,
+    givenUpReason,
     hostedRun,
     planFunding,
     withCreditedBack,

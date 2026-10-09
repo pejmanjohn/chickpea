@@ -12,7 +12,7 @@ import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   creditBackFailedRun,
-  creditBackReason,
+  givenUpReason,
   hostedRun,
   planFunding,
   withCreditedBack,
@@ -321,7 +321,7 @@ export async function executeTurnJob(
   const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
     const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
       hostedRun(ports.env, flueDispatch.dispatchReceipt?.submissionId),
-      creditBackReason('recovery-failure', { funding: planFunding(job.runtimePlan) }),
+      givenUpReason(flueDispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
     ));
     try {
       await ports.runTurn(job.turn, job.assignment, ports.env, {

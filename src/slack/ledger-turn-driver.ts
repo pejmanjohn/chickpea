@@ -4,7 +4,7 @@ import type { PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import {
   creditBackFailedRun,
-  creditBackReason,
+  givenUpReason,
   hostedRun,
   planFunding,
   withCreditedBack,
@@ -312,14 +312,14 @@ export function createLedgerSlackRunHandler(
       if (error instanceof AgentPromptFailure && error.recoveryRequired) {
         return deliverDurableRecoveryFailure(
           options, claim, job, client, installationContext,
-          'flue_dispatch_reconciliation_required', flueDispatch.dispatchReceipt?.submissionId,
+          'flue_dispatch_reconciliation_required', flueDispatch,
         );
       }
       if (error instanceof AgentPromptFailure && error.retryable) {
         if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
           return deliverDurableRecoveryFailure(
             options, claim, job, client, installationContext,
-            'post_dispatch_attempts_exhausted', flueDispatch.dispatchReceipt?.submissionId,
+            'post_dispatch_attempts_exhausted', flueDispatch,
           );
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
@@ -349,11 +349,11 @@ async function deliverDurableRecoveryFailure(
   client: WebClient,
   installationContext: SlackInstallationExecutionContext | undefined,
   reasonCode: string,
-  submissionId: string | undefined,
+  dispatch: Pick<SlackFlueDispatchState, 'dispatchReceipt' | 'flueSettlement'>,
 ): Promise<RunDriverHandlerResult> {
   const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
-    hostedRun(options.platformEnv, submissionId),
-    creditBackReason('recovery-failure', { funding: planFunding(job.runtimePlan) }),
+    hostedRun(options.platformEnv, dispatch.dispatchReceipt?.submissionId),
+    givenUpReason(dispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
   ));
   try {
     await (options.executeTurn ?? runTurn)(job.turn, job.assignment, options.platformEnv, {
