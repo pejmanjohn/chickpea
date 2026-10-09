@@ -223,6 +223,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
     await f.config.updateAgent(created.id, {
       slackPresence: {
         ...created.slackPresence!,
+        kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
         userGroupId: 'SDECKWELCOME',

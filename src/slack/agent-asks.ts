@@ -92,10 +92,11 @@ export function agentSlackHandle(
 /**
  * Whether this Agent's replies may ask other Agents. Only user Agents ask:
  * the built-in Chickpea lists and describes Agents, so a handle in its reply
- * names that Agent and never asks it.
+ * names that Agent and never asks it. An Agent with its own Slack app posts
+ * as another bot, whose messages this app's admission drops, so it asks no one.
  */
-export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
-  return agent.kind === 'user';
+export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind' | 'slackPresence'>): boolean {
+  return agent.kind === 'user' && agent.slackPresence?.kind !== 'agent_app';
 }
 
 /**
