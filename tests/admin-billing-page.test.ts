@@ -114,6 +114,10 @@ async function harness(options: {
   onboarding?: Record<string, unknown>;
   onboardingUnread?: boolean;
   modelsHeld?: boolean;
+  /** The page's clock; Date.now() reads it. */
+  clock?: { now: number };
+  /** Timers of a second or more wait for firePoll() instead of running. */
+  manualPolls?: boolean;
   platformFailures?: number;
   platformFailureBody?: unknown;
   platformHeld?: boolean;
@@ -123,6 +127,9 @@ async function harness(options: {
   let html = '';
   const renders: string[] = [];
   const timerDelays: number[] = [];
+  const pendingPolls: Array<() => void> = [];
+  const clock = options.clock;
+  const PageDate = clock ? class extends Date { static override now() { return clock.now; } } : Date;
   const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; renders.push(value); } };
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
@@ -236,10 +243,11 @@ async function harness(options: {
   }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   vm.runInNewContext(script, {
-    console, Date, document, fetch, clearTimeout,
+    console, Date: PageDate, document, fetch, clearTimeout,
     // Try polls the journey; an unref'd timer lets the file's process exit.
     setTimeout: (callback: () => void, ms?: number) => {
       timerDelays.push(ms ?? 0);
+      if (options.manualPolls && (ms ?? 0) >= 1000) return pendingPolls.push(callback);
       return setTimeout(callback, ms).unref();
     },
     history: {
@@ -260,8 +268,14 @@ async function harness(options: {
     listeners.input!({ target: actionTarget({ 'data-action': 'prov-key-input', 'data-provider': provider }, 'sk-test') });
     await click({ 'data-action': 'prov-validate', 'data-provider': provider });
   };
+  const firePoll = async () => {
+    const poll = pendingPolls.shift();
+    assert.ok(poll, 'a poll is waiting');
+    poll();
+    await flush();
+  };
   return {
-    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey,
+    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey, firePoll,
     portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
   };
 }
@@ -1018,8 +1032,20 @@ test('the boot\'s other requests never move a journey back once setup moved it o
   assert.equal(platformRequests(page.requests), 1);
 });
 
-test('Try checks for Chickpea\'s first reply every second', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY });
+test('Try checks for Chickpea\'s first reply every second for two minutes, then less often for a tab left open', async () => {
+  const clock = { now: Date.parse('2026-10-09T12:00:00Z') };
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY, clock, manualPolls: true });
   assert.match(page.html(), /Say hi to Chickpea in Slack/);
-  assert.deepEqual(page.timerDelays.filter((ms) => ms > 0), [1000]);
+  const polls = () => page.timerDelays.filter((ms) => ms >= 1000);
+  assert.deepEqual(polls(), [1000]);
+  clock.now += 119_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000], 'still every second inside the first two minutes');
+  clock.now += 2_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000, 5000], 'every five seconds after two minutes');
+  clock.now += 10 * 60_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000, 5000, 15000], 'every fifteen seconds after ten minutes');
+  assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 3);
 });

@@ -13034,6 +13034,14 @@
   }
 
   var onboardingPollTimer = null;
+  var onboardingPollStartedAt = 0;
+  // A first reply is likely within minutes of Try, or of returning to this
+  // tab; a tab left open afterwards checks less often.
+  var ONBOARDING_POLL_BACKOFF = [
+    { beforeMs: 2 * 60 * 1000, everyMs: 1000 },
+    { beforeMs: 10 * 60 * 1000, everyMs: 5000 },
+    { beforeMs: Infinity, everyMs: 15000 }
+  ];
   var onboardingUnreadRequest = null;
   var onboardingPollRequest = false;
 
@@ -13082,9 +13090,13 @@
     if (!shouldPoll) {
       if (onboardingPollTimer && typeof clearTimeout === "function") clearTimeout(onboardingPollTimer);
       onboardingPollTimer = null;
+      onboardingPollStartedAt = 0;
       return;
     }
     if (onboardingPollTimer || onboardingPollRequest || typeof setTimeout !== "function") return;
+    if (!onboardingPollStartedAt) onboardingPollStartedAt = Date.now();
+    var polling = Date.now() - onboardingPollStartedAt;
+    var delay = ONBOARDING_POLL_BACKOFF.find(function (step) { return polling < step.beforeMs; }).everyMs;
     onboardingPollTimer = setTimeout(function () {
       onboardingPollTimer = null;
       onboardingPollRequest = true;
@@ -13092,7 +13104,7 @@
         onboardingPollRequest = false;
         syncOnboardingActivity();
       });
-    }, 1000);
+    }, delay);
   }
 
   function continueOnboardingProvider() {
