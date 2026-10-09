@@ -347,6 +347,15 @@ function liveAgentMention(userGroupId: string, handle: string): string {
   return `<!subteam^${userGroupId}|@${handle}>`;
 }
 
+/**
+ * A delivered reply as Slack returns it on read, where a mention has no
+ * label. A model that later reads the reply copies this form, which never
+ * stays live.
+ */
+export function slackReadbackText(text: string): string {
+  return text.replace(/<!subteam\^([^<>|\n]+)\|[^<>\n]*>/g, '<!subteam^$1>');
+}
+
 /** Plain `@handle` words of listed Agents, as live mentions. */
 function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string {
   return text.replace(SLACK_HANDLE_WORD, (word, handle: string) => {
@@ -364,8 +373,10 @@ function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string
  * joiner after `<`. User mentions, Channel links and dates are unchanged.
  *
  * `live` names the Agent handles this reply may mention: in prose, a plain
- * `@handle` or a user-group mention of one of them becomes a live mention of
- * that Agent, which notifies nobody. Every other user group stays inert.
+ * `@handle` of one of them becomes a live mention of that Agent, which
+ * notifies nobody. A user-group token stays live only in the exact form this
+ * function writes. Any other token naming one of them is inert and reads as
+ * that Agent's handle. Every other user group stays inert.
  * Idempotent, and a streamed prefix neutralizes to a prefix of the answer:
  * a handle word changes only once it is complete.
  */
@@ -382,12 +393,13 @@ export function neutralizeSlackBroadcastMentions(
     }
     const linked = liveHandles ? linkAgentHandleWords(segment, liveHandles) : segment;
     return joinBroadcastWords(linked.replace(SLACK_SPECIAL_MENTION,
-      (_token, target: string, label: string | undefined) => {
+      (token: string, target: string, label: string | undefined) => {
         const groupId = /^subteam\^/i.test(target) ? target.slice('subteam^'.length) : undefined;
         const handle = groupId === undefined ? undefined : liveGroups?.get(groupId);
-        return groupId !== undefined && handle
-          ? liveAgentMention(groupId, handle)
-          : `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
+        if (groupId === undefined || handle === undefined) {
+          return `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
+        }
+        return token === liveAgentMention(groupId, handle) ? token : `@${SLACK_MENTION_BREAK}${handle}`;
       }));
   }).join('');
 }
