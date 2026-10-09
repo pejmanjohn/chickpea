@@ -39,6 +39,7 @@ import {
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
+import { unstyledClasses } from './helpers/unstyled-classes.ts';
 
 const START = 1_800_100_000_000;
 const CAPABILITY = 'c'.repeat(43);
@@ -152,7 +153,11 @@ test('the initiating member claims one authenticated browser and completes an ex
 
     const initial = await app.request(`http://localhost/setup/${setupId}`);
     assert.equal(initial.status, 200);
-    assert.match(await initial.text(), /Checking this one-use setup link/);
+    const claimHtml = await initial.text();
+    assert.match(claimHtml, /Checking this one-use setup link/);
+    assert.match(claimHtml, /data-connector-surface="setup-claim"/);
+    assert.match(claimHtml, /role="img" aria-label="Chickpea"/);
+    assert.deepEqual(unstyledClasses(claimHtml), []);
     assert.equal(initial.headers.get('referrer-policy'), 'no-referrer');
     assert.match(initial.headers.get('content-security-policy') ?? '', /default-src 'none'/);
 
@@ -181,6 +186,12 @@ test('the initiating member claims one authenticated browser and completes an ex
       body: JSON.stringify({ capability: CAPABILITY }),
     });
     assert.equal(wrongMember.status, 403);
+    const wrongMemberPage = await app.request(`http://localhost/setup/${setupId}`);
+    assert.equal(wrongMemberPage.status, 410);
+    const unavailableHtml = await wrongMemberPage.text();
+    assert.match(unavailableHtml, /Setup link unavailable/);
+    assert.match(unavailableHtml, /data-connector-surface="setup-unavailable"/);
+    assert.deepEqual(unstyledClasses(unavailableHtml), []);
 
     principal = browserPrincipal(owner);
 
@@ -208,6 +219,8 @@ test('the initiating member claims one authenticated browser and completes an ex
     });
     const summaryHtml = await summary.text();
     assert.match(summaryHtml, /Connect Gmail/);
+    assert.match(summaryHtml, /data-connector-surface="setup-summary"/);
+    assert.deepEqual(unstyledClasses(summaryHtml), []);
     assert.match(summaryHtml, /Customer Research/);
     assert.doesNotMatch(summaryHtml, new RegExp(owner.user.id));
     assert.doesNotMatch(summaryHtml, new RegExp(CAPABILITY));
@@ -253,7 +266,10 @@ test('the initiating member claims one authenticated browser and completes an ex
     now += 24 * 60 * 60_000;
     const terminal = await app.request(`http://localhost/setup/${setupId}`);
     assert.equal(terminal.status, 200);
-    assert.match(await terminal.text(), /Setup complete/);
+    const terminalHtml = await terminal.text();
+    assert.match(terminalHtml, /Setup complete/);
+    assert.match(terminalHtml, /data-connector-surface="setup-complete"/);
+    assert.deepEqual(unstyledClasses(terminalHtml), []);
   } finally {
     identity.close();
     config.close();

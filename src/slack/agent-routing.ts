@@ -46,6 +46,8 @@ export type AgentRoutingResult =
       reason: AgentRoutingDenialReason;
       alternatives: AgentRouteAlternative[];
     }
+  /** A Channel member mentioned an active Agent that has not been added to this Channel. */
+  | { kind: 'not_in_channel'; agent: CustomAgentConfig }
   | {
       kind: 'routed';
       source: AgentRouteSource;
@@ -225,6 +227,8 @@ export async function resolveAgentRoute(
   }
 
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
+  // A group that is not one of this installation's Agents (people, or another
+  // app's Agent) is ordinary text: the message goes where it would without it.
   const mentionedAgents = mentionedGroupIds
     .flatMap((groupId) => {
       const agent = agentsByGroupId.get(groupId);
@@ -235,7 +239,10 @@ export async function resolveAgentRoute(
   )) {
     return denied('not_available', []);
   }
+  // Directory repair binds only an Agent granted in this Channel.
   if (
+    surface === 'channel' &&
+    activeGrants.length > 0 &&
     mentionedGroupIds.length === 1 &&
     mentionedAgents.length === 0 &&
     input.transport
@@ -255,15 +262,7 @@ export async function resolveAgentRoute(
       // memory preparation remain identical to a previously healthy mapping.
       return resolveAgentRoute(input);
     }
-    return denied(
-      repair.kind === 'temporarily_unavailable'
-        ? 'temporarily_unavailable'
-        : 'not_available',
-      [],
-    );
-  }
-  if (mentionedAgents.length !== mentionedGroupIds.length) {
-    return denied('not_available', []);
+    if (repair.kind === 'temporarily_unavailable') return denied('temporarily_unavailable', []);
   }
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests, which only a Channel
@@ -281,9 +280,7 @@ export async function resolveAgentRoute(
         workspaceManagementRoute: false,
         ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
       });
-      if (access !== 'allowed') {
-        return denied('not_available', access === 'private_denied' ? [] : available);
-      }
+      if (access !== 'allowed') return refusal(agent, access, available, true);
     }
   }
 
@@ -331,7 +328,7 @@ export async function resolveAgentRoute(
     ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
   });
   if (!selected || access !== 'allowed') {
-    return denied('not_available', access === 'private_denied' ? [] : available);
+    return refusal(selected, access, available, source === 'agent_handle');
   }
 
   const routed = withTeammates(await commitSelectedAgentRoute({
@@ -379,11 +376,14 @@ export async function mayUseThreadAgent(input: {
   }) === 'allowed';
 }
 
+type AgentAccess = 'allowed' | 'unavailable' | 'private_denied' | 'not_in_channel';
+
 /**
  * Whether the actor may talk to the Agent routing selected: a full member and
  * an active Agent; in a Channel, a member of it with the Agent's active grant
- * there (a workspace-management route needs none); elsewhere, a user-created
- * Agent's live placement authority (`private_denied` when that says no).
+ * there (a workspace-management route needs none; a user-created Agent
+ * without one is `not_in_channel`); elsewhere, a user-created Agent's live
+ * placement authority (`private_denied` when that says no).
  */
 async function agentAccess(input: {
   agent: CustomAgentConfig | undefined;
@@ -392,14 +392,14 @@ async function agentAccess(input: {
   activeGrants: AgentChannelGrant[];
   workspaceManagementRoute: boolean;
   authorizeUserAgent?: ResolveAgentRouteInput['authorizeUserAgent'];
-}): Promise<'allowed' | 'unavailable' | 'private_denied'> {
+}): Promise<AgentAccess> {
   const { agent, actor } = input;
   if (!actor.fullMember || !agent || !agentIsActive(agent)) return 'unavailable';
   if (input.surface === 'channel') {
-    const grant = input.activeGrants.find((candidate) => candidate.agentId === agent.id);
-    return actor.channelMember && (input.workspaceManagementRoute || grant)
-      ? 'allowed'
-      : 'unavailable';
+    if (!actor.channelMember) return 'unavailable';
+    if (input.workspaceManagementRoute ||
+        input.activeGrants.some((candidate) => candidate.agentId === agent.id)) return 'allowed';
+    return agent.kind === 'user' ? 'not_in_channel' : 'unavailable';
   }
   if (agent.kind !== 'user') return 'allowed';
   const access = await input.authorizeUserAgent?.(agent);
@@ -643,6 +643,21 @@ function assignmentForAgent(
     ...(grant?.channelLabel ? { channelLabel: grant.channelLabel } : {}),
     agent,
   };
+}
+
+/**
+ * How routing answers someone who cannot use `agent` here. Only an Agent the
+ * person mentioned is named as missing from the Channel; any other refusal
+ * lists the Agents this Channel has, unless that would disclose a private one.
+ */
+function refusal(
+  agent: CustomAgentConfig | undefined,
+  access: AgentAccess,
+  available: AgentRouteAlternative[],
+  mentioned: boolean,
+): Exclude<AgentRoutingResult, { kind: 'ignore' | 'routed' }> {
+  if (mentioned && agent && access === 'not_in_channel') return { kind: 'not_in_channel', agent };
+  return denied('not_available', access === 'private_denied' ? [] : available);
 }
 
 function denied(
