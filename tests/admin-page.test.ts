@@ -395,6 +395,11 @@ type ProviderSummaryFixture = {
   subscription?: OpenAiSubscriptionStatusFixture;
   platformFunded?: boolean;
 };
+type ModelReadinessFixture =
+  | null
+  | 'credential_missing'
+  | 'funding_not_offered'
+  | { unavailable: 'model_unsupported'; message: string };
 type ModelProviderFixture = {
   id: string;
   configured: boolean;
@@ -570,7 +575,7 @@ function runAdminPageHarness(
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
     modelProviders?: ModelProviderFixture[];
     /** The server's readiness answer per model; others answer from the provider's key. */
-    modelReadiness?: Record<string, 'credential_missing' | 'funding_not_offered' | null>;
+    modelReadiness?: Record<string, ModelReadinessFixture>;
     workspaceDefault?: WorkspaceDefaultFixture | null;
     workspaceDefaultPutError?: { status: number; error: string; current?: WorkspaceDefaultFixture };
     attachSelectionValue?: string;
@@ -2707,12 +2712,14 @@ function runAdminPageHarness(
       const modelId = new URLSearchParams(path.slice(path.indexOf('?'))).get('modelId') ?? '';
       modelReadinessRequests.push(modelId);
       const providerId = modelId.slice(0, modelId.indexOf('/'));
-      const unavailable = harnessOptions.modelReadiness && modelId in harnessOptions.modelReadiness
+      const answer = harnessOptions.modelReadiness && modelId in harnessOptions.modelReadiness
         ? harnessOptions.modelReadiness[modelId]
         : listedModelProviders().some((provider) => provider.id === providerId && provider.configured)
           ? null
           : 'credential_missing';
-      return Promise.resolve(jsonResponse({ modelId, unavailable }));
+      return Promise.resolve(jsonResponse(
+        answer !== null && typeof answer === 'object' ? { modelId, ...answer } : { modelId, unavailable: answer },
+      ));
     }
     if (path === '/admin/api/workspace-model-default') {
       if (method === 'PUT') {
@@ -13956,7 +13963,7 @@ async function agentModelTab(options: {
   model: string;
   hosted: boolean;
   modelProviders?: ModelProviderFixture[];
-  modelReadiness?: Record<string, 'credential_missing' | 'funding_not_offered' | null>;
+  modelReadiness?: Record<string, ModelReadinessFixture>;
 }) {
   const harness = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
@@ -13998,6 +14005,27 @@ test('an own-key workspace with no key keeps the No key warning on a pinned Agen
   const field = agentModelField(harness.app.innerHTML);
   assert.ok(field.endsWith(`${NO_KEY_WARNING}</div>`), field);
   assert.doesNotMatch(field, /Not available/);
+});
+
+test('a keyless own-key Agent pinned to a model the catalog dropped shows the server\'s reason', async () => {
+  const dropped = 'openai/gpt-4.1-mini-2025-04-14';
+  const message = 'The active OpenAI API-key catalog does not support this model.';
+  const harness = await agentModelTab({
+    model: dropped,
+    hosted: true,
+    modelProviders: [{
+      id: 'openai',
+      configured: false,
+      source: 'via OPENAI_API_KEY',
+      suggestions: ['openai/gpt-6-sol'],
+      authMethods: { activeMethod: 'api_key', apiKeyConfigured: false, subscription: { state: 'disconnected', updatedAt: 0 } },
+    }],
+    modelReadiness: { [dropped]: { unavailable: 'model_unsupported', message } },
+  });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.endsWith(`Settings &nearr;</button></p><p class="field-error">${message}</p></div>`), field);
+  assert.doesNotMatch(field, /No key|Not available/);
 });
 
 test('standalone keeps every Agent model warning it shows today', async () => {

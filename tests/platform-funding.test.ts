@@ -821,15 +821,22 @@ test('Admin reads an Agent model on a credits installation as ready by its price
     assert.equal(body.modelId, modelId);
     return body.unavailable;
   };
+  const DROPPED = 'openai/gpt-4.1-mini-2025-04-14';
+  const DROPPED_ANSWER = {
+    modelId: DROPPED,
+    unavailable: 'model_unsupported',
+    message: 'The active OpenAI API-key catalog does not support this model.',
+  };
+  const dropped = async () => (await request(`/admin/api/models/readiness?modelId=${encodeURIComponent(DROPPED)}`)).json();
 
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     fakePort();
     assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'credits serve a priced model with no saved key');
     assert.equal(await unavailable('anthropic/claude-opus-4-1'), 'funding_not_offered', 'credits serve only a priced model');
-    assert.equal(
-      await unavailable('openai/gpt-4.1-mini-2025-04-14'),
-      'model_unsupported',
-      'a priced model the active catalog does not serve is refused first, as the Workspace default reads it',
+    assert.deepEqual(
+      await dropped(),
+      DROPPED_ANSWER,
+      'a priced model the active catalog does not serve is refused first, with the reason, as the Workspace default reads it',
     );
     assert.equal(
       await unavailable('cloudflare/@cf/zai-org/glm-5.2'),
@@ -841,6 +848,7 @@ test('Admin reads an Agent model on a credits installation as ready by its price
     t.mock.timers.setTime(NOW);
     fakePort({ funding: async () => 'customer' });
     assert.equal(await unavailable(`anthropic/${SONNET}`), 'credential_missing', 'a customer-funded installation needs its own key');
+    assert.deepEqual(await dropped(), DROPPED_ANSWER, 'a keyless own key hears the catalog reason before the missing key');
   });
 });
 
