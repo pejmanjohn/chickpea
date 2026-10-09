@@ -2530,6 +2530,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return 'unavailable';
     }
   };
+  const agentAvatarOrigin = (c: Context) => ({
+    publicOrigin: requestOrigin(c),
+    installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
+  });
   const agentAdminProjectionForRequest = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -2543,10 +2547,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await memberVisibleAgentChannels(c, agentGrants)
         : new Map<string, SlackChannel>()
       : undefined;
-    return agentAdminProjection(agent, store(c), snapshots(c), {
-      publicOrigin: requestOrigin(c),
-      installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
-    }, undefined, {
+    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), undefined, {
       canEdit: principal ? canEditAgent(principal, agent) : true,
       ...extraAccess,
       ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
@@ -6577,10 +6578,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       listedWorkspaceIds.map(async (workspaceId) =>
         [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
     ));
-    const avatarOrigin = {
-      publicOrigin: requestOrigin(c),
-      installationId: agentAvatarInstallation(platformEnv),
-    };
+    const avatarOrigin = agentAvatarOrigin(c);
     return c.json({
       // The connected workspace, when unambiguous. Admin loads Agent
       // connections against it without first waiting for Slack status.
