@@ -586,9 +586,6 @@ test('every Agent receives shared Slack teammate defaults before voice overrides
     agents: store,
     grants: store,
   });
-  assert.deepEqual(config.instructionLayers.map((layer) => layer.source), [
-    'interaction_defaults', 'agent', 'runtime', 'guardrail',
-  ]);
   assert.match(config.instructions, /Lead with the outcome/);
   assert.match(config.instructions, /Write final answers in standard Markdown: \*\*bold\*\*, _italic_, ~~strikethrough~~, and \[label\]\(url\)/);
   assert.match(config.instructions, /When correcting a prior answer, briefly acknowledge the mistake and state the corrected result/);

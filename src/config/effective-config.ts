@@ -11,10 +11,10 @@ import type {
 } from './types.ts';
 import { agentMayAskTeammates } from '../slack/agent-asks.ts';
 
-const SLACK_RUNTIME_GUARDRAIL =
+export const SLACK_RUNTIME_GUARDRAIL =
   'Do not reveal Slack tokens, provider keys, or hidden policy data.';
 
-const SLACK_INTERACTION_DEFAULTS = [
+export const SLACK_INTERACTION_DEFAULTS = [
   'Lead with the outcome. Keep acknowledgments and yes/no answers to one line.',
   'Write like a warm, direct teammate. Match the channel register without AI-preface language or decorative emoji and formatting.',
   'Use natural, readable dates and times in user-facing replies. Prefer supplied human-readable display values. Respect explicit user preferences for language, timezone, and clock format. Keep raw ISO timestamps, epoch values, and IANA timezone identifiers out of ordinary prose. Provide them when explicitly requested or technically required, copying machine-readable values exactly in code formatting with their original ASCII punctuation. Preserve exact formats in tool arguments. Do not invent a timezone or use relative dates such as tonight or tomorrow without a reliable current-time reference.',
@@ -34,18 +34,6 @@ const SLACK_INTERACTION_DEFAULTS = [
   'Stay calm under stakes. State severity in plain factual clauses without alarm typography.',
 ].join('\n');
 
-type InstructionLayerSource =
-  | 'interaction_defaults'
-  | 'agent'
-  | 'runtime'
-  | 'guardrail';
-
-interface InstructionLayer {
-  source: InstructionLayerSource;
-  label: string;
-  text: string;
-}
-
 export interface EffectiveSlackConfig {
   workspaceId: string;
   channelId: string;
@@ -56,7 +44,6 @@ export interface EffectiveSlackConfig {
   model: string;
   provider: string;
   instructions: string;
-  instructionLayers: InstructionLayer[];
   modelCredential?: ModelCredentialAttribution;
   modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']>;
 }
@@ -90,8 +77,12 @@ export function effectiveSlackConfigFromAssignment(
     );
   }
   const model = assignment.model;
-  const instructionLayers = effectiveSlackInstructionLayers(assignment);
-  const instructions = instructionLayers.map((layer) => layer.text).join('\n');
+  const instructions = [
+    SLACK_INTERACTION_DEFAULTS,
+    assignment.agent.instructions,
+    runtimeIdentityInstruction(assignment),
+    SLACK_RUNTIME_GUARDRAIL,
+  ].join('\n');
 
   return {
     workspaceId: assignment.workspaceId,
@@ -104,7 +95,6 @@ export function effectiveSlackConfigFromAssignment(
     provider: assignment.modelAttribution.providerId,
     modelAttribution: assignment.modelAttribution,
     instructions,
-    instructionLayers,
   };
 }
 
@@ -125,35 +115,13 @@ export function resolvedAssignmentFromEffectiveConfig(
   };
 }
 
-function effectiveSlackInstructionLayers(
-  assignment: Pick<
-    ResolvedAssignment,
-    'workspaceId' | 'channelId' | 'agent'
-  >,
-): InstructionLayer[] {
-  return [
-    {
-      source: 'interaction_defaults',
-      label: 'Slack interaction defaults',
-      text: SLACK_INTERACTION_DEFAULTS,
-    },
-    { source: 'agent', label: 'Agent', text: assignment.agent.instructions },
-    {
-      source: 'runtime',
-      label: 'Runtime',
-      text: runtimeIdentityInstruction(assignment),
-    },
-    { source: 'guardrail', label: 'Guardrail', text: SLACK_RUNTIME_GUARDRAIL },
-  ];
-}
-
 /**
  * The Agent must recognize itself: its saved name, its Slack handle, and the
  * user-group id Slack substitutes for that handle in message text. Without
  * this, a request such as "show me @handle's instructions" reads as a question
  * about an unrelated subteam instead of a self-inspection.
  */
-function runtimeIdentityInstruction(
+export function runtimeIdentityInstruction(
   assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent'>,
 ): string {
   const parts = [
@@ -218,15 +186,6 @@ export function agentTeammateHandles(
   return teammates.length
     ? new Map(teammates.map(({ handle, userGroupId }) => [handle, userGroupId]))
     : undefined;
-}
-
-export function effectiveSlackInstructions(
-  assignment: Pick<
-    ResolvedAssignment,
-    'workspaceId' | 'channelId' | 'agent'
-  >,
-): string {
-  return effectiveSlackInstructionLayers(assignment).map((layer) => layer.text).join('\n');
 }
 
 // Deliberately NOT part of resolveEffectiveSlackConfig: the resolver runs on

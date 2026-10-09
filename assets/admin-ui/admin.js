@@ -12604,14 +12604,6 @@
     return agent.model || "No model pinned";
   }
 
-  function instructionLayersHtml(layers) {
-    return layers.map(function (layer) {
-      var ember = layer.source === "channel";
-      var label = String(layer.label || "").toLowerCase() === "profile" ? "Agent" : layer.label;
-      return '<span class="layer-tag ' + (ember ? "ember" : "") + '">' + esc(label) + '</span><span class="' + (ember ? "from-addendum" : "") + '">' + esc(layer.text) + '</span>';
-    }).join("");
-  }
-
   function providerBadges() {
     return state.models.providers.map(function (provider) {
       return '<span class="badge ' + (provider.configured ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + esc(provider.id) + '</span>';

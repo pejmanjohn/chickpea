@@ -1,4 +1,4 @@
-import { defineTool, type ToolDefinition, useInstruction, useTool } from '@flue/runtime';
+import { defineTool, type ToolDefinition, useInstruction } from '@flue/runtime';
 
 import type {
   RuntimePlanManagedConnectionV2,
@@ -169,16 +169,20 @@ function groupManagedConnections(
   return groups;
 }
 
-/** Mount only secret-free declarations from the durable plan. */
+/**
+ * Only secret-free declarations from the durable plan. The caller mounts the
+ * returned tools after the universal tools: they differ by workspace and
+ * Agent, so they cannot sit in the shared prompt prefix.
+ */
 export function useManagedConnectionTools(
   plan: RuntimePlanV2,
   resolvePlatformEnv: PlatformEnvResolver,
   usageCorrelation?: ManagedToolUsageCorrelation,
   reservedToolNames: readonly string[] = [],
-): void {
-  if (!plan.actorMembershipId || !plan.managedConnections?.length) return;
+): ReturnType<typeof createManagedConnectionTools> {
+  if (!plan.actorMembershipId || !plan.managedConnections?.length) return [];
   useInstruction(MANAGED_CONNECTION_RESULT_INSTRUCTION);
-  for (const tool of createManagedConnectionTools({
+  return createManagedConnectionTools({
     connections: plan.managedConnections,
     workspaceId: plan.conversation.workspaceId,
     agentId: plan.agentId,
@@ -189,9 +193,7 @@ export function useManagedConnectionTools(
       ...reservedToolNames,
     ],
     ...(usageCorrelation ? { usageCorrelation } : {}),
-  })) {
-    useTool(tool);
-  }
+  });
 }
 
 function createCapabilityTool(

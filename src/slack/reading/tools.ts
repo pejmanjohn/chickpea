@@ -1,4 +1,4 @@
-import { defineTool, useDelivery, useInstruction, useTool } from '@flue/runtime';
+import { defineTool, useDelivery, useTool } from '@flue/runtime';
 import * as v from 'valibot';
 
 import type { RuntimePlanV2 } from '../../agents/runtime-plan.ts';
@@ -97,7 +97,6 @@ export function createSlackReadingTools(resolve: () => Promise<SlackReadingServi
 export function useSlackReadingTools(plan: RuntimePlanV2, resolveEnv: () => Promise<PlatformEnv | undefined>): void {
   const signal = parseSlackManagementSignal(useDelivery(), plan);
   if (!signal || !plan.actorMembershipId) return;
-  useInstruction(SLACK_READING_INSTRUCTION);
   // One service per render: its request caps and authority caches span the turn's
   // calls; authority is still checked again on every call.
   let service: Promise<SlackReadingService> | undefined;

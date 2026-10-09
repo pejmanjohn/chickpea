@@ -895,15 +895,6 @@ button, input, textarea, select { font: inherit; }
   margin-top: 2px;
   padding: 10px 14px;
 }
-.layer-tag {
-  color: var(--text-3);
-  font-size: 0.65625rem;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-.layer-tag.ember { color: var(--ember-press); }
-.from-addendum { border-left: 3px solid var(--ember); margin-left: -16px; padding-left: 13px; }
 details.advanced { border-top: 1.5px solid rgba(59, 50, 32, 0.15); padding-top: 4px; }
 details.advanced summary {
   align-items: center;

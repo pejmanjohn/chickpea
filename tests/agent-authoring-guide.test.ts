@@ -19,6 +19,7 @@ import { toJsonSchema } from '@valibot/to-json-schema';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { proposeWorkspaceChangesValibotSchema } from '../src/management/schemas.ts';
 import { scheduleActionInputSchema, scheduleActionDescription, slackManagementInstruction } from '../src/management/slack-tools.ts';
+import { RUNTIME_PLAN_INSTRUCTIONS, sharedSystemBlock } from '../src/agents/shared-prefix.ts';
 
 test('canonical Agent-authoring package is versioned, complete, and digest-bound', async () => {
   assert.equal(AGENT_AUTHORING_SKILL_NAME, 'agent-authoring');
@@ -223,7 +224,7 @@ test('Slack tool selection routes destructive schedule deletion through confirma
   );
 
   assert.equal(v.safeParse(scheduleActionInputSchema, { action: 'delete' }).success, false);
-  assert.match(source, /useInstruction\(slackManagementInstruction\(plan\.agentId\)\)/);
+  assert.match(source, /useInstruction\(slackManagementRoutingInstruction\(plan\.agentId\)\)/);
   assert.match(scheduleTool, /description: scheduleActionDescription/);
   assert.match(scheduleTool, /input: scheduleActionInputSchema/);
   assert.match(selectionInstruction, /Deleting scheduled work is deliberately excluded from manage_scheduled_work/i);
@@ -285,7 +286,8 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
     slackSource.indexOf('export function ChickpeaSlack'),
     slackSource.indexOf('/** Compose the declarations shared by Slack'),
   );
-  assert.match(chickpeaSlackBody, /useAgentAuthoring\(\)/);
+  assert.match(chickpeaSlackBody, /useAgentAuthoringSkill\(\)/);
+  assert.ok(sharedSystemBlock('user').includes(AGENT_AUTHORING_ROUTER_INSTRUCTION));
   assert.doesNotMatch(chickpeaSlackBody, /remember_memory|autonomousMemoryRequest/);
   assert.doesNotMatch(routineSource, /useAgentAuthoring/);
   assert.doesNotMatch(slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
@@ -296,7 +298,11 @@ test('interactive Slack Agent mounts authoring while routine execution does not'
   );
   assert.match(
     slackSource.slice(slackSource.indexOf('export function useRuntimePlanAgent')),
-    /useInstruction\('Sandbox files are temporary working data, not durable Agent memory\.[^']*fresh conversation[^']*Never promise future recall from a sandbox file\.'\)/,
+    /useInstruction\(RUNTIME_PLAN_INSTRUCTIONS\.sandboxMemory\)/,
+  );
+  assert.match(
+    RUNTIME_PLAN_INSTRUCTIONS.sandboxMemory,
+    /^Sandbox files are temporary working data, not durable Agent memory\..*fresh conversation.*Never promise future recall from a sandbox file\.$/,
   );
 });
 
