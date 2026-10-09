@@ -134,7 +134,7 @@ function unsharedSystemBlocks(): readonly string[] {
 /**
  * The first tenant instruction: the Agent's saved instructions, its identity
  * in this workspace and channel, the saved instructions again inside the
- * external-action boundary, and the Channel teammates it may ask.
+ * external-action boundary, and the teammates it may ask.
  */
 export function slackTenantInstructions(
   assignment: Pick<ResolvedAssignment, 'workspaceId' | 'channelId' | 'agent' | 'teammates' | 'threadGuest'>,

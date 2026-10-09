@@ -1096,9 +1096,7 @@ export async function postAgentRoutingFeedback(input: {
     : '';
   const text = input.result.reason === 'temporarily_unavailable'
     ? 'That Agent address could not be verified right now. Try again.'
-    : input.result.reason === 'several_agents'
-      ? 'Mention one Agent at a time here.'
-      : `That Agent is not available here.${alternatives}`;
+    : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible

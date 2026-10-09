@@ -1,12 +1,11 @@
 import type { CustomAgentConfig, ResolvedAssignment } from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
-import { slackConversationKind } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
 /**
- * Agent-to-Agent asks: an Agent that mentions another Agent's handle in a
- * reply it delivered in a Channel thread asks that Agent, which answers in
- * the same thread. The ask never arrives as a Slack event (every Agent posts
+ * Agent-to-Agent asks: an Agent that mentions a teammate's handle in a reply
+ * it delivered in a thread asks that Agent, which answers in the same
+ * thread. The ask never arrives as a Slack event (every Agent posts
  * as this app's one bot user, and admission ignores app-authored events);
  * the host admits it from the delivered reply instead.
  */
@@ -100,15 +99,13 @@ export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): bo
 
 /**
  * Whether this turn's replies may ask other Agents: a user Agent's
- * chickpea-v1 Channel thread. A DM has one Agent, and a legacy installation
- * has no handles.
+ * chickpea-v1 turn with teammates here. A legacy installation has no handles.
  */
 function turnMayAskAgents(
-  turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
-  assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agent'>,
+  assignment: Pick<ResolvedAssignment, 'runtimeContract' | 'agent' | 'teammates'>,
 ): boolean {
-  return assignment.runtimeContract === 'chickpea-v1' && slackConversationKind(turn) === 'channel' &&
-    agentMayAskTeammates(assignment.agent);
+  return assignment.runtimeContract === 'chickpea-v1' && agentMayAskTeammates(assignment.agent) &&
+    (assignment.teammates?.length ?? 0) > 0;
 }
 
 // Unlike SLACK_HANDLE_WORD, a `|` before the `@` matches: a live mention's label asks.
@@ -155,7 +152,7 @@ export function createAgentAskCollector(input: {
   flush(outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped'): Promise<void>;
 } {
   const deliveries: Array<{ messageTs: string; text: string }> = [];
-  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.turn, input.assignment);
+  const eligible = Boolean(input.dispatch) && turnMayAskAgents(input.assignment);
   // A guest in a chain the thread's own Agent started: its answer goes back.
   const answersOwner = eligible && input.assignment.threadGuest === true &&
     Boolean(input.turn.agentAsk?.threadOwnerAgentId);

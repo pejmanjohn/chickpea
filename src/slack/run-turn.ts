@@ -644,7 +644,7 @@ async function runTurnAttempt(
   const skipMemory = Boolean(memoryCommand) || Boolean(turn.managementApprovalProposalId) ||
     options.replayText !== undefined || stoppedBeforeDispatch || abortedReplay;
   let onNativeStarted = async (): Promise<void> => {};
-  // A reply mentions its Channel teammates live; each mention asks that Agent.
+  // A reply mentions its teammates live; each mention asks that Agent.
   const liveAgentHandles = agentTeammateHandles(assignment);
   const agentViewPresentation = options.presentationState && options.runId
     ? new SlackAgentViewPresentation({
