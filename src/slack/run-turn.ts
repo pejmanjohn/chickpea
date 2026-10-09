@@ -1,4 +1,5 @@
 import { planAllowsConnectionFileUpload } from '../connections/file-upload-tool.ts';
+import { conversationThreadImageInventory } from './thread-images.ts';
 import { verifyMemoryUpdateAcknowledgement } from './memory-update-terminal.ts';
 import { WebClient } from '@slack/web-api';
 
@@ -1723,6 +1724,18 @@ async function runTurnAttempt(
       currentRequestPolicyVersion === 2 && frozenProgressiveEligibility?.allowed === true
         ? frozenProgressiveEligibility
         : undefined;
+    // The host fetch is the only place these records exist; the dispatch
+    // envelope is the only channel that reaches the Agent object. Only a plan
+    // that can use them gets them: one whose image role resolved, or one that
+    // can send a conversation image to a connection.
+    const threadImages = context.images?.length && runtimePlanDecision &&
+      (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
+        planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
+      ? context.images
+      : undefined;
+    const threadImageManifest = threadImages && runtimePlanDecision
+      ? conversationThreadImageInventory(runtimePlanDecision.runtimePlan.conversation, threadImages).manifest
+      : '';
     const prompt = assembleSlackPrompt(turn, promptContext, {
       ...(handoffBlock ? { handoffBlock } : {}),
       ...(preparedMemory?.promptBlock && !memoryRendered
@@ -1741,6 +1754,7 @@ async function runTurnAttempt(
       // The thread's own Agent reads a teammate's message as its answer; a
       // guest reads it as a question.
       ...(turn.agentAsk ? { askedAsThreadOwner: assignment.threadGuest !== true } : {}),
+      ...(threadImageManifest ? { threadImageManifest } : {}),
       ...(installationContext
         ? {
             slackApp: {
@@ -1839,15 +1853,7 @@ async function runTurnAttempt(
             ...(memoryRendered && preparedMemory?.promptBlock
               ? { memoryBlock: preparedMemory.promptBlock }
               : {}),
-            // The host fetch is the only place these records exist; the dispatch
-            // envelope is the only channel that reaches the Agent object. Only a
-            // plan that can use them gets them: one whose image role resolved, or
-            // one that can send a conversation image to a connection.
-            ...(context.images?.length && runtimePlanDecision &&
-            (runtimePlanDecision.runtimePlan.imageCapability?.filled === true ||
-              planAllowsConnectionFileUpload(runtimePlanDecision.runtimePlan))
-              ? { threadImages: context.images }
-              : {}),
+            ...(threadImages ? { threadImages } : {}),
             ...(admittedListIds.length ? { admittedListIds } : {}),
             ...turnEnvelopeBuilder(runtimePlanDecision?.runtimePlan, settingsStore, options.appStores?.config, platformEnv),
             ...(platformEnv ? { env: platformEnv } : {}),

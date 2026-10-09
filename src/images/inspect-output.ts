@@ -1,7 +1,7 @@
 import type { UserMessage } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 import { withModelRequestPurpose } from '../config/model-access.ts';
-import { providerStreamsForModel } from '../config/pi-provider.ts';
+import { providerStreamsForModel, sideCallOptions } from '../config/pi-provider.ts';
 import * as v from 'valibot';
 import type { ImageInput } from './openai-images-client.ts';
 import { prepareImageInspection } from './prepare-output.ts';
@@ -58,7 +58,7 @@ export async function runStatelessVisionCall(
     tools: [],
     messages: [{ role: 'user', timestamp: Date.now(), content: call.content }],
   }, {
-    maxTokens: call.maxTokens ?? 1024,
+    ...sideCallOptions(model, call.maxTokens ?? 1024),
     maxRetries: 0,
     signal: call.signal ? AbortSignal.any([timeout, call.signal]) : timeout,
   }).result());
