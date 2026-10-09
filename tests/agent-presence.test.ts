@@ -17,6 +17,7 @@ import {
   classifyAgentPresenceError,
 } from '../src/slack/agent-presence/errors.ts';
 import {
+  agentUserGroupName,
   alternativeAgentHandles,
   normalizeAgentHandle,
 } from '../src/slack/agent-presence/handles.ts';
@@ -46,6 +47,27 @@ test('Agent handles normalize predictably and suggest collision-free alternative
   );
   const long = 'a'.repeat(80);
   assert.ok(alternativeAgentHandles(long, new Set([long])).every((handle) => handle.length <= 80));
+});
+
+test('an Agent\'s user group takes its name unless another group already has it', () => {
+  const group = (id: string, name: string, disabled = false): SlackUserGroup =>
+    ({ id, name, handle: id.toLowerCase(), disabled });
+  const help = group('S_HELP', 'Support');
+
+  assert.equal(agentUserGroupName('Support', [group('S_OPS', 'Ops')]), 'Support');
+  assert.equal(agentUserGroupName('Support', [help]), 'Support Agent');
+  assert.equal(agentUserGroupName('Support', [group('S_HELP', '  support ')]), 'Support Agent',
+    'names compare without case or surrounding spaces');
+  assert.equal(agentUserGroupName('Support', [group('S_HELP', 'Support', true)]), 'Support Agent',
+    'a deactivated group\'s name is avoided too');
+  assert.equal(agentUserGroupName('Support', [group('S1', 'Support')], 'S1'), 'Support',
+    'the Agent\'s own group never blocks its name');
+  assert.equal(agentUserGroupName('Support', [help, group('S1', 'Support Agent')], 'S1'), 'Support Agent');
+  assert.equal(
+    agentUserGroupName('Support', [help, group('S_A', 'Support Agent'), group('S_2', 'Support 2')]),
+    'Support 3',
+  );
+  assert.equal(agentUserGroupName('Sales Agent', [group('S_SALES', 'Sales Agent')]), 'Sales Agent 2');
 });
 
 test('Slack create-time handle collisions retain safe alternative suggestions', async () => {
