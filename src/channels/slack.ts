@@ -699,6 +699,9 @@ function handleAgentAppSlackEvents(
       payload, route.route === 'installation' ? route.teamId : undefined, handoff, platformEnv,
     );
     if (!installation) return c.json({ error: 'not_found' }, 404);
+    // The installation's own credential gate stands for its Agent apps: a tenant in recovery serves nothing.
+    const gate = await directSlackCredentials(c, platformEnv);
+    if (gate instanceof Response) return gate;
     const eventType = payload.type === 'event_callback' && payload.event && typeof payload.event === 'object'
       ? (payload.event as { type?: unknown }).type
       : undefined;
@@ -722,6 +725,8 @@ function handleAgentAppSlackInteractions(
       payload, route.route === 'installation' ? route.teamId : undefined, handoff, platformEnv,
     );
     if (!installation) return c.json({ error: 'not_found' }, 404);
+    const gate = await directSlackCredentials(c, platformEnv);
+    if (gate instanceof Response) return gate;
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
     const execution = agentAppExecution(bot, platformEnv);

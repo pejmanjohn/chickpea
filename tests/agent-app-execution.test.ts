@@ -125,13 +125,13 @@ test("a turn of an Agent with a live app runs as that Agent's own bot, cached pe
   assert.equal(context.displayName, 'Support');
   assert.equal(context.transportMode, 'direct');
   assert.ok(context.client, "the Agent's own client");
-  assert.deepEqual(h.baseCalls, [], "the installation's bot was never resolved for it");
+  assert.deepEqual(h.baseCalls, [TEAM], "the installation's own resolution runs first, and its refusals would stand");
   assert.equal(await h.resolve(TEAM, 'agent_support'), context, 'resolved once per Agent');
 
   assert.equal(await h.resolve(TEAM, 'agent_finance'), h.base, 'a user-group Agent answers as the installation bot');
   assert.equal(await h.resolve(TEAM, CHICKPEA_AGENT_ID), h.base);
   assert.equal(await h.resolve(TEAM), h.base, 'a resolution without an Agent is the base');
-  assert.deepEqual(h.baseCalls, [TEAM, TEAM, TEAM]);
+  assert.deepEqual(h.baseCalls, [TEAM, TEAM, TEAM, TEAM]);
 }));
 
 test('a broken app never answers as Chickpea: the turn is unavailable', async (t) => withHarness(t, async (h) => {
@@ -144,6 +144,19 @@ test('a broken app never answers as Chickpea: the turn is unavailable', async (t
   await assert.rejects(() => h.resolve(TEAM, 'agent_support'), (error: unknown) =>
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable');
   assert.deepEqual(h.baseCalls, [], 'a live record without a token still never falls back to the installation bot');
+}));
+
+test("the installation's own refusal wins over a live app: a revoked or gated installation runs no Agent bot", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  const refused = withAgentAppExecution(async (workspaceId) => {
+    h.baseCalls.push(workspaceId);
+    throw new SlackInstallationUnavailableError(workspaceId, 'installation_revoked');
+  }, h.env);
+  await assert.rejects(() => refused(TEAM, 'agent_support'), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked');
+  assert.deepEqual(h.baseCalls, [TEAM], 'the installation is checked before the Agent bot is considered');
+  await assert.rejects(() => refused(TEAM, 'agent_support'), (error: unknown) =>
+    error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked', 'a refusal is not cached as a context');
 }));
 
 test('without the port the resolver is the base resolver, even for an Agent whose record names an app', async (t) => withHarness(t, async (h) => {

@@ -72,9 +72,11 @@ export async function agentAppBotCredentials(
 
 /**
  * A turn resolver that answers as the Agent's own bot whenever the Agent has
- * a live app, and as the installation's bot otherwise. Without the port it
- * is the base resolver and never reads the realm. A broken app throws, so a
- * reply is never posted as Chickpea on that Agent's behalf.
+ * a live app, and as the installation's bot otherwise. The installation's
+ * own resolution runs first either way, so every refusal it enforces (a
+ * revoked, erased or gated installation) stands for the Agent app too.
+ * Without the port it is the base resolver and never reads the realm. A
+ * broken app throws, so a reply is never posted as Chickpea on its behalf.
  */
 export function withAgentAppExecution(
   base: SlackInstallationExecutionResolver,
@@ -86,11 +88,12 @@ export function withAgentAppExecution(
     const key = `${workspaceId}\u0000${agentId}`;
     let context = contexts.get(key);
     if (!context) {
-      context = agentAppExecutionBot(env, agentId).then((lookup): Promise<SlackInstallationExecutionContext> | SlackInstallationExecutionContext => {
+      context = agentAppExecutionBot(env, agentId).then(async (lookup): Promise<SlackInstallationExecutionContext> => {
         if (lookup.kind === 'not_app') return base(workspaceId);
         if (lookup.kind === 'unavailable') {
           throw new SlackInstallationUnavailableError(workspaceId, 'agent_app_unavailable', { retryable: false });
         }
+        await base(workspaceId);
         const { bot } = lookup;
         return {
           workspaceId,
@@ -120,7 +123,7 @@ export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Pro
   if (!stored) return undefined;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   const teamId = workspace?.teamId ?? workspace?.workspaceId;
-  if (!teamId) return undefined;
+  if (!teamId || workspace?.health === 'revoked') return undefined;
   return { agentId: agent.id, teamId, signingSecret: stored.secrets.signingSecret };
 }
 

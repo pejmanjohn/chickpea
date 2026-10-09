@@ -7,7 +7,7 @@ import { test, type TestContext } from 'node:test';
 
 import { Hono } from 'hono';
 
-import { serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
+import { markSlackInstallationEnded, serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
@@ -248,4 +248,18 @@ test('an app_uninstalled ends only that Agent app: the bot token goes, the Owner
   assert.equal(await endAgentSlackApp(h.base, AGENT_APP, dmEvent({}, { type: 'app_uninstalled' })), 'ignored', 'ending twice changes nothing');
   assert.equal((await h.deliver('events', dmEvent())).status, 200);
   assert.equal(h.calls.filter((call) => call.token === AGENT_BOT).length, 0, 'a removed app runs nothing as its bot');
+}));
+
+test("a revoked installation serves none of its Agent apps' deliveries and offers no ingress facts", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  assert.ok(h.calls.some((call) => call.token === AGENT_BOT), 'live before the revocation');
+  h.calls.length = 0;
+  await markSlackInstallationEnded(h.stores.config, TEAM, 'app_uninstalled');
+  assert.equal((await h.deliver('events', dmEvent())).status, 404);
+  assert.equal((await h.deliver('interactions', {
+    type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 't', channel: { id: 'D1' },
+    message: { ts: '1.1' }, actions: [{ type: 'button', action_id: 'x', block_id: 'y', value: 'z', action_ts: '1.2' }],
+  })).status, 404);
+  assert.equal(h.calls.length, 0, 'nothing runs as the Agent bot once the installation is gone');
+  assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined);
 }));
