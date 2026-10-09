@@ -191,7 +191,7 @@ export function normalizeSlackTurn(
       threadTs: event.thread_ts ?? event.ts,
       sessionThreadTs: 'dm',
       source: 'dm_message',
-      ...(event.channel_type ? { channelType: event.channel_type } : {}),
+      channelType: event.channel_type ?? 'im',
       contextMode: event.thread_ts ? 'thread' : 'dm_history',
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(attachmentSet.intake ? { attachmentIntake: attachmentSet.intake } : {}),

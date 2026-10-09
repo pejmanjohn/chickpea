@@ -39,6 +39,7 @@ import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
+import { personRequestText } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
@@ -512,14 +513,15 @@ export class TurnJobStoreLogic {
   }
 
   /**
-   * Whether `job`'s Agent already has an ask in this thread from the same
+   * Whether `job`'s Agent already has a turn in this thread from the same
    * exchange that has not started (no attempt recorded yet, so it has not
-   * read the thread). That turn reads the thread when it runs, a later
+   * read the thread): an ask, or its turn as one of the Agents the person's
+   * message mentioned. That turn reads the thread when it runs, a later
    * message included, so asking the Agent again would only repeat it. A row
    * an unfinished stop holds does not count: its ending may drop it, and a
    * message posted after the stop runs as an ordinary turn.
    */
-  hasQueuedAgentAsk(job: Pick<TurnJob, 'turn' | 'assignment'>, originMessageTs: string): boolean {
+  hasQueuedExchangeTurn(job: Pick<TurnJob, 'turn' | 'assignment'>, originMessageTs: string): boolean {
     const threadKey = stopThreadKeyOf(job.turn, job.assignment);
     if (!threadKey) return false;
     return this.db.all(
@@ -527,9 +529,12 @@ export class TurnJobStoreLogic {
        WHERE thread_key = ? AND delivered = 0 AND status = 'pending' AND attempts = 0
          AND dispatch_envelope_json IS NULL
          AND json_extract(assignment_json, '$.agentId') = ?
-         AND json_extract(turn_json, '$.agentAsk.originMessageTs') = ?`,
+         AND (json_extract(turn_json, '$.agentAsk.originMessageTs') = ?
+           OR (json_extract(turn_json, '$.coAddressed') IS NOT NULL
+             AND json_extract(turn_json, '$.messageTs') = ?))`,
       threadKey,
       job.assignment.agentId,
+      originMessageTs,
       originMessageTs,
     ).some((row) => this.effectiveStop(parseTurnStopRecord(row.stop_json))?.role !== 'held');
   }
@@ -1540,6 +1545,7 @@ export class TurnJobStoreLogic {
       // different Durable Objects.
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
+      const requesterText = personRequestText(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -1559,7 +1565,7 @@ export class TurnJobStoreLogic {
             eventId: turn.eventId,
             messageTs: turn.messageTs,
             turnJobId: id,
-            requesterText: turn.text.slice(0, 40_000),
+            ...(requesterText === undefined ? {} : { requesterText: requesterText.slice(0, 40_000) }),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }

@@ -1160,9 +1160,7 @@ export async function postAgentRoutingFeedback(input: {
     : '';
   const text = input.result.reason === 'temporarily_unavailable'
     ? 'That Agent address could not be verified right now. Try again.'
-    : input.result.reason === 'several_agents'
-      ? 'Mention one Agent at a time here.'
-      : `That Agent is not available here.${alternatives}`;
+    : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible
@@ -1186,6 +1184,21 @@ export async function postAgentRoutingFeedback(input: {
     thread_ts: input.turn.threadTs,
     text,
   });
+}
+
+async function replyToRefusedMessageOnce(
+  state: SlackStateStore,
+  msgKey: string,
+  reply: () => Promise<void>,
+): Promise<void> {
+  const key = `${msgKey}:routing-reply`;
+  if (!(await state.claim(key))) return;
+  try {
+    await reply();
+  } catch (error) {
+    await state.release(key).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function processSlackUserChange(
@@ -2511,17 +2524,18 @@ async function processSlackEvent(
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
       if (routed.kind === 'not_in_channel') {
-        await offerAgentForChannel({
+        const actor = agentRoutingActor;
+        await replyToRefusedMessageOnce(state, msgKey, () => offerAgentForChannel({
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,
           userId: turn.userId,
           ...(turn.threadTs !== turn.messageTs ? { threadTs: turn.threadTs } : {}),
           agent: routed.agent,
-          actor: agentRoutingActor,
+          actor,
           identity: stores.identity,
           transport: runtimeTransport,
           client: runtimeClient,
-        });
+        }));
         return;
       }
       if (routed.kind !== 'routed' && ask) {
@@ -2547,12 +2561,12 @@ async function processSlackEvent(
             runtimeContract: installation.runtimeContract,
           })
         ) return;
-        await postAgentRoutingFeedback({
+        await replyToRefusedMessageOnce(state, msgKey, () => postAgentRoutingFeedback({
           turn,
           surface,
           result: routed,
           client: runtimeClient,
-        });
+        }));
         return;
       }
       routedHandoff = routed.handoff;
@@ -2643,8 +2657,8 @@ async function processSlackEvent(
           ? { interactionMode: routedAssignment.interactionMode }
           : {}),
         ...(routedAssignment.threadGuest ? { threadGuest: true as const } : {}),
-        ...(routedAssignment.channelTeammates?.length
-          ? { channelTeammates: routedAssignment.channelTeammates }
+        ...(routedAssignment.teammates?.length
+          ? { teammates: routedAssignment.teammates }
           : {}),
       };
   } catch (err) {

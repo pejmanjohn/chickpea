@@ -153,7 +153,7 @@ type AgentViewFinalResult =
 
 interface AgentViewPresentationOptions {
   client: WebClient;
-  /** Agent handles this run's reply may mention live (its Channel teammates). */
+  /** Agent handles this run's reply may mention live (its teammates). */
   liveAgentHandles?: SlackLiveAgentHandles;
   state: SlackPresentationStatePort;
   runId: string;
