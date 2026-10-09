@@ -52,6 +52,7 @@ import {
 } from '../src/slack/credits-ask.ts';
 import { resolveSlackInstallationExecutionContext } from '../src/slack/installation-execution.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
+import { repairSlackInteractionProgress } from '../src/slack/run-turn.ts';
 import {
   PRIVATE_CHANNEL_SETUP_ADD_ACTION,
   PRIVATE_CHANNEL_SETUP_AGENT_ACTION,
@@ -754,6 +755,49 @@ test('a hosted Agent posts with an avatar URL that names its installation', asyn
     assert.equal(posted.token, BOT_TOKEN);
     assert.equal(posted.body.get('icon_url'), 'https://hosted.example/assets/i/inst_tenant_a/agents/agent_ops/avatar/1');
   });
+});
+
+test('progress repair edits an Agent\'s delivered messages in place and never names a sender', async () => {
+  const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+  const record = (method: string) => async (args: Record<string, unknown>) => {
+    calls.push({ method, args });
+    return { ok: true };
+  };
+  const client = {
+    chat: { update: record('chat.update'), delete: record('chat.delete') },
+    reactions: { remove: record('reactions.remove') },
+  } as unknown as Parameters<typeof repairSlackInteractionProgress>[3];
+  const turn = {
+    workspaceId: TEAM, channelId: 'C_OPS', eventId: 'Ev_repair', text: 'Do the work', userId: 'U1',
+    messageTs: '1800000008.000100', threadTs: '1800000008.000100', source: 'app_mention' as const,
+    contextMode: 'thread' as const, channelType: 'channel',
+    interactionIntent: { disposition: 'work' as const, reason: 'substantive_request' as const, checklist: ['Check it'] },
+  };
+  const presence = {
+    requestedHandle: 'ops', normalizedHandle: 'ops', desiredState: 'active' as const, health: 'healthy' as const,
+  };
+  for (const avatar of [
+    { kind: 'generated' as const, revision: 1, seed: 'ops' },
+    { kind: 'uploaded' as const, revision: 2, url: 'https://hosted.example/assets/agents/agent_ops/avatar/2' },
+  ]) {
+    calls.length = 0;
+    await repairSlackInteractionProgress(turn, {
+      workspaceId: TEAM, channelId: 'C_OPS', agentId: 'agent_ops',
+      agent: {
+        id: 'agent_ops', kind: 'user', revision: 1, name: 'Ops', instructions: '', enabled: true,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        slackPresence: { ...presence, avatar },
+      },
+    }, {
+      checklist: { channelId: 'C_OPS', threadTs: turn.threadTs, messageTs: '1800000008.000200', cleanup: 'pending', terminal: 'success' },
+      acknowledgment: { channelId: 'C_OPS', messageTs: turn.messageTs, name: 'eyes', created: true, cleanup: 'pending' },
+    }, client, () => {});
+    assert.deepEqual(calls.map(({ method }) => method), ['chat.update', 'reactions.remove'], avatar.kind);
+    assert.equal(calls[0]!.args.ts, '1800000008.000200', 'the checklist is edited where it was posted');
+    for (const { method, args } of calls) {
+      assert.equal('icon_url' in args || 'username' in args, false, `${method} keeps the sender it was posted with`);
+    }
+  }
 });
 
 test('a hosted bot bundle that latches recovery on a direct delivery is answered not found, never a server error', async (t) => {

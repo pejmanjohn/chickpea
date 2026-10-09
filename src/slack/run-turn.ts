@@ -2344,9 +2344,6 @@ export async function repairSlackInteractionProgress(
     channelId: turn.channelId,
     threadTs: turn.threadTs,
     agentName: assignment.agent.name,
-    ...(assignment.agent.slackPresence?.avatar.url
-      ? { agentAvatarUrl: assignment.agent.slackPresence.avatar.url }
-      : {}),
     agentId: assignment.agent.id,
     modelLabel: resolvedAssignmentModel(assignment),
     userId: turn.userId,
