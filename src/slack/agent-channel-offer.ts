@@ -2,6 +2,7 @@ import type { WebClient } from '@slack/web-api';
 
 import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
+import { isAgentId } from '../config/agent-id.ts';
 import type { CustomAgentConfig } from '../config/types.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { agentSlackHandle } from './agent-asks.ts';
@@ -22,7 +23,6 @@ export const AGENT_CHANNEL_ADD_ACTION = 'chickpea.host.v1.agent_channel_add';
 const BUTTON_LABEL_LIMIT = 75;
 /** Owners named to someone who cannot add the Agent themselves. */
 const OWNERS_NAMED = 2;
-const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 type SlackBlock = Record<string, unknown>;
 type OfferIdentity = Pick<IdentityStore, 'listMemberships' | 'listExternalIdentities'>;
@@ -45,7 +45,7 @@ export interface AgentChannelAddClick {
 /** Parsing grants no authority. */
 export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAddClick | undefined {
   if (action.actionId !== AGENT_CHANNEL_ADD_ACTION || action.containerType !== 'message' ||
-      !action.channelId || !action.value || !AGENT_ID.test(action.value)) return undefined;
+      !action.channelId || !action.value || !isAgentId(action.value)) return undefined;
   return {
     workspaceId: action.workspaceId,
     userId: action.userId,

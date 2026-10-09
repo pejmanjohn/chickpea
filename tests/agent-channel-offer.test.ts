@@ -3,6 +3,8 @@ import { test } from 'node:test';
 
 import { processGatewaySlackEnvelope, processGatewayUiAction } from '../src/channels/slack.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
+import { addAgentToChannel, parseAgentChannelAddClick } from '../src/slack/agent-channel-offer.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import type { TurnJob } from '../src/slack/turn-job-types.ts';
@@ -277,4 +279,42 @@ test('on a direct install, as hosted runs, the Add button adds the Agent through
     const grant = (await stores.config.listAgentChannelGrants('T1', 'C1')).find(({ agentId }) => agentId === LEGAL.id);
     assert.equal(grant?.status, 'active');
   });
+});
+
+test('a clicker who is not in the Channel is refused before anything is published', async () => {
+  const notices: string[] = [];
+  let published = 0;
+  await addAgentToChannel({
+    workspaceId: 'T1', userId: 'U1', channelId: 'C1', threadTs: null, agentId: LEGAL.id, actionTs: '5001.000100',
+  }, {
+    claim: async () => true,
+    resolveActor: async () => ({
+      routing: { fullMember: true, channelMember: false },
+      principal: {
+        userId: 'user_owner', membershipId: 'membership_owner', organizationId: 'org_oss', role: 'owner',
+        authenticatorKind: 'slack_event', credentialId: 'slack:T1:U1', correlationId: 'slack-event:T1:U1', machine: false,
+      },
+    }),
+    getAgent: async () => ({
+      id: LEGAL.id, kind: 'user', name: 'Legal', creatorMembershipId: 'membership_owner',
+      editPolicy: 'creator_and_admins',
+      slackPresence: { normalizedHandle: 'legal', userGroupId: 'SLEGAL' },
+    }) as unknown as CustomAgentConfig,
+    identity: { listMemberships: async () => [], listExternalIdentities: async () => [] },
+    publish: async () => { published += 1; },
+    adminUrl: async () => undefined,
+    client: { chat: { postEphemeral: async (input: { text?: string }) => { notices.push(String(input.text)); return { ok: true }; } } } as never,
+  });
+  assert.equal(published, 0);
+  assert.deepEqual(notices, ['That Agent is not available here.']);
+});
+
+test('a click names an Agent only by the persisted Agent id grammar', () => {
+  const click = (value: string) => parseAgentChannelAddClick({
+    workspaceId: 'T1', userId: 'U1', containerType: 'message', channelId: 'C1', messageTs: '5000.000200',
+    threadTs: null, isEphemeral: true, viewId: null, actionId: ADD_ACTION, blockId: ADD_ACTION,
+    actionType: 'button', value, selected: [], state: {}, actionTs: '5001.000100', triggerId: 'trigger1',
+  });
+  assert.equal(click(LEGAL.id)?.agentId, LEGAL.id);
+  for (const value of ['Agent_Legal', '../agent_legal', '']) assert.equal(click(value), undefined, value);
 });
