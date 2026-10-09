@@ -133,6 +133,45 @@ test('logout revokes the refresh token with the public client id and deletes the
   assert.doesNotMatch(stale.stderr, /rt_|at_/);
 });
 
+test('logout keeps the session when a live access token cannot be revoked, and finishes once it has expired', async () => {
+  const failing = new FakeDeployment({ accessTokenTtlSeconds: 1200, now, accessTokenRevocationStatus: 500 });
+  await failing.start();
+  try {
+    const store = temporaryStore();
+    const login = await runCli(['login', failing.url], { store, now, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+    assert.equal(login.code, 0, login.stderr);
+    const live = await runCli(['logout', failing.url], { store, now });
+    assert.equal(live.code, 1);
+    assert.equal(live.stderr, `chickpea: REVOKE_FAILED: The deployment answered HTTP 500 to the revocation request. Retry, or remove the entry by hand from ${store.path}.\n`);
+    assert.ok(store.read(failing.url), 'a live token that may still work keeps its entry');
+
+    clock.now += 1201 * 1_000;
+    const retry = await runCli(['logout', failing.url], { store, now });
+    assert.equal(retry.code, 0, retry.stderr);
+    assert.equal(retry.stdout, `Removed the session for ${failing.url}.\n`);
+    assert.equal(store.read(failing.url), undefined);
+  } finally {
+    await failing.stop();
+  }
+});
+
+test('logout after the access token expired revokes the refresh token and removes the session', async () => {
+  const failing = new FakeDeployment({ accessTokenTtlSeconds: 1200, now, accessTokenRevocationStatus: 500 });
+  await failing.start();
+  try {
+    const store = temporaryStore();
+    const login = await runCli(['login', failing.url], { store, now, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+    assert.equal(login.code, 0, login.stderr);
+    clock.now += 1201 * 1_000;
+    const logout = await runCli(['logout', failing.url], { store, now });
+    assert.equal(logout.code, 0, logout.stderr);
+    assert.equal(logout.stdout, `Revoked and removed the session for ${failing.url}.\n`);
+    assert.equal(store.read(failing.url), undefined);
+  } finally {
+    await failing.stop();
+  }
+});
+
 test('login against a deployment that has not finished setup fails with a stable code', async () => {
   const incomplete = new FakeDeployment({ mode: 'setup-incomplete' });
   await incomplete.start();

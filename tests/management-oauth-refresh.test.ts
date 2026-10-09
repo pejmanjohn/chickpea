@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { test } from 'node:test';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { test, type TestContext } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
+import { build, resolveConfig } from 'vite';
 
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
@@ -13,16 +18,22 @@ const RESOURCE = `${ORIGIN}/mcp`;
 const WORKSPACE_SCOPE = 'chickpea:workspace';
 const RENEWABLE_SCOPE = `${WORKSPACE_SCOPE} offline_access`;
 const REDIRECT = 'http://127.0.0.1:47321/callback';
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-async function fixture() {
+interface AuthModules {
+  createBetterAuth: typeof createBetterAuth;
+  createBetterAuthPublicHandler: typeof createBetterAuthPublicHandler;
+}
+
+async function fixture(modules: AuthModules = { createBetterAuth, createBetterAuthPublicHandler }) {
   const backend = new NodeBetterAuthBackend(':memory:');
   let admission: BetterAuthAdmissionOperation | null = null;
   const options = {
     backend, baseURL: ORIGIN, secret: randomBytes(32).toString('base64url'),
     privateSeam: { async resolveAdmissionOperation() { return admission; } },
   };
-  const auth = createBetterAuth(options);
-  const handler = createBetterAuthPublicHandler(options);
+  const auth = modules.createBetterAuth(options);
+  const handler = modules.createBetterAuthPublicHandler(options);
   const person = await auth.chickpea.reconcileSlackIdentity({
     slackTeamId: 'T12345678', slackUserId: 'U12345678', displayName: 'Fixture Owner',
     organization: { name: 'Fixture', slug: 'fixture' },
@@ -43,12 +54,15 @@ async function fixture() {
       body: JSON.stringify(body),
     }));
   }
-  function token(body: Record<string, string>) {
-    return handler(new Request(`${ORIGIN}/api/auth/oauth2/token`, {
+  function form(route: string, body: Record<string, string>) {
+    return handler(new Request(`${ORIGIN}${route}`, {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(body),
     }));
   }
+  const token = (body: Record<string, string>) => form('/api/auth/oauth2/token', body);
+  const revoke = (clientId: string, value: string, hint: 'access_token' | 'refresh_token') =>
+    form('/api/auth/oauth2/revoke', { client_id: clientId, token: value, token_type_hint: hint });
   async function register(scope?: string) {
     const response = await json('/api/auth/oauth2/register', {
       application_type: 'native', client_name: 'Refresh fixture',
@@ -89,7 +103,48 @@ async function fixture() {
       redirect_uri: REDIRECT, resource: RESOURCE,
     });
   }
-  return { backend, options, cookie, handler, register, beginAuthorize, authorize, token };
+  return { backend, options, cookie, handler, register, beginAuthorize, authorize, token, revoke };
+}
+
+async function workerBuildAuthModules(t: TestContext): Promise<AuthModules> {
+  const resolved = await resolveConfig(
+    { root: PROJECT_ROOT, configFile: path.join(PROJECT_ROOT, 'vite.config.ts') },
+    'build',
+  );
+  const { minify, rolldownOptions } = resolved.environments.chickpea!.build;
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'chickpea-worker-auth-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const entry = path.join(directory, 'auth-routes.ts');
+  writeFileSync(entry, [
+    `export { createBetterAuth } from ${JSON.stringify(path.join(PROJECT_ROOT, 'src/auth/better-auth.ts'))};`,
+    `export { createBetterAuthPublicHandler } from ${JSON.stringify(path.join(PROJECT_ROOT, 'src/auth/better-auth-routes.ts'))};`,
+  ].join('\n'));
+  const outDir = path.join(directory, 'dist');
+  await build({
+    configFile: false,
+    root: PROJECT_ROOT,
+    logLevel: 'silent',
+    ssr: { noExternal: true },
+    build: { ssr: entry, outDir, minify, rolldownOptions: { output: rolldownOptions.output ?? {} } },
+  });
+  const [bundle] = readdirSync(outDir).filter((name) => name.startsWith('auth-routes.'));
+  return await import(pathToFileURL(path.join(outDir, bundle!)).href) as AuthModules;
+}
+
+for (const variant of ['source', 'Worker build'] as const) {
+  test(`revoking an expired access token answers 200, not 500 (${variant})`, async (t) => {
+    const modules = variant === 'source' ? undefined : await workerBuildAuthModules(t);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const f = await fixture(modules);
+    t.after(() => f.backend.close());
+    const client = await (await f.register(RENEWABLE_SCOPE)).json() as { client_id: string };
+    const tokens = await (await f.authorize(client.client_id, RENEWABLE_SCOPE)).json() as Record<string, string>;
+
+    t.mock.timers.tick(16 * 60_000);
+    assert.equal((await f.revoke(client.client_id, tokens.refresh_token!, 'refresh_token')).status, 200);
+    const expired = await f.revoke(client.client_id, tokens.access_token!, 'access_token');
+    assert.equal(expired.status, 200, 'RFC 7009 2.2: an expired token is invalid, so revoking it succeeds');
+  });
 }
 
 for (const explicitRegistrationScope of [true, false]) {
