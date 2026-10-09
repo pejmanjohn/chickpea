@@ -18,6 +18,7 @@ import {
 } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
+import { resolveModelReadiness } from '../config/model-readiness.ts';
 import { getProviderFavorites } from '../config/provider-models.ts';
 import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
@@ -129,6 +130,7 @@ export function createLiveWorkspaceManagementService(
     productTelemetry,
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
+    modelReadiness: () => resolveModelReadiness({ env, settings }),
     providerCredentialRevision: async (providerId) =>
       installationModelCredentialVersion(providerId, env, settings),
     removeProviderCredential: async (providerId) =>

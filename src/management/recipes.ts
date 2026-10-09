@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
+import { PLATFORM_NOT_OFFERED_TEXT, type ModelReadiness } from '../config/model-readiness.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
   ApiConnectionConfig,
@@ -141,7 +142,7 @@ export async function exportWorkspaceRecipe(
 
 export async function previewWorkspaceRecipe(
   config: Pick<ConfigStore, 'listUserAgents'>,
-  providerSource: (providerId: 'anthropic' | 'openai' | 'openrouter') => Promise<'env' | 'stored' | 'missing'>,
+  readiness: ModelReadiness,
   input: PreviewWorkspaceRecipeInput,
 ): Promise<WorkspaceRecipePreview> {
   const recipe = parseWorkspaceRecipe(input.recipe);
@@ -154,7 +155,7 @@ export async function previewWorkspaceRecipe(
 
   for (const recipeAgent of recipe.agents) {
     const matches = currentAgents.filter(({ name }) => name === recipeAgent.name);
-    const availability = await recipeAvailability(recipeAgent, currentAgents, providerSource);
+    const availability = await recipeAvailability(recipeAgent, currentAgents, readiness);
     if (matches.length === 0) {
       const proposedAgentId = allocatePortableAgentId(recipeAgent, digest, allocatedAgentIds);
       const clientRef = `recipe_${recipeAgent.symbol}`;
@@ -386,7 +387,7 @@ function appendSetupOperations(
 async function recipeAvailability(
   recipe: WorkspaceRecipeAgent,
   current: CustomAgentConfig[],
-  providerSource: (providerId: 'anthropic' | 'openai' | 'openrouter') => Promise<'env' | 'stored' | 'missing'>,
+  readiness: ModelReadiness,
 ): Promise<{ setupRequired: string[]; unavailable: string[] }> {
   const setupRequired = [
     ...recipe.mcpRequirements.filter(({ authMode }) => authMode !== 'none')
@@ -396,9 +397,14 @@ async function recipeAvailability(
   ];
   const unavailable: string[] = [];
   const provider = recipe.model?.split('/', 1)[0];
-  if (provider && ['anthropic', 'openai', 'openrouter'].includes(provider) &&
-      await providerSource(provider as 'anthropic' | 'openai' | 'openrouter') === 'missing') {
+  const answer = recipe.model ? await readiness(recipe.model) : undefined;
+  if (answer?.unavailable === 'credential_missing' && provider &&
+      ['anthropic', 'openai', 'openrouter'].includes(provider)) {
     setupRequired.push(`${provider} model provider`);
+  } else if (answer?.unavailable === 'funding_not_offered') {
+    unavailable.push(PLATFORM_NOT_OFFERED_TEXT);
+  } else if (answer?.unavailable === 'model_unsupported') {
+    unavailable.push(answer.message);
   }
   for (const repository of recipe.repositoryRequirements) {
     if (current.some((agent) => agent.repositories.some((candidate) =>

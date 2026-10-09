@@ -1735,11 +1735,11 @@ test('change-set proposal preflights the whole set and stales before the first w
 });
 
 test('base Agent creation inherits the default and rejects an unconfigured model pin before writing', async () => {
-  const checkedProviders: string[] = [];
+  const askedModels: string[] = [];
   const f = await createManagementAdapterFixture('creation-model-readiness', {
-    providerCredentialSource: async (provider) => {
-      checkedProviders.push(provider);
-      return provider === 'anthropic' ? 'stored' : 'missing';
+    modelReadiness: async () => async (model) => {
+      askedModels.push(model);
+      return model.startsWith('anthropic/') ? undefined : { unavailable: 'credential_missing' };
     },
   });
   const context: ManagementActorContext = {
@@ -1765,7 +1765,7 @@ test('base Agent creation inherits the default and rejects an unconfigured model
     assert.equal(rejected.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(rejected.outcomes[0]?.warning ?? '', /omit.*model.*inherit/i);
     await assert.rejects(() => f.config.getAgent(agentInput.id), UnknownAgentError);
-    assert.deepEqual(checkedProviders, ['openai']);
+    assert.deepEqual(askedModels, ['openai/gpt-4o-mini']);
 
     const { model: _model, ...inheritingAgent } = agentInput;
     const inherited = await f.service.applyWorkspaceChanges({
@@ -1774,7 +1774,7 @@ test('base Agent creation inherits the default and rejects an unconfigured model
     });
     assert.equal(inherited.status, 'completed');
     assert.equal((await f.config.getAgent(agentInput.id)).model, undefined);
-    assert.deepEqual(checkedProviders, ['openai']);
+    assert.deepEqual(askedModels, ['openai/gpt-4o-mini']);
 
     const pinned = await f.service.applyWorkspaceChanges({
       context: { ...context, origin: { ...context.origin, kind: 'slack',
@@ -1788,7 +1788,7 @@ test('base Agent creation inherits the default and rejects an unconfigured model
     });
     assert.equal(pinned.status, 'completed');
     assert.equal((await f.config.getAgent('agent_pinned')).model, agentInput.model);
-    assert.deepEqual(checkedProviders, ['openai', 'anthropic']);
+    assert.deepEqual(askedModels, ['openai/gpt-4o-mini', agentInput.model]);
   } finally {
     f.close();
   }

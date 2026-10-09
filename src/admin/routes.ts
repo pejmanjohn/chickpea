@@ -318,9 +318,17 @@ import {
   pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
-  type ModelProviderUnavailableReason,
   type ModelResolvableAgent,
 } from '../config/model-policy.ts';
+import {
+  activeCatalogCompatibilityError,
+  chatModelProviderReady,
+  chatSubscriptionStatus,
+  openAiSubscriptionIsReady,
+  PLATFORM_NOT_OFFERED_TEXT,
+  resolveModelReadiness,
+  workersAiStatus,
+} from '../config/model-readiness.ts';
 import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
 import {
   resolveOpenAiAuthMethod,
@@ -460,7 +468,6 @@ import type { SlackStateStore } from '../slack/claim-store.ts';
 import {
   cancelOpenAiSubscriptionAuthorization,
   confirmOpenAiSubscriptionAccountChange,
-  getOpenAiSubscriptionAuthorizationStatus,
   pollOpenAiSubscriptionAuthorization,
   startOpenAiSubscriptionAuthorization,
   type OpenAiSubscriptionAuthorizationDependencies,
@@ -6715,24 +6722,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/models', async (c) => c.json({ providers: await chatPickerProviders(c) }));
 
-  // Everything one request's readiness answers share, the funding read included.
-  const chatModelReadiness = async (c: Context, funding?: ModelRequestFundingSource) => {
-    const settingsStore = settings(c);
-    const platformEnv = c.env as PlatformEnv | undefined;
-    await loadModelCatalog(settingsStore, platformEnv);
-    const [resolvedFunding, openAiAuthMethod, workersAiEnabled, openAiSubscription, runtimeProviders] = await Promise.all([
-      funding ?? installationFunding(platformEnv),
-      resolveOpenAiAuthMethod(settingsStore),
-      getWorkersAiEnabled(settingsStore),
-      chatSubscriptionStatus(settingsStore, platformEnv),
-      modelProviders(c),
-    ]);
-    const input = {
-      runtimeProviders, platformEnv, openAiAuthMethod, workersAiEnabled, openAiSubscription, settingsStore,
-      funding: resolvedFunding,
-    };
-    return (modelId: string) => chatModelUnavailable(modelId, modelId.slice(0, modelId.indexOf('/')), input);
-  };
+  const chatModelReadiness = (c: Context, funding?: ModelRequestFundingSource) => resolveModelReadiness({
+    settings: settings(c),
+    env: c.env as PlatformEnv | undefined,
+    runtimeProviders: modelProviders(c),
+    ...(funding ? { funding } : {}),
+  });
 
   app.get('/admin/api/models/readiness', async (c) => {
     const modelId = c.req.query('modelId') ?? '';
@@ -12773,47 +12768,6 @@ interface WorkspaceModelDefaultProjection {
   };
 }
 
-/** A chat-model provider can serve a turn now: the chat default's own health rule. */
-function chatModelProviderReady(providerId: string, input: {
-  runtimeProviders: RuntimeModelProvider[];
-  platformEnv: PlatformEnv | undefined;
-  openAiAuthMethod: 'api_key' | 'subscription';
-  workersAiEnabled: boolean;
-  openAiSubscription: Awaited<ReturnType<typeof chatSubscriptionStatus>>;
-}): boolean {
-  const provider = input.runtimeProviders.find(({ id }) => id === providerId);
-  const workersAiReady = providerId !== 'cloudflare' ||
-    (input.workersAiEnabled && workersAiStatus(input.platformEnv) !== 'missing');
-  const providerReady = providerId === 'openai' && input.openAiAuthMethod === 'subscription'
-    ? openAiSubscriptionIsReady(input.openAiSubscription)
-    : Boolean(provider?.configured);
-  return providerReady && workersAiReady;
-}
-
-type ChatModelReadinessInput = Parameters<typeof chatModelProviderReady>[1] & {
-  settingsStore: SettingsStore;
-  funding: ModelRequestFundingSource;
-};
-
-type ChatModelUnavailable =
-  | { unavailable: 'model_unsupported'; message: string }
-  | { unavailable: ModelProviderUnavailableReason };
-
-async function chatModelUnavailable(
-  modelId: string,
-  providerId: string,
-  input: ChatModelReadinessInput,
-): Promise<ChatModelUnavailable | undefined> {
-  const message = await activeCatalogCompatibilityError(modelId, input.openAiAuthMethod, input.settingsStore, input.platformEnv);
-  if (message) return { unavailable: 'model_unsupported', message };
-  const unavailable = await modelProviderUnavailable(
-    pricedModelRoute(modelId, 'standard_input_output'),
-    () => chatModelProviderReady(providerId, input),
-    input.funding,
-  );
-  return unavailable ? { unavailable } : undefined;
-}
-
 /**
  * Why a chat model cannot fill the coding role right now, if it cannot: the
  * active catalog must serve it and its provider must be ready, exactly as for
@@ -12861,7 +12815,6 @@ async function codingModelChoiceError(input: {
     : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
 
-const PLATFORM_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
 const PLATFORM_MODELS_SOURCE = 'Chickpea’s models';
 
 function chatModelProviderId(modelId: string): string | undefined {
@@ -12876,20 +12829,14 @@ async function workspaceModelDefaultProjection(input: {
   platformEnv: PlatformEnv | undefined;
   runtimeProviders: RuntimeModelProvider[];
 }): Promise<WorkspaceModelDefaultProjection> {
-  const [
-    workspaceDefault,
-    agents,
-    openAiAuthMethod,
-    workersAiEnabled,
-    openAiSubscription,
-    funding,
-  ] = await Promise.all([
+  const [workspaceDefault, agents, unavailable] = await Promise.all([
     input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
     input.configStore.listUserAgents(),
-    resolveOpenAiAuthMethod(input.settingsStore),
-    getWorkersAiEnabled(input.settingsStore),
-    chatSubscriptionStatus(input.settingsStore, input.platformEnv),
-    installationFunding(input.platformEnv),
+    resolveModelReadiness({
+      settings: input.settingsStore,
+      env: input.platformEnv,
+      runtimeProviders: input.runtimeProviders,
+    }),
   ]);
   const modelId = workspaceDefault?.modelId ?? null;
   const separator = modelId?.indexOf('/') ?? -1;
@@ -12910,15 +12857,7 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    const answer = await chatModelUnavailable(modelId, providerId, {
-      runtimeProviders: input.runtimeProviders,
-      platformEnv: input.platformEnv,
-      openAiAuthMethod,
-      workersAiEnabled,
-      openAiSubscription,
-      settingsStore: input.settingsStore,
-      funding,
-    });
+    const answer = await unavailable(modelId);
     health = answer
       ? {
           status: 'repair_required',
@@ -13029,30 +12968,6 @@ function providerWarnings(
   };
 }
 
-async function activeCatalogCompatibilityError(
-  model: string | null | undefined,
-  method: 'api_key' | 'subscription',
-  store: SettingsStore, env?: PlatformEnv,
-): Promise<string | undefined> {
-  if (!model) return undefined;
-  if (model.startsWith('openai/') && method === 'subscription' && isCloudflareTarget()) {
-    const status = await planStatus(planDependencies(env, store));
-    return status.models.some(item => `openai/${item.id}` === model) ? undefined : 'Choose a model available to the connected ChatGPT account.';
-  }
-  if (model.startsWith('openai/')) {
-    const lane = method === 'subscription' ? 'openai_subscription' : 'openai_api_key';
-    if (resolveActiveCatalogRoute(model, lane, env)) return undefined;
-    return method === 'subscription'
-      ? 'The selected ChatGPT subscription does not support this OpenAI model.'
-      : 'The active OpenAI API-key catalog does not support this model.';
-  }
-  if (model.startsWith('anthropic/') &&
-      !resolveActiveCatalogRoute(model, 'anthropic_api_key', env)) {
-    return 'The active Anthropic API-key catalog does not support this model.';
-  }
-  return undefined;
-}
-
 function activeCatalogModels(
   lane: 'anthropic_api_key' | 'openai_api_key' | 'openai_subscription',
   env: PlatformEnv | undefined,
@@ -13070,14 +12985,6 @@ function activeCatalogModels(
       ...(entry.displayName ? { name: entry.displayName } : {}),
     }];
   });
-}
-
-function openAiSubscriptionIsReady(
-  status: Awaited<ReturnType<typeof chatSubscriptionStatus>>,
-): boolean {
-  return status.state === 'connected' ||
-    status.state === 'account_change_confirmation_required' ||
-    (status.state === 'authorizing' && 'accountFingerprint' in status && Boolean(status.accountFingerprint));
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -13135,20 +13042,6 @@ function providerSummary(
     status,
     modelCount: cachedProviderModelCount(id, env) ?? null,
   };
-}
-
-function workersAiStatus(env: PlatformEnv | undefined): ProviderKeySource {
-  // Deployment-funded: not offered to an installation of a deployment serving many.
-  if (deploymentServesManyInstallations(env)) return 'missing';
-  if (hasWorkersAiBinding(env)) {
-    return 'env';
-  }
-  return process.env.CLOUDFLARE_API_TOKEN && process.env.CLOUDFLARE_ACCOUNT_ID ? 'env' : 'missing';
-}
-
-function hasWorkersAiBinding(env: PlatformEnv | undefined): boolean {
-  const ai = env?.AI;
-  return Boolean(ai && typeof ai === 'object' && typeof (ai as { models?: unknown }).models === 'function');
 }
 
 function copyAuthResponseCookies(c: Context, headers: Headers | undefined): void {
@@ -13465,8 +13358,4 @@ function effectiveConfigResponse(config: EffectiveSlackConfig): object {
 function isAbortOrTimeoutError(error: unknown): boolean {
   return error instanceof Error &&
     (error.name === 'AbortError' || error.name === 'TimeoutError');
-}
-
-async function chatSubscriptionStatus(store: SettingsStore, env?: PlatformEnv) {
-  return isCloudflareTarget() ? planStatus(planDependencies(env, store)) : getOpenAiSubscriptionAuthorizationStatus(store);
 }

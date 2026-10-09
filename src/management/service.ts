@@ -19,6 +19,7 @@ import {
   UnknownAgentError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
+import type { ModelReadiness } from '../config/model-readiness.ts';
 import {
   resolveProviderRuntimeImpact,
   resolveProviderRuntimeImpacts,
@@ -172,6 +173,13 @@ const META_ADS_CATALOG_SETUP_MESSAGE =
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
+// A member learns nothing about saved keys, and a runtime without the readiness
+// seam has none to read, so every key-lane pin reads as unconfigured.
+const keyLaneUnconfigured: ModelReadiness = async (modelId) =>
+  MANAGED_PROVIDER_IDS.some((id) => modelId.startsWith(`${id}/`))
+    ? { unavailable: 'credential_missing' }
+    : undefined;
+
 class MetaAdsCatalogSetupRequiredError extends ManagementError {
   constructor() {
     super('invalid_request', META_ADS_CATALOG_SETUP_MESSAGE);
@@ -231,6 +239,7 @@ export interface WorkspaceManagementServiceInput {
   providerCredentialSource?: (
     providerId: ManagedProviderId,
   ) => Promise<ManagedProviderSource>;
+  modelReadiness?: () => Promise<ModelReadiness>;
   providerCredentialRevision?: (
     providerId: ManagedProviderId,
   ) => Promise<number>;
@@ -1632,13 +1641,10 @@ export class WorkspaceManagementService {
       target: { kind: 'workspace', id: actor.organizationId },
     });
     const editable = await this.editableAgents(actor);
-    const preview = await previewWorkspaceRecipe(
-      { listUserAgents: async () => editable },
-      actor.role === 'member'
-        ? async () => 'missing'
-        : async (providerId) => this.stores.providerCredentialSource?.(providerId) ?? 'missing',
-      input,
-    );
+    const readiness = actor.role === 'member' || !this.stores.modelReadiness
+      ? keyLaneUnconfigured
+      : await this.stores.modelReadiness();
+    const preview = await previewWorkspaceRecipe({ listUserAgents: async () => editable }, readiness, input);
     emitManagementMetric('recipe.preview', {
       surface: context.origin.kind,
       outcome: 'success',
@@ -4026,18 +4032,25 @@ export class WorkspaceManagementService {
   }
 
   private async assertCreationModelProvider(model: string | undefined): Promise<void> {
-    // Production adapters supply the same credential-source reader used by
-    // provider settings. Alternate runtimes may own their provider bindings.
-    const source = this.stores.providerCredentialSource;
-    if (!source || !model) return;
-    const provider = model.split('/')[0];
-    if (provider !== 'anthropic' && provider !== 'openai' && provider !== 'openrouter') return;
-    if (await source(provider) !== 'missing') return;
+    // Production adapters supply the workspace's model readiness rule.
+    // Alternate runtimes may own their provider bindings.
+    const readiness = this.stores.modelReadiness;
+    if (!readiness || !model) return;
+    const answer = await (await readiness())(model);
+    if (!answer) return;
+    const reason = answer.unavailable === 'model_unsupported'
+      ? answer.message
+      : answer.unavailable === 'funding_not_offered'
+        ? "it is not available on Chickpea's models."
+        : `provider ${model.split('/')[0]} is not configured.`;
+    const guidance = answer.unavailable === 'credential_missing'
+      ? 'explain the required provider setup'
+      : 'say it is not available and ask them to choose another model';
     throw new ManagementError(
       'model_provider_unavailable',
-      `Cannot create an Agent pinned to ${model}: provider ${provider} is not configured. ` +
+      `Cannot create an Agent pinned to ${model}: ${reason} ` +
         'If the requester did not select a model, omit the model field to inherit the workspace default. ' +
-        'If they explicitly selected this model, explain the required provider setup; do not substitute another model.',
+        `If they explicitly selected this model, ${guidance}; do not substitute another model.`,
     );
   }
 
