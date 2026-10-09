@@ -796,8 +796,9 @@ function agentWelcomePublicationIssue(
 
 function formatChickpeaIntroduction(_receipt: ManagementChickpeaIntroduction): string {
   return [
-    'Hi — I’m *Chickpea*. I help your workspace create and manage specialized Agents right from Slack.',
-    'You can ask me to create an Agent, change how an Agent works, connect tools, or set up scheduled work. I’ll show one clear proposal when approval matters, then carry it out after you approve it once.',
+    'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+    'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
+    'What would you like your first Agent to help with?',
   ].join('\n\n');
 }
 

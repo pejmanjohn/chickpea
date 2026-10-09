@@ -597,7 +597,7 @@ test('an acknowledged Agent welcome is not retried when post-delivery bookkeepin
   assert.equal(result.deliveryRef, 'slack:C_WELCOME:1800000000.000500');
 });
 
-test('Chickpea introduction opens one Slack DM and posts bounded capability guidance', async () => {
+test('Chickpea introduction opens one Slack DM and ends with a question the person answers', async () => {
   const calls: Array<Record<string, unknown>> = [];
   const record: ManagementReceiptOutboxRecord = {
     outboxId: 'chickpea_intro_org_user',
@@ -644,8 +644,11 @@ test('Chickpea introduction opens one Slack DM and posts bounded capability guid
   });
   assert.deepEqual(calls[0], { users: 'U_INTRO' });
   assert.equal(calls[1]?.channel, 'D_INTRO');
-  assert.match(String(calls[1]?.text), /create and manage specialized Agents/);
-  assert.match(String(calls[1]?.text), /approve it once/);
+  assert.equal(calls[1]?.text, [
+    'Hi, I’m *Chickpea*. I set up AI Agents for your team, right here in Slack.',
+    'Each Agent has one job, like answering support questions or drafting weekly updates. Tell me what you need, and I’ll create the Agent, connect its tools, and add it to the right channels.',
+    'What would you like your first Agent to help with?',
+  ].join('\n\n'));
   assert.equal(result.deliveryRef, 'slack:D_INTRO:1800000000.000400');
 });
 
