@@ -242,6 +242,18 @@ for (const [name, setup] of Object.entries(CONNECTED_AGENTS)) {
   });
 }
 
+test('a new image in the thread leaves the tools and system prompt unchanged, so the cached history holds', async () => {
+  const thread = { ...ALPHA, agentKind: 'user' as const, imageModel: IMAGE_MODEL, thread: '1787003600.000100' };
+  const image = {
+    conversationKey: `${ALPHA.workspace}:${ALPHA.channel}:${thread.thread}`, fileId: 'F0IMAGE0001', filename: 'logo.png',
+    mimeType: 'image/png', origin: 'agent' as const, messageTs: '1787003600.000200',
+  };
+  const before = await render(thread);
+  const after = await render({ ...thread, threadImages: [image] });
+  assert.equal(JSON.stringify(withoutMarkers(after.tools)), JSON.stringify(withoutMarkers(before.tools)));
+  assert.deepEqual(after.system.map((block: any) => block.text), before.system.map((block: any) => block.text));
+});
+
 test('a customer-funded request goes out exactly as pi-ai builds it', async () => {
   const platform = await render(ALPHA);
   const customer = await render({ ...ALPHA, funding: 'customer' });

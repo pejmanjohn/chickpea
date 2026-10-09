@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SharedPrefixId } from '../../src/agents/shared-prefix.ts';
+import type { ThreadImageRecord } from '../../src/slack/thread-images.ts';
 
 process.env.ANTHROPIC_API_KEY = 'render-only-not-a-key';
 process.env.OPENAI_API_KEY = 'render-only-not-a-key';
@@ -28,6 +29,7 @@ const { configurePlatformFunding } = await import('../../src/config/platform-fun
 const { configureInstallationAdmission } = await import('../../src/config/installation-admission.ts');
 const { scopeInstallationEnv } = await import('../../src/config/installation-scope.ts');
 const { NO_RUN_FEES } = await import('./platform-funding.ts');
+const { serializeThreadImageRecords } = await import('../../src/slack/thread-images.ts');
 
 export type RenderedRequest = Record<string, any>;
 
@@ -52,6 +54,8 @@ export interface SlackRequestVariant {
   agentOverrides?: Record<string, unknown>;
   /** The workspace's connection accounts and this Agent's bindings to them. */
   connections?: { accounts: unknown[]; bindings: unknown[] };
+  /** Images already in the thread, as the host hands them to the dispatch. */
+  threadImages?: ThreadImageRecord[];
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -147,6 +151,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   const attributes = {
     workspaceId: variant.workspace, channelId: variant.channel, threadTs: variant.thread, conversationKind,
     slackUserId: variant.user, eventId: turn.eventId, messageTs, turnJobId: `job_${variant.thread}`,
+    ...(variant.threadImages ? { threadImages: serializeThreadImageRecords(variant.threadImages)! } : {}),
   };
   const signal = variant.delivery === 'file_delivery_check'
     ? {
