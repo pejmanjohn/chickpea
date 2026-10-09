@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  hasDeliveredOnboardingReply,
+  hasShownOnboardingReply,
   isDeliveredOnboardingReply,
 } from '../src/admin/onboarding-proof.ts';
 import { opaqueId } from '../src/work/admission.ts';
 import type { WorkRunListItem, WorkStore } from '../src/work/types.ts';
+import { onboardingRunFixture as fixture } from './helpers/onboarding-runs.ts';
 
 const TARGET = { workspaceId: 'T123', slackUserId: 'U_OWNER', tryStartedAt: 100 };
 
@@ -46,7 +47,7 @@ test('onboarding proof follows bounded pages and stops once runs predate Try', a
       return pages.shift()!;
     },
   } as unknown as WorkStore;
-  assert.equal(await hasDeliveredOnboardingReply(paged, TARGET), true);
+  assert.equal(await hasShownOnboardingReply(paged, TARGET), true);
   assert.equal(calls.length, 2);
 
   let cutoffCalls = 0;
@@ -59,77 +60,46 @@ test('onboarding proof follows bounded pages and stops once runs predate Try', a
       };
     },
   } as unknown as WorkStore;
-  assert.equal(await hasDeliveredOnboardingReply(cutoff, TARGET), false);
+  assert.equal(await hasShownOnboardingReply(cutoff, TARGET), false);
   assert.equal(cutoffCalls, 1);
 });
 
-function fixture(
-  override: {
-    run?: Partial<WorkRunListItem['run']>;
-    binding?: Partial<WorkRunListItem['binding']>;
-  } = {},
-): WorkRunListItem {
-  return {
-    work: { id: 'work_onboarding' as WorkRunListItem['work']['id'], kind: 'conversation', lifecycle: 'open', maximumSensitivity: 'private', createdAt: 90, updatedAt: 120, closedAt: null },
-    binding: {
-      id: 'binding_onboarding' as WorkRunListItem['binding']['id'],
-      workId: 'work_onboarding' as WorkRunListItem['binding']['workId'],
-      adapterKind: 'slack',
-      externalAccountId: opaqueId('account', 'slack:T123'),
-      externalConversationId: 'conversation_opaque',
-      generation: 1,
-      lifecycle: 'active',
-      sourceVisibility: 'private',
-      configMode: 'resolve_each_run',
-      pinnedConfigRevisionId: null,
-      orderingKey: 'slack:T123:D456',
-      createdAt: 90,
-      expiredAt: null,
-      ...override.binding,
+test('the proof lists the newest runs of every status, stopping at the first run before Try', async () => {
+  const calls: unknown[] = [];
+  const work = {
+    async listRuns(input: unknown) {
+      calls.push(input);
+      return { items: [fixture({ run: { createdAt: 99 } })], nextCursor: { createdAt: 99, runId: 'run_older' } };
     },
-    run: {
-      id: 'run_onboarding' as WorkRunListItem['run']['id'],
-      workId: 'work_onboarding' as WorkRunListItem['run']['workId'],
-      bindingId: 'binding_onboarding' as WorkRunListItem['run']['bindingId'],
-      kind: 'interactive',
-      admissionSequence: 1,
-      triggerKind: 'slack_dm_message',
-      triggerRef: 'slack:event:one',
-      dedupeKey: 'event-one',
-      actorRef: opaqueId('actor', 'slack:T123:U_OWNER'),
-      actorTrustTier: 'member',
-      sourceContextWatermark: null,
-      triggerContentRef: null,
-      preparedInputRef: null,
-      configRevisionId: 'config_onboarding' as WorkRunListItem['run']['configRevisionId'],
-      effectiveCapabilityDigest: 'a'.repeat(64),
-      executionAuthority: 'ledger',
-      coordinatorKind: 'interactive',
-      authorityEpoch: 1,
-      policyApprovedOutputRef: null,
-      renderedPayloadRef: null,
-      status: 'settled',
-      terminalDisposition: 'succeeded',
-      deliveryStatus: 'delivered',
-      deliveryMethod: 'slack_chat_postMessage',
-      deliveryAttemptId: 'attempt-one',
-      deliveryRef: 'slack:D456:1900000000.000001',
-      deliveryFinalizedAt: 120,
-      leaseOwner: null,
-      leaseUntil: null,
-      fencingToken: 1,
-      safeFailureCode: null,
-      recoveryResolutionKind: null,
-      recoveryAdminCredentialId: null,
-      recoveryOperatorLabel: null,
-      recoveryAuthOrigin: null,
-      recoveryReasonCode: null,
-      recoveryRequestId: null,
-      recoveryResolvedAt: null,
-      createdAt: 110,
-      updatedAt: 120,
-      settledAt: 120,
-      ...override.run,
-    },
-  };
-}
+  } as unknown as WorkStore;
+  assert.equal(await hasShownOnboardingReply(work, TARGET, async () => undefined), false);
+  assert.deepEqual(calls, [{ kind: 'interactive', limit: 100, cursor: null }]);
+});
+
+const STREAMING = { run: { status: 'executing', terminalDisposition: null, deliveryStatus: 'pending', deliveryRef: null, settledAt: null } } as const;
+const shown = (channelId: string, acknowledgedByteLength: number) =>
+  async (runId: string) => runId === 'run_onboarding' ? { root: { channelId }, stream: { acknowledgedByteLength } } : undefined;
+const onePage = (item: WorkRunListItem) => ({
+  async listRuns() { return { items: [item], nextCursor: null }; },
+}) as unknown as WorkStore;
+
+test('a reply already showing answer text in the Owner\'s DM counts before its run settles', async () => {
+  const streaming = fixture(STREAMING);
+  assert.equal(isDeliveredOnboardingReply(streaming, TARGET), false, 'not settled, so not delivered');
+  assert.equal(await hasShownOnboardingReply(onePage(streaming), TARGET, shown('D456', 42)), true);
+
+  for (const [label, item, reader] of [
+    ['a stream with only its task plan', streaming, shown('D456', 0)],
+    ['text in a channel, not the DM', streaming, shown('C456', 42)],
+    ['another person\'s DM', fixture({ ...STREAMING, run: { ...STREAMING.run, actorRef: opaqueId('actor', 'slack:T123:U_SOMEONE_ELSE') } }), shown('D456', 42)],
+    ['a run before Try', fixture({ ...STREAMING, run: { ...STREAMING.run, createdAt: 99 } }), shown('D456', 42)],
+    ['another workspace', fixture({ ...STREAMING, binding: { externalAccountId: opaqueId('account', 'slack:T999') } }), shown('D456', 42)],
+    ['no presentation yet', streaming, async () => undefined],
+    ['a reader that fails', streaming, async () => { throw new Error('state store unavailable'); }],
+    ['a reply that failed after showing some text', fixture({ run: { terminalDisposition: 'failed', deliveryStatus: 'failed', deliveryRef: null } }), shown('D456', 42)],
+    ['a reply that was stopped after showing some text', fixture({ run: { terminalDisposition: 'cancelled', deliveryStatus: 'failed', deliveryRef: null } }), shown('D456', 42)],
+  ] as const) {
+    assert.equal(await hasShownOnboardingReply(onePage(item), TARGET, reader), false, label);
+  }
+  assert.equal(await hasShownOnboardingReply(onePage(streaming), TARGET), false, 'no reader: not shown yet');
+});

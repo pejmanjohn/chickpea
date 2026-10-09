@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
-import { hasDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
+import { hasShownOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { prepareSlackShadowAdmission } from '../src/slack/work-admission.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -173,7 +173,7 @@ for (const slow of [
           'work.delivery_delivered',
         ],
       );
-      assert.equal(await hasDeliveredOnboardingReply(fixture.store, fixture.onboarding), true);
+      assert.equal(await hasShownOnboardingReply(fixture.store, fixture.onboarding), true);
     } finally {
       fixture.close();
     }

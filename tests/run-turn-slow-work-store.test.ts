@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 
 import type { WebClient } from '@slack/web-api';
 
-import { hasDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
+import { hasShownOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { AgentObservationYield } from '../src/slack/flue-dispatch.ts';
@@ -91,7 +91,7 @@ test('a Try DM reply settles its Run although the Work store outlived the observ
     assert.equal(run?.deliveryStatus, 'delivered');
     assert.equal(run?.deliveryRef, `slack:${assignment.channelId}:1790000300.000200`);
     assert.equal(
-      await hasDeliveredOnboardingReply(result.work, {
+      await hasShownOnboardingReply(result.work, {
         workspaceId: assignment.workspaceId,
         slackUserId: result.userId,
         tryStartedAt,
