@@ -536,7 +536,7 @@ function runAdminPageHarness(
     channelIndex?: Array<Record<string, unknown>>;
     channelIndexError?: { status: number; error: string; message?: string };
     onboarding?: OnboardingFixture | null;
-    onboardingEmbedded?: boolean;
+    onboardingUnread?: boolean;
     onboardingProviderError?: { status: number; error: string; message?: string };
     onboardingTryError?: { status: number; error: string; message?: string; workspaceDefault?: WorkspaceDefaultFixture };
     slackChannelFailures?: number;
@@ -3092,7 +3092,7 @@ function runAdminPageHarness(
       options.browserOffered ?? true,
       options.selfHosted ?? true,
       (options.initialPath ?? '/admin/channels') === '/admin/onboarding' ? {
-        initial: options.onboardingEmbedded === false || options.workspaceAdminUi === false ? null : options.onboarding ?? null,
+        initial: options.onboardingUnread === true || options.workspaceAdminUi === false ? null : options.onboarding ?? null,
         githubConnectPath: options.selfHosted === false ? options.onboarding?.githubConnectPath ?? null : null,
       } : undefined,
     ),
@@ -4466,9 +4466,11 @@ test('Add to channels lets publication reconcile public app membership', async (
   assert.doesNotMatch(harness.app.innerHTML, /Invite it to #new-channel in Slack/);
 });
 
+const CHECK_ICON_PATH_START = 'M12.416 3.376';
+
 function isSuccessNotice(html: string, text: string): boolean {
   const notice = html.match(new RegExp(`<div class="callout callout-success" role="status"><svg[^>]*><path d="([^"]*)"\\/></svg><span>${text.replace(/[.#]/g, '\\$&')}</span></div>`));
-  return Boolean(notice?.[1]!.startsWith('M12.416 3.376') &&
+  return Boolean(notice?.[1]!.startsWith(CHECK_ICON_PATH_START) &&
     /\.callout-success \{[^}]*background: var\(--ok-tint\)/.test(adminUiStylesheet()));
 }
 
@@ -18139,7 +18141,8 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   await flushAsync();
   assert.match(harness.app.innerHTML, /Agent configuration/);
   assert.match(harness.app.innerHTML, /Instructions/);
-  assert.equal(pending.size, 4);
+  assert.equal(pending.size, 3);
+  assert.equal(pending.has('/admin/api/onboarding'), false, 'only the onboarding page reads the journey');
   assert.ok(slackGets > 0);
   assert.equal(harness.agentConnectionGets(), 0);
   // The delayed channel response must update discovery without resetting the editor.
@@ -18147,7 +18150,6 @@ test('Agent deep links render before channel discovery and auxiliary checks fini
   input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Keep my unsaved instructions') });
   pending.get('/admin/api/channels')!(jsonResponse({ channels: [] }));
   pending.get('/admin/api/models')!(jsonResponse({ providers: [] }));
-  pending.get('/admin/api/onboarding')!(jsonResponse({ error: 'onboarding_not_found' }, 404));
   pending.get('/admin/api/environment/status')!(jsonResponse({}));
   resolveSlack(jsonResponse(connectedSlackFixture()));
   await flushAsync();
@@ -19532,7 +19534,7 @@ test('the onboarding page paints its real step first, and a provider step waits 
   assert.match(choosing.app.innerHTML, /<p class="onboarding-eyebrow">Step 2 of 4<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
   assert.match(choosing.app.innerHTML, /<span>Anthropic<\/span><span class="onboarding-provider-tab-status">Ready<\/span>/);
 
-  const unread = runAdminPageHarness({ ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try'), onboardingEmbedded: false });
+  const unread = runAdminPageHarness({ ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try'), onboardingUnread: true });
   assert.match(unread.renderHistory[0]!, /Loading setup&hellip;/, 'a page without the journey says it is loading it');
   await flushAsync();
   assert.match(unread.app.innerHTML, /Say hi to Chickpea in Slack/);

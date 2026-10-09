@@ -987,6 +987,7 @@
       state.channelScreen = "overview";
       state.profileScreen = "list";
       render();
+      loadOnboardingIfUnread();
       return;
     }
     if (parts[1] === "usage" && USAGE_ADMIN_UI) { applyUsageQuery(location.search || ""); openUsage(); return; }
@@ -2902,14 +2903,13 @@
   var ONBOARDING_STAGE_STEPS = {
     connect_slack: "slack", choose_provider: "provider", choose_model: "model", connect_github: "github", try: "try"
   };
+  var CHICKPEA_MODELS_STAGE_STEPS = Object.assign({}, ONBOARDING_STAGE_STEPS, { choose_provider: "slack", choose_model: "slack" });
 
   function onboardingStepIndex() {
     var steps = ONBOARDING_PAGE.steps;
     var stage = state.onboarding && state.onboarding.stage;
     if (stage === "complete") return steps.length;
-    var id = (stage === "choose_provider" || stage === "choose_model") && onboardingOnChickpeaModels()
-      ? "slack"
-      : ONBOARDING_STAGE_STEPS[stage] || "slack";
+    var id = (onboardingOnChickpeaModels() ? CHICKPEA_MODELS_STAGE_STEPS : ONBOARDING_STAGE_STEPS)[stage] || "slack";
     var index = steps.findIndex(function (step) { return step.id === id; });
     return index >= 0 ? index : steps.length - 1;
   }
@@ -13034,11 +13034,18 @@
   }
 
   var onboardingPollTimer = null;
+  var onboardingUnreadRequest = null;
   var onboardingPollRequest = false;
 
   function onboardingResponseSignature(value) {
     if (!value) return "";
     return [value.revision, value.stage, value.providerId, value.modelId, value.tryStartedAt, value.completedAt, value.agentId, value.slackAppId, value.redirectTo].join("|");
+  }
+
+  function loadOnboardingIfUnread() {
+    if (WORKSPACE_ADMIN_UI && !state.onboarding && !onboardingUnreadRequest) {
+      onboardingUnreadRequest = loadOnboarding(true).finally(function () { onboardingUnreadRequest = null; });
+    }
   }
 
   function loadOnboarding(shouldRender) {
@@ -13316,7 +13323,6 @@
         auxiliary(api("/admin/api/models"), function (body) { state.models = body; });
         auxiliary(requests.imageModels, function (body) { applyImageModels(body); });
         auxiliary(requests.slack, function (body) { state.slack = body; state.slackStatusAt = Date.now(); });
-        auxiliary(requests.onboarding, applyBootOnboarding);
         auxiliary(requests.workspaceDefault, function (body) {
           if (body && body.workspaceDefault) applyWorkspaceDefault(body.workspaceDefault, false);
         });
@@ -13351,7 +13357,6 @@
     }
     var requests = auxiliaryRequests();
     var slackRequest = requests.slack;
-    var onboardingRequest = requests.onboarding;
     var channelsRequest = requests.channels;
     var workspaceDefaultRequest = requests.workspaceDefault;
     var imageModelsRequest = requests.imageModels;
@@ -13362,7 +13367,6 @@
       // Resilient on purpose: the connection card is auxiliary — if this
       // endpoint fails, the rest of the admin page must still render.
       slackRequest,
-      onboardingRequest,
       channelsRequest,
       workspaceDefaultRequest,
       environmentStatusRequest,
@@ -13374,8 +13378,7 @@
       state.models = parts[1];
       state.slack = parts[2];
       state.slackStatusAt = Date.now();
-      applyBootOnboarding(parts[3]);
-      state.channelIndex = parts[4].channels;
+      state.channelIndex = parts[3].channels;
       state.channelIndex.forEach(function (channel) {
         (channel.grants || []).forEach(function (grant) {
           state.grants.push(Object.assign({}, grant, {
@@ -13385,10 +13388,10 @@
           }));
         });
       });
-      state.channelIndexError = parts[4].error;
-      if (parts[5] && parts[5].workspaceDefault) applyWorkspaceDefault(parts[5].workspaceDefault, false);
-      state.environmentStatus = parts[6];
-      applyImageModels(parts[7]);
+      state.channelIndexError = parts[3].error;
+      if (parts[4] && parts[4].workspaceDefault) applyWorkspaceDefault(parts[4].workspaceDefault, false);
+      state.environmentStatus = parts[5];
+      applyImageModels(parts[6]);
       syncChannelFormWorkspacePrefill();
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
@@ -13397,28 +13400,10 @@
     });
   }
 
-  function applyBootOnboarding(result) {
-    if (!result || state.onboarding) return;
-    state.onboarding = result.body;
-    state.onboardingError = result.error;
-  }
-
   // The boot requests other than the Agent inventory.
   function createBootAuxiliaryRequests() {
     var slackRequest = WORKSPACE_ADMIN_UI
       ? requestSlackStatus().catch(function () { return null; })
-      : Promise.resolve(null);
-    var onboardingRequest = WORKSPACE_ADMIN_UI && !state.onboarding
-      ? api("/admin/api/onboarding").then(function (body) {
-          return { body: body, error: "" };
-        }).catch(function (error) {
-          return {
-            body: null,
-            error: error && error.message === "onboarding_not_found"
-              ? "This workspace does not have an active setup journey."
-              : ((error && (error.serverMessage || error.message)) || "Could not load setup.")
-          };
-        })
       : Promise.resolve(null);
     var channelsRequest = WORKSPACE_ADMIN_UI
       ? api("/admin/api/channels").then(function (body) {
@@ -13437,7 +13422,6 @@
       : Promise.resolve(null);
     return {
       slack: slackRequest,
-      onboarding: onboardingRequest,
       channels: channelsRequest,
       workspaceDefault: workspaceDefaultRequest,
       imageModels: imageModelsRequest,
@@ -17661,6 +17645,7 @@
   if (initialRoute === "/admin/onboarding") {
     state.view = "onboarding";
     render();
+    loadOnboardingIfUnread();
   }
   if (USAGE_ADMIN_UI && initialRoute === "/admin/usage") applyUsageQuery(location.search || "");
   state.oauthReturn = canNavigate ? oauthReturnFromSearch(location.search || "") : null;

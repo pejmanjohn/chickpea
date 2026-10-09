@@ -9,20 +9,20 @@ const labels = (steps: ReadonlyArray<{ label: string }>) => steps.map((step) => 
 const ids = (steps: ReadonlyArray<{ id: string }>) => steps.map((step) => step.id);
 
 test('standalone keeps its four steps and never offers GitHub', () => {
-  for (const github of [false, true]) {
-    const steps = onboardingSteps({ selfHosted: true, chickpeaModels: false, github });
+  for (const githubOffered of [false, true]) {
+    const steps = onboardingSteps({ selfHosted: true, onChickpeaModels: false, githubOffered });
     assert.deepEqual(labels(steps), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
     assert.deepEqual(ids(steps), ['slack', 'provider', 'model', 'try']);
   }
 });
 
 test('hosted starts at Add to Slack, drops the provider and model on Chickpea\'s models, and offers GitHub when the host can connect it', () => {
-  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, chickpeaModels: false, github: true })),
+  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true })),
     ['Add to Slack', 'Choose provider', 'Choose model', 'Connect GitHub', 'Try Chickpea']);
-  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, chickpeaModels: false, github: false })),
+  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: false })),
     ['Add to Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
-  assert.deepEqual(ids(onboardingSteps({ selfHosted: false, chickpeaModels: true, github: true })), ['slack', 'github', 'try']);
-  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, chickpeaModels: true, github: false })), ['Add to Slack', 'Try Chickpea']);
+  assert.deepEqual(ids(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true })), ['slack', 'github', 'try']);
+  assert.deepEqual(labels(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: false })), ['Add to Slack', 'Try Chickpea']);
 });
 
 const BILLING: PlatformBillingPort = {

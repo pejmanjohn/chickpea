@@ -458,7 +458,7 @@ import {
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { parseSlackThreadKey } from '../slack/thread-key.ts';
-import { hasDeliveredOnboardingReply } from './onboarding-proof.ts';
+import { hasShownOnboardingReply } from './onboarding-proof.ts';
 import type {
   AuthControl,
   HumanIdentityDirectory,
@@ -10100,7 +10100,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (journey.selectedWorkspaceId && journey.selectedProviderId &&
         journey.selectedModelId && journey.trySlackUserId && journey.tryStartedAt) {
       const presentations = slackState(c);
-      const delivered = await hasDeliveredOnboardingReply(work(c), {
+      const delivered = await hasShownOnboardingReply(work(c), {
           workspaceId: journey.selectedWorkspaceId,
           slackUserId: journey.trySlackUserId,
           tryStartedAt: journey.tryStartedAt,

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  hasDeliveredOnboardingReply,
+  hasShownOnboardingReply,
   isDeliveredOnboardingReply,
 } from '../src/admin/onboarding-proof.ts';
 import { opaqueId } from '../src/work/admission.ts';
@@ -47,7 +47,7 @@ test('onboarding proof follows bounded pages and stops once runs predate Try', a
       return pages.shift()!;
     },
   } as unknown as WorkStore;
-  assert.equal(await hasDeliveredOnboardingReply(paged, TARGET), true);
+  assert.equal(await hasShownOnboardingReply(paged, TARGET), true);
   assert.equal(calls.length, 2);
 
   let cutoffCalls = 0;
@@ -60,7 +60,7 @@ test('onboarding proof follows bounded pages and stops once runs predate Try', a
       };
     },
   } as unknown as WorkStore;
-  assert.equal(await hasDeliveredOnboardingReply(cutoff, TARGET), false);
+  assert.equal(await hasShownOnboardingReply(cutoff, TARGET), false);
   assert.equal(cutoffCalls, 1);
 });
 
@@ -72,7 +72,7 @@ test('the proof lists the newest runs of every status, stopping at the first run
       return { items: [fixture({ run: { createdAt: 99 } })], nextCursor: { createdAt: 99, runId: 'run_older' } };
     },
   } as unknown as WorkStore;
-  assert.equal(await hasDeliveredOnboardingReply(work, TARGET, async () => undefined), false);
+  assert.equal(await hasShownOnboardingReply(work, TARGET, async () => undefined), false);
   assert.deepEqual(calls, [{ kind: 'interactive', limit: 100, cursor: null }]);
 });
 
@@ -86,7 +86,7 @@ const onePage = (item: WorkRunListItem) => ({
 test('a reply already showing answer text in the Owner\'s DM counts before its run settles', async () => {
   const streaming = fixture(STREAMING);
   assert.equal(isDeliveredOnboardingReply(streaming, TARGET), false, 'not settled, so not delivered');
-  assert.equal(await hasDeliveredOnboardingReply(onePage(streaming), TARGET, shown('D456', 42)), true);
+  assert.equal(await hasShownOnboardingReply(onePage(streaming), TARGET, shown('D456', 42)), true);
 
   for (const [label, item, reader] of [
     ['a stream with only its task plan', streaming, shown('D456', 0)],
@@ -97,7 +97,7 @@ test('a reply already showing answer text in the Owner\'s DM counts before its r
     ['no presentation yet', streaming, async () => undefined],
     ['a reader that fails', streaming, async () => { throw new Error('state store unavailable'); }],
   ] as const) {
-    assert.equal(await hasDeliveredOnboardingReply(onePage(item), TARGET, reader), false, label);
+    assert.equal(await hasShownOnboardingReply(onePage(item), TARGET, reader), false, label);
   }
-  assert.equal(await hasDeliveredOnboardingReply(onePage(streaming), TARGET), false, 'no reader: not shown yet');
+  assert.equal(await hasShownOnboardingReply(onePage(streaming), TARGET), false, 'no reader: not shown yet');
 });

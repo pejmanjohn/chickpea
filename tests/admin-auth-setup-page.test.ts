@@ -273,7 +273,7 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   const base = { surface: 'add-to-slack', eyebrow: 'Step 2 of 3', title: 'Now add Chickpea to Slack', body: '<p>Body</p>' };
   const html = renderSlackJourneyPage({
     ...base,
-    progress: { steps: onboardingSteps({ selfHosted: false, chickpeaModels: true, github: true }), current: 'github' },
+    progress: { steps: onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true }), current: 'github' },
     badge: 'Signed in with Slack as <Ana & "Bo">',
   });
   const progress = '<ol class="auth-progress" role="list" aria-label="Onboarding progress">' +
@@ -293,7 +293,7 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
 });
 
 test('the shell step bar marks every step done before the current one, and none after', () => {
-  const steps = onboardingSteps({ selfHosted: false, chickpeaModels: false, github: true });
+  const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true });
   const html = renderSlackJourneyPage({ surface: 'add-to-slack', eyebrow: 'Step 1 of 5', title: 'Add', body: '', progress: { steps, current: 'slack' } });
   const states = [...html.matchAll(/<li( class="([^"]+)")?( aria-current="step")?><span class="auth-progress-dot">([^<]+)<\/span>/g)]
     .map((match) => `${match[2] ?? 'pending'}:${match[4]}`);

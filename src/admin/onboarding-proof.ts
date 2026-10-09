@@ -12,7 +12,7 @@ export type OnboardingPresentationReader = (runId: string) => Promise<{
   stream: { acknowledgedByteLength: number };
 } | undefined>;
 
-export async function hasDeliveredOnboardingReply(
+export async function hasShownOnboardingReply(
   work: WorkStore,
   target: OnboardingReplyTarget,
   readPresentation?: OnboardingPresentationReader,

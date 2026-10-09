@@ -112,8 +112,8 @@ async function harness(options: {
   admin?: boolean;
   ownKey?: OwnKeyFacts;
   onboarding?: Record<string, unknown>;
-  onboardingEmbedded?: boolean;
-  bootHeld?: boolean;
+  onboardingUnread?: boolean;
+  modelsHeld?: boolean;
   platformFailures?: number;
   platformFailureBody?: unknown;
   platformHeld?: boolean;
@@ -131,8 +131,8 @@ async function harness(options: {
   let platformFailures = options.platformFailures ?? 0;
   let releasePlatform = () => {};
   const platformGate = options.platformHeld ? new Promise<void>((resolve) => { releasePlatform = resolve; }) : undefined;
-  let releaseBoot = () => {};
-  const bootGate = options.bootHeld ? new Promise<void>((resolve) => { releaseBoot = resolve; }) : undefined;
+  let releaseModels = () => {};
+  const modelsGate = options.modelsHeld ? new Promise<void>((resolve) => { releaseModels = resolve; }) : undefined;
   const start = new URL(options.path, 'https://chickpea.example');
   const location = {
     pathname: start.pathname, search: start.search,
@@ -185,7 +185,7 @@ async function harness(options: {
     if (path === '/admin/api/agents') return response({ agents: [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
     if (path === '/admin/api/models') {
-      await bootGate;
+      await modelsGate;
       return response({ providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, configured: false, suggestions: [] })) });
     }
     if (path === '/admin/api/slack-connection') return response({ connected: true, teamId: 'TACME', teamName: 'Acme' });
@@ -230,7 +230,7 @@ async function harness(options: {
     selfHosted: options.selfHosted ?? !options.billingOffered,
     billingOffered: options.billingOffered,
     onboarding: start.pathname === '/admin/onboarding' ? {
-      initial: role === 'member' || options.onboardingEmbedded === false ? null : onboarding,
+      initial: role === 'member' || options.onboardingUnread === true ? null : onboarding,
       githubConnectPath: options.selfHosted ?? !options.billingOffered ? null : onboarding.githubConnectPath as string ?? null,
     } : undefined,
   }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
@@ -262,7 +262,7 @@ async function harness(options: {
   };
   return {
     html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey,
-    portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseBoot: () => releaseBoot(),
+    portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
   };
 }
 
@@ -1008,9 +1008,9 @@ test('on Chickpea\'s models the step bar is the same from the first paint to Chi
 });
 
 test('the boot\'s other requests never move a journey back once setup moved it on', async () => {
-  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, bootHeld: true });
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, modelsHeld: true });
   assert.match(page.html(), /Say hi to Chickpea in Slack/, 'setup finished before the boot\'s requests');
-  page.releaseBoot();
+  page.releaseModels();
   await flush();
   assert.match(page.html(), /Say hi to Chickpea in Slack/);
   assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 0,

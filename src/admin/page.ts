@@ -118,8 +118,8 @@ export function renderAdminPage(
     ...options.onboarding,
     steps: onboardingSteps({
       selfHosted,
-      chickpeaModels: options.billingOffered === true && options.installationOwner === true,
-      github: options.onboarding.githubConnectPath !== null,
+      onChickpeaModels: options.billingOffered === true && options.installationOwner === true,
+      githubOffered: options.onboarding.githubConnectPath !== null,
     }),
   };
   // No referrer policy: the browser default sends other sites only Admin's
