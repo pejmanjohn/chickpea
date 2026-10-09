@@ -13,6 +13,7 @@ import {
 } from '../src/management/receipts.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import type {
+  ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
   ReleaseAgentWelcomeInput,
 } from '../src/management/types.ts';
@@ -200,10 +201,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     ]);
     const owed = await f.management.getOutboxForOperation('agent_welcome_op_help_published');
     assert.equal(owed?.status, 'pending');
-    assert.equal(
-      owed?.receipt.kind === 'agent_created_welcome' ? owed.receipt.followUpOf : undefined,
-      'agent_welcome_op_help',
-    );
+    assert.equal(welcomeOf(owed).followUpOf, 'agent_welcome_op_help');
 
     assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
     assert.equal(f.posts.length, 2);
@@ -217,10 +215,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     assert.ok(String(welcome.text).endsWith('<https://example.test/admin/agents/agent_help|View Agent>'));
     const settled = await f.management.getOutboxForOperation('agent_welcome_op_help_published');
     assert.equal(settled?.status, 'delivered');
-    assert.equal(
-      settled?.receipt.kind === 'agent_created_welcome' ? settled.receipt.deliveryPersona : undefined,
-      'agent',
-    );
+    assert.equal(welcomeOf(settled).deliveryPersona, 'agent');
     assert.equal(
       (await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', CREATION_THREAD.threadTs))?.agentId,
       'agent_help',
@@ -252,4 +247,9 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
 
 function welcomeTs(postCount: number): string {
   return `1800000000.${String(postCount + 1).padStart(6, '0')}`;
+}
+
+function welcomeOf(record: ManagementReceiptOutboxRecord | undefined): ManagementAgentCreatedWelcome {
+  assert.ok(record && 'kind' in record.receipt && record.receipt.kind === 'agent_created_welcome');
+  return record.receipt;
 }

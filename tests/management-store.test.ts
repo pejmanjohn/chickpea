@@ -75,6 +75,32 @@ const CREATION_THREAD = {
 };
 
 /** The welcome Chickpea posted itself because the Agent's handle was not live. */
+function chickpeaFallbackReceipt(
+  outboxId: string,
+  receipt: Partial<ManagementAgentCreatedWelcome> = {},
+): ManagementAgentCreatedWelcome {
+  return {
+    kind: 'agent_created_welcome',
+    creationOperationId: `op_${outboxId}`,
+    presentationRunId: 'run_help',
+    turnJobId: 'turn_help',
+    agentId: 'agent_help',
+    agentName: 'Support',
+    agentHandle: 'support',
+    agentDescription: 'Answers support questions.',
+    requesterMembershipId: 'membership_help',
+    surface: 'direct',
+    persona: { name: 'Support', avatarUrl: 'https://example.test/support.png' },
+    publication: { status: 'partial', incomplete: ['slack_presence', 'source_channel'] },
+    connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
+    connectorNotices: [{ kind: 'unavailable', label: 'HubSpot', text: 'HubSpot is unavailable.' }],
+    followOnNotices: [{ kind: 'pending', text: 'A proposal is pending.' }],
+    deliveryPersona: 'chickpea',
+    viewAgentUrl: 'https://example.test/admin/agents/agent_help',
+    ...receipt,
+  };
+}
+
 function chickpeaFallbackWelcome(
   outboxId: string,
   receipt: Partial<ManagementAgentCreatedWelcome> = {},
@@ -84,26 +110,7 @@ function chickpeaFallbackWelcome(
     outboxId,
     operationId: `op_${outboxId}`,
     destination: CREATION_THREAD,
-    receipt: {
-      kind: 'agent_created_welcome',
-      creationOperationId: `op_${outboxId}`,
-      presentationRunId: 'run_help',
-      turnJobId: 'turn_help',
-      agentId: 'agent_help',
-      agentName: 'Support',
-      agentHandle: 'support',
-      agentDescription: 'Answers support questions.',
-      requesterMembershipId: 'membership_help',
-      surface: 'direct',
-      persona: { name: 'Support', avatarUrl: 'https://example.test/support.png' },
-      publication: { status: 'partial', incomplete: ['slack_presence', 'source_channel'] },
-      connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
-      connectorNotices: [{ kind: 'unavailable', label: 'HubSpot', text: 'HubSpot is unavailable.' }],
-      followOnNotices: [{ kind: 'pending', text: 'A proposal is pending.' }],
-      deliveryPersona: 'chickpea',
-      viewAgentUrl: 'https://example.test/admin/agents/agent_help',
-      ...receipt,
-    },
+    receipt: chickpeaFallbackReceipt(outboxId, receipt),
     status: 'delivered',
     attempts: 1,
     nextAttemptAt: NOW,
@@ -155,9 +162,8 @@ test('releasing an Agent welcome queues one follow-up after a Chickpea fallback 
     }, { createdAt: NOW + 20, updatedAt: NOW + 20 }));
     assert.deepEqual(await store.releaseAgentWelcome({ ...release, at: NOW + 30 }), { created: true });
     const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
-    assert.equal(second?.receipt.kind, 'agent_created_welcome');
-    assert.deepEqual(second?.receipt.kind === 'agent_created_welcome'
-      ? second.receipt.publication : undefined, { status: 'complete', incomplete: [] });
+    assert.ok(second && 'kind' in second.receipt && second.receipt.kind === 'agent_created_welcome');
+    assert.deepEqual(second.receipt.publication, { status: 'complete', incomplete: [] });
   } finally {
     store.close();
   }
@@ -174,9 +180,11 @@ test('releasing an Agent welcome leaves welcomes the Agent posted itself, undeli
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_scope_only', {
       publication: { status: 'partial', incomplete: ['source_channel'] },
     }));
-    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_pending', {
-      deliveryPersona: undefined,
-    }, { status: 'pending', attempts: 0 }));
+    const { deliveryPersona: _notDelivered, ...undelivered } =
+      chickpeaFallbackReceipt('agent_welcome_pending');
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_pending', {}, {
+      receipt: undelivered, status: 'pending', attempts: 0,
+    }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_other_agent', { agentId: 'agent_other' }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_followed_published', {
       followUpOf: 'agent_welcome_followed',

@@ -10,6 +10,7 @@ import type { IdentityRpcRequest } from '../src/identity/types.ts';
 import { drainManagementReceiptOutbox } from '../src/management/receipts.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import type {
+  ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
   ManagementRpcRequest,
 } from '../src/management/types.ts';
@@ -54,6 +55,20 @@ const NOW = 1_800_000_000_000;
 /** The state store's next wake before the claim: a far-off sweep. */
 const LATER_SWEEP = NOW + 7 * 60_000;
 
+function welcomeReceipt(operationId: string): ManagementAgentCreatedWelcome {
+  return {
+    kind: 'agent_created_welcome',
+    creationOperationId: operationId,
+    turnJobId: 'turn_welcome',
+    agentId: 'agent_new',
+    agentName: 'New Agent',
+    requesterMembershipId: 'member_1',
+    surface: 'channel',
+    persona: { name: 'New Agent' },
+    publication: { status: 'complete', incomplete: [] },
+  };
+}
+
 function welcomeOutbox(operationId: string, at: number): ManagementReceiptOutboxRecord {
   return {
     outboxId: `agent_welcome_${operationId}`,
@@ -61,17 +76,7 @@ function welcomeOutbox(operationId: string, at: number): ManagementReceiptOutbox
     destination: {
       kind: 'thread', workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000001',
     },
-    receipt: {
-      kind: 'agent_created_welcome',
-      creationOperationId: operationId,
-      turnJobId: 'turn_welcome',
-      agentId: 'agent_new',
-      agentName: 'New Agent',
-      requesterMembershipId: 'member_1',
-      surface: 'channel',
-      persona: { name: 'New Agent' },
-      publication: { status: 'complete', incomplete: [] },
-    },
+    receipt: welcomeReceipt(operationId),
     status: 'pending',
     attempts: 0,
     nextAttemptAt: at,
@@ -139,14 +144,13 @@ test('releasing a welcome owed after a late handle arms the outbox drain at once
   context.mock.method(Date, 'now', () => NOW);
   const f = fixture(LATER_SWEEP);
   try {
-    const fallback = welcomeOutbox('op_late_handle', NOW - 60_000);
     f.management.putOutbox({
-      ...fallback,
+      ...welcomeOutbox('op_late_handle', NOW - 60_000),
       status: 'delivered',
       attempts: 1,
       deliveryRef: 'slack:C_TEST:1800000000.000002',
       receipt: {
-        ...fallback.receipt,
+        ...welcomeReceipt('op_late_handle'),
         publication: { status: 'partial', incomplete: ['slack_presence'] },
         deliveryPersona: 'chickpea',
       },
