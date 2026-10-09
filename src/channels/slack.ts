@@ -25,6 +25,7 @@ import { resolveModelPolicyForAssignment } from '../config/model-policy.ts';
 import { liveChannelConfigurationEnabled } from '../config/live-channel-config.ts';
 import {
   ModelResolutionError,
+  UnknownAgentError,
 } from '../config/errors.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { deploymentTenancy, requireInstallationScope } from '../config/installation-scope.ts';
@@ -214,6 +215,12 @@ import {
   type PrivateChannelSetupAction,
 } from '../slack/private-channel-setup.ts';
 import { askOwnersForCredits, parseCreditsAskAction, type CreditsAskAction } from '../slack/credits-ask.ts';
+import {
+  addAgentToChannel,
+  offerAgentForChannel,
+  parseAgentChannelAddClick,
+  type AgentChannelAddClick,
+} from '../slack/agent-channel-offer.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
 import { DEFAULT_EGRESS_POLICY } from '../config/egress.ts';
@@ -1696,6 +1703,9 @@ interface SlackUiContext {
   platformEnv: PlatformEnv | undefined;
   stores: AppStores;
   client: SlackUiClient;
+  transport: SlackTransport;
+  /** The gateway this click came through, when it did. */
+  gateway?: GatewayDeploymentClient;
   execution?: SlackEventExecution;
   /** The app's own bot user: never a person someone can pick. */
   botUserId?: string;
@@ -1728,6 +1738,8 @@ async function sendUiNotice(
  */
 async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiAction }): Promise<void> {
   const { action, stores, client } = input;
+  const addClick = parseAgentChannelAddClick(action);
+  if (addClick) return addMentionedAgentToChannel({ ...input, click: addClick });
   const control = parseUiControl(action);
   // Link buttons also send block_actions, and so does choosing a value in a
   // form's field (in a message or a modal); only Submit answers a form.
@@ -1960,6 +1972,52 @@ function surfaceMessenger(
   };
 }
 
+/** The offer's Add button: Admin's Add to channels, from Slack. */
+async function addMentionedAgentToChannel(
+  input: SlackUiContext & { click: AgentChannelAddClick },
+): Promise<void> {
+  const { click, stores, transport, botUserId, platformEnv } = input;
+  if (!botUserId) return;
+  await addAgentToChannel(click, {
+    claim: (key) => stores.slackState.claim(key),
+    resolveActor: () => resolveAgentRoutingActor({
+      workspaceId: click.workspaceId,
+      userId: click.userId,
+      channelId: click.channelId,
+      botUserId,
+      transport,
+      stores,
+    }),
+    getAgent: (agentId) => stores.config.getAgent(agentId).catch((error: unknown) => {
+      if (error instanceof UnknownAgentError) return undefined;
+      throw error;
+    }),
+    identity: stores.identity,
+    publish: async (agent, principal) => {
+      const prepared = await prepareGeneratedGatewayAgentAvatar({
+        workspaceId: click.workspaceId,
+        installation: await stores.config.getWorkspaceInstallation(click.workspaceId),
+        agent,
+        publish: (candidate) =>
+          (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
+        updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
+      });
+      await new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+        workspaceId: click.workspaceId,
+        channelId: click.channelId,
+        agentId: prepared.id,
+        actorMembershipId: principal.membershipId,
+        actorSlackUserId: click.userId,
+      });
+    },
+    adminUrl: async () => {
+      const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);
+      return origin ? new URL('/admin/agents', origin).toString() : undefined;
+    },
+    client: input.client,
+  });
+}
+
 async function processDirectSlackUiAction(
   action: SlackUiAction,
   appId: string,
@@ -2004,6 +2062,7 @@ async function directSlackUiContext(
     platformEnv,
     stores,
     client: createSlackWebClient(credentials.botToken),
+    transport: createDirectSlackTransport(credentials.botToken, credentials.userGroupToken),
     ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
   };
 }
@@ -2084,14 +2143,17 @@ async function gatewaySlackUiContext(
       binding.workspaceId !== delivery.workspaceId || binding.appId !== installation.appId ||
       binding.botUserId !== installation.botUserId) return undefined;
   const client = createGatewaySlackWebClient(gateway);
+  const transport = createGatewaySlackTransport(gateway);
   return {
     appId: installation.appId,
     platformEnv,
     stores,
     client,
+    transport,
+    gateway,
     botUserId: installation.botUserId,
     execution: {
-      transport: createGatewaySlackTransport(gateway),
+      transport,
       client,
       botUserId: installation.botUserId,
       stores,
@@ -2447,6 +2509,20 @@ async function processSlackEvent(
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
+      if (routed.kind === 'not_in_channel') {
+        await offerAgentForChannel({
+          workspaceId: turn.workspaceId,
+          channelId: turn.channelId,
+          userId: turn.userId,
+          ...(turn.threadTs !== turn.messageTs ? { threadTs: turn.threadTs } : {}),
+          agent: routed.agent,
+          actor: agentRoutingActor,
+          identity: stores.identity,
+          transport: runtimeTransport,
+          client: runtimeClient,
+        });
+        return;
+      }
       if (routed.kind !== 'routed' && ask) {
         // The asking Agent's teammates list names whom it can reach; an ask
         // that cannot run here is not answered, and nobody is told in Slack.
