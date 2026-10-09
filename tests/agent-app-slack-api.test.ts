@@ -67,6 +67,9 @@ test('rotate sends the refresh token as a form field and parses the new pair', a
   const odd = api(() => ok({ token: 'x', refresh_token: 'y' }));
   await assert.rejects(() => odd.client.rotate('xoxe-1-old'), (error: unknown) =>
     error instanceof SlackUnavailable && error.reason === 'invalid_slack_response');
+  const noTeam = api(() => ok({ token: 'x', refresh_token: 'y', exp: 1_800_000_000 }));
+  await assert.rejects(() => noTeam.client.rotate('xoxe-1-old'), (error: unknown) =>
+    error instanceof SlackUnavailable && error.reason === 'invalid_slack_response');
 });
 
 test('create carries the manifest under the configuration token and tells a refusal from an unknown answer', async () => {
