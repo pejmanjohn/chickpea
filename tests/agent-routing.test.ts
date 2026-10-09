@@ -468,7 +468,7 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
         },
         limiter: new AgentUserGroupLookupLimiter(),
       });
-      assert.equal(result.kind, 'not_available', scenario.name);
+      assert.equal(result.kind, 'unknown', scenario.name);
       assert.equal(updates, 0, scenario.name);
     }
   } finally {
@@ -589,8 +589,8 @@ test('concurrent unknown-group repairs share one directory lookup', async () => 
   assert.equal(lookups, 1);
   releaseLookup();
   assert.deepEqual(await Promise.all([first, second]), [
-    { kind: 'not_available' },
-    { kind: 'not_available' },
+    { kind: 'unknown' },
+    { kind: 'unknown' },
   ]);
 });
 
@@ -721,13 +721,14 @@ test('an empty handoff fallback is receipted once for retry stability', async ()
   }
 });
 
-test('an ungranted handle discloses only permitted alternatives and keeps the current owner', async () => {
+test('a switched-off Agent\'s handle discloses only permitted alternatives and keeps the current owner', async () => {
   const { store, support, finance } = await fixture();
   try {
     await resolveAgentRoute({
       turn: turn(), surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
     });
     await store.deleteAgentChannelGrant('T1', 'C1', finance.id);
+    await store.updateAgent(finance.id, { enabled: false }, finance.revision);
     const denied = await resolveAgentRoute({
       turn: turn({
         eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE|@finance> take over',
@@ -810,7 +811,7 @@ test('several Agent handles address each Agent in order, and root messages witho
     });
     assert.equal((await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId, finance.id);
 
-    // One mentioned Agent this person cannot reach here: nobody is asked.
+    // One mentioned Agent is not in this Channel: nobody is asked, and it is named.
     await store.createAgent({
       id: 'agent_legal', name: 'Legal', instructions: 'Legal.', enabled: true, lifecycle: 'active',
       creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
@@ -828,7 +829,8 @@ test('several Agent handles address each Agent in order, and root messages witho
       }),
       surface: 'channel', actor, config: store,
     });
-    assert.equal(withUngranted.kind, 'denied');
+    assert.equal(withUngranted.kind, 'not_in_channel');
+    if (withUngranted.kind === 'not_in_channel') assert.equal(withUngranted.agent.id, 'agent_legal');
     assert.equal(await store.getAgentThreadRoute('T1', 'C1', '102.1'), undefined);
 
     const ignored = await resolveAgentRoute({
@@ -1027,7 +1029,7 @@ test('activated addressed DM roots are sticky and explicit addresses transfer ow
   }
 });
 
-test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership', async () => {
+test('ambiguous, unauthorized, and non-Agent DM addresses do not mutate ownership', async () => {
   const { store, support } = await fixture();
   try {
     await activateChickpea(store);
@@ -1048,11 +1050,12 @@ test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership'
     const before = await store.getAgentThreadRoute('T1', 'D1', '100.1');
     assert.ok(before);
 
-    for (const text of [
-      '<!subteam^SSUPPORT> and <!subteam^SFINANCE>',
-      '<!subteam^SUNKNOWN> help',
-      '<!subteam^SFINANCE> help',
-    ]) {
+    for (const [text, routedTo] of [
+      ['<!subteam^SSUPPORT> and <!subteam^SFINANCE>', undefined],
+      // Not an Agent here: plain text, which the thread's Agent answers.
+      ['<!subteam^SUNKNOWN> help', support.id],
+      ['<!subteam^SFINANCE> help', undefined],
+    ] as const) {
       const result = await resolveAgentRoute({
         turn: turn({
           channelId: 'D1', eventId: `Ev-${text}`, messageTs: '100.2', text,
@@ -1060,7 +1063,7 @@ test('ambiguous, unknown, and unauthorized DM addresses do not mutate ownership'
         }),
         surface: 'direct', actor, config: store, authorizeUserAgent,
       });
-      assert.notEqual(result.kind, 'routed');
+      assert.equal(result.kind === 'routed' ? result.assignment.agentId : undefined, routedTo, text);
       assert.deepEqual(
         await store.getAgentThreadRoute('T1', 'D1', '100.1'),
         before,
@@ -1259,6 +1262,120 @@ test('an Agent edit advances its owned route so the next reply uses current pers
     assert.equal(continued.route.agentGeneration, 2);
     assert.equal(continued.route.revision, 2);
     assert.equal(continued.routeChanged, true);
+  } finally {
+    store.close();
+  }
+});
+
+/** A workspace directory holding one group that is not this installation's Agent. */
+function peopleGroup(id: string, handle: string) {
+  return {
+    lookupUserGroup: async (groupId: string) => groupId === id
+      ? { id, name: handle, handle, description: 'People', disabled: false, updatedAt: 1_800_000_000 }
+      : undefined,
+  };
+}
+
+test('a user group that is not one of this installation\'s Agents addresses nobody in a Channel', async () => {
+  const { store } = await fixture();
+  try {
+    for (const transport of [
+      peopleGroup('SHELP', 'help'),
+      { lookupUserGroup: async () => { throw new Error('Slack unavailable'); } },
+    ]) {
+      const result = await resolveAgentRoute({
+        turn: turn({ text: '<!subteam^SHELP|@help> what instrument does chickpea play?' }),
+        surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+        transport, userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),
+      });
+      assert.deepEqual(result, { kind: 'ignore' });
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('a people group mentioned beside an Agent, or in an Agent\'s thread, leaves that Agent answering', async () => {
+  const { store, support } = await fixture();
+  try {
+    const actor = { channelMember: true, fullMember: true };
+    const opened = await resolveAgentRoute({
+      turn: turn({ text: '<!subteam^SPEOPLE|@oncall> <!subteam^SSUPPORT|@support> is checkout down?' }),
+      surface: 'channel', actor, config: store, transport: peopleGroup('SPEOPLE', 'oncall'),
+    });
+    assert.equal(opened.kind, 'routed');
+    if (opened.kind === 'routed') assert.equal(opened.assignment.agentId, support.id);
+
+    const reply = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: 'thanks, looping in <!subteam^SPEOPLE|@oncall>',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor, config: store, transport: peopleGroup('SPEOPLE', 'oncall'),
+    });
+    assert.equal(reply.kind, 'routed');
+    if (reply.kind === 'routed') {
+      assert.equal(reply.assignment.agentId, support.id);
+      assert.equal(reply.source, 'thread_owner');
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('in a DM with Chickpea a mentioned people group is part of the request, with no directory lookup', async () => {
+  const { store } = await fixture();
+  try {
+    const chickpea = await activateChickpea(store);
+    let lookups = 0;
+    const result = await resolveAgentRoute({
+      turn: turn({
+        channelId: 'D1', source: 'dm_message', channelType: 'im', contextMode: 'dm_history',
+        text: 'create me a <!subteam^SOLDSUPPORT|@support> agent that ill connect to zendesk',
+      }),
+      surface: 'direct', actor: { channelMember: false, fullMember: true }, config: store,
+      authorizeUserAgent: allowUserAgent,
+      transport: {
+        lookupUserGroup: async () => {
+          lookups += 1;
+          return undefined;
+        },
+      },
+    });
+    assert.equal(result.kind, 'routed');
+    if (result.kind === 'routed') {
+      assert.equal(result.assignment.agentId, chickpea.id);
+      assert.equal(result.source, 'default_agent');
+    }
+    assert.equal(lookups, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('a mentioned Agent with no grant in this Channel is named so it can be added', async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    const actor = { channelMember: true, fullMember: true };
+    await resolveAgentRoute({ turn: turn(), surface: 'channel', actor, config: store });
+    await store.deleteAgentChannelGrant('T1', 'C1', finance.id);
+    const result = await resolveAgentRoute({
+      turn: turn({
+        eventId: 'Ev2', messageTs: '100.2', text: '<!subteam^SFINANCE|@finance> take over',
+        source: 'implicit_thread_reply', contextMode: 'thread',
+      }),
+      surface: 'channel', actor, config: store,
+    });
+    assert.equal(result.kind, 'not_in_channel');
+    if (result.kind === 'not_in_channel') assert.equal(result.agent.id, finance.id);
+    assert.equal((await store.getAgentThreadRoute('T1', 'C1', '100.1'))?.agentId, support.id);
+
+    // Someone outside the Channel is still refused.
+    const outsider = await resolveAgentRoute({
+      turn: turn({ messageTs: '300.1', threadTs: '300.1', text: '<!subteam^SFINANCE|@finance> hi' }),
+      surface: 'channel', actor: { channelMember: false, fullMember: true }, config: store,
+    });
+    assert.equal(outsider.kind, 'denied');
   } finally {
     store.close();
   }
