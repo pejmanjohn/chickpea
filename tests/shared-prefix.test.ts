@@ -18,6 +18,7 @@ import {
   sharedPrefixMisses,
   sharedPrefixRequests,
   sharedSystemBlock,
+  type WarmedSharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
@@ -48,8 +49,7 @@ const TENANT_IDS = [
 ];
 
 const IMAGE_MODEL = 'openai/gpt-image-2.5-flare';
-type WarmedShape = typeof WARMED_SHARED_PREFIX_SHAPES[number];
-const SHAPE_VARIANTS: Record<WarmedShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered' | 'imageModel'>> = {
+const SHAPE_VARIANTS: Record<WarmedSharedPrefixShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered' | 'imageModel'>> = {
   interactive: { progressiveStreamingOffered: false },
   interactive_streaming: { progressiveStreamingOffered: true },
   interactive_image: { progressiveStreamingOffered: false, imageModel: IMAGE_MODEL },
@@ -58,7 +58,7 @@ const SHAPE_VARIANTS: Record<WarmedShape, Pick<SlackRequestVariant, 'progressive
 const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form'];
 const IMAGE_TOOLS = ['generate_image', 'recover_image'];
 const SEGMENT_TOOLS = { interactive: INTERACTIVE_TOOLS, streaming: ['stream_answer'], image: IMAGE_TOOLS };
-const SHAPE_TOOLS: Record<WarmedShape, string[]> = {
+const SHAPE_TOOLS: Record<WarmedSharedPrefixShape, string[]> = {
   interactive: INTERACTIVE_TOOLS,
   interactive_streaming: [...INTERACTIVE_TOOLS, 'stream_answer'],
   interactive_image: [...INTERACTIVE_TOOLS, ...IMAGE_TOOLS],

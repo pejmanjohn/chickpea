@@ -416,12 +416,12 @@ export async function sendImageRequest(
   }, endpoint);
   if (!sent) return result;
   const sentRequest: SentRequest = {
-    requestId: crypto.randomUUID(), route: grant.providerId, model, fundingSource: grant.fundingSource, sharedPrefix: null,
+    requestId: crypto.randomUUID(), route: grant.providerId, model, fundingSource: grant.fundingSource,
   };
   const attribution = cells.getStore()?.attribution ?? {
     installationId: usageInstallationId(env), runId: grant.runId, attemptId: crypto.randomUUID(), agentId: null,
   };
-  await settleRecord(env, sentRequest, platformGrant, () => sentImageRequestRecord({
+  await settleRecord(env, sentRequest, platformGrant, null, () => sentImageRequestRecord({
     requestId: sentRequest.requestId, attribution, provider: grant.providerId, model,
     fundingSource: grant.fundingSource, result, finishedAt: Date.now(),
   }));
@@ -491,10 +491,7 @@ interface ModelAccessRequest<TModel, TOptions> {
   send(start: (model: TModel) => AssistantMessageEventStream): AssistantMessageEventStream;
 }
 
-type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'> & {
-  /** Set by the platform payload hook once the payload is built. */
-  sharedPrefix: SharedPrefixId | null;
-};
+type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
 
 interface ListPriceMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
@@ -561,15 +558,15 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     route: registeredId,
     model: model.id,
     fundingSource: bound?.grant.fundingSource ?? 'customer',
-    sharedPrefix: null,
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
   const platformGrant = bound?.grant.fundingSource === 'platform' ? bound.grant : undefined;
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
+  const priced = listPriced && listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced]);
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
-    sendRequest(cell, sent, request, platformGrant, reader, start);
+    sendRequest(cell, sent, request, platformGrant, reader, priced, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
   const { access } = bound;
   return {
@@ -579,7 +576,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
-      ...(listPriced ? { onPayload: listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced], request) } : {}),
+      ...(priced ? { onPayload: priced.onPayload } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -592,10 +589,11 @@ function sendRequest<TModel extends Model<Api>>(
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
+  priced: ListPricedPayload | undefined,
   start: (model: TModel) => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
   const { installationId } = cell;
-  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader) : undefined;
+  const settle = recorder || platformGrant ? settleRequest(cell, request, platformGrant, reader, priced) : undefined;
   if (!installationId && !platformGrant) {
     const source = start(model);
     if (!settle) return source;
@@ -666,10 +664,11 @@ function settleRequest(
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
   reader: ProviderReportReader | undefined,
+  priced: ListPricedPayload | undefined,
 ): (final: AssistantMessage) => Promise<void> {
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const mode = listPriced && LIST_PRICE_MODES[listPriced];
-  return (final) => settleRecord(cell.env, request, platformGrant, async () => {
+  return (final) => settleRecord(cell.env, request, platformGrant, priced?.sharedPrefix() ?? null, async () => {
     const finishedAt = Date.now();
     const report = await reader?.report() ?? NO_PROVIDER_REPORT;
     const record = modelRequestRecord({
@@ -695,20 +694,25 @@ function offList(reported: string | null, listPriced: readonly string[]): boolea
   return reported !== null && !listPriced.includes(reported);
 }
 
-function listPricedPayload(
-  callerHook: StreamOptions['onPayload'],
-  mode: ListPriceMode,
-  request: SentRequest,
-): NonNullable<StreamOptions['onPayload']> {
-  return async (payload, model) => {
-    const returned = await callerHook?.(payload, model);
-    const composed = returned === undefined ? payload : returned;
-    if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
-    const pinned = mode.pin(composed);
-    if (!mode.sharePrefix) return pinned;
-    const decision = await mode.sharePrefix(pinned);
-    request.sharedPrefix = decision.sharedPrefix;
-    return decision.payload;
+interface ListPricedPayload {
+  onPayload: NonNullable<StreamOptions['onPayload']>;
+  /** Undefined until the hook has built a payload. */
+  sharedPrefix(): SharedPrefixId | null | undefined;
+}
+
+function listPricedPayload(callerHook: StreamOptions['onPayload'], mode: ListPriceMode): ListPricedPayload {
+  let sharedPrefix: SharedPrefixId | null | undefined;
+  return {
+    onPayload: async (payload, model) => {
+      const returned = await callerHook?.(payload, model);
+      const composed = returned === undefined ? payload : returned;
+      if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
+      const pinned = mode.pin(composed);
+      const decision = mode.sharePrefix ? await mode.sharePrefix(pinned) : { payload: pinned, sharedPrefix: null };
+      sharedPrefix = decision.sharedPrefix;
+      return decision.payload;
+    },
+    sharedPrefix: () => sharedPrefix,
   };
 }
 
@@ -716,6 +720,7 @@ async function settleRecord(
   env: PlatformEnv | undefined,
   request: SentRequest,
   platformGrant: ModelAccessGrant | undefined,
+  sharedPrefix: SharedPrefixId | null,
   build: () => ModelRequestRecord | Promise<ModelRequestRecord>,
 ): Promise<void> {
   const writeRecord = recorder;
@@ -724,7 +729,7 @@ async function settleRecord(
   const settled = [
     writeRecord && record.then((built) => writeRecord(built, env))
       .catch((error: unknown) => logSettleFailure('record', request, error)),
-    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built, request.sharedPrefix))
+    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built, sharedPrefix))
       .catch((error: unknown) => logSettleFailure('charge', request, error)),
   ];
   let timer: ReturnType<typeof setTimeout> | undefined;

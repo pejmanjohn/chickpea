@@ -71,7 +71,7 @@ export interface PlatformFundingPort {
    * `record.requestId` is the idempotency key. `listPriceUsdMicros` is null
    * when Core could not price the usage, and `priceUnknownReason` says why.
    * `sharedPrefix` is the shared prompt prefix the request carried with an
-   * hour's cache, as `sharedPrefixRequests` names it, or null.
+   * hour's cache, or null.
    */
   charge(record: ModelRequestRecord, sharedPrefix: SharedPrefixId | null): Promise<void>;
   /**

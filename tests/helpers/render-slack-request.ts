@@ -47,7 +47,6 @@ export interface SlackRequestVariant {
   member?: boolean;
   /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
   delivery?: 'message' | 'file_delivery_check';
-  /** The workspace's default image model, which mounts `generate_image`. */
   imageModel?: string;
 }
 
@@ -106,9 +105,10 @@ export function blockedNetworkCalls(): readonly string[] {
   return blockedUrls;
 }
 
-/** The shared prefix the platform charge of the render that returned `request` reported; undefined when nothing was charged. */
-export function chargedSharedPrefix(request: RenderedRequest): SharedPrefixId | null | undefined {
-  return chargedPrefixes.get(request);
+export function chargedSharedPrefix(request: RenderedRequest): SharedPrefixId | null {
+  const charged = chargedPrefixes.get(request);
+  if (charged === undefined) throw new Error('The render was not charged to the platform.');
+  return charged;
 }
 
 export async function renderSlackRequest(variant: SlackRequestVariant): Promise<RenderedRequest> {

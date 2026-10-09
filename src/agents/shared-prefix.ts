@@ -83,19 +83,13 @@ export function slackSystemBase(input: {
   ].join(PART_SEPARATOR);
 }
 
-/** Runs of tools a Slack turn mounts between breakpoints A and B, in mount order. */
 type ShapeSegment = 'interactive' | 'streaming' | 'image';
 
-/**
- * Every run of tools between A and B that leaves B shared across workspaces.
- * A request's tools after A must equal one shape's segments exactly.
- */
 export const SHARED_PREFIX_SHAPES = {
   interactive: ['interactive'],
   interactive_streaming: ['interactive', 'streaming'],
   interactive_image: ['interactive', 'image'],
   interactive_streaming_image: ['interactive', 'streaming', 'image'],
-  // A group DM mounts no interactive tools.
   bare: [],
   streaming: ['streaming'],
   image: ['image'],
@@ -106,10 +100,14 @@ export type SharedPrefixShape = keyof typeof SHARED_PREFIX_SHAPES;
 /** One shared prefix on a model: an Agent kind's constant block after one shape's tools. */
 export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
 
-/** The shapes a channel or DM turn sends, which `sharedPrefixRequests` writes. */
-export const WARMED_SHARED_PREFIX_SHAPES = [
-  'interactive', 'interactive_streaming', 'interactive_image', 'interactive_streaming_image',
-] as const satisfies readonly SharedPrefixShape[];
+/** Channel and DM turns mount the interactive tools, so these are the shapes worth warming. */
+export type WarmedSharedPrefixShape = {
+  [Shape in SharedPrefixShape]: 'interactive' extends typeof SHARED_PREFIX_SHAPES[Shape][number] ? Shape : never;
+}[SharedPrefixShape];
+
+export const WARMED_SHARED_PREFIX_SHAPES = (Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
+  .filter((shape): shape is WarmedSharedPrefixShape =>
+    (SHARED_PREFIX_SHAPES[shape] as readonly ShapeSegment[]).includes('interactive'));
 
 const sharedBlocks = new Map<AgentKind, string>();
 
@@ -182,7 +180,6 @@ function withoutCacheControl(block: unknown): unknown {
 
 export interface SharedPrefixDecision {
   payload: Payload;
-  /** The shared prefix the payload carries with B at one hour; null when it carries none. */
   sharedPrefix: SharedPrefixId | null;
 }
 
@@ -279,8 +276,8 @@ export interface SharedPrefixRequest {
 }
 
 /**
- * One request per Agent kind and shape that writes or refreshes that shared
- * prefix on `model`. Its bytes are a rendered turn's, kept in
+ * One request per Agent kind and warmed shape that writes or refreshes that
+ * shared prefix on `model`. Its bytes are a rendered turn's, kept in
  * shared-prefix-tools.json, which the test pins to a fresh render.
  */
 export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
