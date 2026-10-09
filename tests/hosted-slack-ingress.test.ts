@@ -255,6 +255,36 @@ test('a hosted delivery verifies only with the host app\'s signing secret, and o
   });
 });
 
+test('opening a hosted Messages tab sets the first prompts with the installation\'s bot and queues the introduction', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const opened = h.event({ type: 'app_home_opened', user: 'U1', channel: 'DHOME', tab: 'messages' });
+    assert.equal((await h.deliver('events', opened)).status, 200);
+    await h.settle(() => h.calls.some(({ method }) => method === 'views.publish'));
+    assert.deepEqual(h.calls.filter(({ method }) => method === 'assistant.threads.setSuggestedPrompts')
+      .map(({ token, body }) => ({
+        token,
+        channel: body.get('channel_id'),
+        thread: body.get('thread_ts'),
+        prompts: JSON.parse(body.get('prompts') ?? 'null'),
+      })), [{
+      token: BOT_TOKEN,
+      channel: 'DHOME',
+      thread: null,
+      prompts: [
+        { title: 'Create my first Agent', message: 'Help me create my first Agent. Ask me what my team works on.' },
+        { title: 'Ideas for my team', message: 'What kinds of Agents could help my team?' },
+        { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
+      ],
+    }]);
+    const now = Date.now();
+    assert.deepEqual((await h.stores.management.claimDueOutbox(now + 1, 10, now + 30_000))
+      .map(({ destination, receipt }) => ({ destination, receipt })), [{
+      destination: { kind: 'slack_dm', workspaceId: TEAM, slackUserId: 'U1' },
+      receipt: { kind: 'chickpea_introduction', trigger: 'first_interaction' },
+    }]);
+  });
+});
+
 test('a hosted delivery with a bad signature is refused before any store is read', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const reads: string[] = [];

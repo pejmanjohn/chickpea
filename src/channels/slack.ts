@@ -179,6 +179,7 @@ import {
   removeSlackReaction,
   slackMidRunReceipt,
 } from '../slack/web-client-presenter.ts';
+import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
   isRetryableDependencyFailure,
@@ -677,7 +678,7 @@ function handleDirectSlackEvents(
     if (credentials instanceof Response) return credentials;
     const eventType = payload.event.type;
     if (eventType === 'app_home_opened') {
-      const event = payload.event as { user?: unknown };
+      const event = payload.event as { user?: unknown; channel?: unknown; tab?: unknown };
       if (typeof event.user === 'string') {
         const botUserId = await resolveInstallationBotUserId(
           installation.botUserId,
@@ -686,11 +687,12 @@ function handleDirectSlackEvents(
         );
         detach(
           c,
-          publishAgentAppHome({
+          openAgentAppHome({
             workspaceId: payload.team_id,
-            userId: event.user,
+            event: { user: event.user, channel: event.channel, tab: event.tab },
             stores,
             transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
+            client: createSlackWebClient(credentials.botToken ?? ''),
             ...(botUserId ? { botUserId } : {}),
           }).catch((error) => {
             console.error('[chickpea] App Home publish failed:', sanitizeError(error));
@@ -933,6 +935,54 @@ export async function claimChickpeaIntroductionForAgentInteraction(input: {
   });
 }
 
+const FIRST_PROMPTS = [
+  { title: 'Create my first Agent', message: 'Help me create my first Agent. Ask me what my team works on.' },
+  { title: 'Ideas for my team', message: 'What kinds of Agents could help my team?' },
+  { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
+];
+
+/**
+ * Slack's app_home_opened, from either transport. Either tab publishes Home.
+ * Opening Messages offers the first prompts to anyone, and queues Chickpea's
+ * introduction for a full member so the DM greets them before they write.
+ */
+async function openAgentAppHome(input: {
+  workspaceId: string;
+  event: { user: string; channel?: unknown; tab?: unknown };
+  stores: AppStores;
+  transport: SlackTransport;
+  client: Pick<SlackUiClient, 'assistant'>;
+  botUserId?: string;
+}): Promise<void> {
+  const messages = input.event.tab === 'messages';
+  const channelId = typeof input.event.channel === 'string' ? input.event.channel : undefined;
+  await Promise.all([
+    messages && channelId ? offerFirstPrompts(input.client, channelId) : undefined,
+    publishAgentAppHome({
+      workspaceId: input.workspaceId,
+      userId: input.event.user,
+      stores: input.stores,
+      transport: input.transport,
+      ...(input.botUserId ? { botUserId: input.botUserId } : {}),
+      introduce: messages,
+    }),
+  ]);
+}
+
+async function offerFirstPrompts(client: Pick<SlackUiClient, 'assistant'>, channelId: string): Promise<void> {
+  try {
+    // Without a thread they apply to the whole tab. Slack does not say they
+    // persist, so every open sets them again.
+    await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts: FIRST_PROMPTS });
+  } catch (error) {
+    const code = slackPlatformErrorCode(error) ?? 'unknown';
+    // Standalone apps are made with static prompts, and Slack refuses runtime ones there.
+    if (code !== 'static_prompts_configured') {
+      console.warn('[chickpea] Slack suggested prompts refused:', code);
+    }
+  }
+}
+
 async function publishAgentAppHome(input: {
   workspaceId: string;
   userId: string;
@@ -940,6 +990,8 @@ async function publishAgentAppHome(input: {
   transport: SlackTransport;
   botUserId?: string;
   unavailableNotice?: boolean;
+  /** Queue Chickpea's introduction for a full member before publishing. */
+  introduce?: boolean;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -951,6 +1003,14 @@ async function publishAgentAppHome(input: {
     transport: input.transport,
     stores: input.stores,
   });
+  if (input.introduce) {
+    await claimChickpeaIntroductionForAgentInteraction({
+      actor,
+      workspaceId: input.workspaceId,
+      slackUserId: input.userId,
+      management: input.stores.management,
+    });
+  }
   const [agents, grants] = actor.routing.fullMember
     ? await Promise.all([
         input.stores.config.listAgents(),
@@ -1238,11 +1298,12 @@ export async function processGatewaySlackEnvelope(
     event: envelope.event,
   };
   if (envelope.event.type === 'app_home_opened') {
-    await publishAgentAppHome({
+    await openAgentAppHome({
       workspaceId: envelope.workspaceId,
-      userId: envelope.event.user,
+      event: envelope.event,
       stores,
       transport,
+      client,
       botUserId: installation.botUserId,
     });
     return 'accepted';
