@@ -2779,12 +2779,12 @@
 
   function onboardingPlatformSetupHtml() {
     if (state.onboardingError) {
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
         '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
         (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
     }
-    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' + onboardingIllustrationHtml("setup") + '</section>';
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' + onboardingIllustrationHtml("setup") + '</section>';
   }
 
   function onboardingProviderHtml() {
@@ -2928,8 +2928,11 @@
 
   // Connecting returns here with `?github=connected`: the step shows the
   // connection and waits for Next.
+  // Connected when the host just returned from a connect, or already holds an
+  // active account (a reload drops the return flag).
   function onboardingGithubConnected() {
-    return state.githubConnected && !!state.onboarding && state.onboarding.stage === "connect_github";
+    return !!state.onboarding && state.onboarding.stage === "connect_github" &&
+      (state.githubConnected || (state.onboardingGithubAccounts || []).length > 0);
   }
 
   function onboardingGithubHtml() {
@@ -2969,9 +2972,9 @@
 
   function onboardingMainHtml() {
     if (state.onboardingError && !state.onboarding) {
-      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
+      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
     }
-    if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
+    if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
     if (state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") {
       if (onboardingOnChickpeaModels()) return onboardingPlatformSetupHtml();
@@ -13239,7 +13242,8 @@
   // Once, when the GitHub step first shows connected.
   var onboardingGithubAccountsRequested = false;
   function loadOnboardingGithubAccounts() {
-    if (onboardingGithubAccountsRequested || state.view !== "onboarding" || !onboardingGithubConnected()) return;
+    if (onboardingGithubAccountsRequested || state.view !== "onboarding" || !state.onboarding ||
+        state.onboarding.stage !== "connect_github" || !onboardingGithubConnectPath()) return;
     onboardingGithubAccountsRequested = true;
     api("/admin/api/github/status").then(function (body) {
       state.onboardingGithubAccounts = ((body && body.installations) || []).filter(function (installation) {

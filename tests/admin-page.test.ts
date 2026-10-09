@@ -19622,6 +19622,35 @@ test('a connect started in hosted onboarding returns to the GitHub step, connect
   assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'the notice belongs to the GitHub step');
 });
 
+test('the GitHub step shows a connection the host already holds, so a reload after connecting still waits for Next', async () => {
+  const [acme, , suspended] = hostedGithubStatus().installations!;
+  const reloaded = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('connect_github', '/github/connect'),
+    githubStatus: hostedGithubStatus({ installations: [acme!] }),
+  });
+  await flushAsync();
+  assert.match(reloaded.app.innerHTML, /<span class="onboarding-success-badge">Connected to acme · 3 repositories<\/span>[\s\S]*<h1 class="onboarding-title">GitHub is connected<\/h1>/);
+  assert.doesNotMatch(reloaded.app.innerHTML, /github-connect-form|Skip for now/);
+  assert.equal(reloaded.onboardingGithubPosts.length, 0, 'nothing moves on until Next');
+
+  const suspendedOnly = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('connect_github', '/github/connect'),
+    githubStatus: hostedGithubStatus({ installations: [suspended!] }),
+  });
+  await flushAsync();
+  assert.match(suspendedOnly.app.innerHTML, /Let Agents work on your code[\s\S]*github-connect-form/, 'a suspended account is not a connection');
+
+  const atTry = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: onboardingAt('try', '/github/connect'),
+    githubStatus: hostedGithubStatus({ installations: [acme!] }),
+  });
+  await flushAsync();
+  assert.equal(atTry.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 0, 'only the GitHub step reads GitHub');
+});
+
 test('the connected GitHub step names the accounts it can read, and says GitHub connected otherwise', async () => {
   const [acme, octo, suspended] = hostedGithubStatus().installations!;
   const cases: Array<[string, Parameters<typeof runAdminPageHarness>[0] & object, string]> = [
