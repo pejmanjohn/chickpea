@@ -1241,6 +1241,56 @@ test('exhausted hosted ledger reattachment whose last attempt recorded the recei
   }
 });
 
+test('exhausted hosted ledger reattachment whose replayed ending is out of usage is not credited back', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('out-of-usage')));
+    const id = 'turn_out-of-usage';
+    turns.enqueue(turnJob(admission.run.id, 'out-of-usage'));
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Do the work.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch(id, 'Do the work', { generation: id });
+    turns.recordFlueReceipt(id, {
+      submissionId: 'sub_out_of_usage', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    });
+    turns.recordFlueSettlement(id, { outcome: 'failed', settledAt: clock, failureKind: 'credits-exhausted' });
+    turns.recordAttempt(id, MAX_POST_DISPATCH_ATTEMPTS - 1);
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const replayed: Array<string | undefined> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      platformEnv,
+      // The out-of-usage reply the run settled with keeps failing to post.
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) throw new AgentPromptFailure('agent', 503, false, true);
+        replayed.push(options?.replayText);
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'post_dispatch_attempts_exhausted',
+    });
+    assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+    assert.deepEqual(creditBacks, []);
+  } finally {
+    db.close();
+  }
+});
+
 test('failure classification uses the newest immutable RunExecution', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');

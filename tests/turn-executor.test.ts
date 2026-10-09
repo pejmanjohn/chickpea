@@ -19,6 +19,7 @@ import {
   type TurnExecutionOptions,
   type TurnExecutionPorts,
 } from '../src/slack/turn-executor.ts';
+import type { FlueSettlementCheckpointV1 } from '../src/slack/turn-job-types.ts';
 import { MAX_POST_DISPATCH_ATTEMPTS, type PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { slackClientMessageId } from '../src/slack/transport/message-id.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
@@ -590,6 +591,7 @@ const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
  * A hosted turn whose every reattachment fails, on its last attempt: the
  * executor gives up and posts the recovery text, through the run's
  * presentation when it `replays`, fresh in the thread when it is `stuck`.
+ * A `settlement` is the run's own ending, which each attempt replays.
  * Returns the text each way and the host's credit-backs.
  */
 async function givenUpHostedTurn(
@@ -597,6 +599,7 @@ async function givenUpHostedTurn(
   answer: CreditBackOutcome,
   receipt: boolean,
   presentation: 'replays' | 'stuck' = 'replays',
+  settlement?: FlueSettlementCheckpointV1,
 ) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
@@ -630,6 +633,7 @@ async function givenUpHostedTurn(
     ...(receipt
       ? { dispatchReceipt: { submissionId: 'sub_given_up', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_given_up' } }
       : {}),
+    ...(settlement ? { flueSettlement: settlement } : {}),
   });
   assert.equal(await executeTurnJob(job, h.ports, h.options), presentation === 'replays');
   return { replayed, posted, creditBacks };
@@ -651,6 +655,24 @@ test('a given-up hosted turn whose presentation is stuck posts the credited-back
   assert.deepEqual(replayed, []);
   assert.deepEqual(posted.map((post) => post.text), [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
   assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'evicted' }]);
+});
+
+test('a given-up turn whose replayed ending is out of usage is not credited back', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true, 'replays',
+    { outcome: 'failed', settledAt: 1_785_900_000_000, failureKind: 'credits-exhausted' },
+  );
+  assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+  assert.deepEqual(creditBacks, []);
+});
+
+test('a given-up turn whose replayed ending is a sandbox crash is credited back as one', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true, 'replays',
+    { outcome: 'failed', settledAt: 1_785_900_000_000, failureKind: 'sandbox' },
+  );
+  assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'sandbox' }]);
 });
 
 test('a given-up run with nothing to credit back posts the plain recovery text', async (t) => {
