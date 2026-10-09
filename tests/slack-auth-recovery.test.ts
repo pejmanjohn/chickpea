@@ -117,6 +117,7 @@ test('repair stages only the unchanged app/team and promotes after confidential 
       ),
       {
         botToken: 'xoxb-replacement-token',
+        userGroupToken: undefined,
         signingSecret: 'replacement-signing-secret',
         botUserId: 'UBOT',
         connectionRevision: waiting.candidateRevision,

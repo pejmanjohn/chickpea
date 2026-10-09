@@ -690,7 +690,7 @@ function handleDirectSlackEvents(
             workspaceId: payload.team_id,
             userId: event.user,
             stores,
-            transport: createDirectSlackTransport(credentials.botToken ?? ''),
+            transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
             ...(botUserId ? { botUserId } : {}),
           }).catch((error) => {
             console.error('[chickpea] App Home publish failed:', sanitizeError(error));
@@ -784,7 +784,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       seedAgentAppHomeThread({
         ...selection,
         stores,
-        transport: createDirectSlackTransport(credentials.botToken ?? ''),
+        transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
         ...(platformEnv ? { platformEnv } : {}),
         ...(botUserId ? { botUserId } : {}),
       }).catch((error) => {
@@ -2083,7 +2083,7 @@ async function processDirectPrivateChannelSetup(
   if (!credentials.botToken || !botUserId) return;
   await completePrivateChannelSetupAction(action, {
     stores,
-    transport: createDirectSlackTransport(credentials.botToken),
+    transport: createDirectSlackTransport(credentials.botToken, credentials.userGroupToken),
     client: createSlackWebClient(credentials.botToken),
     botUserId,
     ...(platformEnv ? { platformEnv } : {}),
@@ -2311,7 +2311,7 @@ async function processSlackEvent(
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
   const runtimeTransport = execution?.transport ?? (
-    credentials.botToken ? createDirectSlackTransport(credentials.botToken) : undefined
+    credentials.botToken ? createDirectSlackTransport(credentials.botToken, credentials.userGroupToken) : undefined
   );
   const runtimeClient = execution?.client ?? (
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
@@ -3395,7 +3395,7 @@ async function processSlackStopButton(
     ? undefined
     : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
   const transport = execution?.transport ?? (
-    credentials?.botToken ? createDirectSlackTransport(credentials.botToken) : undefined
+    credentials?.botToken ? createDirectSlackTransport(credentials.botToken, credentials.userGroupToken) : undefined
   );
   const client = execution?.client ?? (
     credentials?.botToken ? createSlackWebClient(credentials.botToken) : undefined
@@ -3941,7 +3941,7 @@ async function handleMemberJoinedChannel(
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
   );
   if (!resolvedBotUserId || event.user !== resolvedBotUserId || !client) return;
-  const transport = execution?.transport ?? createDirectSlackTransport(credentials.botToken!);
+  const transport = execution?.transport ?? createDirectSlackTransport(credentials.botToken!, credentials.userGroupToken);
   let channel;
   try {
     channel = await transport.lookupChannel(event.channel);

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import type { WorkspaceInstallation } from '../src/config/types.ts';
 import {
+  createDirectSlackTransport,
   createDirectSlackTransportFromClient,
   type DirectSlackApiClient,
 } from '../src/slack/transport/direct.ts';
@@ -440,6 +441,126 @@ test('direct transport omits persona fields when posting as the base Slack app',
   });
 });
 
+const USER_GROUP_CALLS = [
+  'usergroups.list', 'usergroups.list', 'usergroups.create', 'usergroups.update', 'usergroups.disable', 'usergroups.enable',
+];
+const BOT_ONLY_CALLS = [
+  'users.info', 'conversations.info', 'conversations.list', 'users.conversations', 'conversations.members',
+  'conversations.open', 'conversations.join', 'views.publish', 'chat.postMessage',
+];
+
+test('an Owner client answers exactly the six user-group methods and the bot answers everything else', async (t) => {
+  const logs = captureLogs(t);
+  const botCalls: RecordedCall[] = [];
+  const ownerCalls: RecordedCall[] = [];
+  const transport = createDirectSlackTransportFromClient(fakeClient(botCalls), fakeClient(ownerCalls));
+
+  await exerciseEveryMethod(transport);
+
+  assert.deepEqual(ownerCalls.map(({ method }) => method), USER_GROUP_CALLS);
+  assert.deepEqual(botCalls.map(({ method }) => method), BOT_ONLY_CALLS);
+  assert.deepEqual(ownerCalls.find(({ method }) => method === 'usergroups.disable')?.input, { usergroup: 'S123' });
+  assert.deepEqual(logs.info.map((line) => JSON.parse(line)), USER_GROUP_CALLS.map((operation) => ({
+    event: 'chickpea.slack_user_groups.call', operation, answeredBy: 'owner', code: 'ok',
+  })));
+  assert.deepEqual(logs.warn, [], 'an Owner\'s success is not a warning');
+  assert.equal(Object.keys(transport).length, 16);
+  assert.doesNotMatch(JSON.stringify(transport), /xox|token|client/i);
+});
+
+test('each refusal of the Owner as caller asks the bot exactly once, and the bot\'s answer stands', async (t) => {
+  const logs = captureLogs(t);
+  const warnings = logs.warn;
+  const expected: Array<Record<string, unknown>> = [];
+  for (const ownerCode of ['token_revoked', 'account_inactive', 'permission_denied', 'missing_scope']) {
+    for (const botCode of ['ok', 'permission_denied']) {
+      const botCalls: RecordedCall[] = [];
+      const ownerCalls: RecordedCall[] = [];
+      const bot = fakeClient(botCalls);
+      if (botCode !== 'ok') bot.usergroups.disable = answer(botCalls, 'usergroups.disable', { ok: false, error: botCode });
+      const owner = fakeClient(ownerCalls);
+      owner.usergroups.disable = failWith(ownerCalls, 'usergroups.disable', platformError(ownerCode));
+      const transport = createDirectSlackTransportFromClient(bot, owner);
+
+      if (botCode === 'ok') {
+        assert.equal((await transport.disableUserGroup('S123')).disabled, true, ownerCode);
+      } else {
+        await assert.rejects(transport.disableUserGroup('S123'), (error: unknown) =>
+          error instanceof SlackTransportError && error.operation === 'usergroups.disable' &&
+          error.code === 'permission_denied');
+      }
+      assert.deepEqual(ownerCalls.map(({ method }) => method), ['usergroups.disable'], ownerCode);
+      assert.deepEqual(botCalls.map(({ method }) => method), ['usergroups.disable'], ownerCode);
+      expected.push({
+        event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable',
+        answeredBy: 'bot', code: botCode, ownerCode,
+      });
+    }
+  }
+  assert.deepEqual(warnings.map((line) => JSON.parse(line)), expected);
+  assert.deepEqual(logs.info, []);
+  assert.doesNotMatch(warnings.join('\n'), /xox|S123/);
+});
+
+test('a rate limit or an unreachable Slack answering the Owner never reaches the bot', async (t) => {
+  const warnings = captureLogs(t).warn;
+  const failures: Array<[unknown, string]> = [
+    [platformError('ratelimited'), 'ratelimited'],
+    [Object.assign(new Error('rate limited'), { code: 'slack_webapi_rate_limited_error', retryAfter: 30 }),
+      'slack_webapi_rate_limited_error'],
+    [new Error('socket hang up'), 'slack_unreachable'],
+    [Object.assign(new Error('request failed'), { code: 'slack_webapi_request_error' }), 'slack_webapi_request_error'],
+  ];
+  for (const [failure, code] of failures) {
+    const botCalls: RecordedCall[] = [];
+    const ownerCalls: RecordedCall[] = [];
+    const owner = fakeClient(ownerCalls);
+    owner.usergroups.disable = failWith(ownerCalls, 'usergroups.disable', failure);
+    const transport = createDirectSlackTransportFromClient(fakeClient(botCalls), owner);
+    await assert.rejects(transport.disableUserGroup('S123'), (error: unknown) =>
+      error instanceof SlackTransportError && error.code === code, code);
+    assert.deepEqual(ownerCalls.map(({ method }) => method), ['usergroups.disable'], code);
+    assert.deepEqual(botCalls, [], code);
+  }
+  assert.deepEqual(warnings.map((line) => JSON.parse(line).code), failures.map(([, code]) => code));
+});
+
+test('without an Owner client every user-group call reaches the bot and nothing is logged', async (t) => {
+  const logs = captureLogs(t);
+  const calls: RecordedCall[] = [];
+  await exerciseEveryMethod(createDirectSlackTransportFromClient(fakeClient(calls)));
+  assert.deepEqual(calls.filter(({ method }) => method.startsWith('usergroups.')).map(({ method }) => method),
+    USER_GROUP_CALLS);
+  assert.deepEqual(logs, { info: [], warn: [] });
+});
+
+test('a direct transport sends user-group calls with the user-group token and all else with the bot token', async (t) => {
+  captureLogs(t);
+  const sent: Array<{ method: string; authorization: string | null }> = [];
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    const method = new URL(request.url).pathname.split('/').at(-1)!;
+    sent.push({ method, authorization: request.headers.get('authorization') });
+    const group = { id: 'S123', name: 'Support', handle: 'support', date_update: 1, date_delete: 1 };
+    return Response.json(method === 'usergroups.disable'
+      ? { ok: true, usergroup: group }
+      : { ok: true, channel: 'C123', ts: '1700.2' });
+  });
+
+  const hosted = createDirectSlackTransport('xoxb-w16-bot-secret', 'xoxp-w16-owner-secret');
+  await hosted.disableUserGroup('S123');
+  await hosted.postMessage({ channelId: 'C123', text: 'Handled' });
+  const standalone = createDirectSlackTransport('xoxb-w16-bot-secret', undefined);
+  await standalone.disableUserGroup('S123');
+
+  assert.deepEqual(sent, [
+    { method: 'usergroups.disable', authorization: 'Bearer xoxp-w16-owner-secret' },
+    { method: 'chat.postMessage', authorization: 'Bearer xoxb-w16-bot-secret' },
+    { method: 'usergroups.disable', authorization: 'Bearer xoxb-w16-bot-secret' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(hosted), /xox/);
+});
+
 test('workspace installation selects one transport mode at the runtime edge', () => {
   const direct = stubTransport('direct');
   const gateway = stubTransport('gateway');
@@ -457,6 +578,55 @@ test('workspace installation selects one transport mode at the runtime edge', ()
   assert.equal(selectSlackTransport(installation('direct'), { direct, gateway }), direct);
   assert.equal(selectSlackTransport(installation('gateway'), { direct, gateway }), gateway);
 });
+
+function captureLogs(t: TestContext): { info: string[]; warn: string[] } {
+  const logs = { info: [] as string[], warn: [] as string[] };
+  for (const level of ['info', 'warn'] as const) {
+    t.mock.method(console, level, (...args: unknown[]) => { logs[level].push(args.map(String).join(' ')); });
+  }
+  return logs;
+}
+
+/** The Slack SDK's shape for an `ok: false` answer, which it throws. */
+function platformError(code: string): Error {
+  return Object.assign(new Error(`An API error occurred: ${code}`), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: code },
+  });
+}
+
+function answer(calls: RecordedCall[], method: string, result: Record<string, unknown>) {
+  return async (input?: Record<string, unknown>) => {
+    calls.push({ method, input });
+    return result;
+  };
+}
+
+function failWith(calls: RecordedCall[], method: string, failure: unknown) {
+  return async (input?: Record<string, unknown>) => {
+    calls.push({ method, input });
+    throw failure;
+  };
+}
+
+async function exerciseEveryMethod(transport: SlackTransport): Promise<void> {
+  await transport.lookupMember('U123');
+  await transport.lookupChannel('C123');
+  await transport.listChannels();
+  await transport.listMemberChannels('U123');
+  await transport.channelHasMember('C123', 'U123');
+  await transport.openDirectConversation('U123');
+  await transport.joinPublicChannel('C123');
+  await transport.lookupUserGroup('S123');
+  await transport.listUserGroups({ includeDisabled: true });
+  await transport.createUserGroup({ name: 'Support Triage', handle: 'support' });
+  await transport.updateUserGroup('S123', { handle: 'help' });
+  await transport.disableUserGroup('S123');
+  await transport.enableUserGroup('S123');
+  await transport.publishAppHome({
+    userId: 'U123', view: { type: 'home', blocks: [] } as Parameters<SlackTransport['publishAppHome']>[0]['view'],
+  });
+  await transport.postMessage({ channelId: 'C123', text: 'Handled' });
+}
 
 function fakeClient(
   calls: RecordedCall[],

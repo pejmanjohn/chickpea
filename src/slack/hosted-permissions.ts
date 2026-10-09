@@ -30,9 +30,15 @@ export interface HostedSlackPermissionsUpdate {
    * the session itself.
    */
   path: string;
+  /**
+   * The update also asks the installing Owner for a user-group token, so an
+   * active bundle without one needs the update too.
+   */
+  grantsUserGroupToken?: boolean;
 }
 
 let updatePath: string | null = null;
+let grantsUserGroupToken = false;
 
 /**
  * Install the host's update path, once at module scope; undefined removes it.
@@ -43,6 +49,7 @@ export function configureHostedSlackPermissionsUpdate(
 ): void {
   if (update === undefined) {
     updatePath = null;
+    grantsUserGroupToken = false;
     return;
   }
   const path = update.path;
@@ -50,10 +57,15 @@ export function configureHostedSlackPermissionsUpdate(
     throw new Error('The Slack permissions update path must be a same-origin path.');
   }
   updatePath = path;
+  grantsUserGroupToken = update.grantsUserGroupToken === true;
 }
 
 export function hostedSlackPermissionsUpdatePath(): string | null {
   return updatePath;
+}
+
+export function hostedSlackUpdateGrantsUserGroupToken(): boolean {
+  return grantsUserGroupToken;
 }
 
 /** The scope evidence of one installation's active credential revision. */
@@ -68,6 +80,7 @@ export interface SlackPermissionsEvidence {
 export interface SlackPermissionsCheckDependencies {
   /** The installation's bot token, read only when a gap needs confirming. */
   botToken: () => Promise<string | undefined>;
+  requiredUserGroupTokenHeld?: () => Promise<boolean>;
   authTest?: typeof slackAuthTest;
   warn?: (entry: Record<string, unknown>) => void;
   now?: () => number;
@@ -112,6 +125,16 @@ export async function evaluateSlackPermissions(
   evidence: SlackPermissionsEvidence | undefined,
   dependencies: SlackPermissionsCheckDependencies,
   requested: readonly string[] = REQUESTED_SLACK_BOT_SCOPES,
+): Promise<SettledDecision | 'unknown'> {
+  const decision = await evaluateBotScopes(evidence, dependencies, requested);
+  if (decision !== 'current' || !dependencies.requiredUserGroupTokenHeld) return decision;
+  return await dependencies.requiredUserGroupTokenHeld() ? 'current' : 'update_needed';
+}
+
+async function evaluateBotScopes(
+  evidence: SlackPermissionsEvidence | undefined,
+  dependencies: SlackPermissionsCheckDependencies,
+  requested: readonly string[],
 ): Promise<SettledDecision | 'unknown'> {
   // A revision written without validation says nothing about its grant.
   if (!evidence || evidence.validatedAt === null || evidence.grantedScopes.length === 0) return 'unknown';

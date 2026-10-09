@@ -1,5 +1,6 @@
 import type { View } from '@slack/types';
 
+import { withUserGroupAuthority } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import { slackClientMessageId } from './message-id.ts';
 import {
@@ -52,10 +53,15 @@ export interface DirectSlackApiClient {
   chat: { postMessage: SlackApiMethod };
 }
 
-/** Construct a direct customer-owned adapter while keeping the token captured. */
-export function createDirectSlackTransport(botToken: string): SlackTransport {
+type UserGroupMethod = keyof DirectSlackApiClient['usergroups'];
+
+/** Construct a direct customer-owned adapter while keeping the tokens captured. */
+export function createDirectSlackTransport(botToken: string, userGroupToken: string | undefined): SlackTransport {
   const client = createSlackWebClient(botToken) as unknown as DirectSlackApiClient;
-  return createDirectSlackTransportFromClient(client);
+  const ownerClient = userGroupToken
+    ? createSlackWebClient(userGroupToken) as unknown as DirectSlackApiClient
+    : undefined;
+  return createDirectSlackTransportFromClient(client, ownerClient);
 }
 
 /**
@@ -64,7 +70,23 @@ export function createDirectSlackTransport(botToken: string): SlackTransport {
  */
 export function createDirectSlackTransportFromClient(
   client: DirectSlackApiClient,
+  ownerClient?: Pick<DirectSlackApiClient, 'usergroups'>,
 ): SlackTransport {
+  const userGroups = async (method: UserGroupMethod, input: SlackApiInput): Promise<SlackApiResult> => {
+    const operation = `usergroups.${method}`;
+    const { outcome } = await withUserGroupAuthority({
+      operation,
+      owner: ownerClient?.usergroups,
+      bot: client.usergroups,
+      call: (api) => call(api[method], operation, input).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error: normalizeError(error, operation) }),
+      ),
+      errorCode: (settled) => 'error' in settled ? settled.error.code : undefined,
+    });
+    if ('error' in outcome) throw outcome.error;
+    return outcome.result;
+  };
   return {
     mode: 'direct',
 
@@ -119,9 +141,7 @@ export function createDirectSlackTransportFromClient(
     },
 
     async lookupUserGroup(userGroupId): Promise<SlackUserGroup | undefined> {
-      const result = await call(client.usergroups.list, 'usergroups.list', {
-        include_disabled: true,
-      });
+      const result = await userGroups('list', { include_disabled: true });
       if (!Array.isArray(result.usergroups)) return undefined;
       for (const candidate of result.usergroups) {
         const group = mapUserGroup(requiredRecord(candidate, 'usergroups.list'));
@@ -131,16 +151,14 @@ export function createDirectSlackTransportFromClient(
     },
 
     async listUserGroups(options = {}): Promise<SlackUserGroup[]> {
-      const result = await call(client.usergroups.list, 'usergroups.list', {
-        include_disabled: options.includeDisabled ?? false,
-      });
+      const result = await userGroups('list', { include_disabled: options.includeDisabled ?? false });
       return Array.isArray(result.usergroups)
         ? result.usergroups.map((group) => mapUserGroup(requiredRecord(group, 'usergroups.list')))
         : [];
     },
 
     async createUserGroup(input): Promise<SlackUserGroup> {
-      const result = await call(client.usergroups.create, 'usergroups.create', {
+      const result = await userGroups('create', {
         name: input.name,
         handle: input.handle,
         ...(input.description !== undefined ? { description: input.description } : {}),
@@ -149,7 +167,7 @@ export function createDirectSlackTransportFromClient(
     },
 
     async updateUserGroup(userGroupId, patch): Promise<SlackUserGroup> {
-      const result = await call(client.usergroups.update, 'usergroups.update', {
+      const result = await userGroups('update', {
         usergroup: userGroupId,
         ...patch,
       });
@@ -157,16 +175,12 @@ export function createDirectSlackTransportFromClient(
     },
 
     async disableUserGroup(userGroupId): Promise<SlackUserGroup> {
-      const result = await call(client.usergroups.disable, 'usergroups.disable', {
-        usergroup: userGroupId,
-      });
+      const result = await userGroups('disable', { usergroup: userGroupId });
       return mapUserGroup(requiredRecord(result.usergroup, 'usergroups.disable'));
     },
 
     async enableUserGroup(userGroupId): Promise<SlackUserGroup> {
-      const result = await call(client.usergroups.enable, 'usergroups.enable', {
-        usergroup: userGroupId,
-      });
+      const result = await userGroups('enable', { usergroup: userGroupId });
       return mapUserGroup(requiredRecord(result.usergroup, 'usergroups.enable'));
     },
 

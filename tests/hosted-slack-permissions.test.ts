@@ -14,7 +14,9 @@ import {
   configureHostedSlackPermissionsUpdate,
   evaluateSlackPermissions,
   hostedSlackPermissionsUpdatePath,
+  hostedSlackUpdateGrantsUserGroupToken,
   resetSlackPermissionsMemo,
+  type SlackPermissionsCheckDependencies,
   type SlackPermissionsEvidence,
 } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
@@ -193,6 +195,49 @@ test('when Slack cannot answer, the stored gap stands and is asked again next ti
   assert.equal(slack.calls.length, 4);
 });
 
+const withUserGroupToken = (dependencies: SlackPermissionsCheckDependencies, held: boolean) =>
+  ({ ...dependencies, requiredUserGroupTokenHeld: async () => held });
+
+test('a host that grants a user-group token needs an update until the active bundle holds one', async (t) => {
+  resetSlackPermissionsMemo();
+  t.after(resetSlackPermissionsMemo);
+  const slack = liveSlack(() => ({ grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES] }));
+  const full = evidence({ grantedScopes: REQUESTED_SLACK_BOT_SCOPES });
+
+  assert.equal(await evaluateSlackPermissions(full, withUserGroupToken(slack.dependencies, false)), 'update_needed');
+  assert.equal(await evaluateSlackPermissions(full, withUserGroupToken(slack.dependencies, true)), 'current');
+  assert.equal(await evaluateSlackPermissions(full, slack.dependencies), 'current', 'a host without the grant asks nothing more');
+  assert.equal(await evaluateSlackPermissions(evidence({ validatedAt: null }), withUserGroupToken(slack.dependencies, false)), 'unknown');
+  assert.deepEqual(slack.calls, [], 'Slack cannot show a token the host never stored, so it is not asked');
+});
+
+test('missing bot scopes need an update even when the bundle holds the user-group token', async (t) => {
+  resetSlackPermissionsMemo();
+  t.after(resetSlackPermissionsMemo);
+  const gap = liveSlack(() => ({ grantedScopes: WITHOUT_LISTS }));
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(gap.dependencies, true)), 'update_needed');
+});
+
+test('a stored scope gap Slack has already closed still needs the user-group token', async (t) => {
+  resetSlackPermissionsMemo();
+  t.after(resetSlackPermissionsMemo);
+  const slack = liveSlack(() => ({ grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES] }));
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(slack.dependencies, false)), 'update_needed');
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(slack.dependencies, true)), 'current');
+});
+
+test('the host says whether its update grants a user-group token, and removing the update forgets it', (t) => {
+  t.after(() => configureHostedSlackPermissionsUpdate(undefined));
+  assert.equal(hostedSlackUpdateGrantsUserGroupToken(), false);
+  configureHostedSlackPermissionsUpdate({ path: '/start/reinstall', grantsUserGroupToken: true });
+  assert.equal(hostedSlackUpdateGrantsUserGroupToken(), true);
+  configureHostedSlackPermissionsUpdate({ path: '/start/reinstall' });
+  assert.equal(hostedSlackUpdateGrantsUserGroupToken(), false);
+  configureHostedSlackPermissionsUpdate({ path: '/start/reinstall', grantsUserGroupToken: true });
+  configureHostedSlackPermissionsUpdate(undefined);
+  assert.equal(hostedSlackUpdateGrantsUserGroupToken(), false);
+});
+
 test('the host update path must be same-origin', (t) => {
   t.after(() => configureHostedSlackPermissionsUpdate(undefined));
   assert.equal(hostedSlackPermissionsUpdatePath(), null);
@@ -228,10 +273,11 @@ async function hostedInstallation(t: TestContext, grantedScopes: readonly string
     configureHostedSlackPermissionsUpdate(undefined);
   });
   const credentials = { state: identity, keyring: generateCredentialKeyring() };
-  const write = (expected: string | null, scopes: readonly string[]) => writeHostedSlackBotCredentials(credentials, expected, {
-    botToken: 'xoxb-hosted-permissions', botUserId: 'UBOT', appId: 'AHOSTED1', teamId: 'TTEST',
-    grantedScopes: [...scopes], validatedAt: Date.now(),
-  });
+  const write = (expected: string | null, scopes: readonly string[], userGroupToken?: string) =>
+    writeHostedSlackBotCredentials(credentials, expected, {
+      botToken: 'xoxb-hosted-permissions', botUserId: 'UBOT', appId: 'AHOSTED1', teamId: 'TTEST',
+      grantedScopes: [...scopes], validatedAt: Date.now(), ...(userGroupToken ? { userGroupToken } : {}),
+    });
   const revision = await write(null, grantedScopes);
   await syncHostedWorkspaceInstallation(ENV, { teamId: 'TTEST', appId: 'AHOSTED1', botUserId: 'UBOT' }, config);
   await settings.setSetting(SLACK_SETTING_KEYS.teamName, 'Tenant Workspace');
@@ -302,6 +348,25 @@ test('hosted Slack status is unknown for a revoked installation or one without s
   assert.deepEqual((await empty.view('admin')).body.slackPermissions,
     { status: 'unknown', canUpdate: false, updatePath: '/start/reinstall' });
   assert.equal(empty.authTests.length, 0);
+});
+
+test('Admin shows the update bar while the host grants a user-group token the active bundle lacks', async (t) => {
+  const tenant = await hostedInstallation(t, REQUESTED_SLACK_BOT_SCOPES);
+  configureHostedSlackPermissionsUpdate({ path: '/start/reinstall' });
+  assert.deepEqual((await tenant.view('owner')).body.slackPermissions,
+    { status: 'current', canUpdate: true, updatePath: '/start/reinstall' }, 'without the host flag, no token is expected');
+
+  configureHostedSlackPermissionsUpdate({ path: '/start/reinstall', grantsUserGroupToken: true });
+  const owner = await tenant.view('owner');
+  assert.deepEqual(owner.body.slackPermissions, { status: 'update_needed', canUpdate: true, updatePath: '/start/reinstall' });
+  assert.deepEqual((await tenant.view('admin')).body.slackPermissions,
+    { status: 'update_needed', canUpdate: false, updatePath: '/start/reinstall' });
+
+  await tenant.write(tenant.revision, REQUESTED_SLACK_BOT_SCOPES, 'xoxp-w16-owner-secret');
+  const updated = await tenant.view('owner');
+  assert.deepEqual(updated.body.slackPermissions, { status: 'current', canUpdate: true, updatePath: '/start/reinstall' });
+  assert.doesNotMatch(JSON.stringify([owner.body, updated.body]), /xoxp|usergroups:/, 'no token or scope reaches Admin');
+  assert.equal(tenant.authTests.length, 0, 'the bar is decided without asking Slack');
 });
 
 test('standalone Slack status carries no permissions field', async (t) => {

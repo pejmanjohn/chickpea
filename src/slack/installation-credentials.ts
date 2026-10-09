@@ -28,8 +28,12 @@ import {
   type SlackSecretEnvelopeContext,
 } from './secret-envelope.ts';
 
+export const SLACK_TOKEN_MAX_BYTES = 16_384;
+
 export interface ResolvedSlackInstallationCredentials {
   botToken: string | undefined;
+  /** A hosted installation's installing Owner's token, used only for Slack user-group calls. */
+  userGroupToken: string | undefined;
   signingSecret: string | undefined;
   botUserId: string | undefined;
   connectionRevision: string | null;
@@ -155,6 +159,8 @@ export interface ReplaceUnreadableHostedSlackBotBundleInput {
   /** The installer the host's verified install grant names: an active Owner of this installation. */
   installerSlackUserId: string;
   botToken: string;
+  /** The installing Owner's user-group token, when the grant carried one. */
+  userGroupToken?: string;
   botUserId: string;
   grantedScopes: string[];
   validatedAt: number;
@@ -324,6 +330,7 @@ export async function resolveSlackInstallationCredentials(
   }
   return {
     botToken: nonEmpty(secrets.botToken),
+    userGroupToken: nonEmpty(secrets.userGroupToken),
     signingSecret: nonEmpty(secrets.signingSecret),
     botUserId: active.botUserId ?? undefined,
     connectionRevision: active.revision,
@@ -428,7 +435,7 @@ export async function writeHostedSlackBotCredentials(
   dependencies: SlackCredentialDependencies,
   expectedRevision: string | null,
   values: Required<Pick<SlackInstallationCredentialWrite,
-    'botToken' | 'botUserId' | 'appId' | 'teamId' | 'grantedScopes' | 'validatedAt'>>,
+    'botToken' | 'botUserId' | 'appId' | 'teamId' | 'grantedScopes' | 'validatedAt'>> & { userGroupToken?: string },
 ): Promise<string> {
   const candidate = await stageSlackCredentialBundle(dependencies, {
     identityId: HOSTED_SLACK_INSTALLATION_ID,
@@ -441,7 +448,7 @@ export async function writeHostedSlackBotCredentials(
     grantedScopes: values.grantedScopes,
     validatedAt: values.validatedAt,
     manifestFingerprint: null,
-    secrets: { botToken: values.botToken },
+    secrets: hostedSecrets(values),
   });
   const promoted = await promoteSlackCredentialBundle(dependencies, {
     identityId: HOSTED_SLACK_INSTALLATION_ID,
@@ -807,7 +814,7 @@ export async function replaceUnreadableHostedSlackBotBundle(
     grantedScopes: input.grantedScopes,
     validatedAt: input.validatedAt,
     manifestFingerprint: null,
-    secrets: { botToken: input.botToken },
+    secrets: hostedSecrets(input),
   });
   const promoted = await promoteSlackCredentialBundle(dependencies, {
     identityId: HOSTED_SLACK_INSTALLATION_ID,
@@ -880,7 +887,17 @@ function isIdentityStore(value: IdentityStore | SettingsStore): value is Identit
 }
 
 function missingCredentials(): ResolvedSlackInstallationCredentials {
-  return { botToken: undefined, signingSecret: undefined, botUserId: undefined, connectionRevision: null };
+  return {
+    botToken: undefined, userGroupToken: undefined, signingSecret: undefined, botUserId: undefined,
+    connectionRevision: null,
+  };
+}
+
+function hostedSecrets(values: { botToken: string; userGroupToken?: string }): Record<string, string> {
+  return {
+    botToken: values.botToken,
+    ...(values.userGroupToken === undefined ? {} : { userGroupToken: values.userGroupToken }),
+  };
 }
 
 function validateBundleShape(
@@ -890,13 +907,13 @@ function validateBundleShape(
   secrets: Record<string, string>,
 ): void {
   const names = Object.keys(secrets).sort();
-  const permitted = new Set(['botToken', 'clientId', 'clientSecret', 'signingSecret']);
+  const permitted = new Set(['botToken', 'clientId', 'clientSecret', 'signingSecret', 'userGroupToken']);
   if (names.length === 0 || names.some((name) => !permitted.has(name))) {
     throw new Error('Slack credential bundle contains unsupported fields.');
   }
   for (const name of names) {
     const value = secrets[name];
-    const max = name === 'botToken' ? 16_384 : 4_096;
+    const max = name === 'botToken' || name === 'userGroupToken' ? SLACK_TOKEN_MAX_BYTES : 4_096;
     if (typeof value !== 'string' || !value.trim() ||
         new TextEncoder().encode(value).byteLength > max) {
       throw new Error('Slack credential bundle contains an invalid field.');
@@ -909,10 +926,15 @@ function validateBundleShape(
     (purpose === 'app_credentials' || purpose === 'connected_credentials');
   if (!allowed) throw new Error('Slack credential purpose does not match its identity class.');
   if (identityId === HOSTED_SLACK_INSTALLATION_ID) {
-    if (purpose !== 'connected_credentials' || names.join() !== 'botToken') {
-      throw new Error('A hosted Slack installation bundle holds only its bot token.');
+    if (purpose !== 'connected_credentials' || !['botToken', 'botToken,userGroupToken'].includes(names.join())) {
+      throw new Error(
+        'A hosted Slack installation bundle holds only its bot token and, when granted, the installing Owner\'s user-group token.',
+      );
     }
     return;
+  }
+  if (names.includes('userGroupToken')) {
+    throw new Error('Only a hosted Slack installation bundle holds a user-group token.');
   }
   const hasApp = names.includes('clientId') && names.includes('clientSecret');
   const partialApp = names.includes('clientId') !== names.includes('clientSecret');

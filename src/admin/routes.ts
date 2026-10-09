@@ -544,6 +544,7 @@ import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
 import {
   evaluateSlackPermissions,
   hostedSlackPermissionsUpdatePath,
+  hostedSlackUpdateGrantsUserGroupToken,
   type SlackPermissionsView,
 } from '../slack/hosted-permissions.ts';
 import {
@@ -2307,7 +2308,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken);
+    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
   };
   const ensureGeneratedGatewayAvatar = async (
     c: Context,
@@ -10749,6 +10750,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         botToken: async () => (await resolveSlackCredentials(
           env, settings(c), slackCredentialResolutionDependencies(c),
         )).botToken,
+        ...(hostedSlackUpdateGrantsUserGroupToken() ? {
+          requiredUserGroupTokenHeld: async () => Boolean((await resolveSlackInstallationCredentials(
+            slackInstallationCredentialId(env), env, dependencies,
+          )).userGroupToken),
+        } : {}),
       },
     );
     return { status, canUpdate, updatePath: path };
