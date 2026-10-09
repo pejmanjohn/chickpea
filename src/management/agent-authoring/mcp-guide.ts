@@ -56,7 +56,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'Do not call `propose_workspace_changes`, show a creation preview, or ask the person to say “create it”. The service creates the Agent immediately; the receipt\'s `links.admin` and `links.slack` are how you hand the new Agent to the person.',
   ],
   [
-    'For Slack, pass connector display names explicitly requested in the current message as ordered `connectorMentions`; they are only hints for independently authorized welcome links and never grant access.',
+    'For Slack, pass the display names of the services the requester asked this Agent to use, in this message or earlier in the conversation, as ordered `connectorMentions`; they are only hints for independently authorized welcome links and never grant access.',
     'Connectors the person asked for are follow-on work: after creation, call `prepare_connector_setup` for each one and give the person its handoff link; connectors never ride inside the create operation and never grant access by themselves.',
   ],
   [

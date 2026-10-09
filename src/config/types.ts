@@ -192,6 +192,7 @@ export interface AgentPresenceBase {
   avatar: AgentAvatarRevision;
   errorCode?: string;
   errorDetail?: string;
+  handleSuggestions?: string[];
   observedAt?: number;
 }
 

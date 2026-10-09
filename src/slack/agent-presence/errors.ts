@@ -108,7 +108,7 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
   if (error.code === 'name_already_exists') {
     return new AgentPresenceError(
       'name_collision',
-      'A Slack user group already has this Agent’s name. Rename the Agent, then retry.',
+      'A Slack user group already has this Agent’s name. Retry picks a free name for its Slack group.',
       common,
     );
   }
@@ -150,11 +150,12 @@ interface AgentPresenceRecovery {
   actionKind?: 'retry' | 'reconnect';
   adminUrl?: string;
   note?: string;
+  suggestions?: string[];
 }
 
 /** Atlas-quality explanation plus exact remediation instead of reconnect advice. */
 export function agentPresenceRecovery(
-  error: Pick<AgentPresenceError, 'code' | 'message'>,
+  error: Pick<AgentPresenceError, 'code' | 'message'> & { suggestions?: string[] },
   agent: Pick<CustomAgentConfig, 'name' | 'slackPresence'>,
 ): AgentPresenceRecovery {
   const handle = agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name);
@@ -220,17 +221,23 @@ export function agentPresenceRecovery(
     };
   }
   if (error.code === 'handle_collision') {
+    const suggestions = error.suggestions?.length
+      ? error.suggestions
+      : agent.slackPresence?.handleSuggestions ?? [];
     return {
       title: `@${handle} is already in use`,
-      explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
-      steps: ['Choose one of the suggested available handles or enter another handle.', 'Select Retry.'],
+      explanation: 'Slack handles are shared across the whole workspace, so a person or a Slack user group already uses this one. The Agent is saved.',
+      steps: suggestions.length > 0
+        ? ['Choose a suggested handle below, or type another one and save.']
+        : ['Type another handle and save.'],
       actionLabel: 'Retry',
+      ...(suggestions.length > 0 ? { suggestions } : {}),
     };
   }
   if (error.code === 'name_collision') {
     return {
       title: `A Slack user group is already named “${agent.name}”`,
-      explanation: 'Rename this Agent, then press Retry.',
+      explanation: 'Press Retry and Chickpea will pick a free name for its Slack group.',
       steps: [],
       actionLabel: 'Retry',
     };

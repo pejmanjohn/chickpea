@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.39' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.40' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -93,7 +93,7 @@ Infer low-risk defaults when confidence is high and disclose them. For example, 
 
 Once a sufficiently understood new-Agent request reaches \`commit\` posture without an explicit preview-only or wait-for-approval constraint, call \`apply_workspace_changes\` in that same turn with exactly one standalone base \`create_agent\` operation. Do not call \`propose_workspace_changes\`, show a creation preview, or ask the requester to say “create it”. The service creates the Agent immediately and the Slack host owns the single welcome. If the base identity or purpose remains materially unresolved, stay read-only and clarify first.
 
-Keep connections, repositories, routines, memory, and caller-supplied Channel reach out of the base operation. For Slack, pass connector display names explicitly requested in the current message as ordered \`connectorMentions\`; they are only hints for independently authorized welcome links and never grant access. For a compound request, create the standalone base Agent first, then route every follow-on change through its existing tool and confirmation policy. If creation returns a duplicate-identity clarification, ask whether to use the existing Agent or choose a distinct name or handle; do not propose creation or retry unchanged content.
+Keep connections, repositories, routines, memory, and caller-supplied Channel reach out of the base operation. For Slack, pass the display names of the services the requester asked this Agent to use, in this message or earlier in the conversation, as ordered \`connectorMentions\`; they are only hints for independently authorized welcome links and never grant access. For a compound request, create the standalone base Agent first, then route every follow-on change through its existing tool and confirmation policy. If creation returns a duplicate-identity clarification, ask whether to use the existing Agent or choose a distinct name or handle; do not propose creation or retry unchanged content.
 
 Do not repeatedly re-ask settled details. Fill obvious low-risk blanks, expose material assumptions in the single review, and let the requester correct them instead of adding another gate.
 

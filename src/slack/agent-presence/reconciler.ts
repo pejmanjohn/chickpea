@@ -15,7 +15,7 @@ import {
   AgentPresenceError,
   classifyAgentPresenceError,
 } from './errors.ts';
-import { alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
+import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
@@ -411,17 +411,11 @@ export class AgentPresenceReconciler {
         // group found before this Agent ever entered pending state is a
         // workspace-global collision, never an ownership signal.
         if (presence.errorCode !== 'user_group_create_ambiguous' && !presence.userGroupId) {
-          const collision = new AgentPresenceError(
+          throw new AgentPresenceError(
             'handle_collision',
             `@${normalizedHandle} is already in use.`,
-            {
-              suggestions: alternativeAgentHandles(
-                normalizedHandle,
-                new Set(groups.map((candidate) => candidate.handle)),
-              ),
-            },
+            { suggestions: suggestedHandles(normalizedHandle, groups) },
           );
-          throw collision;
         }
         if (!hasAmbiguousCreateOwnershipProof({ slackPresence: presence }, handleMatch)) {
           throw new AgentPresenceError(
@@ -435,7 +429,7 @@ export class AgentPresenceReconciler {
 
     if (!group) {
       const pendingCreate = {
-        name: agent.name,
+        name: agentUserGroupName(agent.name, groups),
         handle: normalizedHandle,
         description: agent.description ?? `${agent.name} Agent`,
         startedAt: this.now(),
@@ -466,20 +460,19 @@ export class AgentPresenceReconciler {
             { retryable: true },
           );
         }
-        const classified = classifyAgentPresenceError(error);
-        if (classified.code === 'handle_collision') {
-          throw new AgentPresenceError('handle_collision', classified.message, {
-            suggestions: alternativeAgentHandles(
-              normalizedHandle,
-              new Set(groups.map((candidate) => candidate.handle)),
-            ),
-            ...(classified.slackCode ? { slackCode: classified.slackCode } : {}),
-          });
-        }
-        throw error;
+        throw withHandleSuggestions(error, normalizedHandle, groups);
       }
     } else {
-      group = await this.updateGroupIfNeeded(group, agent, normalizedHandle);
+      try {
+        group = await this.updateGroupIfNeeded(
+          group,
+          agent,
+          normalizedHandle,
+          agentUserGroupName(agent.name, groups, group.id),
+        );
+      } catch (error) {
+        throw withHandleSuggestions(error, normalizedHandle, groups);
+      }
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
     let current = await config.getAgent(agent.id);
@@ -673,15 +666,16 @@ export class AgentPresenceReconciler {
     group: SlackUserGroup,
     agent: CustomAgentConfig,
     normalizedHandle: string,
+    name: string,
   ): Promise<SlackUserGroup> {
     const desiredDescription = agent.description ?? `${agent.name} Agent`;
     if (
-      group.name === agent.name &&
+      group.name === name &&
       group.handle === normalizedHandle &&
       group.description === desiredDescription
     ) return group;
     return this.dependencies.transport.updateUserGroup(group.id, {
-      name: agent.name,
+      name,
       handle: normalizedHandle,
       description: desiredDescription,
     });
@@ -692,7 +686,7 @@ export class AgentPresenceReconciler {
     error: AgentPresenceError,
   ): Promise<void> {
     const current = await this.dependencies.config.getAgent(agent.id);
-    const presence = requiredPresence(current);
+    const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,
       {
@@ -702,6 +696,9 @@ export class AgentPresenceReconciler {
           health: 'needs_attention',
           errorCode: error.code,
           errorDetail: error.message,
+          ...(error.code === 'handle_collision' && error.suggestions.length > 0
+            ? { handleSuggestions: error.suggestions }
+            : {}),
           observedAt: this.now(),
         },
       },
@@ -743,6 +740,23 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
   }
 }
 
+function suggestedHandles(handle: string, groups: readonly SlackUserGroup[]): string[] {
+  return alternativeAgentHandles(handle, new Set(groups.map((group) => group.handle)));
+}
+
+function withHandleSuggestions(
+  error: unknown,
+  handle: string,
+  groups: readonly SlackUserGroup[],
+): unknown {
+  const classified = classifyAgentPresenceError(error);
+  if (classified.code !== 'handle_collision') return error;
+  return new AgentPresenceError(classified.code, classified.message, {
+    ...classified.options,
+    suggestions: suggestedHandles(handle, groups),
+  });
+}
+
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   if (!agent.slackPresence) throw new Error(`Agent ${agent.id} has no Slack presence`);
   return agent.slackPresence;
@@ -755,16 +769,23 @@ function userGroupPresence(agent: CustomAgentConfig): UserGroupPresence {
   return presence;
 }
 
-type WithoutPresenceErrors<P> = P extends AgentSlackPresence ? Omit<P, 'errorCode' | 'errorDetail'> : never;
+type PresenceErrorField = 'errorCode' | 'errorDetail' | 'handleSuggestions';
+
+type WithoutPresenceErrors<P> = P extends AgentSlackPresence ? Omit<P, PresenceErrorField> : never;
 
 function withoutPresenceErrors<P extends AgentSlackPresence>(presence: P): WithoutPresenceErrors<P> {
-  const { errorCode: _errorCode, errorDetail: _errorDetail, ...clean } = presence;
+  const {
+    errorCode: _errorCode,
+    errorDetail: _errorDetail,
+    handleSuggestions: _handleSuggestions,
+    ...clean
+  } = presence;
   return clean as WithoutPresenceErrors<P>;
 }
 
 function withoutPendingCreate(
   presence: WithoutPresenceErrors<UserGroupPresence>,
-): Omit<UserGroupPresence, 'errorCode' | 'errorDetail' | 'pendingCreate'> {
+): Omit<UserGroupPresence, PresenceErrorField | 'pendingCreate'> {
   const { pendingCreate: _pendingCreate, ...clean } = presence;
   return clean;
 }
