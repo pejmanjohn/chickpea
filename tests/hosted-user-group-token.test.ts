@@ -9,14 +9,9 @@ import {
   invalidateSlackInstallationCredentialCache,
   prepareSlackCredentialBundle,
   resolveSlackInstallationCredentials,
+  SLACK_TOKEN_MAX_BYTES,
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
-
-/**
- * A hosted installation may hold the installing Owner's user-group token in
- * its credential bundle, beside the bot token, so Agent archive can
- * deactivate a Slack user group. Only the hosted bundle may hold it.
- */
 
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_user_groups' });
 const OWNER_TOKEN = 'xoxp-w16-owner-secret';
@@ -37,8 +32,7 @@ function hostedInstallation(t: TestContext) {
         grantedScopes: ['chat:write'], validatedAt: 1_800_000_000_000,
         ...(userGroupToken === undefined ? {} : { userGroupToken }),
       }),
-    /** Read from the encrypted store, not the cache a write primes. */
-    resolve: () => {
+    resolveUncached: () => {
       invalidateSlackInstallationCredentialCache();
       return resolveSlackInstallationCredentials(HOSTED_SLACK_INSTALLATION_ID, ENV, { state: identity, keyring, env: ENV });
     },
@@ -47,16 +41,16 @@ function hostedInstallation(t: TestContext) {
 
 test('a hosted bundle keeps the installing Owner\'s user-group token beside the bot token, and a reinstall without one drops it', async (t) => {
   const tenant = hostedInstallation(t);
-  assert.equal((await tenant.resolve()).userGroupToken, undefined, 'no bundle, no token');
+  assert.equal((await tenant.resolveUncached()).userGroupToken, undefined, 'no bundle, no token');
 
   const granted = await tenant.write(null, OWNER_TOKEN);
-  const resolved = await tenant.resolve();
+  const resolved = await tenant.resolveUncached();
   assert.equal(resolved.botToken, 'xoxb-w16-bot');
   assert.equal(resolved.userGroupToken, OWNER_TOKEN);
   assert.equal(resolved.connectionRevision, granted);
 
   await tenant.write(granted);
-  const bare = await tenant.resolve();
+  const bare = await tenant.resolveUncached();
   assert.equal(bare.botToken, 'xoxb-w16-bot');
   assert.equal(bare.userGroupToken, undefined);
 });
@@ -84,9 +78,8 @@ test('only a hosted bundle holds a user-group token, and only beside its bot tok
   await assert.rejects(prepare(HOSTED_SLACK_INSTALLATION_ID, { userGroupToken: OWNER_TOKEN }),
     /hosted Slack installation bundle holds only its bot token/, 'never without the bot token');
 
-  // The bot token's size bound, not the 4 KiB one for app secrets.
-  await prepare(HOSTED_SLACK_INSTALLATION_ID, { botToken: 'xoxb-w16-bot', userGroupToken: `xoxp-${'a'.repeat(16_379)}` });
+  await prepare(HOSTED_SLACK_INSTALLATION_ID, { botToken: 'xoxb-w16-bot', userGroupToken: 'a'.repeat(SLACK_TOKEN_MAX_BYTES) });
   await assert.rejects(prepare(HOSTED_SLACK_INSTALLATION_ID, {
-    botToken: 'xoxb-w16-bot', userGroupToken: `xoxp-${'a'.repeat(16_380)}`,
+    botToken: 'xoxb-w16-bot', userGroupToken: 'a'.repeat(SLACK_TOKEN_MAX_BYTES + 1),
   }), /invalid field/);
 });

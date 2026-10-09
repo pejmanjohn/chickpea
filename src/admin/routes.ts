@@ -10751,7 +10751,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           env, settings(c), slackCredentialResolutionDependencies(c),
         )).botToken,
         ...(hostedSlackUpdateGrantsUserGroupToken() ? {
-          holdsUserGroupToken: async () => Boolean((await resolveSlackInstallationCredentials(
+          requiredUserGroupTokenHeld: async () => Boolean((await resolveSlackInstallationCredentials(
             slackInstallationCredentialId(env), env, dependencies,
           )).userGroupToken),
         } : {}),

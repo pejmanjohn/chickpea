@@ -11,7 +11,6 @@ const CALLER_REFUSALS = [
   'permission_denied', 'not_allowed', 'restricted_action', 'two_factor_setup_required', 'two_factor_required',
 ];
 
-/** Slack answering each token with a fixed code, `ok` for success. */
 function slack(answers: Record<string, string>) {
   const calls: string[] = [];
   const log: Array<Record<string, unknown>> = [];
@@ -26,7 +25,7 @@ function slack(answers: Record<string, string>) {
         calls.push(token);
         return answers[token]!;
       },
-      refusal: (code) => code === 'ok' ? undefined : code,
+      errorCode: (code) => code === 'ok' ? undefined : code,
       log: (entry) => { log.push(entry); },
     }),
   };
@@ -93,7 +92,7 @@ test('by default the one line per call goes to console.warn as JSON without any 
     owner: OWNER,
     bot: BOT,
     call: async (token: string) => token === OWNER ? 'token_revoked' : 'ok',
-    refusal: (code) => code === 'ok' ? undefined : code,
+    errorCode: (code) => code === 'ok' ? undefined : code,
   });
   assert.equal(result.answeredBy, 'bot');
   assert.equal(lines.length, 1);

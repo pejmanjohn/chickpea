@@ -30,25 +30,17 @@ import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
-/**
- * The installing Owner's user-group token lives only in the credential
- * bundle and the transport's closure. Wherever a user-group call is refused
- * on its way from Admin or a management tool, no error, response, tool
- * result or log line carries it.
- */
-
 const OWNER_TOKEN = 'xoxp-w16-owner-secret';
 const BOT_TOKEN = 'xoxb-w16-bot-secret';
 const APP_ID = 'AHOSTED1';
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>;
 
 type Credential = 'bot' | 'owner';
-/** Slack's error code for one call, or undefined for success. */
-type Answer = (credential: Credential, method: string) => string | undefined;
+type SlackErrorCodeFor = (credential: Credential, method: string) => string | undefined;
 
-const ownerRevoked: Answer = (credential, method) =>
+const ownerRevoked: SlackErrorCodeFor = (credential, method) =>
   credential === 'owner' ? 'token_revoked' : method === 'usergroups.disable' ? 'permission_denied' : undefined;
-const botDenied: Answer = (credential, method) =>
+const botDenied: SlackErrorCodeFor = (credential, method) =>
   credential === 'bot' && method === 'usergroups.disable' ? 'permission_denied' : undefined;
 
 function captureConsole(t: TestContext): string[] {
@@ -61,8 +53,7 @@ function captureConsole(t: TestContext): string[] {
   return lines;
 }
 
-/** Slack's Web API over fetch, with one active user group; answers are decided per token. */
-function fakeSlackApi(t: TestContext, answer: Answer) {
+function fakeSlackApi(t: TestContext, errorCodeFor: SlackErrorCodeFor) {
   const calls: string[] = [];
   const group = {
     id: 'S_SUPPORT', name: 'Support', handle: 'support', description: 'Support Agent', date_update: 1, date_delete: 0,
@@ -74,7 +65,7 @@ function fakeSlackApi(t: TestContext, answer: Answer) {
     assert.ok([`Bearer ${OWNER_TOKEN}`, `Bearer ${BOT_TOKEN}`].includes(authorization ?? ''), method);
     const credential: Credential = authorization === `Bearer ${OWNER_TOKEN}` ? 'owner' : 'bot';
     calls.push(`${credential}:${method}`);
-    const code = answer(credential, method);
+    const code = errorCodeFor(credential, method);
     if (code) return Response.json({ ok: false, error: code });
     if (method === 'usergroups.disable') group.date_delete = 2;
     if (method === 'usergroups.enable') group.date_delete = 0;
@@ -109,8 +100,7 @@ function publishedAgent(): CustomAgentConfig {
   };
 }
 
-/** A hosted installation of `teamId` whose bundle holds the bot token and the Owner's user-group token. */
-async function hostedSlack(
+async function installHostedWithBothTokensAndPublishedAgent(
   credentials: SlackCredentialDependencies,
   config: SqliteConfigStore,
   env: Record<string, unknown>,
@@ -145,7 +135,7 @@ async function hostedAdmin(t: TestContext) {
   });
   const owner = await createSlackOwner(identity, { teamId: 'TTEST', userId: 'UOWNER' });
   const credentials = { state: identity, keyring: generateCredentialKeyring() };
-  await hostedSlack(credentials, config, env, 'TTEST');
+  await installHostedWithBothTokensAndPublishedAgent(credentials, config, env, 'TTEST');
   const app = createAdminRoutes({
     store: config, settings, slackCredentials: credentials,
     ...testAdminAuthority('w16-admin-session', undefined, identity, ownerPrincipal(owner)),
@@ -168,7 +158,7 @@ test('refusals through the authority and the direct transport leave the user-gro
   const decided = await withUserGroupAuthority({
     operation: 'usergroups.disable', owner: OWNER_TOKEN, bot: BOT_TOKEN,
     call: async (token: string) => token === OWNER_TOKEN ? 'token_revoked' : 'permission_denied',
-    refusal: (code) => code,
+    errorCode: (code) => code,
   });
   assert.deepEqual(decided, { outcome: 'permission_denied', answeredBy: 'bot' });
 
@@ -232,7 +222,7 @@ async function hostedManagement(t: TestContext, run: (archive: () => Promise<unk
       invalidateSlackInstallationCredentialCache();
     });
     const credentials = { state: f.identity, keyring };
-    await hostedSlack(credentials, f.config, env, f.owner.user.slackTeamId);
+    await installHostedWithBothTokensAndPublishedAgent(credentials, f.config, env, f.owner.user.slackTeamId);
     const service = createLiveWorkspaceManagementService(env, {
       identity: f.identity, settings, slackCredentials: credentials,
       overrides: {

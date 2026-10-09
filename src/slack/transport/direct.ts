@@ -55,11 +55,7 @@ export interface DirectSlackApiClient {
 
 type UserGroupMethod = keyof DirectSlackApiClient['usergroups'];
 
-/**
- * Construct a direct customer-owned adapter while keeping the tokens captured.
- * A host may hold the installing Owner's user-group token; `usergroups.*`
- * calls use it (see withUserGroupAuthority) and every other call the bot's.
- */
+/** Construct a direct customer-owned adapter while keeping the tokens captured. */
 export function createDirectSlackTransport(botToken: string, userGroupToken?: string): SlackTransport {
   const client = createSlackWebClient(botToken) as unknown as DirectSlackApiClient;
   const ownerClient = userGroupToken
@@ -86,7 +82,7 @@ export function createDirectSlackTransportFromClient(
         (result) => ({ result }),
         (error: unknown) => ({ error: normalizeError(error, operation) }),
       ),
-      refusal: (settled) => 'error' in settled ? settled.error.code : undefined,
+      errorCode: (settled) => 'error' in settled ? settled.error.code : undefined,
     });
     if ('error' in outcome) throw outcome.error;
     return outcome.result;

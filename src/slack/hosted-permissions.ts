@@ -80,8 +80,7 @@ export interface SlackPermissionsEvidence {
 export interface SlackPermissionsCheckDependencies {
   /** The installation's bot token, read only when a gap needs confirming. */
   botToken: () => Promise<string | undefined>;
-  /** Present only when the host's update grants a user-group token: whether the active bundle holds one. */
-  holdsUserGroupToken?: () => Promise<boolean>;
+  requiredUserGroupTokenHeld?: () => Promise<boolean>;
   authTest?: typeof slackAuthTest;
   warn?: (entry: Record<string, unknown>) => void;
   now?: () => number;
@@ -120,9 +119,7 @@ export function resetSlackPermissionsMemo(): void {
  * (the requested set) or a reinstall (a new revision), and both move it
  * toward `current`. The live check can only remove a false positive: `current`
  * stands for the revision, and a confirmed gap is asked again after ten
- * minutes. So the bar cannot flap. When the host's update grants a
- * user-group token, a bundle without one needs the update; Slack is not
- * asked, since it cannot show a token the host never stored.
+ * minutes. So the bar cannot flap.
  */
 export async function evaluateSlackPermissions(
   evidence: SlackPermissionsEvidence | undefined,
@@ -130,8 +127,8 @@ export async function evaluateSlackPermissions(
   requested: readonly string[] = REQUESTED_SLACK_BOT_SCOPES,
 ): Promise<SettledDecision | 'unknown'> {
   const decision = await evaluateBotScopes(evidence, dependencies, requested);
-  if (decision !== 'current' || !dependencies.holdsUserGroupToken) return decision;
-  return await dependencies.holdsUserGroupToken() ? 'current' : 'update_needed';
+  if (decision !== 'current' || !dependencies.requiredUserGroupTokenHeld) return decision;
+  return await dependencies.requiredUserGroupTokenHeld() ? 'current' : 'update_needed';
 }
 
 async function evaluateBotScopes(

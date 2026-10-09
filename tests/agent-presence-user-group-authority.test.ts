@@ -10,13 +10,6 @@ import {
   type DirectSlackApiClient,
 } from '../src/slack/transport/direct.ts';
 
-/**
- * Agent presence over the direct transport when a host holds the installing
- * Owner's user-group token. Slack lets only Owners and Admins deactivate a
- * user group, so the bot's `usergroups.disable` is refused while the Owner's
- * succeeds. Presence code is unchanged; only the transport decides who asks.
- */
-
 type Credential = 'bot' | 'owner';
 type Input = Record<string, unknown> | undefined;
 
@@ -29,7 +22,6 @@ interface FakeGroup {
   date_delete: number;
 }
 
-/** One Slack workspace seen through the bot's and the Owner's tokens. */
 class FakeSlackWorkspace {
   readonly calls: string[] = [];
   readonly refusals: Record<Credential, Record<string, string>> = { bot: {}, owner: {} };
@@ -100,8 +92,7 @@ function agent(): CustomAgentConfig {
   };
 }
 
-/** A published Agent whose Slack workspace refuses the bot's user-group deactivation. */
-async function publishedAgent(t: TestContext) {
+async function agentPublishedWhereSlackRefusesTheBot(t: TestContext) {
   t.mock.method(console, 'warn', () => undefined);
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   t.after(() => config.close());
@@ -122,7 +113,7 @@ async function publishedAgent(t: TestContext) {
 }
 
 test('an archive the bot may not perform finishes through the installing Owner, and restore enables through it', async (t) => {
-  const { slack, reconciler } = await publishedAgent(t);
+  const { slack, reconciler } = await agentPublishedWhereSlackRefusesTheBot(t);
 
   const archived = await reconciler.archive('agent_support');
   assert.equal(archived.lifecycle, 'archived');
@@ -142,7 +133,7 @@ test('an archive the bot may not perform finishes through the installing Owner, 
 });
 
 test('a revoked Owner token falls back to the bot, whose denial keeps today\'s archive recovery', async (t) => {
-  const { config, slack, reconciler } = await publishedAgent(t);
+  const { config, slack, reconciler } = await agentPublishedWhereSlackRefusesTheBot(t);
   slack.refusals.owner['usergroups.list'] = 'token_revoked';
   slack.refusals.owner['usergroups.disable'] = 'token_revoked';
 

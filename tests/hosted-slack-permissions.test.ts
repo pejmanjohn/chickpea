@@ -16,6 +16,7 @@ import {
   hostedSlackPermissionsUpdatePath,
   hostedSlackUpdateGrantsUserGroupToken,
   resetSlackPermissionsMemo,
+  type SlackPermissionsCheckDependencies,
   type SlackPermissionsEvidence,
 } from '../src/slack/hosted-permissions.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
@@ -194,27 +195,35 @@ test('when Slack cannot answer, the stored gap stands and is asked again next ti
   assert.equal(slack.calls.length, 4);
 });
 
+const withUserGroupToken = (dependencies: SlackPermissionsCheckDependencies, held: boolean) =>
+  ({ ...dependencies, requiredUserGroupTokenHeld: async () => held });
+
 test('a host that grants a user-group token needs an update until the active bundle holds one', async (t) => {
   resetSlackPermissionsMemo();
   t.after(resetSlackPermissionsMemo);
   const slack = liveSlack(() => ({ grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES] }));
-  const holds = (held: boolean) => ({ ...slack.dependencies, holdsUserGroupToken: async () => held });
   const full = evidence({ grantedScopes: REQUESTED_SLACK_BOT_SCOPES });
 
-  assert.equal(await evaluateSlackPermissions(full, holds(false)), 'update_needed');
-  assert.equal(await evaluateSlackPermissions(full, holds(true)), 'current');
+  assert.equal(await evaluateSlackPermissions(full, withUserGroupToken(slack.dependencies, false)), 'update_needed');
+  assert.equal(await evaluateSlackPermissions(full, withUserGroupToken(slack.dependencies, true)), 'current');
   assert.equal(await evaluateSlackPermissions(full, slack.dependencies), 'current', 'a host without the grant asks nothing more');
-  assert.equal(await evaluateSlackPermissions(evidence({ validatedAt: null }), holds(false)), 'unknown');
+  assert.equal(await evaluateSlackPermissions(evidence({ validatedAt: null }), withUserGroupToken(slack.dependencies, false)), 'unknown');
   assert.deepEqual(slack.calls, [], 'Slack cannot show a token the host never stored, so it is not asked');
+});
 
-  // Missing bot scopes still need an update whatever the bundle holds.
-  const gap = liveSlack(() => ({ grantedScopes: WITHOUT_LISTS }));
-  assert.equal(await evaluateSlackPermissions(evidence(), { ...gap.dependencies, holdsUserGroupToken: async () => true }),
-    'update_needed');
-  // A gap Slack does not confirm is current for the bot, and still needs the token.
+test('missing bot scopes need an update even when the bundle holds the user-group token', async (t) => {
   resetSlackPermissionsMemo();
-  assert.equal(await evaluateSlackPermissions(evidence(), holds(false)), 'update_needed');
-  assert.equal(await evaluateSlackPermissions(evidence(), holds(true)), 'current');
+  t.after(resetSlackPermissionsMemo);
+  const gap = liveSlack(() => ({ grantedScopes: WITHOUT_LISTS }));
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(gap.dependencies, true)), 'update_needed');
+});
+
+test('a stored scope gap Slack has already closed still needs the user-group token', async (t) => {
+  resetSlackPermissionsMemo();
+  t.after(resetSlackPermissionsMemo);
+  const slack = liveSlack(() => ({ grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES] }));
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(slack.dependencies, false)), 'update_needed');
+  assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(slack.dependencies, true)), 'current');
 });
 
 test('the host says whether its update grants a user-group token, and removing the update forgets it', (t) => {
@@ -353,7 +362,6 @@ test('Admin shows the update bar while the host grants a user-group token the ac
   assert.deepEqual((await tenant.view('admin')).body.slackPermissions,
     { status: 'update_needed', canUpdate: false, updatePath: '/start/reinstall' });
 
-  // The Owner's update stores the token in a new revision, and the bar clears.
   await tenant.write(tenant.revision, REQUESTED_SLACK_BOT_SCOPES, 'xoxp-w16-owner-secret');
   const updated = await tenant.view('owner');
   assert.deepEqual(updated.body.slackPermissions, { status: 'current', canUpdate: true, updatePath: '/start/reinstall' });

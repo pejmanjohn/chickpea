@@ -28,6 +28,8 @@ import {
   type SlackSecretEnvelopeContext,
 } from './secret-envelope.ts';
 
+export const SLACK_TOKEN_MAX_BYTES = 16_384;
+
 export interface ResolvedSlackInstallationCredentials {
   botToken: string | undefined;
   /** A hosted installation's installing Owner's token, used only for Slack user-group calls. */
@@ -911,7 +913,7 @@ function validateBundleShape(
   }
   for (const name of names) {
     const value = secrets[name];
-    const max = name === 'botToken' || name === 'userGroupToken' ? 16_384 : 4_096;
+    const max = name === 'botToken' || name === 'userGroupToken' ? SLACK_TOKEN_MAX_BYTES : 4_096;
     if (typeof value !== 'string' || !value.trim() ||
         new TextEncoder().encode(value).byteLength > max) {
       throw new Error('Slack credential bundle contains an invalid field.');

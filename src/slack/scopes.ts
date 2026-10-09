@@ -26,11 +26,7 @@ export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPE
  * removing it so those grants are not refused.
  */
 export const RETIRED_SLACK_BOT_SCOPES: readonly string[] = Object.freeze([]);
-/**
- * User scopes a hosted install asks the installing Owner for. Slack lets only
- * Owners and Admins deactivate a user group, so archiving an Agent needs a
- * token with an Owner's rights; it is used only for `usergroups.*` calls.
- */
+/** User scopes a hosted install asks the installing Owner for; that token is used only for `usergroups.*` calls. */
 export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergroups:write']);
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */
