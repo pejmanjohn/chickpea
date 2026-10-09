@@ -4238,29 +4238,47 @@ test('Agent roster uses each Agent Slack avatar when one is available', async ()
 });
 
 test('generated Agent avatars stay consistent across the roster and profile before publication', async () => {
-  const generatedAgent = {
-    ...releaseAgent,
-    slackPresence: {
-      requestedHandle: 'release-profile',
-      normalizedHandle: 'release-profile',
-      desiredState: 'active',
-      health: 'healthy',
-      avatar: { kind: 'generated', revision: 3, seed: 'gallery-seed-without-url' },
-    },
+  const presence = {
+    requestedHandle: 'release-profile',
+    normalizedHandle: 'release-profile',
+    desiredState: 'active',
+    health: 'healthy',
   };
-  const harness = runAdminPageHarness({
+  const presentedUrl = 'https://hosted.example/assets/i/inst_tenant_a/agents/agent_release/avatar/3';
+  const named = runAdminPageHarness({
     initialPath: '/admin/agents/agent_release',
-    agents: [generatedAgent],
+    agents: [{
+      ...releaseAgent,
+      slackPresence: {
+        ...presence,
+        avatar: { kind: 'generated', revision: 3, seed: 'gallery-seed', url: presentedUrl },
+      },
+    }],
   });
   await flushAsync();
 
-  const expectedUrl = '/assets/agents/agent_release/avatar/3';
-  const renderedImages = harness.app.innerHTML.match(
-    new RegExp(`<img[^>]+src="${expectedUrl}"`, 'g'),
+  const renderedImages = named.app.innerHTML.match(
+    new RegExp(`<img[^>]+src="${presentedUrl.replace(/\./g, '\\.')}"`, 'g'),
   ) ?? [];
-  assert.equal(renderedImages.length, 2, 'roster and profile should use the same generated avatar');
-  assert.doesNotMatch(harness.app.innerHTML, /agent-profile-avatar-fallback/);
-  assert.doesNotMatch(harness.app.innerHTML, /class="agent-roster-icon variant-[012]"/);
+  assert.equal(renderedImages.length, 2, 'roster and profile should use the server-presented avatar URL');
+  assert.doesNotMatch(named.app.innerHTML, /agent-profile-avatar-fallback/);
+  assert.doesNotMatch(named.app.innerHTML, /class="agent-roster-icon variant-[012]"/);
+
+  const unnamed = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    agents: [{
+      ...releaseAgent,
+      slackPresence: {
+        ...presence,
+        avatar: { kind: 'generated', revision: 3, seed: 'gallery-seed-without-url' },
+      },
+    }],
+  });
+  await flushAsync();
+
+  assert.doesNotMatch(unnamed.app.innerHTML, /<img[^>]+src="\/assets\/agents\//,
+    'Admin does not guess an avatar path the server did not present');
+  assert.match(unnamed.app.innerHTML, /class="agent-roster-icon variant-[012]"/);
 });
 
 test('Agent editing no longer exposes a separate Slack identity control', async () => {
