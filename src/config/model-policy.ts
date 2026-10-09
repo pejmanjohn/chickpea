@@ -26,6 +26,7 @@ import { providerPrefix } from './model-access.ts';
 import { installationFunding } from './platform-funding.ts';
 import { priceCatalogFor } from '../usage/pricing/catalog.ts';
 import type { UsagePriceRate } from '../usage/pricing/types.ts';
+import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
 
 // Accepts `model: null` alongside the stored shape so admin PATCH previews
 // (where null means "clear the pin") can be checked without re-shaping.
@@ -427,8 +428,9 @@ export async function modelProviderUnavailable(
   route: PricedModelRoute | undefined,
   env: PlatformEnv | undefined,
   customerFunded: () => Promise<boolean> | boolean,
+  funding: ModelRequestFundingSource | Promise<ModelRequestFundingSource> = installationFunding(env),
 ): Promise<ModelProviderUnavailableReason | undefined> {
-  if (await installationFunding(env) !== 'platform') {
+  if (await funding !== 'platform') {
     return (await customerFunded()) ? undefined : 'credential_missing';
   }
   const now = Date.now();
