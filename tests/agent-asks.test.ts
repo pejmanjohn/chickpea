@@ -787,7 +787,7 @@ test('a message that mentions several Agents asks each in order, and the first o
       slackAgentThreadKey(jobs[0]!.turn, jobs[0]!.assignment));
     assert.equal((await stores.config.getAgentThreadRoute('T1', 'C1', '4000.000100'))?.agentId, 'agent_finance');
 
-    // A mentioned Agent this person cannot reach here: nobody is asked.
+    // A mentioned Agent not in this Channel: nobody is asked, and the person is offered to add it.
     await processGatewaySlackEnvelope({
       workspaceId: 'T1', eventId: 'Ev5000', eventTime: 5000,
       event: {
@@ -797,7 +797,7 @@ test('a message that mentions several Agents asks each in order, and the first o
     }, undefined, gateway, { stores, enqueueTurn });
     assert.equal(jobs.length, 2);
     assert.equal(posts.at(-1)?.ephemeral, true);
-    assert.match(String(posts.at(-1)?.text), /not available here/);
+    assert.equal(posts.at(-1)?.text, '@legal isn’t in <#C1> yet.');
   });
 });
 

@@ -39,9 +39,15 @@ type MentionRepairConfig = Pick<
   'listAgents' | 'listAgentChannelGrants' | 'updateAgent'
 >;
 
+/**
+ * `unknown`: the directory did not prove the group is this installation's
+ * Agent here, so the mention is ordinary text (a group of people, another
+ * app's Agent, or a lookup that failed). `temporarily_unavailable`: it is,
+ * but binding it raced another change.
+ */
 type MentionedAgentUserGroupRepairResult =
   | { kind: 'repaired'; agent: CustomAgentConfig }
-  | { kind: 'not_available' | 'temporarily_unavailable' };
+  | { kind: 'unknown' | 'temporarily_unavailable' };
 
 type UserGroupLookupResult =
   | { kind: 'found'; group: SlackUserGroup }
@@ -191,15 +197,10 @@ async function repairMentionedAgentUserGroupOnce(
   limiter: AgentUserGroupLookupLimiter,
 ): Promise<MentionedAgentUserGroupRepairResult> {
   const lookup = await limiter.lookup(input.workspaceId, input.userGroupId, input.transport);
-  if (lookup.kind !== 'found') {
-    if (lookup.kind === 'failed' || lookup.kind === 'rate_limited') {
-      return { kind: 'temporarily_unavailable' };
-    }
-    return { kind: 'not_available' };
-  }
+  if (lookup.kind !== 'found') return { kind: 'unknown' };
   if (lookup.group.disabled) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
-    return { kind: 'not_available' };
+    return { kind: 'unknown' };
   }
 
   const [agents, grants] = await Promise.all([
@@ -221,7 +222,7 @@ async function repairMentionedAgentUserGroupOnce(
   );
   if (candidates.length !== 1) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
-    return { kind: 'not_available' };
+    return { kind: 'unknown' };
   }
   const agent = candidates[0]!;
   const activeGrants = grants.filter((grant) =>
@@ -232,7 +233,7 @@ async function repairMentionedAgentUserGroupOnce(
   );
   if (activeGrants.length !== 1 || competingClaim) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
-    return { kind: 'not_available' };
+    return { kind: 'unknown' };
   }
 
   const presence = agent.slackPresence!;
@@ -256,7 +257,7 @@ async function repairMentionedAgentUserGroupOnce(
     );
     if (claims.length !== 1 || claims[0]?.id !== repaired.id) {
       limiter.rememberDenied(input.workspaceId, input.userGroupId);
-      return { kind: 'not_available' };
+      return { kind: 'unknown' };
     }
     return { kind: 'repaired', agent: repaired };
   } catch {
