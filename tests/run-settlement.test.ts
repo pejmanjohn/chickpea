@@ -8,7 +8,12 @@ import {
   type CreditBackReason,
 } from '../src/config/platform-funding.ts';
 import type { RoutineFailureClass } from '../src/routines/types.ts';
-import { creditBackReason, hostedRun, type SlackFailureKind } from '../src/usage/run-settlement.ts';
+import {
+  creditBackReason,
+  hostedRun,
+  type RecoveryFailure,
+  type SlackFailureKind,
+} from '../src/usage/run-settlement.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
@@ -16,9 +21,10 @@ import { NO_RUN_FEES } from './helpers/platform-funding.ts';
  * run can fail, and what is credited back when Chickpea pays the run's
  * provider (`platform`), when the workspace's own key does (`customer`), and
  * when Chickpea pays and the run had already called a tool (`platformAfterToolCall`).
+ * The executor giving up on a turn is its own kind, `recovery-failure`.
  */
 const EXPECTED: Record<
-  SlackFailureKind | RoutineFailureClass,
+  SlackFailureKind | RoutineFailureClass | RecoveryFailure,
   {
     readonly platform: CreditBackReason | null;
     readonly customer: CreditBackReason | null;
@@ -34,6 +40,7 @@ const EXPECTED: Record<
   'credits-exhausted': { platform: null, customer: null, platformAfterToolCall: null },
   sandbox: { platform: 'sandbox', customer: 'sandbox', platformAfterToolCall: 'sandbox' },
   'sandbox-session-cap': { platform: null, customer: null, platformAfterToolCall: null },
+  'recovery-failure': { platform: 'evicted', customer: 'evicted', platformAfterToolCall: 'evicted' },
 
   creator_ineligible: { platform: null, customer: null, platformAfterToolCall: null },
   channel_ineligible: { platform: null, customer: null, platformAfterToolCall: null },

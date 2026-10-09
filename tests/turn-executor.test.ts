@@ -588,13 +588,15 @@ const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
 
 /**
  * A hosted turn whose every reattachment fails, on its last attempt: the
- * executor gives up and posts the recovery text. Returns that text and the
- * host's credit-backs.
+ * executor gives up and posts the recovery text, through the run's
+ * presentation when it `replays`, fresh in the thread when it is `stuck`.
+ * Returns the text each way and the host's credit-backs.
  */
 async function givenUpHostedTurn(
   t: TestContext,
   answer: CreditBackOutcome,
   receipt: boolean,
+  presentation: 'replays' | 'stuck' = 'replays',
 ) {
   const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
   configurePlatformFunding({
@@ -606,11 +608,21 @@ async function givenUpHostedTurn(
   });
   t.after(() => resetPlatformFundingForTests());
   const replayed: Array<string | undefined> = [];
+  const posted: Array<Record<string, unknown>> = [];
+  const client = {
+    chat: {
+      async postMessage(input: Record<string, unknown>) {
+        posted.push(input);
+        return { ok: true, ts: '1785900000.000900' };
+      },
+    },
+  } as unknown as WebClient;
   const h = fakePorts(async (options) => {
+    if (presentation === 'stuck') throw new Error('Slack Agent View presentation requires reconciliation.');
     if (options.replayTerminalResult !== 'failure') throw new Error('Flue read failed');
     replayed.push(options.replayText);
     await options.onDelivered?.();
-  });
+  }, async () => ({ workspaceId: 'T1', client }));
   h.ports.env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_executor' });
   const job = pendingJob({
     attempts: MAX_POST_DISPATCH_ATTEMPTS - 1,
@@ -619,8 +631,8 @@ async function givenUpHostedTurn(
       ? { dispatchReceipt: { submissionId: 'sub_given_up', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_given_up' } }
       : {}),
   });
-  assert.equal(await executeTurnJob(job, h.ports, h.options), true);
-  return { replayed, creditBacks };
+  assert.equal(await executeTurnJob(job, h.ports, h.options), presentation === 'replays');
+  return { replayed, posted, creditBacks };
 }
 
 test('a hosted turn the executor gives up on is credited back as evicted, and its recovery text says so', async (t) => {
@@ -628,6 +640,16 @@ test('a hosted turn the executor gives up on is credited back as evicted, and it
     t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true,
   );
   assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'evicted' }]);
+});
+
+test('a given-up hosted turn whose presentation is stuck posts the credited-back notice fresh', async (t) => {
+  t.mock.method(console, 'error', () => undefined);
+  const { replayed, posted, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true, 'stuck',
+  );
+  assert.deepEqual(replayed, []);
+  assert.deepEqual(posted.map((post) => post.text), [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
   assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'evicted' }]);
 });
 

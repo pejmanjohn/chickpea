@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { ErrorCode, type WebClient } from '@slack/web-api';
 
 import { isDeliveredOnboardingReply } from '../src/admin/onboarding-proof.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
+import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import {
+  configurePlatformFunding,
+  resetPlatformFundingForTests,
+  type CreditBackReason,
+  type RunRef,
+} from '../src/config/platform-funding.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
 import {
@@ -29,10 +36,17 @@ import { ShadowWorkLifecycle } from '../src/work/lifecycle.ts';
 import { prepareSubmitRun, type SubmitRunInput } from '../src/work/submit-run.ts';
 import { WorkStoreLogic } from '../src/work/store.ts';
 import type { WorkStore } from '../src/work/types.ts';
+import type { UsageMicros } from '../src/usage/usage-display.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { captureSlackIdentityOperationalEvents } from './helpers/slack-identity-observability.ts';
-import { ARTIFACT_UNDELIVERED_NOTE, rejectedFileFallbackPayload } from '../src/slack/web-client-presenter.ts';
+import {
+  ARTIFACT_UNDELIVERED_NOTE,
+  DURABLE_RECOVERY_FAILURE_TEXT,
+  rejectedFileFallbackPayload,
+} from '../src/slack/web-client-presenter.ts';
 
 const NOW = 1_940_000_000_000;
+const CREDITED_BACK = 'Usage for this reply was credited back to your plan.';
 
 test('memory confirmation survives durable settlement storage with legacy receipts still readable', () => {
   const db = openStateDb(':memory:');
@@ -1070,6 +1084,114 @@ test('exhausted ledger reattachment posts the recovery notice fresh when the pre
   }
 });
 
+test('a hosted ledger Run given up on in the attempt that recorded its receipt is credited back as evicted, and its recovery text says so', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('credited-notice')));
+    turns.enqueue(turnJob(admission.run.id, 'credited-notice'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const replayed: Array<string | undefined> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      platformEnv,
+      // The dispatch is accepted, then its reconciliation cannot be settled.
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) {
+          const dispatch = options?.flueDispatch;
+          assert.ok(dispatch, 'the attempt carries its dispatch state');
+          dispatch.dispatchReceipt = {
+            submissionId: 'sub_credited', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_credited',
+          };
+          throw new AgentPromptFailure('agent', 409, true);
+        }
+        replayed.push(options?.replayText);
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'flue_dispatch_reconciliation_required',
+    });
+    assert.equal(executions, 2);
+    assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+    assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_canary', runId: 'sub_credited' }, reason: 'evicted' }]);
+  } finally {
+    db.close();
+  }
+});
+
+test('exhausted hosted ledger reattachment with a stuck presentation posts the credited-back notice fresh', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('stuck-credited')));
+    const id = 'turn_stuck-credited';
+    turns.enqueue(turnJob(admission.run.id, 'stuck-credited'));
+    // An earlier attempt dispatched the run and checkpointed its receipt.
+    turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+      turn: turn(), assignment: assignment(), instructions: 'Do the work.', memoryEpoch: 1,
+    }));
+    turns.prepareFlueDispatch(id, 'Do the work', { generation: id });
+    turns.recordFlueReceipt(id, {
+      submissionId: 'sub_stuck_credited', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    });
+    turns.recordAttempt(id, MAX_POST_DISPATCH_ATTEMPTS - 1);
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const posted: Array<Record<string, unknown>> = [];
+    const client = {
+      chat: {
+        async postMessage(input: Record<string, unknown>) {
+          posted.push(input);
+          return { ok: true, ts: '100.009' };
+        },
+      },
+    } as unknown as WebClient;
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client,
+      platformEnv,
+      // The run keeps losing its reattachment, and the recovery notice then
+      // fails through the same stuck presentation.
+      executeTurn: (async () => {
+        executions += 1;
+        if (executions === 1) throw new AgentPromptFailure('agent', 503, false, true);
+        throw new Error('Slack Agent View presentation requires reconciliation.');
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'post_dispatch_attempts_exhausted',
+    });
+    assert.equal(executions, 2);
+    assert.deepEqual(posted.map((post) => post.text), [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+    assert.equal(posted[0]!.client_msg_id, slackClientMessageId(`recovery_notice:${admission.run.id}`));
+    assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_canary', runId: 'sub_stuck_credited' }, reason: 'evicted' }]);
+  } finally {
+    db.close();
+  }
+});
+
 test('failure classification uses the newest immutable RunExecution', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
@@ -1243,6 +1365,24 @@ function presentationPort(
       store.applyAppendCooldown(workspaceId, retryAfterMs),
     matchFlueObservation: (instanceId, submissionId) =>
       turns.matchFlueObservation(instanceId, submissionId),
+  };
+}
+
+/** A hosted installation whose host credits back every run it is asked about. */
+function hostedCanary(t: TestContext) {
+  const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  configurePlatformFunding({
+    funding: async () => 'customer', admit: async () => 'admitted', charge: async () => undefined,
+    ...NO_RUN_FEES,
+    creditBack: async (run, reason) => {
+      creditBacks.push({ run, reason });
+      return { kind: 'credited', usageMicros: 80_000 as UsageMicros };
+    },
+  });
+  t.after(() => resetPlatformFundingForTests());
+  return {
+    platformEnv: scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_canary' }),
+    creditBacks,
   };
 }
 
