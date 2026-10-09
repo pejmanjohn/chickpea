@@ -1,15 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { CONNECTION_CATALOG_PRESETS } from '../src/config/presets.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
 import {
   renderCatalogConnectionAccessReviewPage,
   renderCatalogConnectionSetupPage,
+  renderManagedConnectionDeparturePage,
   renderManagedConnectionSetupPage,
   renderManagedConnectionSuccessPage,
+  renderManagedConnectionUnavailablePage,
   renderManagedConnectionWaitingPage,
+  renderSetupClaimPage,
+  renderSetupPanelPage,
 } from '../src/management/connector-landing-page.ts';
 import type { ManagementSetupRecord } from '../src/management/types.ts';
+import { unstyledClasses } from './helpers/unstyled-classes.ts';
 
 const setup: ManagementSetupRecord = {
   setupOperationId: 'setup_connector_page',
@@ -107,7 +114,16 @@ test('native catalog connectors use the same dedicated Agent setup surface', asy
 
     assert.match(rendered, /Connect Linear to Project Guide/);
     assert.match(rendered, /data-connector-surface="connector-setup"/);
-    assert.match(rendered, /<select[^>]+name="ownerKind"/);
+    assert.match(rendered, /<section class="setup-card">/);
+    assert.match(rendered, /Who uses this connection\?/);
+    assert.match(rendered, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="member"/);
+    assert.match(rendered, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="team"/);
+    assert.doesNotMatch(rendered, /<input[^>]+name="ownerKind"[^>]+checked/);
+    assert.match(rendered, /Each person signs in with their own account\. Project Guide uses yours only for your requests\./);
+    assert.match(rendered, /One shared account for everyone who can use Project Guide\./);
+    assert.doesNotMatch(rendered, /<select|select-control/);
+    assert.match(rendered, /<button[^>]+value="authorize" disabled>Continue to Linear<\/button>/);
+    assert.match(rendered, /Choose Personal or Team to continue\./);
     assert.match(rendered, /Linear requests native read and write access/);
     assert.match(rendered, /Continue to Linear/);
     assert.doesNotMatch(rendered, /<nav|aria-label="Usage"|data-section-switcher/);
@@ -301,4 +317,102 @@ test('managed connector copy and success scope stay accurate for a team Gmail ha
   } finally {
     config.close();
   }
+});
+
+function catalogSetup(presetId: string, label: string): ManagementSetupRecord {
+  return {
+    ...setup,
+    setupOperationId: `setup_catalog_${presetId.replaceAll('-', '_')}`,
+    action: 'catalog_connection',
+    target: {
+      kind: 'catalog_connection',
+      provider: presetId,
+      targetId: `agent:agent_sprout:catalog:${presetId}`,
+      targetLabel: label,
+      expectedRevision: 1,
+      agentId: 'agent_sprout',
+      agentName: 'Sprout',
+      connectionId: `connection_${presetId}`,
+      replacement: false,
+      ownerKind: 'member',
+      presetId,
+    },
+    status: 'claimed',
+  };
+}
+
+const sprout: CustomAgentConfig = {
+  id: 'agent_sprout',
+  kind: 'user',
+  name: 'Sprout',
+  revision: 1,
+  enabled: true,
+  instructions: 'Help the team.',
+  skills: [],
+  mcpServers: [],
+  apiConnections: [],
+  repositories: [],
+};
+
+test('API-preset connectors ask for their fields in styled inputs inside the setup card', () => {
+  const rendered = renderCatalogConnectionSetupPage({ setup: catalogSetup('zendesk', 'Zendesk'), agent: sprout });
+  assert.match(rendered, /<section class="setup-card">/);
+  assert.match(rendered, /<input class="text-input" id="workspace-subdomain" name="workspaceSubdomain"[^>]+required>/);
+  assert.match(rendered, /<input class="text-input" id="connection-credential" name="credential" type="password"[^>]+required>/);
+  assert.match(rendered, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="team"/);
+  assert.doesNotMatch(rendered, /<select|owner-select|select-control/);
+});
+
+test('every connector and setup page styles each class it uses', () => {
+  const pages: Array<[string, string]> = CONNECTION_CATALOG_PRESETS.map((preset) => [
+    `catalog setup for ${preset.id}`,
+    renderCatalogConnectionSetupPage({ setup: catalogSetup(preset.id, preset.name), agent: sprout }),
+  ]);
+  const metaAds = catalogSetup('meta-ads', 'Meta Ads');
+  pages.push(
+    ['Meta Ads access review', renderCatalogConnectionAccessReviewPage({
+      setup: metaAds,
+      agent: sprout,
+      accessReview: { approvedAccountIds: ['act_1234567890'], tools: [
+        { name: 'ads_get_insights', title: 'Get insights', available: true, selected: true, effect: 'read' },
+        { name: 'ads_create_campaign', available: false, selected: false, effect: 'write', requiresEditingAccess: true },
+      ] },
+    })],
+    ['BugSnag access review', renderCatalogConnectionAccessReviewPage({
+      setup: catalogSetup('bugsnag', 'BugSnag'),
+      agent: sprout,
+      accessReview: { approvedAccountIds: [], tools: [] },
+    })],
+    ['managed setup, read', renderManagedConnectionSetupPage({ setup, agent: sprout })],
+    ['managed setup, write', renderManagedConnectionSetupPage({ setup, agent: sprout, writeAvailable: true, failureMessage: 'Try again.' })],
+    ['managed waiting', renderManagedConnectionWaitingPage({ setup, agent: sprout })],
+    ['managed departure', renderManagedConnectionDeparturePage({ setup, agent: sprout }, 'https://hubspot.example/authorize')],
+    ['managed success', renderManagedConnectionSuccessPage({ setup: { ...setup, status: 'completed' }, agent: sprout })],
+    ['connection unavailable', renderManagedConnectionUnavailablePage()],
+    ['one-use claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: false })],
+    ['reusable claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: true })],
+    ['generic setup panel', renderSetupPanelPage({
+      title: 'Connect Gmail',
+      surface: 'setup-summary',
+      content: '<p class="eyebrow">Chickpea delegated setup</p><h1>Connect Gmail</h1><dl><div><dt>Provider</dt><dd>gmail</dd></div></dl>' +
+        '<p class="warning">This will replace the currently connected credential.</p><p class="error">Setup did not complete.</p>' +
+        '<form method="post" action="/setup/setup_panel/complete"><label>Credential<input type="password" name="credential" required></label><button type="submit">Continue</button></form>',
+    })],
+  );
+  for (const [name, html] of pages) {
+    assert.deepEqual(unstyledClasses(html), [], `${name} uses classes with no CSS rule`);
+  }
+});
+
+test('the setup claim page shows a branded loading state and stops it when the link fails', () => {
+  const claim = renderSetupClaimPage({ setupId: 'setup_claim', reusable: true });
+  assert.match(claim, /data-connector-surface="setup-claim"/);
+  assert.match(claim, /role="img" aria-label="Chickpea"/);
+  assert.match(claim, /<span class="setup-spinner" id="claim-spinner" aria-hidden="true"><\/span>/);
+  assert.match(claim, /<p class="lead" id="status" role="status" aria-live="polite">Checking this secure setup link…<\/p>/);
+  assert.match(claim, /function unavailable\(\)\{document\.getElementById\("claim-spinner"\)\.hidden=true;/);
+  assert.match(claim, /\.setup-spinner\[hidden\] \{ display: none; \}/);
+  assert.match(claim, /prefers-reduced-motion: reduce[^}]*\.setup-spinner \{ animation: none; \}/);
+  assert.match(claim, /fetch\("\/setup\/setup_claim\/exchange"/);
+  assert.match(renderSetupClaimPage({ setupId: 'setup_claim', reusable: false }), /Checking this one-use setup link…/);
 });
