@@ -10278,6 +10278,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const PLATFORM_DEFAULT_MODEL = { providerId: 'anthropic', modelId: 'anthropic/claude-opus-5-5' } as const;
+  const PLATFORM_DEFAULT_IMAGE_MODEL_ID: ImageModelId = OPENAI_API_IMAGE_DEFAULT_MODEL_ID;
 
   app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
@@ -10298,12 +10299,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           workspaceId: slack.teamId,
           providerId: PLATFORM_DEFAULT_MODEL.providerId,
         });
-        return await startOnboardingTryWithModel(c, selected, {
+        const started = await startOnboardingTryWithModel(c, selected, {
           workspaceId: slack.teamId,
           providerId: PLATFORM_DEFAULT_MODEL.providerId,
           modelId: PLATFORM_DEFAULT_MODEL.modelId,
           expectedDefaultRevision: (await store(c).getWorkspaceModelDefault(slack.teamId))?.revision ?? 0,
         });
+        if (started.ok) {
+          const workspaceId = slack.teamId;
+          await initializeWorkspaceImageDefaultBestEffort(async () => {
+            const profile = findImageModel(PLATFORM_DEFAULT_IMAGE_MODEL_ID);
+            if (!profile || !await imageModelProfileReady(profile, c.env as PlatformEnv | undefined, settings(c))) {
+              return undefined;
+            }
+            return {
+              config: store(c),
+              workspaceId,
+              modelId: PLATFORM_DEFAULT_IMAGE_MODEL_ID,
+              membershipId: principal.membershipId,
+            };
+          });
+        }
+        return started;
       } catch (error) {
         const raced = await readOnboardingJourney(settings(c));
         if (!raced || (raced.journey.state !== 'complete' && !raced.journey.tryStartedAt)) throw error;

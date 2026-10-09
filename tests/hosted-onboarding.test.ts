@@ -29,6 +29,7 @@ import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import { IdentityStoreLogic } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
+import { currentImagePrice } from '../src/images/request-record.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import {
@@ -290,6 +291,7 @@ test('the hosted journey runs Choose provider, Choose model and Try; finishing o
     const tryStage = await trying.json() as { stage: string; revision: string };
     assert.equal(tryStage.stage, 'try');
     assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))?.modelId, model);
+    assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'on its own key, onboarding chooses no image model');
     // With a key and Chickpea answering on that model, Admin opens as usual.
     assert.equal((await admin('/admin')).status, 200);
     // Proceed to Dashboard finishes the journey without waiting for the reply.
@@ -449,11 +451,12 @@ function hostPorts(t: TestContext) {
 const startOnPlatform = (as: ReturnType<Awaited<ReturnType<typeof signUp>>['admin']>) =>
   as('/admin/api/onboarding/platform', { method: 'POST' });
 
-test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 5.5 once, and goes straight to Try', async (t) => {
+test('where the host sells Chickpea\'s models, onboarding chooses them, Opus 5.5 and the default image model once, and goes straight to Try', async (t) => {
   const host = hostPorts(t);
   const signup = await signUp(t);
   await signup.claim();
-  const admin = signup.admin(await signup.ownerPrincipal());
+  const owner = await signup.ownerPrincipal();
+  const admin = signup.admin(owner);
   const started = await startOnPlatform(admin);
   assert.equal(started.status, 200, await started.clone().text());
   const body = await started.json() as { stage: string; providerId: string; modelId: string; revision: string };
@@ -467,6 +470,10 @@ test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 
   assert.equal(journey.agentId, 'agent_chickpea');
   assert.equal(journey.selectedModelId, 'anthropic/claude-opus-5-5');
   assert.equal(body.revision, revision);
+  const imageRole = await signup.config.getWorkspaceModelRole(TEAM, 'image');
+  assert.ok(imageRole, 'the default image model is chosen');
+  assert.equal(imageRole.modelId, 'openai/gpt-image-2.5-flare');
+  assert.equal(imageRole.lastChangedByMembershipId, owner.membershipId);
 
   const anotherOwner = signup.admin(principalFor('owner', { userId: 'user_second_owner', membershipId: 'membership_second_owner' }));
   for (const as of [admin, anotherOwner]) {
@@ -477,6 +484,41 @@ test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 
   assert.deepEqual(host.chosen, ['platform'], 'the host is asked once');
   assert.equal((await signup.journey())!.revision, revision);
   assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))!.revision, workspaceDefault.revision);
+  assert.equal((await signup.config.getWorkspaceModelRole(TEAM, 'image'))!.revision, imageRole.revision);
+});
+
+for (const [kept, modelId] of [
+  ['an image role set to Not set', undefined],
+  ['another image model', 'openai/gpt-image-2.5-sunburst'],
+] as const) {
+  test(`setting up on Chickpea's models keeps ${kept}`, async (t) => {
+    hostPorts(t);
+    const signup = await signUp(t);
+    await signup.claim();
+    const chosen = await signup.config.putWorkspaceModelRole({
+      workspaceId: TEAM, role: 'image', ...(modelId ? { modelId } : {}),
+    }, 0);
+    const started = await json<{ stage: string }>(startOnPlatform(signup.admin(await signup.ownerPrincipal())));
+    assert.equal(started.stage, 'try');
+    assert.deepEqual(await signup.config.getWorkspaceModelRole(TEAM, 'image'), chosen);
+  });
+}
+
+test('setting up on Chickpea\'s models chooses no image model that Chickpea\'s models cannot serve, and still chooses the chat model', async (t) => {
+  const claimedAt = Date.UTC(2026, 9, 7, 12);
+  const imagePrice = currentImagePrice('openai', 'gpt-image-2.5-flare', claimedAt);
+  assert.ok(imagePrice, 'the default image model is priced at the claim');
+  t.mock.timers.enable({ apis: ['Date'], now: claimedAt });
+  hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  t.mock.timers.setTime(imagePrice.version.staleAfter);
+  const started = await startOnPlatform(admin);
+  assert.equal(started.status, 200, await started.clone().text());
+  assert.equal((await started.json() as { stage: string }).stage, 'try');
+  assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))?.modelId, 'anthropic/claude-opus-5-5');
+  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined);
 });
 
 test('when the host cannot record Chickpea\'s models, onboarding changes nothing, and trying again finishes', async (t) => {
@@ -525,6 +567,7 @@ test('a Member, an Admin, a finished journey, or a host with no billing port cha
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
   await beginOnboardingJourney(signup.settings);
   assert.equal((await startOnPlatform(admin)).status, 404, 'no port, nothing to choose');
+  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'no port, no image model');
 });
 
 test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {
