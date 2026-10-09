@@ -41,12 +41,19 @@ export interface UsageRow {
   readonly usageMicros: UsageMicros;
 }
 
+/** What the Owner chose in Stripe's portal to happen to the plan at `at` instead of renewing it: it ends, or moves to another plan. */
+export type PendingPlanChange =
+  | { readonly kind: 'ends'; readonly at: Date }
+  | { readonly kind: 'plan'; readonly plan: { readonly key: string; readonly name: string }; readonly at: Date };
+
 export interface BillingSummary {
   readonly funding: BillingFunding;
   /** Null without a plan: a trial, or an own-key installation that never chose one. */
   readonly plan: { readonly key: string; readonly name: string; readonly priceCents: number } | null;
   /** The billing period `use` covers; its end is when the plan renews. */
   readonly period: { readonly start: Date; readonly end: Date } | null;
+  /** Null or absent when the plan renews unchanged, or there is no plan. */
+  readonly pendingChange?: PendingPlanChange | null;
   /** The plan's meter; null without a plan period. */
   readonly planUsage: {
     readonly usedMicros: UsageMicros;
