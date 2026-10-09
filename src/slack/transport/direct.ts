@@ -205,7 +205,7 @@ export function createDirectSlackTransportFromClient(
         ...(input.blocks ? { blocks: input.blocks } : {}),
         ...(input.persona ? {
           username: input.persona.name,
-          icon_url: input.persona.avatarUrl,
+          ...(input.persona.avatarUrl ? { icon_url: input.persona.avatarUrl } : {}),
         } : {}),
         ...(input.idempotencyKey
           ? { client_msg_id: slackClientMessageId(input.idempotencyKey) }

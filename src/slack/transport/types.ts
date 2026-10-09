@@ -57,7 +57,8 @@ export interface SlackUserGroup {
 
 export interface SlackMessagePersona {
   name: string;
-  avatarUrl: string;
+  /** Absent on an install with no public URL to serve the avatar from. */
+  avatarUrl?: string;
 }
 
 export interface SlackMessageReference {

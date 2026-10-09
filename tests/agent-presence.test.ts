@@ -20,6 +20,7 @@ import {
   alternativeAgentHandles,
   normalizeAgentHandle,
 } from '../src/slack/agent-presence/handles.ts';
+import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import {
   SlackTransportError,
@@ -48,7 +49,7 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport, now: () => NOW }).publish({
+      () => new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish({
         workspaceId: 'TACME',
         agentId: 'agent_support',
         channelId: 'C_SUPPORT',
@@ -99,7 +100,7 @@ test('publishing verifies actor membership, joins a public Channel, and creates 
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
-    const result = await new AgentPresenceReconciler({ config, transport, now: () => NOW }).publish({
+    const result = await new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish({
       workspaceId: 'TACME',
       agentId: 'agent_support',
       channelId: 'C_SUPPORT',
@@ -132,7 +133,7 @@ test('publishing into a renamed Channel refreshes its stored Channel and grant l
   try {
     await config.createAgent(agent('agent_support', 'Support Triage', 'support'));
     await config.createAgent(agent('agent_billing', 'Billing', 'billing'));
-    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
     await reconciler.publish({
       workspaceId: 'TACME',
       agentId: 'agent_support',
@@ -172,7 +173,7 @@ test('publishing activates a private Chickpea-created draft before enabling its 
       lifecycle: 'draft',
     });
 
-    const result = await new AgentPresenceReconciler({ config, transport, now: () => NOW }).publish({
+    const result = await new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish({
       workspaceId: 'TACME',
       agentId: 'agent_support',
       channelId: 'C_SUPPORT',
@@ -196,7 +197,7 @@ test('publication fails closed when the actor is not a member or Chickpea needs 
     const notMember = new FakeSlackTransport();
     notMember.actorIsMember = false;
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport: notMember }).publish({
+      () => new AgentPresenceReconciler({ config, transport: notMember, announce: null }).publish({
         workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_PRIVATE',
         actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
       }),
@@ -209,7 +210,7 @@ test('publication fails closed when the actor is not a member or Chickpea needs 
     privateChannel.channel.private = true;
     privateChannel.channel.member = false;
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport: privateChannel }).publish({
+      () => new AgentPresenceReconciler({ config, transport: privateChannel, announce: null }).publish({
         workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_PRIVATE',
         actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
       }),
@@ -228,7 +229,7 @@ test('a failed republish never downgrades an existing active Channel grant', asy
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({
       workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
@@ -256,7 +257,7 @@ test('Slack policy denial saves needs-attention state with the exact role recove
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport }).publish({
+      () => new AgentPresenceReconciler({ config, transport, announce: null }).publish({
         workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
         actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
       }),
@@ -302,7 +303,7 @@ test('retry adopts an exact group after an ambiguous create and never creates a 
   transport.ambiguousCreate = true;
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
     await assert.rejects(
       () => reconciler.publish({
         workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
@@ -333,7 +334,7 @@ test('retry never adopts a foreign same-handle group after an ambiguous create',
   transport.ambiguousCreatePersistsGroup = false;
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
     await assert.rejects(
       () => reconciler.publish({
         workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
@@ -380,7 +381,7 @@ test('a handle edit racing Slack creation converges on one updated user group', 
         },
       }, current.revision);
     };
-    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW });
     const reconciled = await reconciler.reconcile('agent_support');
 
     assert.equal(reconciled.name, 'Support Pro');
@@ -398,7 +399,7 @@ test('archive disables the alias and removes grants; restore enables the same al
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({
       workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
@@ -423,7 +424,7 @@ test('failed Slack restore stays retryable with an active desired state', async 
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({
       workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
@@ -456,7 +457,7 @@ test('Retry never resurrects an archived Agent or its Slack user group', async (
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({
       workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
@@ -742,6 +743,127 @@ function crc32(value: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
+function announcing(transport: FakeSlackTransport, options: { welcomeOnJoin?: boolean } = {}) {
+  return agentPresenceAnnouncements({
+    transport,
+    welcomeOnJoin: async () => options.welcomeOnJoin ?? true,
+    avatarUrl: (candidate) => `https://avatars.example/${candidate.id}.png`,
+    management: { releaseAgentWelcome: async () => ({ created: false }) },
+  });
+}
+
+const PUBLISH_SUPPORT = {
+  workspaceId: 'TACME',
+  agentId: 'agent_support',
+  channelId: 'C_SUPPORT',
+  actorMembershipId: 'membership_ada',
+  actorSlackUserId: 'UADA',
+};
+
+test('publishing into a public Channel posts one top-level welcome under the Agent with its live handle', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent({
+      ...agent('agent_support', 'Support', 'help'),
+      description: 'Answers support questions.',
+    });
+    const result = await new AgentPresenceReconciler({
+      config, transport, announce: announcing(transport),
+    }).publish(PUBLISH_SUPPORT);
+
+    assert.equal(transport.posts.length, 1);
+    const [post] = transport.posts;
+    assert.equal(post!.channelId, 'C_SUPPORT');
+    assert.equal(post!.threadTs, undefined);
+    assert.deepEqual(post!.persona, { name: 'Support', avatarUrl: 'https://avatars.example/agent_support.png' });
+    assert.match(post!.text, /^Hi, I’m \*Support\*\. Answers support questions\.\n\n/);
+    assert.match(post!.text, /Mention <!subteam\^S1\|@help> to start a thread with me/);
+    assert.equal(
+      post!.idempotencyKey,
+      `agent-channel-welcome:TACME:C_SUPPORT:agent_support:${result.grant.revision}`,
+    );
+  } finally {
+    config.close();
+  }
+});
+
+test('a second Agent added to a Channel Chickpea already joined posts its own welcome', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.channel.member = true;
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    await config.createAgent(agent('agent_sales', 'Sales', 'sales'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: announcing(transport) });
+    await reconciler.publish(PUBLISH_SUPPORT);
+    await reconciler.publish({ ...PUBLISH_SUPPORT, agentId: 'agent_sales' });
+
+    assert.equal(transport.joinCalls, 0);
+    assert.deepEqual(transport.posts.map((post) => post.persona?.name), ['Support', 'Sales']);
+    assert.match(transport.posts[1]!.text, /<!subteam\^S2\|@sales>/);
+  } finally {
+    config.close();
+  }
+});
+
+test('republishing an active grant, a private Channel, and welcome-off post no welcome', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: announcing(transport) });
+    await reconciler.publish(PUBLISH_SUPPORT);
+    await reconciler.publish(PUBLISH_SUPPORT);
+    assert.equal(transport.posts.length, 1, 'an active grant republished announces nothing');
+
+    const privateTransport = new FakeSlackTransport();
+    privateTransport.channel = { id: 'C_PRIVATE', name: 'private-lab', private: true, member: true, archived: false };
+    privateTransport.groups = transport.groups;
+    const privateResult = await new AgentPresenceReconciler({
+      config, transport: privateTransport, announce: announcing(privateTransport),
+    }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_PRIVATE' });
+    assert.equal(privateResult.grant.status, 'active');
+    assert.deepEqual(privateTransport.posts, [], 'a private Channel keeps its ephemeral confirmation only');
+
+    const quiet = new FakeSlackTransport();
+    quiet.channel = { id: 'C_QUIET', name: 'quiet', private: false, member: false, archived: false };
+    quiet.groups = transport.groups;
+    const quietResult = await new AgentPresenceReconciler({
+      config, transport: quiet, announce: announcing(quiet, { welcomeOnJoin: false }),
+    }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_QUIET' });
+    assert.equal(quietResult.grant.status, 'active');
+    assert.deepEqual(quiet.posts, [], 'the welcome setting is honored');
+  } finally {
+    config.close();
+  }
+});
+
+test('a welcome Slack refuses never fails the publication', async (t) => {
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.postError = new SlackTransportError('chat.postMessage', 'channel_not_found');
+  try {
+    await config.createAgent({
+      ...agent('agent_support', 'Support', 'support'),
+      description: 'A secret-looking description.',
+    });
+    const result = await new AgentPresenceReconciler({
+      config, transport, announce: announcing(transport),
+    }).publish(PUBLISH_SUPPORT);
+
+    assert.equal(result.grant.status, 'active');
+    assert.equal(result.agent.slackPresence?.health, 'healthy');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /announcement/);
+    assert.doesNotMatch(warnings[0]!, /secret-looking/, 'the message text never reaches the log');
+  } finally {
+    config.close();
+  }
+});
+
 function agent(id: string, name: string, handle: string): CustomAgentConfig {
   return {
     id,
@@ -834,7 +956,13 @@ class FakeSlackTransport implements SlackTransport {
     const group = this.requiredGroup(id); group.disabled = false; return { ...group };
   }
   async publishAppHome(): Promise<never> { throw new Error('unused'); }
-  async postMessage(): Promise<never> { throw new Error('unused'); }
+  posts: Array<Parameters<SlackTransport['postMessage']>[0]> = [];
+  postError: Error | undefined;
+  async postMessage(input: Parameters<SlackTransport['postMessage']>[0]) {
+    if (this.postError) throw this.postError;
+    this.posts.push(input);
+    return { channelId: input.channelId, ts: `1800000000.${String(this.posts.length).padStart(6, '0')}` };
+  }
 
   private requiredGroup(id: string): SlackUserGroup {
     const group = this.groups.find((candidate) => candidate.id === id);
@@ -853,7 +981,7 @@ test('a workspace default Agent\'s denied archive takes its replacement now, so 
     await config.ensureWorkspaceInstallation({
       workspaceId: 'TACME', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -876,7 +1004,7 @@ test('archive finishes when the Agent\'s user group no longer exists in Slack', 
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -893,7 +1021,7 @@ test('archive takes only Slack\'s documented not-found code as proof a missing u
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -914,7 +1042,7 @@ test('archive refuses a not-found answer for a user group Slack still lists', as
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -934,7 +1062,7 @@ test('restore finishes when Slack says the handle is already enabled', async () 
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -958,7 +1086,7 @@ test('a workspace default Agent keeps its default when marking it for archive fa
     await store.ensureWorkspaceInstallation({
       workspaceId: 'TACME', transportMode: 'direct', defaultAgentId: 'agent_support',
     });
-    await new AgentPresenceReconciler({ config: store, transport }).publish({ workspaceId: 'TACME',
+    await new AgentPresenceReconciler({ config: store, transport, announce: null }).publish({ workspaceId: 'TACME',
       agentId: 'agent_support', channelId: 'C_SUPPORT', actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     const config = Object.create(store) as typeof store;
     config.updateAgent = async (agentId, patch, expectedRevision) => {
@@ -966,7 +1094,7 @@ test('a workspace default Agent keeps its default when marking it for archive fa
       return store.updateAgent(agentId, patch, expectedRevision);
     };
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport })
+      () => new AgentPresenceReconciler({ config, transport, announce: null })
         .archive('agent_support', { replacementDefaultAgentId: 'agent_backup' }),
       /changed concurrently/,
     );
@@ -980,7 +1108,7 @@ test('archive retry finishes when Slack says an Owner already deactivated the ha
   const transport = new FakeSlackTransport();
   try {
     await config.createAgent(agent('agent_support', 'Support', 'support'));
-    const reconciler = new AgentPresenceReconciler({ config, transport });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
     await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
       actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
     await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');
@@ -1003,7 +1131,7 @@ for (const externallyDisabled of [false, true]) {
     const transport = new FakeSlackTransport();
     try {
       await config.createAgent(agent('agent_support', 'Support', 'support'));
-      const reconciler = new AgentPresenceReconciler({ config, transport });
+      const reconciler = new AgentPresenceReconciler({ config, transport, announce: null });
       await reconciler.publish({ workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
         actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA' });
       await config.deleteAgentChannelGrant('TACME', 'C_SUPPORT', 'agent_support');

@@ -30,7 +30,10 @@ import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { agentPresenceAnnouncements } from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
+import { resolveSlackBehaviorSettings } from '../slack/behavior-settings.ts';
+import { resolveSlackPublicUrl } from '../slack/credentials.ts';
 import { publishGeneratedAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import {
@@ -38,7 +41,11 @@ import {
   resolveChickpeaGatewayUrl,
 } from '../slack/gateway/runtime.ts';
 import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
-import { agentAvatarInstallationField } from '../slack/agent-presence/avatar-assets.ts';
+import {
+  agentAvatarInstallation,
+  agentAvatarInstallationField,
+  agentAvatarUrlForPresentation,
+} from '../slack/agent-presence/avatar-assets.ts';
 import {
   resolveSlackInstallationCredentials,
   type SlackCredentialDependencies,
@@ -108,10 +115,23 @@ export function createLiveWorkspaceManagementService(
     }
     return user;
   };
-  const presenceReconciler = async (workspaceId: string) => new AgentPresenceReconciler({
-    config: config as ConfigStore,
-    transport: await slackTransport(workspaceId),
-  });
+  const management = getManagementStore(env);
+  const presenceReconciler = async (workspaceId: string) => {
+    const transport = await slackTransport(workspaceId);
+    const publicOrigin = await resolveSlackPublicUrl(env, settings, identity);
+    return new AgentPresenceReconciler({
+      config: config as ConfigStore,
+      transport,
+      announce: agentPresenceAnnouncements({
+        transport,
+        welcomeOnJoin: async () =>
+          (await resolveSlackBehaviorSettings(env, settings)).welcomeOnJoin.value,
+        avatarUrl: (agent) =>
+          agentAvatarUrlForPresentation(agent, publicOrigin, agentAvatarInstallation(env)),
+        management,
+      }),
+    });
+  };
   const productTelemetry = overrides.productTelemetry ?? createPlatformProductTelemetry({
     ...(env ? { env } : {}),
     settings,
@@ -120,7 +140,7 @@ export function createLiveWorkspaceManagementService(
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
-    management: getManagementStore(env),
+    management,
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
     work: getWorkStore(env),

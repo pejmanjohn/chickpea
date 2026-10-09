@@ -9,6 +9,7 @@ import {
   type SlackTransport,
   type SlackUserGroup,
 } from '../transport/types.ts';
+import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
   classifyAgentPresenceError,
@@ -18,6 +19,12 @@ import { alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
+  /**
+   * Who hears about a presence transition. Only `publish` and `reconcile`
+   * announce, so `null` only where the reconciler is built for `archive` or
+   * `restore`.
+   */
+  announce: AgentPresenceAnnouncements | null;
   now?: () => number;
 }
 
@@ -370,6 +377,15 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
+    if (pendingGrant.status !== 'active') {
+      await this.announce('joinedChannel', published.id, (announce) => announce.joinedChannel({
+        workspaceId: input.workspaceId,
+        channelId: input.channelId,
+        channelIsPrivate: channel.private,
+        agent: published,
+        grantRevision: grant.revision,
+      }));
+    }
     return { agent: published, grant };
   }
 
@@ -668,6 +684,30 @@ export class AgentPresenceReconciler {
       handle: normalizedHandle,
       description: desiredDescription,
     });
+  }
+
+  /**
+   * Announcements are best effort: the grant or presence write they follow
+   * already happened, so a failure is logged (never the message) and never
+   * fails the operation.
+   */
+  private async announce(
+    transition: keyof AgentPresenceAnnouncements,
+    agentId: string,
+    run: (announce: AgentPresenceAnnouncements) => Promise<void>,
+  ): Promise<void> {
+    const { announce } = this.dependencies;
+    if (!announce) return;
+    try {
+      await run(announce);
+    } catch (error) {
+      console.warn('[chickpea] Agent presence announcement failed', JSON.stringify({
+        transition,
+        agentId,
+        error: error instanceof Error ? error.name : 'unknown',
+        ...(error instanceof SlackTransportError ? { code: error.code } : {}),
+      }));
+    }
   }
 
   private async recordFailure(

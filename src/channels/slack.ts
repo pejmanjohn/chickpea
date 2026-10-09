@@ -201,6 +201,7 @@ import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient, setAgentSessionStatus } from '../slack/gateway/web-client.ts';
 import type { GatewayPrivateChannelSetupDelivery } from '../slack/gateway/protocol.ts';
+import { agentPresenceAnnouncements } from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { prepareGeneratedGatewayAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { requireAgentChannelPublication } from '../auth/permissions.ts';
@@ -2199,7 +2200,23 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
-      return new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+      const publicOrigin = await resolveSlackPublicUrl(
+        execution.platformEnv, stores.settings, stores.identity,
+      );
+      return new AgentPresenceReconciler({
+        config: stores.config,
+        transport,
+        announce: agentPresenceAnnouncements({
+          transport,
+          welcomeOnJoin: async () => (await resolveSlackBehaviorSettings(
+            execution.platformEnv, stores.settings,
+          )).welcomeOnJoin.value,
+          avatarUrl: (candidate) => agentAvatarUrlForPresentation(
+            candidate, publicOrigin, agentAvatarInstallation(execution.platformEnv),
+          ),
+          management: stores.management,
+        }),
+      }).publish({
         workspaceId, channelId, agentId,
         actorMembershipId: current.principal.membershipId,
         actorSlackUserId: user.slackUserId,
