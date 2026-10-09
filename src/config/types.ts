@@ -206,6 +206,7 @@ export interface AgentSlackPresence {
   };
   errorCode?: string;
   errorDetail?: string;
+  handleSuggestions?: string[];
   observedAt?: number;
 }
 

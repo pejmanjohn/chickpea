@@ -660,6 +660,7 @@ function runAdminPageHarness(
       nextCursor?: string;
     }>;
     deferAgentPatch?: boolean;
+    agentPatchResponse?: (body: Record<string, unknown>) => Record<string, unknown>;
     initialSearch?: string;
     initialVisibility?: 'hidden' | 'visible';
     usageAdminUi?: boolean;
@@ -1136,6 +1137,7 @@ function runAdminPageHarness(
   const apiOAuthStartResult = options.apiOAuthStartResult;
   const apiOAuthStartError = options.apiOAuthStartError;
   const deferAgentPatch = options.deferAgentPatch === true;
+  const agentPatchResponse = options.agentPatchResponse;
   const githubStatus = options.githubStatus;
   const settingsLoadFetch = options.settingsLoadFetch;
   const websiteLoginsFetch = options.websiteLoginsFetch;
@@ -2507,7 +2509,7 @@ function runAdminPageHarness(
         const { expectedRevision: _expectedRevision, ...patch } = body;
         const revision = Number(existing?.revision ?? 1) + 1;
         if (existing) Object.assign(existing, patch, { id, revision });
-        return jsonResponse({ agent: { id, ...patch, revision } });
+        return jsonResponse({ agent: agentPatchResponse?.(body) ?? { id, ...patch, revision } });
       };
       if (deferAgentPatch) {
         return new Promise((resolve) => {
@@ -4112,6 +4114,99 @@ test('Agent header owns its editable avatar while Slack owns handle, channels, a
   await flushAsync();
   assert.equal(harness.agentPatchBodies[0]?.body.handle, 'release-help');
   assert.equal(harness.agentPatchBodies[0]?.body.editPolicy, 'all_workspace_members');
+});
+
+const takenHandleSuggestions = ['support-team', 'support-2', 'support-3'];
+const takenHandlePresence = {
+  requestedHandle: 'support',
+  normalizedHandle: 'support',
+  desiredState: 'active',
+  avatar: { kind: 'generated', revision: 1 },
+};
+const takenHandleAgent = {
+  ...releaseAgent,
+  name: 'Support',
+  revision: 3,
+  slackPresence: {
+    ...takenHandlePresence,
+    health: 'needs_attention',
+    errorCode: 'handle_collision',
+    handleSuggestions: takenHandleSuggestions,
+  },
+  slackPresenceRecovery: {
+    title: '@support is already in use',
+    explanation: 'Slack handles are shared across the whole workspace, so a person or a Slack user group already uses this one. The Agent is saved.',
+    steps: ['Choose a suggested handle below, or type another one and save.'],
+    actionLabel: 'Retry',
+    suggestions: takenHandleSuggestions,
+  },
+};
+
+test('a taken Slack handle offers each suggested handle as a one-click save', async () => {
+  const harness = runAdminPageHarness({
+    agents: [takenHandleAgent],
+    deferAgentPatch: true,
+    agentPatchResponse: (body) => ({
+      ...takenHandleAgent,
+      revision: 4,
+      slackPresence: {
+        ...takenHandlePresence,
+        requestedHandle: body.handle,
+        normalizedHandle: body.handle,
+        health: 'healthy',
+      },
+      slackPresenceRecovery: null,
+    }),
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  const offeredHandles = () => [...harness.app.innerHTML.matchAll(
+    /data-action="agent-presence-handle" data-handle="([^"]+)"( disabled)?>@([^<]+)<\/button>/g,
+  )].map(([, handle, disabled, label]) => ({ handle, label, disabled: !!disabled }));
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': takenHandleAgent.id }) });
+  assert.match(
+    harness.app.innerHTML,
+    /@support is already in use[\s\S]*?Choose a suggested handle below[\s\S]*?Suggested handles[\s\S]*?data-action="agent-presence-handle"[\s\S]*?data-action="agent-presence-retry"/,
+  );
+  assert.deepEqual(offeredHandles(), takenHandleSuggestions.map((handle) => ({ handle, label: handle, disabled: false })));
+
+  input({ target: inputTarget({ 'data-action': 'profile-instructions' }, 'Unsaved instructions.') });
+  input({ target: inputTarget({ 'data-action': 'profile-handle' }, 'typed-handle') });
+  click({ target: actionTarget({ 'data-action': 'agent-presence-handle', 'data-handle': 'support-team' }) });
+  await flushAsync();
+  assert.deepEqual(harness.agentPatchBodies, [
+    { id: takenHandleAgent.id, body: { expectedRevision: 3, handle: 'support-team' } },
+  ]);
+  assert.ok(offeredHandles().every(({ disabled }) => disabled), 'handles wait for the pending save');
+  assert.match(harness.app.innerHTML, /data-action="agent-presence-retry" disabled>/);
+
+  harness.resolveAgentPatch();
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /already in use|Suggested handles|agent-presence-handle/);
+  assert.match(harness.app.innerHTML, /id="p-handle" type="text" maxlength="80" value="support-team"/);
+  assert.match(harness.app.innerHTML, /data-action="profile-instructions">Unsaved instructions\.<\/textarea>/);
+});
+
+test('a suggested handle chosen after another session changed the Agent asks for a reload', async () => {
+  const harness = runAdminPageHarness({
+    agents: [takenHandleAgent],
+    agentWriteError: { status: 409, error: 'agent_revision_conflict' },
+  });
+  await flushAsync();
+  const { click } = harness.listeners;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': takenHandleAgent.id }) });
+  click({ target: actionTarget({ 'data-action': 'agent-presence-handle', 'data-handle': 'support-team' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.match(
+    harness.app.innerHTML,
+    /This Agent changed in another session\. Your draft is preserved; reload the latest Agent before saving again\.[\s\S]*?data-action="reload-profile">Reload latest Agent<\/button>/,
+  );
+  assert.doesNotMatch(harness.app.innerHTML, /agent_revision_conflict/);
+  assert.match(harness.app.innerHTML, /data-action="agent-presence-handle" data-handle="support-team">/);
 });
 
 test('Agent Slack destination explains every derived DM audience without controls or rosters', async () => {

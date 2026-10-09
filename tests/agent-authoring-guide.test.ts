@@ -180,6 +180,7 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'creation proposals are not supported',
     'Do not call `propose_workspace_changes`',
     'ordered `connectorMentions`',
+    'services the requester asked this Agent to use, in this message or earlier in the conversation',
     'duplicate-identity clarification',
     'Never re-propose unchanged content',
     'without a confirmation turn',
@@ -239,6 +240,16 @@ test('Slack tool selection routes destructive schedule deletion through confirma
   assert.doesNotMatch(scheduleActionDescription, /(?:^|[.!?]\s+)deletion uses/i);
 });
 
+test('Slack creation passes services requested earlier in the conversation as welcome hints', () => {
+  const selectionInstruction = slackManagementInstruction('agent_synthetic');
+
+  assert.match(
+    selectionInstruction,
+    /When the requester asked this Agent to use services, in this message or earlier in the conversation, pass their display names in connectorMentions/,
+  );
+  assert.doesNotMatch(selectionInstruction, /current request explicitly names desired connectors/);
+});
+
 test('Slack connector setup skips broad workspace inspection for a named service', () => {
   const selectionInstruction = slackManagementInstruction('agent_synthetic');
 
@@ -247,6 +258,14 @@ test('Slack connector setup skips broad workspace inspection for a named service
   assert.match(selectionInstruction, /validates catalog availability and requester authority/i);
   assert.match(selectionInstruction, /do not call inspect_workspace first/i);
   assert.match(selectionInstruction, /describe it only as a secure Chickpea link/i);
+  assert.match(
+    selectionInstruction,
+    /already asked for this Agent to use a service that is not connected yet, treat that as the request/i,
+  );
+  assert.match(
+    selectionInstruction,
+    /give its actionLinks in the same reply instead of asking them to request the link/i,
+  );
 });
 
 test('one global Slack action-link policy owns future tool link presentation', async () => {

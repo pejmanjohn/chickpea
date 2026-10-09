@@ -225,7 +225,7 @@ export function createLiveWorkspaceManagementService(
       const ready = await Promise.all(candidates.map(async ({ id }) => !(await unavailable(id))));
       return candidates.filter((_, index) => ready[index]);
     },
-    publishAgentPresence: async ({ actor, agentId, inferredHandle }) => {
+    publishAgentPresence: async ({ actor, agentId }) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {
         return {
@@ -240,9 +240,7 @@ export function createLiveWorkspaceManagementService(
         };
       } catch (error) {
         if (!(error instanceof AgentPresenceError)) throw error;
-        if (inferredHandle && error.code === 'handle_collision' && error.suggestions.length > 0) {
-          throw error;
-        }
+        if (error.code === 'handle_collision' && error.suggestions.length > 0) throw error;
         return {
           agent: await config.getAgent(agentId),
           warning: `The Agent was created, but its Slack handle needs attention: ${error.message}`,
