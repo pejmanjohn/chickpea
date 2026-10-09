@@ -88,6 +88,14 @@ test('management telemetry accepts only content-free dimensions', () => {
   assert.doesNotMatch(lines[0]!, /ignored/);
 });
 
+test('management telemetry names each Slack collision reason', () => {
+  const reasons: unknown[] = [];
+  for (const reason of ['handle_collision', 'name_collision']) {
+    emitManagementMetric('tool.call', { reason }, { info: (line) => reasons.push(line.reason) });
+  }
+  assert.deepEqual(reasons, ['handle_collision', 'name_collision']);
+});
+
 test('Agent-authoring telemetry keeps only versioned outcome classes', () => {
   const lines: string[] = [];
   emitManagementMetric('agent_authoring.outcome', {

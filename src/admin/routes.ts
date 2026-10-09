@@ -2778,7 +2778,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   ): Promise<Response> => {
     const classified = classifyAgentPresenceError(error);
     const agent = await store(c).getAgent(agentId);
-    const handle = agent.slackPresence?.normalizedHandle ?? normalizeAgentHandle(agent.name);
     const status = classified.code === 'rate_limited'
       ? 429
       : classified.code === 'slack_unavailable'
@@ -2789,7 +2788,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       message: classified.message,
       retryable: classified.retryable,
       suggestions: classified.suggestions,
-      recovery: agentPresenceRecovery(classified, handle, agent.slackPresence?.desiredState),
+      recovery: agentPresenceRecovery(classified, agent),
       agent: await agentAdminProjectionForRequest(c, agent),
     }, status);
   };
@@ -9509,11 +9508,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         } catch (error) {
           const classified = classifyAgentPresenceError(error);
           updated = await configStore.getAgent(agentId);
-          presenceRecovery = agentPresenceRecovery(
-            classified,
-            updated.slackPresence?.normalizedHandle ?? normalizeAgentHandle(updated.name),
-            updated.slackPresence?.desiredState,
-          );
+          presenceRecovery = agentPresenceRecovery(classified, updated);
         }
       }
       return c.json({
@@ -13257,8 +13252,7 @@ async function agentAdminProjection(
             code: agent.slackPresence.errorCode as AgentPresenceError['code'],
             message: agent.slackPresence.errorDetail ?? 'Slack could not finish the change.',
           },
-          agent.slackPresence.normalizedHandle,
-          agent.slackPresence.desiredState,
+          agent,
         )
       : null,
     tabs: ['instructions', 'skills', 'connectors', 'repositories', 'websites', 'memory', 'schedules', 'model'],

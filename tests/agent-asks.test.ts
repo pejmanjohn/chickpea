@@ -75,8 +75,7 @@ test('handle words are read from prose, never from code, emails, or paths', () =
     mentionedHandleWords('@Finance can you check? cc @legal, and @finance again.'),
     ['finance', 'legal'],
   );
-  // Neutralization leaves a word joiner after the `@` of a user-group mention.
-  assert.deepEqual(mentionedHandleWords(`Asking @${'\u2060'}finance now`), ['finance']);
+  assert.deepEqual(mentionedHandleWords(`Asking @${'\u2060'}finance now`), []);
   assert.deepEqual(mentionedHandleWords('mail ops@example.com, see a/@b, x.@c, https://x.com/@d'), []);
   assert.deepEqual(mentionedHandleWords('run `@finance` or\n```\n@legal\n```'), []);
   assert.deepEqual(mentionedHandleWords('ask @data-team- please'), ['data-team']);
@@ -491,7 +490,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       // "stop" is an ordinary turn for the asked Agent.
       await ask('3000.000302', '<!subteam^SFINANCE|@finance> stop');
       assert.equal(jobs.length, 3);
-      assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE|@finance> stop');
+      assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE> stop');
       assert.equal(jobs.at(-1)?.midRunReceipt, undefined);
       assert.equal(posts.length, 0, 'no steering reply');
 
@@ -824,8 +823,7 @@ test('a reply mentions its Channel teammates live and every other user group sta
     canonicalSlackMarkdownText('Checking. @a2a-finance, what was Q3? cc @A2A-Finance', live),
     'Checking. <!subteam^SFIN|@a2a-finance>, what was Q3? cc <!subteam^SFIN|@a2a-finance>',
   );
-  // A mention token the model wrote for a teammate stays live, normalized.
-  assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), '<!subteam^SLEGAL|@legal> ok?');
+  assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), `@${joiner}legal ok?`);
   // Other groups, broadcasts, code, emails, and longer words stay as before.
   assert.equal(canonicalSlackMarkdownText('<!subteam^SOPS|@ops> and @here', live), `@${joiner}ops and @${joiner}here`);
   assert.equal(canonicalSlackMarkdownText('run `@a2a-finance` or mail a2a@legal.com', live),
@@ -845,6 +843,74 @@ test('a reply mentions its Channel teammates live and every other user group sta
   assert.equal(continuation.blocks?.[0]?.type === 'markdown' && continuation.blocks[0].text, once);
   const inert = renderSlackReplyPart(once, 'markdown');
   assert.equal(inert.blocks?.[0]?.type === 'markdown' && inert.blocks[0].text, `Hi @${joiner}legal`);
+});
+
+test('a teammate mention an Agent only quoted asks no one; its own @handle still asks', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev3500', eventTime: 3500,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3500.000100',
+        text: '<!subteam^SSUPPORT|@support> quote the root of the other thread',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const supportJob = jobs[0]!;
+    const live = agentTeammateHandles(supportJob.assignment);
+    const deliver = async (messageTs: string, modelText: string) => {
+      const text = canonicalSlackMarkdownText(modelText, live);
+      const before = jobs.length;
+      await processSlackAgentAsks({
+        turn: supportJob.turn,
+        fromAgentId: 'agent_support',
+        fromThreadOwner: true,
+        deliveries: [{ messageTs, text }],
+      }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+      return { text, asked: jobs.slice(before).map((job) => job.assignment.agentId) };
+    };
+    const joiner = '⁠';
+    assert.deepEqual(await deliver('3500.000200', '> <!subteam^SFINANCE> what was Q3 revenue?'),
+      { text: `> @${joiner}finance what was Q3 revenue?`, asked: [] });
+    assert.deepEqual(await deliver('3500.000300', 'The root says "<!subteam^SFINANCE> what was Q3 revenue?"'),
+      { text: `The root says "@${joiner}finance what was Q3 revenue?"`, asked: [] });
+    assert.deepEqual(await deliver('3500.000400', 'It read `<!subteam^SFINANCE> what was Q3?`'),
+      { text: `It read \`<${joiner}!subteam^SFINANCE> what was Q3?\``, asked: [] });
+    assert.deepEqual(await deliver('3500.000500', '<!channel> Q3 is closed'),
+      { text: `@${joiner}channel Q3 is closed`, asked: [] });
+    const own = await deliver('3500.000600', 'Let me check. @finance what was Q3 revenue?');
+    assert.deepEqual(own, {
+      text: 'Let me check. <!subteam^SFINANCE|@finance> what was Q3 revenue?',
+      asked: ['agent_finance'],
+    });
+    assert.equal(canonicalSlackMarkdownText(own.text, live), own.text);
+  });
+});
+
+test('an asked Agent reads its ask as Slack returns it, so quoting the ask asks no third Agent', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev3600', eventTime: 3600,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '3600.000100',
+        text: '<!subteam^SSUPPORT|@support> can we refund order 4821?',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const supportJob = jobs[0]!;
+    const asking = canonicalSlackMarkdownText(
+      '@finance what was billed? @legal may we refund?',
+      agentTeammateHandles(supportJob.assignment),
+    );
+    await processSlackAgentAsks({
+      turn: supportJob.turn,
+      fromAgentId: 'agent_support',
+      fromThreadOwner: true,
+      deliveries: [{ messageTs: '3600.000200', text: asking }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    assert.deepEqual(jobs.map((job) => job.assignment.agentId), ['agent_support', 'agent_finance', 'agent_legal']);
+    const financeJob = jobs[1]!;
+    assert.equal(financeJob.turn.text, '<!subteam^SFINANCE> what was billed? <!subteam^SLEGAL> may we refund?');
+    const quoted = canonicalSlackMarkdownText(`> ${financeJob.turn.text}`, agentTeammateHandles(financeJob.assignment));
+    assert.deepEqual(mentionedHandleWords(quoted), []);
+  }, { grantLegal: true });
 });
 
 test('every streamed prefix of a reply with live mentions is a prefix of its final text', () => {

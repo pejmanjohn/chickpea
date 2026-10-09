@@ -27,12 +27,13 @@ Docs: `/agents/connect-a-service/`, `/agents/connections/`, `/agents/managed-con
 ## How to drive it on a lane
 
 - Credential-backed cases run on the lane's fixtures Agent, `qa-fixtures`, published to the QA channel, with standing connections from `npm run lane:seed -- <lane> --fixtures`. Before claiming, check `npm run verify:live:fixtures -- readiness` and `npm run env -- capabilities all` (managed cases need `COMPOSIO_API_KEY` on the lane).
+- Never publish an unpublished `qa-fixtures` Agent to run a case. A published Agent has no way back to unpublished: removing its last channel leaves it published. On Cobalt the hosted staging app in the same Slack workspace already owns a "QA Fixtures" user group, so publication fails, and since 2026-10-09 Cobalt's fixtures Agent sits in Needs attention with 0 channels. Its connections still work. Instead, seed a run-owned Agent with `npm run lane:seed -- <lane> --agent <run agent id>` and disconnect that connection at cleanup.
 - Verifiers never type, paste or relay a secret. A token case without a seeded or maintainer-entered credential is `blocked`.
 - Use an existing registered connection for execution and formatting changes. Setup, callback, ownership or reconnect changes need fresh OAuth on a run-owned Agent; an existing read is never fresh authorization proof.
 - Complete OAuth consent yourself in the lane browser with the registered test account, after checking the target account and requested grant. A Google consent that refuses automation is a human-only step.
 - Case shape: `case-add --area connections --proof slack --proof admin`, adding `--proof provider` for writes and `--max-wait-ms 120000` for a reply. Ask for a bounded read of a fixture object and include the run marker.
 - Write only to test tenants and follow the recorded constraint (Asana: private tasks only). Mark every created object and delete it at cleanup.
-- Disconnect keeps the row as revoked, so register a run-owned connection with `--ownership retain` and an expected file holding that state, not `absent`. Never disconnect a standing fixture or revoke the provider-side grant.
+- Disconnect keeps the row as revoked, but no user door shows revoked rows: Admin's Agent and workspace connection lists filter them out, and MCP `inspect_workspace` lists no connection accounts. Register a run-owned connection with `--cleanup-preset absent` and use its absence from the Agent's Admin connection list as the cleanup readback. Never disconnect a standing fixture or revoke the provider-side grant.
 
 ## Proof and gotchas
 

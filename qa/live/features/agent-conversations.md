@@ -5,7 +5,7 @@ Docs: `/slack/conversations/`; operator detail in [Agent conversations](../../..
 ## What it covers
 
 - An ask: when an Agent's delivered reply mentions the handle of another Agent that can work in the channel, that Agent answers in the same thread. The mention renders live but notifies nobody.
-- Mentions inside code, email addresses and URLs do not ask, and an Agent never asks itself.
+- Mentions inside code, email addresses and URLs do not ask, nor does a mention an Agent copies from a Slack message, for example in a block quote. An Agent never asks itself.
 - The built-in Chickpea never asks. Its reply to "list my Agents" names their handles without live mentions, and none of those Agents answers.
 - The asked Agent sees the whole thread and knows who asked and which person started the exchange.
 - The thread stays with its own Agent. An answer that asks nobody is handed back to it, and it finishes the request or ends silently when the answer already covers it (see [steering.md](steering.md)).

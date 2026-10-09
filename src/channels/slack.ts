@@ -125,6 +125,7 @@ import {
 } from '../slack/work-admission.ts';
 import {
   renderChannelOnboarding,
+  slackReadbackText,
 } from '../slack/message-format.ts';
 import {
   createSlackWebClient,
@@ -1391,11 +1392,13 @@ export async function processSlackAgentAsks(
   const originMessageTs = agentAskOrigin(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
+    // The asked Agent reads the ask as a person's mention arrives, so quoting it asks nobody.
+    const text = slackReadbackText(delivery.text);
     const turn: NormalizedSlackTurn = {
       workspaceId: asking.workspaceId,
       channelId: asking.channelId,
       eventId: `agent-ask:${asking.channelId}:${delivery.messageTs}:${agent.id}`,
-      text: delivery.text,
+      text,
       userId: asking.userId,
       messageTs: delivery.messageTs,
       threadTs: asking.threadTs,
@@ -1426,7 +1429,7 @@ export async function processSlackAgentAsks(
         ts: delivery.messageTs,
         thread_ts: asking.threadTs,
         user: asking.userId,
-        text: delivery.text,
+        text,
         ...(asking.channelType ? { channel_type: asking.channelType } : {}),
       },
     };
