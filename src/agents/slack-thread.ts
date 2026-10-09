@@ -175,6 +175,7 @@ import {
 } from './coding-worker-task.ts';
 import {
   POST_ARTIFACT_WORKSPACE_INSTRUCTION,
+  THREAD_IMAGE_LISTING_LOCATION,
   buildArtifactToolsInstruction,
   createWorkspaceArtifactTool,
   type SlackArtifactStageInput,
@@ -283,7 +284,7 @@ import { stageArtifactWithReceipt, reuseImageWithReceipt } from '../slack/artifa
 import { FILE_COMPLETION_INSTRUCTION, useFileDeliveryCompletion, type FileDeliveryCompletion } from '../slack/file-delivery-completion.ts';
 import { createSlackAttachmentClient } from '../slack/attachment-client.ts';
 import {
-  buildThreadImageInventory,
+  conversationThreadImageInventory,
   createThreadImageReader,
   parseThreadImageRecords,
   slackThreadImageConversationKey,
@@ -1408,10 +1409,9 @@ export function useRuntimePlanAgent(
     useInstruction(WORKSPACE_TASK_INSTRUCTION);
   }
   if (!options.artifactToolsDisabled) {
-    // Built once per render: the tool resolves `img:N` handles against this
-    // inventory, and `imageInventory.manifest` is the model-facing listing
-    // the artifact-tools instruction renders beside the tool description.
-    const imageInventory = runtimePlanThreadImageInventory(plan, options.threadImages);
+    // Built once per render: the tools resolve `img:N` handles against the
+    // listing the host put in the current request.
+    const imageInventory = conversationThreadImageInventory(plan.conversation, options.threadImages);
     for (const tool of createRuntimePlanArtifactTools(
       plan,
       artifactAccumulator,
@@ -1433,13 +1433,10 @@ export function useRuntimePlanAgent(
       useInstruction(buildArtifactToolsInstruction({
         imageTool: plan.imageCapability?.filled === true,
         canEdit: plan.imageCapability?.acceptsImageInput === true,
-        ...(imageInventory.manifest ? { imageManifest: imageInventory.manifest } : {}),
       }));
-      // Without an image model the artifact instruction lists no images, but
-      // the upload tool still takes a conversation image by its handle.
-      if (plan.imageCapability?.filled !== true && imageInventory.manifest &&
-          runtimePlanAllowsConnectionFileUpload(plan)) {
-        useInstruction(`To send one of these images to a connection, pass its handle to \`${ATTACH_FILE_TO_CONNECTION_TOOL_NAME}\`. Images already in this conversation:\n${imageInventory.manifest}`);
+      // Without an image model the upload tool still takes a conversation image by its handle.
+      if (plan.imageCapability?.filled !== true && runtimePlanAllowsConnectionFileUpload(plan)) {
+        useInstruction(`To send an image from this conversation to a connection, pass its \`img:N\` handle to \`${ATTACH_FILE_TO_CONNECTION_TOOL_NAME}\`. ${THREAD_IMAGE_LISTING_LOCATION}`);
       }
     }
     if (runtimeInstructions) useInstruction(FILE_COMPLETION_INSTRUCTION);
@@ -1979,7 +1976,7 @@ export function createRuntimePlanArtifactTools(
   const resolveRecordingStore = async () => recordingStore ??= createRecordingHandleStore(
     getSettingsStore(await resolveAgentPlatformEnv()), destination,
   );
-  const imageInventory = options.imageInventory ?? runtimePlanThreadImageInventory(plan, options.threadImages);
+  const imageInventory = options.imageInventory ?? conversationThreadImageInventory(plan.conversation, options.threadImages);
   const imageOptions = imageCapability?.filled && reserveImageCall ? {
     acceptsImageInput: imageCapability.acceptsImageInput,
     ...(imageCapability.maxOutputsPerCall === undefined ? {} : {
@@ -2286,26 +2283,6 @@ export interface RuntimePlanArtifactToolOptions {
   resolveWorkspace?: WorkspaceResolver | undefined;
   /** This turn's frozen settings envelope; absent, tools read settings live. */
   turn?: TurnEnvelopeContext | undefined;
-}
-
-/**
- * The per-turn `img:N` inventory for a plan. Built once per render so the
- * model-facing instruction and the tool address the same handles.
- */
-export function runtimePlanThreadImageInventory(
-  plan: RuntimePlanV2,
-  threadImages?: readonly ThreadImageRecord[] | undefined,
-): ThreadImageInventory {
-  return buildThreadImageInventory({
-    // The same key `runtimePlanConversationKey` derives, without re-validating
-    // a plan the caller already parsed.
-    conversationKey: slackThreadImageConversationKey({
-      workspaceId: plan.conversation.workspaceId,
-      channelId: plan.conversation.channelId,
-      threadTs: plan.conversation.threadTs,
-    }),
-    ...(threadImages ? { threadRecords: threadImages } : {}),
-  });
 }
 
 /**

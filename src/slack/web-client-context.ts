@@ -516,6 +516,11 @@ export function assembleSlackPrompt(
      * the thread's Agent.
      */
     askedAsThreadOwner?: boolean;
+    /**
+     * The conversation's `img:N` listing for this request. It grows with the
+     * thread, so it rides in the request instead of the Agent's system prompt.
+     */
+    threadImageManifest?: string;
   } = {},
 ): string {
   const partition = partitionSlackContext(turn, context);
@@ -610,6 +615,9 @@ export function assembleSlackPrompt(
   }
   if (turn.coAddressed) {
     parts.push('', coAddressedContext(turn.coAddressed));
+  }
+  if (options.threadImageManifest) {
+    parts.push('', 'Images in this conversation, with the img:N handles for this request:', options.threadImageManifest);
   }
   parts.push(
     '',
