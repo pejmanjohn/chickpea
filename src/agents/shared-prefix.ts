@@ -202,9 +202,10 @@ export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
   const constant = kind === undefined ? undefined : sharedSystemBlock(kind);
   if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return unshared;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
+  const universal = tools.slice(0, anchor + 1).map(withoutCacheControl);
   const miss = anchor < 0
     ? 'universal_tools_missing'
-    : JSON.stringify(tools.slice(0, anchor + 1).map(withoutCacheControl)) !== renderedToolsJson()
+    : JSON.stringify(universal) !== renderedToolsJson()
       ? 'universal_tools_differ'
       : constant === undefined ? 'system_block_missing' : tail.length === 0 ? 'tenant_block_empty' : undefined;
   if (miss) {
@@ -212,6 +213,7 @@ export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
     console.warn('[chickpea] platform-funded request went out without the shared prompt prefix', {
       model: payload.model,
       reason: miss,
+      ...(miss === 'universal_tools_differ' ? { tool: firstDifferingTool(universal) } : {}),
     });
     return unshared;
   }
@@ -252,6 +254,15 @@ let toolsJson: string | undefined;
 function renderedToolsJson(): string {
   toolsJson ??= JSON.stringify((rendered as RenderedPrefix).tools);
   return toolsJson;
+}
+
+/** The name of the first universal tool whose definition is not the rendered one's. */
+function firstDifferingTool(universal: unknown[]): string {
+  const expected = (rendered as RenderedPrefix).tools;
+  const index = universal.findIndex((tool, at) => JSON.stringify(tool) !== JSON.stringify(expected[at]));
+  // Every sent tool matched: the render has one the request lacks.
+  const tool = index < 0 ? expected[universal.length] : universal[index];
+  return isRecord(tool) && typeof tool.name === 'string' ? tool.name : 'unknown';
 }
 
 function shapeTools(shape: SharedPrefixShape): Payload[] {

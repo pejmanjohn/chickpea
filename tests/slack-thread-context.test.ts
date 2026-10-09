@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { conversationThreadImageInventory } from '../src/slack/thread-images.ts';
 import {
   assembleSlackPrompt,
   hydrateSlackContextViaWebClient,
@@ -115,6 +116,21 @@ test('the trusted app context tells the model that the bot mention addresses it'
   });
   assert.ok(prompt.includes('<@UBOT> is your own Slack mention: a message that mentions it is addressed to you.'));
   assert.ok(prompt.indexOf('<@UBOT> is your own') < prompt.indexOf('<@UBOT> what does'));
+});
+
+test('the conversation image listing rides in the request, before the current message', () => {
+  const turn = threadTurn({ text: 'Make the logo blue.' });
+  const conversation = { workspaceId: turn.workspaceId, channelId: turn.channelId, threadTs: turn.threadTs! };
+  const { manifest } = conversationThreadImageInventory(conversation, [{
+    conversationKey: `${turn.workspaceId}:${turn.channelId}:${turn.threadTs}`, fileId: 'F0IMAGE1', origin: 'person',
+    filename: 'logo.png', mimeType: 'image/png', messageTs: turn.messageTs,
+  }]);
+  const prompt = assembleSlackPrompt(turn, currentMessageOnlyContext(turn), { threadImageManifest: manifest });
+  assert.ok(prompt.includes(`Images in this conversation, with the img:N handles for this request:\n${manifest}`));
+  assert.match(prompt, /- handle=img:1 \| origin=person/);
+  assert.doesNotMatch(prompt, /F0IMAGE1/);
+  assert.ok(prompt.indexOf('handle=img:1') < prompt.indexOf('Current Slack request'));
+  assert.doesNotMatch(assembleSlackPrompt(turn, currentMessageOnlyContext(turn)), /Images in this conversation/);
 });
 
 test('candidate classification recovers a retained correction beyond its two-page scan', async () => {

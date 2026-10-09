@@ -24,8 +24,8 @@ import { parseSlackAttachmentIntake, useSlackAttachmentContext } from '../src/sl
 import { decorateAttachmentProvider } from '../src/slack/attachment-model-context.ts';
 import { slackPresentationIntentCapability } from '../src/slack/presentation-intent.ts';
 import { createSlackPresentTableTool } from '../src/slack/table-presentation.ts';
-import { runtimePlanThreadImageInventory, slackDeliveryThreadImages } from '../src/agents/slack-thread.ts';
-import { serializeThreadImageRecords } from '../src/slack/thread-images.ts';
+import { slackDeliveryThreadImages } from '../src/agents/slack-thread.ts';
+import { conversationThreadImageInventory, serializeThreadImageRecords } from '../src/slack/thread-images.ts';
 import { SLACK_LISTS_INSTRUCTION, SLACK_LIST_TOOL_NAMES, useSlackListsTools } from '../src/slack/lists/tools.ts';
 import { withEnv } from './helpers/env.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -134,7 +134,7 @@ function UploadTurnProbe() {
     tools: [],
     // The same seam ChickpeaSlack uses: the attribute is parsed against the
     // plan's own conversation, never one named on the wire.
-    imageHandles: runtimePlanThreadImageInventory(PLAN, slackDeliveryThreadImages(PLAN, delivery))
+    imageHandles: conversationThreadImageInventory(PLAN.conversation, slackDeliveryThreadImages(PLAN, delivery))
       .entries.map((entry) => entry.handle),
     attachmentStatus: delivery.kind === 'signal' ? delivery.attributes?.attachmentStatus : undefined,
   };
@@ -245,7 +245,7 @@ test('the thread image inventory reaches both renders of an upload turn', async 
   // first render, so a logo referenced after the analysis still resolves.
   assert.deepEqual(upload.renders.map((render) => render.imageHandles), [['img:1'], ['img:1']]);
   assert.deepEqual(upload.renders.map((render) => render.management), [true, true]);
-  const resolved = runtimePlanThreadImageInventory(PLAN, slackDeliveryThreadImages(PLAN, {
+  const resolved = conversationThreadImageInventory(PLAN.conversation, slackDeliveryThreadImages(PLAN, {
     ...slackMessage(true),
   })).resolveHandle('img:1');
   assert.equal(resolved.ok, true);
