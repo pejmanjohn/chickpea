@@ -96,7 +96,7 @@ export function createLiveWorkspaceManagementService(
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken);
+    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
   };
   const actorSlackUser = async (actor: { userId: string }, workspaceId: string) => {
     const user = await identity.getUser(actor.userId);

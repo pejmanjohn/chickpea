@@ -2306,7 +2306,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken);
+    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
   };
   const ensureGeneratedGatewayAvatar = async (
     c: Context,
