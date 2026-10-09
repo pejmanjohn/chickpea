@@ -544,6 +544,7 @@ import { slackInstallationCredentialId } from '../slack/hosted-slack-app.ts';
 import {
   evaluateSlackPermissions,
   hostedSlackPermissionsUpdatePath,
+  hostedSlackUpdateGrantsUserGroupToken,
   type SlackPermissionsView,
 } from '../slack/hosted-permissions.ts';
 import {
@@ -10743,6 +10744,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         botToken: async () => (await resolveSlackCredentials(
           env, settings(c), slackCredentialResolutionDependencies(c),
         )).botToken,
+        ...(hostedSlackUpdateGrantsUserGroupToken() ? {
+          holdsUserGroupToken: async () => Boolean((await resolveSlackInstallationCredentials(
+            slackInstallationCredentialId(env), env, dependencies,
+          )).userGroupToken),
+        } : {}),
       },
     );
     return { status, canUpdate, updatePath: path };
