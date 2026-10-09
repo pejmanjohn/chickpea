@@ -568,6 +568,8 @@ function runAdminPageHarness(
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
     modelProviders?: ModelProviderFixture[];
+    /** The server's readiness answer per model; others answer from the provider's key. */
+    modelReadiness?: Record<string, 'credential_missing' | 'funding_not_offered' | null>;
     workspaceDefault?: WorkspaceDefaultFixture | null;
     workspaceDefaultPutError?: { status: number; error: string; current?: WorkspaceDefaultFixture };
     attachSelectionValue?: string;
@@ -704,6 +706,7 @@ function runAdminPageHarness(
   usageApiCalls: string[];
   scheduledApiCalls: string[];
   fetchCalls: Array<{ path: string; method: string }>;
+  modelReadinessRequests: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -1577,6 +1580,7 @@ function runAdminPageHarness(
     }],
   };
   const fetchCalls: Array<{ path: string; method: string }> = [];
+  const modelReadinessRequests: string[] = [];
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     fetchCalls.push({ path, method });
@@ -2682,20 +2686,32 @@ function runAdminPageHarness(
         }),
       );
     }
-    if (path === '/admin/api/models') {
+    const listedModelProviders = () => {
       const workersAiEnabled = providerState.find((provider) => provider.id === 'workers-ai')?.enabled !== false;
-      return Promise.resolve(jsonResponse({
-        providers: (modelProviders ?? []).filter(
-          (provider) => workersAiEnabled || provider.id !== 'cloudflare',
-        ).map((provider) => {
-          const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
-          const summary = providerState.find((candidate) => candidate.id === summaryId);
-          return {
-            ...provider,
-            configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
-          };
-        }),
-      }));
+      return (modelProviders ?? []).filter(
+        (provider) => workersAiEnabled || provider.id !== 'cloudflare',
+      ).map((provider) => {
+        const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
+        const summary = providerState.find((candidate) => candidate.id === summaryId);
+        return {
+          ...provider,
+          configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
+        };
+      });
+    };
+    if (path === '/admin/api/models') {
+      return Promise.resolve(jsonResponse({ providers: listedModelProviders() }));
+    }
+    if (path.startsWith('/admin/api/models/readiness?')) {
+      const modelId = new URLSearchParams(path.slice(path.indexOf('?'))).get('modelId') ?? '';
+      modelReadinessRequests.push(modelId);
+      const providerId = modelId.slice(0, modelId.indexOf('/'));
+      const unavailable = harnessOptions.modelReadiness && modelId in harnessOptions.modelReadiness
+        ? harnessOptions.modelReadiness[modelId]
+        : listedModelProviders().some((provider) => provider.id === providerId && provider.configured)
+          ? null
+          : 'credential_missing';
+      return Promise.resolve(jsonResponse({ modelId, unavailable }));
     }
     if (path === '/admin/api/workspace-model-default') {
       if (method === 'PUT') {
@@ -3148,6 +3164,7 @@ function runAdminPageHarness(
     usageApiCalls,
     scheduledApiCalls,
     fetchCalls,
+    modelReadinessRequests,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -13914,6 +13931,91 @@ test('Settings tells a credits workspace to choose another model when its defaul
   assert.match(html, /Repair required/);
   assert.match(html, /<p class="hint">Not available on Chickpea's models\. Choose another model\.<\/p>/);
   assert.doesNotMatch(html, /Review anthropic provider settings/);
+});
+
+const OFFERED_MODEL = 'anthropic/claude-opus-5-5';
+const NO_KEY_WARNING = '<p class="field-error">No key for this provider yet — replies with this model will fail until one is added in Settings.</p>';
+const ANTHROPIC_WITHOUT_KEY: ModelProviderFixture = {
+  id: 'anthropic',
+  configured: false,
+  source: 'via ANTHROPIC_API_KEY',
+  suggestions: [OFFERED_MODEL],
+};
+
+function agentModelField(html: string): string {
+  const start = html.indexOf('<label class="field-label" for="p-model">');
+  const end = html.indexOf('<div class="field"><label class="field-label" for="p-image-model">', start);
+  assert.ok(start >= 0 && end > start, 'the Agent Model field renders before the Image model field');
+  return html.slice(start, end);
+}
+
+async function agentModelTab(options: {
+  model: string;
+  hosted: boolean;
+  modelProviders?: ModelProviderFixture[];
+  modelReadiness?: Record<string, 'credential_missing' | 'funding_not_offered' | null>;
+}) {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=model',
+    agents: [{ ...releaseAgent, model: options.model }],
+    modelProviders: options.modelProviders ?? [ANTHROPIC_WITHOUT_KEY],
+    ...(options.modelReadiness ? { modelReadiness: options.modelReadiness } : {}),
+    providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, status: 'missing', modelCount: null })),
+    selfHosted: !options.hosted,
+    browserOffered: !options.hosted,
+  });
+  await flushAsync();
+  return harness;
+}
+
+test('an own-key workspace with no key keeps the No key warning on a pinned Agent', async () => {
+  const harness = await agentModelTab({ model: OFFERED_MODEL, hosted: true });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.endsWith(`${NO_KEY_WARNING}</div>`), field);
+  assert.doesNotMatch(field, /Not available/);
+});
+
+test('standalone keeps every Agent model warning it shows today', async () => {
+  const subscription = (state: 'connected' | 'disconnected'): ModelProviderFixture => ({
+    id: 'openai',
+    configured: state === 'connected',
+    source: 'ChatGPT subscription',
+    suggestions: ['openai/gpt-5.4'],
+    authMethods: {
+      activeMethod: 'subscription',
+      apiKeyConfigured: false,
+      subscription: state === 'connected'
+        ? { state, updatedAt: 1_800_000_005_000, accountFingerprint: 'oas_safe_fixture', connectedAt: 1_800_000_005_000 }
+        : { state, updatedAt: 1_800_000_005_000 },
+    },
+  });
+  const cases: Array<{ model: string; modelProviders: ModelProviderFixture[]; warning: string }> = [
+    { model: OFFERED_MODEL, modelProviders: [ANTHROPIC_WITHOUT_KEY], warning: NO_KEY_WARNING },
+    { model: OFFERED_MODEL, modelProviders: [{ ...ANTHROPIC_WITHOUT_KEY, configured: true }], warning: '' },
+    {
+      model: 'acme/model-1',
+      modelProviders: [ANTHROPIC_WITHOUT_KEY],
+      warning: '<p class="field-error">Free text accepted; provider not detected in this install.</p>',
+    },
+    {
+      model: 'openai/gpt-4o',
+      modelProviders: [subscription('connected')],
+      warning: '<p class="field-error">This OpenAI model is not available through the selected ChatGPT subscription.</p>',
+    },
+    {
+      model: 'openai/gpt-5.4',
+      modelProviders: [subscription('disconnected')],
+      warning: '<p class="field-error">The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings.</p>',
+    },
+    { model: 'openai/gpt-5.4', modelProviders: [subscription('connected')], warning: '' },
+  ];
+  for (const { model, modelProviders, warning } of cases) {
+    const harness = await agentModelTab({ model, hosted: false, modelProviders });
+    const field = agentModelField(harness.app.innerHTML);
+    assert.ok(field.endsWith(`Settings &nearr;</button></p>${warning}</div>`), `${model}: ${field}`);
+  }
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
