@@ -1256,8 +1256,13 @@ export interface OwedAgentWelcomeInput {
   at: number;
 }
 
+/**
+ * `upgraded`: the welcome Chickpea had queued for itself had not posted yet,
+ * so it now posts as the Agent. `queued`: Chickpea's welcome has posted (or is
+ * posting), so the Agent's own follows it.
+ */
 export interface OwedAgentWelcomeResult {
-  created: boolean;
+  outcome: 'upgraded' | 'queued' | 'none';
 }
 
 export interface ExchangeManagementSetupInput {

@@ -9,6 +9,7 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
+  type ManagementAgentCreatedWelcome,
   type OwedAgentWelcomeInput,
   type OwedAgentWelcomeResult,
   type ClaimAgentCreationWelcomeInput,
@@ -1350,10 +1351,10 @@ export class ManagementStoreLogic {
     return this.db.transaction(() => {
       const row = this.db.get(
         `SELECT * FROM management_receipt_outbox
-         WHERE status = 'delivered'
+         WHERE (status IN ('pending', 'delivering')
+             OR (status = 'delivered' AND json_extract(receipt_json, '$.deliveryPersona') = 'chickpea'))
            AND json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
            AND json_extract(receipt_json, '$.agentId') = ?
-           AND json_extract(receipt_json, '$.deliveryPersona') = 'chickpea'
            AND json_extract(receipt_json, '$.fallbackOutboxId') IS NULL
            AND EXISTS (
              SELECT 1 FROM json_each(receipt_json, '$.publication.incomplete')
@@ -1362,10 +1363,30 @@ export class ManagementStoreLogic {
          ORDER BY created_at DESC, outbox_id DESC LIMIT 1`,
         input.agentId,
       ) as unknown as ManagementOutboxRow | undefined;
-      if (!row) return { created: false };
+      if (!row) return { outcome: 'none' };
       const fallback = outboxFromRow(row);
       if (!('kind' in fallback.receipt) || fallback.receipt.kind !== 'agent_created_welcome') {
-        return { created: false };
+        return { outcome: 'none' };
+      }
+      const { takenHandle, ...rest } = fallback.receipt;
+      const incomplete = (rest.publication?.incomplete ?? []).filter((part) => part !== 'slack_presence');
+      const live: ManagementAgentCreatedWelcome = {
+        ...rest,
+        agentName: input.agentName,
+        agentHandle: input.agentHandle,
+        persona: { ...rest.persona, name: input.agentName },
+        ...(takenHandle && input.agentHandle === rest.agentHandle ? { takenHandle } : {}),
+        publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
+      };
+      if (fallback.status === 'pending') {
+        this.db.run(
+          `UPDATE management_receipt_outbox SET receipt_json = ?, updated_at = ?
+           WHERE outbox_id = ? AND status = 'pending'`,
+          JSON.stringify(live),
+          input.at,
+          fallback.outboxId,
+        );
+        return { outcome: 'upgraded' };
       }
       const {
         presentationRunId: _presentationRunId,
@@ -1373,32 +1394,21 @@ export class ManagementStoreLogic {
         deliveryPersona: _deliveryPersona,
         connectorNotices: _connectorNotices,
         followOnNotices: _followOnNotices,
-        takenHandle,
-        ...receipt
-      } = fallback.receipt;
-      const incomplete = (receipt.publication?.incomplete ?? [])
-        .filter((part) => part !== 'slack_presence');
+        ...followUp
+      } = live;
       const outboxId = `${fallback.outboxId}_published`;
       const created = this.insertOutboxIfAbsent({
         outboxId,
         operationId: outboxId,
         destination: fallback.destination,
-        receipt: {
-          ...receipt,
-          agentName: input.agentName,
-          agentHandle: input.agentHandle,
-          persona: { ...receipt.persona, name: input.agentName },
-          ...(takenHandle && input.agentHandle === receipt.agentHandle ? { takenHandle } : {}),
-          publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
-          fallbackOutboxId: fallback.outboxId,
-        },
+        receipt: { ...followUp, fallbackOutboxId: fallback.outboxId },
         status: 'pending',
         attempts: 0,
         nextAttemptAt: input.at,
         createdAt: input.at,
         updatedAt: input.at,
       });
-      return { created };
+      return { outcome: created ? 'queued' : 'none' };
     });
   }
 

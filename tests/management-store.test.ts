@@ -127,7 +127,7 @@ test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallbac
     const original = chickpeaFallbackWelcome('agent_welcome_help');
     await store.putOutbox(original);
     const owed = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
-    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: true });
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'queued' });
     assert.deepEqual(await store.getOutboxForOperation('agent_welcome_help_published'), {
       outboxId: 'agent_welcome_help_published',
       operationId: 'agent_welcome_help_published',
@@ -154,13 +154,13 @@ test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallbac
       updatedAt: NOW + 5,
     });
     assert.deepEqual(await store.getOutboxForOperation('op_agent_welcome_help'), original);
-    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 9 }), { created: false });
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 9 }), { outcome: 'none' });
     assert.equal((await store.claimDueOutbox(NOW + 9, 10, NOW + 30_000)).length, 1);
 
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_again', {
       publication: { status: 'partial', incomplete: ['slack_presence'] },
     }, { createdAt: NOW + 20, updatedAt: NOW + 20 }));
-    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 30 }), { created: true });
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 30 }), { outcome: 'queued' });
     const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
     assert.ok(second && 'kind' in second.receipt && second.receipt.kind === 'agent_created_welcome');
     assert.deepEqual(second.receipt.publication, { status: 'complete', incomplete: [] });
@@ -178,28 +178,62 @@ test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallbac
   }
 });
 
-test('queueing an owed Agent welcome leaves welcomes the Agent posted itself, undelivered ones, and follow-ups alone', async () => {
+test('queueing an owed Agent welcome leaves welcomes the Agent posted itself, failed ones, and follow-ups alone', async () => {
   const store = new SqliteManagementStore(':memory:');
   try {
     const owed = { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 5 };
-    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: false });
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'none' });
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_as_agent', {
       deliveryPersona: 'agent', publication: { status: 'complete', incomplete: [] },
     }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_scope_only', {
       publication: { status: 'partial', incomplete: ['source_channel'] },
     }));
-    const { deliveryPersona: _notDelivered, ...undelivered } =
-      chickpeaFallbackReceipt('agent_welcome_pending');
-    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_pending', {}, {
-      receipt: undelivered, status: 'pending', attempts: 0,
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_failed', {}, {
+      status: 'failed', failureCode: 'slack_delivery_exhausted',
     }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_other_agent', { agentId: 'agent_other' }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_followed_published', {
       fallbackOutboxId: 'agent_welcome_followed',
     }));
-    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: false });
-    assert.equal((await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000)).length, 1, 'only the pending original');
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'none' });
+    assert.equal((await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000)).length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('a handle that goes live before Chickpea posts its fallback makes that welcome the Agent\'s own', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const { deliveryPersona: _notDelivered, ...unsent } = chickpeaFallbackReceipt('agent_welcome_help');
+    const pending = chickpeaFallbackWelcome('agent_welcome_help', {}, {
+      receipt: { ...unsent, publication: { status: 'partial', incomplete: ['slack_presence'] } },
+      status: 'pending', attempts: 0,
+    });
+    await store.putOutbox(pending);
+    const owed = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'upgraded' });
+    const upgraded = await store.getOutboxForOperation('op_agent_welcome_help');
+    assert.equal(upgraded?.status, 'pending');
+    assert.ok(upgraded && 'kind' in upgraded.receipt && upgraded.receipt.kind === 'agent_created_welcome');
+    assert.deepEqual(upgraded.receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(upgraded.receipt.agentHandle, 'help');
+    assert.equal(upgraded.receipt.persona.name, 'Support Desk');
+    assert.equal(upgraded.receipt.presentationRunId, 'run_help', 'it still settles the creation turn');
+    assert.equal(await store.getOutboxForOperation('agent_welcome_help_published'), undefined);
+
+    const [inFlight] = await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000);
+    assert.equal(inFlight?.outboxId, 'agent_welcome_help');
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_posting', {}, {
+      receipt: { ...unsent, publication: { status: 'partial', incomplete: ['slack_presence'] } },
+      status: 'delivering', attempts: 1, createdAt: NOW + 6, updatedAt: NOW + 6,
+    }));
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 7 }), { outcome: 'queued' },
+      'a fallback already posting is followed by the Agent\'s own welcome');
+    const followUp = await store.getOutboxForOperation('agent_welcome_posting_published');
+    assert.ok(followUp && 'kind' in followUp.receipt && followUp.receipt.kind === 'agent_created_welcome');
+    assert.equal(followUp.receipt.fallbackOutboxId, 'agent_welcome_posting');
   } finally {
     store.close();
   }

@@ -1,8 +1,14 @@
+import type { SettingsStore } from '../../config/settings-store.ts';
+import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
+import type { IdentityStore } from '../../identity/types.ts';
 import type { ManagementStore } from '../../management/store.ts';
 import { agentSlackHandle } from '../agent-asks.ts';
+import { resolveSlackBehaviorSettings } from '../behavior-settings.ts';
+import { resolveSlackPublicUrl } from '../credentials.ts';
 import { renderAgentChannelWelcome } from '../message-format.ts';
 import type { SlackTransport } from '../transport/types.ts';
+import { agentAvatarInstallation, agentAvatarUrlForPresentation } from './avatar-assets.ts';
 
 export interface AgentPresenceAnnouncements {
   joinedChannel(input: {
@@ -52,4 +58,23 @@ export function agentPresenceAnnouncements(deps: {
       });
     },
   };
+}
+
+/** The announcements of an installation's live stores, with avatars on its public URL. */
+export async function livePresenceAnnouncements(input: {
+  env: PlatformEnv | undefined;
+  settings: SettingsStore;
+  identity: Pick<IdentityStore, 'getAuthControl'>;
+  management: Pick<ManagementStore, 'queueOwedAgentWelcome'>;
+  transport: Pick<SlackTransport, 'postMessage'>;
+}): Promise<AgentPresenceAnnouncements> {
+  const publicOrigin = await resolveSlackPublicUrl(input.env, input.settings, input.identity);
+  const installationId = agentAvatarInstallation(input.env);
+  return agentPresenceAnnouncements({
+    transport: input.transport,
+    welcomeOnJoin: async () =>
+      (await resolveSlackBehaviorSettings(input.env, input.settings)).welcomeOnJoin.value,
+    avatarUrl: (agent) => agentAvatarUrlForPresentation(agent, publicOrigin, installationId),
+    management: input.management,
+  });
 }

@@ -119,7 +119,7 @@ function fixture() {
       throw new Error('the owed welcome goes through the outbox, never the transport');
     },
   } as unknown as SlackTransport;
-  const releases: OwedAgentWelcomeInput[] = [];
+  const queuedWelcomes: OwedAgentWelcomeInput[] = [];
   const reconciler = new AgentPresenceReconciler({
     config,
     transport,
@@ -130,7 +130,7 @@ function fixture() {
       avatarUrl: () => undefined,
       management: {
         queueOwedAgentWelcome: async (input) => {
-          releases.push(input);
+          queuedWelcomes.push(input);
           return management.queueOwedAgentWelcome(input);
         },
       },
@@ -159,7 +159,7 @@ function fixture() {
     }),
   });
   return {
-    config, management, reconciler, releases, posts, drain,
+    config, management, reconciler, queuedWelcomes, posts, drain,
     close() { config.close(); management.close(); },
   };
 }
@@ -195,7 +195,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     const live = await f.reconciler.retry('agent_help');
     assert.equal(live.slackPresence?.health, 'healthy');
     assert.equal(live.slackPresence?.userGroupId, 'S_HELP');
-    assert.deepEqual(f.releases, [
+    assert.deepEqual(f.queuedWelcomes, [
       { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 10 },
     ]);
     const owed = await f.management.getOutboxForOperation('agent_welcome_op_help_published');
@@ -227,7 +227,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     );
 
     await f.reconciler.retry('agent_help');
-    assert.equal(f.releases.length, 1, 'an Agent that was already live announces nothing');
+    assert.equal(f.queuedWelcomes.length, 1, 'an Agent that was already live announces nothing');
 
     const healthy = await f.config.getAgent('agent_help');
     await f.config.updateAgent(
@@ -236,9 +236,43 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
       healthy.revision,
     );
     await f.reconciler.retry('agent_help');
-    assert.equal(f.releases.length, 2, 'a handle live again is announced again');
+    assert.equal(f.queuedWelcomes.length, 2, 'a handle live again is announced again');
     assert.deepEqual(await f.drain(), { delivered: 0, retried: 0, failed: 0 }, 'but owes nothing more');
     assert.equal(f.posts.length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test('a handle that goes live before Chickpea posts its fallback leaves one welcome, from the Agent', async () => {
+  const f = fixture();
+  try {
+    await f.config.ensureWorkspaceInstallation({
+      workspaceId: WORKSPACE, transportMode: 'direct', teamId: WORKSPACE, appId: 'A1', botUserId: 'U_BOT',
+    });
+    await f.config.createAgent(agentWhoseHandleCollided());
+    await f.management.putOutbox(COLLIDED_HANDLE_WELCOME);
+
+    const stuck = await f.config.getAgent('agent_help');
+    await f.config.updateAgent(
+      'agent_help',
+      { slackPresence: { ...stuck.slackPresence!, requestedHandle: 'help' } },
+      stuck.revision,
+    );
+    await f.reconciler.retry('agent_help');
+    assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
+    assert.equal(f.posts.length, 1);
+    const welcome = f.posts[0]!;
+    assert.equal(welcome.username, 'Support');
+    assert.equal(welcome.thread_ts, CREATION_THREAD.threadTs);
+    assert.match(String(welcome.text), /^Hi — I’m \*Support\* \(@help\)\. Answers support questions\./);
+    assert.doesNotMatch(String(welcome.text), /wouldn’t create its handle/);
+    assert.equal(
+      (await f.config.getAgentThreadRoute(WORKSPACE, 'D_PEJ', CREATION_THREAD.threadTs))?.agentId,
+      'agent_help',
+      'the creation thread is handed to the Agent',
+    );
+    assert.deepEqual(await f.drain(), { delivered: 0, retried: 0, failed: 0 });
   } finally {
     f.close();
   }
