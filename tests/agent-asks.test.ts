@@ -913,6 +913,38 @@ test('a mention of a later Agent the person\'s message addressed joins that Agen
   });
 });
 
+test('a refused message is answered once however often Slack delivers it', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, posts, enqueueTurn, failNextPost }) => {
+    // HR is someone else's Agent with no Channel: this person cannot use it privately.
+    await stores.config.createAgent(agentInput('agent_hr', 'HR', 'hr', 'membership_someone_else'));
+    const deliver = (eventId: string, envelope: Parameters<typeof processGatewaySlackEnvelope>[0]) =>
+      processGatewaySlackEnvelope({ ...envelope, eventId }, undefined, gateway, { stores, enqueueTurn });
+    const refusedDm = directMessage('Ev9300', '9300.000100',
+      '<!subteam^SSUPPORT|@support> <!subteam^SHR|@hr> compare notes');
+    // A reply Slack refuses gives its claim back, so the redelivery says it.
+    failNextPost();
+    await deliver('Ev9300', refusedDm);
+    assert.equal(posts.length, 0);
+    await deliver('Ev9300', refusedDm);
+    await deliver('Ev9301', refusedDm);
+    assert.deepEqual(posts.slice(), [{ channel: 'D1', thread_ts: '9300.000100', text: 'That Agent is not available here.' }]);
+
+    const ungranted = {
+      workspaceId: 'T1', eventId: 'Ev9400', eventTime: 9400,
+      event: {
+        type: 'message' as const, channel: 'C1', channel_type: 'channel', user: 'U1', ts: '9400.000100',
+        text: '<!subteam^SSUPPORT|@support> <!subteam^SLEGAL|@legal> may we refund?',
+      },
+    };
+    await deliver('Ev9400', ungranted);
+    await deliver('Ev9401', ungranted);
+    assert.equal(posts.length, 2);
+    assert.equal(posts[1]?.ephemeral, true);
+    assert.equal(posts[1]?.text, '@legal isn’t in <#C1> yet.');
+    assert.equal(jobs.length, 0);
+  });
+});
+
 test('each Agent a message mentioned is told who else was asked and its place', () => {
   const agents = [
     { agentId: 'agent_pm', name: 'PM', handle: 'pm' },

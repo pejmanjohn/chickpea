@@ -1122,6 +1122,25 @@ export async function postAgentRoutingFeedback(input: {
   });
 }
 
+/**
+ * Answers a message routing refused once, however often Slack delivers it.
+ * A reply that fails gives its claim back, so the delivery's retry says it.
+ */
+async function replyToRefusedMessageOnce(
+  state: SlackStateStore,
+  msgKey: string,
+  reply: () => Promise<void>,
+): Promise<void> {
+  const key = `${msgKey}:routing-reply`;
+  if (!(await state.claim(key))) return;
+  try {
+    await reply();
+  } catch (error) {
+    await state.release(key).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function processSlackUserChange(
   payload: SlackEventFixture,
   stores: AppStores,
@@ -2430,17 +2449,18 @@ async function processSlackEvent(
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
       if (routed.kind === 'not_in_channel') {
-        await offerAgentForChannel({
+        const actor = agentRoutingActor;
+        await replyToRefusedMessageOnce(state, msgKey, () => offerAgentForChannel({
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,
           userId: turn.userId,
           ...(turn.threadTs !== turn.messageTs ? { threadTs: turn.threadTs } : {}),
           agent: routed.agent,
-          actor: agentRoutingActor,
+          actor,
           identity: stores.identity,
           transport: runtimeTransport,
           client: runtimeClient,
-        });
+        }));
         return;
       }
       if (routed.kind !== 'routed' && ask) {
@@ -2466,12 +2486,12 @@ async function processSlackEvent(
             runtimeContract: installation.runtimeContract,
           })
         ) return;
-        await postAgentRoutingFeedback({
+        await replyToRefusedMessageOnce(state, msgKey, () => postAgentRoutingFeedback({
           turn,
           surface,
           result: routed,
           client: runtimeClient,
-        });
+        }));
         return;
       }
       routedHandoff = routed.handoff;
