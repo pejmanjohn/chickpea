@@ -6,6 +6,7 @@ import {
   appendSlackReplyFooter,
   buildSlackAdminUrl,
   canonicalSlackMarkdownText,
+  renderAgentChannelWelcome,
   renderChannelOnboarding,
   renderSlackReplyFooterBlock,
   replyFooterModelLabel,
@@ -997,6 +998,37 @@ test('Channel onboarding explains explicit Agent routing, owned threads, and Con
   const unlinked = renderChannelOnboarding({ botUserId: 'UBOT', channelId: 'C_ENG', publicUrl: undefined });
   assert.match(unlinked, /(^|\s)Configure the Agents available in this Channel/);
   assert.doesNotMatch(unlinked, /\|Configure>/);
+});
+
+test('an Agent’s Channel welcome names it, mentions its live handle, and bounds its description', () => {
+  const mention = 'Mention <!subteam^S_HELP|@help> to start a thread with me. ' +
+    'I only join conversations that mention me, and once I’m in a thread you can keep going there without the mention.';
+  const described = renderAgentChannelWelcome({
+    name: 'Support',
+    description: 'Answers customer questions & escalates <urgent> ones. Ping @here for outages.',
+    handle: 'help',
+    userGroupId: 'S_HELP',
+  });
+  assert.equal(described, [
+    'Hi, I’m *Support*. Answers customer questions &amp; escalates &lt;urgent&gt; ones. Ping @⁠here for outages.',
+    mention,
+  ].join('\n\n'));
+
+  const bare = renderAgentChannelWelcome({
+    name: 'Sup*port',
+    description: '  ',
+    handle: 'help',
+    userGroupId: 'S_HELP',
+  });
+  assert.equal(bare, `Hi, I’m *Support*.\n\n${mention}`);
+
+  const long = renderAgentChannelWelcome({
+    name: 'Support',
+    description: 'x'.repeat(500),
+    handle: 'help',
+    userGroupId: 'S_HELP',
+  });
+  assert.equal(long.split('\n\n')[0], `Hi, I’m *Support*. ${'x'.repeat(400)}`);
 });
 
 test('unassigned-Channel hint names the bot, explains the silence, and links Configure', () => {

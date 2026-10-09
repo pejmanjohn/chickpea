@@ -5,7 +5,9 @@ import { AuditStoreLogic } from '../src/audit/store.ts';
 import { ManagementStoreLogic, SqliteManagementStore } from '../src/management/store.ts';
 import {
   ManagementError,
+  type ManagementAgentCreatedWelcome,
   type ManagementApplyResult,
+  type ManagementReceiptOutboxRecord,
   type PutManagementChangeSetProposalInput,
 } from '../src/management/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -63,6 +65,175 @@ test('Chickpea introduction claim queues exactly one durable DM across triggers'
       (await store.claimDueOutbox(NOW, 10, NOW + 30_000)).length,
       1,
     );
+  } finally {
+    store.close();
+  }
+});
+
+const CREATION_THREAD = {
+  kind: 'thread' as const, workspaceId: 'T_HELP', channelId: 'D_HELP', threadTs: '1800000000.000100',
+};
+
+function chickpeaFallbackReceipt(
+  outboxId: string,
+  receipt: Partial<ManagementAgentCreatedWelcome> = {},
+): ManagementAgentCreatedWelcome {
+  return {
+    kind: 'agent_created_welcome',
+    creationOperationId: `op_${outboxId}`,
+    presentationRunId: 'run_help',
+    turnJobId: 'turn_help',
+    agentId: 'agent_help',
+    agentName: 'Support',
+    agentHandle: 'support-team',
+    takenHandle: 'support',
+    agentDescription: 'Answers support questions.',
+    requesterMembershipId: 'membership_help',
+    surface: 'direct',
+    persona: { name: 'Support', avatarUrl: 'https://example.test/support.png' },
+    publication: { status: 'partial', incomplete: ['slack_presence', 'source_channel'] },
+    connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
+    connectorNotices: [{ kind: 'unavailable', label: 'HubSpot', text: 'HubSpot is unavailable.' }],
+    followOnNotices: [{ kind: 'pending', text: 'A proposal is pending.' }],
+    deliveryPersona: 'chickpea',
+    viewAgentUrl: 'https://example.test/admin/agents/agent_help',
+    ...receipt,
+  };
+}
+
+function chickpeaFallbackWelcome(
+  outboxId: string,
+  receipt: Partial<ManagementAgentCreatedWelcome> = {},
+  record: Partial<ManagementReceiptOutboxRecord> = {},
+): ManagementReceiptOutboxRecord {
+  return {
+    outboxId,
+    operationId: `op_${outboxId}`,
+    destination: CREATION_THREAD,
+    receipt: chickpeaFallbackReceipt(outboxId, receipt),
+    status: 'delivered',
+    attempts: 1,
+    nextAttemptAt: NOW,
+    deliveryRef: 'slack:D_HELP:1800000000.000200',
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...record,
+  };
+}
+
+test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallback left the handle unfinished', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const original = chickpeaFallbackWelcome('agent_welcome_help');
+    await store.putOutbox(original);
+    const owed = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'queued' });
+    assert.deepEqual(await store.getOutboxForOperation('agent_welcome_help_published'), {
+      outboxId: 'agent_welcome_help_published',
+      operationId: 'agent_welcome_help_published',
+      destination: CREATION_THREAD,
+      receipt: {
+        kind: 'agent_created_welcome',
+        creationOperationId: 'op_agent_welcome_help',
+        agentId: 'agent_help',
+        agentName: 'Support Desk',
+        agentHandle: 'help',
+        agentDescription: 'Answers support questions.',
+        requesterMembershipId: 'membership_help',
+        surface: 'direct',
+        persona: { name: 'Support Desk', avatarUrl: 'https://example.test/support.png' },
+        publication: { status: 'partial', incomplete: ['source_channel'] },
+        connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
+        viewAgentUrl: 'https://example.test/admin/agents/agent_help',
+        fallbackOutboxId: 'agent_welcome_help',
+      },
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: NOW + 5,
+      createdAt: NOW + 5,
+      updatedAt: NOW + 5,
+    });
+    assert.deepEqual(await store.getOutboxForOperation('op_agent_welcome_help'), original);
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 9 }), { outcome: 'none' });
+    assert.equal((await store.claimDueOutbox(NOW + 9, 10, NOW + 30_000)).length, 1);
+
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_again', {
+      publication: { status: 'partial', incomplete: ['slack_presence'] },
+    }, { createdAt: NOW + 20, updatedAt: NOW + 20 }));
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 30 }), { outcome: 'queued' });
+    const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
+    assert.ok(second && 'kind' in second.receipt && second.receipt.kind === 'agent_created_welcome');
+    assert.deepEqual(second.receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(second.receipt.takenHandle, undefined, 'a handle fixed later was not picked because another was taken');
+
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_kept', {
+      publication: { status: 'partial', incomplete: ['slack_presence'] },
+    }, { createdAt: NOW + 40, updatedAt: NOW + 40 }));
+    await store.queueOwedAgentWelcome({ ...owed, agentHandle: 'support-team', at: NOW + 50 });
+    const kept = await store.getOutboxForOperation('agent_welcome_help_kept_published');
+    assert.ok(kept && 'kind' in kept.receipt && kept.receipt.kind === 'agent_created_welcome');
+    assert.equal(kept.receipt.takenHandle, 'support', 'the handle picked at creation still explains itself');
+  } finally {
+    store.close();
+  }
+});
+
+test('queueing an owed Agent welcome leaves welcomes the Agent posted itself, failed ones, and follow-ups alone', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const owed = { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'none' });
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_as_agent', {
+      deliveryPersona: 'agent', publication: { status: 'complete', incomplete: [] },
+    }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_scope_only', {
+      publication: { status: 'partial', incomplete: ['source_channel'] },
+    }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_failed', {}, {
+      status: 'failed', failureCode: 'slack_delivery_exhausted',
+    }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_other_agent', { agentId: 'agent_other' }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_followed_published', {
+      fallbackOutboxId: 'agent_welcome_followed',
+    }));
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'none' });
+    assert.equal((await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000)).length, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('a handle that goes live before Chickpea posts its fallback makes that welcome the Agent\'s own', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const { deliveryPersona: _notDelivered, ...unsent } = chickpeaFallbackReceipt('agent_welcome_help');
+    const pending = chickpeaFallbackWelcome('agent_welcome_help', {}, {
+      receipt: { ...unsent, publication: { status: 'partial', incomplete: ['slack_presence'] } },
+      status: 'pending', attempts: 0,
+    });
+    await store.putOutbox(pending);
+    const owed = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { outcome: 'upgraded' });
+    const upgraded = await store.getOutboxForOperation('op_agent_welcome_help');
+    assert.equal(upgraded?.status, 'pending');
+    assert.ok(upgraded && 'kind' in upgraded.receipt && upgraded.receipt.kind === 'agent_created_welcome');
+    assert.deepEqual(upgraded.receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(upgraded.receipt.agentHandle, 'help');
+    assert.equal(upgraded.receipt.persona.name, 'Support Desk');
+    assert.equal(upgraded.receipt.presentationRunId, 'run_help', 'it still settles the creation turn');
+    assert.equal(await store.getOutboxForOperation('agent_welcome_help_published'), undefined);
+
+    const [inFlight] = await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000);
+    assert.equal(inFlight?.outboxId, 'agent_welcome_help');
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_posting', {}, {
+      receipt: { ...unsent, publication: { status: 'partial', incomplete: ['slack_presence'] } },
+      status: 'delivering', attempts: 1, createdAt: NOW + 6, updatedAt: NOW + 6,
+    }));
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 7 }), { outcome: 'queued' },
+      'a fallback already posting is followed by the Agent\'s own welcome');
+    const followUp = await store.getOutboxForOperation('agent_welcome_posting_published');
+    assert.ok(followUp && 'kind' in followUp.receipt && followUp.receipt.kind === 'agent_created_welcome');
+    assert.equal(followUp.receipt.fallbackOutboxId, 'agent_welcome_posting');
   } finally {
     store.close();
   }

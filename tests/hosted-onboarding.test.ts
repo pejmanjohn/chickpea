@@ -713,7 +713,7 @@ test('the journey starts with the first Owner claim or not at all, and once', as
   const started: number[] = [];
   let interrupted = true;
   const identity = facade(new IdentityStoreLogic(db, {
-    ownerClaimed: (at) => {
+    ownerClaimed: ({ at }) => {
       started.push(at);
       settings.applySettingsPatch(onboardingJourneyStart(at).patch);
       if (interrupted) throw new Error('interrupted after the journey started');
@@ -752,9 +752,38 @@ test('the journey starts with the first Owner claim or not at all, and once', as
   assert.equal(settings.getSetting(ONBOARDING_JOURNEY_KEY), undefined);
 });
 
+function receiptOutbox(db: { all(sql: string): Record<string, unknown>[] }) {
+  return db.all('SELECT status, destination_json, receipt_json FROM management_receipt_outbox').map((row) => ({
+    status: row.status,
+    destination: JSON.parse(String(row.destination_json)),
+    receipt: JSON.parse(String(row.receipt_json)),
+  }));
+}
+
+test('the first Owner claim queues Chickpea\'s introduction to the Owner\'s DM, once', async (t) => {
+  const signup = await signUp(t);
+  assert.deepEqual(receiptOutbox(signup.tenant.db), []);
+  await signup.claim();
+  await activateInstallerOwner({ ...signup.owner, request: new Request(`${ORIGIN}/start/install/callback`) });
+  await signup.claim();
+  const owner = (await signup.identity.getOwnerClaim())!;
+  const operation = (await signup.identity.getAuthOperation(owner.operationId))!;
+  await signup.identity.claimOwner({
+    operationId: owner.operationId, organizationId: owner.organizationId!, slackTeamId: TEAM, slackUserId: INSTALLER,
+    betterAuthUserId: operation.betterAuthUserId!, betterAuthMembershipId: operation.betterAuthMembershipId!,
+  });
+  await signup.identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'UMEMBER', displayName: 'Member' });
+  assert.deepEqual(receiptOutbox(signup.tenant.db), [{
+    status: 'pending',
+    destination: { kind: 'slack_dm', workspaceId: TEAM, slackUserId: INSTALLER },
+    receipt: { kind: 'chickpea_introduction', trigger: 'first_owner' },
+  }]);
+});
+
 test('standalone is unchanged: its state object starts nothing at an Owner claim, and Admin never lands in onboarding', async (t) => {
   const storage = new FakeObjectStorage();
-  const stores = buildTagStateStores(new DoSqlStateDb(storage.asDurableObjectStorage()), {} as PlatformEnv, {
+  const db = new DoSqlStateDb(storage.asDurableObjectStorage());
+  const stores = buildTagStateStores(db, {} as PlatformEnv, {
     gatewayLeaseOwner: 'test-standalone',
   });
   const identity = facade(stores.identity) as unknown as IdentityStore;
@@ -769,6 +798,7 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   });
   assert.equal((await identity.getOwnerClaim())?.status, 'active');
   assert.equal(stores.settings.getSetting(ONBOARDING_JOURNEY_KEY), undefined);
+  assert.deepEqual(receiptOutbox(db), [], 'standalone introduces its Owner from first-Owner activation instead');
 
   // Standalone's own setup lands its Owner in onboarding; plain Admin stays Admin.
   const config = new SqliteConfigStore(':memory:', { agents: [] });

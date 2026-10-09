@@ -575,6 +575,10 @@ import {
 } from '../slack/agent-presence/errors.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
+import {
+  agentPresenceAnnouncements,
+  type AgentPresenceAnnouncements,
+} from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import {
   resolvePrivateAgentAudience,
@@ -2336,9 +2340,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     actor: { principal: AuthPrincipal; slackUserId: string; slackTeamId: string },
   ): Promise<CustomAgentConfig> => {
     const workspaceId = actor.slackTeamId;
+    const transport = await agentSlackTransport(c, workspaceId);
     const reconciler = new AgentPresenceReconciler({
       config: store(c),
-      transport: await agentSlackTransport(c, workspaceId),
+      transport,
+      announce: presenceAnnouncements(c, transport),
     });
     if (agent.slackPresence?.desiredState === 'disabled') return reconciler.retry(agent.id);
     const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
@@ -2564,6 +2570,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     publicOrigin: requestOrigin(c),
     installationId: agentAvatarInstallation(c.env as PlatformEnv | undefined),
   });
+  const presenceAnnouncements = (
+    c: Context,
+    transport: SlackTransport,
+  ): AgentPresenceAnnouncements => {
+    const origin = agentAvatarOrigin(c);
+    return agentPresenceAnnouncements({
+      transport,
+      welcomeOnJoin: async () => (await resolveSlackBehaviorSettings(
+        c.env as PlatformEnv | undefined,
+        settings(c),
+      )).welcomeOnJoin.value,
+      avatarUrl: (agent) => agentAvatarUrlForPresentation(
+        agent,
+        origin.publicOrigin,
+        origin.installationId,
+      ),
+      management: { queueOwedAgentWelcome: (input) => management(c).queueOwedAgentWelcome(input) },
+    });
+  };
   const agentAdminProjectionForRequest = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -9641,9 +9666,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         current,
         parsed.output.workspaceId,
       );
+      const transport = await agentSlackTransport(c, parsed.output.workspaceId);
       const reconciler = new AgentPresenceReconciler({
         config: store(c),
-        transport: await agentSlackTransport(c, parsed.output.workspaceId),
+        transport,
+        announce: presenceAnnouncements(c, transport),
       });
       const result = await reconciler.publish({
         workspaceId: parsed.output.workspaceId,
@@ -9733,6 +9760,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, actor.slackTeamId),
+            announce: null,
           }).archive(agentId, archiveOptions)
         : await store(c).archiveAgent(agentId, {
             expectedRevision: current.revision,
@@ -9773,6 +9801,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, workspaceId),
+            announce: null,
           }).restore(agentId)
         : await store(c).restoreAgent(agentId, current.revision);
       return c.json({ agent: await agentAdminProjectionForRequest(c, updated) });

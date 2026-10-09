@@ -200,6 +200,16 @@ test('public invitations retain active-grant and welcome-setting gates', async (
   assert.equal(f.messages().length, 1);
 }));
 
+test('Chickpea joining a public Channel by itself posts nothing; a person inviting it still does', async () => isolated(async (f) => {
+  f.state.private = false;
+  await f.stores.config.putAgentChannelGrant({ workspaceId: 'T1', channelId: 'C1', agentId: 'agent_ops', status: 'active', createdByMembershipId: f.owner.membership.id }, 0);
+  await f.join('', 'EvSelfJoin');
+  assert.deepEqual(f.messages(), [], 'the Agent being added greets the Channel, not Chickpea');
+  await f.join('U1', 'EvInvited');
+  assert.deepEqual(f.messages().map(({ operation }) => operation), ['chat.postMessage']);
+  assert.match(String(f.messages()[0]!.input.text), /^Chickpea is ready in this Channel\./);
+}));
+
 test('wrong inviter and stale gateway binding cannot act on the card', async () => isolated(async (f) => {
   await f.join();
   const setupId = f.setupId();

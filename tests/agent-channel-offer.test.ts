@@ -211,6 +211,11 @@ test('a person who may add a mentioned Agent to this Channel is offered a button
     assert.equal(await click({ user: 'U1', value: LEGAL.id, actionTs: '5001.000100' }), 'accepted');
     const grant = (await stores.config.listAgentChannelGrants('T1', 'C1')).find(({ agentId }) => agentId === LEGAL.id);
     assert.equal(grant?.status, 'active');
+    const welcome = posts.find((post) => !post.ephemeral && post.username === 'Legal');
+    assert.equal(welcome?.channel, 'C1');
+    assert.equal(welcome?.thread_ts, undefined);
+    assert.equal(welcome?.icon_url, 'https://example.com/agent_legal.png');
+    assert.match(String(welcome?.text), /Mention <!subteam\^SLEGAL\|@legal> to start a thread with me\./);
     assert.equal(posts.at(-1)?.ephemeral, true);
     assert.equal(posts.at(-1)?.text, '@legal is ready in this channel. Mention @legal to start a conversation.');
 

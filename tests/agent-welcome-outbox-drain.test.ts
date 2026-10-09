@@ -4,13 +4,19 @@ import test from 'node:test';
 import vm from 'node:vm';
 import ts from 'typescript';
 
+import { CfIdentityStore } from '../src/config/cf-state-proxies.ts';
+import type { TagStateRpc } from '../src/config/state-rpc.ts';
+import type { IdentityRpcRequest } from '../src/identity/types.ts';
 import { drainManagementReceiptOutbox } from '../src/management/receipts.ts';
 import { ManagementStoreLogic } from '../src/management/store.ts';
 import type {
+  ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
   ManagementRpcRequest,
 } from '../src/management/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
+import { hostedInstallation } from './helpers/installation-objects.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 // Execute the production TagStateStore RPC method and its alarm helper (not a
 // copy of their arming rule) over a real management store. Under the thread
@@ -25,14 +31,17 @@ const source = ts.createSourceFile(
 const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
-const methods = ['managementExecute', 'armAlarmNoLaterThan'].map((name) => {
+const methods = ['identityExecute', 'managementExecute', 'armReceiptDrainAfter', 'armAlarmNoLaterThan'].map((name) => {
   const method = stateClass.members.find((member) =>
     ts.isMethodDeclaration(member) && member.name.getText(source) === name);
   assert.ok(method, `production method ${name} exists`);
   return method.getText(source);
 });
+const writers = source.statements.find((node) => ts.isVariableStatement(node) &&
+  node.declarationList.declarations.some(({ name }) => name.getText(source) === 'RECEIPT_OUTBOX_WRITERS'));
+assert.ok(writers, 'production RECEIPT_OUTBOX_WRITERS exists');
 const compiled = ts.transpileModule(
-  `class ManagementProbe { ${methods.join('\n')} }\nManagementProbe`,
+  `${writers.getText(source)}\nclass ManagementProbe { ${methods.join('\n')} }\nManagementProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
@@ -40,6 +49,7 @@ type Result = { ok: true; value: unknown } | { ok: false; error: { code: string 
 type Probe = {
   ctx: { storage: { getAlarm(): Promise<number | null>; setAlarm(at: number): Promise<void> } };
   call: (callback: (stores: unknown) => unknown) => Result;
+  identityExecute(request: IdentityRpcRequest): Promise<Result>;
   managementExecute(request: ManagementRpcRequest): Promise<Result>;
 };
 const ProbeClass = vm.runInNewContext(compiled, { Date }) as new () => Probe;
@@ -48,6 +58,20 @@ const NOW = 1_800_000_000_000;
 /** The state store's next wake before the claim: a far-off sweep. */
 const LATER_SWEEP = NOW + 7 * 60_000;
 
+function welcomeReceipt(operationId: string): ManagementAgentCreatedWelcome {
+  return {
+    kind: 'agent_created_welcome',
+    creationOperationId: operationId,
+    turnJobId: 'turn_welcome',
+    agentId: 'agent_new',
+    agentName: 'New Agent',
+    requesterMembershipId: 'member_1',
+    surface: 'channel',
+    persona: { name: 'New Agent' },
+    publication: { status: 'complete', incomplete: [] },
+  };
+}
+
 function welcomeOutbox(operationId: string, at: number): ManagementReceiptOutboxRecord {
   return {
     outboxId: `agent_welcome_${operationId}`,
@@ -55,17 +79,7 @@ function welcomeOutbox(operationId: string, at: number): ManagementReceiptOutbox
     destination: {
       kind: 'thread', workspaceId: 'T_TEST', channelId: 'C_TEST', threadTs: '1800000000.000001',
     },
-    receipt: {
-      kind: 'agent_created_welcome',
-      creationOperationId: operationId,
-      turnJobId: 'turn_welcome',
-      agentId: 'agent_new',
-      agentName: 'New Agent',
-      requesterMembershipId: 'member_1',
-      surface: 'channel',
-      persona: { name: 'New Agent' },
-      publication: { status: 'complete', incomplete: [] },
-    },
+    receipt: welcomeReceipt(operationId),
     status: 'pending',
     attempts: 0,
     nextAttemptAt: at,
@@ -129,6 +143,31 @@ test('a welcome claim never pulls an earlier wake later, and reads arm nothing',
   } finally { g.db.close(); }
 });
 
+test('queueing a welcome owed after a late handle arms the outbox drain at once', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const f = fixture(LATER_SWEEP);
+  try {
+    f.management.putOutbox({
+      ...welcomeOutbox('op_late_handle', NOW - 60_000),
+      status: 'delivered',
+      attempts: 1,
+      deliveryRef: 'slack:C_TEST:1800000000.000002',
+      receipt: {
+        ...welcomeReceipt('op_late_handle'),
+        publication: { status: 'partial', incomplete: ['slack_presence'] },
+        deliveryPersona: 'chickpea',
+      },
+    });
+    const queued = await f.probe.managementExecute({
+      kind: 'queue_owed_agent_welcome',
+      input: { agentId: 'agent_new', agentName: 'New Agent', agentHandle: 'new-agent', at: NOW },
+    });
+    assert.equal(queued.ok, true);
+    assert.equal(f.management.nextOutboxDueAt(), NOW);
+    assert.deepEqual(f.writes, [NOW], 'the follow-up is drained now, not at the next unrelated wake');
+  } finally { f.db.close(); }
+});
+
 test('a replayed welcome claim posts exactly one welcome and re-arms nothing once delivered', async (context) => {
   let clock = NOW;
   context.mock.method(Date, 'now', () => clock);
@@ -158,4 +197,23 @@ test('a replayed welcome claim posts exactly one welcome and re-arms nothing onc
     assert.equal((await drain()).delivered, 0);
     assert.deepEqual(posted, ['agent_welcome_op_welcome'], 'exactly one welcome post');
   } finally { f.db.close(); }
+});
+
+test('a hosted first-Owner claim over the state RPC arms the outbox drain for Chickpea\'s introduction', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const tenant = hostedInstallation('inst_owner_introduction');
+  const probe = new ProbeClass();
+  let alarm: number | null = LATER_SWEEP;
+  const writes: number[] = [];
+  probe.call = (callback) => ({ ok: true, value: callback(tenant.stores) });
+  probe.ctx = { storage: {
+    async getAlarm() { return alarm; },
+    async setAlarm(at) { writes.push(at); alarm = at; },
+  } };
+  const identity = new CfIdentityStore({
+    identityExecute: (request: IdentityRpcRequest) => probe.identityExecute(request),
+  } as unknown as TagStateRpc);
+  await createSlackOwner(identity, { now: NOW, organizationId: tenant.organizationId });
+  assert.equal(tenant.stores.management.nextOutboxDueAt(), NOW);
+  assert.deepEqual(writes, [NOW], 'the introduction is drained now, not at the next unrelated wake');
 });

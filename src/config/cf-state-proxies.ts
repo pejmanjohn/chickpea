@@ -1395,6 +1395,12 @@ export class CfManagementStore implements ManagementStore {
     return response.result;
   }
 
+  async queueOwedAgentWelcome(input: Parameters<ManagementStore['queueOwedAgentWelcome']>[0]) {
+    const response = await this.execute({ kind: 'queue_owed_agent_welcome', input });
+    if (response.kind !== 'owed_agent_welcome') throw unexpectedManagementResponse();
+    return response.result;
+  }
+
   async getOutboxForOperation(operationId: string) {
     const response = await this.execute({ kind: 'get_outbox_for_operation', operationId });
     if (response.kind !== 'outbox') throw unexpectedManagementResponse();
