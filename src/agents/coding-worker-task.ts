@@ -14,6 +14,8 @@ import { recordWorkspaceObject, sandboxStub } from '../sandbox/sandbox-object.ts
 import { currentWorkspaceRegistry, type WorkspaceTurnRegistry } from '../sandbox/workspace-registry.ts';
 import { defaultWorkspaceId } from '../sandbox/workspace-session.ts';
 import { WORKSPACE_DELEGATION_GUIDANCE } from '../sandbox/workspace-skill.ts';
+import type { WorkspaceRoster } from '../sandbox/workspace-limits.ts';
+import { createWorkspaceTools } from '../sandbox/workspace-tools.ts';
 import {
   createWorkspaceTaskTool,
   emptyWorkspaceTaskResponseState,
@@ -37,8 +39,7 @@ export { CHICKPEA_SUBMISSION_DURABILITY } from './submission-durability.ts';
 export const WORKSPACE_TASK_INSTRUCTION =
   `${WORKSPACE_DELEGATION_GUIDANCE} The worker runs on the workspace's coding model. Report the pull request links it returns. When a request spans two repositories, give each its own named workspace; tasks in different workspaces can run in parallel. If a workspace tool reports the workspace unavailable or the worker failed, say so and use the Repositories API path when it covers the request.`;
 
-/** `workspace_task` for a coordinator running `plan`. */
-export function createRuntimePlanWorkspaceTaskTool(input: {
+interface RuntimePlanWorkspaceTaskToolInput {
   plan: RuntimePlanV2;
   /** The coordinator's own instance id; its status line shows the worker's progress. */
   coordinatorId: string;
@@ -48,7 +49,25 @@ export function createRuntimePlanWorkspaceTaskTool(input: {
   onWorkerStarted: (record: CodingWorkerRunRecord) => void;
   onWorkerUsage: (record: CodingWorkerUsageRecord) => void;
   onMilestone: (record: WorkspaceMilestoneRecord) => void;
+}
+
+/**
+ * Every coding-workspace tool a coordinator running `plan` mounts, in mount
+ * order. Their definitions name no workspace, repository or Agent, so turns
+ * that mount them can share a prompt prefix across workspaces.
+ */
+export function createRuntimePlanCodingTools(input: RuntimePlanWorkspaceTaskToolInput & {
+  roster: WorkspaceRoster;
+  taskRunning: (workspaceId: string) => boolean;
 }) {
+  return [
+    ...createWorkspaceTools({ resolve: input.resolve, roster: input.roster, taskRunning: input.taskRunning }),
+    createRuntimePlanWorkspaceTaskTool(input),
+  ];
+}
+
+/** `workspace_task` for a coordinator running `plan`. */
+export function createRuntimePlanWorkspaceTaskTool(input: RuntimePlanWorkspaceTaskToolInput) {
   return createWorkspaceTaskTool({
     resolve: input.resolve,
     binding: (workspaceId) => codingWorkerBindingForPlan(input.plan, workspaceId),
