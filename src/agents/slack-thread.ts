@@ -174,6 +174,7 @@ import {
   workspaceTaskRunning,
 } from './coding-worker-task.ts';
 import {
+  POST_ARTIFACT_WORKSPACE_INSTRUCTION,
   buildArtifactToolsInstruction,
   createWorkspaceArtifactTool,
   type SlackArtifactStageInput,
@@ -1442,6 +1443,7 @@ export function useRuntimePlanAgent(
       }
     }
     if (runtimeInstructions) useInstruction(FILE_COMPLETION_INSTRUCTION);
+    if (runtimePlanWorkspaceToolsMounted(plan, false)) useInstruction(POST_ARTIFACT_WORKSPACE_INSTRUCTION);
     if (fileCompletion.repairing) {
       useInstruction('This is an export-only file delivery repair. Only read, glob, grep, post_artifact, complete_file_delivery and final presentation tools can execute. Do not run shell commands, change files, use connections, or generate anything again.');
     }

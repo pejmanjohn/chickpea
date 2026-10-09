@@ -192,6 +192,56 @@ test('a tool between A and B that no shared shape sends keeps A and caches B for
   assert.deepEqual(markers(shared), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
 });
 
+const ZENDESK_POLICY = {
+  kind: 'api', authMode: 'credential', allowedHosts: ['acme.zendesk.com'], pathPrefixes: ['/api/v2'],
+  allowedMethods: ['GET', 'POST', 'PUT'], headerName: 'Authorization', headerValuePrefix: 'Basic ', presetId: 'zendesk',
+};
+function connected(account: Record<string, unknown>) {
+  return {
+    accounts: [{
+      id: 'conn_1', workspaceId: ALPHA.workspace, revision: 1, createdByMembershipId: 'member', label: 'Service',
+      secretRefId: 'secret_1', lifecycle: 'ready', createdAt: 0, updatedAt: 0, ownerKind: 'team', ...account,
+    }],
+    bindings: [{
+      agentId: USER_AGENT_ID, connectionAccountId: 'conn_1', providerId: account.providerId,
+      allowedCapabilities: [], enabled: true, createdAt: 0, updatedAt: 0,
+    }],
+  };
+}
+const CONNECTED_AGENTS: Record<string, Partial<SlackRequestVariant>> = {
+  'a team API connection': { connections: connected({ providerId: 'zendesk', policy: ZENDESK_POLICY }) },
+  'a personal API connection': {
+    connections: connected({ providerId: 'zendesk', policy: ZENDESK_POLICY, ownerKind: 'member', ownerMembershipId: 'member' }),
+  },
+  'an MCP connection': {
+    connections: connected({
+      providerId: 'crm',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.crm.example/mcp', transport: 'streamable-http', authMode: 'none', headerNames: [],
+        discoveredTools: [{ name: 'search_accounts', description: 'Search accounts.', inputSchema: { type: 'object' } }],
+        allowedTools: ['search_accounts'],
+      },
+    }),
+  },
+  'a GitHub repository': {
+    agentOverrides: { repositories: [{ id: 'repo_1', installationId: 1, accountLogin: 'acme', fullName: 'acme/support', enabled: true }] },
+  },
+};
+
+for (const [name, setup] of Object.entries(CONNECTED_AGENTS)) {
+  test(`a user Agent with ${name} sends the same universal tools and keeps breakpoint A`, async () => {
+    const plain = await render({ ...ALPHA_DM, agentKind: 'user' });
+    const before = sharedPrefixMisses();
+    const request = await render({ ...ALPHA_DM, agentKind: 'user', thread: '1787002700.000100', ...setup });
+    assert.equal(sharedPrefixMisses(), before, 'the request is not a shared-prefix miss');
+    const anchor = anchorIndex(request);
+    assert.equal(anchor, anchorIndex(plain));
+    assert.equal(JSON.stringify(withoutMarkers(request.tools.slice(0, anchor + 1))), JSON.stringify(withoutMarkers(plain.tools.slice(0, anchor + 1))));
+    assert.equal(request.tools[anchor].cache_control?.ttl, '1h');
+    assert.equal(request.system[0].text, sharedSystemBlock('user'));
+  });
+}
+
 test('a customer-funded request goes out exactly as pi-ai builds it', async () => {
   const platform = await render(ALPHA);
   const customer = await render({ ...ALPHA, funding: 'customer' });
@@ -213,9 +263,19 @@ test('a request whose system block does not match goes out unchanged and counts 
 
   const changedTool = structuredClone(customer);
   changedTool.tools[12].description = `${changedTool.tools[12].description} Workspace ${ALPHA.workspace}.`;
-  assert.deepEqual(sharePromptPrefix(changedTool), { payload: changedTool, sharedPrefix: null },
-    'universal tools other than the rendered ones');
+  const warnings: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
+  try {
+    assert.deepEqual(sharePromptPrefix(changedTool), { payload: changedTool, sharedPrefix: null },
+      'universal tools other than the rendered ones');
+  } finally {
+    console.warn = warn;
+  }
   assert.equal(sharedPrefixMisses(), before + 2);
+  assert.deepEqual(warnings.map(([, fields]) => fields), [
+    { model: 'claude-opus-5-5', reason: 'universal_tools_differ', tool: changedTool.tools[12].name },
+  ], 'the warning names the first universal tool that differs, and nothing from its text');
   assert.equal(sharePromptPrefix(structuredClone(customer)).sharedPrefix, 'system/interactive_streaming', 'the unchanged request shares');
 
   const intentCheck = { model: 'claude-opus-5-5', system: [{ type: 'text', text: 'Classify.' }], messages: [] };

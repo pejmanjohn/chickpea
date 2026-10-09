@@ -48,6 +48,10 @@ export interface SlackRequestVariant {
   /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
   delivery?: 'message' | 'file_delivery_check';
   imageModel?: string;
+  /** Saved Agent fields over the fixture Agent, for example repositories. */
+  agentOverrides?: Record<string, unknown>;
+  /** The workspace's connection accounts and this Agent's bindings to them. */
+  connections?: { accounts: unknown[]; bindings: unknown[] };
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -74,13 +78,13 @@ const userAgent = {
 function currentAgent(): any {
   const variant = current!;
   const agent = variant.agentKind === 'user' ? userAgent : createChickpeaAgent();
-  return { ...agent, model: `anthropic/${variant.model ?? 'claude-opus-5-5'}` };
+  return { ...agent, model: `anthropic/${variant.model ?? 'claude-opus-5-5'}`, ...variant.agentOverrides };
 }
 const store: any = getConfigStore();
 const identity: any = getIdentityStore();
 store.getAgent = async () => currentAgent();
-store.listConnectionAccounts = async () => [];
-store.listAgentConnectionBindings = async () => [];
+store.listConnectionAccounts = async () => current!.connections?.accounts ?? [];
+store.listAgentConnectionBindings = async () => current!.connections?.bindings ?? [];
 store.getWorkspaceModelRole = async (workspaceId: string, role: string) => role === 'image' && current!.imageModel
   ? { workspaceId, role, modelId: current!.imageModel, revision: 1, createdAt: 0, updatedAt: 0 }
   : undefined;

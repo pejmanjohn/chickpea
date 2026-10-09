@@ -206,29 +206,24 @@ const WORKSPACE_ARTIFACT_INPUT = v.object({
   workspace: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(64))),
 });
 
-const WORKSPACE_ARTIFACT_SENTENCE =
-  ' To attach a file from a coding workspace instead, pass workspace (for example "main") with a path under /workspace.';
+/** post_artifact's coding-workspace guidance, mounted only when the turn has a coding workspace. */
+export const POST_ARTIFACT_WORKSPACE_INSTRUCTION =
+  'To attach a file from a coding workspace with `post_artifact`, pass workspace (for example "main") with a path under /workspace.';
 
-/** Flue 2 hook-agent variant: the harness supplies the initialized sandbox. */
+/**
+ * Flue 2 hook-agent variant: the harness supplies the initialized sandbox.
+ * The definition never depends on `workspaces`, because post_artifact opens
+ * the shared prompt prefix; without a workspace source, a `workspace`
+ * argument is refused as unavailable.
+ */
 export function createWorkspaceArtifactTool(
   options: ArtifactDestinationBinding,
   deliver: WorkspaceArtifactDelivery = deliverArtifact,
   workspaces?: WorkspaceArtifactSource,
 ) {
-  if (!workspaces) {
-    return defineTool({
-      name: POST_ARTIFACT_TOOL_NAME,
-      description: artifactToolDescription(options.sandboxKind),
-      input: ARTIFACT_INPUT,
-      harness: true,
-      async run({ data, harness }) {
-        return { output: await deliver(harness.sandbox, data, options) };
-      },
-    });
-  }
   return defineTool({
     name: POST_ARTIFACT_TOOL_NAME,
-    description: artifactToolDescription(options.sandboxKind) + WORKSPACE_ARTIFACT_SENTENCE,
+    description: artifactToolDescription(options.sandboxKind),
     input: WORKSPACE_ARTIFACT_INPUT,
     harness: true,
     async run({ data, harness }) {
@@ -236,7 +231,7 @@ export function createWorkspaceArtifactTool(
       if (workspace === undefined) {
         return { output: await deliver(harness.sandbox, input, options) };
       }
-      const env = await workspaces.sandbox(workspace)?.catch(() => undefined);
+      const env = await workspaces?.sandbox(workspace)?.catch(() => undefined);
       if (!env) {
         const unavailable: ArtifactToolResult = {
           attached: false,
