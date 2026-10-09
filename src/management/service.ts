@@ -274,7 +274,6 @@ export interface WorkspaceManagementServiceInput {
   publishAgentPresence?: (input: {
     actor: LiveManagementActor;
     agentId: string;
-    inferredHandle: boolean;
   }) => Promise<{ agent: CustomAgentConfig; warning?: string }>;
   publishAgentChannel?: (input: {
     actor: LiveManagementActor;
@@ -321,6 +320,7 @@ interface ImmediateMutation {
   resultingRevisions: Record<string, number>;
   handoffUrl?: string;
   warning?: string;
+  handleChange?: ManagementItemOutcome['handleChange'];
 }
 
 type ActingAgentScopeTarget = {
@@ -1833,14 +1833,7 @@ export class WorkspaceManagementService {
             progress,
             readiness,
           );
-          progress = appendOutcome(progress, index, {
-            itemId: operation.itemId,
-            operationKind: operation.kind,
-            disposition: 'applied',
-            changed: mutation.changed,
-            ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
-            ...(mutation.warning ? { warning: mutation.warning } : {}),
-          });
+          progress = appendOutcome(progress, index, appliedOutcome(operation, mutation));
           if (request.operations.length === 1 &&
               operation.kind !== 'create_agent' && mutation.inverse) {
             await this.stores.management.putUndo({
@@ -2127,14 +2120,7 @@ export class WorkspaceManagementService {
     const result = await this.resultFor(
       proposal.proposalId,
       `confirmation:${proposal.proposalId}`,
-      [{
-        itemId: proposal.operation.itemId,
-        operationKind: proposal.operation.kind,
-        disposition: 'applied',
-        changed: mutation.changed,
-        ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
-        ...(mutation.warning ? { warning: mutation.warning } : {}),
-      }],
+      [appliedOutcome(proposal.operation, mutation)],
     );
     const resumed = await this.resumeConfirmedRequest(actor, input.context, proposal, result);
     await this.stores.management.completeProposal(
@@ -2263,14 +2249,7 @@ export class WorkspaceManagementService {
         if (!recoveryDenied) {
           try {
             mutation ??= await this.executeChangeSetOperation(actor, proposal, operation);
-            outcomes.push({
-              itemId: operation.itemId,
-              operationKind: operation.kind,
-              disposition: 'applied',
-              changed: mutation.changed,
-              ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
-              ...(mutation.warning ? { warning: mutation.warning } : {}),
-            });
+            outcomes.push(appliedOutcome(operation, mutation));
           } catch (error) {
             const reconciled = await this.reconcileChangeSetOperation(
               actor,
@@ -2278,14 +2257,7 @@ export class WorkspaceManagementService {
               operation,
             ).catch(() => undefined);
             outcomes.push(reconciled
-              ? {
-                  itemId: operation.itemId,
-                  operationKind: operation.kind,
-                  disposition: 'applied',
-                  changed: reconciled.changed,
-                  ...(reconciled.handoffUrl ? { handoffUrl: reconciled.handoffUrl } : {}),
-                  ...(reconciled.warning ? { warning: reconciled.warning } : {}),
-                }
+              ? appliedOutcome(operation, reconciled)
               : {
                   itemId: operation.itemId,
                   operationKind: operation.kind,
@@ -4296,7 +4268,6 @@ export class WorkspaceManagementService {
         const created = await this.stores.config.createAgent(createInput);
         await this.captureAgentCreated(actor, created.id);
         const published = await this.publishCreatedAgent(actor, created, {
-          inferredHandle: operation.agent.requestedHandle === undefined,
           requestId: mutationId,
           prepared,
         });
@@ -4304,7 +4275,7 @@ export class WorkspaceManagementService {
           await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
-          published.warning,
+          published,
         );
       }
       case 'update_agent': {
@@ -4432,7 +4403,6 @@ export class WorkspaceManagementService {
       const intended = prepared.intendedAfter as CustomAgentConfig;
       if (current && agentCreationMatches(current, intended)) {
         const published = await this.publishCreatedAgent(actor, current, {
-          inferredHandle: operation.agent.requestedHandle === undefined,
           ...(requestId ? { requestId } : {}),
           prepared,
         });
@@ -4440,7 +4410,7 @@ export class WorkspaceManagementService {
           await this.publishGeneratedAvatarForSlackOrigin(actor, published.agent),
           prepared.inverse,
           await this.agentEditorUrl(published.agent.id),
-          published.warning,
+          published,
         );
       }
       return undefined;
@@ -4524,42 +4494,44 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     agent: CustomAgentConfig,
     options: {
-      inferredHandle: boolean;
       requestId?: string;
       prepared: ManagementPreparedItem;
     },
-  ): Promise<{ agent: CustomAgentConfig; warning?: string }> {
-    if (!this.stores.publishAgentPresence ||
-        (agent.slackPresence?.desiredState === 'active' &&
-          agent.slackPresence.health === 'healthy' && agent.slackPresence.userGroupId)) {
-      return { agent };
+  ): Promise<CreatedAgentPublication> {
+    const publishAgentPresence = this.stores.publishAgentPresence;
+    if (!publishAgentPresence) return { agent };
+    if (agent.slackPresence?.desiredState === 'active' &&
+        agent.slackPresence.health === 'healthy' && agent.slackPresence.userGroupId) {
+      return withHandleChange(options.prepared.operation, agent);
     }
+    const publish = async (): Promise<CreatedAgentPublication> => {
+      const published = await publishAgentPresence({ actor, agentId: agent.id });
+      return published.warning
+        ? published
+        : withHandleChange(options.prepared.operation, published.agent);
+    };
     try {
-      return await this.stores.publishAgentPresence({
-        actor,
-        agentId: agent.id,
-        inferredHandle: options.inferredHandle,
-      });
+      return await publish();
     } catch (error) {
       let publicationError = error;
-      if (options.inferredHandle && error instanceof AgentPresenceError &&
-          error.code === 'handle_collision' && error.suggestions[0]) {
+      if (error instanceof AgentPresenceError && error.code === 'handle_collision') {
         // The Agent is already committed: a failed recovery is reported on
-        // its handle, never as a failed creation.
-        try {
-          const recovered = await this.selectInferredAgentHandle(
-            options.requestId,
-            options.prepared,
-            agent.id,
-            error.suggestions[0],
-          );
-          return await this.stores.publishAgentPresence({
-            actor,
-            agentId: recovered.id,
-            inferredHandle: false,
-          });
-        } catch (retryError) {
-          publicationError = retryError;
+        // its handle, never as a failed creation. A variation can still
+        // collide with a member username the suggestions could not see.
+        for (const suggestion of error.suggestions.slice(0, 3)) {
+          try {
+            await this.selectAvailableAgentHandle(
+              options.requestId,
+              options.prepared,
+              agent.id,
+              suggestion,
+            );
+            return await publish();
+          } catch (retryError) {
+            publicationError = retryError;
+            if (!(retryError instanceof AgentPresenceError &&
+                retryError.code === 'handle_collision')) break;
+          }
         }
       }
       const current = await this.stores.config.getAgent(agent.id);
@@ -4573,19 +4545,19 @@ export class WorkspaceManagementService {
     }
   }
 
-  private async selectInferredAgentHandle(
+  private async selectAvailableAgentHandle(
     requestId: string | undefined,
     prepared: ManagementPreparedItem,
     agentId: string,
     suggestion: string,
-  ): Promise<CustomAgentConfig> {
+  ): Promise<void> {
     const current = await this.stores.config.getAgent(agentId);
     const presence = current.slackPresence;
     if (!presence) {
       throw new ManagementError('invalid_state', 'The Agent Slack identity is unavailable.');
     }
     const selected = normalizeAgentHandle(suggestion);
-    const updated = await this.stores.config.updateAgent(agentId, {
+    await this.stores.config.updateAgent(agentId, {
       slackPresence: {
         ...presence,
         requestedHandle: selected,
@@ -4611,7 +4583,6 @@ export class WorkspaceManagementService {
         }, this.now());
       }
     }
-    return updated;
   }
 
   private async executeConfirmed(
@@ -5065,6 +5036,21 @@ export class WorkspaceManagementService {
   }
 }
 
+function appliedOutcome(
+  operation: ManagementOperation,
+  mutation: ImmediateMutation,
+): ManagementItemOutcome {
+  return {
+    itemId: operation.itemId,
+    operationKind: operation.kind,
+    disposition: 'applied',
+    changed: mutation.changed,
+    ...(mutation.handoffUrl ? { handoffUrl: mutation.handoffUrl } : {}),
+    ...(mutation.warning ? { warning: mutation.warning } : {}),
+    ...(mutation.handleChange ? { handleChange: mutation.handleChange } : {}),
+  };
+}
+
 function appendOutcome(
   progress: ManagementRequestProgress,
   index: number,
@@ -5320,7 +5306,7 @@ function mutationForAgent(
   agent: CustomAgentConfig,
   inverse?: ManagementOperation,
   handoffUrl?: string,
-  warning?: string,
+  { warning, handleChange }: Omit<CreatedAgentPublication, 'agent'> = {},
 ): ImmediateMutation {
   const changed = [{ kind: 'agent' as const, id: agent.id, revision: agent.revision }];
   return {
@@ -5328,8 +5314,28 @@ function mutationForAgent(
     ...(inverse ? { inverse } : {}),
     ...(handoffUrl ? { handoffUrl } : {}),
     ...(warning ? { warning } : {}),
+    ...(handleChange ? { handleChange } : {}),
     resultingRevisions: { [`agent:${agent.id}`]: agent.revision },
   };
+}
+
+interface CreatedAgentPublication {
+  agent: CustomAgentConfig;
+  warning?: string;
+  handleChange?: ManagementItemOutcome['handleChange'];
+}
+
+// Derived from the operation, so a resumed creation reports the same change.
+function withHandleChange(
+  operation: ManagementOperation,
+  agent: CustomAgentConfig,
+): CreatedAgentPublication {
+  if (operation.kind !== 'create_agent') return { agent };
+  const requested = normalizeAgentHandle(operation.agent.requestedHandle ?? operation.agent.name);
+  const used = agent.slackPresence?.normalizedHandle;
+  return used && used !== requested
+    ? { agent, handleChange: { requested, used } }
+    : { agent };
 }
 
 function agentCreationMatches(

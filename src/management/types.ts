@@ -300,6 +300,7 @@ export interface ManagementItemOutcome {
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
+  handleChange?: { requested: string; used: string };
 }
 
 type ManagementSetupAction =

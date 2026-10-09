@@ -16,6 +16,7 @@ import {
   completeSettledAgentWelcomeHandoff,
 } from '../src/management/receipts.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
+import { alternativeAgentHandles } from '../src/slack/agent-presence/handles.ts';
 import { resolvePrivateAgentAccess } from '../src/slack/agent-access.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
@@ -2006,18 +2007,18 @@ test('inferred Slack handle collision recovers one Agent with one stable alterna
         throw new AgentPresenceError(
           'handle_collision',
           'That Slack handle is unavailable.',
-          { suggestions: ['support-triage-2', 'support-triage-3'] },
+          { suggestions: ['support-triage-team', 'support-triage-2', 'support-triage-3'] },
         );
       }
       const current = await f.config.getAgent(agentId);
-      assert.equal(current.slackPresence?.requestedHandle, 'support-triage-2');
+      assert.equal(current.slackPresence?.requestedHandle, 'support-triage-team');
       return {
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
             ...current.slackPresence!,
             desiredState: 'active',
             health: 'healthy',
-            userGroupId: 'S_SUPPORT_2',
+            userGroupId: 'S_SUPPORT_TEAM',
           },
         }, current.revision),
       };
@@ -2037,7 +2038,11 @@ test('inferred Slack handle collision recovers one Agent with one stable alterna
     });
     assert.equal(created.status, 'completed');
     assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.normalizedHandle,
-      'support-triage-2');
+      'support-triage-team');
+    assert.deepEqual(created.outcomes[0]?.handleChange, {
+      requested: 'support-triage',
+      used: 'support-triage-team',
+    });
     assert.equal(publishCalls, 2);
 
     const replay = await service.applyWorkspaceChanges({
@@ -2064,21 +2069,23 @@ test('a failed inferred-handle recovery reports the created Agent, not a failed 
   // Choosing the alternative handle loses a race after the Agent committed.
   const config = Object.create(f.config) as typeof f.config;
   config.updateAgent = async (agentId, patch, expectedRevision) => {
-    if (patch.slackPresence?.requestedHandle === 'support-triage-2') {
+    if (patch.slackPresence?.requestedHandle === 'support-triage-team') {
       throw new ManagementError('revision_conflict', 'The Agent changed concurrently.');
     }
     return f.config.updateAgent(agentId, patch, expectedRevision);
   };
+  let publishCalls = 0;
   const service = new WorkspaceManagementService({
     identity: f.identity,
     config,
     management: f.management,
     randomId: () => 'inferred_handle_recovery_failed',
     publishAgentPresence: async () => {
+      publishCalls += 1;
       throw new AgentPresenceError(
         'handle_collision',
         'That Slack handle is unavailable.',
-        { suggestions: ['support-triage-2'] },
+        { suggestions: ['support-triage-team', 'support-triage-2', 'support-triage-3'] },
       );
     },
   });
@@ -2095,6 +2102,8 @@ test('a failed inferred-handle recovery reports the created Agent, not a failed 
       { kind: 'agent', id: agentInput.id },
     ]);
     assert.match(created.outcomes[0]?.warning ?? '', /^The Agent was created, but its Slack handle needs attention/);
+    assert.equal(created.outcomes[0]?.handleChange, undefined);
+    assert.equal(publishCalls, 1);
     assert.equal((await f.config.getAgent(agentInput.id)).name, agentInput.name);
   } finally {
     f.close();
@@ -2155,7 +2164,38 @@ test('duplicate clarification ignores Agents the member cannot edit', async () =
   }
 });
 
-test('an explicit unavailable handle preserves the created Agent without choosing an alternative', async () => {
+// Slack refuses a taken handle. Visible user groups seed the suggestions;
+// member usernames also collide but are invisible to that list.
+function fakeHandlePublisher(
+  f: Awaited<ReturnType<typeof createManagementAdapterFixture>>,
+  taken: { userGroups: ReadonlySet<string>; usernames?: ReadonlySet<string> },
+  suggestionCount = 3,
+) {
+  const attempts: string[] = [];
+  const publishAgentPresence = async ({ agentId }: { agentId: string }) => {
+    const current = await f.config.getAgent(agentId);
+    const handle = current.slackPresence!.normalizedHandle;
+    attempts.push(handle);
+    if (taken.userGroups.has(handle) || taken.usernames?.has(handle)) {
+      throw new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
+        suggestions: alternativeAgentHandles(handle, taken.userGroups, suggestionCount),
+      });
+    }
+    return {
+      agent: await f.config.updateAgent(agentId, {
+        slackPresence: {
+          ...current.slackPresence!,
+          desiredState: 'active',
+          health: 'healthy',
+          userGroupId: `S_${handle.toUpperCase()}`,
+        },
+      }, current.revision),
+    };
+  };
+  return { attempts, publishAgentPresence };
+}
+
+test('an explicit taken handle publishes the first available variation', async () => {
   const f = await createManagementAdapterFixture('explicit-handle-collision');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -2163,30 +2203,165 @@ test('an explicit unavailable handle preserves the created Agent without choosin
     organizationId: f.admin.membership.organizationId,
     origin: { kind: 'mcp', clientId: 'explicit-handle-client' },
   };
-  let publishCalls = 0;
+  const publisher = fakeHandlePublisher(f, { userGroups: new Set(['support']) });
   const service = new WorkspaceManagementService({
     identity: f.identity,
     config: f.config,
     management: f.management,
-    publishAgentPresence: async () => {
-      publishCalls += 1;
-      throw new AgentPresenceError(
-        'handle_collision',
-        'That Slack handle is unavailable.',
-        { suggestions: ['support-2'] },
-      );
-    },
+    publishAgentPresence: publisher.publishAgentPresence,
+  });
+  try {
+    const operation: ManagementOperation = { itemId: 'create', kind: 'create_agent', agent: agentInput };
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'explicit-handle-collision',
+      operations: [operation],
+    });
+    assert.equal(created.status, 'completed');
+    assert.equal(created.outcomes[0]?.warning, undefined);
+    assert.deepEqual(created.outcomes[0]?.handleChange, { requested: 'support', used: 'support-team' });
+    const agent = await f.config.getAgent(agentInput.id);
+    assert.equal(agent.slackPresence?.normalizedHandle, 'support-team');
+    assert.equal(agent.slackPresence?.health, 'healthy');
+    assert.deepEqual(publisher.attempts, ['support', 'support-team']);
+
+    const replay = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'explicit-handle-collision',
+      operations: [operation],
+    });
+    assert.deepEqual(replay, created);
+    assert.deepEqual(publisher.attempts, ['support', 'support-team']);
+  } finally {
+    f.close();
+  }
+});
+
+test('a variation that also collides moves on to the next one', async () => {
+  const f = await createManagementAdapterFixture('variation-handle-collision');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'variation-handle-client' },
+  };
+  const publisher = fakeHandlePublisher(f, {
+    userGroups: new Set(['support']),
+    usernames: new Set(['support-team']),
+  });
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    publishAgentPresence: publisher.publishAgentPresence,
   });
   try {
     const created = await service.applyWorkspaceChanges({
       context,
-      idempotencyKey: 'explicit-handle-collision',
+      idempotencyKey: 'variation-handle-collision',
       operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
     });
     assert.equal(created.status, 'completed');
-    assert.match(created.outcomes[0]?.warning ?? '', /Slack handle needs attention/);
-    assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.normalizedHandle, 'support');
-    assert.equal(publishCalls, 1);
+    assert.equal(created.outcomes[0]?.warning, undefined);
+    assert.deepEqual(created.outcomes[0]?.handleChange, { requested: 'support', used: 'support-2' });
+    assert.deepEqual(publisher.attempts, ['support', 'support-team', 'support-2']);
+    assert.equal((await f.config.getAgent(agentInput.id)).slackPresence?.normalizedHandle, 'support-2');
+  } finally {
+    f.close();
+  }
+});
+
+test('when every variation collides the created Agent keeps a handle warning', async () => {
+  const f = await createManagementAdapterFixture('exhausted-handle-collision');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'exhausted-handle-client' },
+  };
+  const publisher = fakeHandlePublisher(f, {
+    userGroups: new Set(['support']),
+    usernames: new Set(['support-team', 'support-2', 'support-3', 'support-4']),
+  }, 4);
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    publishAgentPresence: publisher.publishAgentPresence,
+  });
+  try {
+    const created = await service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'exhausted-handle-collision',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(created.status, 'completed');
+    assert.equal(created.outcomes[0]?.disposition, 'applied');
+    assert.match(created.outcomes[0]?.warning ?? '', /^The Agent was created, but its Slack handle needs attention/);
+    assert.equal(created.outcomes[0]?.handleChange, undefined);
+    assert.deepEqual(publisher.attempts, ['support', 'support-team', 'support-2', 'support-3']);
+    assert.equal((await f.config.getAgent(agentInput.id)).name, agentInput.name);
+  } finally {
+    f.close();
+  }
+});
+
+test('a creation interrupted after publishing a variation still reports the handle change', async () => {
+  const f = await createManagementAdapterFixture('variation-publish-recovery');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'variation-publish-recovery-client' },
+  };
+  const publisher = fakeHandlePublisher(f, { userGroups: new Set(['support']) });
+  const crashingManagement = new Proxy(f.management, {
+    get(target, property) {
+      if (property === 'saveRequestProgress') {
+        return async (...args: Parameters<typeof target.saveRequestProgress>) => {
+          if (args[1].outcomes.length > 0) {
+            throw new Error('Synthetic crash before the outcome was saved.');
+          }
+          return target.saveRequestProgress(...args);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const operation: ManagementOperation = { itemId: 'create', kind: 'create_agent', agent: agentInput };
+  try {
+    await assert.rejects(
+      () => new WorkspaceManagementService({
+        identity: f.identity,
+        config: f.config,
+        management: crashingManagement,
+        randomId: () => 'variation_publish_recovery',
+        publishAgentPresence: publisher.publishAgentPresence,
+      }).applyWorkspaceChanges({
+        context,
+        idempotencyKey: 'variation-publish-recovery',
+        operations: [operation],
+      }),
+      /Synthetic crash before the outcome was saved/,
+    );
+    assert.deepEqual(publisher.attempts, ['support', 'support-team']);
+
+    const recovered = await new WorkspaceManagementService({
+      identity: f.identity,
+      config: f.config,
+      management: f.management,
+      randomId: () => 'variation_publish_recovery_retry',
+      publishAgentPresence: publisher.publishAgentPresence,
+    }).applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'variation-publish-recovery',
+      operations: [operation],
+    });
+    assert.equal(recovered.status, 'completed');
+    assert.equal(recovered.outcomes[0]?.warning, undefined);
+    assert.deepEqual(recovered.outcomes[0]?.handleChange, { requested: 'support', used: 'support-team' });
+    assert.deepEqual(publisher.attempts, ['support', 'support-team']);
   } finally {
     f.close();
   }
