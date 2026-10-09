@@ -5,7 +5,9 @@ import { AuditStoreLogic } from '../src/audit/store.ts';
 import { ManagementStoreLogic, SqliteManagementStore } from '../src/management/store.ts';
 import {
   ManagementError,
+  type ManagementAgentCreatedWelcome,
   type ManagementApplyResult,
+  type ManagementReceiptOutboxRecord,
   type PutManagementChangeSetProposalInput,
 } from '../src/management/types.ts';
 import { openStateDb } from '../src/state/node-state-db.ts';
@@ -63,6 +65,124 @@ test('Chickpea introduction claim queues exactly one durable DM across triggers'
       (await store.claimDueOutbox(NOW, 10, NOW + 30_000)).length,
       1,
     );
+  } finally {
+    store.close();
+  }
+});
+
+const CREATION_THREAD = {
+  kind: 'thread' as const, workspaceId: 'T_HELP', channelId: 'D_HELP', threadTs: '1800000000.000100',
+};
+
+/** The welcome Chickpea posted itself because the Agent's handle was not live. */
+function chickpeaFallbackWelcome(
+  outboxId: string,
+  receipt: Partial<ManagementAgentCreatedWelcome> = {},
+  record: Partial<ManagementReceiptOutboxRecord> = {},
+): ManagementReceiptOutboxRecord {
+  return {
+    outboxId,
+    operationId: `op_${outboxId}`,
+    destination: CREATION_THREAD,
+    receipt: {
+      kind: 'agent_created_welcome',
+      creationOperationId: `op_${outboxId}`,
+      presentationRunId: 'run_help',
+      turnJobId: 'turn_help',
+      agentId: 'agent_help',
+      agentName: 'Support',
+      agentHandle: 'support',
+      agentDescription: 'Answers support questions.',
+      requesterMembershipId: 'membership_help',
+      surface: 'direct',
+      persona: { name: 'Support', avatarUrl: 'https://example.test/support.png' },
+      publication: { status: 'partial', incomplete: ['slack_presence', 'source_channel'] },
+      connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
+      connectorNotices: [{ kind: 'unavailable', label: 'HubSpot', text: 'HubSpot is unavailable.' }],
+      followOnNotices: [{ kind: 'pending', text: 'A proposal is pending.' }],
+      deliveryPersona: 'chickpea',
+      viewAgentUrl: 'https://example.test/admin/agents/agent_help',
+      ...receipt,
+    },
+    status: 'delivered',
+    attempts: 1,
+    nextAttemptAt: NOW,
+    deliveryRef: 'slack:D_HELP:1800000000.000200',
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...record,
+  };
+}
+
+test('releasing an Agent welcome queues one follow-up after a Chickpea fallback left the handle unfinished', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const original = chickpeaFallbackWelcome('agent_welcome_help');
+    await store.putOutbox(original);
+    const release = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.releaseAgentWelcome(release), { created: true });
+    assert.deepEqual(await store.getOutboxForOperation('agent_welcome_help_published'), {
+      outboxId: 'agent_welcome_help_published',
+      operationId: 'agent_welcome_help_published',
+      destination: CREATION_THREAD,
+      receipt: {
+        kind: 'agent_created_welcome',
+        creationOperationId: 'op_agent_welcome_help',
+        agentId: 'agent_help',
+        agentName: 'Support Desk',
+        agentHandle: 'help',
+        agentDescription: 'Answers support questions.',
+        requesterMembershipId: 'membership_help',
+        surface: 'direct',
+        persona: { name: 'Support Desk', avatarUrl: 'https://example.test/support.png' },
+        publication: { status: 'partial', incomplete: ['source_channel'] },
+        connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
+        viewAgentUrl: 'https://example.test/admin/agents/agent_help',
+        followUpOf: 'agent_welcome_help',
+      },
+      status: 'pending',
+      attempts: 0,
+      nextAttemptAt: NOW + 5,
+      createdAt: NOW + 5,
+      updatedAt: NOW + 5,
+    });
+    assert.deepEqual(await store.getOutboxForOperation('op_agent_welcome_help'), original);
+    assert.deepEqual(await store.releaseAgentWelcome({ ...release, at: NOW + 9 }), { created: false });
+    assert.equal((await store.claimDueOutbox(NOW + 9, 10, NOW + 30_000)).length, 1);
+
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_again', {
+      publication: { status: 'partial', incomplete: ['slack_presence'] },
+    }, { createdAt: NOW + 20, updatedAt: NOW + 20 }));
+    assert.deepEqual(await store.releaseAgentWelcome({ ...release, at: NOW + 30 }), { created: true });
+    const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
+    assert.equal(second?.receipt.kind, 'agent_created_welcome');
+    assert.deepEqual(second?.receipt.kind === 'agent_created_welcome'
+      ? second.receipt.publication : undefined, { status: 'complete', incomplete: [] });
+  } finally {
+    store.close();
+  }
+});
+
+test('releasing an Agent welcome leaves welcomes the Agent posted itself, undelivered ones, and follow-ups alone', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  try {
+    const release = { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.releaseAgentWelcome(release), { created: false });
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_as_agent', {
+      deliveryPersona: 'agent', publication: { status: 'complete', incomplete: [] },
+    }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_scope_only', {
+      publication: { status: 'partial', incomplete: ['source_channel'] },
+    }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_pending', {
+      deliveryPersona: undefined,
+    }, { status: 'pending', attempts: 0 }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_other_agent', { agentId: 'agent_other' }));
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_followed_published', {
+      followUpOf: 'agent_welcome_followed',
+    }));
+    assert.deepEqual(await store.releaseAgentWelcome(release), { created: false });
+    assert.equal((await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000)).length, 1, 'only the pending original');
   } finally {
     store.close();
   }

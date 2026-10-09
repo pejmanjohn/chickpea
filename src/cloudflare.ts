@@ -1158,7 +1158,8 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
       request.kind === 'complete_setup' ||
       request.kind === 'put_outbox' ||
       request.kind === 'claim_introduction' ||
-      request.kind === 'claim_agent_creation_welcome'
+      request.kind === 'claim_agent_creation_welcome' ||
+      request.kind === 'release_agent_welcome'
     )) {
       const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
       if (due.ok && due.value !== null) {

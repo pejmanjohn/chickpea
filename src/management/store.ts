@@ -9,6 +9,8 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
+  type ReleaseAgentWelcomeInput,
+  type ReleaseAgentWelcomeResult,
   type ClaimAgentCreationWelcomeInput,
   type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
@@ -290,6 +292,7 @@ export interface ManagementStore {
   claimIntroduction(
     input: ClaimManagementIntroductionInput,
   ): Promise<ClaimManagementIntroductionResult>;
+  releaseAgentWelcome(input: ReleaseAgentWelcomeInput): Promise<ReleaseAgentWelcomeResult>;
   getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
   claimDueOutbox(
     at: number,
@@ -491,6 +494,8 @@ export class ManagementStoreLogic {
         return { kind: 'outbox', outbox: this.putOutbox(request.record) };
       case 'claim_introduction':
         return { kind: 'introduction_claim', result: this.claimIntroduction(request.input) };
+      case 'release_agent_welcome':
+        return { kind: 'agent_welcome_release', result: this.releaseAgentWelcome(request.input) };
       case 'get_outbox_for_operation':
         return {
           kind: 'outbox',
@@ -1317,7 +1322,13 @@ export class ManagementStoreLogic {
   }
 
   putOutbox(record: ManagementReceiptOutboxRecord): ManagementReceiptOutboxRecord {
-    this.db.run(
+    this.insertOutbox(record);
+    return this.requireOutbox(record.outboxId);
+  }
+
+  /** Whether this call wrote the row; an existing outbox id is left as it is. */
+  private insertOutbox(record: ManagementReceiptOutboxRecord): boolean {
+    return this.db.run(
       `INSERT OR IGNORE INTO management_receipt_outbox (
         outbox_id, operation_id, destination_json, receipt_json, status,
         attempts, next_attempt_at, delivery_ref, failure_code, created_at, updated_at
@@ -1333,8 +1344,69 @@ export class ManagementStoreLogic {
       record.failureCode ?? null,
       record.createdAt,
       record.updatedAt,
-    );
-    return this.requireOutbox(record.outboxId);
+    ).changes === 1;
+  }
+
+  /**
+   * When a new Agent's handle was not live at creation, Chickpea posted the
+   * welcome itself and the Agent's own was left owed. Once the handle is
+   * live, queue that welcome into the creation thread as a follow-up of the
+   * fallback: the same receipt under the Agent as it is now, without the
+   * notices and the Run the fallback already showed and settled. One
+   * follow-up per fallback, so a repeat release writes nothing.
+   */
+  releaseAgentWelcome(input: ReleaseAgentWelcomeInput): ReleaseAgentWelcomeResult {
+    return this.db.transaction(() => {
+      const row = this.db.get(
+        `SELECT * FROM management_receipt_outbox
+         WHERE status = 'delivered'
+           AND json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
+           AND json_extract(receipt_json, '$.agentId') = ?
+           AND json_extract(receipt_json, '$.deliveryPersona') = 'chickpea'
+           AND json_extract(receipt_json, '$.followUpOf') IS NULL
+           AND EXISTS (
+             SELECT 1 FROM json_each(receipt_json, '$.publication.incomplete')
+             WHERE json_each.value = 'slack_presence'
+           )
+         ORDER BY created_at DESC, outbox_id DESC LIMIT 1`,
+        input.agentId,
+      ) as unknown as ManagementOutboxRow | undefined;
+      if (!row) return { created: false };
+      const fallback = outboxFromRow(row);
+      if (!('kind' in fallback.receipt) || fallback.receipt.kind !== 'agent_created_welcome') {
+        return { created: false };
+      }
+      const {
+        presentationRunId: _presentationRunId,
+        turnJobId: _turnJobId,
+        deliveryPersona: _deliveryPersona,
+        connectorNotices: _connectorNotices,
+        followOnNotices: _followOnNotices,
+        ...receipt
+      } = fallback.receipt;
+      const incomplete = (receipt.publication?.incomplete ?? [])
+        .filter((part) => part !== 'slack_presence');
+      const outboxId = `${fallback.outboxId}_published`;
+      const created = this.insertOutbox({
+        outboxId,
+        operationId: outboxId,
+        destination: fallback.destination,
+        receipt: {
+          ...receipt,
+          agentName: input.agentName,
+          agentHandle: input.agentHandle,
+          persona: { ...receipt.persona, name: input.agentName },
+          publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
+          followUpOf: fallback.outboxId,
+        },
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: input.at,
+        createdAt: input.at,
+        updatedAt: input.at,
+      });
+      return { created };
+    });
   }
 
   claimIntroduction(input: ClaimManagementIntroductionInput): ClaimManagementIntroductionResult {

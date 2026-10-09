@@ -135,6 +135,32 @@ test('a welcome claim never pulls an earlier wake later, and reads arm nothing',
   } finally { g.db.close(); }
 });
 
+test('releasing a welcome owed after a late handle arms the outbox drain at once', async (context) => {
+  context.mock.method(Date, 'now', () => NOW);
+  const f = fixture(LATER_SWEEP);
+  try {
+    const fallback = welcomeOutbox('op_late_handle', NOW - 60_000);
+    f.management.putOutbox({
+      ...fallback,
+      status: 'delivered',
+      attempts: 1,
+      deliveryRef: 'slack:C_TEST:1800000000.000002',
+      receipt: {
+        ...fallback.receipt,
+        publication: { status: 'partial', incomplete: ['slack_presence'] },
+        deliveryPersona: 'chickpea',
+      },
+    });
+    const released = await f.probe.managementExecute({
+      kind: 'release_agent_welcome',
+      input: { agentId: 'agent_new', agentName: 'New Agent', agentHandle: 'new-agent', at: NOW },
+    });
+    assert.equal(released.ok, true);
+    assert.equal(f.management.nextOutboxDueAt(), NOW);
+    assert.deepEqual(f.writes, [NOW], 'the follow-up is drained now, not at the next unrelated wake');
+  } finally { f.db.close(); }
+});
+
 test('a replayed welcome claim posts exactly one welcome and re-arms nothing once delivered', async (context) => {
   let clock = NOW;
   context.mock.method(Date, 'now', () => clock);

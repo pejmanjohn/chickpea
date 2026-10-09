@@ -125,6 +125,27 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       'claim_introduction',
     ]);
 
+    await proxy.putOutbox({
+      outboxId: 'agent_welcome_rpc',
+      operationId: 'operation_rpc',
+      destination: { kind: 'thread', workspaceId: 'T_RPC', channelId: 'D_RPC', threadTs: '1800000000.000100' },
+      receipt: {
+        kind: 'agent_created_welcome', agentId: 'agent_rpc', agentName: 'RPC Agent',
+        requesterMembershipId: 'member_rpc', surface: 'direct', persona: { name: 'RPC Agent' },
+        publication: { status: 'partial', incomplete: ['slack_presence'] }, deliveryPersona: 'chickpea',
+      },
+      status: 'delivered', attempts: 1, nextAttemptAt: NOW, createdAt: NOW, updatedAt: NOW,
+    });
+    const releaseInput = { agentId: 'agent_rpc', agentName: 'RPC Agent', agentHandle: 'rpc', at: NOW + 2 };
+    assert.deepEqual(await proxy.releaseAgentWelcome(releaseInput), { created: true });
+    assert.deepEqual(await proxy.releaseAgentWelcome(releaseInput), { created: false });
+    assert.equal((await proxy.getOutboxForOperation('agent_welcome_rpc_published'))?.status, 'pending');
+    assert.deepEqual(calls.slice(-3).map(({ kind }) => kind), [
+      'release_agent_welcome',
+      'release_agent_welcome',
+      'get_outbox_for_operation',
+    ]);
+
     const setupRecord = {
       setupOperationId: 'setup_rpc_reusable',
       organizationId: 'org_rpc',

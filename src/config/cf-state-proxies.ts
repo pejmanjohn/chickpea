@@ -1395,6 +1395,12 @@ export class CfManagementStore implements ManagementStore {
     return response.result;
   }
 
+  async releaseAgentWelcome(input: Parameters<ManagementStore['releaseAgentWelcome']>[0]) {
+    const response = await this.execute({ kind: 'release_agent_welcome', input });
+    if (response.kind !== 'agent_welcome_release') throw unexpectedManagementResponse();
+    return response.result;
+  }
+
   async getOutboxForOperation(operationId: string) {
     const response = await this.execute({ kind: 'get_outbox_for_operation', operationId });
     if (response.kind !== 'outbox') throw unexpectedManagementResponse();
