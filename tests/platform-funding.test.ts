@@ -827,6 +827,11 @@ test('Admin reads an Agent model on a credits installation as ready by its price
     assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'credits serve a priced model with no saved key');
     assert.equal(await unavailable('anthropic/claude-opus-4-1'), 'funding_not_offered', 'credits serve only a priced model');
     assert.equal(
+      await unavailable('openai/gpt-4.1-mini-2025-04-14'),
+      'model_unsupported',
+      'a priced model the active catalog does not serve is refused first, as the Workspace default reads it',
+    );
+    assert.equal(
       await unavailable('cloudflare/@cf/zai-org/glm-5.2'),
       'funding_not_offered',
       'credits serve only a provider the deployment offers',
@@ -919,6 +924,24 @@ test('on a credits installation Admin lists the OpenRouter models Chickpea\'s mo
       'with no current price Chickpea\'s models list nothing',
     );
     assert.deepEqual(await marked(), [], 'and mark no provider card');
+  });
+});
+
+test('each Admin model request on a credits installation asks the funding port once', async (t) => {
+  const { request } = await creditsAdmin(t);
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    for (const path of [
+      '/admin/api/models',
+      '/admin/api/providers',
+      '/admin/api/providers/anthropic/models',
+      `/admin/api/models/readiness?modelId=${encodeURIComponent(`anthropic/${SONNET}`)}`,
+      '/admin/api/workspace-model-default',
+    ]) {
+      const calls = fakePort();
+      const response = await request(path);
+      assert.equal(response.status, 200, path);
+      assert.equal(calls.funding.length, 1, `${path} asked the funding port ${calls.funding.length} times`);
+    }
   });
 });
 
