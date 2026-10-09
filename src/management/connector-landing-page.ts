@@ -709,8 +709,7 @@ body {
 }
 .text-input { margin-top: 10px; }
 textarea.text-input { max-width: none; resize: vertical; }
-.text-input::placeholder,
-.setup-panel input::placeholder { color: rgba(107, 92, 66, .72); }
+.text-input::placeholder { color: rgba(107, 92, 66, .72); }
 .text-input:focus-visible,
 .setup-panel input:focus-visible { outline: 3px solid rgba(176, 84, 21, .42); outline-offset: 2px; }
 .flow-alert {
@@ -741,8 +740,7 @@ textarea.text-input { max-width: none; resize: vertical; }
   padding: 0 22px;
   text-decoration: none;
 }
-.primary-button:disabled,
-.setup-panel button:disabled { box-shadow: 0 2px 0 rgba(59, 50, 32, .18); cursor: not-allowed; opacity: .5; }
+.primary-button:disabled { box-shadow: 0 2px 0 rgba(59, 50, 32, .18); cursor: not-allowed; opacity: .5; }
 .primary-button:active,
 .setup-panel button:active { box-shadow: none; transform: translateY(3px); }
 .text-button {
@@ -831,13 +829,7 @@ textarea.text-input { max-width: none; resize: vertical; }
   box-shadow: 0 12px 34px rgba(59, 50, 32, .09);
   padding: clamp(24px, 5vw, 36px);
 }
-.setup-panel h1 {
-  font-family: "Baloo 2", ui-rounded, system-ui, sans-serif;
-  font-size: clamp(1.9rem, 4vw, 2.4rem);
-  letter-spacing: -.03em;
-  line-height: 1.1;
-  margin: 0 0 12px;
-}
+.setup-panel h1 { font-size: clamp(1.9rem, 4vw, 2.4rem); margin: 0 0 12px; }
 .setup-panel p { color: var(--muted); line-height: 1.55; margin: 12px 0 0; }
 .setup-panel a { color: var(--ink); font-weight: 800; text-underline-offset: 4px; }
 .setup-panel dl { display: grid; gap: 12px; margin: 24px 0 0; }

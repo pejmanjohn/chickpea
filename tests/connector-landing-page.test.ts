@@ -16,7 +16,7 @@ import {
   renderSetupPanelPage,
 } from '../src/management/connector-landing-page.ts';
 import type { ManagementSetupRecord } from '../src/management/types.ts';
-import { unstyledClasses } from './helpers/unstyled-classes.ts';
+import { unstyledClasses, unusedStyledClasses } from './helpers/unstyled-classes.ts';
 
 const setup: ManagementSetupRecord = {
   setupOperationId: 'setup_connector_page',
@@ -363,7 +363,7 @@ test('API-preset connectors ask for their fields in styled inputs inside the set
   assert.doesNotMatch(rendered, /<select|owner-select|select-control/);
 });
 
-test('every connector and setup page styles each class it uses', () => {
+test('every connector and setup page styles each class it uses, and every styled class is used', () => {
   const pages: Array<[string, string]> = CONNECTION_CATALOG_PRESETS.map((preset) => [
     `catalog setup for ${preset.id}`,
     renderCatalogConnectionSetupPage({ setup: catalogSetup(preset.id, preset.name), agent: sprout }),
@@ -388,6 +388,10 @@ test('every connector and setup page styles each class it uses', () => {
     ['managed waiting', renderManagedConnectionWaitingPage({ setup, agent: sprout })],
     ['managed departure', renderManagedConnectionDeparturePage({ setup, agent: sprout }, 'https://hubspot.example/authorize')],
     ['managed success', renderManagedConnectionSuccessPage({ setup: { ...setup, status: 'completed' }, agent: sprout })],
+    ['success for a connector without a logo', renderManagedConnectionSuccessPage({
+      setup: { ...setup, status: 'completed', target: { ...setup.target, provider: 'acme', targetLabel: 'Acme CRM', presetId: 'acme' } },
+      agent: sprout,
+    })],
     ['connection unavailable', renderManagedConnectionUnavailablePage()],
     ['one-use claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: false })],
     ['reusable claim', renderSetupClaimPage({ setupId: 'setup_claim', reusable: true })],
@@ -402,6 +406,7 @@ test('every connector and setup page styles each class it uses', () => {
   for (const [name, html] of pages) {
     assert.deepEqual(unstyledClasses(html), [], `${name} uses classes with no CSS rule`);
   }
+  assert.deepEqual(unusedStyledClasses(pages.map(([, html]) => html)), [], 'CSS rules style classes no page uses');
 });
 
 test('the setup claim page shows a branded loading state and stops it when the link fails', () => {
