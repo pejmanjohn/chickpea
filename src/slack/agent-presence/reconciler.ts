@@ -13,7 +13,7 @@ import {
   AgentPresenceError,
   classifyAgentPresenceError,
 } from './errors.ts';
-import { alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
+import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
@@ -422,7 +422,7 @@ export class AgentPresenceReconciler {
 
     if (!group) {
       const pendingCreate = {
-        name: agent.name,
+        name: agentUserGroupName(agent.name, groups),
         handle: normalizedHandle,
         description: agent.description ?? `${agent.name} Agent`,
         startedAt: this.now(),
@@ -457,7 +457,12 @@ export class AgentPresenceReconciler {
       }
     } else {
       try {
-        group = await this.updateGroupIfNeeded(group, agent, normalizedHandle);
+        group = await this.updateGroupIfNeeded(
+          group,
+          agent,
+          normalizedHandle,
+          agentUserGroupName(agent.name, groups, group.id),
+        );
       } catch (error) {
         throw withHandleSuggestions(error, normalizedHandle, groups);
       }
@@ -644,15 +649,16 @@ export class AgentPresenceReconciler {
     group: SlackUserGroup,
     agent: CustomAgentConfig,
     normalizedHandle: string,
+    name: string,
   ): Promise<SlackUserGroup> {
     const desiredDescription = agent.description ?? `${agent.name} Agent`;
     if (
-      group.name === agent.name &&
+      group.name === name &&
       group.handle === normalizedHandle &&
       group.description === desiredDescription
     ) return group;
     return this.dependencies.transport.updateUserGroup(group.id, {
-      name: agent.name,
+      name,
       handle: normalizedHandle,
       description: desiredDescription,
     });

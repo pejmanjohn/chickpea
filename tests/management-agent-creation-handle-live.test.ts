@@ -30,7 +30,9 @@ const HOSTED = { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>;
 function fakeSlackWorkspace(t: TestContext) {
   const groups = [
     { id: 'S0SUPPORT', name: 'Customer Support', handle: 'support', date_update: 1, date_delete: 0 },
+    { id: 'S0HELP', name: 'Support', handle: 'help', date_update: 1, date_delete: 0 },
   ];
+  const nameKey = (name: string) => name.trim().toLowerCase();
   const memberUsernames = new Set(['support-team']);
   const createdHandles: string[] = [];
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -40,13 +42,15 @@ function fakeSlackWorkspace(t: TestContext) {
     if (method !== 'usergroups.create') throw new Error(`Unexpected Slack call: ${method}`);
     const form = new URLSearchParams(await request.text());
     const handle = form.get('handle') ?? '';
+    const name = form.get('name') ?? '';
     createdHandles.push(handle);
+    if (groups.some((group) => nameKey(group.name) === nameKey(name))) {
+      return Response.json({ ok: false, error: 'name_already_exists' });
+    }
     if (memberUsernames.has(handle) || groups.some((group) => group.handle === handle)) {
       return Response.json({ ok: false, error: 'handle_already_exists' });
     }
-    const group = {
-      id: `S0${groups.length}`, name: form.get('name') ?? '', handle, date_update: 2, date_delete: 0,
-    };
+    const group = { id: `S0${groups.length}`, name, handle, date_update: 2, date_delete: 0 };
     groups.push(group);
     return Response.json({ ok: true, usergroup: group });
   });
@@ -117,14 +121,12 @@ test('a Slack request for a taken @support publishes @support-2 and welcomes as 
     assert.deepEqual(outcome?.handleChange, { requested: 'support', used: 'support-2' });
     assert.deepEqual(slack.createdHandles, ['support-team', 'support-2'], 'Slack never saw @support created');
     const presence = (await f.config.getAgent('agent_support')).slackPresence;
+    const created = slack.groups.find((group) => group.handle === 'support-2');
     assert.deepEqual(
       { handle: presence?.normalizedHandle, health: presence?.health, userGroupId: presence?.userGroupId },
-      {
-        handle: 'support-2',
-        health: 'healthy',
-        userGroupId: slack.groups.find((group) => group.handle === 'support-2')?.id,
-      },
+      { handle: 'support-2', health: 'healthy', userGroupId: created?.id },
     );
+    assert.equal(created?.name, 'Support Agent', 'the S0HELP group already holds the name "Support"');
 
     const finalized = await service.finalizeSlackAgentCreationWelcome({
       context: await resolveSlackManagementActor(signal, f.identity),

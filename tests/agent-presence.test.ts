@@ -516,6 +516,63 @@ test('a handle edit racing Slack creation converges on one updated user group', 
   }
 });
 
+test('an Agent named like another Slack user group publishes under a distinct group name until that name frees up', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.groups.push({ id: 'S_HELP', name: 'Support', handle: 'help', disabled: false });
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const created = await reconciler.reconcile('agent_support');
+    const own = () => transport.groups.find((group) => group.id === created.slackPresence?.userGroupId);
+    assert.equal(created.slackPresence?.health, 'healthy');
+    assert.equal(created.name, 'Support');
+    assert.deepEqual({ name: own()?.name, handle: own()?.handle }, { name: 'Support Agent', handle: 'support' });
+
+    const again = await reconciler.reconcile('agent_support');
+    assert.equal(again.slackPresence?.health, 'healthy');
+    assert.equal(own()?.name, 'Support Agent', 'the distinct name holds while the other group keeps "Support"');
+
+    transport.groups = transport.groups.filter((group) => group.id !== 'S_HELP');
+    const freed = await reconciler.reconcile('agent_support');
+    assert.equal(freed.slackPresence?.health, 'healthy');
+    assert.deepEqual({ name: own()?.name, handle: own()?.handle }, { name: 'Support', handle: 'support' });
+    assert.equal(transport.createCalls, 1);
+  } finally {
+    config.close();
+  }
+});
+
+test('a user group that takes the Agent\'s name mid-create is a name collision, and Retry publishes around it', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  const listed = transport.listUserGroups.bind(transport);
+  transport.listUserGroups = async () => {
+    const seen = await listed();
+    transport.groups.push({ id: 'S_HELP', name: 'Support', handle: 'help', disabled: false });
+    transport.listUserGroups = listed;
+    return seen;
+  };
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await assert.rejects(() => reconciler.retry('agent_support'), {
+      code: 'name_collision', slackCode: 'name_already_exists',
+    });
+    const failed = (await config.getAgent('agent_support')).slackPresence;
+    assert.deepEqual({ health: failed?.health, errorCode: failed?.errorCode },
+      { health: 'needs_attention', errorCode: 'name_collision' });
+    assert.equal(transport.groups.some((group) => group.handle === 'support'), false);
+
+    const retried = await reconciler.retry('agent_support');
+    const own = transport.groups.find((group) => group.id === retried.slackPresence?.userGroupId);
+    assert.equal(retried.slackPresence?.health, 'healthy');
+    assert.deepEqual({ name: own?.name, handle: own?.handle }, { name: 'Support Agent', handle: 'support' });
+  } finally {
+    config.close();
+  }
+});
+
 test('archive disables the alias and removes grants; restore enables the same alias', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
@@ -924,6 +981,7 @@ class FakeSlackTransport implements SlackTransport {
   async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     this.createCalls += 1;
+    if (this.nameTaken(input.name)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
     const group: SlackUserGroup = {
       id: `S${this.groups.length + 1}`,
       name: input.name,
@@ -946,6 +1004,9 @@ class FakeSlackTransport implements SlackTransport {
     if (this.groups.some((other) => other.id !== id && other.handle === patch.handle)) {
       throw new SlackTransportError('usergroups.update', 'handle_already_exists');
     }
+    if (patch.name !== undefined && this.nameTaken(patch.name, id)) {
+      throw new SlackTransportError('usergroups.update', 'name_already_exists');
+    }
     Object.assign(group, patch);
     return { ...group };
   }
@@ -961,6 +1022,11 @@ class FakeSlackTransport implements SlackTransport {
   }
   async publishAppHome(): Promise<never> { throw new Error('unused'); }
   async postMessage(): Promise<never> { throw new Error('unused'); }
+
+  private nameTaken(name: string, exceptId?: string): boolean {
+    const key = name.trim().toLowerCase();
+    return this.groups.some((group) => group.id !== exceptId && group.name.trim().toLowerCase() === key);
+  }
 
   private requiredGroup(id: string): SlackUserGroup {
     const group = this.groups.find((candidate) => candidate.id === id);
