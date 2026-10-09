@@ -3,9 +3,7 @@ import type { ManagementStore } from '../../management/store.ts';
 import { renderAgentChannelWelcome } from '../message-format.ts';
 import type { SlackTransport } from '../transport/types.ts';
 
-/** What the reconciler says once an Agent's presence changes in Slack. */
 export interface AgentPresenceAnnouncements {
-  /** `agent` was just added to `channelId` (its grant turned active) and its handle is live. */
   joinedChannel(input: {
     workspaceId: string;
     channelId: string;
@@ -13,15 +11,12 @@ export interface AgentPresenceAnnouncements {
     agent: CustomAgentConfig;
     grantRevision: number;
   }): Promise<void>;
-  /** `agent`'s handle just became live in Slack after not being live. */
   published(agent: CustomAgentConfig): Promise<void>;
 }
 
 export function agentPresenceAnnouncements(deps: {
   transport: Pick<SlackTransport, 'postMessage'>;
-  /** The `welcomeOnJoin` behavior setting, read when needed. */
   welcomeOnJoin(): Promise<boolean>;
-  /** The Agent's avatar as Slack should show it. */
   avatarUrl(agent: CustomAgentConfig): string | undefined;
   management: Pick<ManagementStore, 'releaseAgentWelcome'>;
   now?: () => number;
@@ -58,7 +53,6 @@ export function agentPresenceAnnouncements(deps: {
   };
 }
 
-/** The handle Slack renders for this Agent, once its user group is live. */
 function liveHandle(
   agent: CustomAgentConfig,
 ): { userGroupId: string; handle: string } | undefined {

@@ -17,9 +17,7 @@ interface Harness {
   stores: AppStores;
   calls: Array<{ operation: string; input: Record<string, unknown> }>;
   warnings: unknown[][];
-  /** Slack's app_home_opened for `user`, through the shared gateway. */
   open(user: string, tab: string): Promise<void>;
-  /** Introductions now due, claimed for delivery. */
   dueIntroductions(): Promise<unknown[]>;
 }
 

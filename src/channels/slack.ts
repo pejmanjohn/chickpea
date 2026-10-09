@@ -952,11 +952,6 @@ const FIRST_PROMPTS = [
   { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
 ];
 
-/**
- * Slack's app_home_opened, from either transport. Either tab publishes Home.
- * Opening Messages offers the first prompts to anyone, and queues Chickpea's
- * introduction for a full member so the DM greets them before they write.
- */
 async function openAgentAppHome(input: {
   workspaceId: string;
   event: { user: string; channel?: unknown; tab?: unknown };
@@ -987,7 +982,6 @@ async function offerFirstPrompts(client: Pick<SlackUiClient, 'assistant'>, chann
     await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts: FIRST_PROMPTS });
   } catch (error) {
     const code = slackPlatformErrorCode(error) ?? 'unknown';
-    // Standalone apps are made with static prompts, and Slack refuses runtime ones there.
     if (code !== 'static_prompts_configured') {
       console.warn('[chickpea] Slack suggested prompts refused:', code);
     }
@@ -1001,7 +995,6 @@ async function publishAgentAppHome(input: {
   transport: SlackTransport;
   botUserId?: string;
   unavailableNotice?: boolean;
-  /** Queue Chickpea's introduction for a full member before publishing. */
   introduce?: boolean;
 }): Promise<void> {
   if (!input.botUserId) return;
@@ -4142,8 +4135,6 @@ async function handleMemberJoinedChannel(
     return;
   }
 
-  // A join with no inviter is Chickpea joining itself to add an Agent, and
-  // that Agent greets the Channel. The onboarding is for a person's invite.
   if (!event.inviter || event.inviter === resolvedBotUserId) return;
   // Public courtesy messages retain the existing enabled-grant and setting gates.
   if (!publicWelcomeEnabled) return;

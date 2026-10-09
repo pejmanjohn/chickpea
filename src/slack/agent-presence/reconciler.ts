@@ -19,11 +19,6 @@ import { alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
-  /**
-   * Who hears about a presence transition. Only `publish` and `reconcile`
-   * announce, so `null` only where the reconciler is built for `archive` or
-   * `restore`.
-   */
   announce: AgentPresenceAnnouncements | null;
   now?: () => number;
 }
@@ -698,11 +693,6 @@ export class AgentPresenceReconciler {
     });
   }
 
-  /**
-   * Announcements are best effort: the grant or presence write they follow
-   * already happened, so a failure is logged (never the message) and never
-   * fails the operation.
-   */
   private async announce(
     transition: keyof AgentPresenceAnnouncements,
     agentId: string,

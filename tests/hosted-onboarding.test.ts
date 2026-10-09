@@ -669,7 +669,6 @@ test('the journey starts with the first Owner claim or not at all, and once', as
   assert.equal(settings.getSetting(ONBOARDING_JOURNEY_KEY), undefined);
 });
 
-/** The state object's receipt outbox, every row, as stored. */
 function receiptOutbox(db: { all(sql: string): Record<string, unknown>[] }) {
   return db.all('SELECT status, destination_json, receipt_json FROM management_receipt_outbox').map((row) => ({
     status: row.status,

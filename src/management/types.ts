@@ -450,11 +450,6 @@ export interface ManagementAgentCreatedWelcome {
   deferredHandoffProposalId?: string;
   /** Persona Slack actually accepted for the durable welcome delivery. */
   deliveryPersona?: 'agent' | 'chickpea';
-  /**
-   * The outbox id of the welcome Chickpea had to post itself because this
-   * Agent's handle was not live yet; this welcome is the Agent's own, owed
-   * since then (see `ManagementStore.releaseAgentWelcome`).
-   */
   followUpOf?: string;
   viewAgentUrl?: string;
   /** Compatibility fields for proposal-created welcomes. */
@@ -1252,7 +1247,6 @@ export interface ClaimAgentCreationWelcomeResult {
   created: boolean;
 }
 
-/** The Agent as it is live now, for the welcome it still owes its creation thread. */
 export interface ReleaseAgentWelcomeInput {
   agentId: string;
   agentName: string;

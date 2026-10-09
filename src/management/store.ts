@@ -1326,7 +1326,6 @@ export class ManagementStoreLogic {
     return this.requireOutbox(record.outboxId);
   }
 
-  /** Whether this call wrote the row; an existing outbox id is left as it is. */
   private insertOutbox(record: ManagementReceiptOutboxRecord): boolean {
     return this.db.run(
       `INSERT OR IGNORE INTO management_receipt_outbox (
@@ -1347,14 +1346,6 @@ export class ManagementStoreLogic {
     ).changes === 1;
   }
 
-  /**
-   * When a new Agent's handle was not live at creation, Chickpea posted the
-   * welcome itself and the Agent's own was left owed. Once the handle is
-   * live, queue that welcome into the creation thread as a follow-up of the
-   * fallback: the same receipt under the Agent as it is now, without the
-   * notices and the Run the fallback already showed and settled. One
-   * follow-up per fallback, so a repeat release writes nothing.
-   */
   releaseAgentWelcome(input: ReleaseAgentWelcomeInput): ReleaseAgentWelcomeResult {
     return this.db.transaction(() => {
       const row = this.db.get(

@@ -27,7 +27,6 @@ const CREATION_THREAD = {
   kind: 'thread' as const, workspaceId: WORKSPACE, channelId: 'D_PEJ', threadTs: '1800000000.000100',
 };
 
-/** The welcome queued at creation while the Agent's handle collided. */
 const ORIGINAL_WELCOME: ManagementReceiptOutboxRecord = {
   outboxId: 'agent_welcome_op_help',
   operationId: 'op_help',

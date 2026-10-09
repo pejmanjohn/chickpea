@@ -62,10 +62,7 @@ export function buildTagStateStores(
     identity: new IdentityStoreLogic(db, {
       installation: () => storeInstallationIdentity(installationBinding, env),
       // A hosted sign-up's guided onboarding starts as the person signing up
-      // becomes the first Owner, with Slack already connected by the host,
-      // and Chickpea's introduction waits in their DM before they write.
-      // claimIntroduction's transaction nests here as a savepoint
-      // (do-state-db.ts), so both commit with the claim or not at all.
+      // becomes the first Owner, with Slack already connected by the host.
       ...(deploymentServesManyInstallations(env)
         ? {
             ownerClaimed: ({ at, resolution }) => {

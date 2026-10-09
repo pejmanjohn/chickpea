@@ -1049,10 +1049,6 @@ export function renderChannelOnboarding(params: {
   ].join(' ');
 }
 
-/**
- * An Agent's own greeting once it is added to a public Channel. Its handle is
- * a live mention: a zero-member user group renders and asks, and pings nobody.
- */
 export function renderAgentChannelWelcome(params: {
   name: string;
   description: string | undefined;
@@ -1068,7 +1064,6 @@ export function renderAgentChannelWelcome(params: {
   ].join('\n\n');
 }
 
-/** Customer-written text inside the welcome: one line, no markup, no pings. */
 function welcomeText(value: string, max: number): string {
   const plain = value.replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ').replace(/[*_~`]/g, '').trim();
   return neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(plain.slice(0, max).trim()));

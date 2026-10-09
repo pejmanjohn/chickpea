@@ -74,7 +74,6 @@ const CREATION_THREAD = {
   kind: 'thread' as const, workspaceId: 'T_HELP', channelId: 'D_HELP', threadTs: '1800000000.000100',
 };
 
-/** The welcome Chickpea posted itself because the Agent's handle was not live. */
 function chickpeaFallbackReceipt(
   outboxId: string,
   receipt: Partial<ManagementAgentCreatedWelcome> = {},
