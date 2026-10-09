@@ -104,6 +104,12 @@ import {
 } from '../config/types.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
 import {
+  RUNTIME_PLAN_INSTRUCTIONS,
+  UNIVERSAL_ARTIFACT_TOOL_NAMES,
+  slackAgentKind,
+  slackSystemBase,
+} from './shared-prefix.ts';
+import {
   isDeniedRepositoryEndpoint,
   matchesGrantedCodeSearch,
   REPOSITORY_METHODS,
@@ -257,7 +263,6 @@ const DISPLAY_GUIDE_TOOLS = [
 ];
 import {
   createSlackPresentTableTool,
-  SLACK_PRESENT_TABLE_INSTRUCTION,
   SLACK_PRESENT_TABLE_TOOL_NAME,
   SLACK_TABLE_PRESENTATION_DATA_NAME,
   SlackTablePresentationSchema,
@@ -299,7 +304,7 @@ import {
 } from '../management/tool-adapter.ts';
 import {
   AGENT_AUTHORING_SKILL_NAME,
-  useAgentAuthoring,
+  useAgentAuthoringSkill,
 } from '../management/agent-authoring/index.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
 import { bootstrapRuntimeProviders } from '../runtime-bootstrap.ts';
@@ -812,6 +817,9 @@ export function ChickpeaSlack({ id }: AgentProps) {
   });
   const managementEnabled = !!parseSlackManagementSignal(delivery, plan);
   const turn = runtimePlanTurnContext(plan, delivery);
+  // The returned shared block opens the system prompt; this Agent's own
+  // instructions and identity open the tenant block after it.
+  useInstruction(plan.instructions);
   useChickpeaSlackRuntimeCapabilities(
     plan,
     id,
@@ -831,7 +839,11 @@ export function ChickpeaSlack({ id }: AgentProps) {
     async (env) => plan.runtimeModel ?? (await prepareRuntimePlanModel(plan, env, turn)).model,
   );
   if (memoryBlock) useInstruction(`${memoryBlock}\n\n${ADVISORY_MEMORY_FINAL_CHECK}`);
-  return plan.instructions;
+  return slackSystemBase({
+    kind: slackAgentKind(plan.agentId),
+    managementMounted: managementEnabled,
+    memberToolsMounted: managementEnabled && plan.actorMembershipId !== undefined,
+  });
 }
 
 /** Persistent state naming the Slack turn this instance is answering. */
@@ -914,19 +926,21 @@ export function useChickpeaSlackRuntimeCapabilities(
       ...(presentationIntent ? { presentationToolName: presentationIntent.tool.name } : {}),
       tablePresentationToolName: SLACK_PRESENT_TABLE_TOOL_NAME,
     }),
+    instructionsInSystemBase: true,
+    mountBeforeTenantTools: () => {
+      useAgentAuthoringSkill();
+      useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
+      useSlackListsTools(plan, resolveAgentPlatformEnv);
+      useSlackReadingTools(plan, resolveAgentPlatformEnv);
+      useTool(createSlackPresentTableTool(writeTablePresentation));
+      useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
+      if (presentationIntent) {
+        useInstruction(presentationIntent.instruction);
+        useTool(presentationIntent.tool);
+      }
+    },
   });
-  useAgentAuthoring();
-  useWorkspaceManagementSlackTools(plan, resolveAgentPlatformEnv, writeAgentCreationTerminal, writeMemoryUpdate);
   usePersonalConnectionAuthorizationSlackTool(plan, resolveAgentPlatformEnv);
-  useSlackListsTools(plan, resolveAgentPlatformEnv);
-  useSlackReadingTools(plan, resolveAgentPlatformEnv);
-  useInstruction(SLACK_PRESENT_TABLE_INSTRUCTION);
-  useTool(createSlackPresentTableTool(writeTablePresentation));
-  useSlackInteractiveComponents(plan, writeInteractiveQuestion, writeDisplayComponent);
-  if (presentationIntent) {
-    useInstruction(presentationIntent.instruction);
-    useTool(presentationIntent.tool);
-  }
 }
 
 /**
@@ -1203,9 +1217,19 @@ export function useRuntimePlanAgent(
     releaseCodingWorkspace?: boolean;
     /** This turn's frozen settings envelope; absent, tools read settings live. */
     turn?: TurnEnvelopeContext;
+    /** The caller's returned instruction already carries the unconditional instructions (slackSystemBase). */
+    instructionsInSystemBase?: boolean;
+    /**
+     * Mounts the tools every turn of the caller shares, after post_artifact
+     * and complete_file_delivery and before any tool that differs by
+     * workspace, Agent, or turn, so the shared tools form a cacheable prefix.
+     */
+    mountBeforeTenantTools?: () => void;
   } = {},
 ): void {
   assertRuntimePlanInstallation(plan, id);
+  const universalTools: Parameters<typeof useTool>[0][] = [];
+  const tenantTools: Parameters<typeof useTool>[0][] = [];
   const { accumulator: artifactAccumulator, writeReceipts: writeArtifactReceipts } = useSlackArtifactReceipts();
   const fileCompletion = useFileDeliveryCompletion(plan, (fileIds) => {
     writeArtifactReceipts({ schemaVersion: 1, receipts: artifactAccumulator.remove(fileIds) });
@@ -1276,29 +1300,32 @@ export function useRuntimePlanAgent(
   if (options.responseMetadataModel) {
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }
-  useInstruction('Never invent facts or claim access to context and tools you do not have.');
+  const runtimeInstructions = options.instructionsInSystemBase !== true;
+  if (runtimeInstructions) useInstruction(RUNTIME_PLAN_INSTRUCTIONS.honesty);
   useInstruction(runtimePlanConnectedServicesInstruction(plan));
   if (options.slackCapabilities) {
     useInstruction(runtimePlanSlackCapabilitiesInstruction(options.slackCapabilities));
   }
-  useInstruction('Sandbox files are temporary working data, not durable Agent memory. They do not follow this Agent into a fresh conversation. A successful file or shell write cannot establish that a fact was remembered. Never promise future recall from a sandbox file.');
+  if (runtimeInstructions) useInstruction(RUNTIME_PLAN_INSTRUCTIONS.sandboxMemory);
   if (plan.codingWorkspace && isCloudflareTarget() && !fileCompletion.repairing) {
     useInstruction(CODING_WORKSPACE_INSTRUCTION);
   }
-  useInstruction('This virtual sandbox starts with a fresh filesystem for each new request, including a follow-up in the same Slack thread. Files from an earlier request are gone. When the current user asks to return or revise those files, recreate them from the available contents in this request before attaching them; do not assume an earlier path still exists. The internal file-delivery check continues the current request and may only read and export existing files.');
-  useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
-  useInstruction('The final Slack answer must be self-contained. Earlier assistant steps are working narration. After an interrupted response, write the complete final answer again, not just the remaining words of the partial response.');
-  useManagedConnectionTools(
+  if (runtimeInstructions) {
+    useInstruction(RUNTIME_PLAN_INSTRUCTIONS.freshSandbox);
+    useInstruction(SLACK_ACTION_LINK_INSTRUCTION);
+    useInstruction(RUNTIME_PLAN_INSTRUCTIONS.selfContained);
+  }
+  tenantTools.push(...useManagedConnectionTools(
     plan,
     resolveAgentPlatformEnv,
     options.connectorUsageCorrelation,
     [AGENT_AUTHORING_SKILL_NAME],
-  );
+  ));
   // Not an artifact tool: an old routine occurrence without a file
   // destination still calls its connections. Only a file-delivery repair,
   // which may not use connections, goes without.
   if (runtimePlanAllowsConnectionRequests(plan) && !fileCompletion.repairing) {
-    useTool(createRuntimePlanConnectionRequestTool(plan));
+    tenantTools.push(createRuntimePlanConnectionRequestTool(plan));
     useInstruction([
       'API connections are declared for this turn. Call them with the connection_request tool, within the listed hosts, path prefixes, and methods, and report the service\'s answer including error messages. Credentials are added automatically; never supply, retrieve, or print authentication headers or credential values. The shell cannot reach these services.',
       'These declarations describe the frozen permission ceiling, not a guarantee of availability. The runtime rechecks current account authority on every request; if access is denied or unavailable, report that result without bypassing it or claiming success.',
@@ -1366,9 +1393,9 @@ export function useRuntimePlanAgent(
       roster: workspaceRoster,
       taskRunning: workspaceTaskRunning,
     })) {
-      useTool(tool);
+      tenantTools.push(tool);
     }
-    useTool(createRuntimePlanWorkspaceTaskTool({
+    tenantTools.push(createRuntimePlanWorkspaceTaskTool({
       plan,
       coordinatorId: id,
       ...(options.sandboxConversationKey ? { sandboxConversationKey: options.sandboxConversationKey } : {}),
@@ -1399,7 +1426,7 @@ export function useRuntimePlanAgent(
         ...(options.turn ? { turn: options.turn } : {}),
       },
     )) {
-      useTool(tool);
+      (UNIVERSAL_ARTIFACT_TOOL_NAMES.has(tool.name) ? universalTools : tenantTools).push(tool);
     }
     if (!fileCompletion.repairing) {
       useInstruction(buildArtifactToolsInstruction({
@@ -1414,11 +1441,14 @@ export function useRuntimePlanAgent(
         useInstruction(`To send one of these images to a connection, pass its handle to \`${ATTACH_FILE_TO_CONNECTION_TOOL_NAME}\`. Images already in this conversation:\n${imageInventory.manifest}`);
       }
     }
-    useInstruction(FILE_COMPLETION_INSTRUCTION);
+    if (runtimeInstructions) useInstruction(FILE_COMPLETION_INSTRUCTION);
     if (fileCompletion.repairing) {
       useInstruction('This is an export-only file delivery repair. Only read, glob, grep, post_artifact, complete_file_delivery and final presentation tools can execute. Do not run shell commands, change files, use connections, or generate anything again.');
     }
   }
+  for (const tool of universalTools) useTool(tool);
+  options.mountBeforeTenantTools?.();
+  for (const tool of tenantTools) useTool(tool);
 }
 
 function slackActivityToolDescriptors(input: {

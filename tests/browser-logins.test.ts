@@ -330,7 +330,7 @@ test('snapshot hashes of Agents without grants are unchanged by the new field', 
   };
   const config = {
     workspaceId: 'T1', channelId: 'C1', agentId: 'agent_one', agent, model: 'm',
-    provider: 'p', instructions: 'Help.', instructionLayers: [],
+    provider: 'p', instructions: 'Help.',
     modelAttribution: { source: 'pinned', providerId: 'p' },
   } as unknown as EffectiveSlackConfig;
   const legacy = computeSnapshotHash(config);

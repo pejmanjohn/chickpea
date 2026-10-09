@@ -67,7 +67,7 @@ const config = {
     model: 'anthropic/claude-sonnet-4-6', skills: [], mcpServers: [], apiConnections: [], repositories: [],
     slackPresence: { requestedHandle: 'smoke-agent', normalizedHandle: 'smoke-agent', userGroupId: 'S123456' },
   },
-  model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.', instructionLayers: [],
+  model: 'anthropic/claude-sonnet-4-6', provider: 'anthropic', instructions: 'Be useful.',
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } as unknown as EffectiveSlackConfig;
 

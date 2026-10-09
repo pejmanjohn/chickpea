@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { effectiveSlackInstructions } from '../src/config/effective-config.ts';
+import { runtimeIdentityInstruction } from '../src/config/effective-config.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 
 const base: CustomAgentConfig = {
@@ -11,7 +11,7 @@ const base: CustomAgentConfig = {
 };
 
 test('the runtime layer tells an Agent its own name, handle, and Slack user group', () => {
-  const text = effectiveSlackInstructions({
+  const text = runtimeIdentityInstruction({
     workspaceId: 'T1', channelId: 'D1',
     agent: {
       ...base,
@@ -28,7 +28,7 @@ test('the runtime layer tells an Agent its own name, handle, and Slack user grou
 });
 
 test('an Agent without Slack presence still learns its name and self-inspection rule', () => {
-  const text = effectiveSlackInstructions({ workspaceId: 'T1', channelId: 'D1', agent: base });
+  const text = runtimeIdentityInstruction({ workspaceId: 'T1', channelId: 'D1', agent: base });
   assert.match(text, /your name is Brief\./);
   assert.doesNotMatch(text, /Your Slack handle/);
   assert.match(text, /never from Slack subteam lookups/);

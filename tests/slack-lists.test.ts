@@ -15,8 +15,7 @@ import { SLACK_LIST_OPERATIONS, type JsonObject, type SlackListsCall } from '../
 import {
   assertSlackListsAccess,
   createSlackListTools,
-  SLACK_LISTS_INSTRUCTION,
-  slackListsInstructionFor,
+  slackListsHostContext,
 } from '../src/slack/lists/tools.ts';
 import type { SlackManagementSignal } from '../src/management/slack-tools.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -91,16 +90,16 @@ test('List admission uses only current, same-root, and saved exact links', () =>
   }
 });
 
-test('Lists instruction declares missing frozen destination context before a tool call', () => {
-  const missing = slackListsInstructionFor(undefined);
+test('Lists host context declares missing frozen destination context before a tool call', () => {
+  const missing = slackListsHostContext(undefined) ?? '';
   assert.match(missing, /no existing Slack List reference was admitted/i);
   assert.match(missing, /Ask the requester for the exact native Slack List link before calling any existing-List tool/i);
   assert.match(missing, /do not use a URL from background history/i);
   assert.match(missing, /does not prevent creating a new named List.+explicitly asks/i);
   assert.match(missing, /using that confirmed new List in follow-on calls/i);
 
-  assert.equal(slackListsInstructionFor([]), missing);
-  assert.equal(slackListsInstructionFor(['FEXISTING']), SLACK_LISTS_INSTRUCTION);
+  assert.equal(slackListsHostContext([]), missing);
+  assert.equal(slackListsHostContext(['FEXISTING']), undefined);
 });
 
 test('current and configured List references survive a saturated same-root history', () => {

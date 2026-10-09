@@ -1,6 +1,6 @@
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { defineSkill, useInstruction, useSkill } from '@flue/runtime';
+import { defineSkill, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
 export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.39' as const;
@@ -212,8 +212,6 @@ export const AGENT_AUTHORING_PACKAGE = Object.freeze({
   skill: agentAuthoringSkill,
 });
 
-/** Mount product-owned authoring intelligence only in interactive Agents. */
-export function useAgentAuthoring(): void {
-  useInstruction(AGENT_AUTHORING_ROUTER_INSTRUCTION);
+export function useAgentAuthoringSkill(): void {
   useSkill(agentAuthoringSkill);
 }
