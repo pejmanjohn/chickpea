@@ -49,6 +49,8 @@ export function adminUiConfig(input: {
    * secret bindings.
    */
   selfHosted?: boolean;
+  /** True where the host sells Chickpea's models: Admin has the Plan page and onboarding offers them. */
+  billingOffered?: boolean;
   targetChip: string;
 }): Record<string, unknown> {
   return {
@@ -58,6 +60,7 @@ export function adminUiConfig(input: {
     installationOwner: input.installationOwner === true,
     browserOffered: input.browserOffered !== false,
     selfHosted: input.selfHosted !== false,
+    billingOffered: input.billingOffered === true,
     targetChip: input.targetChip,
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
@@ -85,6 +88,7 @@ export function renderAdminPage(
     installationOwner?: boolean;
     browserOffered?: boolean;
     selfHosted?: boolean;
+    billingOffered?: boolean;
     assetVersion?: string;
   } = {},
 ): string {
@@ -134,7 +138,8 @@ ${CHICKPEA_FAVICON_HTML}
 </div>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
-    browserOffered: options.browserOffered !== false, selfHosted: options.selfHosted !== false, targetChip,
+    browserOffered: options.browserOffered !== false, selfHosted: options.selfHosted !== false,
+    billingOffered: options.billingOffered === true, targetChip,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>

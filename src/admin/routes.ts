@@ -50,6 +50,9 @@ import {
 } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
+import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
+import { platformBilling } from '../config/platform-billing.ts';
+import { installationFunding } from '../config/platform-funding.ts';
 import {
   BROWSER_ENV_VARS,
   clearBrowserSettings,
@@ -206,6 +209,7 @@ import {
   completeOnboardingJourney,
   ONBOARDING_PROVIDER_IDS,
   readOnboardingJourney,
+  selectOnboardingFunding,
   selectOnboardingProvider,
   settleOnboardingGithubStep,
   startOnboardingTry,
@@ -1565,6 +1569,11 @@ const composioProjectSetupSchema = v.strictObject({
 const onboardingProviderSchema = v.strictObject({
   expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
   providerId: v.picklist(ONBOARDING_PROVIDER_IDS),
+});
+
+const onboardingFundingSchema = v.strictObject({
+  expectedRevision: v.pipe(v.string(), v.minLength(1), v.maxLength(2_048)),
+  funding: v.picklist(['platform', 'own_key']),
 });
 
 const onboardingTrySchema = v.strictObject({
@@ -6105,6 +6114,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
       browserOffered: standalone,
       selfHosted: standalone,
+      billingOffered: !standalone && platformBilling() !== undefined,
       workspaceAdminUi: Boolean(
         principal && permissionForRole(principal.role).has('admin.configure'),
       ),
@@ -6231,6 +6241,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     work,
     channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
       channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
+  }));
+  app.route('/admin/api', createBillingAdminApi({
+    agentNames: async (c) => new Map([
+      [CHICKPEA_AGENT_ID, 'Chickpea'],
+      ...(await store(c).listUserAgents()).map((agent) => [agent.id, agent.name] as const),
+    ]),
+    personNames: async (c) => {
+      const memberships = await identity(c).listMemberships();
+      const users = await Promise.all(memberships.map((membership) => identity(c).getUser(membership.userId)));
+      return new Map(memberships.flatMap((membership, index) => {
+        const name = users[index]?.displayName;
+        return name ? [[membership.id, name] as const] : [];
+      }));
+    },
+    ownKeyFacts: async (c) => {
+      const configStore = store(c);
+      const [sources, installation, agents] = await Promise.all([
+        describeProviderKeySources(c.env as PlatformEnv | undefined, settings(c)),
+        modelDefaultInstallation(configStore),
+        configStore.listUserAgents(),
+      ]);
+      return {
+        savedKeys: new Set(PROVIDER_KEY_IDS.filter((id) => sources[id] !== 'missing')),
+        defaultModel: installation && (await configStore.getWorkspaceModelDefault(installation.workspaceId))?.modelId,
+        agents: agents.filter((agent) => agent.lifecycle === 'active' && agent.enabled),
+      };
+    },
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
@@ -9897,6 +9934,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     if (!isProviderKeyId(providerId)) return false;
     const env = c.env as PlatformEnv | undefined;
+    // On Chickpea's models, Chickpea's own key pays for the request.
+    if (await installationFunding(env) === 'platform') return true;
     if (providerId === 'openai') {
       const settingsStore = settings(c);
       const method = await resolveOpenAiAuthMethod(settingsStore);
@@ -10058,6 +10097,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           : null,
       },
       channel: null,
+      ...(journey.selectedFunding ? { funding: journey.selectedFunding } : {}),
       providerId: journey.selectedProviderId ?? null,
       modelId: null,
       models: journey.selectedProviderId
@@ -10102,6 +10142,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         providerId: parsed.output.providerId,
       });
       return onboardingResponse(c, selected);
+    } catch (error) {
+      return internalError(c, error);
+    }
+  });
+
+  // Where the host sells Chickpea's models, the Owner's first onboarding
+  // choice: the host records it, and the journey keeps it. Once onboarding
+  // ends, the Plan page switches an installation's funding.
+  app.post('/admin/api/onboarding/funding', async (c) => {
+    const parsed = v.safeParse(onboardingFundingSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    const principal = principalByContext.get(c);
+    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    try {
+      const port = platformBilling();
+      const installationId = port && requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
+      if (!port || !installationId) return c.json({ error: 'not_found' }, 404);
+      const snapshot = await readOnboardingJourney(settings(c));
+      if (!snapshot) return c.json({ error: 'onboarding_not_found' }, 404);
+      if (snapshot.journey.state === 'complete') return c.json({ error: 'onboarding_complete' }, 409);
+      if (snapshot.revision !== parsed.output.expectedRevision) return c.json({ error: 'onboarding_changed' }, 409);
+      await port.chooseFunding(installationId, parsed.output.funding);
+      return onboardingResponse(c, await selectOnboardingFunding(settings(c), {
+        expectedRevision: snapshot.revision,
+        funding: parsed.output.funding,
+      }));
     } catch (error) {
       return internalError(c, error);
     }
@@ -11923,6 +11989,8 @@ function permissionForAdminPage(path: string): Permission {
   // Settings → MCP reads only GET /admin/api/mcp-clients, which every
   // signed-in person may read.
   if (path === ADMIN_CODING_AGENTS_PATH) return 'account.view';
+  // Everyone sees the plan's usage; only an Owner's page offers to buy.
+  if (path === PLAN_PATH) return 'account.view';
   return 'admin.configure';
 }
 
@@ -11952,6 +12020,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     return 'agent.create';
   }
   if (c.req.method === 'GET' && c.req.path === '/admin/api/team') return 'team.view';
+  if (c.req.method === 'GET' && c.req.path === '/admin/api/billing') return 'account.view';
   if (c.req.path.startsWith('/admin/api/team/memberships')) return 'team.manage_members';
   if (c.req.path === '/admin/api/connections/managed/recover') return 'auth.recover';
   if (
@@ -12667,11 +12736,11 @@ async function codingModelChoiceError(input: {
   );
   if (!unavailable) return undefined;
   return unavailable === 'funding_not_offered'
-    ? CREDITS_NOT_OFFERED_TEXT
+    ? PLATFORM_NOT_OFFERED_TEXT
     : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
 }
 
-const CREDITS_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
+const PLATFORM_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');
