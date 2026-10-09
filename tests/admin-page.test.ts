@@ -19448,6 +19448,24 @@ function onboardingLabels(html: string): string[] {
   return [...rail.matchAll(/<span class="onboarding-step-label">([^<]*)<\/span>/g)].map((match) => match[1]!);
 }
 
+test('hosted pages carry no deployment environment label; standalone keeps it on onboarding', async () => {
+  const config = (script: string) => script.match(/window\.__chickpeaAdminConfig = (.*);\n/)![1]!;
+  for (const cloudflare of [false, true]) {
+    const hostedConfig = config(inlineScriptFor(cloudflare, false, true, true, false, false));
+    assert.doesNotMatch(hostedConfig, /cloudflare · workers|local · node|targetChip/, `hosted ${cloudflare ? 'Cloudflare' : 'Node'} config`);
+  }
+  assert.match(config(inlineScriptFor(false)), /"targetChip":"local · node"/);
+  assert.match(config(inlineScriptFor(true)), /"targetChip":"cloudflare · workers"/);
+
+  const hosted = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/onboarding', onboarding: onboardingAt('try') });
+  await flushAsync();
+  assert.match(hosted.app.innerHTML, /<div class="onboarding-brand-row"><div class="onboarding-brand">[\s\S]*?<\/div><\/div><ol class="onboarding-orientation/);
+  assert.doesNotMatch(hosted.app.innerHTML, /onboarding-environment/);
+  const standalone = runAdminPageHarness({ initialPath: '/admin/onboarding', onboarding: onboardingAt('try') });
+  await flushAsync();
+  assert.match(standalone.app.innerHTML, /<span class="onboarding-environment">local · node<\/span><\/div><ol class="onboarding-orientation/);
+});
+
 test('hosted onboarding offers Connect GitHub (optional) after the model; Skip for now goes to Try and changes nothing else', async () => {
   const harness = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,

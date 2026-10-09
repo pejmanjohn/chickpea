@@ -52,7 +52,8 @@ export function adminUiConfig(input: {
   selfHosted?: boolean;
   /** True where the host sells Chickpea's models: Admin has the Plan page and onboarding offers them. */
   billingOffered?: boolean;
-  targetChip: string;
+  /** Standalone only: the runtime this deployment runs on, shown beside onboarding's brand. */
+  targetChip?: string | undefined;
 }): Record<string, unknown> {
   return {
     isCloudflare: input.isCloudflare,
@@ -62,7 +63,7 @@ export function adminUiConfig(input: {
     browserOffered: input.browserOffered !== false,
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
-    targetChip: input.targetChip,
+    ...(input.targetChip ? { targetChip: input.targetChip } : {}),
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
     managedConnectorPresets: MANAGED_CONNECTOR_PRESETS,
@@ -97,7 +98,8 @@ export function renderAdminPage(
   // Cloudflare runtimes. The primary Admin chrome intentionally stays
   // product-focused and does not expose this deployment detail.
   const isCloudflare = isCloudflareTarget();
-  const targetChip = isCloudflare ? 'cloudflare · workers' : 'local · node';
+  const selfHosted = options.selfHosted !== false;
+  const targetChip = !selfHosted ? undefined : isCloudflare ? 'cloudflare · workers' : 'local · node';
   const usageAdminUi = options.usageAdminUi === true;
   // Omission preserves the full Admin shell for callers and tests that do not
   // have a request principal. The authenticated route passes this explicitly.
@@ -139,7 +141,7 @@ ${CHICKPEA_FAVICON_HTML}
 </div>
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
-    browserOffered: options.browserOffered !== false, selfHosted: options.selfHosted !== false,
+    browserOffered: options.browserOffered !== false, selfHosted,
     billingOffered: options.billingOffered === true, targetChip,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>

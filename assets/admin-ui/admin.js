@@ -2976,7 +2976,8 @@
 
   function onboardingShellHtml() {
     return '<main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">' +
-      '<div class="onboarding-brand">' + peaMarkHtml() + wordmarkHtml() + '</div><span class="onboarding-environment">' + esc(CONFIG.targetChip) + '</span></div>' +
+      '<div class="onboarding-brand">' + peaMarkHtml() + wordmarkHtml() + '</div>' +
+      (CONFIG.targetChip ? '<span class="onboarding-environment">' + esc(CONFIG.targetChip) + '</span>' : '') + '</div>' +
       onboardingOrientationHtml() + '<div class="onboarding-stage" aria-live="polite">' + onboardingMainHtml() + '</div></div></main>';
   }
 
