@@ -12771,45 +12771,45 @@
 
   function modelWarningHtml(model) {
     if (!model || model.indexOf("/") < 1) return "";
-    var unavailable = modelUnavailable(model);
-    if (unavailable === "funding_not_offered") return NOT_OFFERED_HINT_HTML;
-    var warning = modelWarning(model, unavailable === "credential_missing");
+    var answer = modelReadiness(model) || {};
+    if (answer.unavailable === "funding_not_offered") return NOT_OFFERED_HINT_HTML;
+    var warning = modelWarning(model, answer);
     return warning ? '<p class="field-error">' + esc(warning) + '</p>' : "";
   }
 
-  function modelUnavailable(model) {
+  function modelReadiness(model) {
     var slot = state.modelReadiness;
-    if (slot && slot.model === model) return slot.unavailable;
+    if (slot && slot.model === model) return slot.answer;
     // Skip while the picker is open, since a request per keystroke would flash the warning.
-    if (state.modelPickerOpen) return undefined;
-    slot = state.modelReadiness = { model: model, unavailable: undefined };
+    if (state.modelPickerOpen) return null;
+    slot = state.modelReadiness = { model: model, answer: null };
     api("/admin/api/models/readiness?modelId=" + encodeURIComponent(model)).then(function (body) {
-      return (body && body.unavailable) || null;
+      return body && body.unavailable ? body : null;
     }).catch(function () {
       return null;
-    }).then(function (unavailable) {
+    }).then(function (answer) {
       if (state.modelReadiness !== slot) return;
-      slot.unavailable = unavailable;
-      if (unavailable) renderPreservingPagePosition();
+      slot.answer = answer;
+      if (answer) renderPreservingPagePosition();
     });
-    return undefined;
+    return null;
   }
 
-  function modelWarning(model, credentialMissing) {
+  function modelWarning(model, answer) {
     var provider = model.slice(0, model.indexOf("/"));
     var entry = state.models.providers.find(function (item) { return item.id === provider; });
     if (!entry) return "Free text accepted; provider not detected in this install.";
-    if (provider === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription") {
-      if ((entry.suggestions || []).indexOf(model) < 0) {
-        return "This OpenAI model is not available through the selected ChatGPT subscription.";
-      }
-      return credentialMissing
-        ? "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings."
-        : "";
+    var subscription = provider === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription";
+    if (subscription && (entry.suggestions || []).indexOf(model) < 0) {
+      return "This OpenAI model is not available through the selected ChatGPT subscription.";
     }
+    if (answer.unavailable === "model_unsupported") return answer.message;
+    if (answer.unavailable !== "credential_missing") return "";
     // Known provider, no key: the pin will save, but every reply fails with a
     // sanitized provider error — say so here instead of letting it surprise.
-    return credentialMissing ? "No key for this provider yet — replies with this model will fail until one is added in Settings." : "";
+    return subscription
+      ? "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings."
+      : "No key for this provider yet — replies with this model will fail until one is added in Settings.";
   }
 
   function slugId(name) {
