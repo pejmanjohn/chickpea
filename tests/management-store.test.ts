@@ -85,7 +85,8 @@ function chickpeaFallbackReceipt(
     turnJobId: 'turn_help',
     agentId: 'agent_help',
     agentName: 'Support',
-    agentHandle: 'support',
+    agentHandle: 'support-team',
+    takenHandle: 'support',
     agentDescription: 'Answers support questions.',
     requesterMembershipId: 'membership_help',
     surface: 'direct',
@@ -163,6 +164,15 @@ test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallbac
     const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
     assert.ok(second && 'kind' in second.receipt && second.receipt.kind === 'agent_created_welcome');
     assert.deepEqual(second.receipt.publication, { status: 'complete', incomplete: [] });
+    assert.equal(second.receipt.takenHandle, undefined, 'a handle fixed later was not picked because another was taken');
+
+    await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_kept', {
+      publication: { status: 'partial', incomplete: ['slack_presence'] },
+    }, { createdAt: NOW + 40, updatedAt: NOW + 40 }));
+    await store.queueOwedAgentWelcome({ ...owed, agentHandle: 'support-team', at: NOW + 50 });
+    const kept = await store.getOutboxForOperation('agent_welcome_help_kept_published');
+    assert.ok(kept && 'kind' in kept.receipt && kept.receipt.kind === 'agent_created_welcome');
+    assert.equal(kept.receipt.takenHandle, 'support', 'the handle picked at creation still explains itself');
   } finally {
     store.close();
   }

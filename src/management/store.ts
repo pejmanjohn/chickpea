@@ -1373,6 +1373,7 @@ export class ManagementStoreLogic {
         deliveryPersona: _deliveryPersona,
         connectorNotices: _connectorNotices,
         followOnNotices: _followOnNotices,
+        takenHandle,
         ...receipt
       } = fallback.receipt;
       const incomplete = (receipt.publication?.incomplete ?? [])
@@ -1387,6 +1388,7 @@ export class ManagementStoreLogic {
           agentName: input.agentName,
           agentHandle: input.agentHandle,
           persona: { ...receipt.persona, name: input.agentName },
+          ...(takenHandle && input.agentHandle === receipt.agentHandle ? { takenHandle } : {}),
           publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
           fallbackOutboxId: fallback.outboxId,
         },
