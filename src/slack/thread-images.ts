@@ -209,6 +209,21 @@ export function threadImageRecordsFromRecord(
 }
 
 /**
+ * One Slack conversation's `img:N` inventory. The Agent's tools resolve
+ * handles against it and the host lists the same handles in the current
+ * request, so both build it here from the same records.
+ */
+export function conversationThreadImageInventory(
+  conversation: { workspaceId: string; channelId: string; threadTs: string },
+  threadImages?: readonly ThreadImageRecord[],
+): ThreadImageInventory {
+  return buildThreadImageInventory({
+    conversationKey: slackThreadImageConversationKey(conversation),
+    ...(threadImages ? { threadRecords: threadImages } : {}),
+  });
+}
+
+/**
  * One turn's inventory: thread images in thread order, then the images this
  * response staged, which take the next handles.
  */

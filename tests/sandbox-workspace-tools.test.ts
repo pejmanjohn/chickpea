@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { toJsonSchema } from '@valibot/to-json-schema';
+
 import type { FlueExecutionOperation, Sandbox } from '@flue/runtime';
 
 import { runtimePlanWorkspaceResolver, runtimePlanWorkspaceToolsMounted } from '../src/agents/slack-thread.ts';
@@ -671,10 +673,16 @@ test('post_artifact with a workspace reads that workspace and fails closed witho
   assert.deepEqual(missing, {
     output: { attached: false, reason: 'unavailable', detail: 'source_unavailable' },
   });
-  assert.ok(tool.description.includes('pass workspace'));
 
+  // post_artifact opens the shared prompt prefix, so a coding workspace must not change its definition.
   const plain = createWorkspaceArtifactTool(binding, deliver);
-  assert.equal(plain.description.includes('pass workspace'), false);
+  assert.equal(plain.description, tool.description);
+  assert.deepEqual(toJsonSchema(plain.input, { errorMode: 'ignore' }), toJsonSchema(tool.input, { errorMode: 'ignore' }));
+  assert.deepEqual(
+    await plain.run({ ...RUN, harness, data: { path: '/workspace/d.png', filename: 'd.png', workspace: 'main' } } as never),
+    { output: { attached: false, reason: 'unavailable', detail: 'source_unavailable' } },
+  );
+  assert.deepEqual(readFrom, ['/home/user:bash:a.csv', '/workspace:cloudflare:/workspace/b.png']);
 });
 
 test('list_files reports a missing directory, and read of a directory is a typed refusal', async () => {
