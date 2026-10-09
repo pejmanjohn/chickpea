@@ -139,6 +139,18 @@ for (const agentKind of ['system', 'user'] as const) {
   }
 }
 
+test('a workspace with an image model sends the same bytes through B and caches B for an hour', async () => {
+  const alpha = await render({ ...ALPHA, imageModel: 'openai/gpt-image-2.5-flare' });
+  const anchor = anchorIndex(alpha);
+  assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name),
+    ['ask_user', 'offer_actions', 'request_form', 'stream_answer', 'generate_image', 'recover_image']);
+  assert.deepEqual(markers(alpha), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+  for (const variant of [ALPHA_OTHER_CHANNEL, { ...BRAVO, imageModel: 'openai/gpt-image-2.5-sunburst' }, ALPHA_DM]) {
+    const other = await render({ imageModel: 'openai/gpt-image-2.5-flare', ...variant });
+    assert.equal(throughB(other), throughB(alpha), `${variant.workspace} ${variant.channel} sends the same bytes through B`);
+  }
+});
+
 test('a group DM, which mounts no interactive tools, also caches B for an hour', async () => {
   for (const [progressiveStreamingOffered, after] of [[false, []], [true, ['stream_answer']]] as const) {
     const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered });

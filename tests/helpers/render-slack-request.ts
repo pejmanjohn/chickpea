@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.ANTHROPIC_API_KEY = 'render-only-not-a-key';
+process.env.OPENAI_API_KEY = 'render-only-not-a-key';
 process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-request-')), 'state.db');
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
@@ -44,6 +45,8 @@ export interface SlackRequestVariant {
   member?: boolean;
   /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
   delivery?: 'message' | 'file_delivery_check';
+  /** The workspace's default image model, which mounts `generate_image`. */
+  imageModel?: string;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
@@ -75,6 +78,9 @@ const identity: any = getIdentityStore();
 store.getAgent = async () => currentAgent();
 store.listConnectionAccounts = async () => [];
 store.listAgentConnectionBindings = async () => [];
+store.getWorkspaceModelRole = async (workspaceId: string, role: string) => role === 'image' && current!.imageModel
+  ? { workspaceId, role, modelId: current!.imageModel, revision: 1, createdAt: 0, updatedAt: 0 }
+  : undefined;
 identity.getOrganization = async () => ({ id: 'org', slackTeamId: current!.workspace });
 identity.getMembership = async () => ({ id: 'member', organizationId: 'org', status: 'active', userId: 'user' });
 identity.getMembershipAccessOverlay = async () => undefined;
