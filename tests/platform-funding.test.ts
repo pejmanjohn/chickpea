@@ -839,6 +839,53 @@ test('Admin reads an Agent model on a credits installation as ready by its price
   });
 });
 
+test('on a credits installation Admin lists the models Chickpea\'s models serve and marks the providers they cover', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    return (await response.json()) as T;
+  };
+  type Listed = { id: string; configured: boolean; source: string; suggestions: string[] };
+  const anthropic = async () =>
+    (await read<{ providers: Listed[] }>('/admin/api/models')).providers.find(({ id }) => id === 'anthropic')!;
+  const cards = async () =>
+    (await read<{ providers: Array<{ id: string; platformFunded?: boolean }> }>('/admin/api/providers')).providers;
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const served = await anthropic();
+    assert.equal(served.configured, true, 'Chickpea\'s models serve Anthropic with no saved key');
+    assert.equal(served.source, 'Chickpea’s models');
+    assert.ok(served.suggestions.includes(`anthropic/${SONNET}`));
+    for (const model of served.suggestions) {
+      const readiness = await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(model)}`);
+      assert.equal(readiness.unavailable, null, `${model} is listed only when the readiness rule serves it`);
+    }
+    assert.deepEqual(
+      (await read<{ models: Array<{ id: string }> }>('/admin/api/providers/anthropic/models')).models.map(({ id }) => `anthropic/${id}`),
+      served.suggestions,
+      'the picker\'s live list on Chickpea\'s models is the same list',
+    );
+    assert.deepEqual((await cards()).map(({ id, platformFunded }) => [id, platformFunded]), [
+      ['anthropic', true],
+      ['openai', true],
+      ['openrouter', true],
+    ]);
+
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.ok(!(await anthropic()).suggestions.includes(`anthropic/${SONNET}`), 'a stale price leaves the list');
+    t.mock.timers.setTime(NOW);
+
+    fakePort({ funding: async () => 'customer' });
+    const ownKey = await anthropic();
+    assert.equal(ownKey.configured, false, 'a customer-funded installation needs its own key');
+    assert.notEqual(ownKey.source, 'Chickpea’s models');
+    assert.ok(ownKey.suggestions.includes(`anthropic/${SONNET}`));
+    assert.ok((await cards()).every((card) => !('platformFunded' in card)));
+  });
+});
+
 test('a credits installation with no saved key can choose a priced coding model, and only a priced one', async (t) => {
   const { request } = await creditsAdmin(t);
   const choose = (modelId: string) => request('/admin/api/workspace-model-roles/coding', {

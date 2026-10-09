@@ -393,6 +393,7 @@ type ProviderSummaryFixture = {
   subscriptionAvailable?: boolean;
   subscriptionProtocol?: 'chatgpt-plan' | 'codex';
   subscription?: OpenAiSubscriptionStatusFixture;
+  platformFunded?: boolean;
 };
 type ModelProviderFixture = {
   id: string;
@@ -14061,6 +14062,107 @@ test('the Agent Model field asks about a typed model once its picker closes', as
   await flushAsync();
   assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL, UNOFFERED_MODEL]);
   assert.ok(agentModelField(harness.app.innerHTML).includes(NOT_OFFERED_HINT));
+});
+
+const PLATFORM_ANTHROPIC: ModelProviderFixture = {
+  id: 'anthropic',
+  configured: true,
+  source: 'Chickpea’s models',
+  suggestions: [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+};
+const HOSTED_PROVIDERS_WITHOUT_KEYS: ProviderSummaryFixture[] = ['anthropic', 'openai', 'openrouter'].map((id) => ({
+  id,
+  status: 'missing',
+  modelCount: null,
+  ...(id === 'openai' ? { activeAuthMethod: 'api_key' as const, subscriptionAvailable: false } : {}),
+}));
+
+test('on Chickpea\'s models the Agent model picker lists the models Chickpea offers', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=model',
+    agents: [{ ...releaseAgent, model: OFFERED_MODEL }],
+    modelProviders: [PLATFORM_ANTHROPIC],
+    anthropicModels: [{ id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }],
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  const list = harness.app.innerHTML.match(/<div class="combo-list" role="listbox">[\s\S]*?<div class="combo-settings">/)?.[0] ?? '';
+  assert.match(list, /<div class="combo-group">anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.deepEqual(
+    [...list.matchAll(/data-action="pick-model" data-model="([^"]+)"/g)].map((match) => match[1]),
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+  );
+  assert.doesNotMatch(list, /no providers configured|Add or connect a provider/);
+});
+
+test('on Chickpea\'s models the Workspace default offers the same models as the Agent picker', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    modelProviders: [PLATFORM_ANTHROPIC],
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+    workspaceDefault: {
+      workspaceId: 'T_CREDITS',
+      modelId: OFFERED_MODEL,
+      revision: 1,
+      provenance: 'admin_selected',
+      runtimeContract: 'chickpea-v1',
+      live: true,
+      inheritingAgentCount: 0,
+      health: { status: 'ready', providerId: 'anthropic' },
+    },
+  });
+  await flushAsync();
+
+  const select = harness.app.innerHTML.match(/<select class="input mono" id="workspace-default-model"[\s\S]*?<\/select>/)?.[0] ?? '';
+  assert.deepEqual(
+    [...select.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+  );
+});
+
+test('on Chickpea\'s models each provider card says they are in use and an own key is optional', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+
+  for (const id of ['anthropic', 'openai', 'openrouter']) {
+    const card = harness.app.innerHTML.match(new RegExp(`<article class="prov-row provider-card[^"]*" data-provider-card="${id}">[\\s\\S]*?</article>`))?.[0] ?? '';
+    assert.ok(card.includes('<span class="badge badge-neutral"><span class="dot"></span>Chickpea&rsquo;s models</span>'), `${id}: ${card}`);
+    assert.ok(card.includes('<p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p>'), `${id}: ${card}`);
+    assert.ok(card.includes(`<button type="button" class="btn btn-soft btn-sm" data-action="prov-add-key" data-provider="${id}">Add key</button>`), `${id}: ${card}`);
+    assert.doesNotMatch(card, /Key needed|Platform billing requires|Add your OpenRouter key/);
+  }
+});
+
+test('an own-key workspace with no key keeps its Key needed provider cards', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS,
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+
+  for (const id of ['anthropic', 'openai', 'openrouter']) {
+    const card = harness.app.innerHTML.match(new RegExp(`<article class="prov-row provider-card[^"]*" data-provider-card="${id}">[\\s\\S]*?</article>`))?.[0] ?? '';
+    assert.ok(card.includes('<span class="badge badge-off"><span class="dot"></span>Key needed</span>'), `${id}: ${card}`);
+    assert.ok(card.includes(`<button type="button" class="btn btn-primary btn-sm" data-action="prov-add-key" data-provider="${id}">Add key</button>`), `${id}: ${card}`);
+    assert.doesNotMatch(card, /Chickpea&rsquo;s models|No API key needed/);
+  }
+  assert.match(harness.app.innerHTML, /<p class="provider-card-muted">Platform billing requires an API key here\.<\/p>/);
+  assert.match(harness.app.innerHTML, /Add your OpenRouter key\. Chickpea validates it with/);
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {
