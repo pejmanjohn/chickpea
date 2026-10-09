@@ -15,6 +15,11 @@ export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to you
 
 export type SlackFailureKind = Extract<FlueSettlementCheckpointV1, { outcome: 'failed' | 'aborted' }>['failureKind'];
 
+/** The executor gave the turn up: an eviction or wall-time yield, or a reconciliation it could not settle. */
+export type RecoveryFailure = 'recovery-failure';
+
+type FailureKind = SlackFailureKind | RoutineFailureClass | RecoveryFailure;
+
 type NotOurs =
   | 'out_of_usage'
   | 'workspace_limit'
@@ -32,7 +37,7 @@ const ours = (reason: CreditBackReason): Owner => ({ ours: reason });
 const oursUnlessToolCalled = (reason: CreditBackReason): Owner => ({ ours: reason, unlessToolCalled: true });
 const notOurs = (why: NotOurs): Owner => ({ notOurs: why });
 
-const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
+const FAILURE_OWNERS: Record<FailureKind, Owner> = {
   agent: ours('chickpea'),
   provider: ours('provider'),
   'invalid-output': oursUnlessToolCalled('provider'),
@@ -42,6 +47,7 @@ const FAILURE_OWNERS: Record<SlackFailureKind | RoutineFailureClass, Owner> = {
   'credits-exhausted': notOurs('out_of_usage'),
   sandbox: ours('sandbox'),
   'sandbox-session-cap': notOurs('workspace_limit'),
+  'recovery-failure': ours('evicted'),
 
   creator_ineligible: notOurs('customer_setup'),
   channel_ineligible: notOurs('customer_setup'),
@@ -70,7 +76,7 @@ export interface FailedRun {
   readonly toolCallCount?: number | undefined;
 }
 
-export function creditBackReason(kind: SlackFailureKind | RoutineFailureClass, run: FailedRun): CreditBackReason | null {
+export function creditBackReason(kind: FailureKind, run: FailedRun): CreditBackReason | null {
   const owner = FAILURE_OWNERS[kind];
   if ('notOurs' in owner) return null;
   if (owner.unlessToolCalled && (run.toolCallCount ?? 0) > 0) return null;
