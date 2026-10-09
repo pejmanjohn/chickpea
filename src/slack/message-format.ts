@@ -366,10 +366,8 @@ function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string
  * `live` names the Agent handles this reply may mention: in prose, a plain
  * `@handle` of one of them becomes a live mention of that Agent, which
  * notifies nobody. A user-group token stays live only in the exact form this
- * function writes, so each message of a reply renders the approved text
- * again without dropping an ask. Any other token naming one of them, whether
- * the model wrote it or copied it from Slack, is inert and reads as that
- * Agent's handle. Every other user group stays inert.
+ * function writes. Any other token naming one of them is inert and reads as
+ * that Agent's handle. Every other user group stays inert.
  * Idempotent, and a streamed prefix neutralizes to a prefix of the answer:
  * a handle word changes only once it is complete.
  */

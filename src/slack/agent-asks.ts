@@ -111,13 +111,6 @@ function turnMayAskAgents(
     agentMayAskTeammates(assignment.agent);
 }
 
-// A handle word: `@` not preceded by a word character or `.`, `@`, `/`,
-// `:`, `-`, so an email address, a URL, or a path is never a mention. Unlike
-// the word message-format.ts links live (SLACK_HANDLE_WORD), this one
-// accepts a `|` or `<` before the `@`: a delivered reply holds its
-// teammates' mentions as `<!subteam^ID|@handle>`, whose label must still
-// ask. An inert mention carries the word joiner right after its `@`, so it
-// never asks: message-format.ts alone decides which mentions are live.
 const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@([A-Za-z0-9_-]+)/gu;
 
 /**

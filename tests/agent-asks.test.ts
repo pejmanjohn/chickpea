@@ -75,7 +75,6 @@ test('handle words are read from prose, never from code, emails, or paths', () =
     mentionedHandleWords('@Finance can you check? cc @legal, and @finance again.'),
     ['finance', 'legal'],
   );
-  // An inert mention carries a word joiner after its `@`, so it asks nobody.
   assert.deepEqual(mentionedHandleWords(`Asking @${'\u2060'}finance now`), []);
   assert.deepEqual(mentionedHandleWords('mail ops@example.com, see a/@b, x.@c, https://x.com/@d'), []);
   assert.deepEqual(mentionedHandleWords('run `@finance` or\n```\n@legal\n```'), []);
@@ -824,7 +823,6 @@ test('a reply mentions its Channel teammates live and every other user group sta
     canonicalSlackMarkdownText('Checking. @a2a-finance, what was Q3? cc @A2A-Finance', live),
     'Checking. <!subteam^SFIN|@a2a-finance>, what was Q3? cc <!subteam^SFIN|@a2a-finance>',
   );
-  // A mention token the model wrote for a teammate is inert and reads as its handle.
   assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), `@${joiner}legal ok?`);
   // Other groups, broadcasts, code, emails, and longer words stay as before.
   assert.equal(canonicalSlackMarkdownText('<!subteam^SOPS|@ops> and @here', live), `@${joiner}ops and @${joiner}here`);
@@ -870,8 +868,6 @@ test('a teammate mention an Agent only quoted asks no one; its own @handle still
       return { text, asked: jobs.slice(before).map((job) => job.assignment.agentId) };
     };
     const joiner = '⁠';
-    // Slack returns every mention as `<!subteam^ID>`, so that is what a model
-    // copies from a thread it read.
     assert.deepEqual(await deliver('3500.000200', '> <!subteam^SFINANCE> what was Q3 revenue?'),
       { text: `> @${joiner}finance what was Q3 revenue?`, asked: [] });
     assert.deepEqual(await deliver('3500.000300', 'The root says "<!subteam^SFINANCE> what was Q3 revenue?"'),
@@ -885,7 +881,6 @@ test('a teammate mention an Agent only quoted asks no one; its own @handle still
       text: 'Let me check. <!subteam^SFINANCE|@finance> what was Q3 revenue?',
       asked: ['agent_finance'],
     });
-    // Each message of a reply renders again from the approved text.
     assert.equal(canonicalSlackMarkdownText(own.text, live), own.text);
   });
 });
