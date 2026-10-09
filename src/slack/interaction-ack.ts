@@ -46,15 +46,19 @@ export function createSlackInteractionAck(request: Request, startedAt = Date.now
 
 /**
  * `answer` if it settles first. Otherwise, at the deadline, `late()` if the
- * acknowledgement is still unclaimed, and `answer` goes on by itself; an
- * answer whose maker claimed first is always waited for. A deadline already
- * past answers on the next turn of the event loop.
+ * acknowledgement is still unclaimed; an answer whose maker claimed first is
+ * always waited for. `answer` is handed to `waitUntil` here, so it finishes
+ * after a late response wherever the runtime would otherwise end the request.
+ * A deadline already past fires once timers run, which can still be after
+ * Core has claimed.
  */
 export function answerSlackInteractionBy<T>(
   ack: SlackInteractionAck,
   answer: Promise<T>,
   late: () => T,
+  waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<T> {
+  waitUntil(answer);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<T>((resolve) => {
     timer = setTimeout(() => {

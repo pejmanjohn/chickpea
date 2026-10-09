@@ -55,20 +55,29 @@ function ackIn(ms: number): SlackInteractionAck {
 
 const after = <T>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
 
+/** What a runtime keeps alive past the response: only what reached waitUntil. */
+function keptAlive() {
+  const kept: Promise<unknown>[] = [];
+  return { kept, waitUntil: (promise: Promise<unknown>) => { kept.push(promise); } };
+}
+
 test('an answer ready before the deadline is Slack\'s answer', async () => {
   const ack = ackIn(200);
-  assert.equal(await answerSlackInteractionBy(ack, after(5, 'core'), () => 'host'), 'core');
+  const { waitUntil } = keptAlive();
+  assert.equal(await answerSlackInteractionBy(ack, after(5, 'core'), () => 'host', waitUntil), 'core');
   assert.equal(ack.claim(), true, 'nobody claimed an empty answer that made it in time');
 });
 
-test('past the deadline the host answers once, and the slower answer still finishes on its own', async () => {
+test('past the deadline the host answers once, and the slower answer is kept alive to finish', async () => {
   const ack = ackIn(10);
   let finished = false;
   const answer = after(60, 'core').then((value) => { finished = true; return value; });
-  assert.equal(await answerSlackInteractionBy(ack, answer, () => 'host'), 'host');
+  const { kept, waitUntil } = keptAlive();
+  assert.equal(await answerSlackInteractionBy(ack, answer, () => 'host', waitUntil), 'host');
   assert.equal(finished, false);
   assert.equal(ack.claim(), false, 'the host holds the claim, so Core cannot also answer');
-  assert.equal(await answer, 'core');
+  assert.deepEqual(kept, [answer], 'the answer is handed to waitUntil, not left to float');
+  assert.equal(await kept[0], 'core');
 });
 
 test('errors claimed just before the deadline are waited for, never replaced by an empty answer', async () => {
@@ -77,10 +86,10 @@ test('errors claimed just before the deadline are waited for, never replaced by 
     assert.equal(ack.claim(), true);
     return after(40, 'errors');
   });
-  assert.equal(await answerSlackInteractionBy(ack, answer, () => 'host'), 'errors');
+  assert.equal(await answerSlackInteractionBy(ack, answer, () => 'host', keptAlive().waitUntil), 'errors');
 });
 
-test('a deadline already gone is answered before any I/O the answer waits on', async () => {
+test('a deadline already gone is answered once timers run, ahead of an answer still waiting on I/O', async () => {
   const ack = ackIn(-500);
-  assert.equal(await answerSlackInteractionBy(ack, after(30, 'core'), () => 'host'), 'host');
+  assert.equal(await answerSlackInteractionBy(ack, after(30, 'core'), () => 'host', keptAlive().waitUntil), 'host');
 });

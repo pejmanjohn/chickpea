@@ -1892,11 +1892,12 @@ async function handleSlackUiViewSubmission(
     if (!surface || surface.namespace !== 'ui' || surface.workspaceId !== submission.workspaceId) return;
     const open = surface.status === 'open' || surface.status === 'pending_delivery';
     if (open && surface.expiresAt > Date.now()) {
-      emitUiInteraction('refused', 'unavailable');
+      const unsent = unsentModalAnswer(surface, submission);
+      emitUiInteraction('refused', unsent.refusal);
       return sendUiNotice(client, {
         channelId: surface.channelId,
         userId: submission.userId,
-        text: unsentModalText(surface, submission),
+        text: unsent.text,
         threadTs: surface.threadTs,
       });
     }
@@ -1925,14 +1926,19 @@ async function handleSlackUiViewSubmission(
 }
 
 /** Why an answer to a still-open card was not sent, once its modal has closed. */
-function unsentModalText(surface: UiSurfaceRecord, submission: SlackUiViewSubmission): string {
-  if (!surfaceMayAnswer(surface, submission.userId)) return uiRefusalText('wrong_user', surface);
-  const spec = surface.spec;
-  if (submission.callbackId === FORM_VIEW_CALLBACK_ID && spec.kind === 'form') {
-    const read = readFormSubmission(surface, spec.form, submission.state);
-    if (!read.ok) return formErrorsText(surface, spec.form, read.errors);
+function unsentModalAnswer(
+  surface: UiSurfaceRecord,
+  submission: SlackUiViewSubmission,
+): { refusal: UiRefusal; text: string } {
+  if (!surfaceMayAnswer(surface, submission.userId)) {
+    return { refusal: 'wrong_user', text: uiRefusalText('wrong_user', surface) };
   }
-  return 'Not sent yet. Try again, or reply in the thread instead.';
+  const spec = surface.spec;
+  if (submission.callbackId === FORM_VIEW_CALLBACK_ID && spec.kind === 'form' && formLayout(spec.form) === 'modal') {
+    const read = readFormSubmission(surface, spec.form, submission.state);
+    if (!read.ok) return { refusal: 'unavailable', text: formErrorsText(surface, spec.form, read.errors) };
+  }
+  return { refusal: 'unavailable', text: 'Not sent yet. Try again, or reply in the thread instead.' };
 }
 
 /**
