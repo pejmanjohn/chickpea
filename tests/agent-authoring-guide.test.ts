@@ -258,6 +258,14 @@ test('Slack connector setup skips broad workspace inspection for a named service
   assert.match(selectionInstruction, /validates catalog availability and requester authority/i);
   assert.match(selectionInstruction, /do not call inspect_workspace first/i);
   assert.match(selectionInstruction, /describe it only as a secure Chickpea link/i);
+  assert.match(
+    selectionInstruction,
+    /already asked for this Agent to use a service that is not connected yet, treat that as the request/i,
+  );
+  assert.match(
+    selectionInstruction,
+    /give its actionLinks in the same reply instead of asking them to request the link/i,
+  );
 });
 
 test('one global Slack action-link policy owns future tool link presentation', async () => {
