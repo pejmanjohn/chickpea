@@ -3,10 +3,12 @@ import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { SlackPublicContextEntry } from '../src/config/types.ts';
+import { mentionedHandleWords } from '../src/slack/agent-asks.ts';
 import { clearSlackContextNameCache, resolveSlackContextNames } from '../src/slack/context-names.ts';
 import type { CompletedSlackArtifactReceipt } from '../src/slack/artifact-receipts.ts';
 import { slackContextAuthorLabel } from '../src/slack/context-format.ts';
 import { collectAdmittedSlackListIds } from '../src/slack/lists/admission.ts';
+import { canonicalSlackMarkdownText } from '../src/slack/message-format.ts';
 import { slackFileSummaries, slackMessageText } from '../src/slack/message-text.ts';
 import {
   assembleRetainedSlackContext,
@@ -644,6 +646,30 @@ test('an image the Agent posted stays in a record-only turn\'s inventory', async
       ({ fileId, origin, messageTs, byteLength })), [
       { fileId: 'F0CHART001', origin: 'agent', messageTs: '1005.000100', byteLength: 4096 },
     ]);
+  });
+});
+
+test('the record holds an Agent\'s mention as Slack returns it, so quoting the record asks nobody', async () => {
+  await withStore(async (store) => {
+    const request = turn({ messageTs: ROOT, text: 'what did we bill in Q3?' });
+    const assignment = { runtimeContract: 'chickpea-v1', agentId: 'agent_oncall' } as const;
+    const live = new Map([['finance', 'SFINANCE']]);
+    await recordAcceptedSlackHumanMessage(store, request, assignment);
+    const delivered = canonicalSlackMarkdownText('@finance what did we bill in Q3?', live);
+    assert.deepEqual(mentionedHandleWords(delivered), ['finance']);
+    await recordDeliveredSlackAgentMessage(store, request, assignment, { messageTs: '1005.000100', text: delivered });
+
+    const [, reply] = await store.listSlackPublicContext('T1', 'C1', ROOT);
+    assert.equal(reply?.text, '<!subteam^SFINANCE> what did we bill in Q3?');
+    const client = repliesClient([]);
+    const context = await hydrateTurnSlackContext({
+      client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
+    });
+    assert.equal(client.calls.length, 0);
+    const read = context.messages.find((message) => message.ts === '1005.000100');
+    assert.equal(read?.text, '<!subteam^SFINANCE> what did we bill in Q3?');
+    assert.deepEqual(mentionedHandleWords(canonicalSlackMarkdownText(`> ${read?.text}`, live)), []);
+    assert.deepEqual(mentionedHandleWords(canonicalSlackMarkdownText(`It asked: ${read?.text}`, live)), []);
   });
 });
 
