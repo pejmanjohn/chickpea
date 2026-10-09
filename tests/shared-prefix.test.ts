@@ -223,7 +223,8 @@ const CONNECTED_AGENTS: Record<string, Partial<SlackRequestVariant>> = {
       },
     }),
   },
-  'a GitHub repository': {
+  // Node never mounts a coding workspace; tests/sandbox-workspace-tools.test.ts pins post_artifact with one.
+  'a GitHub repository and no coding workspace': {
     agentOverrides: { repositories: [{ id: 'repo_1', installationId: 1, accountLogin: 'acme', fullName: 'acme/support', enabled: true }] },
   },
 };
