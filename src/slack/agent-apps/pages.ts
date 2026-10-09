@@ -129,6 +129,45 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 }
 
+export const START_APP_ACTION = 'agent_app_start';
+export const FINISH_APP_ACTION = 'agent_app_finish';
+/** A sequence that has not moved for this long shows "Finish setting up". */
+export const STALLED_AFTER_MS = 2 * 60_000;
+
+export type AgentAppHomeRow =
+  | { kind: 'offer'; tokenPageUrl: string | undefined }
+  | { kind: 'setting_up' }
+  | { kind: 'stalled' }
+  | { kind: 'waiting' }
+  | { kind: 'active' }
+  | { kind: 'attention' };
+
+const HOME_COPY = {
+  setting_up: ({ handle }: AgentAppNames) => `Setting up @${handle}'s own Slack app.`,
+  stalled: ({ handle }: AgentAppNames) => `Setting up @${handle}'s Slack app stopped partway.`,
+  waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
+  active: ({ handle }: AgentAppNames) => `@${handle} has its own Slack app. People can message @${handle} directly.`,
+  attention: ({ handle }: AgentAppNames) => `@${handle}'s Slack app needs your attention. Open your messages with Chickpea for details.`,
+} satisfies Record<Exclude<AgentAppHomeRow['kind'], 'offer'>, (names: AgentAppNames) => string>;
+
+/** The Owner's App Home line under an Agent, with its one control. */
+export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, agentId: string): object[] {
+  const button = (text: string, extra: Record<string, unknown>) => ({
+    type: 'actions',
+    elements: [{ type: 'button', text: { type: 'plain_text', text }, ...extra }],
+  });
+  if (row.kind === 'offer') {
+    const label = escapeMrkdwn(`Give @${names.handle} its own Slack app`);
+    return [row.tokenPageUrl
+      ? button(label, { url: row.tokenPageUrl, action_id: `agent_app_link_${agentId}` })
+      : button(label, { action_id: START_APP_ACTION, value: agentId })];
+  }
+  const line = { type: 'context', elements: [{ type: 'mrkdwn', text: escapeMrkdwn(HOME_COPY[row.kind](names)) }] };
+  return row.kind === 'stalled'
+    ? [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })]
+    : [line];
+}
+
 export function archiveRefusedCopy(names: Pick<AgentAppNames, 'name'>): string {
   return `Chickpea couldn't remove ${names.name}'s Slack app, so ${names.name} is not archived. Try again in a minute.`;
 }

@@ -181,7 +181,7 @@ export function createAgentAskCollector(input: {
     note(delivery) {
       if (!eligible || flushed) return;
       if (answersOwner) answer ??= { messageTs: delivery.messageTs, text: delivery.text };
-      if (mentionedHandleWords(delivery.text).length === 0 && mentionedBotUsers(delivery.text).length === 0) return;
+      if (mentionedHandleWords(delivery.text).length === 0) return;
       if (deliveries.some(({ messageTs }) => messageTs === delivery.messageTs)) return;
       deliveries.push({ messageTs: delivery.messageTs, text: delivery.text });
     },

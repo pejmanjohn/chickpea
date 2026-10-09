@@ -12,7 +12,9 @@ import {
 } from '../installation-execution.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
 import { createSlackWebClient } from '../web-client.ts';
-import { agentSlackAppsHost, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
+import type { CustomAgentConfig } from '../../config/types.ts';
+import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
+import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
 import { readAppSecrets, type SecretDeps } from './secrets.ts';
 import { AgentSlackApps } from './service.ts';
@@ -137,6 +139,76 @@ export async function endAgentSlackAppLive(
   if (!host) return 'ignored';
   return (await liveAgentSlackApps(env, host)).end(appId, payload);
 }
+
+/** The reconciler's archive hook: present only with the port. */
+export function agentAppRetirement(env: PlatformEnv | undefined): { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> } | undefined {
+  const host = agentSlackAppsHost();
+  if (!host) return undefined;
+  return {
+    async retire(agent) {
+      return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
+    },
+  };
+}
+
+/** Tenant end: every Agent app of this installation, each reported, none throwing. */
+export async function retireAgentSlackAppsLive(env: PlatformEnv): Promise<readonly AgentAppRetirement[]> {
+  const host = agentSlackAppsHost();
+  const stores = resolveStores(env);
+  const agents = (await stores.config.listAgents()).filter((agent) => agent.slackPresence?.kind === 'agent_app');
+  if (agents.length === 0) return [];
+  if (!host) return agents.map((agent) => ({ agentId: agent.id, outcome: 'left_for_owner' as const }));
+  const service = await liveAgentSlackApps(env, host);
+  const outcomes: AgentAppRetirement[] = [];
+  for (const agent of agents) {
+    try {
+      outcomes.push({ agentId: agent.id, outcome: (await service.retire(agent)).outcome });
+    } catch {
+      outcomes.push({ agentId: agent.id, outcome: 'left_for_owner' });
+    }
+  }
+  return outcomes;
+}
+
+/** The Owner's App Home lines, keyed by Agent ID; empty without the port or for anyone but an Owner. */
+export async function agentAppHomeRows(input: {
+  env: PlatformEnv | undefined;
+  viewer: { role?: string | undefined };
+  agents: readonly CustomAgentConfig[];
+}): Promise<ReadonlyMap<string, readonly object[]>> {
+  const host = agentSlackAppsHost();
+  if (!host || input.viewer.role !== 'owner') return new Map();
+  return (await liveAgentSlackApps(input.env, host)).homeRows(input.agents, input.viewer);
+}
+
+/**
+ * An Owner's click on an App Home or DM control of an Agent app; false when
+ * the payload is none of them. The viewer is resolved only for such a click,
+ * and only an Owner's click does anything.
+ */
+export async function handleAgentAppHomeAction(input: {
+  env: PlatformEnv | undefined;
+  payload: { type?: unknown; user?: { id?: unknown }; actions?: unknown };
+  viewer: () => Promise<{ role?: string | undefined; republish: () => Promise<void> } | undefined>;
+}): Promise<boolean> {
+  const host = agentSlackAppsHost();
+  if (!host || input.payload.type !== 'block_actions' || !Array.isArray(input.payload.actions)) return false;
+  const action = input.payload.actions.find((candidate): candidate is { action_id: string; value: string } =>
+    !!candidate && typeof candidate === 'object' && typeof (candidate as { action_id?: unknown }).action_id === 'string' &&
+    AGENT_APP_ACTIONS.has((candidate as { action_id: string }).action_id) && typeof (candidate as { value?: unknown }).value === 'string'
+  );
+  if (!action) return false;
+  const slackUserId = input.payload.user?.id;
+  const viewer = typeof slackUserId === 'string' ? await input.viewer() : undefined;
+  if (!viewer || viewer.role !== 'owner' || typeof slackUserId !== 'string') return true;
+  const service = await liveAgentSlackApps(input.env, host);
+  if (action.action_id === START_APP_ACTION) await service.start(action.value, slackUserId);
+  else await service.retry(action.value, slackUserId);
+  await viewer.republish();
+  return true;
+}
+
+const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
 
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);

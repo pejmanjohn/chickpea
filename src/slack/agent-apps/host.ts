@@ -9,7 +9,7 @@ import {
   InstallationContextError,
 } from '../../config/installation-scope.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
-import { agentAppIngressFacts, endAgentSlackAppLive } from './live.ts';
+import { agentAppIngressFacts, endAgentSlackAppLive, retireAgentSlackAppsLive } from './live.ts';
 
 export interface AgentSlackAppsHost {
   /** Slack Request URLs for one app; only the host holds the path-token key. Pure; throws on a malformed ID. */
@@ -102,6 +102,6 @@ export interface AgentAppRetirement {
 }
 
 /** Tenant end: uninstalls and deletes every Agent app of the env's installation. Never throws for one app. */
-export async function retireAgentSlackApps(_env: PlatformEnv): Promise<readonly AgentAppRetirement[]> {
-  throw new Error('not implemented');
+export function retireAgentSlackApps(env: PlatformEnv): Promise<readonly AgentAppRetirement[]> {
+  return retireAgentSlackAppsLive(env);
 }

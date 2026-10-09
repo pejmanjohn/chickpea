@@ -3,6 +3,7 @@ import {
   createSlackChannel,
   type SlackChannel,
   type SlackChannelOptions,
+  type SlackInteractionPayload,
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
 import type { Context } from 'hono';
@@ -10,8 +11,10 @@ import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
   agentAppBotCredentials,
+  agentAppHomeRows,
   agentAppIsLive,
   endAgentSlackApp,
+  handleAgentAppHomeAction,
 } from '../slack/agent-apps/index.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
@@ -668,6 +671,40 @@ export async function serveAgentAppSlackDelivery(
   return route.handler(c, async () => {});
 }
 
+/**
+ * An Owner's App Home or DM control of an Agent app (give, finish, try again):
+ * handled with the installation's bot and the Owner's role, then the App
+ * Home is published again. False when the click is none of them.
+ */
+async function serveAgentAppHomeAction(
+  c: Parameters<NonNullable<SlackChannelOptions['interactions']>>[0]['c'],
+  payload: SlackInteractionPayload,
+): Promise<boolean> {
+  const platformEnv = c.env as PlatformEnv | undefined;
+  const workspaceId = payload.team?.id;
+  const userId = payload.user?.id;
+  if (!workspaceId || !userId) return false;
+  return handleAgentAppHomeAction({
+    env: platformEnv,
+    payload,
+    viewer: async () => {
+      const stores = resolveStores(platformEnv);
+      const installation = await stores.config.getWorkspaceInstallation(workspaceId);
+      if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked') return undefined;
+      const credentials = await directSlackCredentials(c, platformEnv);
+      if (credentials instanceof Response) return undefined;
+      const botUserId = await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
+      if (!botUserId) return undefined;
+      const transport = createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken);
+      const actor = await resolveAgentRoutingActor({ workspaceId, userId, botUserId, transport, stores });
+      return {
+        role: actor.principal?.role,
+        republish: () => publishAgentAppHome({ workspaceId, userId, stores, transport, botUserId, actor, platformEnv }),
+      };
+    },
+  });
+}
+
 /** The bot users of this installation: its own, and every live Agent app's. */
 function tenantBotUserIds(agents: readonly CustomAgentConfig[], installationBotUserId: string | undefined): string[] {
   const ids = agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []);
@@ -898,6 +935,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       }));
       return;
     }
+    if (await serveAgentAppHomeAction(c, payload)) return;
     const selection = parseAgentAppHomeSelection(payload);
     if (!selection) return;
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -1137,6 +1175,7 @@ async function publishAgentAppHome(input: {
   botUserId?: string;
   unavailableNotice?: boolean;
   actor?: ResolvedAgentRoutingActor;
+  platformEnv?: PlatformEnv | undefined;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -1167,6 +1206,11 @@ async function publishAgentAppHome(input: {
     userId: input.userId,
     view: agentDirectoryAppHome(visible, {
       unavailableNotice: input.unavailableNotice === true,
+      rowExtras: await agentAppHomeRows({
+        env: input.platformEnv,
+        viewer: { role: actor.principal?.role },
+        agents: visible,
+      }),
     }),
   });
 }

@@ -1,6 +1,7 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
 import {
   type AgentSlackAppAdminDeps,
+  agentAppRetirement,
   createAgentSlackAppAdminRoutes,
   isAgentSlackAppTokenApiPath,
 } from '../slack/agent-apps/index.ts';
@@ -9763,11 +9764,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const archiveOptions = parsed.output.replacementDefaultAgentId
         ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
         : {};
-      const updated = current.slackPresence?.userGroupId
+      const agentApps = agentAppRetirement(c.env as PlatformEnv | undefined);
+      const updated = current.slackPresence?.userGroupId || current.slackPresence?.kind === 'agent_app'
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, actor.slackTeamId),
             announce: null,
+            ...(agentApps ? { agentApps } : {}),
           }).archive(agentId, archiveOptions)
         : await store(c).archiveAgent(agentId, {
             expectedRevision: current.revision,
