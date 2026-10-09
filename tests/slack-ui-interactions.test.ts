@@ -731,6 +731,35 @@ test('a modal submission whose card closed or expired meanwhile is told so, and 
   assert.equal(f.jobs.length, 1);
 }));
 
+test('a modal answer checked only after its modal closed tells the person privately what to fix', async () => withFixture(async (f) => {
+  // A host acknowledged Slack before the answer was checked, so the modal is
+  // gone; the card stays open and nothing starts until it is sent again.
+  const surface = await f.surface({
+    namespace: 'ui',
+    spec: formSpec([
+      { key: 'name', label: 'Legal name', type: 'text', required: true },
+      { key: 'email', label: 'Billing email', type: 'email', required: true },
+    ], { submitLabel: 'Send details' }),
+  });
+  const state = (email: string) => ({
+    ...fieldState(surface.id, 0, { type: 'plain_text_input', value: 'Acme' }),
+    ...fieldState(surface.id, 1, { type: 'email_text_input', value: email }),
+  });
+  await f.submit(surface.id, { state: state('ap at acme') });
+  assert.equal(f.jobs.length, 1);
+  assert.equal(f.ephemerals().at(-1),
+    'Not sent yet. Press Fill in, fix these, then press Send details again:\n• Billing email: Enter an email address.');
+  assert.equal((await f.read(surface.id))?.status, 'open');
+
+  await f.submit(surface.id, { userId: 'U2', state: state('ap@acme.test'), deliveryId: 'view:other' });
+  assert.equal(f.ephemerals().at(-1), 'Only <@U1> can answer this. You can reply in the thread.');
+  assert.equal(f.jobs.length, 1);
+
+  await f.submit(surface.id, { state: state('ap@acme.test'), deliveryId: 'view:fixed' });
+  assert.equal(f.jobs.length, 2);
+  assert.equal((await f.read(surface.id))?.status, 'resolved');
+}));
+
 test('"Something else…" answers a question in the person\'s own words', async () => withFixture(async (f) => {
   const surface = await f.surface({ namespace: 'ui', spec: question() });
   await f.submit(surface.id, {
