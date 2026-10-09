@@ -106,16 +106,16 @@ interface IdentityStoreOptions {
   /**
    * Runs once, inside the transaction in which claimOwner makes the person
    * who signed up at a host the installation's first Owner, so whatever it
-   * writes to this store commits with the claim or not at all.
+   * writes to this store's database commits with the claim or not at all.
    */
-  ownerClaimed?: (at: number) => void;
+  ownerClaimed?: (owner: { at: number; resolution: IdentityResolution }) => void;
 }
 
 export class IdentityStoreLogic {
   private readonly audit: AuditStoreLogic;
   private readonly now: () => number;
   private readonly installation: () => InstallationIdentity;
-  private readonly ownerClaimed: ((at: number) => void) | undefined;
+  private readonly ownerClaimed: IdentityStoreOptions['ownerClaimed'];
 
   constructor(private readonly db: StateDb, options: IdentityStoreOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -2080,7 +2080,7 @@ export class IdentityStoreLogic {
       // A repeat for an Owner already claimed resolves them again and starts nothing.
       const claiming = this.getOwnerClaim()?.status === 'reserved';
       const resolution = this.claimOwnerInTransaction(input);
-      if (claiming) this.ownerClaimed?.(input.at ?? this.now());
+      if (claiming) this.ownerClaimed?.({ at: input.at ?? this.now(), resolution });
       return resolution;
     });
   }

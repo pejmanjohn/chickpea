@@ -452,6 +452,7 @@ export interface ManagementAgentCreatedWelcome {
   deferredHandoffProposalId?: string;
   /** Persona Slack actually accepted for the durable welcome delivery. */
   deliveryPersona?: 'agent' | 'chickpea';
+  fallbackOutboxId?: string;
   viewAgentUrl?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
@@ -1248,6 +1249,22 @@ export interface ClaimAgentCreationWelcomeResult {
   created: boolean;
 }
 
+export interface OwedAgentWelcomeInput {
+  agentId: string;
+  agentName: string;
+  agentHandle: string;
+  at: number;
+}
+
+/**
+ * `upgraded`: the welcome Chickpea had queued for itself had not posted yet,
+ * so it now posts as the Agent. `queued`: Chickpea's welcome has posted (or is
+ * posting), so the Agent's own follows it.
+ */
+export interface OwedAgentWelcomeResult {
+  outcome: 'upgraded' | 'queued' | 'none';
+}
+
 export interface ExchangeManagementSetupInput {
   setupOperationId: string;
   tokenDigest: string;
@@ -1383,6 +1400,7 @@ export type ManagementRpcRequest =
     }
   | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
   | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
+  | { kind: 'queue_owed_agent_welcome'; input: OwedAgentWelcomeInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'list_agent_creation_welcomes'; workspaceId: string; agentId: string; requesterMembershipId: string }
   | {
@@ -1420,4 +1438,5 @@ export type ManagementRpcResponse =
   | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
   | { kind: 'introduction_claim'; result: ClaimManagementIntroductionResult }
   | { kind: 'agent_creation_welcome_claim'; result: ClaimAgentCreationWelcomeResult }
+  | { kind: 'owed_agent_welcome'; result: OwedAgentWelcomeResult }
   | { kind: 'retention'; deleted: number };

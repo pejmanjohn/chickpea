@@ -103,6 +103,7 @@ async function agentPublishedWhereSlackRefusesTheBot(t: TestContext) {
   const reconciler = new AgentPresenceReconciler({
     config,
     transport: createDirectSlackTransportFromClient(slack.client('bot'), slack.client('owner')),
+    announce: null,
   });
   await config.createAgent(agent());
   await reconciler.publish({

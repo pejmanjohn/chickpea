@@ -180,6 +180,7 @@ import {
   removeSlackReaction,
   slackMidRunReceipt,
 } from '../slack/web-client-presenter.ts';
+import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import {
   isRetryableDependencyFailure,
@@ -201,6 +202,7 @@ import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient, setAgentSessionStatus } from '../slack/gateway/web-client.ts';
 import type { GatewayPrivateChannelSetupDelivery } from '../slack/gateway/protocol.ts';
+import { livePresenceAnnouncements } from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { prepareGeneratedGatewayAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { requireAgentChannelPublication } from '../auth/permissions.ts';
@@ -684,7 +686,7 @@ function handleDirectSlackEvents(
     if (credentials instanceof Response) return credentials;
     const eventType = payload.event.type;
     if (eventType === 'app_home_opened') {
-      const event = payload.event as { user?: unknown };
+      const event = payload.event as { user?: unknown; channel?: unknown; tab?: unknown };
       if (typeof event.user === 'string') {
         const botUserId = await resolveInstallationBotUserId(
           installation.botUserId,
@@ -693,11 +695,12 @@ function handleDirectSlackEvents(
         );
         detach(
           c,
-          publishAgentAppHome({
+          openAgentAppHome({
             workspaceId: payload.team_id,
-            userId: event.user,
+            event: { user: event.user, channel: event.channel, tab: event.tab },
             stores,
             transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
+            client: createSlackWebClient(credentials.botToken ?? ''),
             ...(botUserId ? { botUserId } : {}),
           }).catch((error) => {
             console.error('[chickpea] App Home publish failed:', sanitizeError(error));
@@ -940,6 +943,66 @@ export async function claimChickpeaIntroductionForAgentInteraction(input: {
   });
 }
 
+const PROMPTS_FIXED_BY_APP_MANIFEST = 'static_prompts_configured';
+
+const FIRST_PROMPTS = [
+  { title: 'Create my first Agent', message: 'Help me create my first Agent. Ask me what my team works on.' },
+  { title: 'Ideas for my team', message: 'What kinds of Agents could help my team?' },
+  { title: 'Connect a tool', message: 'Which tools can my Agents connect to?' },
+];
+
+async function openAgentAppHome(input: {
+  workspaceId: string;
+  event: { user: string; channel?: unknown; tab?: unknown };
+  stores: AppStores;
+  transport: SlackTransport;
+  client: Pick<SlackUiClient, 'assistant'>;
+  botUserId?: string;
+}): Promise<void> {
+  if (!input.botUserId) return;
+  const messages = input.event.tab === 'messages';
+  const channelId = typeof input.event.channel === 'string' ? input.event.channel : undefined;
+  const actor = await resolveAgentRoutingActor({
+    workspaceId: input.workspaceId,
+    userId: input.event.user,
+    botUserId: input.botUserId,
+    transport: input.transport,
+    stores: input.stores,
+  });
+  await Promise.all([
+    messages && channelId ? offerFirstPrompts(input.client, channelId) : undefined,
+    messages
+      ? claimChickpeaIntroductionForAgentInteraction({
+          actor,
+          workspaceId: input.workspaceId,
+          slackUserId: input.event.user,
+          management: input.stores.management,
+        })
+      : undefined,
+    publishAgentAppHome({
+      workspaceId: input.workspaceId,
+      userId: input.event.user,
+      stores: input.stores,
+      transport: input.transport,
+      botUserId: input.botUserId,
+      actor,
+    }),
+  ]);
+}
+
+async function offerFirstPrompts(client: Pick<SlackUiClient, 'assistant'>, channelId: string): Promise<void> {
+  try {
+    // Without a thread they apply to the whole tab. Slack does not say they
+    // persist, so every open sets them again.
+    await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts: FIRST_PROMPTS });
+  } catch (error) {
+    const code = slackPlatformErrorCode(error) ?? 'unknown';
+    if (code !== PROMPTS_FIXED_BY_APP_MANIFEST) {
+      console.warn('[chickpea] Slack suggested prompts refused:', code);
+    }
+  }
+}
+
 async function publishAgentAppHome(input: {
   workspaceId: string;
   userId: string;
@@ -947,11 +1010,12 @@ async function publishAgentAppHome(input: {
   transport: SlackTransport;
   botUserId?: string;
   unavailableNotice?: boolean;
+  actor?: ResolvedAgentRoutingActor;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
   if (!installation) return;
-  const actor = await resolveAgentRoutingActor({
+  const actor = input.actor ?? await resolveAgentRoutingActor({
     workspaceId: input.workspaceId,
     userId: input.userId,
     botUserId: input.botUserId,
@@ -1245,11 +1309,12 @@ export async function processGatewaySlackEnvelope(
     event: envelope.event,
   };
   if (envelope.event.type === 'app_home_opened') {
-    await publishAgentAppHome({
+    await openAgentAppHome({
       workspaceId: envelope.workspaceId,
-      userId: envelope.event.user,
+      event: envelope.event,
       stores,
       transport,
+      client,
       botUserId: installation.botUserId,
     });
     return 'accepted';
@@ -1940,7 +2005,14 @@ async function addMentionedAgentToChannel(
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
         updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
       });
-      await new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+      await new AgentPresenceReconciler({
+        config: stores.config,
+        transport,
+        announce: await livePresenceAnnouncements({
+          env: platformEnv, settings: stores.settings, identity: stores.identity,
+          management: stores.management, transport,
+        }),
+      }).publish({
         workspaceId: click.workspaceId,
         channelId: click.channelId,
         agentId: prepared.id,
@@ -2200,7 +2272,14 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
-      return new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+      return new AgentPresenceReconciler({
+        config: stores.config,
+        transport,
+        announce: await livePresenceAnnouncements({
+          env: execution.platformEnv, settings: stores.settings, identity: stores.identity,
+          management: stores.management, transport,
+        }),
+      }).publish({
         workspaceId, channelId, agentId,
         actorMembershipId: current.principal.membershipId,
         actorSlackUserId: user.slackUserId,
@@ -4027,8 +4106,10 @@ async function handleMemberJoinedChannel(
   }
   if (channel.id !== event.channel || channel.archived || !channel.member) return;
 
+  const personInviter = event.inviter !== resolvedBotUserId ? event.inviter : undefined;
+  if (!personInviter) return;
+
   if (channel.private) {
-    if (!event.inviter || event.inviter === resolvedBotUserId) return;
     if (!await stores.slackState.claim(`evt:${payload.event_id}`)) return;
     const setupExecution: PrivateChannelSetupExecution = {
       stores, transport, client, botUserId: resolvedBotUserId,
@@ -4036,7 +4117,7 @@ async function handleMemberJoinedChannel(
     };
     try {
       const setup = await privateChannelSetupService(setupExecution).begin({
-        workspaceId, channelId: event.channel, inviterSlackUserId: event.inviter,
+        workspaceId, channelId: event.channel, inviterSlackUserId: personInviter,
       });
       if (setup.agents.length === 0) return;
       const adminUrl = await privateChannelSetupAdminUrl(setupExecution);
@@ -4046,7 +4127,7 @@ async function handleMemberJoinedChannel(
         truncated: setup.choicesTruncated,
         ...(adminUrl ? { adminUrl } : {}),
       });
-      await client.chat.postEphemeral({ channel: event.channel, user: event.inviter, ...card });
+      await client.chat.postEphemeral({ channel: event.channel, user: personInviter, ...card });
     } catch (error) {
       console.warn('[chickpea] private Channel setup card unavailable:', sanitizeError(error));
     }

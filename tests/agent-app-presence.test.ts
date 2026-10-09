@@ -10,6 +10,7 @@ import type {
 } from '../src/config/types.ts';
 import { agentMayAskTeammates, agentSlackHandle } from '../src/slack/agent-asks.ts';
 import { agentAppIsLive, normalizeAgentAppPresence } from '../src/slack/agent-apps/index.ts';
+import type { AgentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import {
   AgentPresenceReconciler,
@@ -78,6 +79,11 @@ async function storeAgent(
   await config.updateAgent(id, { slackPresence: written }, created.revision);
   return written;
 }
+
+/** An app Agent never has a handle going live or a Channel welcome to announce. */
+const announcesNothing = new Proxy({} as AgentPresenceAnnouncements, {
+  get(_target, name) { return () => { throw new Error(`unexpected announcement ${String(name)}`); }; },
+});
 
 /** Every Slack call fails the test; the methods a test allows are given explicitly. */
 function slackThatRefuses(allowed: Partial<SlackTransport> = {}): SlackTransport & { calls: string[] } {
@@ -150,7 +156,7 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
   });
   try {
     const presence = await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE));
-    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce: announcesNothing, now: () => NOW });
     assert.deepEqual((await reconciler.reconcile('agent_support')).slackPresence, presence);
     assert.deepEqual((await reconciler.retry('agent_support')).slackPresence, presence);
     const published = await reconciler.publish({
@@ -210,7 +216,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
     await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE, { released: { userGroupId: 'S1' } }));
     const transport = slackThatRefuses();
     await assert.rejects(
-      () => new AgentPresenceReconciler({ config, transport, now: () => NOW }).archive('agent_support'),
+      () => new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).archive('agent_support'),
       (error: unknown) => error instanceof AgentPresenceError && error.code === 'slack_operation_failed' &&
         error.message === "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.",
     );
@@ -226,6 +232,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
     const archived = await new AgentPresenceReconciler({
       config,
       transport: withHost,
+      announce: null,
       now: () => NOW,
       agentApps: {
         async retire(current) {

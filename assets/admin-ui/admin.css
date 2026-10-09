@@ -562,6 +562,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
 .onboarding-actions .btn { min-height: 50px; padding: 11px 19px; }
 .onboarding-slack-logo { display: inline-block; flex: 0 0 auto; height: 23px; margin-right: 7px; width: 23px; }
+.github-connect-mark { flex: 0 0 auto; height: 20px; margin-right: 9px; width: 20px; }
 .onboarding-instructions { display: grid; gap: 32px; margin-top: 32px; }
 .onboarding-instruction { display: grid; gap: 13px; }
 .onboarding-instruction-title { align-items: center; color: var(--text); display: grid; font-size: 1.125rem; font-weight: 700; gap: 12px; grid-template-columns: 36px minmax(0, 1fr); line-height: 1.35; margin: 0; }
@@ -659,15 +660,13 @@ button, input, textarea, select { font: inherit; }
 .onboarding-model-note.is-caveat .onboarding-model-note-badge { background: var(--ember-tint); color: var(--ember-press); }
 .onboarding-model-note .link-btn { font-size: inherit; font-weight: 700; }
 .onboarding-model-actions .btn-primary { min-width: 260px; }
-.onboarding-success { align-items: flex-start; display: flex; gap: 14px; }
-.onboarding-success-icon { background: var(--ok-solid); border-radius: 50%; color: white; display: grid; flex: 0 0 auto; font-size: 1.3125rem; font-weight: 700; height: 42px; place-items: center; width: 42px; }
 .onboarding-success-badge { align-items: center; background: var(--ok-tint); border-radius: 999px; color: #36592a; display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 7px; margin-bottom: 16px; padding: 8px 12px; }
 .onboarding-success-badge::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; font-size: .6875rem; height: 18px; place-items: center; width: 18px; }
-.onboarding-prompt-box { background: var(--well); border-radius: 15px; box-shadow: inset 0 0 0 1px var(--line); margin-top: 30px; padding: 19px; }
-.onboarding-prompt-label { color: var(--text-3); font-family: var(--mono); font-size: .6875rem; letter-spacing: .06em; margin: 0 0 9px; text-transform: uppercase; }
-.onboarding-prompt { color: var(--text); font-size: 1rem; font-weight: 600; line-height: 1.65; margin: 0; }
-.onboarding-prompt-hint { color: var(--text-3); font-size: .8125rem; line-height: 1.5; margin: 6px 0 0; }
-.onboarding-status { color: var(--ok); font-size: .8125rem; font-weight: 700; margin: 10px 0 0; min-height: 20px; }
+.onboarding-status { color: var(--ok); font-size: .8125rem; font-weight: 700; margin: 14px 0 0; min-height: 20px; }
+.onboarding-try-dashboard { align-items: center; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 14px 24px; justify-content: space-between; margin-top: 30px; padding-top: 24px; }
+.onboarding-try-dashboard p { color: var(--text-2); flex: 1 1 260px; font-size: .9375rem; line-height: 1.5; margin: 0; }
+.onboarding-try-dashboard strong { color: var(--text); }
+.onboarding-illustration:empty { display: none; }
 @media (max-width: 720px) {
   .onboarding-shell-inner { padding: 20px 16px 45px; }
   .onboarding-environment { display: none; }
@@ -1818,6 +1817,8 @@ details[open].advanced summary::before {
   padding: 12px 14px;
 }
 .callout .g { color: var(--ember-deep); flex-shrink: 0; }
+.callout-success { background: var(--ok-tint); }
+.callout-success .g { color: var(--ok); }
 .slack-permissions-bar { align-items: center; flex-wrap: wrap; }
 .slack-permissions-bar > span { flex: 1; min-width: 200px; }
 .slack-permissions-bar > form { margin: 0; }

@@ -57,7 +57,7 @@ export interface SlackUserGroup {
 
 export interface SlackMessagePersona {
   name: string;
-  avatarUrl: string;
+  avatarUrl?: string;
 }
 
 export interface SlackMessageReference {

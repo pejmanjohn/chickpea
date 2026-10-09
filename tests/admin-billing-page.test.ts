@@ -112,6 +112,12 @@ async function harness(options: {
   admin?: boolean;
   ownKey?: OwnKeyFacts;
   onboarding?: Record<string, unknown>;
+  onboardingUnread?: boolean;
+  modelsHeld?: boolean;
+  /** The page's clock; Date.now() reads it. */
+  clock?: { now: number };
+  /** Timers of a second or more wait for firePoll() instead of running. */
+  manualPolls?: boolean;
   platformFailures?: number;
   platformFailureBody?: unknown;
   platformHeld?: boolean;
@@ -119,7 +125,12 @@ async function harness(options: {
   stripeFails?: Error;
 }) {
   let html = '';
-  const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; } };
+  const renders: string[] = [];
+  const timerDelays: number[] = [];
+  const pendingPolls: Array<() => void> = [];
+  const clock = options.clock;
+  const PageDate = clock ? class extends Date { static override now() { return clock.now; } } : Date;
+  const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; renders.push(value); } };
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
   const assigned: string[] = [];
@@ -127,6 +138,8 @@ async function harness(options: {
   let platformFailures = options.platformFailures ?? 0;
   let releasePlatform = () => {};
   const platformGate = options.platformHeld ? new Promise<void>((resolve) => { releasePlatform = resolve; }) : undefined;
+  let releaseModels = () => {};
+  const modelsGate = options.modelsHeld ? new Promise<void>((resolve) => { releaseModels = resolve; }) : undefined;
   const start = new URL(options.path, 'https://chickpea.example');
   const location = {
     pathname: start.pathname, search: start.search,
@@ -179,6 +192,7 @@ async function harness(options: {
     if (path === '/admin/api/agents') return response({ agents: [] });
     if (path === '/admin/api/assignments') return response({ assignments: [] });
     if (path === '/admin/api/models') {
+      await modelsGate;
       return response({ providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, configured: false, suggestions: [] })) });
     }
     if (path === '/admin/api/slack-connection') return response({ connected: true, teamId: 'TACME', teamName: 'Acme' });
@@ -205,25 +219,39 @@ async function harness(options: {
       return response(onboarding);
     }
     if (path === '/admin/api/onboarding') return response(onboarding);
+    if (path === '/admin/api/onboarding/github') {
+      onboarding = { ...onboarding, stage: 'try', revision: 'revision_github_settled' };
+      return response(onboarding);
+    }
     if (path === '/admin/api/onboarding/provider') {
       onboarding = { ...onboarding, stage: 'choose_model', providerId: body.providerId, models: ['anthropic/claude-sonnet-5-5'] };
       return response(onboarding);
     }
     return response({ error: 'not_found' }, 404);
   };
-  const script = renderAdminPage({
+  const serverHtml = renderAdminPage({
     usageAdminUi: true,
     workspaceAdminUi: role !== 'member',
     installationOwner: owner,
     browserOffered: !options.billingOffered,
     selfHosted: options.selfHosted ?? !options.billingOffered,
     billingOffered: options.billingOffered,
-  }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    onboarding: start.pathname === '/admin/onboarding' ? {
+      initial: role === 'member' || options.onboardingUnread === true ? null : onboarding,
+      githubConnectPath: options.selfHosted ?? !options.billingOffered ? null : onboarding.githubConnectPath as string ?? null,
+      githubReturned: !(options.selfHosted ?? !options.billingOffered) && start.searchParams.get('github') === 'connected',
+    } : undefined,
+  });
+  const script = serverHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   vm.runInNewContext(script, {
-    console, Date, document, fetch, clearTimeout,
+    console, Date: PageDate, document, fetch, clearTimeout,
     // Try polls the journey; an unref'd timer lets the file's process exit.
-    setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
+    setTimeout: (callback: () => void, ms?: number) => {
+      timerDelays.push(ms ?? 0);
+      if (options.manualPolls && (ms ?? 0) >= 1000) return pendingPolls.push(callback);
+      return setTimeout(callback, ms).unref();
+    },
     history: {
       pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
       replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
@@ -242,9 +270,15 @@ async function harness(options: {
     listeners.input!({ target: actionTarget({ 'data-action': 'prov-key-input', 'data-provider': provider }, 'sk-test') });
     await click({ 'data-action': 'prov-validate', 'data-provider': provider });
   };
+  const firePoll = async () => {
+    const poll = pendingPolls.shift();
+    assert.ok(poll, 'a poll is waiting');
+    poll();
+    await flush();
+  };
   return {
-    html: () => html, requests, assigned, location, click, saveKey,
-    portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(),
+    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey, firePoll, serverHtml,
+    portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
   };
 }
 
@@ -883,12 +917,13 @@ const TODAY_AT_TRY = '<ol class="onboarding-orientation" role="list" aria-label=
   '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose model</span></li>' +
   '<li class="active" aria-current="step"><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
 
-test('standalone, and hosted where Chickpea\'s models are not offered, keep today\'s four onboarding steps byte for byte', async () => {
-  for (const [mode, selfHosted] of [['standalone', true], ['hosted without Chickpea\'s models', false]] as const) {
+test('standalone keeps today\'s four onboarding steps byte for byte; hosted without Chickpea\'s models starts them at Add to Slack', async () => {
+  for (const [mode, selfHosted, first] of [['standalone', true, 'Connect Slack'], ['hosted without Chickpea\'s models', false, 'Add to Slack']] as const) {
+    const firstStep = (bar: string) => bar.replace('>Connect Slack<', `>${first}<`);
     const choosing = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted });
-    assert.equal(progress(choosing.html()), TODAY_AT_CHOOSE_PROVIDER, `${mode} at Choose provider`);
+    assert.equal(progress(choosing.html()), firstStep(TODAY_AT_CHOOSE_PROVIDER), `${mode} at Choose provider`);
     const trying = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted, onboarding: TRY });
-    assert.equal(progress(trying.html()), TODAY_AT_TRY, `${mode} at Try`);
+    assert.equal(progress(trying.html()), firstStep(TODAY_AT_TRY), `${mode} at Try`);
   }
 });
 
@@ -897,36 +932,37 @@ const platformRequests = (requests: Array<{ path: string; method: string }>) =>
 const stepLabels = (html: string) =>
   [...progress(html).matchAll(/<span class="onboarding-step-label">([^<]*)<\/span>/g)].map((match) => match[1]);
 
-test('hosted onboarding on Chickpea\'s models goes from Connect Slack to Try Chickpea, setting up once', async () => {
+test('hosted onboarding on Chickpea\'s models goes from Add to Slack to Try Chickpea, setting up once', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN });
   assert.equal(platformRequests(page.requests), 1);
-  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Try Chickpea']);
+  assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
   assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Try Chickpea<\/span><\/li><\/ol>$/);
-  assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Meet Chickpea in Slack<\/h1>/);
+  assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Say hi to Chickpea in Slack<\/h1>/);
   assert.doesNotMatch(page.html(), /Choose your model provider|Choose your model/);
 
   const reload = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY });
-  assert.match(reload.html(), /Meet Chickpea in Slack/);
-  assert.deepEqual(stepLabels(reload.html()), ['Connect Slack', 'Try Chickpea']);
+  assert.match(reload.html(), /Say hi to Chickpea in Slack/);
+  assert.deepEqual(stepLabels(reload.html()), ['Add to Slack', 'Try Chickpea']);
   assert.equal(platformRequests(reload.requests), 0, 'a journey at Try sets nothing up again');
 });
 
 test('while Chickpea sets up, the card says so, and nothing else asks again', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true });
-  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>'));
-  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Try Chickpea']);
-  await page.click({ 'data-action': 'copy-onboarding-prompt' });
+  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' +
+    '<div class="onboarding-illustration" data-illustration="setup" aria-hidden="true"></div></section>'));
+  assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
+  await page.click({ 'data-action': 'toggle-swap' });
   assert.equal(platformRequests(page.requests), 1, 'a render while it runs sends nothing more');
   page.releasePlatform();
   await flush();
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
   assert.equal(platformRequests(page.requests), 1);
 });
 
-test('with Connect GitHub offered, it is the step between Connect Slack and Try Chickpea', async () => {
+test('with Connect GitHub offered, it is the step between Add to Slack and Try Chickpea', async () => {
   const github = { ...CHOOSE_PROVIDER, githubConnectPath: '/github/connect' };
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: github });
-  assert.deepEqual(stepLabels(page.html()), ['Connect Slack', 'Connect GitHub', 'Try Chickpea']);
+  assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Connect GitHub', 'Try Chickpea']);
   assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li>/);
   assert.match(page.html(), /Let Agents work on your code/);
 });
@@ -934,7 +970,7 @@ test('with Connect GitHub offered, it is the step between Connect Slack and Try 
 test('setup that does not finish offers Try again, never the provider steps, and Try again reaches Try', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1 });
   assert.equal(platformRequests(page.requests), 1);
-  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
     '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
     '<p class="hint">Code: internal_error</p>' +
     '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>'));
@@ -944,7 +980,7 @@ test('setup that does not finish offers Try again, never the provider steps, and
 
   await page.click({ 'data-action': 'onboarding-platform-retry' });
   assert.equal(platformRequests(page.requests), 2);
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
 });
 
 test('the failed setup card names the route\'s error code, and shows no code line when the response has none', async () => {
@@ -958,12 +994,86 @@ test('the failed setup card names the route\'s error code, and shows no code lin
   assert.match(uncoded.html(), /Setup did not finish/);
   assert.doesNotMatch(uncoded.html(), /Code:/);
   await uncoded.click({ 'data-action': 'onboarding-platform-retry' });
-  assert.match(uncoded.html(), /Meet Chickpea in Slack/);
+  assert.match(uncoded.html(), /Say hi to Chickpea in Slack/);
 });
 
 test('a journey already past the provider step sets up the same way', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...CHOOSE_PROVIDER, stage: 'choose_model', providerId: 'openai' } });
   assert.equal(platformRequests(page.requests), 1, 'a journey already past the provider sets up too');
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
 });
 
+
+test('on Chickpea\'s models the step bar is the same from the first paint to Chickpea is ready, with or without GitHub', async () => {
+  for (const [githubConnectPath, steps] of [[undefined, ['Add to Slack', 'Try Chickpea']], ['/github/connect', ['Add to Slack', 'Connect GitHub', 'Try Chickpea']]] as const) {
+    const github = githubConnectPath ? { githubConnectPath } : {};
+    const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true, onboarding: { ...CHOOSE_PROVIDER, ...github } });
+    assert.match(page.renders[0]!, /Setting up Chickpea&hellip;/, 'the first paint is already setting up');
+    assert.match(progress(page.renders[0]!), /<li class="active" aria-current="step"><span class="onboarding-step-dot">1<\/span><span class="onboarding-step-label">Add to Slack<\/span><\/li>/,
+      'setting up belongs to adding Chickpea to Slack');
+    page.releasePlatform();
+    await flush();
+    if (githubConnectPath) {
+      assert.match(page.html(), /Let Agents work on your code/);
+      await page.click({ 'data-action': 'onboarding-github-skip' });
+    }
+    assert.match(page.html(), new RegExp(`<p class="onboarding-eyebrow">Step ${steps.length} of ${steps.length}</p>`));
+    const ready = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...TRY, ...github, stage: 'complete' } });
+    for (const html of [...page.renders, ...ready.renders]) assert.deepEqual(stepLabels(html), steps);
+  }
+});
+
+test('the boot\'s other requests never move a journey back once setup moved it on', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, modelsHeld: true });
+  assert.match(page.html(), /Say hi to Chickpea in Slack/, 'setup finished before the boot\'s requests');
+  page.releaseModels();
+  await flush();
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
+  assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 0,
+    'the page carries the journey, so nothing asks for it again');
+  assert.equal(platformRequests(page.requests), 1);
+});
+
+test('Try checks for Chickpea\'s first reply every second for two minutes, then less often for a tab left open', async () => {
+  const clock = { now: Date.parse('2026-10-09T12:00:00Z') };
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY, clock, manualPolls: true });
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
+  const polls = () => page.timerDelays.filter((ms) => ms >= 1000);
+  assert.deepEqual(polls(), [1000]);
+  clock.now += 119_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000], 'still every second inside the first two minutes');
+  clock.now += 2_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000, 5000], 'every five seconds after two minutes');
+  clock.now += 10 * 60_000;
+  await page.firePoll();
+  assert.deepEqual(polls(), [1000, 1000, 5000, 15000], 'every fifteen seconds after ten minutes');
+  assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 3);
+});
+
+const stepBar = (html: string) => html.match(/<ol class="onboarding-orientation[\s\S]*?<\/ol>/)?.[0];
+
+test('the server paints the same step bar the script paints first, at every stage and in every mode', async () => {
+  const stages = ['choose_provider', 'choose_model', 'connect_github', 'try', 'complete'];
+  const modes: Array<[string, { billingOffered: boolean; selfHosted?: boolean; github?: string }]> = [
+    ['Chickpea\'s models with GitHub', { billingOffered: true, github: '/github/connect' }],
+    ['Chickpea\'s models without GitHub', { billingOffered: true }],
+    ['own key, hosted, with GitHub', { billingOffered: false, selfHosted: false, github: '/github/connect' }],
+    ['standalone', { billingOffered: false, selfHosted: true }],
+  ];
+  for (const [mode, { billingOffered, selfHosted, github }] of modes) {
+    for (const stage of stages) {
+      for (const search of stage === 'connect_github' ? ['', '?github=connected'] : ['']) {
+        const onboarding = { ...TRY, stage, ...(github ? { githubConnectPath: github } : {}) };
+        const page = await harness({
+          path: `/admin/onboarding${search}`, billingOffered, ...(selfHosted === undefined ? {} : { selfHosted }),
+          summary: NO_PLAN, onboarding, platformHeld: true,
+        });
+        const server = stepBar(page.serverHtml.slice(0, page.serverHtml.indexOf('<script')));
+        assert.ok(server, `${mode} at ${stage}${search}: the server paints a step bar`);
+        assert.equal(server, stepBar(page.renders[0]!), `${mode} at ${stage}${search}`);
+      }
+    }
+  }
+});
