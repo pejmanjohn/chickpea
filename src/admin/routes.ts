@@ -2555,7 +2555,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         origin.publicOrigin,
         origin.installationId,
       ),
-      management: { releaseAgentWelcome: (input) => management(c).releaseAgentWelcome(input) },
+      management: { queueOwedAgentWelcome: (input) => management(c).queueOwedAgentWelcome(input) },
     });
   };
   const agentAdminProjectionForRequest = async (

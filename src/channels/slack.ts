@@ -946,6 +946,8 @@ export async function claimChickpeaIntroductionForAgentInteraction(input: {
   });
 }
 
+const PROMPTS_FIXED_BY_APP_MANIFEST = 'static_prompts_configured';
+
 const FIRST_PROMPTS = [
   { title: 'Create my first Agent', message: 'Help me create my first Agent. Ask me what my team works on.' },
   { title: 'Ideas for my team', message: 'What kinds of Agents could help my team?' },
@@ -960,17 +962,33 @@ async function openAgentAppHome(input: {
   client: Pick<SlackUiClient, 'assistant'>;
   botUserId?: string;
 }): Promise<void> {
+  if (!input.botUserId) return;
   const messages = input.event.tab === 'messages';
   const channelId = typeof input.event.channel === 'string' ? input.event.channel : undefined;
+  const actor = await resolveAgentRoutingActor({
+    workspaceId: input.workspaceId,
+    userId: input.event.user,
+    botUserId: input.botUserId,
+    transport: input.transport,
+    stores: input.stores,
+  });
   await Promise.all([
     messages && channelId ? offerFirstPrompts(input.client, channelId) : undefined,
+    messages
+      ? claimChickpeaIntroductionForAgentInteraction({
+          actor,
+          workspaceId: input.workspaceId,
+          slackUserId: input.event.user,
+          management: input.stores.management,
+        })
+      : undefined,
     publishAgentAppHome({
       workspaceId: input.workspaceId,
       userId: input.event.user,
       stores: input.stores,
       transport: input.transport,
-      ...(input.botUserId ? { botUserId: input.botUserId } : {}),
-      introduce: messages,
+      botUserId: input.botUserId,
+      actor,
     }),
   ]);
 }
@@ -982,7 +1000,7 @@ async function offerFirstPrompts(client: Pick<SlackUiClient, 'assistant'>, chann
     await client.assistant.threads.setSuggestedPrompts({ channel_id: channelId, prompts: FIRST_PROMPTS });
   } catch (error) {
     const code = slackPlatformErrorCode(error) ?? 'unknown';
-    if (code !== 'static_prompts_configured') {
+    if (code !== PROMPTS_FIXED_BY_APP_MANIFEST) {
       console.warn('[chickpea] Slack suggested prompts refused:', code);
     }
   }
@@ -995,26 +1013,18 @@ async function publishAgentAppHome(input: {
   transport: SlackTransport;
   botUserId?: string;
   unavailableNotice?: boolean;
-  introduce?: boolean;
+  actor?: ResolvedAgentRoutingActor;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
   if (!installation) return;
-  const actor = await resolveAgentRoutingActor({
+  const actor = input.actor ?? await resolveAgentRoutingActor({
     workspaceId: input.workspaceId,
     userId: input.userId,
     botUserId: input.botUserId,
     transport: input.transport,
     stores: input.stores,
   });
-  if (input.introduce) {
-    await claimChickpeaIntroductionForAgentInteraction({
-      actor,
-      workspaceId: input.workspaceId,
-      slackUserId: input.userId,
-      management: input.stores.management,
-    });
-  }
   const [agents, grants] = actor.routing.fullMember
     ? await Promise.all([
         input.stores.config.listAgents(),
@@ -4109,8 +4119,10 @@ async function handleMemberJoinedChannel(
   }
   if (channel.id !== event.channel || channel.archived || !channel.member) return;
 
+  const personInviter = event.inviter !== resolvedBotUserId ? event.inviter : undefined;
+  if (!personInviter) return;
+
   if (channel.private) {
-    if (!event.inviter || event.inviter === resolvedBotUserId) return;
     if (!await stores.slackState.claim(`evt:${payload.event_id}`)) return;
     const setupExecution: PrivateChannelSetupExecution = {
       stores, transport, client, botUserId: resolvedBotUserId,
@@ -4118,7 +4130,7 @@ async function handleMemberJoinedChannel(
     };
     try {
       const setup = await privateChannelSetupService(setupExecution).begin({
-        workspaceId, channelId: event.channel, inviterSlackUserId: event.inviter,
+        workspaceId, channelId: event.channel, inviterSlackUserId: personInviter,
       });
       if (setup.agents.length === 0) return;
       const adminUrl = await privateChannelSetupAdminUrl(setupExecution);
@@ -4128,14 +4140,13 @@ async function handleMemberJoinedChannel(
         truncated: setup.choicesTruncated,
         ...(adminUrl ? { adminUrl } : {}),
       });
-      await client.chat.postEphemeral({ channel: event.channel, user: event.inviter, ...card });
+      await client.chat.postEphemeral({ channel: event.channel, user: personInviter, ...card });
     } catch (error) {
       console.warn('[chickpea] private Channel setup card unavailable:', sanitizeError(error));
     }
     return;
   }
 
-  if (!event.inviter || event.inviter === resolvedBotUserId) return;
   // Public courtesy messages retain the existing enabled-grant and setting gates.
   if (!publicWelcomeEnabled) return;
   try {

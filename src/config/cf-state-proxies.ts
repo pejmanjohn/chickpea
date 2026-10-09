@@ -1395,9 +1395,9 @@ export class CfManagementStore implements ManagementStore {
     return response.result;
   }
 
-  async releaseAgentWelcome(input: Parameters<ManagementStore['releaseAgentWelcome']>[0]) {
-    const response = await this.execute({ kind: 'release_agent_welcome', input });
-    if (response.kind !== 'agent_welcome_release') throw unexpectedManagementResponse();
+  async queueOwedAgentWelcome(input: Parameters<ManagementStore['queueOwedAgentWelcome']>[0]) {
+    const response = await this.execute({ kind: 'queue_owed_agent_welcome', input });
+    if (response.kind !== 'owed_agent_welcome') throw unexpectedManagementResponse();
     return response.result;
   }
 

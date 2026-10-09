@@ -31,14 +31,17 @@ const source = ts.createSourceFile(
 const stateClass = source.statements.find((node) =>
   ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
 assert.ok(stateClass && ts.isClassDeclaration(stateClass));
-const methods = ['identityExecute', 'managementExecute', 'armAlarmNoLaterThan'].map((name) => {
+const methods = ['identityExecute', 'managementExecute', 'armReceiptDrainAfter', 'armAlarmNoLaterThan'].map((name) => {
   const method = stateClass.members.find((member) =>
     ts.isMethodDeclaration(member) && member.name.getText(source) === name);
   assert.ok(method, `production method ${name} exists`);
   return method.getText(source);
 });
+const writers = source.statements.find((node) => ts.isVariableStatement(node) &&
+  node.declarationList.declarations.some(({ name }) => name.getText(source) === 'RECEIPT_OUTBOX_WRITERS'));
+assert.ok(writers, 'production RECEIPT_OUTBOX_WRITERS exists');
 const compiled = ts.transpileModule(
-  `class ManagementProbe { ${methods.join('\n')} }\nManagementProbe`,
+  `${writers.getText(source)}\nclass ManagementProbe { ${methods.join('\n')} }\nManagementProbe`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
@@ -140,7 +143,7 @@ test('a welcome claim never pulls an earlier wake later, and reads arm nothing',
   } finally { g.db.close(); }
 });
 
-test('releasing a welcome owed after a late handle arms the outbox drain at once', async (context) => {
+test('queueing a welcome owed after a late handle arms the outbox drain at once', async (context) => {
   context.mock.method(Date, 'now', () => NOW);
   const f = fixture(LATER_SWEEP);
   try {
@@ -155,11 +158,11 @@ test('releasing a welcome owed after a late handle arms the outbox drain at once
         deliveryPersona: 'chickpea',
       },
     });
-    const released = await f.probe.managementExecute({
-      kind: 'release_agent_welcome',
+    const queued = await f.probe.managementExecute({
+      kind: 'queue_owed_agent_welcome',
       input: { agentId: 'agent_new', agentName: 'New Agent', agentHandle: 'new-agent', at: NOW },
     });
-    assert.equal(released.ok, true);
+    assert.equal(queued.ok, true);
     assert.equal(f.management.nextOutboxDueAt(), NOW);
     assert.deepEqual(f.writes, [NOW], 'the follow-up is drained now, not at the next unrelated wake');
   } finally { f.db.close(); }

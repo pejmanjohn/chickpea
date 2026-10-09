@@ -136,13 +136,13 @@ test('Cloudflare management proxy preserves the canonical ledger contract and ty
       },
       status: 'delivered', attempts: 1, nextAttemptAt: NOW, createdAt: NOW, updatedAt: NOW,
     });
-    const releaseInput = { agentId: 'agent_rpc', agentName: 'RPC Agent', agentHandle: 'rpc', at: NOW + 2 };
-    assert.deepEqual(await proxy.releaseAgentWelcome(releaseInput), { created: true });
-    assert.deepEqual(await proxy.releaseAgentWelcome(releaseInput), { created: false });
+    const owedInput = { agentId: 'agent_rpc', agentName: 'RPC Agent', agentHandle: 'rpc', at: NOW + 2 };
+    assert.deepEqual(await proxy.queueOwedAgentWelcome(owedInput), { created: true });
+    assert.deepEqual(await proxy.queueOwedAgentWelcome(owedInput), { created: false });
     assert.equal((await proxy.getOutboxForOperation('agent_welcome_rpc_published'))?.status, 'pending');
     assert.deepEqual(calls.slice(-3).map(({ kind }) => kind), [
-      'release_agent_welcome',
-      'release_agent_welcome',
+      'queue_owed_agent_welcome',
+      'queue_owed_agent_welcome',
       'get_outbox_for_operation',
     ]);
 

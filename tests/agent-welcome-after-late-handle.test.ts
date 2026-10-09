@@ -15,7 +15,7 @@ import { SqliteManagementStore } from '../src/management/store.ts';
 import type {
   ManagementAgentCreatedWelcome,
   ManagementReceiptOutboxRecord,
-  ReleaseAgentWelcomeInput,
+  OwedAgentWelcomeInput,
 } from '../src/management/types.ts';
 import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
@@ -27,7 +27,7 @@ const CREATION_THREAD = {
   kind: 'thread' as const, workspaceId: WORKSPACE, channelId: 'D_PEJ', threadTs: '1800000000.000100',
 };
 
-const ORIGINAL_WELCOME: ManagementReceiptOutboxRecord = {
+const COLLIDED_HANDLE_WELCOME: ManagementReceiptOutboxRecord = {
   outboxId: 'agent_welcome_op_help',
   operationId: 'op_help',
   destination: CREATION_THREAD,
@@ -119,7 +119,7 @@ function fixture() {
       throw new Error('the owed welcome goes through the outbox, never the transport');
     },
   } as unknown as SlackTransport;
-  const releases: ReleaseAgentWelcomeInput[] = [];
+  const releases: OwedAgentWelcomeInput[] = [];
   const reconciler = new AgentPresenceReconciler({
     config,
     transport,
@@ -129,9 +129,9 @@ function fixture() {
       welcomeOnJoin: async () => true,
       avatarUrl: () => undefined,
       management: {
-        releaseAgentWelcome: async (input) => {
+        queueOwedAgentWelcome: async (input) => {
           releases.push(input);
-          return management.releaseAgentWelcome(input);
+          return management.queueOwedAgentWelcome(input);
         },
       },
       now: () => NOW + 10,
@@ -171,7 +171,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
       workspaceId: WORKSPACE, transportMode: 'direct', teamId: WORKSPACE, appId: 'A1', botUserId: 'U_BOT',
     });
     await f.config.createAgent(agentWhoseHandleCollided());
-    await f.management.putOutbox(ORIGINAL_WELCOME);
+    await f.management.putOutbox(COLLIDED_HANDLE_WELCOME);
 
     assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
     assert.equal(f.posts.length, 1);
@@ -200,7 +200,7 @@ test('the welcome Chickpea posted for an Agent is posted again by that Agent onc
     ]);
     const owed = await f.management.getOutboxForOperation('agent_welcome_op_help_published');
     assert.equal(owed?.status, 'pending');
-    assert.equal(welcomeOf(owed).followUpOf, 'agent_welcome_op_help');
+    assert.equal(welcomeOf(owed).fallbackOutboxId, 'agent_welcome_op_help');
 
     assert.deepEqual(await f.drain(), { delivered: 1, retried: 0, failed: 0 });
     assert.equal(f.posts.length, 2);

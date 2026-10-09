@@ -120,13 +120,13 @@ function chickpeaFallbackWelcome(
   };
 }
 
-test('releasing an Agent welcome queues one follow-up after a Chickpea fallback left the handle unfinished', async () => {
+test('queueing an owed Agent welcome adds one follow-up after a Chickpea fallback left the handle unfinished', async () => {
   const store = new SqliteManagementStore(':memory:');
   try {
     const original = chickpeaFallbackWelcome('agent_welcome_help');
     await store.putOutbox(original);
-    const release = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
-    assert.deepEqual(await store.releaseAgentWelcome(release), { created: true });
+    const owed = { agentId: 'agent_help', agentName: 'Support Desk', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: true });
     assert.deepEqual(await store.getOutboxForOperation('agent_welcome_help_published'), {
       outboxId: 'agent_welcome_help_published',
       operationId: 'agent_welcome_help_published',
@@ -144,7 +144,7 @@ test('releasing an Agent welcome queues one follow-up after a Chickpea fallback 
         publication: { status: 'partial', incomplete: ['source_channel'] },
         connectorActions: [{ presetId: 'zendesk', label: 'Zendesk', setupUrl: 'https://example.test/setup' }],
         viewAgentUrl: 'https://example.test/admin/agents/agent_help',
-        followUpOf: 'agent_welcome_help',
+        fallbackOutboxId: 'agent_welcome_help',
       },
       status: 'pending',
       attempts: 0,
@@ -153,13 +153,13 @@ test('releasing an Agent welcome queues one follow-up after a Chickpea fallback 
       updatedAt: NOW + 5,
     });
     assert.deepEqual(await store.getOutboxForOperation('op_agent_welcome_help'), original);
-    assert.deepEqual(await store.releaseAgentWelcome({ ...release, at: NOW + 9 }), { created: false });
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 9 }), { created: false });
     assert.equal((await store.claimDueOutbox(NOW + 9, 10, NOW + 30_000)).length, 1);
 
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_help_again', {
       publication: { status: 'partial', incomplete: ['slack_presence'] },
     }, { createdAt: NOW + 20, updatedAt: NOW + 20 }));
-    assert.deepEqual(await store.releaseAgentWelcome({ ...release, at: NOW + 30 }), { created: true });
+    assert.deepEqual(await store.queueOwedAgentWelcome({ ...owed, at: NOW + 30 }), { created: true });
     const second = await store.getOutboxForOperation('agent_welcome_help_again_published');
     assert.ok(second && 'kind' in second.receipt && second.receipt.kind === 'agent_created_welcome');
     assert.deepEqual(second.receipt.publication, { status: 'complete', incomplete: [] });
@@ -168,11 +168,11 @@ test('releasing an Agent welcome queues one follow-up after a Chickpea fallback 
   }
 });
 
-test('releasing an Agent welcome leaves welcomes the Agent posted itself, undelivered ones, and follow-ups alone', async () => {
+test('queueing an owed Agent welcome leaves welcomes the Agent posted itself, undelivered ones, and follow-ups alone', async () => {
   const store = new SqliteManagementStore(':memory:');
   try {
-    const release = { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 5 };
-    assert.deepEqual(await store.releaseAgentWelcome(release), { created: false });
+    const owed = { agentId: 'agent_help', agentName: 'Support', agentHandle: 'help', at: NOW + 5 };
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: false });
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_as_agent', {
       deliveryPersona: 'agent', publication: { status: 'complete', incomplete: [] },
     }));
@@ -186,9 +186,9 @@ test('releasing an Agent welcome leaves welcomes the Agent posted itself, undeli
     }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_other_agent', { agentId: 'agent_other' }));
     await store.putOutbox(chickpeaFallbackWelcome('agent_welcome_followed_published', {
-      followUpOf: 'agent_welcome_followed',
+      fallbackOutboxId: 'agent_welcome_followed',
     }));
-    assert.deepEqual(await store.releaseAgentWelcome(release), { created: false });
+    assert.deepEqual(await store.queueOwedAgentWelcome(owed), { created: false });
     assert.equal((await store.claimDueOutbox(NOW + 5, 10, NOW + 30_000)).length, 1, 'only the pending original');
   } finally {
     store.close();

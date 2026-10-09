@@ -450,7 +450,7 @@ export interface ManagementAgentCreatedWelcome {
   deferredHandoffProposalId?: string;
   /** Persona Slack actually accepted for the durable welcome delivery. */
   deliveryPersona?: 'agent' | 'chickpea';
-  followUpOf?: string;
+  fallbackOutboxId?: string;
   viewAgentUrl?: string;
   /** Compatibility fields for proposal-created welcomes. */
   setupUrl?: string;
@@ -1247,14 +1247,14 @@ export interface ClaimAgentCreationWelcomeResult {
   created: boolean;
 }
 
-export interface ReleaseAgentWelcomeInput {
+export interface OwedAgentWelcomeInput {
   agentId: string;
   agentName: string;
   agentHandle: string;
   at: number;
 }
 
-export interface ReleaseAgentWelcomeResult {
+export interface OwedAgentWelcomeResult {
   created: boolean;
 }
 
@@ -1393,7 +1393,7 @@ export type ManagementRpcRequest =
     }
   | { kind: 'put_outbox'; record: ManagementReceiptOutboxRecord }
   | { kind: 'claim_introduction'; input: ClaimManagementIntroductionInput }
-  | { kind: 'release_agent_welcome'; input: ReleaseAgentWelcomeInput }
+  | { kind: 'queue_owed_agent_welcome'; input: OwedAgentWelcomeInput }
   | { kind: 'get_outbox_for_operation'; operationId: string }
   | { kind: 'list_agent_creation_welcomes'; workspaceId: string; agentId: string; requesterMembershipId: string }
   | {
@@ -1431,5 +1431,5 @@ export type ManagementRpcResponse =
   | { kind: 'outbox_batch'; outbox: ManagementReceiptOutboxRecord[] }
   | { kind: 'introduction_claim'; result: ClaimManagementIntroductionResult }
   | { kind: 'agent_creation_welcome_claim'; result: ClaimAgentCreationWelcomeResult }
-  | { kind: 'agent_welcome_release'; result: ReleaseAgentWelcomeResult }
+  | { kind: 'owed_agent_welcome'; result: OwedAgentWelcomeResult }
   | { kind: 'retention'; deleted: number };

@@ -9,6 +9,7 @@ import {
   type SlackTransport,
   type SlackUserGroup,
 } from '../transport/types.ts';
+import { agentSlackHandle } from '../agent-asks.ts';
 import type { AgentPresenceAnnouncements } from './announcements.ts';
 import {
   AgentPresenceError,
@@ -374,7 +375,7 @@ export class AgentPresenceReconciler {
       pendingGrant.revision,
     );
     if (pendingGrant.status !== 'active') {
-      await this.announce('joinedChannel', published.id, (announce) => announce.joinedChannel({
+      await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
         workspaceId: input.workspaceId,
         channelId: input.channelId,
         channelIsPrivate: channel.private,
@@ -388,11 +389,10 @@ export class AgentPresenceReconciler {
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
   async reconcile(agentId: string): Promise<CustomAgentConfig> {
     const before = await this.dependencies.config.getAgent(agentId);
-    const wasLive = before.slackPresence?.health === 'healthy' &&
-      Boolean(before.slackPresence.userGroupId);
+    const wasLive = handleIsLive(before);
     const reconciled = await this.reconcileOnce(agentId, 0);
     if (!wasLive) {
-      await this.announce('published', reconciled.id, (announce) => announce.published(reconciled));
+      await this.announceBestEffort('handleWentLive', reconciled.id, (announce) => announce.handleWentLive(reconciled));
     }
     return reconciled;
   }
@@ -693,7 +693,7 @@ export class AgentPresenceReconciler {
     });
   }
 
-  private async announce(
+  private async announceBestEffort(
     transition: keyof AgentPresenceAnnouncements,
     agentId: string,
     run: (announce: AgentPresenceAnnouncements) => Promise<void>,
@@ -766,6 +766,10 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
     if (error instanceof SlackTransportError && error.code === 'already_enabled') return;
     throw error;
   }
+}
+
+function handleIsLive(agent: CustomAgentConfig): boolean {
+  return agent.slackPresence?.health === 'healthy' && agentSlackHandle(agent) !== undefined;
 }
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {

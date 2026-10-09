@@ -748,7 +748,7 @@ function announcing(transport: FakeSlackTransport, options: { welcomeOnJoin?: bo
     transport,
     welcomeOnJoin: async () => options.welcomeOnJoin ?? true,
     avatarUrl: (candidate) => `https://avatars.example/${candidate.id}.png`,
-    management: { releaseAgentWelcome: async () => ({ created: false }) },
+    management: { queueOwedAgentWelcome: async () => ({ created: false }) },
   });
 }
 

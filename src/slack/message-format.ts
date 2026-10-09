@@ -1055,8 +1055,8 @@ export function renderAgentChannelWelcome(params: {
   handle: string;
   userGroupId: string;
 }): string {
-  const name = welcomeText(params.name, 80);
-  const description = welcomeText(params.description ?? '', 400);
+  const name = sanitizedWelcomeText(params.name, 80);
+  const description = sanitizedWelcomeText(params.description ?? '', 400);
   return [
     `Hi, I’m *${name}*.${description ? ` ${description}` : ''}`,
     `Mention ${liveAgentMention(params.userGroupId, params.handle)} to start a thread with me. ` +
@@ -1064,7 +1064,7 @@ export function renderAgentChannelWelcome(params: {
   ].join('\n\n');
 }
 
-function welcomeText(value: string, max: number): string {
+function sanitizedWelcomeText(value: string, max: number): string {
   const plain = value.replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ').replace(/[*_~`]/g, '').trim();
   return neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(plain.slice(0, max).trim()));
 }

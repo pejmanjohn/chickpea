@@ -9,8 +9,8 @@ import {
   type ClaimManagementProposalInput,
   type ClaimManagementIntroductionInput,
   type ClaimManagementIntroductionResult,
-  type ReleaseAgentWelcomeInput,
-  type ReleaseAgentWelcomeResult,
+  type OwedAgentWelcomeInput,
+  type OwedAgentWelcomeResult,
   type ClaimAgentCreationWelcomeInput,
   type ClaimAgentCreationWelcomeResult,
   type AuthorizeManagementSetupInput,
@@ -292,7 +292,7 @@ export interface ManagementStore {
   claimIntroduction(
     input: ClaimManagementIntroductionInput,
   ): Promise<ClaimManagementIntroductionResult>;
-  releaseAgentWelcome(input: ReleaseAgentWelcomeInput): Promise<ReleaseAgentWelcomeResult>;
+  queueOwedAgentWelcome(input: OwedAgentWelcomeInput): Promise<OwedAgentWelcomeResult>;
   getOutboxForOperation(operationId: string): Promise<ManagementReceiptOutboxRecord | undefined>;
   claimDueOutbox(
     at: number,
@@ -494,8 +494,8 @@ export class ManagementStoreLogic {
         return { kind: 'outbox', outbox: this.putOutbox(request.record) };
       case 'claim_introduction':
         return { kind: 'introduction_claim', result: this.claimIntroduction(request.input) };
-      case 'release_agent_welcome':
-        return { kind: 'agent_welcome_release', result: this.releaseAgentWelcome(request.input) };
+      case 'queue_owed_agent_welcome':
+        return { kind: 'owed_agent_welcome', result: this.queueOwedAgentWelcome(request.input) };
       case 'get_outbox_for_operation':
         return {
           kind: 'outbox',
@@ -1322,11 +1322,11 @@ export class ManagementStoreLogic {
   }
 
   putOutbox(record: ManagementReceiptOutboxRecord): ManagementReceiptOutboxRecord {
-    this.insertOutbox(record);
+    this.insertOutboxIfAbsent(record);
     return this.requireOutbox(record.outboxId);
   }
 
-  private insertOutbox(record: ManagementReceiptOutboxRecord): boolean {
+  private insertOutboxIfAbsent(record: ManagementReceiptOutboxRecord): boolean {
     return this.db.run(
       `INSERT OR IGNORE INTO management_receipt_outbox (
         outbox_id, operation_id, destination_json, receipt_json, status,
@@ -1346,7 +1346,7 @@ export class ManagementStoreLogic {
     ).changes === 1;
   }
 
-  releaseAgentWelcome(input: ReleaseAgentWelcomeInput): ReleaseAgentWelcomeResult {
+  queueOwedAgentWelcome(input: OwedAgentWelcomeInput): OwedAgentWelcomeResult {
     return this.db.transaction(() => {
       const row = this.db.get(
         `SELECT * FROM management_receipt_outbox
@@ -1354,7 +1354,7 @@ export class ManagementStoreLogic {
            AND json_extract(receipt_json, '$.kind') = 'agent_created_welcome'
            AND json_extract(receipt_json, '$.agentId') = ?
            AND json_extract(receipt_json, '$.deliveryPersona') = 'chickpea'
-           AND json_extract(receipt_json, '$.followUpOf') IS NULL
+           AND json_extract(receipt_json, '$.fallbackOutboxId') IS NULL
            AND EXISTS (
              SELECT 1 FROM json_each(receipt_json, '$.publication.incomplete')
              WHERE json_each.value = 'slack_presence'
@@ -1378,7 +1378,7 @@ export class ManagementStoreLogic {
       const incomplete = (receipt.publication?.incomplete ?? [])
         .filter((part) => part !== 'slack_presence');
       const outboxId = `${fallback.outboxId}_published`;
-      const created = this.insertOutbox({
+      const created = this.insertOutboxIfAbsent({
         outboxId,
         operationId: outboxId,
         destination: fallback.destination,
@@ -1388,7 +1388,7 @@ export class ManagementStoreLogic {
           agentHandle: input.agentHandle,
           persona: { ...receipt.persona, name: input.agentName },
           publication: { status: incomplete.length === 0 ? 'complete' : 'partial', incomplete },
-          followUpOf: fallback.outboxId,
+          fallbackOutboxId: fallback.outboxId,
         },
         status: 'pending',
         attempts: 0,

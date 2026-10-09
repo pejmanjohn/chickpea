@@ -778,6 +778,16 @@ const RUNNER_DISPATCH_MAX_PAGES = 16;
  * migration live in wrangler.jsonc (TAG_STATE / migrations v2).
  */
 
+type ReceiptOutboxWriter =
+  | Extract<ManagementRpcRequest['kind'],
+    'complete_setup' | 'put_outbox' | 'claim_introduction' | 'claim_agent_creation_welcome' | 'queue_owed_agent_welcome'>
+  | Extract<IdentityRpcRequest['kind'], 'claim_owner'>;
+
+const RECEIPT_OUTBOX_WRITERS: ReadonlySet<string> = new Set<ReceiptOutboxWriter>([
+  'complete_setup', 'put_outbox', 'claim_introduction', 'claim_agent_creation_welcome', 'queue_owed_agent_welcome',
+  'claim_owner',
+]);
+
 export class TagStateStore extends DurableObject implements TagStateRpc, StateStoreHostRpc {
   private stores: TagStateStores | undefined;
   /**
@@ -1134,12 +1144,7 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     request: IdentityRpcRequest,
   ): Promise<StateRpcResult<IdentityRpcResponse>> {
     const result = this.call((stores) => stores.identity.execute(request));
-    if (result.ok && request.kind === 'claim_owner') {
-      const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
-      if (due.ok && due.value !== null) {
-        await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
-      }
-    }
+    if (result.ok) await this.armReceiptDrainAfter(request.kind);
     return result;
   }
 
@@ -1147,23 +1152,20 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     request: ManagementRpcRequest,
   ): Promise<StateRpcResult<ManagementRpcResponse>> {
     const result = this.call((stores) => stores.management.execute(request));
-    // Every request that can write a receipt outbox row arms the drain. The
-    // Agent welcome is claimed from inside the turn, which under the thread
-    // runner executes in its SlackThreadRunner, not in this object's alarm:
-    // nothing else would drain it until an unrelated wake.
-    if (result.ok && (
-      request.kind === 'complete_setup' ||
-      request.kind === 'put_outbox' ||
-      request.kind === 'claim_introduction' ||
-      request.kind === 'claim_agent_creation_welcome' ||
-      request.kind === 'release_agent_welcome'
-    )) {
-      const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
-      if (due.ok && due.value !== null) {
-        await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
-      }
-    }
+    if (result.ok) await this.armReceiptDrainAfter(request.kind);
     return result;
+  }
+
+  // Every request that can write a receipt outbox row arms the drain. The
+  // Agent welcome is claimed from inside the turn, which under the thread
+  // runner executes in its SlackThreadRunner, not in this object's alarm:
+  // nothing else would drain it until an unrelated wake.
+  private async armReceiptDrainAfter(kind: string): Promise<void> {
+    if (!RECEIPT_OUTBOX_WRITERS.has(kind)) return;
+    const due = this.call((stores) => stores.management.nextOutboxDueAt() ?? null);
+    if (due.ok && due.value !== null) {
+      await this.armAlarmNoLaterThan(Math.max(Date.now(), due.value));
+    }
   }
 
   async configListAgents(): Promise<StateRpcResult<CustomAgentConfig[]>> {
