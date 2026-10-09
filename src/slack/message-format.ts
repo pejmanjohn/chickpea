@@ -343,7 +343,7 @@ export type SlackLiveAgentHandles = ReadonlyMap<string, string>;
 // a mention token), and not followed by more handle characters.
 const SLACK_HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:|<-])@([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/gu;
 
-function liveAgentMention(userGroupId: string, handle: string): string {
+export function liveAgentMention(userGroupId: string, handle: string): string {
   return `<!subteam^${userGroupId}|@${handle}>`;
 }
 
@@ -1047,6 +1047,31 @@ export function renderChannelOnboarding(params: {
     'Once an Agent owns a thread, Channel members can continue without repeating the mention.',
     `${configure} the Agents available in this Channel.`,
   ].join(' ');
+}
+
+/**
+ * An Agent's own greeting once it is added to a public Channel. Its handle is
+ * a live mention: a zero-member user group renders and asks, and pings nobody.
+ */
+export function renderAgentChannelWelcome(params: {
+  name: string;
+  description: string | undefined;
+  handle: string;
+  userGroupId: string;
+}): string {
+  const name = welcomeText(params.name, 80);
+  const description = welcomeText(params.description ?? '', 400);
+  return [
+    `Hi, I’m *${name}*.${description ? ` ${description}` : ''}`,
+    `Mention ${liveAgentMention(params.userGroupId, params.handle)} to start a thread with me. ` +
+      'I only join conversations that mention me, and once I’m in a thread you can keep going there without the mention.',
+  ].join('\n\n');
+}
+
+/** Customer-written text inside the welcome: one line, no markup, no pings. */
+function welcomeText(value: string, max: number): string {
+  const plain = value.replace(/[\r\n\u0000-\u001f\u007f]+/g, ' ').replace(/[*_~`]/g, '').trim();
+  return neutralizeSlackMrkdwnHandles(escapeSlackControlCharacters(plain.slice(0, max).trim()));
 }
 
 // The ephemeral nudge for an explicit mention in a channel that has no enabled
