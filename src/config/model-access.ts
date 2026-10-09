@@ -43,6 +43,7 @@ import {
   type FeePost,
 } from './platform-funding.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import type { SharedPrefixDecision, SharedPrefixId } from '../agents/shared-prefix.ts';
 import {
   ANTHROPIC_COMPAT_PROVIDER_ID,
   OPENAI_PLATFORM_COMPAT_PROVIDER_ID,
@@ -415,7 +416,7 @@ export async function sendImageRequest(
   }, endpoint);
   if (!sent) return result;
   const sentRequest: SentRequest = {
-    requestId: crypto.randomUUID(), route: grant.providerId, model, fundingSource: grant.fundingSource,
+    requestId: crypto.randomUUID(), route: grant.providerId, model, fundingSource: grant.fundingSource, sharedPrefix: null,
   };
   const attribution = cells.getStore()?.attribution ?? {
     installationId: usageInstallationId(env), runId: grant.runId, attemptId: crypto.randomUUID(), agentId: null,
@@ -490,12 +491,15 @@ interface ModelAccessRequest<TModel, TOptions> {
   send(start: (model: TModel) => AssistantMessageEventStream): AssistantMessageEventStream;
 }
 
-type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'>;
+type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fundingSource'> & {
+  /** Set by the platform payload hook once the payload is built. */
+  sharedPrefix: SharedPrefixId | null;
+};
 
 interface ListPriceMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
   /** Sets the cache breakpoints that let a Slack turn read a prefix other workspaces wrote. */
-  sharePrefix?(payload: Record<string, unknown>): Promise<Record<string, unknown>>;
+  sharePrefix?(payload: Record<string, unknown>): Promise<SharedPrefixDecision>;
   readonly listPricedServiceTiers: readonly string[];
   readonly listPricedInferenceGeos: readonly string[];
 }
@@ -510,7 +514,7 @@ const LIST_PRICE_MODES = {
         console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
         return undefined;
       });
-      return shared ? shared.sharePromptPrefix(payload) : payload;
+      return shared ? shared.sharePromptPrefix(payload) : { payload, sharedPrefix: null };
     },
     listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
@@ -557,6 +561,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
     route: registeredId,
     model: model.id,
     fundingSource: bound?.grant.fundingSource ?? 'customer',
+    sharedPrefix: null,
   };
   const sent = bound?.access.baseUrl ? { ...model, baseUrl: bound.access.baseUrl } : model;
   const platformGrant = bound?.grant.fundingSource === 'platform' ? bound.grant : undefined;
@@ -574,7 +579,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
       apiKey: access.apiKey,
       ...(access.headers ? { headers: { ...options?.headers, ...access.headers } } : {}),
       ...(reader ? { fetch: reader.fetch } : {}),
-      ...(listPriced ? { onPayload: listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced]) } : {}),
+      ...(listPriced ? { onPayload: listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced], request) } : {}),
     } as TOptions,
     redact: (stream) => withoutKeyInErrors(stream, access.apiKey),
     send,
@@ -693,13 +698,17 @@ function offList(reported: string | null, listPriced: readonly string[]): boolea
 function listPricedPayload(
   callerHook: StreamOptions['onPayload'],
   mode: ListPriceMode,
+  request: SentRequest,
 ): NonNullable<StreamOptions['onPayload']> {
   return async (payload, model) => {
     const returned = await callerHook?.(payload, model);
     const composed = returned === undefined ? payload : returned;
     if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
     const pinned = mode.pin(composed);
-    return mode.sharePrefix ? mode.sharePrefix(pinned) : pinned;
+    if (!mode.sharePrefix) return pinned;
+    const decision = await mode.sharePrefix(pinned);
+    request.sharedPrefix = decision.sharedPrefix;
+    return decision.payload;
   };
 }
 
@@ -715,7 +724,7 @@ async function settleRecord(
   const settled = [
     writeRecord && record.then((built) => writeRecord(built, env))
       .catch((error: unknown) => logSettleFailure('record', request, error)),
-    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built))
+    platformGrant && record.then((built) => chargePlatformRequest(platformGrant, built, request.sharedPrefix))
       .catch((error: unknown) => logSettleFailure('charge', request, error)),
   ];
   let timer: ReturnType<typeof setTimeout> | undefined;

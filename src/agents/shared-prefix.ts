@@ -103,6 +103,9 @@ export const SHARED_PREFIX_SHAPES = {
 } as const satisfies Record<string, readonly ShapeSegment[]>;
 export type SharedPrefixShape = keyof typeof SHARED_PREFIX_SHAPES;
 
+/** One shared prefix on a model: an Agent kind's constant block after one shape's tools. */
+export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
+
 /** The shapes a channel or DM turn sends, which `sharedPrefixRequests` writes. */
 export const WARMED_SHARED_PREFIX_SHAPES = [
   'interactive', 'interactive_streaming', 'interactive_image', 'interactive_streaming_image',
@@ -177,6 +180,12 @@ function withoutCacheControl(block: unknown): unknown {
   return rest;
 }
 
+export interface SharedPrefixDecision {
+  payload: Payload;
+  /** The shared prefix the payload carries with B at one hour; null when it carries none. */
+  sharedPrefix: SharedPrefixId | null;
+}
+
 /**
  * Set breakpoints A on the last universal tool and B on the constant system
  * block, then C on the tenant block and D on the last user block (5 minutes).
@@ -186,13 +195,15 @@ function withoutCacheControl(block: unknown): unknown {
  * block but not both, or other universal tools, goes out as built and counts
  * a miss.
  */
-export function sharePromptPrefix(payload: Payload): Payload {
+export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
+  const unshared = { payload, sharedPrefix: null };
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const anchor = tools.findIndex((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
   const text = singleSystemText(payload);
   const opensWith = (block: string) => text !== undefined && text.startsWith(block + PART_SEPARATOR);
-  const constant = AGENT_KINDS.map(sharedSystemBlock).find(opensWith);
-  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return payload;
+  const kind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
+  const constant = kind === undefined ? undefined : sharedSystemBlock(kind);
+  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return unshared;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
   const miss = anchor < 0
     ? 'universal_tools_missing'
@@ -205,19 +216,22 @@ export function sharePromptPrefix(payload: Payload): Payload {
       model: payload.model,
       reason: miss,
     });
-    return payload;
+    return unshared;
   }
-  return {
+  const shape = shapeOf(tools.slice(anchor + 1));
+  const sharedPrefix: SharedPrefixId | null = kind && shape ? `${kind}/${shape}` : null;
+  const shared = {
     ...payload,
     tools: tools.map((tool, index) => index === anchor
       ? { ...(withoutCacheControl(tool) as Payload), cache_control: ONE_HOUR }
       : withoutCacheControl(tool)),
     system: [
-      { type: 'text', text: constant, cache_control: shapeOf(tools.slice(anchor + 1)) ? ONE_HOUR : FIVE_MINUTES },
+      { type: 'text', text: constant, cache_control: sharedPrefix ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
     ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
   };
+  return { payload: shared, sharedPrefix };
 }
 
 /** Whatever retention pi-ai chose: a 1-hour marker may not follow a 5-minute one. */
@@ -257,6 +271,8 @@ function shapeOf(afterAnchor: unknown[]): SharedPrefixShape | undefined {
 const PREWARM_TURN = 'Reply with one word.';
 
 export interface SharedPrefixRequest {
+  /** The ID a real request carrying this prefix reports to the platform charge. */
+  id: SharedPrefixId;
   kind: AgentKind;
   shape: SharedPrefixShape;
   request: Payload;
@@ -273,6 +289,7 @@ export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
   const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
   return AGENT_KINDS.flatMap((kind) => WARMED_SHARED_PREFIX_SHAPES.map((shape) => ({
+    id: `${kind}/${shape}` as const,
     kind,
     shape,
     request: {
