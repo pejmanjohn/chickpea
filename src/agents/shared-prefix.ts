@@ -83,31 +83,43 @@ export function slackSystemBase(input: {
   ].join(PART_SEPARATOR);
 }
 
-type ShapeSegment = 'interactive' | 'streaming' | 'image';
+/** The capability tools a turn may mount after breakpoint A, in mount order. */
+const SHAPE_SEGMENTS = ['interactive', 'streaming', 'coding', 'image'] as const;
+type ShapeSegment = (typeof SHAPE_SEGMENTS)[number];
 
-export const SHARED_PREFIX_SHAPES = {
-  interactive: ['interactive'],
-  interactive_streaming: ['interactive', 'streaming'],
-  interactive_image: ['interactive', 'image'],
-  interactive_streaming_image: ['interactive', 'streaming', 'image'],
-  bare: [],
-  streaming: ['streaming'],
-  image: ['image'],
-  streaming_image: ['streaming', 'image'],
-} as const satisfies Record<string, readonly ShapeSegment[]>;
-export type SharedPrefixShape = keyof typeof SHARED_PREFIX_SHAPES;
+/** Every non-empty ordered selection of `Segments`, joined with underscores. */
+type Joined<Segments extends readonly string[]> = Segments extends readonly [infer Head extends string, ...infer Rest extends string[]]
+  ? Head | `${Head}_${Joined<Rest>}` | Joined<Rest>
+  : never;
+export type SharedPrefixShape = 'bare' | Joined<typeof SHAPE_SEGMENTS>;
+
+function buildShapes(): Readonly<Record<SharedPrefixShape, readonly ShapeSegment[]>> {
+  const selections = SHAPE_SEGMENTS.reduce<ShapeSegment[][]>((chosen, segment) =>
+    [...chosen, ...chosen.map((selection) => [...selection, segment])], [[]]);
+  const shapes = {} as Record<SharedPrefixShape, readonly ShapeSegment[]>;
+  for (const segments of selections) shapes[(segments.join('_') || 'bare') as SharedPrefixShape] = segments;
+  return shapes;
+}
+
+/** Each shape's segments: every ordered selection of SHAPE_SEGMENTS, `bare` for none. */
+export const SHARED_PREFIX_SHAPES = buildShapes();
 
 /** One shared prefix on a model: an Agent kind's constant block after one shape's tools. */
 export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
 
-/** Channel and DM turns mount the interactive tools, so these are the shapes worth warming. */
-export type WarmedSharedPrefixShape = {
-  [Shape in SharedPrefixShape]: 'interactive' extends typeof SHARED_PREFIX_SHAPES[Shape][number] ? Shape : never;
-}[SharedPrefixShape];
+/**
+ * Channel and DM turns mount the interactive tools, so these are the shapes
+ * worth warming. Coding shapes are not warmed: their first request writes
+ * the prefix and later ones, in any workspace, read it.
+ */
+export type WarmedSharedPrefixShape = Exclude<
+  Extract<SharedPrefixShape, 'interactive' | `interactive_${string}`>,
+  `${string}coding${string}`
+>;
 
 export const WARMED_SHARED_PREFIX_SHAPES = (Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
   .filter((shape): shape is WarmedSharedPrefixShape =>
-    (SHARED_PREFIX_SHAPES[shape] as readonly ShapeSegment[]).includes('interactive'));
+    SHARED_PREFIX_SHAPES[shape].includes('interactive') && !SHARED_PREFIX_SHAPES[shape].includes('coding'));
 
 const sharedBlocks = new Map<AgentKind, string>();
 

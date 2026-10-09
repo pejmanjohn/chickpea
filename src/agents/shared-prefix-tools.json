@@ -5750,6 +5750,196 @@
      ]
     }
    }
+  ],
+  "coding": [
+   {
+    "name": "workspace_open",
+    "description": "Open a coding workspace (a real Linux container with the granted repositories reachable). Prepares it without starting the container; the first command or file operation starts it. Each workspace is its own container: at most 2 can be open in this thread, and each counts as one coding session. A workspace is ephemeral: its files survive only while it is warm or checkpointed, dependencies are never checkpointed, and a pushed branch is the only durable result. Never assume a file from an earlier request exists without checking, and never store secrets in it.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      }
+     },
+     "required": []
+    }
+   },
+   {
+    "name": "workspace_list",
+    "description": "List this thread's coding workspaces. For each: whether it is open (at most 2 can be), its state (running: the container is up; checkpointed: asleep with its files saved; empty: nothing kept), whether a coding task is running in it, and when it was last used. Never starts a container.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {},
+     "required": []
+    }
+   },
+   {
+    "name": "workspace_close",
+    "description": "Close a coding workspace so it no longer counts as open. By default its files stay warm for follow-ups and are checkpointed when this request ends; opening it again by name picks them up. With discard: true the container is destroyed and its checkpoint dropped (use it when the workspace is broken or its contents must not carry over); the next open of that name starts fresh with a new coding worker.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "discard": {
+       "type": "boolean"
+      }
+     },
+     "required": []
+    }
+   },
+   {
+    "name": "workspace_exec",
+    "description": "Run one shell command in the coding workspace (working directory /workspace unless cwd is given) and return its exit code and output. For quick checks and single steps; each stream keeps its last 48 KB. timeoutMs defaults to 2 minutes, at most 10.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "command": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 65536
+      },
+      "cwd": {
+       "type": "string",
+       "minLength": 1
+      },
+      "timeoutMs": {
+       "type": "integer",
+       "minimum": 1000,
+       "maximum": 600000
+      }
+     },
+     "required": [
+      "command"
+     ]
+    }
+   },
+   {
+    "name": "workspace_read",
+    "description": "Read a file from the coding workspace (a path under /workspace). Returns its text, up to 256 KB. With to, copies the file (up to 8 MB, any content) into your own sandbox at that path instead, for further processing there.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "path": {
+       "type": "string",
+       "minLength": 1
+      },
+      "to": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "workspace_write",
+    "description": "Write a file into the coding workspace (a path under /workspace; parent directories are created). Give exactly one source: content (text, such as a script), or from (a file in your own sandbox, up to 8 MB, copied byte for byte).",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "path": {
+       "type": "string",
+       "minLength": 1
+      },
+      "content": {
+       "type": "string",
+       "maxLength": 1048576
+      },
+      "from": {
+       "type": "string",
+       "minLength": 1
+      }
+     },
+     "required": [
+      "path"
+     ]
+    }
+   },
+   {
+    "name": "workspace_list_files",
+    "description": "List files under a directory in the coding workspace (default /workspace), to the given depth (default 2, at most 4). The contents of .git and node_modules are not listed. At most 500 entries.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "path": {
+       "type": "string",
+       "minLength": 1
+      },
+      "depth": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 4
+      }
+     },
+     "required": []
+    }
+   },
+   {
+    "name": "workspace_task",
+    "description": "Brief a coding worker that works in the coding workspace with its own shell and file tools: it can clone, install dependencies, edit files, run tests or a build, push a branch, and open a pull request. The worker cannot see this conversation, so the task must be a complete brief: the repository, what to change, how to verify it, the branch name to use, and whether to open a pull request. It returns the worker's answer and any pull requests it opened. One task can run for up to 60 minutes; at most 2 tasks per response. Use workspace_write and workspace_read to move files in and out, and post_artifact with the workspace to attach a file the worker made.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "workspace": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32,
+       "description": "Workspace name (default \"main\"). Use one workspace per repository or line of work, for example \"api\" and \"web\"; at most 2 can be open in this thread."
+      },
+      "task": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 32768
+      }
+     },
+     "required": [
+      "task"
+     ]
+    }
+   }
   ]
  },
  "models": {

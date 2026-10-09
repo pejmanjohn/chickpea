@@ -14,6 +14,7 @@ import test from 'node:test';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
+  SHARED_PREFIX_SHAPES,
   WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
@@ -291,6 +292,14 @@ async function renderCodingTools(workspace: string, channel: string, repository:
   return withoutMarkers(tools.filter((tool: any) => names.includes(tool.name))) as unknown[];
 }
 
+test('shapes compose the capability segments in mount order, and only interactive shapes without coding are warmed', () => {
+  assert.equal(Object.keys(SHARED_PREFIX_SHAPES).length, 16);
+  for (const [shape, segments] of Object.entries(SHARED_PREFIX_SHAPES)) {
+    assert.equal(shape, segments.join('_') || 'bare');
+  }
+  assert.deepEqual([...WARMED_SHARED_PREFIX_SHAPES], ['interactive', 'interactive_streaming', 'interactive_image', 'interactive_streaming_image']);
+});
+
 test('the coding-workspace tools render the same in every workspace and name none of its tenants', async () => {
   const alpha = await renderCodingTools(ALPHA.workspace, ALPHA.channel, 'acme/support');
   const bravo = await renderCodingTools(BRAVO.workspace, BRAVO.channel, 'globex/api');
@@ -434,6 +443,8 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
       }
     }
   }
+  // A Node render never mounts a coding workspace; the segment comes from the tools a coordinator mounts.
+  snapshot.segments.coding = await renderCodingTools(ALPHA.workspace, ALPHA.channel, 'acme/support');
   const stored = JSON.stringify(snapshot, null, 1) + '\n';
   if (update) writeFileSync(SNAPSHOT, stored);
   assert.equal(readFileSync(SNAPSHOT, 'utf8'), stored,
