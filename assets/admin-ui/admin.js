@@ -2559,7 +2559,7 @@
     var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
     var meter = billing.meter;
     var card = meter
-      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
+      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, ' + billingMeterEndText(billing) +
         (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
         '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
       : billing.planName
@@ -2596,6 +2596,11 @@
         return '<div class="billing-plan"><div><strong>' + esc(plan.name) + '</strong><p class="hint">' + esc(plan.price) + ' a month includes ' + esc(plan.included) + ' of usage</p>' +
           (plan.ownKeyMinimum ? '<p class="hint">Lowest plan for your own API key</p>' : '') + '</div>' + action + '</div>';
       }).join("") + '</div>';
+  }
+
+  function billingMeterEndText(billing) {
+    var pending = billing.pendingChange;
+    return pending && pending.kind === "ends" ? 'ends ' + esc(pending.on) : 'resets ' + esc(billing.meter.resets);
   }
 
   function billingPeriodEndText(billing) {

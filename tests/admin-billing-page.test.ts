@@ -359,6 +359,14 @@ test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade na
   assert.equal(planTerms(downgrading), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 7.');
 });
 
+test('the meter of a plan that ends says the day it ends, not that it resets; a plan that changes still resets', async () => {
+  const endsNov8: BillingSummary = { ...TEAM_PLAN, pendingChange: { kind: 'ends', at: new Date('2026-11-08T17:00:00Z') } };
+  const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: endsNov8 })).html();
+  assertShows(ending, '$128 of $240 used, 53%, ends Nov 8, on pace for 80%');
+  assertHides(ending, 'resets');
+  assertShows((await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING })).html(), '$128 of $240 used, 53%, resets Nov 7, on pace for 80%');
+});
+
 test('a plan that renews unchanged still says when it renews, whether the host leaves out the pending change or sends none', async () => {
   for (const summary of [TEAM_PLAN, { ...TEAM_PLAN, pendingChange: null }]) {
     const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
@@ -604,13 +612,14 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
     summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
   })).html();
   assertShows(frozen, 'available when you renew, until Oct 7, 2027');
-  for (const at of [new Date('2026-11-07T00:30:00Z'), new Date('2026-11-07T23:30:00Z')]) {
+  // A day after the period's end, so a page that printed the period's end instead would read Nov 7.
+  for (const at of [new Date('2026-11-08T00:30:00Z'), new Date('2026-11-08T23:30:00Z')]) {
     const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { kind: 'ends', at } } })).html();
-    assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 7.');
+    assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 8.');
     const changing = (await harness({
       path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { ...TEAM_DOWNGRADING.pendingChange!, at } },
     })).html();
-    assert.equal(planTerms(changing), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 7.');
+    assert.equal(planTerms(changing), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 8.');
   }
 });
 
