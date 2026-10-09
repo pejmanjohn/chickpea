@@ -6630,7 +6630,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // Workers AI binding show ONLY the user's starred favorites (curated in the
   // Settings managers), so this route folds those favorites into their
   // suggestions — the per-provider search/favorites endpoints stay the editors.
-  app.get('/admin/api/models', async (c) => {
+  const chatPickerProviders = async (c: Context) => {
     const settingsStore = settings(c);
     await refreshCatalog(c, false);
     // A deployment serving many offers its installations no subscription lane.
@@ -6695,13 +6695,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return provider;
         }),
     );
-    return c.json({ providers });
-  });
+    if (await installationFunding(c.env as PlatformEnv | undefined) !== 'platform') return providers;
+    // Chickpea's models are a lane like the ChatGPT subscription. They serve
+    // every key-lane provider, but only the models with a current price.
+    const unavailable = await chatModelReadiness(c);
+    return Promise.all(providers.map(async (provider) => {
+      const served = await Promise.all(provider.suggestions.map(async (model) => !(await unavailable(model))));
+      return {
+        ...provider,
+        configured: isProviderKeyId(provider.id),
+        source: PLATFORM_MODELS_SOURCE,
+        suggestions: provider.suggestions.filter((_, index) => served[index]),
+      };
+    }));
+  };
 
-  app.get('/admin/api/models/readiness', async (c) => {
-    const modelId = c.req.query('modelId') ?? '';
-    const separator = modelId.indexOf('/');
-    if (separator < 1) return invalidRequest(c);
+  app.get('/admin/api/models', async (c) => c.json({ providers: await chatPickerProviders(c) }));
+
+  const chatModelReadiness = async (c: Context) => {
     const settingsStore = settings(c);
     const platformEnv = c.env as PlatformEnv | undefined;
     const [openAiAuthMethod, workersAiEnabled, openAiSubscription, runtimeProviders] = await Promise.all([
@@ -6710,13 +6721,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       chatSubscriptionStatus(settingsStore, platformEnv),
       modelProviders(c),
     ]);
-    const unavailable = await chatModelUnavailable(modelId, modelId.slice(0, separator), {
-      runtimeProviders,
-      platformEnv,
-      openAiAuthMethod,
-      workersAiEnabled,
-      openAiSubscription,
-    });
+    const input = { runtimeProviders, platformEnv, openAiAuthMethod, workersAiEnabled, openAiSubscription };
+    return (modelId: string) => chatModelUnavailable(modelId, modelId.slice(0, modelId.indexOf('/')), input);
+  };
+
+  app.get('/admin/api/models/readiness', async (c) => {
+    const modelId = c.req.query('modelId') ?? '';
+    if (modelId.indexOf('/') < 1) return invalidRequest(c);
+    const unavailable = await (await chatModelReadiness(c))(modelId);
     return c.json({ modelId, unavailable: unavailable ?? null });
   });
 
@@ -7117,10 +7129,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (err) {
         return internalError(c, err);
       }
+      const platformFunded = await installationFunding(platformEnv) === 'platform';
       return c.json({
         providers: PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id], platformEnv),
           ...(id === 'openai' ? { activeAuthMethod, subscriptionAvailable: false } : {}),
+          ...(platformFunded ? { platformFunded } : {}),
         })),
       });
     }
@@ -7393,6 +7407,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
+      if ((id === 'anthropic' || id === 'openai') && await installationFunding(platformEnv) === 'platform') {
+        const served = (await chatPickerProviders(c)).find((provider) => provider.id === id)?.suggestions ?? [];
+        return c.json({ provider: id, models: served.map((model) => ({ id: model.slice(id.length + 1) })), cached: true });
+      }
       if (id === 'openai' && !deploymentServesManyInstallations(platformEnv) &&
           await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
         if (isCloudflareTarget()) {
@@ -12802,6 +12820,7 @@ async function codingModelChoiceError(input: {
 }
 
 const PLATFORM_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
+const PLATFORM_MODELS_SOURCE = 'Chickpea’s models';
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');
