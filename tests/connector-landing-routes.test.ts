@@ -270,10 +270,10 @@ test('a native connector welcome link stays on the dedicated setup surface until
     const setupHtml = await setupPage.text();
     assert.match(setupHtml, /Connect Linear to Project Guide/);
     assert.match(setupHtml, /data-connector-surface="connector-setup"/);
-    assert.match(setupHtml, /<option value="" selected disabled>Choose Personal or Team<\/option>/);
-    assert.match(setupHtml, /<option value="member">My connection<\/option>/);
-    assert.match(setupHtml, /<option value="team">Team connection<\/option>/);
-    assert.doesNotMatch(setupHtml, /<option value="(?:member|team)" selected/);
+    assert.match(setupHtml, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="member"/);
+    assert.match(setupHtml, /<input[^>]+type="radio"[^>]+name="ownerKind"[^>]+value="team"/);
+    assert.doesNotMatch(setupHtml, /<input[^>]+name="ownerKind"[^>]+checked/);
+    assert.doesNotMatch(setupHtml, /<select|select-control/);
     assert.match(
       setupHtml,
       /<button[^>]+value="authorize" disabled>Continue to Linear<\/button>/,
