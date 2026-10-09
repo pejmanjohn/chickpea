@@ -74,6 +74,43 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
   }
 });
 
+test('a handle collision keeps its suggestions only until the next outcome', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.createError = new SlackTransportError('usergroups.create', 'handle_already_exists');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const publish = () => reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    const presence = async () => (await config.getAgent('agent_support')).slackPresence;
+
+    await assert.rejects(publish, { code: 'handle_collision' });
+    assert.deepEqual((await presence())?.handleSuggestions, ['support-team', 'support-2', 'support-3']);
+
+    transport.actorIsMember = false;
+    await assert.rejects(publish, { code: 'channel_membership_required' });
+    assert.equal((await presence())?.errorCode, 'channel_membership_required');
+    assert.equal(Object.hasOwn((await presence()) ?? {}, 'handleSuggestions'), false,
+      'another failure must not keep the earlier collision suggestions');
+
+    transport.actorIsMember = true;
+    await assert.rejects(publish, { code: 'handle_collision' });
+    assert.equal((await presence())?.handleSuggestions?.[0], 'support-team');
+
+    transport.createError = undefined;
+    await publish();
+    const published = await presence();
+    assert.equal(published?.health, 'healthy');
+    assert.equal(Object.hasOwn(published ?? {}, 'handleSuggestions'), false,
+      'a successful publish clears the collision suggestions');
+  } finally {
+    config.close();
+  }
+});
+
 test('Slack name and handle collisions each name their own fix', () => {
   const qa = agent('agent_qa', 'QA fixtures', 'qa-fixtures');
 
@@ -96,12 +133,33 @@ test('Slack name and handle collisions each name their own fix', () => {
   assert.equal(handle.code, 'handle_collision');
   assert.equal(handle.slackCode, 'handle_already_exists');
   assert.equal(handle.message, 'That Slack handle is already in use.');
+  const explanation = 'Slack handles are shared across the whole workspace, so a person or a ' +
+    'Slack user group already uses this one. The Agent is saved.';
   assert.deepEqual(agentPresenceRecovery(handle, qa), {
     title: '@qa-fixtures is already in use',
-    explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
-    steps: ['Choose one of the suggested available handles or enter another handle.', 'Select Retry.'],
+    explanation,
+    steps: ['Type another handle and save.'],
     actionLabel: 'Retry',
   });
+  const saved = {
+    ...qa,
+    slackPresence: { ...qa.slackPresence!, handleSuggestions: ['qa-fixtures-team'] },
+  };
+  assert.deepEqual(agentPresenceRecovery(handle, saved), {
+    title: '@qa-fixtures is already in use',
+    explanation,
+    steps: ['Choose an available handle below, or type another one and save.'],
+    actionLabel: 'Retry',
+    suggestions: ['qa-fixtures-team'],
+  });
+  assert.deepEqual(
+    agentPresenceRecovery(
+      new AgentPresenceError('handle_collision', 'taken', { suggestions: ['qa-fixtures-2'] }),
+      saved,
+    ).suggestions,
+    ['qa-fixtures-2'],
+    'suggestions on the error are newer than the saved ones',
+  );
 });
 
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {

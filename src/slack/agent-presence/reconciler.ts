@@ -675,7 +675,7 @@ export class AgentPresenceReconciler {
     error: AgentPresenceError,
   ): Promise<void> {
     const current = await this.dependencies.config.getAgent(agent.id);
-    const presence = requiredPresence(current);
+    const presence = withoutPresenceErrors(requiredPresence(current));
     await this.dependencies.config.updateAgent(
       current.id,
       {
@@ -685,6 +685,9 @@ export class AgentPresenceReconciler {
           health: 'needs_attention',
           errorCode: error.code,
           errorDetail: error.message,
+          ...(error.code === 'handle_collision' && error.suggestions.length > 0
+            ? { handleSuggestions: error.suggestions }
+            : {}),
           observedAt: this.now(),
         },
       },
@@ -731,16 +734,23 @@ function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   return agent.slackPresence;
 }
 
+type PresenceErrorField = 'errorCode' | 'errorDetail' | 'handleSuggestions';
+
 function withoutPresenceErrors(
   presence: AgentSlackPresence,
-): Omit<AgentSlackPresence, 'errorCode' | 'errorDetail'> {
-  const { errorCode: _errorCode, errorDetail: _errorDetail, ...clean } = presence;
+): Omit<AgentSlackPresence, PresenceErrorField> {
+  const {
+    errorCode: _errorCode,
+    errorDetail: _errorDetail,
+    handleSuggestions: _handleSuggestions,
+    ...clean
+  } = presence;
   return clean;
 }
 
 function withoutPendingCreate(
-  presence: Omit<AgentSlackPresence, 'errorCode' | 'errorDetail'>,
-): Omit<AgentSlackPresence, 'errorCode' | 'errorDetail' | 'pendingCreate'> {
+  presence: Omit<AgentSlackPresence, PresenceErrorField>,
+): Omit<AgentSlackPresence, PresenceErrorField | 'pendingCreate'> {
   const { pendingCreate: _pendingCreate, ...clean } = presence;
   return clean;
 }

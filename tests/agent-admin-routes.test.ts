@@ -4997,11 +4997,24 @@ test('a handle Slack already uses is still fixed by a new handle, then Retry', a
     assert.equal(failed.body.error, 'handle_collision');
     assert.equal(failed.body.recovery.title, '@support is already in use');
 
+    const reloaded = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+      headers: auth(),
+    });
+    const { agent: collided } = await reloaded.json() as Record<string, any>;
+    assert.deepEqual(collided.slackPresenceRecovery.suggestions, ['support-team', 'support-2', 'support-3']);
+    assert.deepEqual(collided.slackPresenceRecovery.steps, [
+      'Choose an available handle below, or type another one and save.',
+    ]);
+
     const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {
-      expectedRevision: failed.body.agent.revision, handle: 'support-team',
+      expectedRevision: collided.revision, handle: collided.slackPresenceRecovery.suggestions[0],
     });
     assert.equal(rehandled.status, 200);
     assert.equal(rehandled.body.presenceRecovery, null);
+    assert.equal(rehandled.body.agent.slackPresenceRecovery, null);
+    assert.equal(rehandled.body.agent.slackPresence.health, 'healthy');
+    assert.equal(rehandled.body.agent.slackPresence.normalizedHandle, 'support-team');
+    assert.equal(Object.hasOwn(rehandled.body.agent.slackPresence, 'handleSuggestions'), false);
 
     const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
     assert.equal(retried.status, 200);
