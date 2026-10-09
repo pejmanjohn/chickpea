@@ -12,12 +12,11 @@ import test from 'node:test';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
-  SHARED_PREFIX_SHAPES,
+  WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
   sharedPrefixRequests,
   sharedSystemBlock,
-  type SharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
@@ -47,13 +46,22 @@ const TENANT_IDS = [
   ALPHA.workspace, BRAVO.workspace, ALPHA.channel, ALPHA_OTHER_CHANNEL.channel, BRAVO.channel, ALPHA_DM.channel, USER_AGENT_ID,
 ];
 
-const SHAPE_VARIANTS: Record<SharedPrefixShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered'>> = {
+const IMAGE_MODEL = 'openai/gpt-image-2.5-flare';
+type WarmedShape = typeof WARMED_SHARED_PREFIX_SHAPES[number];
+const SHAPE_VARIANTS: Record<WarmedShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered' | 'imageModel'>> = {
   interactive: { progressiveStreamingOffered: false },
   interactive_streaming: { progressiveStreamingOffered: true },
+  interactive_image: { progressiveStreamingOffered: false, imageModel: IMAGE_MODEL },
+  interactive_streaming_image: { progressiveStreamingOffered: true, imageModel: IMAGE_MODEL },
 };
-const SHAPE_TOOLS: Record<SharedPrefixShape, string[]> = {
-  interactive: ['ask_user', 'offer_actions', 'request_form'],
-  interactive_streaming: ['ask_user', 'offer_actions', 'request_form', 'stream_answer'],
+const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form'];
+const IMAGE_TOOLS = ['generate_image', 'recover_image'];
+const SEGMENT_TOOLS = { interactive: INTERACTIVE_TOOLS, streaming: ['stream_answer'], image: IMAGE_TOOLS };
+const SHAPE_TOOLS: Record<WarmedShape, string[]> = {
+  interactive: INTERACTIVE_TOOLS,
+  interactive_streaming: [...INTERACTIVE_TOOLS, 'stream_answer'],
+  interactive_image: [...INTERACTIVE_TOOLS, ...IMAGE_TOOLS],
+  interactive_streaming_image: [...INTERACTIVE_TOOLS, 'stream_answer', ...IMAGE_TOOLS],
 };
 
 const UNCONDITIONAL_INSTRUCTIONS = [
@@ -118,7 +126,7 @@ for (const agentKind of ['system', 'user'] as const) {
 }
 
 for (const agentKind of ['system', 'user'] as const) {
-  for (const shape of SHARED_PREFIX_SHAPES) {
+  for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
     test(`${agentKind} Agent, ${shape}: channels, workspaces and DMs send the same bytes through B, cached for an hour`, async () => {
       const alpha = await render({ ...ALPHA, agentKind, ...SHAPE_VARIANTS[shape] });
       const anchor = anchorIndex(alpha);
@@ -139,21 +147,20 @@ for (const agentKind of ['system', 'user'] as const) {
   }
 }
 
-test('a workspace with an image model sends the same bytes through B and caches B for an hour', async () => {
-  const alpha = await render({ ...ALPHA, imageModel: 'openai/gpt-image-2.5-flare' });
-  const anchor = anchorIndex(alpha);
-  assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name),
-    ['ask_user', 'offer_actions', 'request_form', 'stream_answer', 'generate_image', 'recover_image']);
-  assert.deepEqual(markers(alpha), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
-  for (const variant of [ALPHA_OTHER_CHANNEL, { ...BRAVO, imageModel: 'openai/gpt-image-2.5-sunburst' }, ALPHA_DM]) {
-    const other = await render({ imageModel: 'openai/gpt-image-2.5-flare', ...variant });
-    assert.equal(throughB(other), throughB(alpha), `${variant.workspace} ${variant.channel} sends the same bytes through B`);
-  }
+test('workspaces on either API-key image model send the same bytes through B', async () => {
+  const flare = await render({ ...ALPHA, imageModel: IMAGE_MODEL });
+  const sunburst = await render({ ...BRAVO, imageModel: 'openai/gpt-image-2.5-sunburst' });
+  assert.equal(throughB(sunburst), throughB(flare));
 });
 
 test('a group DM, which mounts no interactive tools, also caches B for an hour', async () => {
-  for (const [progressiveStreamingOffered, after] of [[false, []], [true, ['stream_answer']]] as const) {
-    const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered });
+  for (const [progressiveStreamingOffered, imageModel, after] of [
+    [false, undefined, []],
+    [true, undefined, ['stream_answer']],
+    [false, IMAGE_MODEL, IMAGE_TOOLS],
+    [true, IMAGE_MODEL, ['stream_answer', ...IMAGE_TOOLS]],
+  ] as const) {
+    const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered, ...(imageModel ? { imageModel } : {}) });
     const anchor = anchorIndex(group);
     assert.deepEqual(group.tools.slice(anchor + 1).map((tool: any) => tool.name), after);
     assert.deepEqual(markers(group), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
@@ -243,23 +250,29 @@ for (const [name, variant, unmounted] of [
 
 test('sharedPrefixRequests sends the bytes rendered turns send, and its tools match a fresh render', async () => {
   const update = process.env.UPDATE_SHARED_PREFIX === '1';
-  const snapshot: { tools: unknown[]; shapes: Record<string, unknown>; models: Record<string, unknown> } = {
-    tools: [], shapes: {}, models: {},
+  const snapshot: { tools: unknown[]; segments: Record<string, unknown[]>; models: Record<string, unknown> } = {
+    tools: [], segments: {}, models: {},
   };
   for (const model of SNAPSHOT_MODELS) {
     const prewarms = update ? [] : sharedPrefixRequests(model);
     if (!update) {
-      assert.deepEqual(prewarms.map(({ kind, shape }) => `${kind} ${shape}`),
-        ['system interactive', 'system interactive_streaming', 'user interactive', 'user interactive_streaming']);
+      assert.deepEqual(prewarms.map(({ kind, shape }) => `${kind} ${shape}`), [
+        'system interactive', 'system interactive_streaming', 'system interactive_image', 'system interactive_streaming_image',
+        'user interactive', 'user interactive_streaming', 'user interactive_image', 'user interactive_streaming_image',
+      ]);
     }
     for (const agentKind of ['system', 'user'] as AgentKind[]) {
-      for (const shape of SHARED_PREFIX_SHAPES) {
+      for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
         const real = await render({ ...ALPHA, model, agentKind, ...SHAPE_VARIANTS[shape] });
         const { model: _model, max_tokens: _max, stream: _stream, system: _system, tools, messages: _messages, ...settings } = real;
         assert.deepEqual(Object.keys(settings).sort(), ['output_config', 'service_tier', 'thinking']);
         const anchor = anchorIndex(real);
         snapshot.tools = withoutMarkers(tools.slice(0, anchor + 1)) as unknown[];
-        snapshot.shapes[shape] = withoutMarkers(tools.slice(anchor + 1));
+        const afterAnchor = withoutMarkers(tools.slice(anchor + 1)) as any[];
+        for (const [segment, names] of Object.entries(SEGMENT_TOOLS)) {
+          const segmentTools = afterAnchor.filter((tool) => names.includes(tool.name));
+          if (segmentTools.length > 0) snapshot.segments[segment] = segmentTools;
+        }
         snapshot.models[model] = settings;
         if (update) continue;
         const { request } = prewarms.find((prewarm) => prewarm.kind === agentKind && prewarm.shape === shape)!;

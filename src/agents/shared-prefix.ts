@@ -1,10 +1,10 @@
 /**
  * The prompt prefix every platform-funded Slack turn on one model and Agent
  * kind shares across workspaces and channels: the universal tools, ending at
- * `present_details`, the interactive tools a channel or DM turn mounts after
- * them, then one constant system block. The Agent's own instructions, its
- * identity, and everything conditional follow as the tenant block, so a new
- * thread in any workspace reads the prefix from the provider's prompt cache.
+ * `present_details`, the capability tools of one shape after them, then one
+ * constant system block. The Agent's own instructions, its identity, and
+ * everything conditional follow as the tenant block, so a new thread in any
+ * workspace reads the prefix from the provider's prompt cache.
  *
  * The platform payload hook in model access sets the cache breakpoints with
  * `sharePromptPrefix`. Any per-workspace text placed before the boundary, or
@@ -83,8 +83,30 @@ export function slackSystemBase(input: {
   ].join(PART_SEPARATOR);
 }
 
-export const SHARED_PREFIX_SHAPES = ['interactive', 'interactive_streaming'] as const;
-export type SharedPrefixShape = typeof SHARED_PREFIX_SHAPES[number];
+/** Runs of tools a Slack turn mounts between breakpoints A and B, in mount order. */
+type ShapeSegment = 'interactive' | 'streaming' | 'image';
+
+/**
+ * Every run of tools between A and B that leaves B shared across workspaces.
+ * A request's tools after A must equal one shape's segments exactly.
+ */
+export const SHARED_PREFIX_SHAPES = {
+  interactive: ['interactive'],
+  interactive_streaming: ['interactive', 'streaming'],
+  interactive_image: ['interactive', 'image'],
+  interactive_streaming_image: ['interactive', 'streaming', 'image'],
+  // A group DM mounts no interactive tools.
+  bare: [],
+  streaming: ['streaming'],
+  image: ['image'],
+  streaming_image: ['streaming', 'image'],
+} as const satisfies Record<string, readonly ShapeSegment[]>;
+export type SharedPrefixShape = keyof typeof SHARED_PREFIX_SHAPES;
+
+/** The shapes a channel or DM turn sends, which `sharedPrefixRequests` writes. */
+export const WARMED_SHARED_PREFIX_SHAPES = [
+  'interactive', 'interactive_streaming', 'interactive_image', 'interactive_streaming_image',
+] as const satisfies readonly SharedPrefixShape[];
 
 const sharedBlocks = new Map<AgentKind, string>();
 
@@ -158,9 +180,9 @@ function withoutCacheControl(block: unknown): unknown {
 /**
  * Set breakpoints A on the last universal tool and B on the constant system
  * block, then C on the tenant block and D on the last user block (5 minutes).
- * B lasts an hour only when every tool between A and B is one a shared shape
- * sends: a tenant tool there keys B to one workspace, where an hour's write
- * premium buys nothing. A Slack turn that carries the anchor tool or a shared
+ * B lasts an hour only when the tools between A and B are a shared shape's:
+ * a tenant tool there keys B to one workspace, where an hour's write premium
+ * buys nothing. A Slack turn that carries the anchor tool or a shared
  * block but not both, or other universal tools, goes out as built and counts
  * a miss.
  */
@@ -191,7 +213,7 @@ export function sharePromptPrefix(payload: Payload): Payload {
       ? { ...(withoutCacheControl(tool) as Payload), cache_control: ONE_HOUR }
       : withoutCacheControl(tool)),
     system: [
-      { type: 'text', text: constant, cache_control: tools.slice(anchor + 1).every(isShapeTool) ? ONE_HOUR : FIVE_MINUTES },
+      { type: 'text', text: constant, cache_control: shapeOf(tools.slice(anchor + 1)) ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
     ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
@@ -211,7 +233,7 @@ function withFiveMinuteMarkers(message: unknown): unknown {
 
 type RenderedPrefix = {
   tools: Payload[];
-  shapes: Record<SharedPrefixShape, Payload[]>;
+  segments: Record<ShapeSegment, Payload[]>;
   models: Record<string, Payload>;
 };
 
@@ -221,10 +243,15 @@ function renderedToolsJson(): string {
   return toolsJson;
 }
 
-let shapeToolsJson: ReadonlySet<string> | undefined;
-function isShapeTool(tool: unknown): boolean {
-  shapeToolsJson ??= new Set(Object.values((rendered as RenderedPrefix).shapes).flat().map((shaped) => JSON.stringify(shaped)));
-  return shapeToolsJson.has(JSON.stringify(withoutCacheControl(tool)));
+function shapeTools(shape: SharedPrefixShape): Payload[] {
+  return SHARED_PREFIX_SHAPES[shape].flatMap((segment) => (rendered as RenderedPrefix).segments[segment]);
+}
+
+let shapesByTools: ReadonlyMap<string, SharedPrefixShape> | undefined;
+function shapeOf(afterAnchor: unknown[]): SharedPrefixShape | undefined {
+  shapesByTools ??= new Map((Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
+    .map((shape) => [JSON.stringify(shapeTools(shape)), shape]));
+  return shapesByTools.get(JSON.stringify(afterAnchor.map(withoutCacheControl)));
 }
 
 const PREWARM_TURN = 'Reply with one word.';
@@ -241,11 +268,11 @@ export interface SharedPrefixRequest {
  * shared-prefix-tools.json, which the test pins to a fresh render.
  */
 export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
-  const { tools, shapes, models } = rendered as RenderedPrefix;
+  const { tools, models } = rendered as RenderedPrefix;
   const settings = models[model];
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
   const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
-  return AGENT_KINDS.flatMap((kind) => SHARED_PREFIX_SHAPES.map((shape) => ({
+  return AGENT_KINDS.flatMap((kind) => WARMED_SHARED_PREFIX_SHAPES.map((shape) => ({
     kind,
     shape,
     request: {
@@ -253,7 +280,7 @@ export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
       max_tokens: 0,
       ...settings,
       system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
-      tools: [...universal, ...shapes[shape]],
+      tools: [...universal, ...shapeTools(shape)],
       messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],
     },
   })));
