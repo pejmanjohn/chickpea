@@ -57,7 +57,7 @@ export const TEAM_ENDING: BillingSummary = { ...TEAM_PLAN, pendingChange: { kind
 /** The Team plan, downgraded in Stripe's portal, changing to the $50 plan with its period. */
 export const TEAM_DOWNGRADING: BillingSummary = {
   ...TEAM_PLAN,
-  pendingChange: { kind: 'plan', plan: { key: 'starter', name: 'Chickpea $50 plan' }, at: PERIOD.end },
+  pendingChange: { kind: 'plan', plan: { name: 'Chickpea $50 plan' }, at: PERIOD.end },
 };
 
 /** The Team plan before its next subscription event records a period, so there is no meter. */

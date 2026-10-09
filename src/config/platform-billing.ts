@@ -44,7 +44,7 @@ export interface UsageRow {
 /** What the Owner chose in Stripe's portal to happen to the plan at `at` instead of renewing it: it ends, or moves to another plan. */
 export type PendingPlanChange =
   | { readonly kind: 'ends'; readonly at: Date }
-  | { readonly kind: 'plan'; readonly plan: { readonly key: string; readonly name: string }; readonly at: Date };
+  | { readonly kind: 'plan'; readonly plan: { readonly name: string }; readonly at: Date };
 
 export interface BillingSummary {
   readonly funding: BillingFunding;
