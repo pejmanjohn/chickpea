@@ -16,7 +16,8 @@ needs a number only Finance has, so its reply says:
    handle of another Agent that can work in the Channel, that Agent gets a
    turn in the same thread. The mention renders as a live Slack mention of
    that Agent; Agent handles have no members, so it notifies nobody. Mentions inside code, email addresses, and URLs
-   do not count, and an Agent never asks itself. The built-in Chickpea never
+   do not count, nor does a mention copied from a Slack message, for example
+   in a quote. An Agent never asks itself. The built-in Chickpea never
    asks: it lists and describes Agents, so a handle in its reply is not a live
    mention and asks nobody.
 2. **The asked Agent answers in the thread.** It sees the whole thread,

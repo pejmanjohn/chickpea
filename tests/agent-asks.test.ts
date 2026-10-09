@@ -75,8 +75,8 @@ test('handle words are read from prose, never from code, emails, or paths', () =
     mentionedHandleWords('@Finance can you check? cc @legal, and @finance again.'),
     ['finance', 'legal'],
   );
-  // Neutralization leaves a word joiner after the `@` of a user-group mention.
-  assert.deepEqual(mentionedHandleWords(`Asking @${'\u2060'}finance now`), ['finance']);
+  // An inert mention carries a word joiner after its `@`, so it asks nobody.
+  assert.deepEqual(mentionedHandleWords(`Asking @${'\u2060'}finance now`), []);
   assert.deepEqual(mentionedHandleWords('mail ops@example.com, see a/@b, x.@c, https://x.com/@d'), []);
   assert.deepEqual(mentionedHandleWords('run `@finance` or\n```\n@legal\n```'), []);
   assert.deepEqual(mentionedHandleWords('ask @data-team- please'), ['data-team']);
@@ -824,8 +824,8 @@ test('a reply mentions its Channel teammates live and every other user group sta
     canonicalSlackMarkdownText('Checking. @a2a-finance, what was Q3? cc @A2A-Finance', live),
     'Checking. <!subteam^SFIN|@a2a-finance>, what was Q3? cc <!subteam^SFIN|@a2a-finance>',
   );
-  // A mention token the model wrote for a teammate stays live, normalized.
-  assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), '<!subteam^SLEGAL|@legal> ok?');
+  // A mention token the model wrote for a teammate is inert and reads as its handle.
+  assert.equal(canonicalSlackMarkdownText('<!subteam^SLEGAL|@counsel> ok?', live), `@${joiner}legal ok?`);
   // Other groups, broadcasts, code, emails, and longer words stay as before.
   assert.equal(canonicalSlackMarkdownText('<!subteam^SOPS|@ops> and @here', live), `@${joiner}ops and @${joiner}here`);
   assert.equal(canonicalSlackMarkdownText('run `@a2a-finance` or mail a2a@legal.com', live),

@@ -1,5 +1,5 @@
 import type { CustomAgentConfig, ResolvedAssignment } from '../config/types.ts';
-import { SLACK_CODE_SEGMENT, SLACK_MENTION_BREAK } from './message-format.ts';
+import { SLACK_CODE_SEGMENT } from './message-format.ts';
 import { slackConversationKind } from './thread-key.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
@@ -111,17 +111,14 @@ function turnMayAskAgents(
     agentMayAskTeammates(assignment.agent);
 }
 
-// A handle word: `@` (with the word joiner neutralization may leave after
-// it) not preceded by a word character or `.`, `@`, `/`, `:`, `-`, so an
-// email address, a URL, or a path is never a mention. Unlike the word
-// message-format.ts links live (SLACK_HANDLE_WORD), this one accepts a `|`
-// or `<` before the `@`: a delivered reply holds its teammates' mentions as
-// `<!subteam^ID|@handle>`, whose label must still ask. Whatever that word
-// links, this must match.
-const HANDLE_WORD = new RegExp(
-  `(?<![\\p{L}\\p{N}_.@/:-])@${SLACK_MENTION_BREAK}?([A-Za-z0-9_-]+)`,
-  'gu',
-);
+// A handle word: `@` not preceded by a word character or `.`, `@`, `/`,
+// `:`, `-`, so an email address, a URL, or a path is never a mention. Unlike
+// the word message-format.ts links live (SLACK_HANDLE_WORD), this one
+// accepts a `|` or `<` before the `@`: a delivered reply holds its
+// teammates' mentions as `<!subteam^ID|@handle>`, whose label must still
+// ask. An inert mention carries the word joiner right after its `@`, so it
+// never asks: message-format.ts alone decides which mentions are live.
+const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@([A-Za-z0-9_-]+)/gu;
 
 /**
  * The handle-shaped words of a delivered message outside code, lowercased,

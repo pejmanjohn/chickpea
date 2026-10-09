@@ -263,11 +263,14 @@ sanitizing and credential redaction. `neutralizeSlackBroadcastMentions` in
   not been probed for mention parsing.
 
 One exception is deliberate: a reply may mention the Agents that work in its
-Channel. For the handles of those teammates only, a plain `@handle` in prose,
-or a user-group mention of one, is delivered as a live
-`<!subteam^ID|@handle>`. Agent handles are zero-member user groups, so the
-mention notifies nobody; it renders as a mention and asks that Agent (see
-[Agent conversations](agent-conversations.md)). The built-in Chickpea asks
+Channel. For the handles of those teammates only, a plain `@handle` in prose
+is delivered as a live `<!subteam^ID|@handle>`. Agent handles are zero-member
+user groups, so the mention notifies nobody; it renders as a mention and asks
+that Agent (see [Agent conversations](agent-conversations.md)). A user-group
+mention the model wrote or copied, such as `<!subteam^ID>` quoted from a
+Slack message, stays inert and reads as `@handle`, so quoting a message asks
+nobody. Only the exact live form this renderer writes stays live when a reply
+renders again. The built-in Chickpea asks
 nobody, so every handle in its reply stays inert. Every other user group stays
 inert, and code keeps its literal characters. A handle word changes only once
 it is complete, so streamed prefixes stay prefixes of the final text.

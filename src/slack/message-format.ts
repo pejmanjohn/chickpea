@@ -364,8 +364,12 @@ function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string
  * joiner after `<`. User mentions, Channel links and dates are unchanged.
  *
  * `live` names the Agent handles this reply may mention: in prose, a plain
- * `@handle` or a user-group mention of one of them becomes a live mention of
- * that Agent, which notifies nobody. Every other user group stays inert.
+ * `@handle` of one of them becomes a live mention of that Agent, which
+ * notifies nobody. A user-group token stays live only in the exact form this
+ * function writes, so each message of a reply renders the approved text
+ * again without dropping an ask. Any other token naming one of them, whether
+ * the model wrote it or copied it from Slack, is inert and reads as that
+ * Agent's handle. Every other user group stays inert.
  * Idempotent, and a streamed prefix neutralizes to a prefix of the answer:
  * a handle word changes only once it is complete.
  */
@@ -382,12 +386,13 @@ export function neutralizeSlackBroadcastMentions(
     }
     const linked = liveHandles ? linkAgentHandleWords(segment, liveHandles) : segment;
     return joinBroadcastWords(linked.replace(SLACK_SPECIAL_MENTION,
-      (_token, target: string, label: string | undefined) => {
+      (token: string, target: string, label: string | undefined) => {
         const groupId = /^subteam\^/i.test(target) ? target.slice('subteam^'.length) : undefined;
         const handle = groupId === undefined ? undefined : liveGroups?.get(groupId);
-        return groupId !== undefined && handle
-          ? liveAgentMention(groupId, handle)
-          : `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
+        if (groupId === undefined || handle === undefined) {
+          return `@${SLACK_MENTION_BREAK}${slackSpecialMentionName(target, label)}`;
+        }
+        return token === liveAgentMention(groupId, handle) ? token : `@${SLACK_MENTION_BREAK}${handle}`;
       }));
   }).join('');
 }
