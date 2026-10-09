@@ -4984,10 +4984,12 @@ test('an Agent named like another Slack user group is fixed by a rename, then Re
   }
 });
 
-test('a handle Slack already uses is still fixed by a new handle, then Retry', async () => {
+test('choosing a suggested handle publishes it and finishes the Channel add it blocked', async () => {
   const transport = new FakeTransport();
   enforceSlackUniqueness(transport, ['support']);
   const fixture = harness(transport);
+  const grantStatuses = async () =>
+    (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status);
   try {
     await createAgent(fixture.app);
     const failed = await supportAgentRequest(fixture.app, 'POST', '/channels', {
@@ -4996,6 +4998,7 @@ test('a handle Slack already uses is still fixed by a new handle, then Retry', a
     assert.equal(failed.status, 409);
     assert.equal(failed.body.error, 'handle_collision');
     assert.equal(failed.body.recovery.title, '@support is already in use');
+    assert.deepEqual(await grantStatuses(), ['pending']);
 
     const reloaded = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
       headers: auth(),
@@ -5015,14 +5018,8 @@ test('a handle Slack already uses is still fixed by a new handle, then Retry', a
     assert.equal(rehandled.body.agent.slackPresence.health, 'healthy');
     assert.equal(rehandled.body.agent.slackPresence.normalizedHandle, 'support-team');
     assert.equal(Object.hasOwn(rehandled.body.agent.slackPresence, 'handleSuggestions'), false);
-
-    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
-    assert.equal(retried.status, 200);
-    assert.equal(retried.body.agent.slackPresence.normalizedHandle, 'support-team');
-    assert.deepEqual(
-      (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status),
-      ['active'],
-    );
+    assert.deepEqual(await grantStatuses(), ['active'],
+      'saving the handle finishes the Channel add without another Retry');
   } finally {
     fixture.store.close();
     fixture.settings.close();
