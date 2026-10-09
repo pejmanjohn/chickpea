@@ -9,6 +9,7 @@ import { setRequestPrincipal } from '../src/auth/service.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
+  BillingRefusal,
   configurePlatformBilling,
   type BillingSummary,
   type PlatformBillingPort,
@@ -73,14 +74,14 @@ const TRY = {
   providerId: 'anthropic', modelId: 'anthropic/claude-sonnet-5-5', tryStartedAt: 1_800_000_000_000,
 };
 
-function fakePort(initial: BillingSummary, fails: { switch?: boolean; stripe?: boolean }) {
+function fakePort(initial: BillingSummary, fails: { switch?: Error | undefined; stripe?: Error | undefined }) {
   const calls: unknown[][] = [];
   let summary = initial;
   const port: PlatformBillingPort = {
     async summary() { return summary; },
     async checkout(_installationId, request) {
       calls.push(['checkout', request]);
-      if (fails.stripe) throw new Error('Stripe is down.');
+      if (fails.stripe) throw fails.stripe;
       return { url: `https://checkout.stripe.com/c/pay/${request.key}` };
     },
     async portal() {
@@ -89,7 +90,7 @@ function fakePort(initial: BillingSummary, fails: { switch?: boolean; stripe?: b
     },
     async chooseFunding(_installationId, funding) {
       calls.push(['chooseFunding', funding]);
-      if (fails.switch) throw new Error('The host is down.');
+      if (fails.switch) throw fails.switch;
       summary = { ...summary, funding };
     },
   };
@@ -114,8 +115,8 @@ async function harness(options: {
   platformFailures?: number;
   platformFailureBody?: unknown;
   platformHeld?: boolean;
-  switchFails?: boolean;
-  stripeFails?: boolean;
+  switchFails?: Error;
+  stripeFails?: Error;
 }) {
   let html = '';
   const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; } };
@@ -152,9 +153,7 @@ async function harness(options: {
     organizationId: 'org_page', role, authenticatorKind: 'test_slack_session',
     credentialId: 'credential_page', correlationId: 'request_page', machine: false,
   };
-  const billing = options.summary
-    ? fakePort(options.summary, { ...(options.switchFails ? { switch: true } : {}), ...(options.stripeFails ? { stripe: true } : {}) })
-    : undefined;
+  const billing = options.summary ? fakePort(options.summary, { switch: options.switchFails, stripe: options.stripeFails }) : undefined;
   const ownKey = options.ownKey ?? KEYED;
   const savedKeys = new Set(ownKey.savedKeys);
   const billingApi = new Hono();
@@ -372,7 +371,7 @@ test('each Stripe button asks the host for a Stripe page and opens the URL it re
 });
 
 test('a Stripe page that cannot be opened says so beside the button that asked for it', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: true });
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new Error('Stripe is down.') });
   await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
   const html = page.html();
   const error = html.indexOf('Stripe could not be opened. Try again.');
@@ -380,6 +379,38 @@ test('a Stripe page that cannot be opened says so beside the button that asked f
   assert.ok(error < html.indexOf('Usage this period'), 'and stays in their section');
   assert.match(html, /data-key="extra_usage_25">Add \$25<\/button>/, 'the button can be pressed again');
   assert.deepEqual(page.assigned, []);
+});
+
+const PLAN_FIRST = 'Choose a plan first. Extra usage is available while your workspace has a plan. Choose a plan, then add extra usage.';
+const billingReads = (requests: Array<{ path: string; method: string }>) =>
+  requests.filter((request) => request.method === 'GET' && request.path === '/admin/api/billing').length;
+
+test('extra usage the host refuses for want of a plan says to choose one first, beside the extra usage buttons', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new BillingRefusal('plan_required') });
+  await page.click({ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' });
+  const html = page.html();
+  const error = html.indexOf(`<p class="field-error" role="alert">${PLAN_FIRST}</p>`);
+  assert.ok(error > html.indexOf('data-key="extra_usage_100"'), 'the reason follows the extra usage buttons');
+  assert.ok(error < html.indexOf('Usage this period'), 'and stays in their section');
+  assertHides(html, 'Stripe could not be opened');
+  assert.deepEqual(page.assigned, []);
+  assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
+});
+
+test('a plan choice the host refuses for an own key names the lowest plan for one, beside the plans', async () => {
+  for (const [minimum, price] of [['plus', '$100'], ['team', '$200']] as const) {
+    const summary: BillingSummary = { ...OWN_KEY_TEAM, offers: { ...OWN_KEY_TEAM.offers, ownKeyMinimumPlanKey: minimum } };
+    const page = await harness({ path: '/admin/plan', billingOffered: true, summary, stripeFails: new BillingRefusal('own_key_plan_required') });
+    await page.click({ 'data-action': 'billing-change-plan' });
+    await page.click({ 'data-action': 'billing-choose-plan', 'data-key': 'plus' });
+    const html = page.html();
+    const error = html.indexOf(`<p class="field-error" role="alert">Your own API key needs the ${price} plan or higher.</p>`);
+    assert.ok(error > html.indexOf('data-action="billing-manage"'), `the ${price} plan is named in the Plan section`);
+    assert.ok(error < html.indexOf('id="billing-plans-heading"'), 'above the plans');
+    assertHides(html, 'Stripe could not be opened');
+    assert.deepEqual(page.portCalls, [['checkout', { kind: 'plan', key: 'plus' }]]);
+    assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
+  }
 });
 
 test('frozen extra usage shows until when it keeps, and no plan means nothing to add it to', async () => {
@@ -591,8 +622,8 @@ test('the confirmation names each Agent whose pinned model has no saved key, in 
   assertHides(one.html(), 'These Agents');
 });
 
-test('a switch to your own key the host refuses shows its error beside the open confirmation', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: true });
+test('a switch to your own key that fails shows its error beside the open confirmation', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new Error('The host is down.') });
   await page.click({ 'data-action': 'billing-use-own-key' });
   await page.click({ 'data-action': 'billing-funding-confirm' });
   const html = page.html();
@@ -600,6 +631,20 @@ test('a switch to your own key the host refuses shows its error beside the open 
   const error = html.indexOf('Could not switch to your own key. Try again.');
   assert.ok(confirm >= 0, 'the confirmation stays open and can be retried');
   assert.ok(error > confirm, 'the error follows the confirmation, not the Stripe buttons');
+});
+
+test('a switch to your own key the host refuses below the lowest plan for it names that plan beside the open confirmation', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new BillingRefusal('own_key_plan_required') });
+  await page.click({ 'data-action': 'billing-use-own-key' });
+  await page.click({ 'data-action': 'billing-funding-confirm' });
+  assert.deepEqual(page.portCalls, [['chooseFunding', 'own_key']], 'Admin\'s own check passed and the host was asked');
+  const html = page.html();
+  const confirm = html.indexOf('data-action="billing-funding-confirm">Switch to your own key</button>');
+  const error = html.indexOf('<p class="field-error" role="alert">Your own API key needs the $100 plan or higher.</p>');
+  assert.ok(confirm >= 0, 'the confirmation stays open');
+  assert.ok(error > confirm, 'the reason follows the confirmation');
+  assertHides(html, 'Could not switch to your own key');
+  assert.equal(billingReads(page.requests), 1, 'the plan is not read again');
 });
 
 const KEY_LINK = '<a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>';
@@ -700,8 +745,8 @@ test('an Owner on their own key finds the page and switches to Chickpea\'s model
   assert.match(page.html(), /data-action="billing-use-own-key">Use your own key instead<\/button>/, 'the page turns into the platform view');
 });
 
-test('a switch to Chickpea\'s models the host refuses keeps the confirmation open with a retryable error', async () => {
-  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, switchFails: true });
+test('a switch to Chickpea\'s models that fails keeps the confirmation open with a retryable error', async () => {
+  const page = await harness({ path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, switchFails: new Error('The host is down.') });
   await page.click({ 'data-action': 'billing-use-platform' });
   await page.click({ 'data-action': 'billing-funding-confirm' });
   assertShows(page.html(), 'Could not switch to Chickpea’s models. Try again.');
@@ -726,6 +771,12 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['own key on a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM }, [{ 'data-action': 'billing-use-platform' }]],
     ['unreadable', { path: '/admin/plan', billingOffered: true, summary: UNREADABLE }, []],
     ['needs a key', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, ownKey: NEEDS_ANTHROPIC }, []],
+    ['extra usage refused for want of a plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, stripeFails: new BillingRefusal('plan_required') },
+      [{ 'data-action': 'billing-add-extra-usage', 'data-key': 'extra_usage_25' }]],
+    ['a plan refused below the own-key plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_TEAM, stripeFails: new BillingRefusal('own_key_plan_required') },
+      [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-choose-plan', 'data-key': 'plus' }]],
+    ['own key refused below its plan', { path: '/admin/plan', billingOffered: true, summary: TEAM_PLAN, switchFails: new BillingRefusal('own_key_plan_required') },
+      [{ 'data-action': 'billing-use-own-key' }, { 'data-action': 'billing-funding-confirm' }]],
   ];
   for (const [label, options, clicks] of states) {
     const page = await harness(options);

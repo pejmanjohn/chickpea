@@ -82,16 +82,34 @@ export interface BillingRedirect {
   readonly url: string;
 }
 
+export type BillingRefusalReason = 'plan_required' | 'own_key_plan_required';
+
+/** A billing action the host refused for a reason the Owner can fix, which Admin shows instead of an outage. */
+export class BillingRefusal extends Error {
+  constructor(readonly reason: BillingRefusalReason) {
+    super(`The host refused the billing action: ${reason}.`);
+    this.name = 'BillingRefusal';
+  }
+}
+
 export interface PlatformBillingPort {
   summary(installationId: string): Promise<BillingSummary>;
   /**
    * Stripe Checkout for a plan or extra usage. `returnPath` is the Admin path,
-   * on the host's own origin, where Stripe sends the Owner back.
+   * on the host's own origin, where Stripe sends the Owner back. Throws
+   * `BillingRefusal` for extra usage without a plan (`plan_required`) or a
+   * plan below the lowest one for an own key (`own_key_plan_required`); any
+   * other throw is an outage.
    */
   checkout(installationId: string, request: CheckoutRequest, returnPath: string): Promise<BillingRedirect>;
   /** The Stripe customer portal: cards, invoices, and plan changes. */
   portal(installationId: string, returnPath: string): Promise<BillingRedirect>;
-  /** An Owner's choice, in onboarding or later on the Plan page. Choosing the same funding again changes nothing. */
+  /**
+   * An Owner's choice, in onboarding or later on the Plan page. Choosing the
+   * same funding again changes nothing. Throws `BillingRefusal`
+   * (`own_key_plan_required`) for an own key below the lowest plan for it;
+   * any other throw is an outage.
+   */
   chooseFunding(installationId: string, funding: BillingFunding): Promise<void>;
 }
 

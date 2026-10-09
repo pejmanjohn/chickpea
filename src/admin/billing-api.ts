@@ -4,6 +4,7 @@ import * as v from 'valibot';
 import { requestPrincipal } from '../auth/service.ts';
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import {
+  BillingRefusal,
   platformBilling,
   type BillingFunding,
   type BillingSummary,
@@ -258,7 +259,8 @@ async function withBilling(
     const installationId = requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
     if (!installationId) return c.json({ error: 'not_found' }, 404);
     return await handle(port, installationId);
-  } catch {
+  } catch (error) {
+    if (error instanceof BillingRefusal) return c.json({ error: error.reason }, 409);
     console.warn(JSON.stringify({ component: 'platform_billing', event: 'billing_unavailable', path: c.req.path }));
     return c.json({ error: 'billing_unavailable' }, 503);
   }

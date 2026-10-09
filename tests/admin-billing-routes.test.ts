@@ -4,7 +4,9 @@ import { test, type TestContext } from 'node:test';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
 import {
+  BillingRefusal,
   configurePlatformBilling,
   type BillingSummary,
   type CheckoutRequest,
@@ -15,6 +17,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
@@ -53,7 +56,7 @@ const people = {
   recordAuthAudit: async () => undefined,
 } as unknown as IdentityStore;
 
-function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort }) {
+function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort; anthropicKeySaved?: boolean }) {
   configurePlatformBilling(options.port);
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -63,10 +66,17 @@ function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?
     store: config, settings, usage,
     ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
   });
-  return (path: string, init: RequestInit = {}) => app.request(path, {
-    ...init,
-    headers: { ...testAdminHeaders(TOKEN), 'content-type': 'application/json', ...init.headers },
-  }, options.env ?? HOSTED);
+  const keySaved = options.anthropicKeySaved
+    ? rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-billing-own-key' },
+      { env: options.env ?? HOSTED, settings, usage, keyring: useDeploymentKeyring(t) })
+    : undefined;
+  return async (path: string, init: RequestInit = {}) => {
+    await keySaved;
+    return app.request(path, {
+      ...init,
+      headers: { ...testAdminHeaders(TOKEN), 'content-type': 'application/json', ...init.headers },
+    }, options.env ?? HOSTED);
+  };
 }
 
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
@@ -235,6 +245,36 @@ test('Add extra usage, Change plan and Manage billing each call the port and ret
   ]);
 });
 
+test('a purchase the host refuses for a reason the Owner can fix answers 409 with that reason', async (t) => {
+  const refusals = [
+    ['plan_required', { kind: 'extra_usage', key: 'extra_usage_25' }],
+    ['own_key_plan_required', { kind: 'plan', key: 'starter' }],
+  ] as const;
+  for (const [reason, purchase] of refusals) {
+    const { port, calls } = fakePort(TEAM_PLAN, {
+      checkout: async (installationId, request, returnPath) => { calls.push(['checkout', installationId, request, returnPath]); throw new BillingRefusal(reason); },
+    });
+    const refused = await admin(t, { port })('/admin/api/billing/checkout', post(purchase));
+    assert.equal(refused.status, 409, reason);
+    assert.equal(refused.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await refused.json(), { error: reason });
+    assert.deepEqual(calls, [['checkout', INSTALLATION, purchase, '/admin/plan']]);
+  }
+});
+
+test('a switch to your own key that passes Admin\'s own check but the host refuses below the lowest plan for it answers as that check does', async (t) => {
+  const { port, calls } = fakePort(TEAM_PLAN, {
+    chooseFunding: async (installationId, funding) => { calls.push(['chooseFunding', installationId, funding]); throw new BillingRefusal('own_key_plan_required'); },
+  });
+  const request = admin(t, { port, anthropicKeySaved: true });
+  assert.deepEqual((await (await request('/admin/api/billing')).json() as Record<string, unknown>).switchFunding,
+    { to: 'own_key', ready: true, agentsWithoutKey: [] }, 'Admin\'s own check passes');
+  const refused = await request('/admin/api/billing/funding', post({ funding: 'own_key' }));
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: 'own_key_plan_required' });
+  assert.deepEqual(calls.filter(([name]) => name === 'chooseFunding'), [['chooseFunding', INSTALLATION, 'own_key']]);
+});
+
 test('a malformed purchase, or a top-up by its retired name, is refused before the port is asked', async (t) => {
   const { port, calls } = fakePort(TEAM_PLAN);
   const request = admin(t, { port });
@@ -256,6 +296,14 @@ test('a port that fails, answers with a URL that is not HTTPS, or names a lowest
   assert.deepEqual(await refused.json(), { error: 'billing_unavailable' });
   const script = admin(t, { port: fakePort(TEAM_PLAN, { checkout: async () => ({ url: 'javascript:alert(1)' }) }).port });
   assert.equal((await script('/admin/api/billing/checkout', post({ kind: 'extra_usage', key: 'extra_usage_25' }))).status, 503);
+  const plainCheckout = admin(t, { port: fakePort(TEAM_PLAN, { checkout: async () => { throw new Error('Extra usage needs a plan.'); } }).port });
+  const outage = await plainCheckout('/admin/api/billing/checkout', post({ kind: 'extra_usage', key: 'extra_usage_25' }));
+  assert.equal(outage.status, 503, 'a plain error is an outage, whatever it says');
+  assert.deepEqual(await outage.json(), { error: 'billing_unavailable' });
+  const plainSwitch = admin(t, { anthropicKeySaved: true, port: fakePort(TEAM_PLAN, { chooseFunding: async () => { throw new Error('Your own key needs the Plus plan.'); } }).port });
+  const switchOutage = await plainSwitch('/admin/api/billing/funding', post({ funding: 'own_key' }));
+  assert.equal(switchOutage.status, 503);
+  assert.deepEqual(await switchOutage.json(), { error: 'billing_unavailable' });
 
   const { port, calls } = fakePort({ ...TEAM_PLAN, offers: { ...TEAM_PLAN.offers, ownKeyMinimumPlanKey: 'retired_pro' } });
   const inconsistent = admin(t, { port });
