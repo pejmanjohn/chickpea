@@ -180,6 +180,9 @@ const keyLaneUnconfigured: ModelReadiness = async (modelId) =>
     ? { unavailable: 'credential_missing' }
     : undefined;
 
+/** One request's model readiness, resolved on first use; undefined when the runtime has none. */
+type RequestModelReadiness = () => Promise<ModelReadiness | undefined>;
+
 class MetaAdsCatalogSetupRequiredError extends ManagementError {
   constructor() {
     super('invalid_request', META_ADS_CATALOG_SETUP_MESSAGE);
@@ -1735,6 +1738,7 @@ export class WorkspaceManagementService {
       return emitOperationOutcomes(actor.origin.kind, pending);
     }
 
+    const readiness = this.requestModelReadiness();
     for (let index = progress.nextIndex; index < request.operations.length; index += 1) {
       const storedOperation = request.operations[index]!;
       const operation = resolveClientReferences(storedOperation, clientRefs);
@@ -1827,6 +1831,7 @@ export class WorkspaceManagementService {
             request.operationId,
             operation,
             progress,
+            readiness,
           );
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
@@ -1944,6 +1949,7 @@ export class WorkspaceManagementService {
     const targetRevisions: Record<string, number> = {};
     const changes: ManagementChangeSetPreview['changes'] = [];
     const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
+    const readiness = this.requestModelReadiness();
     for (const operation of operations) {
       const handoff = await this.actingAgentOperationHandoff(actor, operation);
       if (handoff) {
@@ -1987,7 +1993,7 @@ export class WorkspaceManagementService {
         }
         targetRevisions[key] = revision;
       }
-      const prepared = await this.preflightProposalItem(actor, operation, proposalId);
+      const prepared = await this.preflightProposalItem(actor, operation, proposalId, readiness);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -2173,6 +2179,7 @@ export class WorkspaceManagementService {
         const proposalAgentIds = new Set(proposal.operations.flatMap((operation) =>
           operation.kind === 'create_agent' ? [operation.agent.id] : []
         ));
+        const readiness = this.requestModelReadiness();
         for (const operation of proposal.operations) {
           const handoff = await this.actingAgentOperationHandoff(actor, operation);
           if (handoff) throw new ChickpeaHandoffRequired(handoff);
@@ -2185,7 +2192,7 @@ export class WorkspaceManagementService {
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
           }
-          await this.preflightProposalItem(actor, operation, proposal.proposalId);
+          await this.preflightProposalItem(actor, operation, proposal.proposalId, readiness);
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -4016,10 +4023,11 @@ export class WorkspaceManagementService {
     requestId: string,
     operation: ManagementOperation,
     progress: ManagementRequestProgress,
+    readiness: RequestModelReadiness,
   ): Promise<ImmediateMutation> {
     const prepared = progress.prepared?.itemId === operation.itemId
       ? progress.prepared
-      : await this.prepareItem(actor, operation);
+      : await this.prepareItem(actor, operation, undefined, readiness);
     if (!progress.prepared) {
       await this.stores.management.saveRequestProgress(
         requestId,
@@ -4031,12 +4039,20 @@ export class WorkspaceManagementService {
     return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
   }
 
-  private async assertCreationModelProvider(model: string | undefined): Promise<void> {
+  private requestModelReadiness(): RequestModelReadiness {
     // Production adapters supply the workspace's model readiness rule.
     // Alternate runtimes may own their provider bindings.
-    const readiness = this.stores.modelReadiness;
-    if (!readiness || !model) return;
-    const answer = await (await readiness())(model);
+    const resolve = this.stores.modelReadiness;
+    let resolved: Promise<ModelReadiness> | undefined;
+    return async () => resolve ? (resolved ??= resolve()) : undefined;
+  }
+
+  private async assertModelReady(
+    readiness: RequestModelReadiness,
+    model: string,
+    change: 'create' | 'update',
+  ): Promise<void> {
+    const answer = await (await readiness())?.(model);
     if (!answer) return;
     const reason = answer.unavailable === 'model_unsupported'
       ? answer.message
@@ -4046,10 +4062,12 @@ export class WorkspaceManagementService {
     const guidance = answer.unavailable === 'credential_missing'
       ? 'explain the required provider setup'
       : 'say it is not available and ask them to choose another model';
+    const [refusal, unselected] = change === 'create'
+      ? [`Cannot create an Agent pinned to ${model}`, 'omit the model field to inherit the workspace default']
+      : [`Cannot change the Agent's model to ${model}`, 'leave the model unchanged'];
     throw new ManagementError(
       'model_provider_unavailable',
-      `Cannot create an Agent pinned to ${model}: ${reason} ` +
-        'If the requester did not select a model, omit the model field to inherit the workspace default. ' +
+      `${refusal}: ${reason} If the requester did not select a model, ${unselected}. ` +
         `If they explicitly selected this model, ${guidance}; do not substitute another model.`,
     );
   }
@@ -4058,10 +4076,11 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operation: ManagementOperation,
     creationNonce?: string,
+    readiness = this.requestModelReadiness(),
   ): Promise<ManagementPreparedItem> {
     switch (operation.kind) {
       case 'create_agent': {
-        await this.assertCreationModelProvider(operation.agent.model);
+        if (operation.agent.model) await this.assertModelReady(readiness, operation.agent.model, 'create');
         const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
           const avatar = agent.slackPresence?.avatar;
           return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
@@ -4092,6 +4111,9 @@ export class WorkspaceManagementService {
         assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
         // Also guards proposals stored before submission-time validation existed.
         assertValidRepositoryGrants(operation.patch.repositories);
+        if (operation.patch.model && operation.patch.model !== before.model) {
+          await this.assertModelReady(readiness, operation.patch.model, 'update');
+        }
         const patch = projectManagementAgentPatch(before, operation.patch);
         return {
           itemId: operation.itemId,
@@ -4235,8 +4257,9 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operation: ManagementOperation,
     proposalId: string,
+    readiness: RequestModelReadiness,
   ): Promise<ManagementPreparedItem> {
-    const prepared = await this.prepareItem(actor, operation, proposalId);
+    const prepared = await this.prepareItem(actor, operation, proposalId, readiness);
     if (operation.kind === 'delete_agent') {
       const agent = await this.stores.config.getAgent(operation.agentId);
       const references = await this.stores.config.getAgentReferences(operation.agentId);

@@ -11,6 +11,7 @@ import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import type { ManagementActorContext } from '../src/management/types.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
@@ -77,14 +78,14 @@ async function workspace(t: TestContext, env: PlatformEnv | undefined) {
     origin: { kind: 'mcp', clientId: 'model-readiness-client' },
   };
   let sequence = 0;
-  const createPinned = async (model: string) => {
+  const createPinned = async (model: string | undefined) => {
     const id = `agent_pinned_${++sequence}`;
     const result = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: `create-${id}`,
       operations: [{ itemId: 'create', kind: 'create_agent', agent: {
         id, name: `Pinned ${sequence}`, instructions: 'Answer the team.', enabled: true,
-        editPolicy: 'creator_and_admins', model,
+        editPolicy: 'creator_and_admins', ...(model ? { model } : {}),
         skills: [], mcpServers: [], apiConnections: [], repositories: [],
       } }],
     });
@@ -109,7 +110,45 @@ async function workspace(t: TestContext, env: PlatformEnv | undefined) {
         operation.kind === 'request_setup' && operation.target.kind === 'provider_credential').length,
     };
   };
-  return { f, service, context, createPinned, previewPinned };
+  let changes = 0;
+  const changeModels = (changesToApply: Array<{ agentId: string; expectedRevision: number; model: string }>) =>
+    service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: `change-${++changes}`,
+      operations: changesToApply.map(({ agentId, expectedRevision, model }, index) => ({
+        itemId: `update_${index}`, kind: 'update_agent' as const, agentId, expectedRevision, patch: { model },
+      })),
+    });
+  // The model list an Agent managing itself grounds model questions in.
+  const selfManagedModels = async (model: string) => {
+    const workspaceId = f.owner.user.slackTeamId;
+    const agent = await f.config.createAgent({
+      id: 'agent_self', name: 'Self', instructions: 'Answer the team.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: f.owner.membership.id, editPolicy: 'creator_and_admins', configurationGeneration: 1,
+      model, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await f.config.materializeChickpeaAgent();
+    const installation = await f.config.ensureWorkspaceInstallation({
+      workspaceId, transportMode: 'direct', defaultAgentId: agent.id, teamId: workspaceId,
+      appId: 'A_MODEL_READINESS', botUserId: 'U_CHICKPEA',
+    });
+    await f.config.updateWorkspaceInstallation(workspaceId, { runtimeContract: 'chickpea-v1' }, installation.revision);
+    const inspected = await invokeSlackWorkspaceManagementTool({
+      signal: {
+        agentId: agent.id, workspaceId, channelId: 'D_MODEL_READINESS', threadTs: '400.1',
+        slackUserId: f.owner.binding.slackUserId, eventId: 'Ev_MODEL_READINESS', messageTs: '400.2',
+        turnJobId: 'turn_MODEL_READINESS',
+      },
+      identity: f.identity,
+      service,
+      name: 'inspect_workspace',
+      args: {},
+    });
+    assert.equal(inspected.ok, true, JSON.stringify(inspected));
+    const { result } = inspected as { ok: true; result: { selfManagement: { availableModels: Array<{ id: string }> } } };
+    return result.selfManagement.availableModels.map(({ id }) => id);
+  };
+  return { f, service, context, createPinned, previewPinned, changeModels, selfManagedModels };
 }
 
 const hosted = () => scopeInstallationEnv(
@@ -119,7 +158,7 @@ const hosted = () => scopeInstallationEnv(
 
 test('a workspace on Chickpea\'s models with no key of its own creates Agents pinned to a model Chickpea\'s models serve', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
-    const { f, service, context, createPinned } = await workspace(t, hosted());
+    const { f, createPinned, changeModels } = await workspace(t, hosted());
     const asked = fundedBy('platform');
     for (const model of [DEEPSEEK, OPUS]) {
       const before = asked.length;
@@ -129,14 +168,39 @@ test('a workspace on Chickpea\'s models with no key of its own creates Agents pi
       assert.equal(asked.length - before, 1, `creating an Agent pinned to ${model} asks the funding port once`);
     }
 
-    const changed = await service.applyWorkspaceChanges({
-      context,
-      idempotencyKey: 'change-model',
-      operations: [{ itemId: 'update', kind: 'update_agent', agentId: 'agent_pinned_1',
-        expectedRevision: 1, patch: { model: OPUS } }],
-    });
+    const refused = await changeModels([{ agentId: 'agent_pinned_1', expectedRevision: 1, model: UNPRICED }]);
+    assert.ok('outcomes' in refused);
+    assert.equal(refused.status, 'partial');
+    assert.equal(refused.outcomes[0]?.code, 'model_provider_unavailable');
+    assert.match(
+      refused.outcomes[0]?.warning ?? '',
+      /^Cannot change the Agent's model to anthropic\/claude-opus-4-1: it is not available on Chickpea's models\. If the requester did not select a model, leave the model unchanged\./,
+    );
+    assert.equal((await f.config.getAgent('agent_pinned_1')).model, DEEPSEEK, 'a refused change leaves the model as it was');
+
+    const before = asked.length;
+    const changed = await changeModels([
+      { agentId: 'agent_pinned_1', expectedRevision: 1, model: OPUS },
+      { agentId: 'agent_pinned_2', expectedRevision: 1, model: DEEPSEEK },
+    ]);
     assert.equal(changed.status, 'completed', JSON.stringify(changed));
     assert.equal((await f.config.getAgent('agent_pinned_1')).model, OPUS);
+    assert.equal((await f.config.getAgent('agent_pinned_2')).model, DEEPSEEK);
+    assert.equal(asked.length - before, 1, 'one request changing two models asks the funding port once');
+  });
+});
+
+test('an Agent managing itself on Chickpea\'s models lists the models they serve, and each one creates', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { createPinned, selfManagedModels } = await workspace(t, hosted());
+    fundedBy('platform');
+    const listed = await selfManagedModels(OPUS);
+    assert.ok(listed.includes('anthropic/claude-sonnet-5-5'), `a served model besides its own pin is listed: ${listed.join(', ')}`);
+    assert.ok(!listed.includes(UNPRICED), 'a model Chickpea\'s models do not serve is not listed');
+    for (const model of listed) {
+      const { result } = await createPinned(model);
+      assert.equal(result.status, 'completed', `${model} is listed, so it creates: ${JSON.stringify(result)}`);
+    }
   });
 });
 
@@ -169,8 +233,18 @@ test('Chickpea\'s models refuse a pin they do not serve, and say why, with no pr
   });
 });
 
-async function refusedForMissingKey({ createPinned, previewPinned }: Awaited<ReturnType<typeof workspace>>) {
+async function refusedForMissingKey(
+  { f, createPinned, previewPinned, changeModels, selfManagedModels }: Awaited<ReturnType<typeof workspace>>,
+) {
+  const inheriting = await createPinned(undefined);
+  assert.equal(inheriting.result.status, 'completed', 'an Agent on the workspace default needs no key');
   for (const model of [DEEPSEEK, OPUS]) {
+    const changed = await changeModels([{ agentId: inheriting.id, expectedRevision: 1, model }]);
+    assert.ok('outcomes' in changed);
+    assert.equal(changed.outcomes[0]?.code, 'model_provider_unavailable', `changing to ${model} with no key`);
+    assert.match(changed.outcomes[0]?.warning ?? '', /^Cannot change the Agent's model to .+: provider \w+ is not configured\./);
+    assert.equal((await f.config.getAgent(inheriting.id)).model, undefined);
+
     const { result } = await createPinned(model);
     assert.equal(result.status, 'partial', `${model} with no key`);
     assert.equal(result.outcomes[0]?.code, 'model_provider_unavailable');
@@ -182,6 +256,7 @@ async function refusedForMissingKey({ createPinned, previewPinned }: Awaited<Ret
       `a recipe pinned to ${model} asks for the ${provider} key`,
     );
   }
+  assert.deepEqual(await selfManagedModels(OPUS), [OPUS], 'with no key an Agent managing itself lists only its own pin');
 }
 
 test('a workspace on its own key still needs a key for the pinned provider', async (t) => {

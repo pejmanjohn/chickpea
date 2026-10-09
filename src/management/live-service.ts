@@ -210,25 +210,20 @@ export function createLiveWorkspaceManagementService(
         managedProviderAvailability(provider, { toolkit, accessLane }).status === 'ready';
     },
     listAvailableModels: async () => {
-      const sources = await describeProviderKeySources(env, settings);
-      const entries: Array<{ id: string; name?: string }> =
-        activeModelCatalogSnapshot(env).entries.flatMap((entry) => {
-          if (entry.id.startsWith('anthropic/') &&
-              entry.lanes.anthropic_api_key && sources.anthropic !== 'missing') {
-            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
-          }
-          if (entry.id.startsWith('openai/') &&
-              entry.lanes.openai_api_key && sources.openai !== 'missing') {
-            return [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }];
-          }
-          return [];
-        });
-      if (sources.openrouter !== 'missing') {
-        entries.push(...(await getProviderFavorites('openrouter', settings)).map((id) => ({
-          id: `openrouter/${id}`,
-        })));
-      }
-      return entries;
+      const [unavailable, favorites] = await Promise.all([
+        resolveModelReadiness({ env, settings }),
+        getProviderFavorites('openrouter', settings),
+      ]);
+      const candidates: Array<{ id: string; name?: string }> = [
+        ...activeModelCatalogSnapshot(env).entries.flatMap((entry) =>
+          (entry.id.startsWith('anthropic/') && entry.lanes.anthropic_api_key) ||
+          (entry.id.startsWith('openai/') && entry.lanes.openai_api_key)
+            ? [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }]
+            : []),
+        ...favorites.map((id) => ({ id: `openrouter/${id}` })),
+      ];
+      const ready = await Promise.all(candidates.map(async ({ id }) => !(await unavailable(id))));
+      return candidates.filter((_, index) => ready[index]);
     },
     publishAgentPresence: async ({ actor, agentId, inferredHandle }) => {
       const organization = await identity.getOrganization();
