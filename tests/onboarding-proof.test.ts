@@ -96,6 +96,8 @@ test('a reply already showing answer text in the Owner\'s DM counts before its r
     ['another workspace', fixture({ ...STREAMING, binding: { externalAccountId: opaqueId('account', 'slack:T999') } }), shown('D456', 42)],
     ['no presentation yet', streaming, async () => undefined],
     ['a reader that fails', streaming, async () => { throw new Error('state store unavailable'); }],
+    ['a reply that failed after showing some text', fixture({ run: { terminalDisposition: 'failed', deliveryStatus: 'failed', deliveryRef: null } }), shown('D456', 42)],
+    ['a reply that was stopped after showing some text', fixture({ run: { terminalDisposition: 'cancelled', deliveryStatus: 'failed', deliveryRef: null } }), shown('D456', 42)],
   ] as const) {
     assert.equal(await hasShownOnboardingReply(onePage(item), TARGET, reader), false, label);
   }

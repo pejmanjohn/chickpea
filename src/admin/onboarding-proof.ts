@@ -23,7 +23,8 @@ export async function hasShownOnboardingReply(
     for (const item of page.items) {
       if (item.run.createdAt < target.tryStartedAt) return false;
       if (isDeliveredOnboardingReply(item, target)) return true;
-      if (isOwnerTryMessage(item, target) && await showsAnswerInDm(item.run.id, readPresentation)) return true;
+      if (item.run.status !== 'settled' && isOwnerTryMessage(item, target) &&
+          await showsAnswerInDm(item.run.id, readPresentation)) return true;
     }
     if (!page.nextCursor) return false;
     cursor = page.nextCursor;
