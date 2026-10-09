@@ -82,6 +82,8 @@ export type BillingView =
   | ({ manage: true } & BillingStatus & {
     plan: { key: string; name: string; price: string; included: string | null } | null;
     period: { start: string; end: string } | null;
+    /** Null when the plan renews unchanged, or there is no plan. */
+    pendingChange: { kind: 'ends'; on: string } | { kind: 'plan'; planName: string; on: string } | null;
     use: { byAgent: NamedUse[]; byPerson: NamedUse[] };
     offers: {
       plans: { key: string; name: string; price: string; included: string; ownKeyMinimum: boolean; ownKeyEligible: boolean }[];
@@ -145,6 +147,7 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
   const status = billingStatus(summary, minimum);
   if (!owner) return { manage: false, ...status };
   const planOffer = summary.plan && summary.offers.plans.find((offer) => offer.key === summary.plan?.key);
+  const pending = summary.plan && summary.pendingChange;
   return {
     manage: true,
     ...status,
@@ -155,6 +158,9 @@ function billingView(summary: BillingSummary, owner: OwnerFacts | null): Billing
       included: planOffer ? formatUsageDollars(planOffer.includedMicros) : null,
     },
     period: summary.period && { start: SHORT_DATE.format(summary.period.start), end: SHORT_DATE.format(summary.period.end) },
+    pendingChange: pending?.kind === 'ends' ? { kind: 'ends', on: SHORT_DATE.format(pending.at) }
+      : pending?.kind === 'plan' ? { kind: 'plan', planName: pending.plan.name, on: SHORT_DATE.format(pending.at) }
+      : null,
     use: {
       byAgent: namedUse(summary.use.byAgent, owner.agentNames),
       byPerson: namedUse(summary.use.byPerson, owner.personNames),
