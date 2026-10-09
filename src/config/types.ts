@@ -262,7 +262,7 @@ export type AgentAppLifecycle =
       installedAt: number;
       installedBy: string;
     }
-  | { state: 'uninstalling'; at: number; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
+  | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
   | {
       state: 'needs_attention';
       at: number;
@@ -270,6 +270,7 @@ export type AgentAppLifecycle =
       reason: AgentAppAttention;
       resume: AgentAppResume;
       app?: AgentAppRecord;
+      icon?: AgentAppIcon;
       botUserId?: string;
     };
 

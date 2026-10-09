@@ -130,7 +130,7 @@ test('a stored health never outranks the lifecycle it summarizes', async () => {
     assert.equal(read?.desiredState, 'active');
     assert.equal(agentAppIsLive(read), false);
 
-    const uninstalling = agentApp('support', { state: 'uninstalling', at: NOW, app: APP, next: 'delete' });
+    const uninstalling = agentApp('support', { state: 'uninstalling', at: NOW, startedBy: 'UOWNER', app: APP, next: 'delete' });
     assert.equal(uninstalling.desiredState, 'disabled');
     assert.equal(uninstalling.health, 'pending');
     const removing = agentApp('support', {
