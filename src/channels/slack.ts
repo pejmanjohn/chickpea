@@ -202,7 +202,10 @@ import { GatewayDeploymentClient } from '../slack/gateway/client.ts';
 import { createGatewayDeploymentClient } from '../slack/gateway/runtime.ts';
 import { createGatewaySlackWebClient, setAgentSessionStatus } from '../slack/gateway/web-client.ts';
 import type { GatewayPrivateChannelSetupDelivery } from '../slack/gateway/protocol.ts';
-import { agentPresenceAnnouncements } from '../slack/agent-presence/announcements.ts';
+import {
+  agentPresenceAnnouncements,
+  type AgentPresenceAnnouncements,
+} from '../slack/agent-presence/announcements.ts';
 import { AgentPresenceReconciler } from '../slack/agent-presence/reconciler.ts';
 import { prepareGeneratedGatewayAgentAvatar } from '../slack/agent-presence/gateway-avatar.ts';
 import { requireAgentChannelPublication } from '../auth/permissions.ts';
@@ -1146,6 +1149,22 @@ async function resolvedAgentAvatarUrl(
   return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
 
+async function presenceAnnouncements(
+  stores: AppStores,
+  platformEnv: PlatformEnv | undefined,
+  transport: SlackTransport,
+): Promise<AgentPresenceAnnouncements> {
+  const publicOrigin = await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
+  return agentPresenceAnnouncements({
+    transport,
+    welcomeOnJoin: async () =>
+      (await resolveSlackBehaviorSettings(platformEnv, stores.settings)).welcomeOnJoin.value,
+    avatarUrl: (agent) =>
+      agentAvatarUrlForPresentation(agent, publicOrigin, agentAvatarInstallation(platformEnv)),
+    management: stores.management,
+  });
+}
+
 export async function postAgentRoutingFeedback(input: {
   turn: NormalizedSlackTurn;
   surface: AssignmentSurface;
@@ -2002,7 +2021,11 @@ async function addMentionedAgentToChannel(
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
         updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
       });
-      await new AgentPresenceReconciler({ config: stores.config, transport }).publish({
+      await new AgentPresenceReconciler({
+        config: stores.config,
+        transport,
+        announce: await presenceAnnouncements(stores, platformEnv, transport),
+      }).publish({
         workspaceId: click.workspaceId,
         channelId: click.channelId,
         agentId: prepared.id,
@@ -2262,22 +2285,10 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
       requireAgentChannelPublication(
         current.principal, await stores.config.getAgent(agentId), current.routing.channelMember,
       );
-      const publicOrigin = await resolveSlackPublicUrl(
-        execution.platformEnv, stores.settings, stores.identity,
-      );
       return new AgentPresenceReconciler({
         config: stores.config,
         transport,
-        announce: agentPresenceAnnouncements({
-          transport,
-          welcomeOnJoin: async () => (await resolveSlackBehaviorSettings(
-            execution.platformEnv, stores.settings,
-          )).welcomeOnJoin.value,
-          avatarUrl: (candidate) => agentAvatarUrlForPresentation(
-            candidate, publicOrigin, agentAvatarInstallation(execution.platformEnv),
-          ),
-          management: stores.management,
-        }),
+        announce: await presenceAnnouncements(stores, execution.platformEnv, transport),
       }).publish({
         workspaceId, channelId, agentId,
         actorMembershipId: current.principal.membershipId,
