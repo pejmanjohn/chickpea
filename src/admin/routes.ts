@@ -6647,8 +6647,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settingsStore))).models.map(model => ({ ...model, canonical: `openai/${model.id}` }))
       : activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined);
     const anthropicApiModels = activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined);
+    const runtimeProviders = await modelProviders(c);
     const providers = await Promise.all(
-      (await modelProviders(c))
+      runtimeProviders
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
         .map(async (provider) => {
         if (provider.id === 'openai') {
@@ -6696,17 +6697,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }),
     );
     if (await installationFunding(c.env as PlatformEnv | undefined) !== 'platform') return providers;
-    // Chickpea's models are a lane like the ChatGPT subscription. They serve
-    // every key-lane provider, but only the models with a current price.
+    // Chickpea's models are a lane like the ChatGPT subscription. They need no
+    // key or starred model, and serve only the models with a current price.
     const unavailable = await chatModelReadiness(c);
     return Promise.all(providers.map(async (provider) => {
-      const served = await Promise.all(provider.suggestions.map(async (model) => !(await unavailable(model))));
-      return {
-        ...provider,
-        configured: isProviderKeyId(provider.id),
-        source: PLATFORM_MODELS_SOURCE,
-        suggestions: provider.suggestions.filter((_, index) => served[index]),
-      };
+      const candidates = uniqueStrings([
+        ...provider.suggestions,
+        ...(runtimeProviders.find(({ id }) => id === provider.id)?.suggestions ?? []),
+      ]);
+      const served = await Promise.all(candidates.map(async (model) => !(await unavailable(model))));
+      const suggestions = candidates.filter((_, index) => served[index]);
+      return { ...provider, configured: suggestions.length > 0, source: PLATFORM_MODELS_SOURCE, suggestions };
     }));
   };
 
@@ -7129,12 +7130,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (err) {
         return internalError(c, err);
       }
-      const platformFunded = await installationFunding(platformEnv) === 'platform';
+      const served = await installationFunding(platformEnv) === 'platform'
+        ? new Set((await chatPickerProviders(c)).filter(({ configured }) => configured).map(({ id }) => id))
+        : new Set<string>();
       return c.json({
         providers: PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id], platformEnv),
           ...(id === 'openai' ? { activeAuthMethod, subscriptionAvailable: false } : {}),
-          ...(platformFunded ? { platformFunded } : {}),
+          ...(served.has(id) ? { platformFunded: true } : {}),
         })),
       });
     }
