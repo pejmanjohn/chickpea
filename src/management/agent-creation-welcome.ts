@@ -45,18 +45,22 @@ export async function selectAgentCreationConnectors(input: {
   const candidates: AgentCreationConnectorCandidate[] = [];
   const notices: AgentCreationConnectorNotice[] = [];
   const selected = new Set<string>();
+  const anchorTextsByPriority = [input.requestText, input.agentCorpus];
   const mentions = input.explicitMentions.flatMap((raw) => {
     const matches = matchingConnectorCatalogPresets(raw, catalog);
     const anchors = matches.length === 1
       ? [raw, ...connectorCatalogLookupNames(matches[0]!)]
       : [raw];
-    const index = anchors.reduce<number | undefined>((earliest, anchor) => {
-      const candidate = affirmativeMentionIndex(input.requestText, anchor);
-      if (candidate === undefined) return earliest;
-      return earliest === undefined ? candidate : Math.min(earliest, candidate);
-    }, undefined);
-    return index === undefined ? [] : [{ raw, index }];
-  }).sort((left, right) => left.index - right.index);
+    for (const [rank, text] of anchorTextsByPriority.entries()) {
+      const index = anchors.reduce<number | undefined>((earliest, anchor) => {
+        const candidate = affirmativeMentionIndex(text, anchor);
+        if (candidate === undefined) return earliest;
+        return earliest === undefined ? candidate : Math.min(earliest, candidate);
+      }, undefined);
+      if (index !== undefined) return [{ raw, rank, index }];
+    }
+    return [];
+  }).sort((left, right) => left.rank - right.rank || left.index - right.index);
 
   for (const { raw } of mentions) {
     const matches = matchingConnectorCatalogPresets(raw, catalog);

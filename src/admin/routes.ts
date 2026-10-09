@@ -2330,6 +2330,34 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         store(c).updateAgent(agentId, patch, expectedRevision),
     });
   };
+  const reconcileAgentSlackPresence = async (
+    c: Context,
+    agent: CustomAgentConfig,
+    actor: { principal: AuthPrincipal; slackUserId: string; slackTeamId: string },
+  ): Promise<CustomAgentConfig> => {
+    const workspaceId = actor.slackTeamId;
+    const reconciler = new AgentPresenceReconciler({
+      config: store(c),
+      transport: await agentSlackTransport(c, workspaceId),
+    });
+    if (agent.slackPresence?.desiredState === 'disabled') return reconciler.retry(agent.id);
+    const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
+      (grant) => grant.agentId === agent.id && grant.workspaceId === workspaceId &&
+        grant.status !== 'active',
+    );
+    if (pendingGrants.length === 0) return reconciler.retry(agent.id);
+    let updated = agent;
+    for (const pendingGrant of pendingGrants) {
+      updated = (await reconciler.publish({
+        workspaceId,
+        agentId: agent.id,
+        channelId: pendingGrant.channelId,
+        actorMembershipId: actor.principal.membershipId,
+        actorSlackUserId: actor.slackUserId,
+      })).agent;
+    }
+    return updated;
+  };
   const slackWorkspaceDescriptor = async (c: Context): Promise<{
     teamId: string;
     teamName?: string;
@@ -9517,12 +9545,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
       if (reconcilePresence) {
         try {
-          const actor = await agentActor(c);
-          const transport = await agentSlackTransport(c, actor.slackTeamId);
-          updated = await new AgentPresenceReconciler({
-            config: configStore,
-            transport,
-          }).retry(agentId);
+          updated = await reconcileAgentSlackPresence(c, updated, await agentActor(c));
         } catch (error) {
           const classified = classifyAgentPresenceError(error);
           updated = await configStore.getAgent(agentId);
@@ -9671,30 +9694,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       let current = await store(c).getAgent(agentId);
       requireAgentEdit(actor.principal, current);
       current = await ensureGeneratedGatewayAvatar(c, current, workspaceId);
-      const reconciler = new AgentPresenceReconciler({
-        config: store(c),
-        transport: await agentSlackTransport(c, workspaceId),
-      });
-      const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
-        (grant) => grant.agentId === agentId && grant.workspaceId === workspaceId &&
-          grant.status !== 'active',
-      );
-      let updated = current;
-      if (current.slackPresence?.desiredState === 'disabled') {
-        updated = await reconciler.retry(agentId);
-      } else if (pendingGrants.length > 0) {
-        for (const pendingGrant of pendingGrants) {
-          updated = (await reconciler.publish({
-            workspaceId,
-            agentId,
-            channelId: pendingGrant.channelId,
-            actorMembershipId: actor.principal.membershipId,
-            actorSlackUserId: actor.slackUserId,
-          })).agent;
-        }
-      } else {
-        updated = await reconciler.retry(agentId);
-      }
+      const updated = await reconcileAgentSlackPresence(c, current, actor);
       return c.json({
         agent: await agentAdminProjectionForRequest(c, updated),
       });

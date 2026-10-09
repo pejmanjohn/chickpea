@@ -17,6 +17,7 @@ import {
   classifyAgentPresenceError,
 } from '../src/slack/agent-presence/errors.ts';
 import {
+  agentUserGroupName,
   alternativeAgentHandles,
   normalizeAgentHandle,
 } from '../src/slack/agent-presence/handles.ts';
@@ -34,8 +35,39 @@ test('Agent handles normalize predictably and suggest collision-free alternative
   assert.equal(normalizeAgentHandle('!!!'), 'agent');
   assert.deepEqual(
     alternativeAgentHandles('support', new Set(['support', 'support-2', 'support-4'])),
-    ['support-3', 'support-5', 'support-6'],
+    ['support-team', 'support-3', 'support-5'],
   );
+  assert.deepEqual(
+    alternativeAgentHandles('support', new Set(['support', 'support-team'])),
+    ['support-2', 'support-3', 'support-4'],
+  );
+  assert.deepEqual(
+    alternativeAgentHandles('sales-team', new Set(['sales-team'])),
+    ['sales-team-2', 'sales-team-3', 'sales-team-4'],
+  );
+  const long = 'a'.repeat(80);
+  assert.ok(alternativeAgentHandles(long, new Set([long])).every((handle) => handle.length <= 80));
+});
+
+test('an Agent\'s user group takes its name unless another group already has it', () => {
+  const group = (id: string, name: string, disabled = false): SlackUserGroup =>
+    ({ id, name, handle: id.toLowerCase(), disabled });
+  const help = group('S_HELP', 'Support');
+
+  assert.equal(agentUserGroupName('Support', [group('S_OPS', 'Ops')]), 'Support');
+  assert.equal(agentUserGroupName('Support', [help]), 'Support Agent');
+  assert.equal(agentUserGroupName('Support', [group('S_HELP', '  support ')]), 'Support Agent',
+    'names compare without case or surrounding spaces');
+  assert.equal(agentUserGroupName('Support', [group('S_HELP', 'Support', true)]), 'Support Agent',
+    'a deactivated group\'s name is avoided too');
+  assert.equal(agentUserGroupName('Support', [group('S1', 'Support')], 'S1'), 'Support',
+    'the Agent\'s own group never blocks its name');
+  assert.equal(agentUserGroupName('Support', [help, group('S1', 'Support Agent')], 'S1'), 'Support Agent');
+  assert.equal(
+    agentUserGroupName('Support', [help, group('S_A', 'Support Agent'), group('S_2', 'Support 2')]),
+    'Support 3',
+  );
+  assert.equal(agentUserGroupName('Sales Agent', [group('S_SALES', 'Sales Agent')]), 'Sales Agent 2');
 });
 
 test('Slack create-time handle collisions retain safe alternative suggestions', async () => {
@@ -56,9 +88,79 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
         actorSlackUserId: 'UADA',
       }),
       (error: unknown) => error instanceof AgentPresenceError &&
-        error.code === 'handle_collision' && error.suggestions[0] === 'support-2' &&
+        error.code === 'handle_collision' && error.suggestions[0] === 'support-team' &&
         error.message === 'That Slack handle is already in use.',
     );
+  } finally {
+    config.close();
+  }
+});
+
+test('a handle collision keeps its suggestions only until the next outcome', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.createError = new SlackTransportError('usergroups.create', 'handle_already_exists');
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const publish = () => reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_SUPPORT',
+      actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    const presence = async () => (await config.getAgent('agent_support')).slackPresence;
+
+    await assert.rejects(publish, { code: 'handle_collision' });
+    assert.deepEqual((await presence())?.handleSuggestions, ['support-team', 'support-2', 'support-3']);
+
+    transport.actorIsMember = false;
+    await assert.rejects(publish, { code: 'channel_membership_required' });
+    assert.equal((await presence())?.errorCode, 'channel_membership_required');
+    assert.equal(Object.hasOwn((await presence()) ?? {}, 'handleSuggestions'), false,
+      'another failure must not keep the earlier collision suggestions');
+
+    transport.actorIsMember = true;
+    await assert.rejects(publish, { code: 'handle_collision' });
+    assert.equal((await presence())?.handleSuggestions?.[0], 'support-team');
+
+    transport.createError = undefined;
+    await publish();
+    const published = await presence();
+    assert.equal(published?.health, 'healthy');
+    assert.equal(Object.hasOwn(published ?? {}, 'handleSuggestions'), false,
+      'a successful publish clears the collision suggestions');
+  } finally {
+    config.close();
+  }
+});
+
+test('renaming a published Agent to a handle Slack already uses offers suggested handles', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await reconciler.reconcile('agent_support');
+    transport.groups.push(
+      { id: 'S_OPS', name: 'Ops', handle: 'ops', disabled: false },
+      { id: 'S_OPS_2', name: 'Ops two', handle: 'ops-2', disabled: false },
+    );
+    const published = await config.getAgent('agent_support');
+    await config.updateAgent(published.id, {
+      slackPresence: { ...published.slackPresence!, requestedHandle: 'ops', normalizedHandle: 'ops' },
+    }, published.revision);
+
+    await assert.rejects(
+      () => reconciler.retry('agent_support'),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'handle_collision' &&
+        error.slackCode === 'handle_already_exists' &&
+        error.message === 'That Slack handle is already in use.' &&
+        error.suggestions.join() === 'ops-team,ops-3,ops-4',
+    );
+    const presence = (await config.getAgent('agent_support')).slackPresence;
+    assert.equal(presence?.errorCode, 'handle_collision');
+    assert.deepEqual(presence?.handleSuggestions, ['ops-team', 'ops-3', 'ops-4']);
+    assert.equal(transport.groups[0]?.handle, 'support', 'the refused rename keeps the published handle');
   } finally {
     config.close();
   }
@@ -72,10 +174,10 @@ test('Slack name and handle collisions each name their own fix', () => {
   );
   assert.equal(name.code, 'name_collision');
   assert.equal(name.slackCode, 'name_already_exists');
-  assert.equal(name.message, 'A Slack user group already has this Agent’s name. Rename the Agent, then retry.');
+  assert.equal(name.message, 'A Slack user group already has this Agent’s name. Retry picks a free name for its Slack group.');
   assert.deepEqual(agentPresenceRecovery(name, qa), {
     title: 'A Slack user group is already named “QA fixtures”',
-    explanation: 'Rename this Agent, then press Retry.',
+    explanation: 'Press Retry and Chickpea will pick a free name for its Slack group.',
     steps: [],
     actionLabel: 'Retry',
   });
@@ -86,12 +188,33 @@ test('Slack name and handle collisions each name their own fix', () => {
   assert.equal(handle.code, 'handle_collision');
   assert.equal(handle.slackCode, 'handle_already_exists');
   assert.equal(handle.message, 'That Slack handle is already in use.');
+  const explanation = 'Slack handles are shared across the whole workspace, so a person or a ' +
+    'Slack user group already uses this one. The Agent is saved.';
   assert.deepEqual(agentPresenceRecovery(handle, qa), {
     title: '@qa-fixtures is already in use',
-    explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
-    steps: ['Choose one of the suggested available handles or enter another handle.', 'Select Retry.'],
+    explanation,
+    steps: ['Type another handle and save.'],
     actionLabel: 'Retry',
   });
+  const saved = {
+    ...qa,
+    slackPresence: { ...qa.slackPresence!, handleSuggestions: ['qa-fixtures-team'] },
+  };
+  assert.deepEqual(agentPresenceRecovery(handle, saved), {
+    title: '@qa-fixtures is already in use',
+    explanation,
+    steps: ['Choose a suggested handle below, or type another one and save.'],
+    actionLabel: 'Retry',
+    suggestions: ['qa-fixtures-team'],
+  });
+  assert.deepEqual(
+    agentPresenceRecovery(
+      new AgentPresenceError('handle_collision', 'taken', { suggestions: ['qa-fixtures-2'] }),
+      saved,
+    ).suggestions,
+    ['qa-fixtures-2'],
+    'suggestions on the error are newer than the saved ones',
+  );
 });
 
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {
@@ -388,6 +511,63 @@ test('a handle edit racing Slack creation converges on one updated user group', 
     assert.equal(reconciled.slackPresence?.userGroupId, 'S1');
     assert.equal(transport.groups.length, 1);
     assert.equal(transport.groups[0]?.handle, 'support-pro');
+  } finally {
+    config.close();
+  }
+});
+
+test('an Agent named like another Slack user group publishes under a distinct group name until that name frees up', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.groups.push({ id: 'S_HELP', name: 'Support', handle: 'help', disabled: false });
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    const created = await reconciler.reconcile('agent_support');
+    const own = () => transport.groups.find((group) => group.id === created.slackPresence?.userGroupId);
+    assert.equal(created.slackPresence?.health, 'healthy');
+    assert.equal(created.name, 'Support');
+    assert.deepEqual({ name: own()?.name, handle: own()?.handle }, { name: 'Support Agent', handle: 'support' });
+
+    const again = await reconciler.reconcile('agent_support');
+    assert.equal(again.slackPresence?.health, 'healthy');
+    assert.equal(own()?.name, 'Support Agent', 'the distinct name holds while the other group keeps "Support"');
+
+    transport.groups = transport.groups.filter((group) => group.id !== 'S_HELP');
+    const freed = await reconciler.reconcile('agent_support');
+    assert.equal(freed.slackPresence?.health, 'healthy');
+    assert.deepEqual({ name: own()?.name, handle: own()?.handle }, { name: 'Support', handle: 'support' });
+    assert.equal(transport.createCalls, 1);
+  } finally {
+    config.close();
+  }
+});
+
+test('a user group that takes the Agent\'s name mid-create is a name collision, and Retry publishes around it', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  const listed = transport.listUserGroups.bind(transport);
+  transport.listUserGroups = async () => {
+    const seen = await listed();
+    transport.groups.push({ id: 'S_HELP', name: 'Support', handle: 'help', disabled: false });
+    transport.listUserGroups = listed;
+    return seen;
+  };
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await assert.rejects(() => reconciler.retry('agent_support'), {
+      code: 'name_collision', slackCode: 'name_already_exists',
+    });
+    const failed = (await config.getAgent('agent_support')).slackPresence;
+    assert.deepEqual({ health: failed?.health, errorCode: failed?.errorCode },
+      { health: 'needs_attention', errorCode: 'name_collision' });
+    assert.equal(transport.groups.some((group) => group.handle === 'support'), false);
+
+    const retried = await reconciler.retry('agent_support');
+    const own = transport.groups.find((group) => group.id === retried.slackPresence?.userGroupId);
+    assert.equal(retried.slackPresence?.health, 'healthy');
+    assert.deepEqual({ name: own?.name, handle: own?.handle }, { name: 'Support Agent', handle: 'support' });
   } finally {
     config.close();
   }
@@ -801,6 +981,7 @@ class FakeSlackTransport implements SlackTransport {
   async listUserGroups() { return this.groups.map((group) => ({ ...group })); }
   async createUserGroup(input: { name: string; handle: string; description?: string }) {
     this.createCalls += 1;
+    if (this.nameTaken(input.name)) throw new SlackTransportError('usergroups.create', 'name_already_exists');
     const group: SlackUserGroup = {
       id: `S${this.groups.length + 1}`,
       name: input.name,
@@ -820,6 +1001,12 @@ class FakeSlackTransport implements SlackTransport {
   }
   async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
     const group = this.requiredGroup(id);
+    if (this.groups.some((other) => other.id !== id && other.handle === patch.handle)) {
+      throw new SlackTransportError('usergroups.update', 'handle_already_exists');
+    }
+    if (patch.name !== undefined && this.nameTaken(patch.name, id)) {
+      throw new SlackTransportError('usergroups.update', 'name_already_exists');
+    }
     Object.assign(group, patch);
     return { ...group };
   }
@@ -835,6 +1022,11 @@ class FakeSlackTransport implements SlackTransport {
   }
   async publishAppHome(): Promise<never> { throw new Error('unused'); }
   async postMessage(): Promise<never> { throw new Error('unused'); }
+
+  private nameTaken(name: string, exceptId?: string): boolean {
+    const key = name.trim().toLowerCase();
+    return this.groups.some((group) => group.id !== exceptId && group.name.trim().toLowerCase() === key);
+  }
 
   private requiredGroup(id: string): SlackUserGroup {
     const group = this.groups.find((candidate) => candidate.id === id);

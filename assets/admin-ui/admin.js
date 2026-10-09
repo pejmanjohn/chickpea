@@ -7946,12 +7946,17 @@
   function agentPresenceRecoveryHtml(draft) {
     var recovery = draft.slackPresenceRecovery;
     if (!recovery) return "";
+    var disabled = state.profilePresenceMutation || state.slackConnectionBusy ? ' disabled' : '';
     var steps = (recovery.steps || []).map(function (step) { return '<li>' + esc(step) + '</li>'; }).join("");
+    var handles = (recovery.suggestions || []).map(function (handle) {
+      return '<button type="button" class="btn btn-soft btn-sm" data-action="agent-presence-handle" data-handle="' + esc(handle) + '"' + disabled + '>@' + esc(handle) + '</button>';
+    }).join("");
     return '<div class="callout" style="align-items:flex-start;">' + icon("exclamation-triangle", "ic-l g") +
       '<div><p class="field-label">' + esc(recovery.title) + '</p><p class="hint">' + esc(recovery.explanation) + '</p>' +
       (steps ? '<ol style="margin:12px 0 0; padding-left:20px;">' + steps + '</ol>' : '') +
+      (handles ? '<p class="hint" style="margin-top:12px;">Suggested handles</p><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">' + handles + '</div>' : '') +
       (recovery.note ? '<p class="hint" style="margin-top:10px;">' + esc(recovery.note) + '</p>' : '') +
-      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + (state.profilePresenceMutation || state.slackConnectionBusy ? ' disabled' : '') + '>' + esc(recovery.actionLabel || "Retry") + '</button>' +
+      '<div style="display:flex; gap:8px; margin-top:12px;"><button type="button" class="btn btn-soft btn-sm" data-action="' + (recovery.actionKind === "reconnect" ? "slack-gateway-refresh" : "agent-presence-retry") + '"' + disabled + '>' + esc(recovery.actionLabel || "Retry") + '</button>' +
       (recovery.adminUrl ? '<a class="btn btn-ghost btn-sm" href="' + esc(recovery.adminUrl) + '" target="_blank" rel="noopener noreferrer">Open Slack admin</a>' : '') +
       '</div></div></div>';
   }
@@ -14303,6 +14308,7 @@
     }
     if (action === "save-profile") { saveProfile(); }
     if (action === "agent-presence-retry") { retryAgentPresence(); }
+    if (action === "agent-presence-handle") { saveHandleOnly(target.getAttribute("data-handle")); }
     if (action === "reload-profile") { reloadProfile(); }
     if (action === "discard-profile") { discardProfile(); }
     if (action === "delete-profile") { deleteProfile(); }
@@ -17421,6 +17427,31 @@
       var payload = error && error.payload;
       if (payload && payload.agent) {
         applyAgentMutation(payload.agent, ["slackPresence", "slackPresenceRecovery"]);
+      }
+      state.profileError = (error && (error.serverMessage || error.message)) || "Slack could not finish this Agent handle.";
+    }).finally(function () { finishProfilePresenceMutation(mutation); });
+  }
+
+  function saveHandleOnly(handle) {
+    var draft = state.profileDraft;
+    if (!draft || !draft.id || state.profilePresenceMutation) return;
+    state.profileError = "";
+    var mutation = beginProfilePresenceMutation("handle", draft.id);
+    if (!mutation) return;
+    postJson("/admin/api/agents/" + encodeURIComponent(draft.id), "PATCH", {
+      expectedRevision: draft.revision,
+      handle: handle
+    }).then(function (body) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
+      var updated = body && body.agent;
+      if (!updated) throw new Error("Agent response was missing.");
+      applyAgentMutation(updated, ["handle", "slackPresence", "slackPresenceRecovery"]);
+    }).catch(function (error) {
+      if (!profilePresenceMutationIsCurrent(mutation)) return;
+      if (error && error.payload && error.payload.error === "agent_revision_conflict") {
+        state.profileConflict = true;
+        state.profileError = "This Agent changed in another session. Your draft is preserved; reload the latest Agent before saving again.";
+        return;
       }
       state.profileError = (error && (error.serverMessage || error.message)) || "Slack could not finish this Agent handle.";
     }).finally(function () { finishProfilePresenceMutation(mutation); });

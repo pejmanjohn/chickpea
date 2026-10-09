@@ -4936,47 +4936,24 @@ async function supportAgentRequest(app: Hono, method: string, path: string, body
   return { status: response.status, body: await response.json() as Record<string, any> };
 }
 
-test('an Agent named like another Slack user group is fixed by a rename, then Retry', async () => {
+test('an Agent named like another Slack user group joins its Channel under a distinct group name', async () => {
   const transport = new FakeTransport();
   transport.groups.push({ id: 'S_OTHER_APP', name: 'QA Fixtures', handle: 'qa-checks', disabled: false });
   const sentNames = enforceSlackUniqueness(transport);
   const fixture = harness(transport);
   try {
     await createAgent(fixture.app, 'QA fixtures');
-    const nameRecovery = {
-      title: 'A Slack user group is already named “QA fixtures”',
-      explanation: 'Rename this Agent, then press Retry.',
-      steps: [],
-      actionLabel: 'Retry',
-    };
-    const failed = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+    const added = await supportAgentRequest(fixture.app, 'POST', '/channels', {
       workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
     });
-    assert.equal(failed.status, 409);
-    assert.equal(failed.body.error, 'name_collision');
-    assert.deepEqual(failed.body.suggestions, [], 'a new handle cannot free a taken name');
-    assert.deepEqual(failed.body.recovery, nameRecovery);
-
-    const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {
-      expectedRevision: failed.body.agent.revision, handle: 'qa-fixtures-f2-1009',
-    });
-    assert.equal(rehandled.status, 200);
-    assert.deepEqual(rehandled.body.presenceRecovery, nameRecovery);
-    assert.deepEqual(rehandled.body.agent.slackPresenceRecovery, nameRecovery);
-
-    const renamed = await supportAgentRequest(fixture.app, 'PATCH', '', {
-      expectedRevision: rehandled.body.agent.revision, name: 'QA fixtures bot',
-    });
-    assert.equal(renamed.status, 200);
-    assert.equal(renamed.body.presenceRecovery, null);
-
-    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
-    assert.equal(retried.status, 200);
-    assert.equal(retried.body.agent.slackPresenceRecovery, null);
-    assert.deepEqual(sentNames, ['QA fixtures', 'QA fixtures', 'QA fixtures bot']);
+    assert.equal(added.status, 201);
+    assert.equal(added.body.grant.status, 'active');
+    assert.equal(added.body.agent.name, 'QA fixtures');
+    assert.equal(added.body.agent.slackPresence.health, 'healthy');
+    assert.deepEqual(sentNames, ['QA fixtures Agent']);
     assert.deepEqual(
-      (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status),
-      ['active'],
+      transport.groups.map(({ name, handle }) => ({ name, handle })),
+      [{ name: 'QA Fixtures', handle: 'qa-checks' }, { name: 'QA fixtures Agent', handle: 'support' }],
     );
   } finally {
     fixture.store.close();
@@ -4984,10 +4961,12 @@ test('an Agent named like another Slack user group is fixed by a rename, then Re
   }
 });
 
-test('a handle Slack already uses is still fixed by a new handle, then Retry', async () => {
+test('choosing a suggested handle publishes it and finishes the Channel add it blocked', async () => {
   const transport = new FakeTransport();
   enforceSlackUniqueness(transport, ['support']);
   const fixture = harness(transport);
+  const grantStatuses = async () =>
+    (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status);
   try {
     await createAgent(fixture.app);
     const failed = await supportAgentRequest(fixture.app, 'POST', '/channels', {
@@ -4996,20 +4975,28 @@ test('a handle Slack already uses is still fixed by a new handle, then Retry', a
     assert.equal(failed.status, 409);
     assert.equal(failed.body.error, 'handle_collision');
     assert.equal(failed.body.recovery.title, '@support is already in use');
+    assert.deepEqual(await grantStatuses(), ['pending']);
+
+    const reloaded = await fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+      headers: auth(),
+    });
+    const { agent: collided } = await reloaded.json() as Record<string, any>;
+    assert.deepEqual(collided.slackPresenceRecovery.suggestions, ['support-team', 'support-2', 'support-3']);
+    assert.deepEqual(collided.slackPresenceRecovery.steps, [
+      'Choose a suggested handle below, or type another one and save.',
+    ]);
 
     const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {
-      expectedRevision: failed.body.agent.revision, handle: 'support-team',
+      expectedRevision: collided.revision, handle: collided.slackPresenceRecovery.suggestions[0],
     });
     assert.equal(rehandled.status, 200);
     assert.equal(rehandled.body.presenceRecovery, null);
-
-    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
-    assert.equal(retried.status, 200);
-    assert.equal(retried.body.agent.slackPresence.normalizedHandle, 'support-team');
-    assert.deepEqual(
-      (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status),
-      ['active'],
-    );
+    assert.equal(rehandled.body.agent.slackPresenceRecovery, null);
+    assert.equal(rehandled.body.agent.slackPresence.health, 'healthy');
+    assert.equal(rehandled.body.agent.slackPresence.normalizedHandle, 'support-team');
+    assert.equal(Object.hasOwn(rehandled.body.agent.slackPresence, 'handleSuggestions'), false);
+    assert.deepEqual(await grantStatuses(), ['active'],
+      'saving the handle finishes the Channel add without another Retry');
   } finally {
     fixture.store.close();
     fixture.settings.close();
