@@ -333,7 +333,7 @@ export async function logout(origin: string, deps: AuthDeps): Promise<LogoutResu
   if (clientId && entry.tokens) {
     const attempts: Array<[string | undefined, 'refresh_token' | 'access_token']> = [
       [entry.tokens.refresh_token, 'refresh_token'],
-      [entry.tokens.access_token, 'access_token'],
+      [tokensExpired(entry.tokens, deps.now(), 0) ? undefined : entry.tokens.access_token, 'access_token'],
     ];
     for (const [token, hint] of attempts) {
       if (!token) continue;

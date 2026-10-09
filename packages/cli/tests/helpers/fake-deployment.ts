@@ -19,6 +19,7 @@ export interface FakeDeploymentOptions {
   accessTokenTtlSeconds?: number;
   now?: () => number;
   tools?: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
+  accessTokenRevocationStatus?: number;
 }
 
 interface IssuedAccessToken {
@@ -65,9 +66,11 @@ export class FakeDeployment {
   private readonly ttl: number;
   private readonly now: () => number;
   private readonly tools: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
+  private readonly accessTokenRevocationStatus: number | undefined;
 
   constructor(options: FakeDeploymentOptions = {}) {
     this.mode = options.mode ?? 'ready';
+    this.accessTokenRevocationStatus = options.accessTokenRevocationStatus;
     this.ttl = options.accessTokenTtlSeconds ?? 900;
     this.now = options.now ?? Date.now;
     this.tools = {
@@ -277,11 +280,16 @@ export class FakeDeployment {
     const token = form.get('token') ?? '';
     const refresh = this.refreshTokens.get(token);
     if (refresh) {
+      if (refresh.revoked) return json(response, 400, { error: 'invalid_request', error_description: 'refresh token revoked' });
       if (refresh.clientId !== clientId) return json(response, 200, {});
       refresh.revoked = true;
       return json(response, 200, {});
     }
     if (this.accessTokens.has(token)) {
+      if (this.accessTokenRevocationStatus) {
+        response.writeHead(this.accessTokenRevocationStatus).end();
+        return;
+      }
       return json(response, 400, { error: 'unsupported_token_type', error_description: 'JWT access tokens are self-contained and cannot be revoked server-side' });
     }
     json(response, 400, { error: 'invalid_request', error_description: 'token not found' });
