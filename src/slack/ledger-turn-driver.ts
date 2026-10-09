@@ -2,6 +2,13 @@ import type { WebClient } from '@slack/web-api';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import {
+  creditBackFailedRun,
+  givenUpReason,
+  hostedRun,
+  planFunding,
+  withCreditedBack,
+} from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
 import type { RunDriverHandlerResult } from '../work/driver.ts';
@@ -49,7 +56,7 @@ import {
 import { recordSlackInstallationUnavailable } from './installation-observability.ts';
 import type { SlackInteractionIntent } from './interaction-intent.ts';
 import type { SlackInteractionProgressPatch } from '../config/state-rpc.ts';
-import { AgentPromptFailure } from './flue-dispatch.ts';
+import { AgentPromptFailure, type SlackFlueDispatchState } from './flue-dispatch.ts';
 import {
   abandonTerminalSlackPresentationBestEffort,
   hasRetryableTerminalRepair,
@@ -212,6 +219,27 @@ export function createLedgerSlackRunHandler(
           instanceId: job.agentInstanceId,
         }
       : undefined;
+    // Dispatch writes the receipt it records onto this object, so the give-up
+    // below reads it here rather than from the job this attempt loaded.
+    const flueDispatch: SlackFlueDispatchState = {
+      ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
+      ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
+      ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
+      prepare: (message, observation, threadImages, admittedListIds, turnEnvelope) =>
+        options.turns.prepareFlueDispatch(
+          job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
+        ),
+      reconcileExistingInstance: (uid) =>
+        options.turns.reconcileFlueExistingInstance(job.id, uid),
+      recordReceipt: (receipt) => options.turns.recordFlueReceipt(job.id, receipt),
+      recordSettlement: (settlement) =>
+        options.turns.recordFlueSettlement(job.id, settlement),
+      markRecoveryRequired: (reason) =>
+        options.turns.markRecoveryRequired(job.id, reason),
+      ...(options.turns.stageTurnInput
+        ? { stageTurnInput: options.turns.stageTurnInput.bind(options.turns) }
+        : {}),
+    };
     try {
       await executeTurn(job.turn, job.assignment, options.platformEnv, {
         client,
@@ -228,25 +256,7 @@ export function createLedgerSlackRunHandler(
         ...(options.turns.getThreadContinuation
           ? { getThreadContinuation: options.turns.getThreadContinuation.bind(options.turns) }
           : {}),
-        flueDispatch: {
-          ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
-          ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
-          ...(job.flueSettlement ? { flueSettlement: job.flueSettlement } : {}),
-          prepare: (message, observation, threadImages, admittedListIds, turnEnvelope) =>
-            options.turns.prepareFlueDispatch(
-              job.id, message, observation, threadImages, admittedListIds, turnEnvelope,
-            ),
-          reconcileExistingInstance: (uid) =>
-            options.turns.reconcileFlueExistingInstance(job.id, uid),
-          recordReceipt: (receipt) => options.turns.recordFlueReceipt(job.id, receipt),
-          recordSettlement: (settlement) =>
-            options.turns.recordFlueSettlement(job.id, settlement),
-          markRecoveryRequired: (reason) =>
-            options.turns.markRecoveryRequired(job.id, reason),
-          ...(options.turns.stageTurnInput
-            ? { stageTurnInput: options.turns.stageTurnInput.bind(options.turns) }
-            : {}),
-        },
+        flueDispatch,
         workStore: options.work,
         ...(options.presentationState
           ? {
@@ -302,14 +312,14 @@ export function createLedgerSlackRunHandler(
       if (error instanceof AgentPromptFailure && error.recoveryRequired) {
         return deliverDurableRecoveryFailure(
           options, claim, job, client, installationContext,
-          'flue_dispatch_reconciliation_required',
+          'flue_dispatch_reconciliation_required', flueDispatch,
         );
       }
       if (error instanceof AgentPromptFailure && error.retryable) {
         if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
           return deliverDurableRecoveryFailure(
             options, claim, job, client, installationContext,
-            'post_dispatch_attempts_exhausted',
+            'post_dispatch_attempts_exhausted', flueDispatch,
           );
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
@@ -339,7 +349,12 @@ async function deliverDurableRecoveryFailure(
   client: WebClient,
   installationContext: SlackInstallationExecutionContext | undefined,
   reasonCode: string,
+  dispatch: Pick<SlackFlueDispatchState, 'dispatchReceipt' | 'flueSettlement'>,
 ): Promise<RunDriverHandlerResult> {
+  const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
+    hostedRun(options.platformEnv, dispatch.dispatchReceipt?.submissionId),
+    givenUpReason(dispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
+  ));
   try {
     await (options.executeTurn ?? runTurn)(job.turn, job.assignment, options.platformEnv, {
       client,
@@ -349,7 +364,7 @@ async function deliverDurableRecoveryFailure(
       runAttempt: claim.fencingToken,
       runFencingToken: claim.fencingToken,
       executionAuthority: 'ledger',
-      replayText: DURABLE_RECOVERY_FAILURE_TEXT,
+      replayText: recoveryText,
       replayTerminalResult: 'failure',
       ...(options.presentationState ? { presentationState: options.presentationState } : {}),
       ...(options.settingsStore ? { settingsStore: options.settingsStore } : {}),
@@ -379,6 +394,7 @@ async function deliverDurableRecoveryFailure(
       turnId: job.id,
       channelId: job.turn.channelId,
       threadTs: job.turn.threadTs,
+      text: recoveryText,
     });
     await options.turns.markRecoveryRequired(job.id, reasonCode);
     await clearActiveWork(options, job);

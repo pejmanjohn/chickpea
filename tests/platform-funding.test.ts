@@ -514,6 +514,45 @@ test('each finished platform-funded request is charged once with its record, a s
   assert.equal(new Set(calls.charge.map((record) => record.requestId)).size, 2);
 });
 
+test('a request reporting a token part above its total is recorded and charged with the part at its total, and logs one line', async (t) => {
+  const { env, store } = hostedProxy(t);
+  const calls = fakePort();
+  const warnings: unknown[][] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args); });
+  const reports = (parts: Partial<Usage>): Script => (output, sent) => {
+    const message = reply(sent, 'stop', { input: 1_000, output: 200 });
+    output.push({ type: 'done', reason: 'stop', message: { ...message, usage: { ...message.usage, ...parts } } });
+    output.end();
+  };
+  const { model } = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', [
+    reports({ reasoning: 350 }),
+    reports({ reasoning: 201, cacheWrite: 40, cacheWrite1h: 90 }),
+  ]);
+  const price = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
+  assert.ok(price?.rate.cacheWrite1hMicrosPerUnit);
+
+  await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', async () => {
+    await modelCall(model);
+    await modelCall(model);
+  });
+
+  assert.equal(calls.charge.length, 2);
+  assert.deepEqual(await Promise.all(calls.charge.map((record) => store.getModelRequest(record.requestId))), calls.charge,
+    'each request is recorded as charged');
+  assert.deepEqual(calls.charge.map(({ outputTokens, cacheWriteTokens }) => [outputTokens, cacheWriteTokens]), [
+    [{ total: 200, reasoning: 200 }, { total: 0, oneHour: null }],
+    [{ total: 200, reasoning: 200 }, { total: 40, oneHour: 40 }],
+  ]);
+  assert.deepEqual(
+    [calls.charge[1]?.priceVersionId, calls.charge[1]?.listPriceUsdMicros],
+    [price.version.id, Math.round((1_000 * price.rate.inputMicrosPerUnit + 200 * price.rate.outputMicrosPerUnit +
+      40 * price.rate.cacheWrite1hMicrosPerUnit) / price.rate.unitScale)],
+    'every write is charged at the one-hour rate',
+  );
+  const line = ['[chickpea] model request reported a token part above its total', { provider: 'anthropic', model: SONNET }];
+  assert.deepEqual(warnings, [line, line]);
+});
+
 test('a charge names what its request was for: an attempt\'s request a reply, a stateless call its own purpose', async (t) => {
   const { env } = hostedProxy(t);
   const calls = fakePort();
