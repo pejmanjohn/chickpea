@@ -20,6 +20,9 @@
   // installations is run by its host, so that guidance and those steps are
   // left out there, without replacement copy.
   var SELF_HOSTED = CONFIG.selfHosted !== false;
+  // The host sells Chickpea's models: Admin has the Plan page, and
+  // onboarding offers them.
+  var BILLING_OFFERED = CONFIG.billingOffered === true;
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
   var HOST_MANAGED_SETTINGS_SECTIONS = ["sandbox"];
@@ -97,6 +100,16 @@
     // ordinary members; Owners manage the durable roster here.
     team: null,
     teamLoading: false,
+    // The Plan page: the host's answer once read, what an Owner is waiting
+    // on ("plan", "portal", "extra_usage:<key>" or "minimum_plan" for a
+    // Stripe page, "funding" for a switch between Chickpea's models and the
+    // workspace's own key), and an error with the part of the page it is for.
+    billing: null,
+    billingError: null,
+    billingBusy: "",
+    billingPlansOpen: false,
+    billingFundingConfirm: false,
+    planReturnSwitchFailed: false,
     teamError: "",
     teamBusy: "",
     teamNotice: "",
@@ -207,6 +220,7 @@
     onboardingError: "",
     onboardingBusy: false,
     onboardingNotice: "",
+    onboardingPlatformErrorCode: "",
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
@@ -908,6 +922,7 @@
   function canonicalPath() {
     if (state.view === "onboarding") return "/admin/onboarding";
     if (state.view === "usage") return "/admin/usage";
+    if (state.view === "billing") return "/admin/plan";
     if (state.view === "team") return "/admin/team";
     if (state.view === "settings") {
       return "/admin/settings/" + encodeURIComponent(state.settingsSection);
@@ -949,6 +964,7 @@
       try { return decodeURIComponent(part); } catch (err) { return part; }
     });
     state.leavePrompt = null;
+    if (parts[1] === "plan" && BILLING_OFFERED) { openBilling(); return; }
     // Coding agents is the one Settings page every member can open; any other
     // settings path collapses onto it rather than bouncing back to the Agent.
     if (!WORKSPACE_ADMIN_UI && parts[1] === "settings") {
@@ -1204,6 +1220,7 @@
     syncOnboardingActivity();
     settleOnboardingGithubReturn();
     leaveHostedSlackStep();
+    startOnboardingOnChickpeaModels();
   }
 
   var TYPING_INPUT_TYPES = /^(?:text|password|search|url|email|tel|number)$/i;
@@ -1581,11 +1598,12 @@
       ? '<button type="button" class="btn btn-soft' + (primarySection() === "channels" ? " nav-active" : "") + '" data-action="open-destinations" data-section-switcher="true">Destinations</button>' +
         '<button type="button" class="btn btn-soft' + (primarySection() === "team" ? " nav-active" : "") + '" data-action="open-team" data-section-switcher="true">Team</button>' +
         (USAGE_ADMIN_UI ? '<button type="button" class="btn btn-soft' + (primarySection() === "usage" ? " nav-active" : "") + '" data-action="open-usage" data-section-switcher="true">Usage</button>' : '') +
+        billingTopbarHtml() +
         '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-settings" data-section-switcher="true">Settings</button>'
       : "";
     var memberActions = WORKSPACE_ADMIN_UI
       ? ""
-      : '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
+      : billingTopbarHtml() + '<button type="button" class="btn btn-soft' + (primarySection() === "settings" ? " nav-active" : "") + '" data-action="open-coding-agents" data-section-switcher="true">MCP</button>';
     var actions = mobileRoster
       ? mobileAgentRosterHtml()
       : (WORKSPACE_ADMIN_UI ? connectedBadge : "") + agentsAction + workspaceActions + memberActions + signOutButtonHtml("btn btn-soft");
@@ -1625,7 +1643,7 @@
   }
 
   function isPrimaryAdminSurface() {
-    if (state.view === "profiles" || state.view === "channels" || state.view === "team" || state.view === "usage") return true;
+    if (state.view === "profiles" || state.view === "channels" || state.view === "team" || state.view === "usage" || state.view === "billing") return true;
     if (state.view !== "settings") return false;
     return true;
   }
@@ -1687,8 +1705,10 @@
         { id: "team", label: "Team", action: "open-team" }
       );
       if (USAGE_ADMIN_UI) sections.push({ id: "usage", label: "Usage", action: "open-usage" });
+      if (BILLING_OFFERED) sections.push(BILLING_SECTION);
       sections.push({ id: "settings", label: "Settings", action: "open-settings" });
     } else {
+      if (BILLING_OFFERED) sections.push(BILLING_SECTION);
       // A member has no Settings destination; Coding agents is its own entry.
       sections.push({ id: "settings", label: "MCP", action: "open-coding-agents" });
     }
@@ -1711,6 +1731,7 @@
   function railHtml() {
     if (state.view === "onboarding") return onboardingRailHtml();
     if (state.view === "usage") return usageRailHtml();
+    if (state.view === "billing") return billingRailHtml();
     if (state.view === "team") return teamRailHtml();
     if (state.view === "channels") return channelsRailHtml();
     if (isAgentChannelSurface()) return profilesRailHtml();
@@ -2406,6 +2427,262 @@
       '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Recent ' + usageActivityLabelHtml("activity") + '</h2><p class="hint">Hover over total tokens to see the input, cached input, and output split.</p></div>' + filter + '</div>' + usageOperationsHtml() + '</section>';
   }
 
+  // ---- Plan ------------------------------------------------------------------
+  // The host keeps the plan and its usage and sells through Stripe. Admin
+  // shows its answer, with every amount already in dollars, and sends an
+  // Owner to the Stripe page it returns.
+  var BILLING_SECTION = { id: "billing", label: "Plan", action: "open-billing" };
+  var billingRequest = null;
+
+  function loadBilling() {
+    if (billingRequest) return billingRequest;
+    state.billingError = null;
+    billingRequest = api("/admin/api/billing", { cache: "no-store" }).then(function (body) {
+      state.billing = body;
+    }).catch(function () {
+      state.billingError = { at: "load", text: "Your plan could not be loaded." };
+    }).then(function () {
+      billingRequest = null;
+      render();
+    });
+    return billingRequest;
+  }
+
+  function openBilling() {
+    state.view = "billing";
+    state.profileScreen = "list";
+    state.disableConfirm = false;
+    state.billingPlansOpen = false;
+    state.billingFundingConfirm = false;
+    render();
+    loadBilling();
+  }
+
+  // The page offers one switch: away from how the workspace pays now.
+  function switchFunding() {
+    if (state.billingBusy) return;
+    var next = state.billing.funding === "platform" ? "own_key" : "platform";
+    state.billingBusy = "funding";
+    state.billingError = null;
+    render();
+    postJson("/admin/api/billing/funding", "POST", { funding: next }).then(function (body) {
+      state.billing = body;
+      state.billingFundingConfirm = false;
+    }).catch(function () {
+      state.billingError = { at: "switch", text: next === "platform" ? "Could not switch to Chickpea’s models. Try again." : "Could not switch to your own key. Try again." };
+    }).then(function () {
+      state.billingBusy = "";
+      render();
+    });
+  }
+
+  // The Plan page sends an Owner who needs a key to Model providers with
+  // ?return=plan, so the key they save there can finish the switch.
+  function planReturn() {
+    return BILLING_OFFERED && INSTALLATION_OWNER && typeof location !== "undefined" &&
+      new URLSearchParams(location.search || "").get("return") === "plan";
+  }
+
+  function finishOwnKeySwitch() {
+    postJson("/admin/api/billing/funding", "POST", { funding: "own_key" }).then(function (body) {
+      state.billing = body;
+      openBilling();
+    }).catch(function () {
+      state.planReturnSwitchFailed = true;
+      render();
+    });
+  }
+
+  function openStripe(path, body, busy, at) {
+    if (state.billingBusy) return;
+    state.billingBusy = busy;
+    state.billingError = null;
+    render();
+    postJson(path, "POST", body).then(function (response) {
+      location.assign(response.url);
+    }).catch(function () {
+      state.billingBusy = "";
+      state.billingError = { at: at, text: "Stripe could not be opened. Try again." };
+      render();
+    });
+  }
+
+  function billingErrorHtml(at) {
+    return state.billingError && state.billingError.at === at
+      ? '<p class="field-error" role="alert">' + esc(state.billingError.text) + '</p>'
+      : '';
+  }
+
+  function billingTopbarHtml() {
+    if (!BILLING_OFFERED) return "";
+    return '<button type="button" class="btn btn-soft' + (primarySection() === "billing" ? " nav-active" : "") + '" data-action="open-billing" data-section-switcher="true">' + BILLING_SECTION.label + '</button>';
+  }
+
+  function billingRailHtml() {
+    return '<nav class="rail primary-shell-sidebar" aria-label="Plan">' + primaryShellBrandHtml() + '<div class="rail-context">' +
+      '<div class="rail-head"><span class="section-eyebrow">Plan</span></div>' +
+      '<button type="button" class="chan-item active" data-action="open-billing" aria-current="page"><span class="chan-name">Overview</span><span class="chan-meta">' +
+      (state.billing && state.billing.funding === "own_key" ? "Own API key" : "Usage") + '</span></button>' +
+      '</div>' + sectionSwitcherHtml() + '</nav>';
+  }
+
+  function billingButtonHtml(action, label, key, busyKey, className) {
+    var busy = state.billingBusy;
+    return '<button type="button" class="btn ' + className + '" data-action="' + action + '"' + (key ? ' data-key="' + esc(key) + '"' : '') + (busy ? ' disabled' : '') + '>' + (busy === busyKey ? 'Opening Stripe&hellip;' : label) + '</button>';
+  }
+
+  function billingTrialText(trial) {
+    return esc(trial.remaining) + ' of trial usage left, until ' + esc(trial.until);
+  }
+
+  function billingStatusHtml(billing) {
+    var own = billing.ownKeyWithoutPlan;
+    var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
+    var meter = billing.meter;
+    var card = meter
+      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
+        (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
+        '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
+      : billing.planName
+        ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">' + esc(billing.planName) + '</span>'
+        : billing.trial
+          ? '<span class="usage-card-label">Trial</span><span class="billing-meter-text">' + billingTrialText(billing.trial) + '</span>'
+          : billing.funding === "platform"
+            ? '<span class="usage-card-label">Plan</span><span class="usage-card-value">No plan</span><span class="hint">Choose a plan for monthly usage.</span>'
+            : '';
+    var lines = [];
+    if (billing.rollover) lines.push('Carried from last month: ' + esc(billing.rollover));
+    if (billing.extraUsage) {
+      lines.push(billing.extraUsage.frozen
+        ? esc(billing.extraUsage.remaining) + ' of extra usage, available when you renew, until ' + esc(billing.extraUsage.until)
+        : 'Extra usage: ' + esc(billing.extraUsage.remaining));
+    }
+    if (billing.trial && (meter || billing.planName)) lines.push(billingTrialText(billing.trial));
+    return notice +
+      (card ? '<div class="usage-grid billing-grid"><div class="usage-card usage-card-primary">' + card + '</div></div>' : '') +
+      (lines.length ? '<ul class="billing-lines">' + lines.map(function (line) { return '<li>' + line + '</li>'; }).join("") + '</ul>' : '');
+  }
+
+  function billingPlansHtml(billing) {
+    if (!state.billingPlansOpen) return "";
+    var current = billing.plan && billing.plan.key;
+    var ownKey = billing.funding === "own_key";
+    return '<div class="billing-plans" role="group" aria-labelledby="billing-plans-heading"><h3 class="section-title" id="billing-plans-heading">Choose a plan</h3>' +
+      billing.offers.plans.map(function (plan) {
+        var action = plan.key === current
+          ? '<span class="badge badge-on"><span class="dot"></span>Current plan</span>'
+          : ownKey && !plan.ownKeyEligible
+            ? '<span class="hint">Chickpea&rsquo;s models only</span>'
+            : '<button type="button" class="btn btn-soft" data-action="billing-choose-plan" data-key="' + esc(plan.key) + '"' + (state.billingBusy ? ' disabled' : '') + '>Choose</button>';
+        return '<div class="billing-plan"><div><strong>' + esc(plan.name) + '</strong><p class="hint">' + esc(plan.price) + ' a month includes ' + esc(plan.included) + ' of usage</p>' +
+          (plan.ownKeyMinimum ? '<p class="hint">Lowest plan for your own API key</p>' : '') + '</div>' + action + '</div>';
+      }).join("") + '</div>';
+  }
+
+  function billingPlanSectionHtml(billing) {
+    var plan = billing.plan;
+    var summary = plan
+      ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
+        (billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '') + '</p>'
+      : '<p class="hint">No plan</p>';
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
+      '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +
+      (plan ? billingButtonHtml("billing-manage", "Manage billing", "", "portal", "btn-ghost") : '') + '</div>' +
+      billingErrorHtml("plan") + billingPlansHtml(billing) + '</section>';
+  }
+
+  // Extra usage is spent only while a plan is active, so it is sold only then.
+  function billingExtraUsageHtml(billing) {
+    var offers = billing.offers.extraUsage;
+    var body = billing.plan
+      ? '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2></div></div>' +
+        '<div class="billing-actions">' + offers.map(function (offer) {
+          return billingButtonHtml("billing-add-extra-usage", "Add " + esc(offer.usage), offer.key, "extra_usage:" + offer.key, "btn-soft");
+        }).join("") + '</div>' +
+        (offers.length ? '<p class="hint">Extra usage is sold at face value and keeps for ' + offers[0].validMonths + ' months. You need a plan to use it.</p>' : '')
+      : '<div class="usage-section-head"><div><h2 class="section-title">Extra usage</h2><p class="hint">Choose a plan to add extra usage.</p></div></div>';
+    return '<section class="usage-section">' + body + billingErrorHtml("extra_usage") + '</section>';
+  }
+
+  function billingUseTableHtml(heading, rows, empty) {
+    var body = rows.length
+      ? rows.map(function (row) {
+        return '<tr><td>' + esc(row.name || "Other") + '</td><td class="number">' + esc(row.used) + '</td></tr>';
+      }).join("")
+      : '<tr><td colspan="2">' + empty + '</td></tr>';
+    return '<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>' + heading + '</th><th class="number">Used</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+
+  // A host whose ledger records no person sends no person rows, so the Person
+  // table shows only when there are some.
+  function billingUseHtml(billing) {
+    var period = billing.period;
+    var empty = period ? "No usage yet this period." : "No usage yet.";
+    return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">' + (period ? 'Usage this period' : 'Usage') + '</h2>' +
+      (period ? '<p class="hint">Since ' + esc(period.start) + '.</p>' : '') + '</div></div>' +
+      '<div class="billing-use">' + billingUseTableHtml("Agent", billing.use.byAgent, empty) +
+      (billing.use.byPerson.length ? billingUseTableHtml("Person", billing.use.byPerson, empty) : '') + '</div></section>';
+  }
+
+  function billingFundingConfirmHtml(question, confirmLabel) {
+    var busy = state.billingBusy === "funding";
+    return '<div class="callout"><span>' + question + '</span></div>' +
+      '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (busy ? ' disabled' : '') + '>Cancel</button>' +
+      '<button type="button" class="btn btn-primary" data-action="billing-funding-confirm"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Switching&hellip;' : confirmLabel) + '</button></div>';
+  }
+
+  // An own key needs a plan at or above the lowest one for it, then a key for
+  // the default model's provider, so the way there starts at whichever is missing.
+  function billingSwitchHtml(billing) {
+    var next = billing.switchFunding;
+    var open = state.billingFundingConfirm;
+    var body;
+    if (next.to === "platform") {
+      body = open
+        ? billingFundingConfirmHtml('Switch to Chickpea&rsquo;s models? Replies will stop using your own key.', 'Switch to Chickpea&rsquo;s models')
+        : '<div class="usage-contract"><p>With Chickpea&rsquo;s models, no API key is needed. Replies draw on your plan&rsquo;s usage.</p></div>' +
+          '<div class="billing-actions"><button type="button" class="btn btn-primary" data-action="billing-use-platform">Use Chickpea&rsquo;s models</button></div>';
+    } else if (!next.ready && next.needs === "key") {
+      body = '<div class="billing-actions"><a class="btn btn-ghost" href="/admin/settings/providers?return=plan">Use your own key instead</a></div>' +
+        '<p class="hint">' + (next.provider ? 'Your default model needs an ' + esc(providerMeta(next.provider).name) + ' API key. Add one in Settings first.' : 'Add a provider API key in Settings first.') + '</p>';
+    } else if (!open) {
+      body = '<div class="billing-actions"><button type="button" class="btn btn-ghost" data-action="billing-use-own-key">Use your own key instead</button></div>';
+    } else if (next.ready) {
+      var stranded = next.agentsWithoutKey;
+      body = billingFundingConfirmHtml('Switch to your own key? Your provider bills you for the model directly, and your plan covers tasks.' +
+        (stranded.length === 1 ? ' This Agent will stop replying until a key is added for its model&rsquo;s provider: ' + esc(stranded[0]) + '.'
+          : stranded.length ? ' These Agents will stop replying until a key is added for their model&rsquo;s provider: ' + stranded.map(esc).join(", ") + '.' : ''),
+        'Switch to your own key');
+    } else {
+      body = '<div class="callout"><span>Your own API key needs the ' + esc(next.minimumPlan.price) + ' plan or higher. Choose it first, then switch to your own key.</span></div>' +
+        '<div class="billing-actions"><button type="button" class="btn btn-soft" data-action="billing-funding-cancel"' + (state.billingBusy ? ' disabled' : '') + '>Cancel</button>' +
+        billingButtonHtml("billing-choose-minimum-plan", "Choose the " + esc(next.minimumPlan.price) + " plan", next.minimumPlan.key, "minimum_plan", "btn-primary") + '</div>';
+    }
+    return '<section class="usage-section">' + body + billingErrorHtml("switch") + '</section>';
+  }
+
+  function billingLede(billing) {
+    if (billing.funding === "own_key") return 'Your workspace pays for models with its own API key.' + (billing.planName ? ' Your plan covers tasks.' : '');
+    if (billing.planName) return 'Your plan includes usage for your Agents&rsquo; chat and tasks.';
+    if (billing.trial) return 'Your trial includes usage for your Agents&rsquo; chat and tasks.';
+    return 'Your workspace has no plan. Plans include usage for your Agents&rsquo; chat and tasks.';
+  }
+
+  function billingMainHtml() {
+    var billing = state.billing;
+    var head = '<div class="usage-head"><div class="usage-head-copy"><span class="section-eyebrow">Billing</span><h1 class="page-title">Plan</h1>' +
+      (billing ? '<p class="hint">' + billingLede(billing) + '</p>' : '') + '</div></div>';
+    if (!billing) {
+      if (state.billingError) return head + '<div class="empty"><p class="field-error">' + esc(state.billingError.text) + '</p><button type="button" class="btn btn-ghost" data-action="billing-retry">Retry</button></div>';
+      return head + '<div class="empty"><p class="hint">Loading your plan&hellip;</p></div>';
+    }
+    var status = billingErrorHtml("load") + billingStatusHtml(billing);
+    if (!billing.manage) return head + status + '<div class="usage-contract"><p>An Owner can change the plan and how your workspace pays for models.</p></div>';
+    return head + status + billingPlanSectionHtml(billing) +
+      (billing.funding === "platform" || billing.plan ? billingExtraUsageHtml(billing) : '') +
+      billingUseHtml(billing) + billingSwitchHtml(billing);
+  }
+
   function isOnboardingSlackConnection() {
     return state.view === "onboarding" && state.onboarding && state.onboarding.stage === "connect_slack";
   }
@@ -2479,12 +2756,24 @@
     return '<img class="onboarding-provider-logo" src="' + esc(MODEL_PROVIDER_LOGOS[provider.id] || "") + '" alt="">';
   }
 
+  function onboardingOnChickpeaModels() {
+    return BILLING_OFFERED && INSTALLATION_OWNER;
+  }
+
+  function onboardingPlatformSetupHtml() {
+    if (state.onboardingError) {
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+        '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
+        (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
+    }
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>';
+  }
+
   function onboardingProviderHtml() {
     var selectedId = state.onboardingProviderSelected || initialOnboardingProviderId();
     var selected = selectedId ? onboardingProviderDefinition(selectedId) : null;
     var configured = selected ? onboardingProviderConfigured(selected.id) : false;
-    // Workers AI exists only where the deployment has the binding; Node
-    // installs never see it.
     var tabs = ONBOARDING_PROVIDERS.filter(function (provider) {
       return provider.id !== "cloudflare" || onboardingProviderConfigured("cloudflare");
     }).map(function (provider) {
@@ -2596,6 +2885,11 @@
   }
 
   function onboardingStepLabels() {
+    if (onboardingOnChickpeaModels()) {
+      return onboardingGithubConnectPath()
+        ? ["Connect Slack", "Connect GitHub", "Try Chickpea"]
+        : ["Connect Slack", "Try Chickpea"];
+    }
     return onboardingGithubConnectPath()
       ? ["Connect Slack", "Choose provider", "Choose model", "Connect GitHub", "Try Chickpea"]
       : ["Connect Slack", "Choose provider", "Choose model", "Try Chickpea"];
@@ -2618,6 +2912,9 @@
     }
     if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
+    if ((state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") && onboardingOnChickpeaModels()) {
+      return onboardingPlatformSetupHtml();
+    }
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
     if (state.onboarding.stage === "connect_github" && onboardingGithubConnectPath()) return onboardingGithubHtml();
@@ -2627,6 +2924,8 @@
 
   function onboardingStepNumber() {
     var stage = state.onboarding && state.onboarding.stage;
+    if (onboardingOnChickpeaModels() && (stage === "choose_provider" || stage === "choose_model" ||
+        (stage === "connect_github" && onboardingGithubConnectPath()))) return 2;
     if (stage === "choose_provider") return 2;
     if (stage === "choose_model") return 3;
     if (stage === "connect_github" && onboardingGithubConnectPath()) return 4;
@@ -2638,7 +2937,7 @@
     var current = onboardingStepNumber();
     var journeyComplete = state.onboarding && state.onboarding.stage === "complete";
     var labels = onboardingStepLabels();
-    return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
+    return '<ol class="onboarding-orientation' + (labels.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + labels.map(function (label, index) {
       var step = index + 1;
       var isComplete = journeyComplete || step < current;
       var isActive = !journeyComplete && step === current;
@@ -2662,6 +2961,9 @@
     }
     if (state.view === "team") {
       return '<main class="main"><div class="main-inner team-main">' + teamMainHtml() + '</div></main>';
+    }
+    if (state.view === "billing") {
+      return '<main class="main"><div class="main-inner usage-main">' + billingMainHtml() + '</div></main>';
     }
     // Profiles is a first-class main-panel destination (master-detail, per cards
     // 09-12) that takes precedence over the channel chrome — reachable from the
@@ -9615,6 +9917,12 @@
         new URLSearchParams(location.search || "").get("return") === "onboarding"
       ? '<div class="callout"><span>Connect a ChatGPT subscription and select it for chat. Then return to setup to choose its model.</span><a class="btn btn-primary btn-sm" href="/admin/onboarding">Return to setup</a></div>'
       : "";
+    var planReturnCallout = planReturn()
+      ? '<div class="callout"><span>' + (state.planReturnSwitchFailed
+        ? 'Your key is saved, but the switch to your own key did not finish. Go back to Plan to try again.'
+        : 'Save a key for your default model&rsquo;s provider to switch to your own key.') +
+        '</span><a class="btn btn-primary btn-sm" href="/admin/plan">Back to Plan</a></div>'
+      : "";
     var workspaceDefaultSection = workspaceDefaultSectionHtml();
     var providerSection;
     if (state.settingsError) {
@@ -9631,7 +9939,7 @@
     return head +
       settingsPanelHtml("slack", slackWorkspaceSettingsHtml()) +
       settingsPanelHtml("connectors", connectorsSettingsHtml()) +
-      settingsPanelHtml("providers", onboardingReturn + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
+      settingsPanelHtml("providers", onboardingReturn + planReturnCallout + workspaceDefaultSection + workspaceImageRoleSectionHtml() + workspaceCodingRoleSectionHtml() + providerSection) +
       settingsPanelHtml("github", githubSectionHtml()) +
       (SELF_HOSTED ? settingsPanelHtml("sandbox", sandboxSectionHtml()) : "");
   }
@@ -11881,6 +12189,7 @@
       // suggestion source; the validate call primed the server model cache.
       return loadSettings().then(function () {
         refreshModels();
+        if (planReturn()) finishOwnKeySwitch();
         if (id === "openai") return refreshImageConfigurationAfterOpenAiConnection();
         render();
       });
@@ -12852,6 +13161,28 @@
     });
   }
 
+  // Once per load, and again only from Try again: a failure never retries itself.
+  function startOnboardingOnChickpeaModels() {
+    var stage = state.onboarding && state.onboarding.stage;
+    if (
+      state.view !== "onboarding" || (stage !== "choose_provider" && stage !== "choose_model") ||
+      !onboardingOnChickpeaModels() || state.onboardingBusy || state.onboardingError
+    ) return;
+    state.onboardingBusy = true;
+    state.onboardingPlatformErrorCode = "";
+    postJson("/admin/api/onboarding/platform", "POST", {}).then(function (body) {
+      state.onboarding = body;
+      state.onboardingBusy = false;
+      state.onboardingNotice = "";
+      render();
+    }).catch(function (error) {
+      state.onboardingBusy = false;
+      state.onboardingError = "Chickpea could not finish setting up. Try again.";
+      state.onboardingPlatformErrorCode = error && error.payload && typeof error.payload.error === "string" ? error.payload.error : "";
+      render();
+    });
+  }
+
   // A connect started from onboarding returns to it once; move on to Try.
   var onboardingGithubReturnSettled = false;
   function settleOnboardingGithubReturn() {
@@ -13392,6 +13723,20 @@
       else if (statusMember && (nextStatus === "suspended" || nextStatus === "removed")) confirmTeamStatus(statusMember, nextStatus);
     }
     if (action === "open-usage" && USAGE_ADMIN_UI) { openUsage(); }
+    if (action === "open-billing" && BILLING_OFFERED) { openBilling(); }
+    if (action === "billing-retry") { loadBilling(); }
+    if (action === "billing-add-extra-usage") {
+      var extraUsageKey = target.getAttribute("data-key") || "";
+      openStripe("/admin/api/billing/checkout", { kind: "extra_usage", key: extraUsageKey }, "extra_usage:" + extraUsageKey, "extra_usage");
+    }
+    if (action === "billing-change-plan") { state.billingPlansOpen = !state.billingPlansOpen; render(); }
+    if (action === "billing-choose-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "plan", "plan");
+    if (action === "billing-choose-minimum-plan") openStripe("/admin/api/billing/checkout", { kind: "plan", key: target.getAttribute("data-key") || "" }, "minimum_plan", "switch");
+    if (action === "billing-manage") openStripe("/admin/api/billing/portal", {}, "portal", "plan");
+    if (action === "billing-use-platform" || action === "billing-use-own-key") { state.billingFundingConfirm = true; state.billingError = null; render(); }
+    if (action === "billing-funding-cancel" && !state.billingBusy) { state.billingFundingConfirm = false; state.billingError = null; render(); }
+    if (action === "billing-funding-confirm") switchFunding();
+    if (action === "onboarding-platform-retry" && !state.onboardingBusy) { state.onboardingError = ""; render(); }
     if (action === "open-audit") { openAuditLogs("", "", ""); }
     // Brand-as-home: the reliable exit to the canonical Agent.
     if (action === "go-home") { openHome(); }

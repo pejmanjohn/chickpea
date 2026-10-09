@@ -20,6 +20,8 @@ import {
   selectOnboardingProvider,
   startOnboardingTry,
 } from '../src/config/onboarding-state.ts';
+import { configurePlatformBilling, type BillingFunding } from '../src/config/platform-billing.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { invalidateProviderKeyCache } from '../src/config/provider-keys.ts';
 import { invalidateProviderModelCache } from '../src/config/provider-models.ts';
 import { SettingsStoreLogic, SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
@@ -39,9 +41,11 @@ import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import type { UsageStore } from '../src/usage/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 
 /**
  * Hosted guided onboarding: the person who signs up becomes the first Owner
@@ -389,6 +393,192 @@ test('hosted onboarding never offers Workers AI, even with an AI binding', async
   assert.equal(refused.status, 409);
   assert.deepEqual(await refused.json(), { error: 'onboarding_provider_not_configured' });
   assert.equal((await signup.journey())!.revision, revision);
+});
+
+test('an installation on Chickpea\'s models chooses a provider with no key; one on its own key still needs one', async (t) => {
+  let funding: 'platform' | 'customer' = 'customer';
+  configurePlatformFunding({
+    funding: async () => funding,
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+  });
+  t.after(() => resetPlatformFundingForTests());
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const choose = async () => admin('/admin/api/onboarding/provider', {
+    method: 'POST',
+    body: JSON.stringify({ expectedRevision: (await signup.journey())!.revision, providerId: 'anthropic' }),
+  });
+  const refused = await choose();
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: 'onboarding_provider_not_configured' });
+  funding = 'platform';
+  const chosen = await json(choose());
+  assert.equal(chosen.stage, 'choose_model');
+  assert.equal(chosen.providerId, 'anthropic');
+  assert.equal((await signup.journey())!.journey.selectedProviderId, 'anthropic');
+});
+
+function hostPorts(t: TestContext) {
+  const host = { funding: 'own_key' as BillingFunding, chosen: [] as BillingFunding[], down: false };
+  configurePlatformBilling({
+    summary: async () => ({ ...NO_PLAN, funding: host.funding }),
+    checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
+    portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
+    chooseFunding: async (_installationId, funding) => {
+      host.chosen.push(funding);
+      if (host.down) throw new Error('The host is down.');
+      host.funding = funding;
+    },
+  });
+  configurePlatformFunding({
+    funding: async () => host.funding === 'platform' ? 'platform' : 'customer',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+  });
+  t.after(() => {
+    configurePlatformBilling(undefined);
+    resetPlatformFundingForTests();
+  });
+  return host;
+}
+
+const startOnPlatform = (as: ReturnType<Awaited<ReturnType<typeof signUp>>['admin']>) =>
+  as('/admin/api/onboarding/platform', { method: 'POST' });
+
+test('where the host sells Chickpea\'s models, onboarding chooses them and Opus 5.5 once, and goes straight to Try', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const started = await startOnPlatform(admin);
+  assert.equal(started.status, 200, await started.clone().text());
+  const body = await started.json() as { stage: string; providerId: string; modelId: string; revision: string };
+  assert.equal(body.stage, 'try');
+  assert.equal(body.providerId, 'anthropic');
+  assert.equal(body.modelId, 'anthropic/claude-opus-5-5');
+  assert.deepEqual(host.chosen, ['platform']);
+  const workspaceDefault = (await signup.config.getWorkspaceModelDefault(TEAM))!;
+  assert.equal(workspaceDefault.modelId, 'anthropic/claude-opus-5-5');
+  const { journey, revision } = (await signup.journey())!;
+  assert.equal(journey.agentId, 'agent_chickpea');
+  assert.equal(journey.selectedModelId, 'anthropic/claude-opus-5-5');
+  assert.equal(body.revision, revision);
+
+  const anotherOwner = signup.admin(principalFor('owner', { userId: 'user_second_owner', membershipId: 'membership_second_owner' }));
+  for (const as of [admin, anotherOwner]) {
+    const again = await json<{ stage: string; revision: string }>(startOnPlatform(as));
+    assert.equal(again.stage, 'try');
+    assert.equal(again.revision, revision);
+  }
+  assert.deepEqual(host.chosen, ['platform'], 'the host is asked once');
+  assert.equal((await signup.journey())!.revision, revision);
+  assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))!.revision, workspaceDefault.revision);
+});
+
+test('when the host cannot record Chickpea\'s models, onboarding changes nothing, and trying again finishes', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const before = (await signup.journey())!.revision;
+  const defaultBefore = await signup.config.getWorkspaceModelDefault(TEAM);
+  host.down = true;
+  const failed = await startOnPlatform(admin);
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: 'internal_error' });
+  assert.equal((await signup.journey())!.revision, before);
+  assert.deepEqual(await signup.config.getWorkspaceModelDefault(TEAM), defaultBefore);
+  host.down = false;
+  assert.equal((await json(startOnPlatform(admin))).stage, 'try');
+  assert.deepEqual(host.chosen, ['platform', 'platform']);
+  assert.equal((await signup.config.getWorkspaceModelDefault(TEAM))?.modelId, 'anthropic/claude-opus-5-5');
+});
+
+test('a Member, an Admin, a finished journey, or a host with no billing port changes nothing; the Plan page still switches after onboarding', async (t) => {
+  const host = hostPorts(t);
+  const signup = await signUp(t);
+  await signup.claim();
+  const admin = signup.admin(await signup.ownerPrincipal());
+  for (const role of ['admin', 'member'] as const) {
+    assert.equal((await startOnPlatform(signup.admin(principalFor(role)))).status, 403, role);
+  }
+  const begun = (await signup.journey())!;
+  const provider = await selectOnboardingProvider(signup.settings, {
+    expectedRevision: begun.revision, workspaceId: TEAM, providerId: 'anthropic',
+  });
+  const trying = await startOnboardingTry(signup.settings, {
+    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER,
+  });
+  const complete = await completeOnboardingJourney(signup.settings, trying.revision);
+  assert.equal((await json(startOnPlatform(admin))).stage, 'complete');
+  assert.equal((await signup.journey())!.revision, complete.revision);
+  assert.deepEqual(host.chosen, [], 'nothing is asked of the host');
+  const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'platform' }) });
+  assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
+  assert.deepEqual(host.chosen, ['platform']);
+
+  configurePlatformBilling(undefined);
+  await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
+  await beginOnboardingJourney(signup.settings);
+  assert.equal((await startOnPlatform(admin)).status, 404, 'no port, nothing to choose');
+});
+
+test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {
+  await withProviders(async () => {
+    let funding: BillingFunding = 'platform';
+    const chosen: BillingFunding[] = [];
+    configurePlatformBilling({
+      summary: async () => ({ ...TEAM_PLAN, funding }),
+      checkout: async () => ({ url: 'https://checkout.stripe.com/c/pay/cs_test' }),
+      portal: async () => ({ url: 'https://billing.stripe.com/p/session/test' }),
+      chooseFunding: async (_installationId, next) => { chosen.push(next); funding = next; },
+    });
+    t.after(() => configurePlatformBilling(undefined));
+    const signup = await signUp(t);
+    await signup.claim();
+    const admin = signup.admin(await signup.ownerPrincipal());
+    const current = (await signup.config.getWorkspaceModelDefault(TEAM))!;
+    await signup.config.putWorkspaceModelDefault({
+      workspaceId: TEAM, modelId: 'anthropic/claude-sonnet-5-5', provenance: 'admin_selected',
+    }, current.revision);
+    const agent = (id: string, model: string, enabled = true) => signup.config.createAgent({
+      id, kind: 'user', name: id.replace('agent_', ''), instructions: 'Help.', enabled, lifecycle: 'active',
+      model, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await agent('agent_Research', 'openai/gpt-5.6-terra');
+    await agent('agent_Writer', 'openrouter/openai/gpt-5.6-terra');
+    await agent('agent_Paused', 'openai/gpt-5.6-terra', false);
+    const saveKey = async (provider: 'anthropic' | 'openrouter') => {
+      const saved = await admin(`/admin/api/providers/${provider}/key`, {
+        method: 'POST', body: JSON.stringify({ apiKey: FAKE_PROVIDER_KEYS[provider] }),
+      });
+      assert.equal(saved.status, 200, await saved.clone().text());
+    };
+    const ownKey = async () => (await json(admin('/admin/api/billing'))).switchFunding;
+    const switchToOwnKey = () => admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'own_key' }) });
+
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' });
+    await saveKey('openrouter');
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: false, needs: 'key', provider: 'anthropic' }, 'a key for another provider is not enough');
+    const refused = await switchToOwnKey();
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: 'own_key_missing', provider: 'anthropic' });
+    assert.deepEqual(chosen, [], 'a workspace whose default model has no key stays on Chickpea\'s models');
+
+    await saveKey('anthropic');
+    assert.deepEqual(await ownKey(), { to: 'own_key', ready: true, agentsWithoutKey: ['Research'] },
+      'only an active, enabled Agent pinned to a provider with no key would stop');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const switched = await json(switchToOwnKey());
+      assert.equal(switched.funding, 'own_key');
+      assert.deepEqual(switched.switchFunding, { to: 'platform' });
+    }
+    assert.deepEqual(chosen, ['own_key', 'own_key'], 'switching again asks the host for the same funding');
+  });
 });
 
 test('the journey starts with the first Owner claim or not at all, and once', async (t) => {
