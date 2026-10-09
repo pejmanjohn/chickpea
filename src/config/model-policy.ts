@@ -266,8 +266,8 @@ async function roleProviderUnavailable(
   }
   return modelProviderUnavailable(
     pricedModelRoute(modelId, input.role === 'image' ? 'image_tokens' : 'standard_input_output'),
-    input.env,
     () => defaultProviderCredentialCheck(providerId, input.env, input.settings),
+    installationFunding(input.env),
   );
 }
 
@@ -426,9 +426,8 @@ export type ModelProviderUnavailableReason = Exclude<ModelRoleUnsetReason, 'role
 
 export async function modelProviderUnavailable(
   route: PricedModelRoute | undefined,
-  env: PlatformEnv | undefined,
   customerFunded: () => Promise<boolean> | boolean,
-  funding: ModelRequestFundingSource | Promise<ModelRequestFundingSource> = installationFunding(env),
+  funding: ModelRequestFundingSource | Promise<ModelRequestFundingSource>,
 ): Promise<ModelProviderUnavailableReason | undefined> {
   if (await funding !== 'platform') {
     return (await customerFunded()) ? undefined : 'credential_missing';

@@ -6737,8 +6737,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/api/models/readiness', async (c) => {
     const modelId = c.req.query('modelId') ?? '';
     if (modelId.indexOf('/') < 1) return invalidRequest(c);
-    const unavailable = await (await chatModelReadiness(c))(modelId);
-    return c.json({ modelId, unavailable: unavailable ?? null });
+    const answer = await (await chatModelReadiness(c))(modelId);
+    return c.json({ modelId, ...(answer ?? { unavailable: null }) });
   });
 
   // The image role's picker source, kept separate from the chat model list so a
@@ -12795,20 +12795,23 @@ type ChatModelReadinessInput = Parameters<typeof chatModelProviderReady>[1] & {
   funding: ModelRequestFundingSource;
 };
 
+type ChatModelUnavailable =
+  | { unavailable: 'model_unsupported'; message: string }
+  | { unavailable: ModelProviderUnavailableReason };
+
 async function chatModelUnavailable(
   modelId: string,
   providerId: string,
   input: ChatModelReadinessInput,
-): Promise<ModelProviderUnavailableReason | 'model_unsupported' | undefined> {
-  if (await activeCatalogCompatibilityError(modelId, input.openAiAuthMethod, input.settingsStore, input.platformEnv)) {
-    return 'model_unsupported';
-  }
-  return modelProviderUnavailable(
+): Promise<ChatModelUnavailable | undefined> {
+  const message = await activeCatalogCompatibilityError(modelId, input.openAiAuthMethod, input.settingsStore, input.platformEnv);
+  if (message) return { unavailable: 'model_unsupported', message };
+  const unavailable = await modelProviderUnavailable(
     pricedModelRoute(modelId, 'standard_input_output'),
-    input.platformEnv,
     () => chatModelProviderReady(providerId, input),
     input.funding,
   );
+  return unavailable ? { unavailable } : undefined;
 }
 
 /**
@@ -12835,7 +12838,6 @@ async function codingModelChoiceError(input: {
   if (incompatible) return incompatible;
   const unavailable = await modelProviderUnavailable(
     pricedModelRoute(input.modelId, 'standard_input_output'),
-    input.platformEnv,
     async () => {
       // A key-lane provider is ready when the turn's own key lookup finds a key,
       // so Admin never calls ready what a turn would silently replace.
@@ -12851,6 +12853,7 @@ async function codingModelChoiceError(input: {
         openAiSubscription,
       });
     },
+    installationFunding(input.platformEnv),
   );
   if (!unavailable) return undefined;
   return unavailable === 'funding_not_offered'
@@ -12899,24 +12902,29 @@ async function workspaceModelDefaultProjection(input: {
       code: 'workspace_default_missing',
       repairPath: '/admin/settings/providers',
     };
+  } else if (!providerId) {
+    health = {
+      status: 'repair_required',
+      providerId,
+      code: 'model_unsupported',
+      repairPath: '/admin/settings/providers',
+    };
   } else {
-    const unavailable = providerId
-      ? await chatModelUnavailable(modelId, providerId, {
-          runtimeProviders: input.runtimeProviders,
-          platformEnv: input.platformEnv,
-          openAiAuthMethod,
-          workersAiEnabled,
-          openAiSubscription,
-          settingsStore: input.settingsStore,
-          funding,
-        })
-      : 'model_unsupported';
-    health = unavailable
+    const answer = await chatModelUnavailable(modelId, providerId, {
+      runtimeProviders: input.runtimeProviders,
+      platformEnv: input.platformEnv,
+      openAiAuthMethod,
+      workersAiEnabled,
+      openAiSubscription,
+      settingsStore: input.settingsStore,
+      funding,
+    });
+    health = answer
       ? {
           status: 'repair_required',
           providerId,
           // A platform-funded installation never uses a saved key, so only another model repairs it.
-          code: unavailable === 'credential_missing' ? 'provider_unavailable' : unavailable,
+          code: answer.unavailable === 'credential_missing' ? 'provider_unavailable' : answer.unavailable,
           repairPath: '/admin/settings/providers',
         }
       : { status: 'ready', providerId };

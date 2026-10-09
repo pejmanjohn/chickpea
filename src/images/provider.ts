@@ -5,6 +5,7 @@ import { ModelCredentialRevisionError } from '../config/model-credential-refs.ts
 import { modelProviderUnavailable, pricedModelRoute } from '../config/model-policy.ts';
 import {
   CreditsExhaustedError,
+  installationFunding,
   PlatformFundingUnavailableError,
 } from '../config/platform-funding.ts';
 import { describeProviderKeySources } from '../config/provider-keys.ts';
@@ -44,8 +45,8 @@ export async function imageModelProfileReady(
   }
   const unavailable = await modelProviderUnavailable(
     pricedModelRoute(profile.id, 'image_tokens'),
-    env,
     async () => (await describeProviderKeySources(env, store))[profile.provider] !== 'missing',
+    installationFunding(env),
   );
   return unavailable === undefined;
 }
