@@ -2559,7 +2559,7 @@
     var notice = own ? '<div class="callout"><span>Your own API key needs the ' + esc(own.minimumPrice) + ' plan or higher.</span></div>' : '';
     var meter = billing.meter;
     var card = meter
-      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, resets ' + esc(meter.resets) +
+      ? '<span class="usage-card-label">Plan usage</span><span class="billing-meter-text">' + esc(meter.used) + ' of ' + esc(meter.included) + ' used, ' + meter.percent + '%, ' + billingMeterEndText(billing) +
         (meter.onPacePercent == null ? '' : ', on pace for ' + meter.onPacePercent + '%') + '</span>' +
         '<span class="billing-meter" role="meter" aria-label="Plan usage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.min(meter.percent, 100) + '"><span style="width: ' + Math.min(meter.percent, 100) + '%"></span></span>'
       : billing.planName
@@ -2598,11 +2598,23 @@
       }).join("") + '</div>';
   }
 
+  function billingMeterEndText(billing) {
+    var pending = billing.pendingChange;
+    return pending && pending.kind === "ends" ? 'ends ' + esc(pending.on) : 'resets ' + esc(billing.meter.resets);
+  }
+
+  function billingPeriodEndText(billing) {
+    var pending = billing.pendingChange;
+    if (pending && pending.kind === "ends") return ' Ends ' + esc(pending.on) + '.';
+    if (pending && pending.kind === "plan") return ' Changes to the ' + esc(pending.planName) + ' on ' + esc(pending.on) + '.';
+    return billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '';
+  }
+
   function billingPlanSectionHtml(billing) {
     var plan = billing.plan;
     var summary = plan
       ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
-        (billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '') + '</p>'
+        billingPeriodEndText(billing) + '</p>'
       : '<p class="hint">No plan</p>';
     return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
       '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +

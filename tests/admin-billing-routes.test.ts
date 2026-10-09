@@ -18,7 +18,7 @@ import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
-import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
 const INSTALLATION = 'inst_billing';
@@ -118,6 +118,7 @@ test('an Owner reads the plan\'s usage in dollars, the offers, and named use; un
     ...TEAM_STATUS,
     plan: { key: 'team', name: 'Team', price: '$200', included: '$240' },
     period: { start: 'Oct 7', end: 'Nov 7' },
+    pendingChange: null,
     use: {
       byAgent: [{ name: 'Chickpea', used: '$30.25' }, { name: null, used: '$7' }],
       byPerson: [{ name: 'Maya Chen', used: '$31.50' }, { name: null, used: '$6' }],
@@ -140,6 +141,17 @@ test('an Owner reads the plan\'s usage in dollars, the offers, and named use; un
     switchFunding: { to: 'own_key', ready: false, needs: 'key', provider: null },
   });
   assert.deepEqual(calls, [['summary', INSTALLATION]]);
+});
+
+test('an Owner reads when a plan ends or which plan it changes to; a plan that renews, or no plan, reads none, and a Member never reads it', async (t) => {
+  const view = async (summary: BillingSummary, role: AuthPrincipal['role'] = 'owner') =>
+    await (await admin(t, { port: fakePort(summary).port, role })('/admin/api/billing')).json() as Record<string, unknown>;
+  assert.deepEqual((await view(TEAM_ENDING)).pendingChange, { kind: 'ends', on: 'Nov 7' });
+  assert.deepEqual((await view(TEAM_DOWNGRADING)).pendingChange, { kind: 'plan', planName: 'Chickpea $50 plan', on: 'Nov 7' });
+  assert.equal((await view({ ...TEAM_PLAN, pendingChange: null })).pendingChange, null);
+  assert.equal((await view({ ...NO_PLAN, pendingChange: TEAM_ENDING.pendingChange! })).pendingChange, null);
+  assert.deepEqual(await view(TEAM_ENDING, 'member'), { manage: false, ...TEAM_STATUS });
+  assert.deepEqual(await view(TEAM_DOWNGRADING, 'member'), { manage: false, ...TEAM_STATUS });
 });
 
 test('the status leaves out what is empty: no zero rollover or extra usage', async (t) => {
