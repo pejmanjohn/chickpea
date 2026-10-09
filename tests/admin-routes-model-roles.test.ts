@@ -12,6 +12,7 @@ import { SqliteUsageStore } from '../src/usage/store.ts';
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
 import { FAKE_PROVIDER_KEYS } from './helpers/fake-providers.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { withEnv } from './helpers/env.ts';
 
 const ADMIN_TOKEN = 'model-roles-admin-token';
 const FLARE = 'openai/gpt-image-2.5-flare';
@@ -313,6 +314,53 @@ test('a stale image role revision conflicts and returns the current value', asyn
     assert.equal(body.workspaceModelRole.revision, 1);
   } finally {
     fixture.close();
+  }
+});
+
+test('an Agent model needs its provider key until one is saved, and a member editing Agents may ask', async () => {
+  invalidateProviderKeyCache();
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const app = new Hono();
+  app.route('/', createAdminRoutes({
+    store: config,
+    settings,
+    ...testAdminAuthority(ADMIN_TOKEN, undefined, undefined, {
+      userId: 'user_member',
+      membershipId: 'membership_member',
+      organizationId: 'org_oss',
+      role: 'member',
+      authenticatorKind: 'test_slack_session',
+      credentialId: 'member_session',
+      correlationId: 'member_request',
+      machine: false,
+    }),
+  }));
+  const readiness = (modelId: string) =>
+    app.request(`/admin/api/models/readiness?modelId=${encodeURIComponent(modelId)}`, { headers: auth() });
+  try {
+    await withEnv({ ANTHROPIC_API_KEY: undefined, ANTHROPIC_BASE_URL: undefined }, async () => {
+      const keyless = await readiness('anthropic/claude-opus-5-5');
+      assert.equal(keyless.status, 200);
+      assert.deepEqual(await keyless.json(), { modelId: 'anthropic/claude-opus-5-5', unavailable: 'credential_missing' });
+      assert.deepEqual(
+        await (await readiness('acme/model-1')).json(),
+        { modelId: 'acme/model-1', unavailable: 'credential_missing' },
+      );
+
+      await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.anthropic, FAKE_PROVIDER_KEYS.anthropic);
+      invalidateProviderKeyCache();
+      assert.deepEqual(
+        await (await readiness('anthropic/claude-opus-5-5')).json(),
+        { modelId: 'anthropic/claude-opus-5-5', unavailable: null },
+      );
+    });
+
+    assert.equal((await readiness('claude-opus-5-5')).status, 400);
+  } finally {
+    config.close();
+    settings.close();
+    invalidateProviderKeyCache();
   }
 });
 

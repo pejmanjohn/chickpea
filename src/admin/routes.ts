@@ -318,6 +318,7 @@ import {
   pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
+  type ModelProviderUnavailableReason,
   type ModelResolvableAgent,
 } from '../config/model-policy.ts';
 import {
@@ -6697,6 +6698,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return c.json({ providers });
   });
 
+  app.get('/admin/api/models/readiness', async (c) => {
+    const modelId = c.req.query('modelId') ?? '';
+    const separator = modelId.indexOf('/');
+    if (separator < 1) return invalidRequest(c);
+    const settingsStore = settings(c);
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const [openAiAuthMethod, workersAiEnabled, openAiSubscription, runtimeProviders] = await Promise.all([
+      resolveOpenAiAuthMethod(settingsStore),
+      getWorkersAiEnabled(settingsStore),
+      chatSubscriptionStatus(settingsStore, platformEnv),
+      modelProviders(c),
+    ]);
+    const unavailable = await chatModelUnavailable(modelId, modelId.slice(0, separator), {
+      runtimeProviders,
+      platformEnv,
+      openAiAuthMethod,
+      workersAiEnabled,
+      openAiSubscription,
+    });
+    return c.json({ modelId, unavailable: unavailable ?? null });
+  });
+
   // The image role's picker source, kept separate from the chat model list so a
   // chat model can never reach an image field. Entries are the image catalog
   // narrowed to profiles whose own credential lane is ready, each flagged when it is
@@ -12059,6 +12082,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
       '/admin/api/models',
+      '/admin/api/models/readiness',
       // The per-Agent image field reads its options here, so an Agent editor
       // needs the same access it has to the chat model list.
       '/admin/api/image-models',
@@ -12718,6 +12742,18 @@ function chatModelProviderReady(providerId: string, input: {
   return providerReady && workersAiReady;
 }
 
+function chatModelUnavailable(
+  modelId: string,
+  providerId: string,
+  input: Parameters<typeof chatModelProviderReady>[1],
+): Promise<ModelProviderUnavailableReason | undefined> {
+  return modelProviderUnavailable(
+    pricedModelRoute(modelId, 'standard_input_output'),
+    input.platformEnv,
+    () => chatModelProviderReady(providerId, input),
+  );
+}
+
 /**
  * Why a chat model cannot fill the coding role right now, if it cannot: the
  * active catalog must serve it and its provider must be ready, exactly as for
@@ -12811,17 +12847,13 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    const unavailable = await modelProviderUnavailable(
-      pricedModelRoute(modelId, 'standard_input_output'),
-      input.platformEnv,
-      () => chatModelProviderReady(providerId, {
-        runtimeProviders: input.runtimeProviders,
-        platformEnv: input.platformEnv,
-        openAiAuthMethod,
-        workersAiEnabled,
-        openAiSubscription,
-      }),
-    );
+    const unavailable = await chatModelUnavailable(modelId, providerId, {
+      runtimeProviders: input.runtimeProviders,
+      platformEnv: input.platformEnv,
+      openAiAuthMethod,
+      workersAiEnabled,
+      openAiSubscription,
+    });
     health = unavailable
       ? {
           status: 'repair_required',

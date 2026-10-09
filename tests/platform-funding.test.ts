@@ -773,6 +773,33 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
   });
 });
 
+test('Admin reads an Agent model on a credits installation as ready by its price, and on its own key by its key', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const unavailable = async (modelId: string) => {
+    const response = await request(`/admin/api/models/readiness?modelId=${encodeURIComponent(modelId)}`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { modelId: string; unavailable: string | null };
+    assert.equal(body.modelId, modelId);
+    return body.unavailable;
+  };
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'credits serve a priced model with no saved key');
+    assert.equal(await unavailable('anthropic/claude-opus-4-1'), 'funding_not_offered', 'credits serve only a priced model');
+    assert.equal(
+      await unavailable('cloudflare/@cf/zai-org/glm-5.2'),
+      'funding_not_offered',
+      'credits serve only a provider the deployment offers',
+    );
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.equal(await unavailable(`anthropic/${SONNET}`), 'funding_not_offered', 'credits serve only a current price');
+    t.mock.timers.setTime(NOW);
+    fakePort({ funding: async () => 'customer' });
+    assert.equal(await unavailable(`anthropic/${SONNET}`), 'credential_missing', 'a customer-funded installation needs its own key');
+  });
+});
+
 test('a credits installation with no saved key can choose a priced coding model, and only a priced one', async (t) => {
   const { request } = await creditsAdmin(t);
   const choose = (modelId: string) => request('/admin/api/workspace-model-roles/coding', {
