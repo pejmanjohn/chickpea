@@ -20,6 +20,7 @@ import { uploadAgentAvatar } from '../src/slack/agent-presence/avatar-assets.ts'
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { SlackTransportError, type SlackUserGroup } from '../src/slack/transport/types.ts';
+import { escapeMrkdwn } from '../src/slack/ui/text.ts';
 
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
@@ -258,7 +259,7 @@ test('a start frees the handle, creates without URLs, records before storing sec
   assert.deepEqual(app?.state === 'awaiting_consent' ? app.allowDm : undefined, { channelId: `D_${OWNER}`, ts: '1.0' });
   const [dm] = f.transport.posted;
   assert.equal(dm?.channelId, `D_${OWNER}`);
-  assert.equal(dm?.text, "Support's Slack app is ready. Choose Allow to add it to this workspace. After that, people can message @support directly and mention it in channels it's in.");
+  assert.equal(dm?.text, escapeMrkdwn("Support's Slack app is ready. Choose Allow to add it to this workspace. After that, people can message @support directly and mention it in channels it's in."));
   assert.deepEqual(buttonUrls(dm!), [HOST.allowUrl('agent_support')]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.desiredState, 'active');
@@ -380,7 +381,7 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   await handle.service.start('agent_support', OWNER);
   app = await appOf(handle);
   assert.equal(app?.state === 'needs_attention' && app.reason, 'handle_release_failed');
-  assert.equal(handle.transport.posted[0]?.text, "Chickpea couldn't free the name @support in Slack, so it didn't create Support's app. In Chickpea Admin, choose Update in Slack, then choose Try again.");
+  assert.equal(handle.transport.posted[0]?.text, escapeMrkdwn("Chickpea couldn't free the name @support in Slack, so it didn't create Support's app. In Chickpea Admin, choose Update in Slack, then choose Try again."));
   assert.deepEqual(handle.slack.manifests, [], 'no create without the handle');
   handle.transport.refuseDisable = false;
   await handle.service.retry('agent_support', OWNER);

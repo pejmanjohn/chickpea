@@ -57,6 +57,8 @@ export interface AgentAppGrant {
   botUserId: string;
   teamId: string;
   appId: string;
+  /** The person who chose Allow in Slack. */
+  installerUserId: string;
   scopes: string[];
 }
 
@@ -198,6 +200,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
         botUserId: requiredString(payload.bot_user_id, 'oauth.v2.access'),
         teamId,
         appId,
+        installerUserId: requiredString(asRecord(payload.authed_user).id, 'oauth.v2.access'),
         scopes: [...new Set(scope.split(',').map((item) => item.trim()).filter(Boolean))],
       };
     },

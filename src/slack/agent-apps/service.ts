@@ -28,7 +28,9 @@ import {
   slackManifestFingerprint,
   type SlackAppManifest,
 } from '../app-manifest.ts';
+import { sha256Hex } from '../../security/digest.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
+import { SLACK_BOT_AUTHORIZE_URL } from '../install-oauth.ts';
 import { AGENT_APP_BOT_SCOPES } from '../scopes.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
 import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
@@ -45,14 +47,22 @@ import {
   normalizeAgentAppPresence,
   transition,
 } from './lifecycle.ts';
-import { agentAppMessage, type AgentAppLinks, type AgentAppMessageKind, type AgentAppNames } from './pages.ts';
+import {
+  type AgentAppLinks,
+  type AgentAppMessageKind,
+  type AgentAppNames,
+  agentAppMessage,
+  consentPage,
+} from './pages.ts';
 import {
   ConfigTokenNeeded,
   LostRevision,
   type SecretDeps,
   deleteAppSecrets,
+  deleteConfigurationToken,
   hasConfigurationToken,
   readAppSecrets,
+  saveConfigurationToken,
   withConfigurationToken,
   writeAppSecrets,
 } from './secrets.ts';
@@ -104,6 +114,9 @@ type Outcome = { event: AgentAppEvent; after?: () => Promise<void> } | 'wait';
 type Performer = (run: Run) => Promise<Outcome>;
 
 const MAX_STEPS_PER_RUN = 12;
+/** How long an opened Allow link stays valid. */
+export const CONSENT_TTL_MS = 15 * 60_000;
+const STATE_SHAPE = /^([A-Za-z0-9_-]{1,128})\.([a-f0-9-]{36})$/;
 const MAX_COMMIT_RETRIES = 3;
 const ICON_MIN_PX = 512;
 const ICON_MAX_PX = 2_000;
@@ -203,6 +216,108 @@ export class AgentSlackApps {
     });
     if (resumed.outcome === 'refused') return resumed.agent;
     return this.advance(agentId, { wroteCreating: presence.app.resume === 'creating' });
+  }
+
+  /** "Allow <Agent> in Slack": a fresh consent nonce, then Slack's authorize page. */
+  async allow(agentId: string, ownerSlackUserId: string): Promise<Response> {
+    const { config } = this.deps.stores;
+    let agent = await config.getAgent(agentId);
+    const names = this.names(agent);
+    let presence = agent.slackPresence;
+    if (presence?.kind !== 'agent_app') return consentPage('expired', names);
+    if (presence.app.state === 'active') return consentPage('already_active', names);
+    if (presence.app.state === 'needs_attention' && presence.app.reason === 'app_removed') {
+      agent = await this.retry(agentId, ownerSlackUserId);
+      presence = agent.slackPresence;
+    }
+    if (presence?.kind !== 'agent_app' || presence.app.state !== 'awaiting_consent') return consentPage('expired', names);
+    const nonce = crypto.randomUUID();
+    const now = this.now();
+    const opened = await this.commit(agent, {
+      type: 'consent_opened', at: now, nonceDigest: await sha256Hex(nonce), owner: ownerSlackUserId, expiresAt: now + CONSENT_TTL_MS,
+    });
+    if (opened.outcome !== 'applied') return consentPage('expired', names);
+    const url = new URL(SLACK_BOT_AUTHORIZE_URL);
+    url.searchParams.set('client_id', presence.app.app.clientId);
+    url.searchParams.set('scope', AGENT_APP_BOT_SCOPES.join(','));
+    url.searchParams.set('redirect_uri', this.deps.host.redirectUri);
+    url.searchParams.set('state', `${agent.id}.${nonce}`);
+    return Response.redirect(url.toString(), 303);
+  }
+
+  /** Slack's callback, forwarded untouched: exchange the code with the app's own credentials and validate the grant. */
+  async completeConsent(query: URLSearchParams, ownerSlackUserId: string): Promise<Response> {
+    const { config } = this.deps.stores;
+    const state = STATE_SHAPE.exec(query.get('state') ?? '');
+    if (!state) return consentPage('expired', { name: 'The Agent', handle: 'agent' });
+    const [, agentId, nonce] = state as unknown as [string, string, string];
+    let agent;
+    try {
+      agent = await config.getAgent(agentId);
+    } catch {
+      return consentPage('expired', { name: 'The Agent', handle: 'agent' });
+    }
+    const names = this.names(agent);
+    const presence = agent.slackPresence;
+    if (presence?.kind !== 'agent_app') return consentPage('expired', names);
+    if (presence.app.state === 'active') return consentPage('already_active', names);
+    if (presence.app.state !== 'awaiting_consent' || !presence.app.consent) return consentPage('expired', names);
+    const { consent, app } = presence.app;
+    const now = this.now();
+    if (consent.expiresAt <= now || consent.nonceDigest !== await sha256Hex(nonce)) return consentPage('expired', names);
+    if (consent.owner !== ownerSlackUserId) return consentPage('another_person', names);
+    if (query.get('error') || !query.get('code')) {
+      await this.commit(agent, { type: 'consent_undone', at: now });
+      return consentPage('cancelled', names);
+    }
+    const stored = await readAppSecrets(this.secrets, app.appId);
+    if (!stored) return consentPage('expired', names);
+    let grant;
+    try {
+      grant = await this.slack.exchange({
+        clientId: app.clientId,
+        clientSecret: stored.secrets.clientSecret,
+        code: query.get('code')!,
+        redirectUri: this.deps.host.redirectUri,
+      });
+    } catch (error) {
+      if (error instanceof SlackRefused) return consentPage('expired', names);
+      if (error instanceof SlackUnavailable) return consentPage('slack_down', names);
+      throw error;
+    }
+    const { teamId } = await this.installation();
+    const undo = async () => {
+      await this.slack.uninstall({ clientId: app.clientId, clientSecret: stored.secrets.clientSecret, botToken: grant.botToken }).catch(() => undefined);
+      await this.commit(agent, { type: 'consent_undone', at: now });
+    };
+    if (grant.teamId !== teamId) { await undo(); return consentPage('other_workspace', names); }
+    if (grant.appId !== app.appId || grant.installerUserId !== consent.owner) { await undo(); return consentPage('another_person', names); }
+    if (AGENT_APP_BOT_SCOPES.some((scope) => !grant.scopes.includes(scope))) { await undo(); return consentPage('missing_permissions', names); }
+    await writeAppSecrets(this.secrets, app.appId, agent.id, { ...stored.secrets, botToken: grant.botToken }, stored.revision);
+    const granted = await this.commit(agent, {
+      type: 'consent_granted', at: now, botUserId: grant.botUserId, installedBy: grant.installerUserId,
+    });
+    if (granted.outcome !== 'applied') return consentPage('expired', names);
+    await this.message('ready', granted.agent, consent.owner, `agent-app-ready:${agent.id}:${now}`);
+    return Response.redirect(`https://slack.com/app_redirect?app=${encodeURIComponent(app.appId)}&team=${encodeURIComponent(teamId)}`, 303);
+  }
+
+  /** The token page: paste once per workspace. */
+  async pasteConfigurationToken(refreshToken: string): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
+    return saveConfigurationToken(this.secrets, (await this.installation()).teamId, refreshToken);
+  }
+
+  async hasConfigurationToken(): Promise<boolean> {
+    return hasConfigurationToken(this.secrets, (await this.installation()).teamId);
+  }
+
+  /** Deletes Chickpea's stored pair and nothing in Slack. */
+  async removeConfigurationToken(): Promise<'deleted' | 'none'> {
+    return deleteConfigurationToken(this.secrets, (await this.installation()).teamId);
+  }
+
+  private names(agent: CustomAgentConfig): AgentAppNames {
+    return { name: agent.name, handle: agent.slackPresence?.normalizedHandle ?? agent.id };
   }
 
   private readonly performers: Record<AgentAppStep, Performer> = {
@@ -405,7 +520,7 @@ export class AgentSlackApps {
     slackUserId: string,
     idempotencyKey: string,
   ): Promise<{ channelId: string; ts: string } | undefined> {
-    const names: AgentAppNames = { name: agent.name, handle: agent.slackPresence?.normalizedHandle ?? agent.id };
+    const names = this.names(agent);
     const origin = kind === 'config_token_needed' ? await this.deps.publicOrigin?.() : undefined;
     const links: AgentAppLinks = {
       agentId: agent.id,

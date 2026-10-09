@@ -124,7 +124,7 @@ test("exchange uses the app's own client credentials and parses the grant", asyn
     scope: 'app_mentions:read,chat:write, im:history,chat:write', authed_user: { id: 'UOWNER' },
   }));
   assert.deepEqual(await client.exchange({ clientId: '1.2', clientSecret: 'cs', code: 'code-1', redirectUri: 'https://host/cb' }), {
-    botToken: 'xoxb-agent', botUserId: 'UBOT', teamId: 'TACME', appId: 'A0C8APP',
+    botToken: 'xoxb-agent', botUserId: 'UBOT', teamId: 'TACME', appId: 'A0C8APP', installerUserId: 'UOWNER',
     scopes: ['app_mentions:read', 'chat:write', 'im:history'],
   });
   assert.equal(seen[0]?.method, 'oauth.v2.access');

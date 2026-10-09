@@ -1,4 +1,5 @@
 import { GATEWAY_HTTP_PATH, handleHttpDeliveryRequest } from './slack/gateway/http-delivery.ts';
+import { createAgentSlackAppRoutes } from './slack/agent-apps/index.ts';
 import { deploymentTenancy } from './config/installation-scope.ts';
 import { tagStateStub } from './config/state-rpc.ts';
 import { instrument } from '@flue/runtime';
@@ -248,6 +249,7 @@ app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
   productTelemetry: productTelemetryForRequest,
 }));
+app.route('/', createAgentSlackAppRoutes());
 app.route('/channels/slack', channel.route());
 
 export default app;
