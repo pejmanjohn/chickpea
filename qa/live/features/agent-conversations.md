@@ -13,6 +13,7 @@ Docs: `/slack/conversations/`; operator detail in [Agent conversations](../../..
 - Coordination: the thread's Agent can split work, mentioning each teammate once, and give one combined answer after they reply.
 - Limits: one message asks at most 6 Agents, and one person's message leads to at most 8 asks however they chain. At the limit the asking Agent posts one pause line and the thread waits for a person.
 - Authority: an ask is admitted like a message from the person who started the exchange. The asked Agent uses that person's access and its own accounts, and only people approve, stop, check in, or run memory and schedule commands.
+- Schedules and memory on an ask: "ask @finance, then schedule a weekly check" ends with a proposed schedule that saves only after the person approves in their own reply. "Find out from @finance and remember it" saves on the hand-back without a question; a memory write nobody asked for waits for the person's approval.
 - Asks happen in channel threads and in DM threads. In a DM an Agent asks only the Agents in that thread: its own Agent, Agents that answered there, and Agents the person's message mentioned, each one the person may use privately. An ask to an Agent without a grant in the channel, or in a DM to one not in the thread, is not answered and nothing is posted.
 
 ## How a person reaches it
