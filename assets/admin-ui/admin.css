@@ -1818,6 +1818,8 @@ details[open].advanced summary::before {
   padding: 12px 14px;
 }
 .callout .g { color: var(--ember-deep); flex-shrink: 0; }
+.callout-success { background: var(--ok-tint); }
+.callout-success .g { color: var(--ok); }
 .slack-permissions-bar { align-items: center; flex-wrap: wrap; }
 .slack-permissions-bar > span { flex: 1; min-width: 200px; }
 .slack-permissions-bar > form { margin: 0; }

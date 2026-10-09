@@ -8191,7 +8191,7 @@
 
   function attachNoticeHtml() {
     if (!state.attachNotice) return "";
-    return '<div class="callout">' + icon("exclamation-triangle", "ic-l g") +
+    return '<div class="callout callout-success" role="status">' + icon("check", "ic-l g") +
       '<span>' + esc(state.attachNotice) + '</span></div>';
   }
 

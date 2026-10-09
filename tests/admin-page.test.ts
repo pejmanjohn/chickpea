@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { test } from 'node:test';
 
-import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
+import { adminUiStylesheet, renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
@@ -3968,6 +3968,7 @@ test('Where it works can remove an Agent Channel grant', async () => {
     channelId: 'C0EXR3L9T',
   }]);
   assert.match(harness.app.innerHTML, /Agent removed from #eng-releases/);
+  assert.ok(isSuccessNotice(harness.app.innerHTML, 'Agent removed from #eng-releases.'), 'removing is a success, not a warning');
   assert.match(harness.app.innerHTML, /Make Release Profile mentionable/);
   assert.match(harness.app.innerHTML, /Only the creator can DM this Agent/);
 });
@@ -4453,8 +4454,16 @@ test('Add to channels lets publication reconcile public app membership', async (
   await flushAsync();
 
   assert.match(harness.app.innerHTML, /Agent added to #new-channel/);
+  assert.ok(isSuccessNotice(harness.app.innerHTML, 'Agent added to #new-channel.'), 'adding is a success, not a warning');
   assert.doesNotMatch(harness.app.innerHTML, /Invite it to #new-channel in Slack/);
 });
+
+/** A success callout: a check icon (not the warning triangle), the success tint, announced as status. */
+function isSuccessNotice(html: string, text: string): boolean {
+  const notice = html.match(new RegExp(`<div class="callout callout-success" role="status"><svg[^>]*><path d="([^"]*)"\\/></svg><span>${text.replace(/[.#]/g, '\\$&')}</span></div>`));
+  return Boolean(notice?.[1]!.startsWith('M12.416 3.376') &&
+    /\.callout-success \{[^}]*background: var\(--ok-tint\)/.test(adminUiStylesheet()));
+}
 
 test('Add to channels defers app-membership truth to the publication endpoint', async () => {
   const harness = runAdminPageHarness({
