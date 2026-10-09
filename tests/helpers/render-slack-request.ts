@@ -18,6 +18,7 @@ process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
 const { createFlueContext, resolveModel } = await import('@flue/runtime/internal');
+const { useModel, useTool } = await import('@flue/runtime');
 const { ChickpeaSlack } = await import('../../src/agents/slack-thread.ts');
 const { freezeRuntimePlanForTurn } = await import('../../src/slack/run-turn.ts');
 const { FILE_DELIVERY_SIGNAL_TAG, FILE_DELIVERY_SIGNAL_TYPE } = await import('../../src/slack/file-delivery-completion.ts');
@@ -173,4 +174,40 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
   if (!captured) throw new Error('No Anthropic request was captured.');
   if (charged !== undefined) chargedPrefixes.set(captured as RenderedRequest, charged);
   return captured as RenderedRequest;
+}
+
+let toolsOnly: { model: string; tools: readonly unknown[] } | undefined;
+function ToolsOnly() {
+  useModel(toolsOnly!.model);
+  for (const tool of toolsOnly!.tools) useTool(tool as never);
+  return 'Render tools.';
+}
+
+/**
+ * The request tools that `tools` render to, through the same Flue and pi-ai
+ * path a Slack turn takes. For tools a Node render never mounts, such as the
+ * coding-workspace tools, which need the Cloudflare target.
+ */
+export async function renderToolPayloads(
+  tools: readonly unknown[],
+  model = 'chickpea-anthropic-api-bundled-v1/claude-opus-5-5',
+): Promise<RenderedRequest['tools']> {
+  toolsOnly = { model, tools };
+  captured = undefined;
+  const context = createFlueContext({
+    id: `render-tools-${blockedUrls.length}-${Date.now()}`, agentName: 'render-tools', env: {}, agentConfig: { resolveModel } as any,
+  });
+  const harness: any = await context.initializeRootHarness(ToolsOnly as any, { kind: 'user', body: 'Render tools.' }, {});
+  const grant = {
+    installationId: 'inst_render_tools', providerId: 'anthropic', runId: 'run_render_tools',
+    fundingSource: 'customer', credentialRefId: 'platform:anthropic', credentialVersion: 1,
+  } as any;
+  const env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: grant.installationId }) as any;
+  try {
+    await withModelAccess(grant, env, 'reply', () => harness.prompt('Render tools.'));
+  } catch (error) {
+    if (!captured) throw error;
+  }
+  if (!captured) throw new Error('No Anthropic request was captured.');
+  return (captured as RenderedRequest).tools;
 }
