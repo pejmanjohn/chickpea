@@ -87,7 +87,7 @@ test('explicit connector aliases anchor to the canonical request text without pr
   assert.equal(unsupported.notices[0]?.text, '<CRM & Ops> isn’t available to connect yet.');
 });
 
-test('only request-anchored affirmative connector mentions can become explicit actions', async () => {
+test('only affirmatively anchored connector mentions can become explicit actions', async () => {
   const plan = await selectAgentCreationConnectors({
     requestText: 'Create a research Agent without Notion. I previously used Slack. "Google Drive" is just an example. Use Linear.',
     explicitMentions: ['Notion', 'Slack', 'Google Drive', 'Linear', 'Invented by model'],
@@ -99,6 +99,50 @@ test('only request-anchored affirmative connector mentions can become explicit a
     source: 'explicit',
   }]);
   assert.deepEqual(plan.notices, []);
+});
+
+test('a requested connector named only earlier in the conversation is kept when the new Agent uses it', async () => {
+  const plan = await selectAgentCreationConnectors({
+    requestText: 'create me a support agent',
+    explicitMentions: ['Zendesk', 'Linear'],
+    agentCorpus: 'Support drafts replies to Zendesk tickets and files bugs in Linear.',
+  });
+  assert.deepEqual(plan.candidates.map(({ presetId, source }) => [presetId, source]), [
+    ['zendesk', 'explicit'],
+    ['linear', 'explicit'],
+  ]);
+  assert.deepEqual(plan.notices, []);
+
+  const ordered = await selectAgentCreationConnectors({
+    requestText: 'Create a support Agent that uses Linear.',
+    explicitMentions: ['Zendesk', 'Linear'],
+    agentCorpus: 'Support answers Zendesk tickets.',
+  });
+  assert.deepEqual(ordered.candidates.map(({ presetId }) => presetId), ['linear', 'zendesk']);
+
+  const neither = await selectAgentCreationConnectors({
+    requestText: 'create me a support agent',
+    explicitMentions: ['Zendesk'],
+    agentCorpus: 'Support drafts friendly customer replies.',
+  });
+  assert.deepEqual(neither.candidates, []);
+  assert.deepEqual(neither.notices, []);
+
+  const negated = await selectAgentCreationConnectors({
+    requestText: 'create me a support agent',
+    explicitMentions: ['Zendesk'],
+    agentCorpus: 'Support drafts replies. Never touch Zendesk.',
+  });
+  assert.deepEqual(negated.candidates, []);
+
+  const deduplicated = await selectAgentCreationConnectors({
+    requestText: 'create me a support agent',
+    explicitMentions: ['Zendesk'],
+    agentCorpus: 'Support answers Zendesk tickets.',
+  });
+  assert.deepEqual(deduplicated.candidates.map(({ presetId, source }) => [presetId, source]), [
+    ['zendesk', 'explicit'],
+  ]);
 });
 
 test('one unique corpus match may follow explicit actions but ambiguous inference adds nothing', async () => {
@@ -434,6 +478,73 @@ test('a rejecting managed-connector availability check still queues the welcome'
       label: 'Notion',
       text: 'Notion isn’t available to connect right now.',
     }]);
+  } finally {
+    f.close();
+  }
+});
+
+test('a request to connect Zendesk offers one Connect Zendesk action in the creation reply', async () => {
+  const f = await createManagementAdapterFixture('welcome-zendesk');
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_ZENDESK',
+        threadTs: '900.4',
+        messageTs: '900.4',
+        requestText: 'create me a <!subteam^S0SUPPORT|@support> agent that ill connect to zendesk',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-support-with-zendesk',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_support_zendesk',
+          name: 'Support',
+          requestedHandle: 'support-zendesk',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Draft customer replies.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+
+    const finalized = await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: 'agent_support_zendesk',
+      connectorMentions: ['zendesk'],
+      followOnNotices: [],
+      turnJobId: 'turn_zendesk',
+    });
+    const receipt = finalized.outbox.receipt;
+    if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected Agent welcome receipt');
+    }
+    assert.deepEqual(receipt.connectorActions?.map(({ presetId, label }) => [presetId, label]), [
+      ['zendesk', 'Zendesk'],
+    ]);
+    assert.deepEqual(receipt.connectorNotices, []);
+    const setup = await f.management.getSetup(receipt.connectorActions![0]!.setupOperationId!);
+    assert.equal(setup?.action, 'catalog_connection');
+    assert.equal(setup?.target.agentId, 'agent_support_zendesk');
+    assert.match(formatManagementSetupReceipt(receipt), /\|Connect Zendesk>/);
   } finally {
     f.close();
   }
