@@ -9,6 +9,7 @@ import {
   InstallationContextError,
 } from '../../config/installation-scope.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
+import { agentAppIngressFacts, endAgentSlackAppLive } from './live.ts';
 
 export interface AgentSlackAppsHost {
   /** Slack Request URLs for one app; only the host holds the path-token key. Pure; throws on a malformed ID. */
@@ -38,20 +39,17 @@ export interface AgentSlackAppIngress {
 }
 
 /** Undefined when this installation has no Agent app with that ID (unknown, or deleted). Throws only on a store outage. */
-export async function agentSlackAppIngress(
-  _env: PlatformEnv,
-  _appId: string,
-): Promise<AgentSlackAppIngress | undefined> {
-  throw new Error('not implemented');
+export function agentSlackAppIngress(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
+  return agentAppIngressFacts(env, appId);
 }
 
 /** A verified app_uninstalled or tokens_revoked of one Agent app: ends only that Agent's app, never the installation. */
-export async function endAgentSlackApp(
-  _env: PlatformEnv,
-  _appId: string,
-  _payload: Record<string, unknown>,
+export function endAgentSlackApp(
+  env: PlatformEnv,
+  appId: string,
+  payload: Record<string, unknown>,
 ): Promise<'ended' | 'ignored'> {
-  throw new Error('not implemented');
+  return endAgentSlackAppLive(env, appId, payload);
 }
 
 export type AgentSlackAppHandoff =

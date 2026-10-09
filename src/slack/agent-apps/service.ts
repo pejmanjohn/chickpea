@@ -30,6 +30,7 @@ import {
 } from '../app-manifest.ts';
 import { sha256Hex } from '../../security/digest.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
+import { hostedSlackLifecycleOutcome } from '../hosted-slack-app.ts';
 import { SLACK_BOT_AUTHORIZE_URL } from '../install-oauth.ts';
 import { AGENT_APP_BOT_SCOPES } from '../scopes.ts';
 import type { CredentialKeyring } from '../secret-envelope.ts';
@@ -39,6 +40,7 @@ import {
   type AgentAppEvent,
   type AgentAppStep,
   CREATE_SETTLE_MS,
+  agentAppIsLive,
   agentAppRecord,
   createIsStale,
   initialAgentApp,
@@ -82,7 +84,7 @@ export type AgentAppTransport = Pick<
 export interface AgentSlackAppsDeps {
   env: PlatformEnv | undefined;
   stores: {
-    config: Pick<ConfigStore, 'getAgent' | 'updateAgent' | 'listWorkspaceInstallations'>;
+    config: Pick<ConfigStore, 'getAgent' | 'listAgents' | 'updateAgent' | 'listWorkspaceInstallations'>;
     settings: SettingsStore & EncryptedCredentialStore;
   };
   host: AgentSlackAppsHost;
@@ -300,6 +302,30 @@ export class AgentSlackApps {
     if (granted.outcome !== 'applied') return consentPage('expired', names);
     await this.message('ready', granted.agent, consent.owner, `agent-app-ready:${agent.id}:${now}`);
     return Response.redirect(`https://slack.com/app_redirect?app=${encodeURIComponent(app.appId)}&team=${encodeURIComponent(teamId)}`, 303);
+  }
+
+  /** A verified app_uninstalled or tokens_revoked of one Agent app: the bot token goes, the Owner is told. */
+  async end(appId: string, payload: Record<string, unknown>): Promise<'ended' | 'ignored'> {
+    const { config } = this.deps.stores;
+    const agent = (await config.listAgents()).find((candidate) =>
+      agentAppIsLive(candidate.slackPresence) && candidate.slackPresence.app.app.appId === appId
+    );
+    const presence = agent?.slackPresence;
+    if (!agent || !agentAppIsLive(presence)) return 'ignored';
+    const outcome = hostedSlackLifecycleOutcome(payload, {
+      installedAt: presence.app.installedAt,
+      botUserId: presence.app.botUserId,
+    });
+    if (outcome !== 'end') return 'ignored';
+    const stored = await readAppSecrets(this.secrets, appId).catch(() => undefined);
+    if (stored?.secrets.botToken) {
+      const { clientSecret, signingSecret } = stored.secrets;
+      await writeAppSecrets(this.secrets, appId, agent.id, { clientSecret, signingSecret }, stored.revision);
+    }
+    const removed = await this.commit(agent, { type: 'app_removed', at: this.now() });
+    if (removed.outcome !== 'applied') return 'ignored';
+    await this.notifyAttention(removed.agent);
+    return 'ended';
   }
 
   /** The token page: paste once per workspace. */
