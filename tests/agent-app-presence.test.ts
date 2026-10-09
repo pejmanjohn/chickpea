@@ -80,10 +80,16 @@ async function storeAgent(
   return written;
 }
 
-/** An app Agent never has a handle going live or a Channel welcome to announce. */
-const announcesNothing = new Proxy({} as AgentPresenceAnnouncements, {
-  get(_target, name) { return () => { throw new Error(`unexpected announcement ${String(name)}`); }; },
-});
+/** The reconciler swallows a failing announcement, so record calls instead of throwing. */
+function announcementRecorder(): AgentPresenceAnnouncements & { announced: string[] } {
+  const announced: string[] = [];
+  return new Proxy({ announced } as AgentPresenceAnnouncements & { announced: string[] }, {
+    get(target, name) {
+      if (name === 'announced') return target.announced;
+      return async () => { announced.push(String(name)); };
+    },
+  });
+}
 
 /** Every Slack call fails the test; the methods a test allows are given explicitly. */
 function slackThatRefuses(allowed: Partial<SlackTransport> = {}): SlackTransport & { calls: string[] } {
@@ -156,7 +162,8 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
   });
   try {
     const presence = await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE));
-    const reconciler = new AgentPresenceReconciler({ config, transport, announce: announcesNothing, now: () => NOW });
+    const announce = announcementRecorder();
+    const reconciler = new AgentPresenceReconciler({ config, transport, announce, now: () => NOW });
     assert.deepEqual((await reconciler.reconcile('agent_support')).slackPresence, presence);
     assert.deepEqual((await reconciler.retry('agent_support')).slackPresence, presence);
     const published = await reconciler.publish({
@@ -169,6 +176,7 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
     assert.equal(published.grant.status, 'active');
     assert.deepEqual(published.agent.slackPresence, presence);
     assert.deepEqual(transport.calls, []);
+    assert.equal(announce.announced.includes('handleWentLive'), false, 'no handle went live');
   } finally {
     config.close();
   }
