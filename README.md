@@ -29,6 +29,8 @@
 
 Already installed? [Connect via MCP](#connect-via-mcp) · [Update](#update-chickpea)
 
+[Website](https://chickpea.co) · [Docs](https://docs.chickpea.co)
+
 <br />
 
 [Why it exists](#why-chickpea-exists) · [Features](#what-your-workspace-gets) · [How it works](#how-it-works) · [Managing](#managing-chickpea) · [CLI](#cli) · [Security](#security-model) · [Deployment](#deploy-it-yourself) · [Good to know](#good-to-know) · [FAQ](#faq)
