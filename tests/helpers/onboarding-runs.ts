@@ -1,0 +1,77 @@
+import { opaqueId } from '../../src/work/admission.ts';
+import type { WorkRunListItem } from '../../src/work/types.ts';
+
+/**
+ * The installer's DM to Chickpea in workspace T123 after Try started at 100,
+ * settled with its reply delivered; `override` changes any field.
+ */
+export function onboardingRunFixture(
+  override: {
+    run?: Partial<WorkRunListItem['run']>;
+    binding?: Partial<WorkRunListItem['binding']>;
+  } = {},
+): WorkRunListItem {
+  return {
+    work: { id: 'work_onboarding' as WorkRunListItem['work']['id'], kind: 'conversation', lifecycle: 'open', maximumSensitivity: 'private', createdAt: 90, updatedAt: 120, closedAt: null },
+    binding: {
+      id: 'binding_onboarding' as WorkRunListItem['binding']['id'],
+      workId: 'work_onboarding' as WorkRunListItem['binding']['workId'],
+      adapterKind: 'slack',
+      externalAccountId: opaqueId('account', 'slack:T123'),
+      externalConversationId: 'conversation_opaque',
+      generation: 1,
+      lifecycle: 'active',
+      sourceVisibility: 'private',
+      configMode: 'resolve_each_run',
+      pinnedConfigRevisionId: null,
+      orderingKey: 'slack:T123:D456',
+      createdAt: 90,
+      expiredAt: null,
+      ...override.binding,
+    },
+    run: {
+      id: 'run_onboarding' as WorkRunListItem['run']['id'],
+      workId: 'work_onboarding' as WorkRunListItem['run']['workId'],
+      bindingId: 'binding_onboarding' as WorkRunListItem['run']['bindingId'],
+      kind: 'interactive',
+      admissionSequence: 1,
+      triggerKind: 'slack_dm_message',
+      triggerRef: 'slack:event:one',
+      dedupeKey: 'event-one',
+      actorRef: opaqueId('actor', 'slack:T123:U_OWNER'),
+      actorTrustTier: 'member',
+      sourceContextWatermark: null,
+      triggerContentRef: null,
+      preparedInputRef: null,
+      configRevisionId: 'config_onboarding' as WorkRunListItem['run']['configRevisionId'],
+      effectiveCapabilityDigest: 'a'.repeat(64),
+      executionAuthority: 'ledger',
+      coordinatorKind: 'interactive',
+      authorityEpoch: 1,
+      policyApprovedOutputRef: null,
+      renderedPayloadRef: null,
+      status: 'settled',
+      terminalDisposition: 'succeeded',
+      deliveryStatus: 'delivered',
+      deliveryMethod: 'slack_chat_postMessage',
+      deliveryAttemptId: 'attempt-one',
+      deliveryRef: 'slack:D456:1900000000.000001',
+      deliveryFinalizedAt: 120,
+      leaseOwner: null,
+      leaseUntil: null,
+      fencingToken: 1,
+      safeFailureCode: null,
+      recoveryResolutionKind: null,
+      recoveryAdminCredentialId: null,
+      recoveryOperatorLabel: null,
+      recoveryAuthOrigin: null,
+      recoveryReasonCode: null,
+      recoveryRequestId: null,
+      recoveryResolvedAt: null,
+      createdAt: 110,
+      updatedAt: 120,
+      settledAt: 120,
+      ...override.run,
+    },
+  };
+}

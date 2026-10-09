@@ -10102,11 +10102,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     if (journey.selectedWorkspaceId && journey.selectedProviderId &&
         journey.selectedModelId && journey.trySlackUserId && journey.tryStartedAt) {
+      const presentations = slackState(c);
       const delivered = await hasDeliveredOnboardingReply(work(c), {
           workspaceId: journey.selectedWorkspaceId,
           slackUserId: journey.trySlackUserId,
           tryStartedAt: journey.tryStartedAt,
-        });
+        }, presentations.getRunPresentation?.bind(presentations));
       if (delivered) {
         try {
           snapshot = await completeOnboardingJourney(settings(c), snapshot.revision);

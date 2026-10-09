@@ -13096,7 +13096,7 @@
         onboardingPollRequest = false;
         syncOnboardingActivity();
       });
-    }, 2500);
+    }, 1000);
   }
 
   function continueOnboardingProvider() {

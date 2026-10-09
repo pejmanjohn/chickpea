@@ -41,12 +41,16 @@ import { promisify } from '../src/state/async-facade.ts';
 import { DoSqlStateDb } from '../src/state/do-state-db.ts';
 import { buildTagStateStores } from '../src/state/tag-state-stores.ts';
 import type { UsageStore } from '../src/usage/types.ts';
+import type { SlackStateStore } from '../src/slack/claim-store.ts';
+import { opaqueId } from '../src/work/admission.ts';
+import type { WorkStore } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
+import { onboardingRunFixture } from './helpers/onboarding-runs.ts';
 
 /**
  * Hosted guided onboarding: the person who signs up becomes the first Owner
@@ -118,9 +122,13 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
     const membership = (await identity.getMembership(claim.membershipId!))!;
     return principalFor('owner', { userId: membership.userId, membershipId: membership.id, organizationId: membership.organizationId });
   };
-  const admin = (principal: AuthPrincipal, stores: { config?: ConfigStore; settings?: SettingsStore } = {}) => {
+  const admin = (
+    principal: AuthPrincipal,
+    stores: { config?: ConfigStore; settings?: SettingsStore; work?: WorkStore; slackState?: SlackStateStore } = {},
+  ) => {
     const app = createAdminRoutes({
       store: stores.config ?? config, settings: stores.settings ?? settings, usage, slackCredentials: credentials,
+      work: stores.work, slackState: stores.slackState,
       ...testAdminAuthority(TOKEN, ORIGIN, identity, principal),
     });
     return (path: string, init: RequestInit = {}) => app.request(`${ORIGIN}${path}`, {
@@ -345,6 +353,35 @@ test('the hosted journey runs Choose provider, Choose model and Try; finishing o
     assert.equal(finished.redirectTo, '/admin/agents');
     assert.equal((await admin('/admin')).status, 200);
   });
+});
+
+test('Try finishes as soon as Chickpea\'s answer shows in the Owner\'s DM, before its run settles', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const begun = (await signup.journey())!;
+  const provider = await selectOnboardingProvider(signup.settings, { expectedRevision: begun.revision, workspaceId: TEAM, providerId: 'anthropic' });
+  await startOnboardingTry(signup.settings, {
+    expectedRevision: provider.revision, agentId: 'agent_chickpea', modelId: 'anthropic/claude-sonnet-5', slackUserId: INSTALLER, tryStartedAt: 100,
+  });
+  const streaming = onboardingRunFixture({
+    run: {
+      actorRef: opaqueId('actor', `slack:${TEAM}:${INSTALLER}`), status: 'executing', terminalDisposition: null,
+      deliveryStatus: 'pending', deliveryRef: null, settledAt: null,
+    },
+    binding: { externalAccountId: opaqueId('account', `slack:${TEAM}`) },
+  });
+  const work = { listRuns: async () => ({ items: [streaming], nextCursor: null }) } as unknown as WorkStore;
+  let acknowledgedByteLength = 0;
+  const slackState = {
+    getRunPresentation: async (runId: string) => runId === streaming.run.id
+      ? { root: { channelId: 'DOWNER' }, stream: { acknowledgedByteLength } }
+      : undefined,
+  } as unknown as SlackStateStore;
+  const admin = signup.admin(await signup.ownerPrincipal(), { work, slackState });
+  assert.equal((await json(admin('/admin/api/onboarding'))).stage, 'try', 'a stream showing only its plan is not a reply yet');
+  acknowledgedByteLength = 24;
+  assert.equal((await json(admin('/admin/api/onboarding'))).stage, 'complete');
+  assert.equal((await signup.journey())?.journey.state, 'complete');
 });
 
 test('a finished or skipped journey opens Admin as usual', async (t) => {

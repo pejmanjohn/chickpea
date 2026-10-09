@@ -124,6 +124,7 @@ async function harness(options: {
 }) {
   let html = '';
   const renders: string[] = [];
+  const timerDelays: number[] = [];
   const app = { className: '', get innerHTML() { return html; }, set innerHTML(value: string) { html = value; renders.push(value); } };
   const listeners: Record<string, Listener> = {};
   const requests: Array<{ path: string; method: string; body: unknown }> = [];
@@ -239,7 +240,10 @@ async function harness(options: {
   vm.runInNewContext(script, {
     console, Date, document, fetch, clearTimeout,
     // Try polls the journey; an unref'd timer lets the file's process exit.
-    setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
+    setTimeout: (callback: () => void, ms?: number) => {
+      timerDelays.push(ms ?? 0);
+      return setTimeout(callback, ms).unref();
+    },
     history: {
       pushState(_state: unknown, _title: string, path: string) { applyPath(path); },
       replaceState(_state: unknown, _title: string, path: string) { applyPath(path); },
@@ -259,7 +263,7 @@ async function harness(options: {
     await click({ 'data-action': 'prov-validate', 'data-provider': provider });
   };
   return {
-    html: () => html, renders, requests, assigned, location, click, saveKey,
+    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey,
     portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseBoot: () => releaseBoot(),
   };
 }
@@ -1014,4 +1018,10 @@ test('the boot\'s other requests never move a journey back once setup moved it o
   assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 0,
     'the page carries the journey, so nothing asks for it again');
   assert.equal(platformRequests(page.requests), 1);
+});
+
+test('Try checks for Chickpea\'s first reply every second', async () => {
+  const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY });
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
+  assert.deepEqual(page.timerDelays.filter((ms) => ms > 0), [1000]);
 });
