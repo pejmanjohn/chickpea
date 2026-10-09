@@ -111,6 +111,21 @@ test('a lost key slot is replaced by the Owner\'s verified grant under the deplo
   assert.equal(resolved.connectionRevision, promoted.revision);
 });
 
+test('a replacement keeps the installing Owner\'s user-group token the host verified with the grant', async (t) => {
+  const retired = generateCredentialKeyring('key_v1');
+  const { identity } = await installation(t, retired);
+  const current = generateCredentialKeyring('key_v2');
+  await latch(identity, current);
+
+  await replaceUnreadableHostedSlackBotBundle({ state: identity, keyring: current, env: ENV },
+    grant({ userGroupToken: 'xoxp-w16-owner-secret' }));
+  invalidateSlackInstallationCredentialCache();
+  const resolved = await resolveSlackInstallationCredentials(
+    HOSTED_SLACK_INSTALLATION_ID, ENV, { state: identity, keyring: current, env: ENV });
+  assert.equal(resolved.botToken, 'xoxb-reconnected');
+  assert.equal(resolved.userGroupToken, 'xoxp-w16-owner-secret');
+});
+
 test('a bundle that no longer decrypts is replaced under the same key without a rotation', async (t) => {
   const original = generateCredentialKeyring('key_v1');
   const { identity } = await installation(t, original);

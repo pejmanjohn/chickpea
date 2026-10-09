@@ -70,6 +70,7 @@ test('one encrypted workspace installation is the only runtime credential source
         ),
         {
           botToken: 'xoxb-state',
+          userGroupToken: undefined,
           signingSecret: 'state-signing-secret',
           botUserId: 'UBOT',
           connectionRevision: revision,

@@ -272,6 +272,27 @@ test('a drive rewraps each installation on its own; one failing installation lea
   });
 });
 
+test('a drive carries the installing Owner\'s user-group token to the new key', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { a, keyring, rotate } = await installations(t);
+    const active = await a.identity.getActiveSlackCredentialRevision(HOSTED_SLACK_INSTALLATION_ID);
+    await writeHostedSlackBotCredentials({ state: a.identity, keyring }, active!.revision, {
+      botToken: 'xoxb-t_ops_a', botUserId: 'UBOT', appId: 'AHOSTED', teamId: 'T_OPS_A',
+      grantedScopes: ['chat:write'], validatedAt: 1_700_000_000_000, userGroupToken: 'xoxp-w16-owner-secret',
+    });
+    const rotated = rotate();
+    assert.equal((await drive(a, rotated, 'key_next')).done, true);
+
+    const retired = { currentKeyId: 'key_next', keys: { key_next: rotated.keys.key_next! } };
+    writeFileSync(process.env.CHICKPEA_CREDENTIAL_KEYRING_PATH!, `${JSON.stringify({ version: 1, ...retired })}\n`, { mode: 0o600 });
+    invalidateSlackInstallationCredentialCache();
+    const slack = await resolveSlackInstallationCredentials(HOSTED_SLACK_INSTALLATION_ID, a.env,
+      { state: a.identity, env: a.env });
+    assert.equal(slack.botToken, 'xoxb-t_ops_a');
+    assert.equal(slack.userGroupToken, 'xoxp-w16-owner-secret');
+  });
+});
+
 test('the census counts every encrypted class under every older key, and a class no rewrap covers blocks retirement', async (t) => {
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     const { a, keyring, rotate } = await installations(t);

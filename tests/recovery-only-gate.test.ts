@@ -551,7 +551,7 @@ test('a Worker that lost its key root recovers over HTTP and serves Slack with t
   await repairOverHttp(t, env, 'signing-secret');
   assert.equal((await getIdentityStore(env).getAuthControl())?.healthGate, 'normal');
   assert.deepEqual(await resolveSlackInstallationCredentials(WORKSPACE_SLACK_INSTALLATION_ID, env), {
-    botToken: 'xoxb-recovered-token', signingSecret: 'signing-secret', botUserId: 'UBOT',
+    botToken: 'xoxb-recovered-token', userGroupToken: undefined, signingSecret: 'signing-secret', botUserId: 'UBOT',
     connectionRevision: (await getIdentityStore(env).getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID))?.revision,
   });
   // Slack's deliveries verify against the recovered bundle again.
