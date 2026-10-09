@@ -52,7 +52,7 @@ import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { withEnv } from './helpers/env.ts';
 import { activityStatus } from '../src/activity/semantic.ts';
-import { setObservedSlackStatus } from '../src/slack/status-registry.ts';
+import { setObservedSlackStatus, SlackStatusRegistry } from '../src/slack/status-registry.ts';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -2313,6 +2313,69 @@ test('the thread\'s Agent, handed an answer, can end silently: nothing posts and
   // Only the thread's own Agent may stay silent: a guest's NO_REPLY is its answer.
   const guest = await run(answeredBack('Ev_GUEST_NO_REPLY'), 'NO_REPLY', { ...assignment, threadGuest: true });
   assert.ok(guest.effects.includes('post'));
+});
+
+test('only a person\'s own message titles the thread; an ask or a later co-addressed turn never does', async () => {
+  const titled = async (turn: NormalizedSlackTurn, runAssignment = assignment) => {
+    const work = new SqliteWorkStore(':memory:');
+    const admitted = await work.admitShadowRun(prepareSlackShadowAdmission({
+      turn, assignment: runAssignment, sourceVisibility: 'private', admittedAt: Date.now(),
+    }));
+    const runId = admitted.run.id;
+    const h = v3PresentationHarness(turn, runId);
+    const titles: string[] = [];
+    const client = {
+      apiCall: async () => ({ ok: true }),
+      assistant: { threads: {
+        setStatus: async () => ({ ok: true }),
+        setTitle: async (input: { title: string }) => { titles.push(input.title); return { ok: true }; },
+      } },
+      conversations: { history: async () => ({ ok: true, messages: [] }) },
+      chat: {
+        startStream: async () => ({ ok: true, ts: '1785509000.000300' }),
+        appendStream: async () => ({ ok: true }),
+        stopStream: async () => ({ ok: true }),
+        postMessage: async () => ({ ok: true, ts: '1785509000.000300' }),
+      },
+    } as unknown as WebClient;
+    try {
+      await runTurn(turn, runAssignment, undefined, {
+        client, runId, presentationState: h.state, workStore: work, usageRecordingEnabled: false,
+        statusRegistry: new SlackStatusRegistry(),
+        async agentPrompt(): Promise<AgentDispatchResult> {
+          return {
+            text: 'Done.', requestedModel: runAssignment.model ?? null, returnedModel: null,
+            reportedUsage: null, usageCompleteness: 'not_reported',
+          };
+        },
+      });
+      return titles;
+    } finally { h.db.close(); work.close(); }
+  };
+  const asked: NormalizedSlackTurn = {
+    ...workTurn('Ev_TITLE_ASK'),
+    messageTs: '1785509000.000200',
+    text: 'What did Finance decide about the refund?',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    agentAsk: {
+      fromAgentId: 'agent_finance', fromAgentName: 'Finance', fromAgentHandle: 'finance',
+      originMessageTs: '1785509000.000100',
+    },
+  };
+  const agents = [
+    { agentId: 'agent_finance', name: 'Finance', handle: 'finance' },
+    { agentId: assignment.agentId, name: 'Heartbeat', handle: 'heartbeat' },
+  ];
+  const coAddressed: NormalizedSlackTurn = {
+    ...workTurn('Ev_TITLE_CO_ADDRESSED'),
+    text: 'Plan the refund policy together',
+    interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
+    coAddressed: { agents, position: 1 },
+  };
+  assert.deepEqual(await titled(asked, { ...assignment, threadGuest: true }), []);
+  assert.deepEqual(await titled(coAddressed, { ...assignment, threadGuest: true }), []);
+  assert.deepEqual(await titled({ ...coAddressed, eventId: 'Ev_TITLE_FIRST', coAddressed: { agents, position: 0 } }),
+    ['Plan the refund policy together']);
 });
 
 test('a rejected custom status falls back to the native processing indicator', async () => {

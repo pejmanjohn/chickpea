@@ -1417,9 +1417,10 @@ async function runTurnAttempt(
       await finishDelivery('failed');
       return;
     }
-    // A click or form answers inside the conversation; its host-authored
-    // text never becomes the thread's title.
-    if (!turn.uiResponse) {
+    // Only a person's own words title the thread: a click's or form's text
+    // is host-authored, and an ask or a later co-addressed turn joins a
+    // thread a person's message already titled.
+    if (typedByPerson && !turn.uiResponse) {
       await agentViewPresentation?.setTitle(turn.text).catch(() => {
         console.warn('[chickpea] Slack Agent View title could not be recorded');
       });
