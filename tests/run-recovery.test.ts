@@ -1192,6 +1192,55 @@ test('exhausted hosted ledger reattachment with a stuck presentation posts the c
   }
 });
 
+test('exhausted hosted ledger reattachment whose last attempt recorded the receipt is credited back as evicted', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('last-receipt')));
+    turns.enqueue(turnJob(admission.run.id, 'last-receipt'));
+    turns.recordAttempt('turn_last-receipt', MAX_POST_DISPATCH_ATTEMPTS - 1);
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const replayed: Array<string | undefined> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      platformEnv,
+      // The last attempt dispatches, records the receipt, then loses its read.
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) {
+          const dispatch = options?.flueDispatch;
+          assert.ok(dispatch, 'the attempt carries its dispatch state');
+          dispatch.dispatchReceipt = {
+            submissionId: 'sub_last', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_last',
+          };
+          throw new AgentPromptFailure('agent', 503, false, true);
+        }
+        replayed.push(options?.replayText);
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'post_dispatch_attempts_exhausted',
+    });
+    assert.equal(executions, 2);
+    assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+    assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_canary', runId: 'sub_last' }, reason: 'evicted' }]);
+  } finally {
+    db.close();
+  }
+});
+
 test('failure classification uses the newest immutable RunExecution', async () => {
   let clock = NOW;
   const db = openStateDb(':memory:');
