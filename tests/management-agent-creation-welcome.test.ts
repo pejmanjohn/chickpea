@@ -641,6 +641,84 @@ test('a creation that took a handle variation tells the requester both handles',
   }
 });
 
+test('a creation whose every handle variation is taken names the requested handle in its fallback', async () => {
+  const attempts: string[] = [];
+  const f = await createManagementAdapterFixture('welcome-exhausted-handle', {
+    publishAgentPresence: async ({ agentId }) => {
+      const handle = (await f.config.getAgent(agentId)).slackPresence!.normalizedHandle;
+      attempts.push(handle);
+      throw new AgentPresenceError('handle_collision', `@${handle} is already in use.`, {
+        suggestions: ['support-team', 'support-2', 'support-3'],
+      });
+    },
+  });
+  try {
+    const context: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      actingAgentId: CHICKPEA_AGENT_ID,
+      origin: {
+        kind: 'slack',
+        workspaceId: f.admin.binding.slackTeamId,
+        channelId: 'D_EXHAUSTED_HANDLE',
+        threadTs: '900.4',
+        messageTs: '900.4',
+        requestText: 'create me a support agent',
+        conversationKind: 'im',
+        agentId: CHICKPEA_AGENT_ID,
+      },
+    };
+    const applied = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-support-exhausted-handle',
+      operations: [{
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_support_exhausted',
+          name: 'Support',
+          requestedHandle: 'support',
+          editPolicy: 'creator_and_admins',
+          instructions: 'Draft customer replies.',
+          enabled: true,
+          skills: [],
+          mcpServers: [],
+          apiConnections: [],
+          repositories: [],
+        },
+      }],
+    });
+    if (!('operationId' in applied)) assert.fail('expected applied creation');
+    assert.deepEqual(attempts, ['support', 'support-team', 'support-2', 'support-3']);
+
+    const finalized = await f.service.finalizeSlackAgentCreationWelcome({
+      context,
+      operationId: applied.operationId,
+      creationItemId: 'create',
+      agentId: 'agent_support_exhausted',
+      connectorMentions: [],
+      followOnNotices: [],
+      turnJobId: 'turn_exhausted_handle',
+    });
+    const receipt = finalized.outbox.receipt;
+    if (!('kind' in receipt) || receipt.kind !== 'agent_created_welcome') {
+      assert.fail('expected Agent welcome receipt');
+    }
+    assert.deepEqual(receipt.publication, { status: 'partial', incomplete: ['slack_presence'] });
+    assert.equal(receipt.agentHandle, 'support');
+    assert.equal(receipt.takenHandle, undefined);
+    const text = formatManagementSetupReceipt(receipt);
+    assert.match(
+      text,
+      /^I created \*Support\*, but Slack wouldn’t create its handle, @support, so people can’t mention it yet\./,
+    );
+    assert.doesNotMatch(text, /support-3/);
+  } finally {
+    f.close();
+  }
+});
+
 test('welcome finalization truthfully reports presence and source-Channel publication failures', async () => {
   const scenarios = [
     {

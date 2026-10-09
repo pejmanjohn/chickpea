@@ -30,6 +30,7 @@ import {
   type AgentScheduleReference,
   type AgentConnectionBinding,
   type AgentCreateInput,
+  type AgentSlackPresence,
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountPolicy,
@@ -65,7 +66,7 @@ import {
 } from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
 import type { WorkStore } from '../work/types.ts';
-import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress } from '../slack/command-address.ts';
@@ -4515,20 +4516,37 @@ export class WorkspaceManagementService {
       return await publish();
     } catch (error) {
       let publicationError = error;
-      if (error instanceof AgentPresenceError && error.code === 'handle_collision') {
+      if (isHandleCollision(error)) {
+        const tried: string[] = [];
         for (const suggestion of error.suggestions.slice(0, 3)) {
           try {
-            await this.selectAvailableAgentHandle(
+            tried.push(normalizeAgentHandle(suggestion));
+            await this.selectAgentHandle(
               options.requestId,
               options.prepared,
               agent.id,
               suggestion,
+              { health: 'pending' },
             );
             return await publish();
           } catch (retryError) {
             publicationError = retryError;
-            if (!(retryError instanceof AgentPresenceError &&
-                retryError.code === 'handle_collision')) break;
+            if (!isHandleCollision(retryError)) break;
+          }
+        }
+        const requested = requestedAgentHandle(options.prepared.operation);
+        if (requested && isHandleCollision(publicationError)) {
+          try {
+            await this.selectAgentHandle(options.requestId, options.prepared, agent.id, requested, {
+              health: 'needs_attention',
+              errorCode: 'handle_collision',
+              errorDetail: error.message,
+              handleSuggestions: alternativeAgentHandles(requested, new Set([requested, ...tried])),
+              observedAt: this.now(),
+            });
+            publicationError = error;
+          } catch (restoreError) {
+            publicationError = restoreError;
           }
         }
       }
@@ -4543,24 +4561,25 @@ export class WorkspaceManagementService {
     }
   }
 
-  private async selectAvailableAgentHandle(
+  private async selectAgentHandle(
     requestId: string | undefined,
     prepared: ManagementPreparedItem,
     agentId: string,
-    suggestion: string,
+    handle: string,
+    status: Pick<AgentSlackPresence, 'health' | 'errorCode' | 'errorDetail' | 'handleSuggestions' | 'observedAt'>,
   ): Promise<void> {
     const current = await this.stores.config.getAgent(agentId);
     const presence = current.slackPresence;
     if (!presence) {
       throw new ManagementError('invalid_state', 'The Agent Slack identity is unavailable.');
     }
-    const selected = normalizeAgentHandle(suggestion);
+    const selected = normalizeAgentHandle(handle);
     await this.stores.config.updateAgent(agentId, {
       slackPresence: {
         ...presence,
         requestedHandle: selected,
         normalizedHandle: selected,
-        health: 'pending',
+        ...status,
       },
     }, current.revision);
     const intended = prepared.intendedAfter as CustomAgentConfig;
@@ -5327,12 +5346,21 @@ function withHandleChange(
   operation: ManagementOperation,
   agent: CustomAgentConfig,
 ): CreatedAgentPublication {
-  if (operation.kind !== 'create_agent') return { agent };
-  const requested = normalizeAgentHandle(operation.agent.requestedHandle ?? operation.agent.name);
+  const requested = requestedAgentHandle(operation);
   const used = agent.slackPresence?.normalizedHandle;
-  return used && used !== requested
+  return requested && used && used !== requested
     ? { agent, handleChange: { requested, used } }
     : { agent };
+}
+
+function requestedAgentHandle(operation: ManagementOperation): string | undefined {
+  return operation.kind === 'create_agent'
+    ? normalizeAgentHandle(operation.agent.requestedHandle ?? operation.agent.name)
+    : undefined;
+}
+
+function isHandleCollision(error: unknown): error is AgentPresenceError {
+  return error instanceof AgentPresenceError && error.code === 'handle_collision';
 }
 
 function agentCreationMatches(
