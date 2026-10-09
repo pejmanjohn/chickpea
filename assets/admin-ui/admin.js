@@ -30,6 +30,7 @@
   var GITHUB_SETTINGS_PATH = "/admin/settings/github";
   var GITHUB_INSTALL_COPY = "Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.";
   var NOT_OFFERED_HINT_HTML = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
+  var PLATFORM_PROVIDER_COPY_HTML = '<div class="provider-card-copy"><p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p></div>';
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -10459,11 +10460,13 @@
   }
 
   function providerCardStatusHtml(summary) {
+    if (summary.platformFunded) return '<div class="prov-status"><span class="badge badge-neutral"><span class="dot"></span>Chickpea&rsquo;s models</span></div>';
     var connected = summary.status === "stored" || summary.status === "env";
     return '<div class="prov-status"><span class="badge ' + (connected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (connected ? "Connected" : "Key needed") + '</span></div>';
   }
 
   function providerCardCopyHtml(id, summary, meta) {
+    if (summary.platformFunded) return PLATFORM_PROVIDER_COPY_HTML;
     var connected = summary.status === "stored" || summary.status === "env";
     var count = providerModelCount(id, summary);
     if (!connected) {
@@ -10688,7 +10691,7 @@
         '<button type="button" class="btn btn-soft btn-sm" data-action="prov-change-key" data-provider="' + esc(id) + '">Change key&hellip;</button>' +
         '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove" data-provider="' + esc(id) + '">Remove key&hellip;</button></div></details>';
     }
-    return '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
+    return '<div class="prov-actions"><button type="button" class="btn ' + (summary.platformFunded ? "btn-soft" : "btn-primary") + ' btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
   }
 
   function validateEndpointPath(id) {
@@ -10804,8 +10807,10 @@
       return '<div class="prov-body fav-provider-body fav-provider-editor">' + editor + '<div class="provider-card-footer">' + providerActionsHtml(id, providerSummary, state.provUi[id] || {}) + '</div></div>';
     }
     var intro = "";
-    if (id === "openrouter") {
-      var connected = providerSummary.status === "stored" || providerSummary.status === "env";
+    var connected = providerSummary.status === "stored" || providerSummary.status === "env";
+    if (id === "openrouter" && providerSummary.platformFunded) {
+      intro = PLATFORM_PROVIDER_COPY_HTML;
+    } else if (id === "openrouter") {
       intro = '<div class="provider-step-list"><div class="provider-step' + (connected ? ' complete' : '') + '"><span class="provider-step-number">' + (connected ? '&#10003;' : '1') + '</span><span>Add your OpenRouter key. Chickpea validates it with <span class="mono">GET /auth/key</span>.</span></div>' +
         '<div class="provider-step' + (favs.length ? ' complete' : ' pending') + '"><span class="provider-step-number">' + (favs.length ? '&#10003;' : '2') + '</span><span>Choose the models to show in pickers' + (favs.length ? '.' : ' &middot; 0 chosen.') + '</span></div></div>';
     } else {
