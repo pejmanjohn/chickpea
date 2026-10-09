@@ -4913,6 +4913,110 @@ test('Slack policy failures preserve the Agent and return exact recovery steps',
   }
 });
 
+/** Slack refuses a user group whose name or handle is already taken in the workspace. */
+function enforceSlackUniqueness(transport: FakeTransport, memberHandles: string[] = []): string[] {
+  const sentNames: string[] = [];
+  const create = transport.createUserGroup.bind(transport);
+  transport.createUserGroup = async (input) => {
+    sentNames.push(input.name);
+    if (transport.groups.some(({ name }) => name.toLowerCase() === input.name.toLowerCase())) {
+      throw new SlackTransportError('usergroups.create', 'name_already_exists');
+    }
+    if ([...memberHandles, ...transport.groups.map(({ handle }) => handle)].includes(input.handle)) {
+      throw new SlackTransportError('usergroups.create', 'handle_already_exists');
+    }
+    return create(input);
+  };
+  return sentNames;
+}
+
+async function supportAgentRequest(app: Hono, method: string, path: string, body: unknown) {
+  const response = await app.request(`http://localhost/admin/api/agents/agent_support${path}`, {
+    method, headers: auth(), body: JSON.stringify(body),
+  });
+  return { status: response.status, body: await response.json() as Record<string, any> };
+}
+
+test('an Agent named like another Slack user group is fixed by a rename, then Retry', async () => {
+  const transport = new FakeTransport();
+  transport.groups.push({ id: 'S_OTHER_APP', name: 'QA Fixtures', handle: 'qa-checks', disabled: false });
+  const sentNames = enforceSlackUniqueness(transport);
+  const fixture = harness(transport);
+  try {
+    await createAgent(fixture.app, 'QA fixtures');
+    const nameRecovery = {
+      title: 'A Slack user group is already named “QA fixtures”',
+      explanation: 'Rename this Agent, then press Retry.',
+      steps: [],
+      actionLabel: 'Retry',
+    };
+    const failed = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
+    });
+    assert.equal(failed.status, 409);
+    assert.equal(failed.body.error, 'name_collision');
+    assert.deepEqual(failed.body.suggestions, [], 'a new handle cannot free a taken name');
+    assert.deepEqual(failed.body.recovery, nameRecovery);
+
+    const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {
+      expectedRevision: failed.body.agent.revision, handle: 'qa-fixtures-f2-1009',
+    });
+    assert.equal(rehandled.status, 200);
+    assert.deepEqual(rehandled.body.presenceRecovery, nameRecovery);
+    assert.deepEqual(rehandled.body.agent.slackPresenceRecovery, nameRecovery);
+
+    const renamed = await supportAgentRequest(fixture.app, 'PATCH', '', {
+      expectedRevision: rehandled.body.agent.revision, name: 'QA fixtures bot',
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal(renamed.body.presenceRecovery, null);
+
+    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.agent.slackPresenceRecovery, null);
+    assert.deepEqual(sentNames, ['QA fixtures', 'QA fixtures', 'QA fixtures bot']);
+    assert.deepEqual(
+      (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status),
+      ['active'],
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a handle Slack already uses is still fixed by a new handle, then Retry', async () => {
+  const transport = new FakeTransport();
+  enforceSlackUniqueness(transport, ['support']);
+  const fixture = harness(transport);
+  try {
+    await createAgent(fixture.app);
+    const failed = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
+    });
+    assert.equal(failed.status, 409);
+    assert.equal(failed.body.error, 'handle_collision');
+    assert.equal(failed.body.recovery.title, '@support is already in use');
+
+    const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {
+      expectedRevision: failed.body.agent.revision, handle: 'support-team',
+    });
+    assert.equal(rehandled.status, 200);
+    assert.equal(rehandled.body.presenceRecovery, null);
+
+    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.agent.slackPresence.normalizedHandle, 'support-team');
+    assert.deepEqual(
+      (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ status }) => status),
+      ['active'],
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('Avatar uploads create a new immutable revision used by later Slack replies', async () => {
   const fixture = harness();
   try {

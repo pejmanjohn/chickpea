@@ -63,6 +63,34 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
   }
 });
 
+test('Slack name and handle collisions each name their own fix', () => {
+  const qa = agent('agent_qa', 'QA fixtures', 'qa-fixtures');
+
+  const name = classifyAgentPresenceError(
+    new SlackTransportError('usergroups.create', 'name_already_exists'),
+  );
+  assert.equal(name.code, 'name_collision');
+  assert.equal(name.slackCode, 'name_already_exists');
+  assert.deepEqual(agentPresenceRecovery(name, qa), {
+    title: 'A Slack user group is already named “QA fixtures”',
+    explanation: 'Rename this Agent, then press Retry.',
+    steps: [],
+    actionLabel: 'Retry',
+  });
+
+  const handle = classifyAgentPresenceError(
+    new SlackTransportError('usergroups.create', 'handle_already_exists'),
+  );
+  assert.equal(handle.code, 'handle_collision');
+  assert.equal(handle.slackCode, 'handle_already_exists');
+  assert.deepEqual(agentPresenceRecovery(handle, qa), {
+    title: '@qa-fixtures is already in use',
+    explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
+    steps: ['Choose one of the suggested available handles or enter another handle.', 'Select Retry.'],
+    actionLabel: 'Retry',
+  });
+});
+
 test('publishing verifies actor membership, joins a public Channel, and creates one alias', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
