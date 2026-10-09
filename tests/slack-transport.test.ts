@@ -450,7 +450,7 @@ const BOT_ONLY_CALLS = [
 ];
 
 test('an Owner client answers exactly the six user-group methods and the bot answers everything else', async (t) => {
-  const warnings = captureWarnings(t);
+  const logs = captureLogs(t);
   const botCalls: RecordedCall[] = [];
   const ownerCalls: RecordedCall[] = [];
   const transport = createDirectSlackTransportFromClient(fakeClient(botCalls), fakeClient(ownerCalls));
@@ -460,15 +460,17 @@ test('an Owner client answers exactly the six user-group methods and the bot ans
   assert.deepEqual(ownerCalls.map(({ method }) => method), USER_GROUP_CALLS);
   assert.deepEqual(botCalls.map(({ method }) => method), BOT_ONLY_CALLS);
   assert.deepEqual(ownerCalls.find(({ method }) => method === 'usergroups.disable')?.input, { usergroup: 'S123' });
-  assert.deepEqual(warnings.map((line) => JSON.parse(line)), USER_GROUP_CALLS.map((operation) => ({
+  assert.deepEqual(logs.info.map((line) => JSON.parse(line)), USER_GROUP_CALLS.map((operation) => ({
     event: 'chickpea.slack_user_groups.call', operation, answeredBy: 'owner', code: 'ok',
   })));
+  assert.deepEqual(logs.warn, [], 'an Owner\'s success is not a warning');
   assert.equal(Object.keys(transport).length, 16);
   assert.doesNotMatch(JSON.stringify(transport), /xox|token|client/i);
 });
 
 test('each refusal of the Owner as caller asks the bot exactly once, and the bot\'s answer stands', async (t) => {
-  const warnings = captureWarnings(t);
+  const logs = captureLogs(t);
+  const warnings = logs.warn;
   const expected: Array<Record<string, unknown>> = [];
   for (const ownerCode of ['token_revoked', 'account_inactive', 'permission_denied', 'missing_scope']) {
     for (const botCode of ['ok', 'permission_denied']) {
@@ -496,11 +498,12 @@ test('each refusal of the Owner as caller asks the bot exactly once, and the bot
     }
   }
   assert.deepEqual(warnings.map((line) => JSON.parse(line)), expected);
+  assert.deepEqual(logs.info, []);
   assert.doesNotMatch(warnings.join('\n'), /xox|S123/);
 });
 
 test('a rate limit or an unreachable Slack answering the Owner never reaches the bot', async (t) => {
-  const warnings = captureWarnings(t);
+  const warnings = captureLogs(t).warn;
   const failures: Array<[unknown, string]> = [
     [platformError('ratelimited'), 'ratelimited'],
     [Object.assign(new Error('rate limited'), { code: 'slack_webapi_rate_limited_error', retryAfter: 30 }),
@@ -523,16 +526,16 @@ test('a rate limit or an unreachable Slack answering the Owner never reaches the
 });
 
 test('without an Owner client every user-group call reaches the bot and nothing is logged', async (t) => {
-  const warnings = captureWarnings(t);
+  const logs = captureLogs(t);
   const calls: RecordedCall[] = [];
   await exerciseEveryMethod(createDirectSlackTransportFromClient(fakeClient(calls)));
   assert.deepEqual(calls.filter(({ method }) => method.startsWith('usergroups.')).map(({ method }) => method),
     USER_GROUP_CALLS);
-  assert.deepEqual(warnings, []);
+  assert.deepEqual(logs, { info: [], warn: [] });
 });
 
 test('a direct transport sends user-group calls with the user-group token and all else with the bot token', async (t) => {
-  captureWarnings(t);
+  captureLogs(t);
   const sent: Array<{ method: string; authorization: string | null }> = [];
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
@@ -547,7 +550,7 @@ test('a direct transport sends user-group calls with the user-group token and al
   const hosted = createDirectSlackTransport('xoxb-w16-bot-secret', 'xoxp-w16-owner-secret');
   await hosted.disableUserGroup('S123');
   await hosted.postMessage({ channelId: 'C123', text: 'Handled' });
-  const standalone = createDirectSlackTransport('xoxb-w16-bot-secret');
+  const standalone = createDirectSlackTransport('xoxb-w16-bot-secret', undefined);
   await standalone.disableUserGroup('S123');
 
   assert.deepEqual(sent, [
@@ -576,10 +579,12 @@ test('workspace installation selects one transport mode at the runtime edge', ()
   assert.equal(selectSlackTransport(installation('gateway'), { direct, gateway }), gateway);
 });
 
-function captureWarnings(t: TestContext): string[] {
-  const lines: string[] = [];
-  t.mock.method(console, 'warn', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
-  return lines;
+function captureLogs(t: TestContext): { info: string[]; warn: string[] } {
+  const logs = { info: [] as string[], warn: [] as string[] };
+  for (const level of ['info', 'warn'] as const) {
+    t.mock.method(console, level, (...args: unknown[]) => { logs[level].push(args.map(String).join(' ')); });
+  }
+  return logs;
 }
 
 /** The Slack SDK's shape for an `ok: false` answer, which it throws. */

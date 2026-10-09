@@ -14,9 +14,11 @@ const CALLER_REFUSALS = [
 function slack(answers: Record<string, string>) {
   const calls: string[] = [];
   const log: Array<Record<string, unknown>> = [];
+  const levels: string[] = [];
   return {
     calls,
     log,
+    levels,
     run: (owner: string | undefined) => withUserGroupAuthority({
       operation: 'usergroups.disable',
       owner,
@@ -26,7 +28,7 @@ function slack(answers: Record<string, string>) {
         return answers[token]!;
       },
       errorCode: (code) => code === 'ok' ? undefined : code,
-      log: (entry) => { log.push(entry); },
+      log: (entry, level) => { log.push(entry); levels.push(level); },
     }),
   };
 }
@@ -55,6 +57,7 @@ test('an Owner token answers user-group calls and the bot is never asked', async
   assert.deepEqual(ok.log, [
     { event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable', answeredBy: 'owner', code: 'ok' },
   ]);
+  assert.deepEqual(ok.levels, ['info'], 'an Owner\'s success is information, not a warning');
 });
 
 test('each refusal of the Owner as caller asks the bot exactly once, and the bot\'s answer stands', async () => {
@@ -67,6 +70,7 @@ test('each refusal of the Owner as caller asks the bot exactly once, and the bot
         event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable',
         answeredBy: 'bot', code: botCode, ownerCode,
       }], ownerCode);
+      assert.deepEqual(fallback.levels, ['warn'], ownerCode);
       assertNoToken(JSON.stringify(fallback.log));
     }
   }
@@ -81,12 +85,15 @@ test('a rate limit, an unreachable Slack, or a refusal of the request itself nev
     assert.deepEqual(kept.log, [
       { event: 'chickpea.slack_user_groups.call', operation: 'usergroups.disable', answeredBy: 'owner', code },
     ], code);
+    assert.deepEqual(kept.levels, ['warn'], code);
   }
 });
 
-test('by default the one line per call goes to console.warn as JSON without any token', async (t: TestContext) => {
+test('by default a fallback goes to console.warn and an Owner\'s success to console.info, as JSON without any token', async (t: TestContext) => {
   const lines: string[] = [];
+  const infos: string[] = [];
   t.mock.method(console, 'warn', (...args: unknown[]) => { lines.push(args.map(String).join(' ')); });
+  t.mock.method(console, 'info', (...args: unknown[]) => { infos.push(args.map(String).join(' ')); });
   const result = await withUserGroupAuthority({
     operation: 'usergroups.enable',
     owner: OWNER,
@@ -100,5 +107,19 @@ test('by default the one line per call goes to console.warn as JSON without any 
     event: 'chickpea.slack_user_groups.call', operation: 'usergroups.enable',
     answeredBy: 'bot', code: 'ok', ownerCode: 'token_revoked',
   });
-  assertNoToken(lines.join('\n'));
+  assert.deepEqual(infos, []);
+
+  const owned = await withUserGroupAuthority({
+    operation: 'usergroups.list',
+    owner: OWNER,
+    bot: BOT,
+    call: async () => 'ok',
+    errorCode: (code) => code === 'ok' ? undefined : code,
+  });
+  assert.equal(owned.answeredBy, 'owner');
+  assert.equal(lines.length, 1, 'a success adds no warning');
+  assert.deepEqual(infos.map((line) => JSON.parse(line)), [
+    { event: 'chickpea.slack_user_groups.call', operation: 'usergroups.list', answeredBy: 'owner', code: 'ok' },
+  ]);
+  assertNoToken([...lines, ...infos].join('\n'));
 });

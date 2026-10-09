@@ -94,6 +94,7 @@ function agent(): CustomAgentConfig {
 
 async function agentPublishedWhereSlackRefusesTheBot(t: TestContext) {
   t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(console, 'info', () => undefined);
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   t.after(() => config.close());
   const slack = new FakeSlackWorkspace();

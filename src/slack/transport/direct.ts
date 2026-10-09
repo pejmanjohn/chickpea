@@ -56,7 +56,7 @@ export interface DirectSlackApiClient {
 type UserGroupMethod = keyof DirectSlackApiClient['usergroups'];
 
 /** Construct a direct customer-owned adapter while keeping the tokens captured. */
-export function createDirectSlackTransport(botToken: string, userGroupToken?: string): SlackTransport {
+export function createDirectSlackTransport(botToken: string, userGroupToken: string | undefined): SlackTransport {
   const client = createSlackWebClient(botToken) as unknown as DirectSlackApiClient;
   const ownerClient = userGroupToken
     ? createSlackWebClient(userGroupToken) as unknown as DirectSlackApiClient
