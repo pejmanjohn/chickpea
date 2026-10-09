@@ -37,9 +37,10 @@ function openAiApiModel(
 }
 
 /**
- * Every model on these profiles refuses a temperature, and Opus 5.5, Sonnet
- * 5.5 and Fable 5.1 refuse disabled thinking at any effort, so `off: null`
- * makes a call without a thinking level omit it instead of disabling it.
+ * Every model on these profiles refuses a temperature, and claude-opus-5-5,
+ * claude-sonnet-5-5 and claude-fable-5-1 refuse disabled thinking at any
+ * effort, so `off: null` makes a call without a thinking level omit it
+ * instead of disabling it.
  */
 function anthropicApiModel(cost: Model<string>['cost']): Model<'anthropic-messages'> {
   return {

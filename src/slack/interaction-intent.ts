@@ -488,7 +488,7 @@ async function promptSlackInteractionIntentAgent(
     () => providerStreamsForModel(model).streamSimple(
       model,
       interactionClassifierContext(context),
-      // No temperature: current Anthropic models and the ChatGPT subscription refuse one.
+      // No temperature: most catalog models refuse one.
       { maxTokens: 1024, ...sideCallThinking(model), maxRetries: 0 },
     ).result(),
   );

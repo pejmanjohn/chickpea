@@ -14,8 +14,8 @@ process.env.ANTHROPIC_API_KEY = 'test-not-a-key';
 configureModelAccessResolver({ resolve: async () => ({ apiKey: 'test-not-a-key' }) } as never);
 bootstrapRuntimeProviders();
 
-// What the Messages API refuses with a 400, per Anthropic's model reference.
-// Opus 5 accepts disabled thinking at its default effort (high).
+// What the provider refuses with a 400, per its model reference.
+// claude-opus-5 accepts disabled thinking at its default effort (high).
 const REFUSES: Record<string, { temperature: boolean; disabledThinking: boolean }> = {
   'anthropic/claude-fable-5-1': { temperature: true, disabledThinking: true },
   'anthropic/claude-opus-5-5': { temperature: true, disabledThinking: true },
