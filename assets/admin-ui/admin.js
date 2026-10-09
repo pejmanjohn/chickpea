@@ -230,6 +230,8 @@
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
+    // The active GitHub accounts the connected GitHub step names; null until read.
+    onboardingGithubAccounts: null,
     // Set from a just-completed connect (POST result carries team + botName);
     // drives the dismissable success toast in the connected funnel.
     slackToast: null,
@@ -1226,7 +1228,7 @@
       window.scrollTo(0, 0);
     }
     syncOnboardingActivity();
-    settleOnboardingGithubReturn();
+    loadOnboardingGithubAccounts();
     leaveHostedSlackStep();
     startOnboardingOnChickpeaModels();
   }
@@ -1570,8 +1572,8 @@
     return bar ? main.replace(/^<main class="main"><div class="main-inner[^"]*">/, function (open) { return open + bar; }) : main;
   }
 
-  // Hosted only: once, on the page a GitHub connect returned to, Settings or
-  // onboarding's Try.
+  // Hosted only: once, on the Admin page a GitHub connect returned to.
+  // Onboarding's GitHub step shows the connection itself.
   function githubConnectedNoticeHtml() {
     return !SELF_HOSTED && state.githubConnected
       ? '<div class="callout" role="status"><span>GitHub connected.</span></div>'
@@ -2876,13 +2878,13 @@
     if (!workspace || !slackAppId) return '<div class="empty"><p class="field-error">The Chickpea conversation is unavailable. Reconnect Slack and try again.</p></div>';
     var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
     if (complete) {
-      return '<section class="onboarding-panel onboarding-panel-wide">' + githubConnectedNoticeHtml() + '<span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
+      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
         '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide">' + githubConnectedNoticeHtml() + '<div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
       '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
       '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
@@ -2922,15 +2924,43 @@
     return "Step " + (onboardingStepIndex() + 1) + " of " + ONBOARDING_PAGE.steps.length;
   }
 
-  // Connecting returns here with `?github=connected`, landing on Try.
+  // Connecting returns here with `?github=connected`: the step shows the
+  // connection and waits for Next.
+  function onboardingGithubConnected() {
+    return state.githubConnected && !!state.onboarding && state.onboarding.stage === "connect_github";
+  }
+
   function onboardingGithubHtml() {
     var busy = state.onboardingBusy;
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Optional</p>' +
+    var error = state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '';
+    if (onboardingGithubConnected()) {
+      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">' + esc(onboardingGithubAccountsText()) + '</span>' +
+        '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">GitHub is connected</h1>' +
+        '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' + error +
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div></section>';
+    }
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Let Agents work on your code</h1>' +
-      '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' +
-      (state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '') +
-      '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy) +
+      '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' + error +
+      '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy, githubMarkHtml()) +
       '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div></section>';
+  }
+
+  function githubMarkHtml() {
+    var logo = (CONNECTOR_LOGOS || {}).github;
+    return logo ? '<svg class="github-connect-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + logo.svg + '</svg>' : "";
+  }
+
+  // "Connected to acme · 3 repositories", or "GitHub connected" until the
+  // accounts are read, or when none is active.
+  function onboardingGithubAccountsText() {
+    var accounts = state.onboardingGithubAccounts || [];
+    if (!accounts.length) return "GitHub connected";
+    var names = accounts.map(function (account) { return account.accountLogin; });
+    var named = names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1] : names[0];
+    var counted = accounts.every(function (account) { return typeof account.repoCount === "number"; });
+    var count = accounts.reduce(function (total, account) { return total + (account.repoCount || 0); }, 0);
+    return "Connected to " + named + (counted ? " \u00b7 " + count + (count === 1 ? " repository" : " repositories") : "");
   }
 
   function onboardingMainHtml() {
@@ -2953,9 +2983,11 @@
   function onboardingOrientationHtml() {
     var current = onboardingStepIndex();
     var steps = ONBOARDING_PAGE.steps;
+    var githubConnected = onboardingGithubConnected();
     return '<ol class="onboarding-orientation' + (steps.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + steps.map(function (step, index) {
-      var className = index < current ? "complete" : index === current ? "active" : "";
-      return '<li class="' + className + '"' + (index === current ? ' aria-current="step"' : '') + '><span class="onboarding-step-dot">' + (index < current ? '&#10003;' : index + 1) + '</span><span class="onboarding-step-label">' + esc(step.label) + '</span></li>';
+      var done = index < current || (githubConnected && step.id === "github");
+      var active = !done && index === current;
+      return '<li class="' + (done ? "complete" : active ? "active" : "") + '"' + (active ? ' aria-current="step"' : '') + '><span class="onboarding-step-dot">' + (done ? '&#10003;' : index + 1) + '</span><span class="onboarding-step-label">' + esc(step.label) + '</span></li>';
     }).join("") + '</ol>';
   }
 
@@ -9248,9 +9280,9 @@
     return status ? sameOriginPath(status.connectPath) : "";
   }
 
-  function githubConnectFormHtml(path, next, label, buttonClass, disabled) {
+  function githubConnectFormHtml(path, next, label, buttonClass, disabled, leadingHtml) {
     return '<form class="github-connect-form" method="post" action="' + esc(path) + '"><input type="hidden" name="next" value="' + esc(next) + '">' +
-      '<button type="submit" class="btn ' + buttonClass + '"' + (disabled ? " disabled" : "") + '>' + esc(label) + '</button></form>';
+      '<button type="submit" class="btn ' + buttonClass + '"' + (disabled ? " disabled" : "") + '>' + (leadingHtml || "") + esc(label) + '</button></form>';
   }
 
   function githubInstallationSuspended(installation) {
@@ -13161,7 +13193,7 @@
     });
   }
 
-  // Skip for now, or the return from connecting: the journey moves on to Try.
+  // Skip for now, or Next once connected: the journey moves on to Try.
   function settleOnboardingGithub() {
     if (state.onboardingBusy || !state.onboarding || state.onboarding.stage !== "connect_github") return;
     state.onboardingBusy = true;
@@ -13203,16 +13235,17 @@
     });
   }
 
-  // A connect started from onboarding returns to it once; move on to Try.
-  var onboardingGithubReturnSettled = false;
-  function settleOnboardingGithubReturn() {
-    if (
-      onboardingGithubReturnSettled || !state.githubConnected || state.view !== "onboarding" ||
-      !state.onboarding || state.onboarding.stage !== "connect_github" || state.onboardingBusy
-    ) return;
-    onboardingGithubReturnSettled = true;
-    // After this render, not inside it.
-    Promise.resolve().then(settleOnboardingGithub);
+  // Once, when the GitHub step first shows connected.
+  var onboardingGithubAccountsRequested = false;
+  function loadOnboardingGithubAccounts() {
+    if (onboardingGithubAccountsRequested || state.view !== "onboarding" || !onboardingGithubConnected()) return;
+    onboardingGithubAccountsRequested = true;
+    api("/admin/api/github/status").then(function (body) {
+      state.onboardingGithubAccounts = ((body && body.installations) || []).filter(function (installation) {
+        return installation.status === "active";
+      });
+      render();
+    }).catch(function () {});
   }
 
   function copyOnboardingPrompt() {
@@ -13784,7 +13817,7 @@
       render();
     }
     if (action === "onboarding-model-continue") { selectOnboardingModel(); }
-    if (action === "onboarding-github-skip") { settleOnboardingGithub(); }
+    if (action === "onboarding-github-skip" || action === "onboarding-github-next") { settleOnboardingGithub(); }
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
     if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }

@@ -19542,9 +19542,11 @@ test('hosted onboarding offers Connect GitHub (optional) after the model; Skip f
 
   const step = harness.app.innerHTML;
   assert.match(step, /<li class="active" aria-current="step"><span class="onboarding-step-dot">4<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li>/);
-  assert.match(step, /<p class="onboarding-eyebrow">Optional<\/p><h1 class="onboarding-title">Let Agents work on your code<\/h1>/);
+  assert.match(step, /<p class="onboarding-eyebrow">Step 4 of 5 &middot; Optional<\/p><h1 class="onboarding-title">Let Agents work on your code<\/h1>/);
   assert.ok(step.includes(`<p class="onboarding-lede">${STRING_1} You can skip this and connect GitHub later in Settings.</p>`), 'strings 1 and 22');
-  assert.match(step, /<form class="github-connect-form" method="post" action="\/github\/connect"><input type="hidden" name="next" value="\/admin\/onboarding"><button type="submit" class="btn btn-primary">Connect GitHub<\/button><\/form>/);
+  assert.match(step, /<form class="github-connect-form" method="post" action="\/github\/connect"><input type="hidden" name="next" value="\/admin\/onboarding"><button type="submit" class="btn btn-primary"><svg class="github-connect-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 \.297c[^"]*"\/><\/svg>Connect GitHub<\/button><\/form>/,
+    'the GitHub mark leads the button');
+  assert.match(adminUiStylesheet(), /\.github-connect-mark \{/);
   assert.match(step, /data-action="onboarding-github-skip">Skip for now<\/button>/);
   assert.doesNotMatch(step, /Meet Chickpea in Slack/);
 
@@ -19559,21 +19561,64 @@ test('hosted onboarding offers Connect GitHub (optional) after the model; Skip f
   assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'a skip is not a connect');
 });
 
-test('a connect started in hosted onboarding returns to Try with GitHub connected.', async () => {
+test('a connect started in hosted onboarding returns to the GitHub step, connected, and waits for Next', async () => {
   const harness = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
     onboarding: onboardingAt('connect_github', '/github/connect'),
+    githubStatus: hostedGithubStatus({ installations: [hostedGithubStatus().installations![0]!] }),
   });
   await flushAsync();
   await flushAsync();
-  assert.equal(harness.onboardingGithubPosts.length, 1, 'the return moves the journey on once');
-  const html = harness.app.innerHTML;
-  assert.match(html, /<section class="onboarding-panel onboarding-panel-wide"><div class="callout" role="status"><span>GitHub connected\.<\/span><\/div><div class="onboarding-success">/);
-  assert.match(html, /Step 5 of 5/);
-  assert.ok(harness.historyReplaces.every((path) => !path.includes('github=')));
   harness.focusWindow();
   await flushAsync();
+  assert.equal(harness.onboardingGithubPosts.length, 0, 'nothing moves on until Next');
+  const step = harness.app.innerHTML;
+  assert.ok(step.includes('<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Connected to acme · 3 repositories</span>' +
+    '<p class="onboarding-eyebrow">Step 4 of 5</p><h1 class="onboarding-title">GitHub is connected</h1>' +
+    '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' +
+    '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next">Next: try Chickpea</button></div>'));
+  assert.doesNotMatch(step, /github-connect-form|Skip for now|GitHub connected\./);
+  assert.match(step, /<li class="complete"><span class="onboarding-step-dot">&#10003;<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li><li class=""><span class="onboarding-step-dot">5<\/span>/,
+    'the GitHub step shows done while it waits');
+  assert.equal(harness.settingsGetCalls.filter((path) => path === '/admin/api/github/status').length, 1, 'the accounts are read once');
+  assert.ok(harness.historyReplaces.every((path) => !path.includes('github=')));
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-github-next' }) });
+  await flushAsync();
   assert.equal(harness.onboardingGithubPosts.length, 1);
+  assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 5 of 5<\/p>/);
+  assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'the notice belongs to the GitHub step');
+});
+
+test('the connected GitHub step names the accounts it can read, and says GitHub connected otherwise', async () => {
+  const [acme, octo, suspended] = hostedGithubStatus().installations!;
+  const cases: Array<[string, Parameters<typeof runAdminPageHarness>[0] & object, string]> = [
+    ['two active accounts', { githubStatus: hostedGithubStatus() }, 'Connected to acme and octo · 4 repositories'],
+    ['one repository', { githubStatus: hostedGithubStatus({ installations: [octo!, suspended!] }) }, 'Connected to octo · 1 repository'],
+    ['an unknown count', { githubStatus: hostedGithubStatus({ installations: [{ ...acme!, repoCount: null }] }) }, 'Connected to acme'],
+    ['no active account', { githubStatus: hostedGithubStatus({ installations: [suspended!] }) }, 'GitHub connected'],
+    ['a failed read', { settingsLoadFetch: (path) => path === '/admin/api/github/status' ? Promise.resolve(jsonResponse({ error: 'internal_error' }, 500)) : undefined }, 'GitHub connected'],
+    ['a read still loading', { settingsLoadFetch: (path) => path === '/admin/api/github/status' ? new Promise<FakeResponse>(() => {}) : undefined }, 'GitHub connected'],
+  ];
+  for (const [label, fixture, pill] of cases) {
+    const harness = runAdminPageHarness({
+      ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
+      onboarding: onboardingAt('connect_github', '/github/connect'), ...fixture,
+    });
+    await flushAsync();
+    assert.ok(harness.app.innerHTML.includes(`<span class="onboarding-success-badge">${pill}</span>`), label);
+  }
+});
+
+test('the GitHub connected notice never follows onboarding past its step', async () => {
+  for (const stage of ['try', 'complete'] as const) {
+    const harness = runAdminPageHarness({
+      ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
+      onboarding: onboardingAt(stage, '/github/connect'),
+    });
+    await flushAsync();
+    assert.doesNotMatch(harness.renderHistory.join(''), /GitHub connected\./, stage);
+  }
 });
 
 test('hosted onboarding opens at Choose provider with Slack done, offering API keys only', async () => {
@@ -19670,7 +19715,7 @@ test('hosted Add repositories opens the one active account directly, never a sus
   assert.deepEqual(harness.githubRepoCalls, [`/admin/api/github/installations/${HOSTED_GITHUB_ORG}/repos?q=&page=1`]);
 });
 
-test('a failed onboarding return is tried once, and its error shows on the GitHub step', async () => {
+test('a Next that fails shows its error on the connected GitHub step and keeps Next', async () => {
   const harness = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch: '?github=connected', ...hostedOnboardingProviders,
     onboarding: onboardingAt('connect_github', '/github/connect'),
@@ -19679,11 +19724,9 @@ test('a failed onboarding return is tried once, and its error shows on the GitHu
       : undefined,
   });
   await flushAsync();
-  await flushAsync();
-  harness.focusWindow();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-github-next' }) });
   await flushAsync();
   const posts = harness.fetchCalls.filter(({ path, method }) => path === '/admin/api/onboarding/github' && method === 'POST');
   assert.equal(posts.length, 1);
-  assert.match(harness.app.innerHTML, /Let Agents work on your code[\s\S]*<p class="field-error" role="alert">Could not load setup\.<\/p>/);
-  assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'the notice belongs to Try');
+  assert.match(harness.app.innerHTML, /GitHub is connected[\s\S]*<p class="field-error" role="alert">Could not load setup\.<\/p><div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next">Next: try Chickpea<\/button>/);
 });

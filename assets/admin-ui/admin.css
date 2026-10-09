@@ -562,6 +562,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
 .onboarding-actions .btn { min-height: 50px; padding: 11px 19px; }
 .onboarding-slack-logo { display: inline-block; flex: 0 0 auto; height: 23px; margin-right: 7px; width: 23px; }
+.github-connect-mark { flex: 0 0 auto; height: 20px; margin-right: 9px; width: 20px; }
 .onboarding-instructions { display: grid; gap: 32px; margin-top: 32px; }
 .onboarding-instruction { display: grid; gap: 13px; }
 .onboarding-instruction-title { align-items: center; color: var(--text); display: grid; font-size: 1.125rem; font-weight: 700; gap: 12px; grid-template-columns: 36px minmax(0, 1fr); line-height: 1.35; margin: 0; }
