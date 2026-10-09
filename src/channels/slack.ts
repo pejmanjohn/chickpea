@@ -114,6 +114,7 @@ import {
   hostedSlackLifecycleOutcome,
   slackInstallationCredentialId,
 } from '../slack/hosted-slack-app.ts';
+import { slackInteractionAckOf } from '../slack/interaction-ack.ts';
 import { recordFirstHostedSlackDelivery } from '../slack/hosted-installation.ts';
 import { recordPendingSlackChallenge } from '../slack/installation-handshake.ts';
 import { recordSlackRecoveryEventsProof } from '../auth/recovery.ts';
@@ -258,6 +259,7 @@ import {
 } from '../slack/ui/modals.ts';
 import {
   encodeFormValues,
+  FORM_VIEW_CALLBACK_ID,
   formErrorsText,
   formLayout,
   parseFormValues,
@@ -1860,9 +1862,9 @@ async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiActi
 }
 
 /**
- * A submitted host modal, already validated when Slack's request arrived (the
- * modal closed only for a valid answer). It is re-read against the stored
- * surface and then admitted exactly like a click on the card.
+ * A submitted host modal, already closed: valid when Slack's request arrived,
+ * or acknowledged by a host before it was checked. It is re-read against the
+ * stored surface and then admitted exactly like a click on the card.
  */
 async function handleSlackUiViewSubmission(
   input: SlackUiContext & { submission: SlackUiViewSubmission },
@@ -1884,11 +1886,21 @@ async function handleSlackUiViewSubmission(
     });
   };
   if (!reading.ok) {
-    // It was valid when Slack asked, so the modal closed; only the card can
-    // have changed since. Say so privately, as a late click would.
+    // Its modal has closed: the answer was valid when Slack asked and the card
+    // changed since, or the host acknowledged before it was checked. Say so
+    // privately, as a late click would.
     if (!surface || surface.namespace !== 'ui' || surface.workspaceId !== submission.workspaceId) return;
     const open = surface.status === 'open' || surface.status === 'pending_delivery';
-    if (open && surface.expiresAt > Date.now()) return;
+    if (open && surface.expiresAt > Date.now()) {
+      const unsent = unsentModalAnswer(surface, submission);
+      emitUiInteraction('refused', unsent.refusal);
+      return sendUiNotice(client, {
+        channelId: surface.channelId,
+        userId: submission.userId,
+        text: unsent.text,
+        threadTs: surface.threadTs,
+      });
+    }
     const current = open
       ? await uiSurfaceRecord(state, { kind: 'close_surface', id: surface.id, status: 'expired' }) ?? surface
       : surface;
@@ -1911,6 +1923,22 @@ async function handleSlackUiViewSubmission(
     return;
   }
   return refuse(current.status === 'resolved' ? 'answered' : outcome, current);
+}
+
+/** Why an answer to a still-open card was not sent, once its modal has closed. */
+function unsentModalAnswer(
+  surface: UiSurfaceRecord,
+  submission: SlackUiViewSubmission,
+): { refusal: UiRefusal; text: string } {
+  if (!surfaceMayAnswer(surface, submission.userId)) {
+    return { refusal: 'wrong_user', text: uiRefusalText('wrong_user', surface) };
+  }
+  const spec = surface.spec;
+  if (submission.callbackId === FORM_VIEW_CALLBACK_ID && spec.kind === 'form' && formLayout(spec.form) === 'modal') {
+    const read = readFormSubmission(surface, spec.form, submission.state);
+    if (!read.ok) return { refusal: 'unavailable', text: formErrorsText(surface, spec.form, read.errors) };
+  }
+  return { refusal: 'unavailable', text: 'Not sent yet. Try again, or reply in the thread instead.' };
 }
 
 /**
@@ -2122,6 +2150,9 @@ async function openDirectSlackUiModal(
 /**
  * A submitted host modal answers Slack in this response: field errors keep the
  * modal open; a valid answer closes it and is admitted after the response.
+ * Field errors are this response only when it is the one Slack gets: once a
+ * host has acknowledged in its place, the modal is closed, and the answer is
+ * checked again after the response, which tells the person what to fix.
  */
 async function receiveDirectSlackUiViewSubmission(
   c: Parameters<NonNullable<SlackChannelOptions['interactions']>>[0]['c'],
@@ -2129,12 +2160,16 @@ async function receiveDirectSlackUiViewSubmission(
   appId: string,
   platformEnv: PlatformEnv | undefined,
 ): Promise<Response | undefined> {
-  const context = await directSlackUiContext(submission.workspaceId, appId, platformEnv);
   const surfaceId = viewSubmissionSurfaceId(submission);
-  const surface = context && surfaceId ? await readUiSurface(context.stores, surfaceId) : undefined;
-  const reading = readViewSubmission(submission, surface);
-  if (!reading.ok) return Response.json(reading.responseAction);
-  detach(c, handleSlackUiViewSubmission({ ...context!, submission }).catch((error) => {
+  const [context, surface] = await Promise.all([
+    directSlackUiContext(submission.workspaceId, appId, platformEnv),
+    surfaceId ? readUiSurface(resolveStores(platformEnv), surfaceId) : undefined,
+  ]);
+  const reading = readViewSubmission(submission, context ? surface : undefined);
+  const ack = slackInteractionAckOf(platformEnv);
+  if (!reading.ok && (!ack || ack.claim())) return Response.json(reading.responseAction);
+  if (!context) return undefined;
+  detach(c, handleSlackUiViewSubmission({ ...context, submission }).catch((error) => {
     console.error('[chickpea] Slack form submission failed:', sanitizeError(error));
   }));
   return undefined;

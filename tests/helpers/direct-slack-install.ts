@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 
 import { channel as slackChannel } from '../../src/channels/slack.ts';
-import { closeNodeStateStores, resolveStores, type AppStores } from '../../src/config/state-backend.ts';
+import { closeNodeStateStores, resolveStores, type AppStores, type PlatformEnv } from '../../src/config/state-backend.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../../src/config/types.ts';
 import { buildSlackAppManifest, slackManifestFingerprint } from '../../src/slack/app-manifest.ts';
 import { loadCredentialKeyring } from '../../src/slack/credential-keyring.ts';
@@ -35,8 +35,8 @@ export interface DirectSlackInstall {
   ownerMembershipId: string;
   /** Every Slack Web API call, in order. */
   calls: DirectSlackCall[];
-  /** POST a delivery signed with the install's signing secret. */
-  deliver(kind: 'events' | 'interactions', body: Record<string, unknown>): Promise<Response>;
+  /** POST a delivery signed with the install's signing secret, with the env a host would give Core. */
+  deliver(kind: 'events' | 'interactions', body: Record<string, unknown>, env?: PlatformEnv): Promise<Response>;
 }
 
 export async function withDirectSlackInstall(
@@ -120,7 +120,7 @@ export async function withDirectSlackInstall(
       stores,
       ownerMembershipId: owner.membership.id,
       calls,
-      async deliver(kind, body) {
+      async deliver(kind, body, env) {
         const raw = kind === 'events'
           ? JSON.stringify(body)
           : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
@@ -134,7 +134,7 @@ export async function withDirectSlackInstall(
             'x-slack-signature': `v0=${signature}`,
           },
           body: raw,
-        });
+        }, env);
       },
     });
   } finally {

@@ -367,13 +367,20 @@ export function readFormSubmission(
   return Object.keys(errors).length ? { ok: false, errors } : { ok: true, values };
 }
 
-/** Inline forms cannot show field errors in place: one private notice lists them. */
+/**
+ * Field errors that cannot show in place, in one private notice: an inline
+ * form's, and a modal form's once its modal has closed.
+ */
 export function formErrorsText(record: UiSurfaceRecord, form: RequestFormSpec, errors: Record<string, string>): string {
   const lines = form.fields.flatMap((field, index) => {
     const error = errors[formFieldBlockId(record.id, index)];
     return error ? [`• ${escapeMrkdwn(clampDisplay(field.label, 48))}: ${error}`] : [];
   });
-  return `Not sent yet. Fix these, then press ${escapeMrkdwn(clampDisplay(form.submitLabel ?? 'Submit', 24))} again:\n${lines.join('\n')}`;
+  const submit = escapeMrkdwn(clampDisplay(form.submitLabel ?? 'Submit', 24));
+  const steps = formLayout(form) === 'inline'
+    ? `Fix these, then press ${submit} again:`
+    : `Press Fill in, fix these, then press ${submit} again:`;
+  return `Not sent yet. ${steps}\n${lines.join('\n')}`;
 }
 
 /** One stored value for the answered card: names render as mentions, never pings. */
