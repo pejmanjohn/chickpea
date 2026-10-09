@@ -19679,6 +19679,26 @@ test('the GitHub connected notice never follows onboarding past its step', async
   }
 });
 
+test('an own-key provider step whose providers cannot load says so, and Try again loads them', async () => {
+  let failing = true;
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/onboarding', ...hostedOnboardingProviders,
+    onboarding: { ...onboardingAt('choose_model', '/github/connect'), stage: 'choose_provider', providerId: null, modelId: null, tryStartedAt: null },
+    settingsLoadFetch: (path, method) => failing && path === '/admin/api/models' && method === 'GET'
+      ? Promise.resolve(jsonResponse({ error: 'internal_error' }, 500))
+      : undefined,
+  });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Model providers could not load<\/h1><p class="field-error" role="alert">Check your connection, then try again\.<\/p>[\s\S]*data-action="onboarding-models-retry">Try again<\/button>/);
+  assert.doesNotMatch(harness.app.innerHTML, /aria-busy="true"|internal_error/, 'never a blank card or a server code');
+
+  failing = false;
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-models-retry' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /Choose your model provider/);
+  assert.doesNotMatch(harness.app.innerHTML, /could not load/);
+});
+
 test('hosted onboarding opens at Choose provider with Slack done, offering API keys only', async () => {
   const harness = runAdminPageHarness({
     ...HOSTED_ADMIN, initialPath: '/admin/onboarding',

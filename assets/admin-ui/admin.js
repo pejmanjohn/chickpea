@@ -223,6 +223,7 @@
     onboardingError: "",
     onboardingBusy: false,
     onboardingPlatformErrorCode: "",
+    onboardingModelsError: false,
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
     onboardingModelSelected: "",
@@ -2964,6 +2965,11 @@
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
     if (state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") {
       if (onboardingOnChickpeaModels()) return onboardingPlatformSetupHtml();
+      if (state.models === MODELS_NOT_LOADED && state.onboardingModelsError) {
+        return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+          '<h1 class="onboarding-title">Model providers could not load</h1><p class="field-error" role="alert">Check your connection, then try again.</p>' +
+          '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-models-retry">Try again</button></div></section>';
+      }
       if (state.models === MODELS_NOT_LOADED) return '<section class="onboarding-panel onboarding-panel-wide" aria-busy="true"></section>';
     }
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
@@ -13408,6 +13414,12 @@
       if (renderAfterRefresh) renderAfterRefresh();
       else render();
     }).catch(function (error) {
+      // The onboarding shell has no Admin main column; its provider step says what failed.
+      if (state.view === "onboarding") {
+        state.onboardingModelsError = true;
+        render();
+        return;
+      }
       document.querySelector(".main-inner").innerHTML = '<div class="empty"><p class="field-label">Admin failed to load</p><p class="error">' + esc(error.message) + '</p></div>';
     });
   }
@@ -13770,6 +13782,7 @@
     // Brand-as-home: the reliable exit to the canonical Agent.
     if (action === "go-home") { openHome(); }
     if (action === "retry-onboarding") { state.onboardingError = ""; loadOnboarding(true); }
+    if (action === "onboarding-models-retry") { state.onboardingModelsError = false; render(); refreshData(); }
     if (action === "onboarding-provider-select" && !state.onboardingBusy) {
       state.onboardingProviderSelected = target.getAttribute("data-provider") || "cloudflare";
       state.onboardingProviderKey = "";
