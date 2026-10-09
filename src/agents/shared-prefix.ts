@@ -1,10 +1,10 @@
 /**
  * The prompt prefix every platform-funded Slack turn on one model and Agent
  * kind shares across workspaces and channels: the universal tools, ending at
- * `present_details`, the interactive tools a channel or DM turn mounts after
- * them, then one constant system block. The Agent's own instructions, its
- * identity, and everything conditional follow as the tenant block, so a new
- * thread in any workspace reads the prefix from the provider's prompt cache.
+ * `present_details`, the capability tools of one shape after them, then one
+ * constant system block. The Agent's own instructions, its identity, and
+ * everything conditional follow as the tenant block, so a new thread in any
+ * workspace reads the prefix from the provider's prompt cache.
  *
  * The platform payload hook in model access sets the cache breakpoints with
  * `sharePromptPrefix`. Any per-workspace text placed before the boundary, or
@@ -83,8 +83,31 @@ export function slackSystemBase(input: {
   ].join(PART_SEPARATOR);
 }
 
-export const SHARED_PREFIX_SHAPES = ['interactive', 'interactive_streaming'] as const;
-export type SharedPrefixShape = typeof SHARED_PREFIX_SHAPES[number];
+type ShapeSegment = 'interactive' | 'streaming' | 'image';
+
+export const SHARED_PREFIX_SHAPES = {
+  interactive: ['interactive'],
+  interactive_streaming: ['interactive', 'streaming'],
+  interactive_image: ['interactive', 'image'],
+  interactive_streaming_image: ['interactive', 'streaming', 'image'],
+  bare: [],
+  streaming: ['streaming'],
+  image: ['image'],
+  streaming_image: ['streaming', 'image'],
+} as const satisfies Record<string, readonly ShapeSegment[]>;
+export type SharedPrefixShape = keyof typeof SHARED_PREFIX_SHAPES;
+
+/** One shared prefix on a model: an Agent kind's constant block after one shape's tools. */
+export type SharedPrefixId = `${AgentKind}/${SharedPrefixShape}`;
+
+/** Channel and DM turns mount the interactive tools, so these are the shapes worth warming. */
+export type WarmedSharedPrefixShape = {
+  [Shape in SharedPrefixShape]: 'interactive' extends typeof SHARED_PREFIX_SHAPES[Shape][number] ? Shape : never;
+}[SharedPrefixShape];
+
+export const WARMED_SHARED_PREFIX_SHAPES = (Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
+  .filter((shape): shape is WarmedSharedPrefixShape =>
+    (SHARED_PREFIX_SHAPES[shape] as readonly ShapeSegment[]).includes('interactive'));
 
 const sharedBlocks = new Map<AgentKind, string>();
 
@@ -155,22 +178,29 @@ function withoutCacheControl(block: unknown): unknown {
   return rest;
 }
 
+export interface SharedPrefixDecision {
+  payload: Payload;
+  sharedPrefix: SharedPrefixId | null;
+}
+
 /**
  * Set breakpoints A on the last universal tool and B on the constant system
  * block, then C on the tenant block and D on the last user block (5 minutes).
- * B lasts an hour only when every tool between A and B is one a shared shape
- * sends: a tenant tool there keys B to one workspace, where an hour's write
- * premium buys nothing. A Slack turn that carries the anchor tool or a shared
+ * B lasts an hour only when the tools between A and B are a shared shape's:
+ * a tenant tool there keys B to one workspace, where an hour's write premium
+ * buys nothing. A Slack turn that carries the anchor tool or a shared
  * block but not both, or other universal tools, goes out as built and counts
  * a miss.
  */
-export function sharePromptPrefix(payload: Payload): Payload {
+export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
+  const unshared = { payload, sharedPrefix: null };
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const anchor = tools.findIndex((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
   const text = singleSystemText(payload);
   const opensWith = (block: string) => text !== undefined && text.startsWith(block + PART_SEPARATOR);
-  const constant = AGENT_KINDS.map(sharedSystemBlock).find(opensWith);
-  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return payload;
+  const kind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
+  const constant = kind === undefined ? undefined : sharedSystemBlock(kind);
+  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return unshared;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
   const miss = anchor < 0
     ? 'universal_tools_missing'
@@ -183,19 +213,22 @@ export function sharePromptPrefix(payload: Payload): Payload {
       model: payload.model,
       reason: miss,
     });
-    return payload;
+    return unshared;
   }
-  return {
+  const shape = shapeOf(tools.slice(anchor + 1));
+  const sharedPrefix: SharedPrefixId | null = kind && shape ? `${kind}/${shape}` : null;
+  const shared = {
     ...payload,
     tools: tools.map((tool, index) => index === anchor
       ? { ...(withoutCacheControl(tool) as Payload), cache_control: ONE_HOUR }
       : withoutCacheControl(tool)),
     system: [
-      { type: 'text', text: constant, cache_control: tools.slice(anchor + 1).every(isShapeTool) ? ONE_HOUR : FIVE_MINUTES },
+      { type: 'text', text: constant, cache_control: sharedPrefix ? ONE_HOUR : FIVE_MINUTES },
       { type: 'text', text: tail, cache_control: FIVE_MINUTES },
     ],
     ...(Array.isArray(payload.messages) ? { messages: payload.messages.map(withFiveMinuteMarkers) } : {}),
   };
+  return { payload: shared, sharedPrefix };
 }
 
 /** Whatever retention pi-ai chose: a 1-hour marker may not follow a 5-minute one. */
@@ -211,7 +244,7 @@ function withFiveMinuteMarkers(message: unknown): unknown {
 
 type RenderedPrefix = {
   tools: Payload[];
-  shapes: Record<SharedPrefixShape, Payload[]>;
+  segments: Record<ShapeSegment, Payload[]>;
   models: Record<string, Payload>;
 };
 
@@ -221,31 +254,39 @@ function renderedToolsJson(): string {
   return toolsJson;
 }
 
-let shapeToolsJson: ReadonlySet<string> | undefined;
-function isShapeTool(tool: unknown): boolean {
-  shapeToolsJson ??= new Set(Object.values((rendered as RenderedPrefix).shapes).flat().map((shaped) => JSON.stringify(shaped)));
-  return shapeToolsJson.has(JSON.stringify(withoutCacheControl(tool)));
+function shapeTools(shape: SharedPrefixShape): Payload[] {
+  return SHARED_PREFIX_SHAPES[shape].flatMap((segment) => (rendered as RenderedPrefix).segments[segment]);
+}
+
+let shapesByTools: ReadonlyMap<string, SharedPrefixShape> | undefined;
+function shapeOf(afterAnchor: unknown[]): SharedPrefixShape | undefined {
+  shapesByTools ??= new Map((Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
+    .map((shape) => [JSON.stringify(shapeTools(shape)), shape]));
+  return shapesByTools.get(JSON.stringify(afterAnchor.map(withoutCacheControl)));
 }
 
 const PREWARM_TURN = 'Reply with one word.';
 
 export interface SharedPrefixRequest {
+  /** The ID a real request carrying this prefix reports to the platform charge. */
+  id: SharedPrefixId;
   kind: AgentKind;
   shape: SharedPrefixShape;
   request: Payload;
 }
 
 /**
- * One request per Agent kind and shape that writes or refreshes that shared
- * prefix on `model`. Its bytes are a rendered turn's, kept in
+ * One request per Agent kind and warmed shape that writes or refreshes that
+ * shared prefix on `model`. Its bytes are a rendered turn's, kept in
  * shared-prefix-tools.json, which the test pins to a fresh render.
  */
 export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
-  const { tools, shapes, models } = rendered as RenderedPrefix;
+  const { tools, models } = rendered as RenderedPrefix;
   const settings = models[model];
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
   const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
-  return AGENT_KINDS.flatMap((kind) => SHARED_PREFIX_SHAPES.map((shape) => ({
+  return AGENT_KINDS.flatMap((kind) => WARMED_SHARED_PREFIX_SHAPES.map((shape) => ({
+    id: `${kind}/${shape}` as const,
     kind,
     shape,
     request: {
@@ -253,7 +294,7 @@ export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
       max_tokens: 0,
       ...settings,
       system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
-      tools: [...universal, ...shapes[shape]],
+      tools: [...universal, ...shapeTools(shape)],
       messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],
     },
   })));

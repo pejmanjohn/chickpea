@@ -5452,7 +5452,7 @@
    }
   }
  ],
- "shapes": {
+ "segments": {
   "interactive": [
    {
     "name": "ask_user",
@@ -5651,203 +5651,7 @@
     }
    }
   ],
-  "interactive_streaming": [
-   {
-    "name": "ask_user",
-    "description": "Ask the person to choose between options you already know (which environment, which of two records they meant, approve an exception or not, delete or keep), or to pick a person, channel or date; they answer with one click. Never use it to confirm what they explicitly asked for (\"delete the 12 duplicates\", \"send it\", \"deploy to staging\"): do that instead. Offer only choices you found; when the answer is something they must type (an email, dates, a name), ask in prose. It ends your reply.",
-    "eager_input_streaming": true,
-    "input_schema": {
-     "type": "object",
-     "properties": {
-      "question": {
-       "type": "string",
-       "maxLength": 200
-      },
-      "options": {
-       "type": "array",
-       "items": {
-        "type": "object",
-        "properties": {
-         "label": {
-          "type": "string",
-          "maxLength": 75
-         },
-         "description": {
-          "type": "string",
-          "maxLength": 150
-         },
-         "recommended": {
-          "type": "boolean"
-         },
-         "destructive": {
-          "type": "boolean"
-         }
-        },
-        "required": [
-         "label"
-        ],
-        "additionalProperties": false
-       },
-       "maxItems": 25
-      },
-      "pick": {
-       "enum": [
-        "person",
-        "channel",
-        "date"
-       ],
-       "type": "string"
-      },
-      "multiSelect": {
-       "type": "boolean"
-      },
-      "answerFrom": {
-       "enum": [
-        "requester",
-        "thread"
-       ],
-       "type": "string"
-      }
-     },
-     "required": [
-      "question"
-     ]
-    }
-   },
-   {
-    "name": "offer_actions",
-    "description": "Offer one to three buttons under your reply: a link to open, or an obvious next step someone can start with one click (the label is the whole request). Only when the next step is clear and likely.",
-    "eager_input_streaming": true,
-    "input_schema": {
-     "type": "object",
-     "properties": {
-      "actions": {
-       "type": "array",
-       "items": {
-        "type": "object",
-        "properties": {
-         "label": {
-          "type": "string",
-          "maxLength": 30
-         },
-         "url": {
-          "type": "string",
-          "maxLength": 3000
-         },
-         "recommended": {
-          "type": "boolean"
-         }
-        },
-        "required": [
-         "label"
-        ],
-        "additionalProperties": false
-       },
-       "maxItems": 3
-      }
-     },
-     "required": [
-      "actions"
-     ]
-    }
-   },
-   {
-    "name": "request_form",
-    "description": "Collect three or more structured values at once (or exact dates, people or channels) with a short form. For one or two values ask in prose or with ask_user; it ends your reply.",
-    "eager_input_streaming": true,
-    "input_schema": {
-     "type": "object",
-     "properties": {
-      "title": {
-       "type": "string",
-       "maxLength": 24
-      },
-      "description": {
-       "type": "string",
-       "maxLength": 300
-      },
-      "submitLabel": {
-       "type": "string",
-       "maxLength": 24
-      },
-      "answerFrom": {
-       "enum": [
-        "requester",
-        "thread"
-       ],
-       "type": "string"
-      },
-      "fields": {
-       "type": "array",
-       "items": {
-        "type": "object",
-        "properties": {
-         "key": {
-          "type": "string",
-          "maxLength": 32
-         },
-         "label": {
-          "type": "string",
-          "maxLength": 48
-         },
-         "type": {
-          "enum": [
-           "text",
-           "long_text",
-           "number",
-           "email",
-           "url",
-           "date",
-           "time",
-           "datetime",
-           "choice",
-           "choices",
-           "person",
-           "people",
-           "channel"
-          ],
-          "type": "string"
-         },
-         "required": {
-          "type": "boolean"
-         },
-         "placeholder": {
-          "type": "string",
-          "maxLength": 150
-         },
-         "hint": {
-          "type": "string",
-          "maxLength": 150
-         },
-         "options": {
-          "type": "array",
-          "items": {
-           "type": "string",
-           "maxLength": 75
-          },
-          "maxItems": 50
-         },
-         "initial": {
-          "type": "string",
-          "maxLength": 2000
-         }
-        },
-        "required": [
-         "key",
-         "label",
-         "type"
-        ],
-        "additionalProperties": false
-       },
-       "maxItems": 10
-      }
-     },
-     "required": [
-      "title",
-      "fields"
-     ]
-    }
-   },
+  "streaming": [
    {
     "name": "stream_answer",
     "description": "Declare before answer text that progressive delivery would improve this direct response.",
@@ -5856,6 +5660,89 @@
      "type": "object",
      "properties": {},
      "required": []
+    }
+   }
+  ],
+  "image": [
+   {
+    "name": "generate_image",
+    "description": "Generate an image and attach it to your final reply in the bound Slack destination. Write the whole prompt from the conversation. Choose size, quality and background from the user request; defaults are auto. Use 1024x1024 for square, 1536x1024 for landscape, 1024x1536 for portrait, low quality for a quick draft, and background transparent for a cutout or transparent logo. Custom WIDTHxHEIGHT dimensions must be multiples of 16, no edge above 3840, aspect ratio from 1:3 to 3:1, and 655360 to 8294400 pixels. Explain unsupported exact dimensions instead of silently rounding. The workspace owns the model and transport format. To edit or combine images already in this conversation, list their img:N handles in inputs (at most 4); with no inputs the model generates from the prompt alone. At most 4 images per reply across every call. For variations of one prompt, make one call with count (1-4); for different subjects, make separate calls with their own prompts. Each image attaches as its own file, and the result lists a call's files under files. With count above 1, the provider renders count separate images from the prompt, so write the prompt as one single image: never say \"variations\", \"versions\", \"options\", or a number of images in the prompt, or each rendered image becomes a collage of several. The result reports the model and settings the provider applied. If the result reports attached: false, explain the returned reason and never say an image was attached or edited. A result may attach some variations and list the rest under unattached; say how many attached and why the others did not.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "size": {
+       "type": "string"
+      },
+      "quality": {
+       "enum": [
+        "auto",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+       ],
+       "type": "string"
+      },
+      "background": {
+       "enum": [
+        "auto",
+        "opaque",
+        "transparent"
+       ],
+       "type": "string"
+      },
+      "prompt": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 4000
+      },
+      "filename": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 64
+      },
+      "inputs": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "maxItems": 4
+      },
+      "count": {
+       "type": "integer",
+       "minimum": 1,
+       "maximum": 4
+      }
+     },
+     "required": [
+      "prompt"
+     ]
+    }
+   },
+   {
+    "name": "recover_image",
+    "description": "Reattach an existing image without generating or paying for another image. For an image already visible in Slack, prefer its matching img:N handle: this shares the original Slack file exactly, without downloading and reuploading it for delivery. An optional filename is only the link label; the original download filename stays unchanged. Explain this distinction when a different filename was requested. Use a savedImage handle from generate_image for a failed upload; this retries an upload, whose downloaded bytes may be changed by Slack. Saved images expire after 24 hours and may be evicted earlier by the bounded cache; conversation images depend on Slack access. Never call generate_image just to retry delivery. Optional allowResize applies only to saved-image uploads and permits a smaller delivery when compression alone cannot fit; get this preference from the user request.",
+    "eager_input_streaming": true,
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "image": {
+       "type": "string"
+      },
+      "filename": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 64
+      },
+      "allowResize": {
+       "type": "boolean"
+      }
+     },
+     "required": [
+      "image"
+     ]
     }
    }
   ]

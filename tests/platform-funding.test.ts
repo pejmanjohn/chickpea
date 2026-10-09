@@ -100,9 +100,9 @@ function fakePort(overrides: Partial<PlatformFundingPort> = {}) {
       calls.admit.push({ grant, model });
       return overrides.admit ? overrides.admit(grant, model) : 'admitted';
     },
-    charge: async (record) => {
+    charge: async (record, sharedPrefix) => {
       calls.charge.push(record);
-      if (overrides.charge) await overrides.charge(record);
+      if (overrides.charge) await overrides.charge(record, sharedPrefix);
     },
     ...NO_RUN_FEES,
   });

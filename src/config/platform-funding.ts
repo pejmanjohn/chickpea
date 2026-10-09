@@ -16,6 +16,7 @@ import { errorChainIncludes } from './error-chain.ts';
 import { requireInstallationScope } from './installation-scope.ts';
 import type { ModelAccessGrant } from './model-access.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import type { SharedPrefixId } from '../agents/shared-prefix.ts';
 import type { ModelRequestFundingSource, ModelRequestRecord } from '../usage/model-requests.ts';
 import type { UsageMicros } from '../usage/usage-display.ts';
 
@@ -69,8 +70,10 @@ export interface PlatformFundingPort {
    * Once per finished platform-funded request, and once more if that fails;
    * `record.requestId` is the idempotency key. `listPriceUsdMicros` is null
    * when Core could not price the usage, and `priceUnknownReason` says why.
+   * `sharedPrefix` is the shared prompt prefix the request carried with an
+   * hour's cache, or null.
    */
-  charge(record: ModelRequestRecord): Promise<void>;
+  charge(record: ModelRequestRecord, sharedPrefix: SharedPrefixId | null): Promise<void>;
   /**
    * A run's chat row as each attempt starts and its task row at its first
    * qualifying action, on platform-funded and own-key installations alike.
@@ -196,10 +199,14 @@ export async function requirePlatformFundingAdmitted(
  * charges twice. A charge that still fails is lost (an undercharge), and the
  * installation's next request asks the port again instead of a cached answer.
  */
-export async function chargePlatformRequest(grant: ModelAccessGrant, record: ModelRequestRecord): Promise<void> {
+export async function chargePlatformRequest(
+  grant: ModelAccessGrant,
+  record: ModelRequestRecord,
+  sharedPrefix: SharedPrefixId | null,
+): Promise<void> {
   const charge = async () => {
     if (!port) throw new Error('No platform funding port is configured.');
-    await port.charge(record);
+    await port.charge(record, sharedPrefix);
   };
   try {
     await charge().catch(charge);

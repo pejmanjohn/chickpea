@@ -1,6 +1,7 @@
 import {
   USER_AGENT_ID,
   blockedNetworkCalls,
+  chargedSharedPrefix,
   renderSlackRequest,
   type RenderedRequest,
   type SlackRequestVariant,
@@ -12,12 +13,12 @@ import test from 'node:test';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   SHARED_PREFIX_LAST_TOOL,
-  SHARED_PREFIX_SHAPES,
+  WARMED_SHARED_PREFIX_SHAPES,
   sharePromptPrefix,
   sharedPrefixMisses,
   sharedPrefixRequests,
   sharedSystemBlock,
-  type SharedPrefixShape,
+  type WarmedSharedPrefixShape,
 } from '../src/agents/shared-prefix.ts';
 import { SLACK_INTERACTION_DEFAULTS, SLACK_RUNTIME_GUARDRAIL } from '../src/config/effective-config.ts';
 import type { AgentKind } from '../src/config/types.ts';
@@ -47,13 +48,21 @@ const TENANT_IDS = [
   ALPHA.workspace, BRAVO.workspace, ALPHA.channel, ALPHA_OTHER_CHANNEL.channel, BRAVO.channel, ALPHA_DM.channel, USER_AGENT_ID,
 ];
 
-const SHAPE_VARIANTS: Record<SharedPrefixShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered'>> = {
+const IMAGE_MODEL = 'openai/gpt-image-2.5-flare';
+const SHAPE_VARIANTS: Record<WarmedSharedPrefixShape, Pick<SlackRequestVariant, 'progressiveStreamingOffered' | 'imageModel'>> = {
   interactive: { progressiveStreamingOffered: false },
   interactive_streaming: { progressiveStreamingOffered: true },
+  interactive_image: { progressiveStreamingOffered: false, imageModel: IMAGE_MODEL },
+  interactive_streaming_image: { progressiveStreamingOffered: true, imageModel: IMAGE_MODEL },
 };
-const SHAPE_TOOLS: Record<SharedPrefixShape, string[]> = {
-  interactive: ['ask_user', 'offer_actions', 'request_form'],
-  interactive_streaming: ['ask_user', 'offer_actions', 'request_form', 'stream_answer'],
+const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form'];
+const IMAGE_TOOLS = ['generate_image', 'recover_image'];
+const SEGMENT_TOOLS = { interactive: INTERACTIVE_TOOLS, streaming: ['stream_answer'], image: IMAGE_TOOLS };
+const SHAPE_TOOLS: Record<WarmedSharedPrefixShape, string[]> = {
+  interactive: INTERACTIVE_TOOLS,
+  interactive_streaming: [...INTERACTIVE_TOOLS, 'stream_answer'],
+  interactive_image: [...INTERACTIVE_TOOLS, ...IMAGE_TOOLS],
+  interactive_streaming_image: [...INTERACTIVE_TOOLS, 'stream_answer', ...IMAGE_TOOLS],
 };
 
 const UNCONDITIONAL_INSTRUCTIONS = [
@@ -118,17 +127,19 @@ for (const agentKind of ['system', 'user'] as const) {
 }
 
 for (const agentKind of ['system', 'user'] as const) {
-  for (const shape of SHARED_PREFIX_SHAPES) {
+  for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
     test(`${agentKind} Agent, ${shape}: channels, workspaces and DMs send the same bytes through B, cached for an hour`, async () => {
       const alpha = await render({ ...ALPHA, agentKind, ...SHAPE_VARIANTS[shape] });
       const anchor = anchorIndex(alpha);
       assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name), SHAPE_TOOLS[shape]);
       assert.deepEqual(markers(alpha), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
       assert.equal(alpha.system[0].text, sharedSystemBlock(agentKind));
+      assert.equal(chargedSharedPrefix(alpha), `${agentKind}/${shape}`, 'the charge names the prefix the request carried');
       for (const variant of [ALPHA_OTHER_CHANNEL, BRAVO, ALPHA_DM]) {
         const other = await render({ ...variant, agentKind, ...SHAPE_VARIANTS[shape] });
         assert.equal(throughB(other), throughB(alpha), `${variant.workspace} ${variant.channel} sends the same bytes through B`);
         assert.notEqual(other.system[1].text, alpha.system[1].text, 'the tenant block names the workspace and channel');
+        assert.equal(chargedSharedPrefix(other), chargedSharedPrefix(alpha));
       }
       const prefix = throughB(alpha);
       for (const id of TENANT_IDS) assert.ok(!prefix.includes(id), `${id} is not before breakpoint B`);
@@ -139,12 +150,24 @@ for (const agentKind of ['system', 'user'] as const) {
   }
 }
 
+test('workspaces on either API-key image model send the same bytes through B', async () => {
+  const flare = await render({ ...ALPHA, imageModel: IMAGE_MODEL });
+  const sunburst = await render({ ...BRAVO, imageModel: 'openai/gpt-image-2.5-sunburst' });
+  assert.equal(throughB(sunburst), throughB(flare));
+});
+
 test('a group DM, which mounts no interactive tools, also caches B for an hour', async () => {
-  for (const [progressiveStreamingOffered, after] of [[false, []], [true, ['stream_answer']]] as const) {
-    const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered });
+  for (const [progressiveStreamingOffered, imageModel, after, prefix] of [
+    [false, undefined, [], 'system/bare'],
+    [true, undefined, ['stream_answer'], 'system/streaming'],
+    [false, IMAGE_MODEL, IMAGE_TOOLS, 'system/image'],
+    [true, IMAGE_MODEL, ['stream_answer', ...IMAGE_TOOLS], 'system/streaming_image'],
+  ] as const) {
+    const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered, ...(imageModel ? { imageModel } : {}) });
     const anchor = anchorIndex(group);
     assert.deepEqual(group.tools.slice(anchor + 1).map((tool: any) => tool.name), after);
     assert.deepEqual(markers(group), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+    assert.equal(chargedSharedPrefix(group), prefix);
   }
 });
 
@@ -153,6 +176,7 @@ test('a tool between A and B that no shared shape sends keeps A and caches B for
   const anchor = anchorIndex(finalAnswer);
   assert.equal(finalAnswer.tools.at(-1).name, 'stream_answer', 'the effect-capable stream_answer follows the interactive tools');
   assert.deepEqual(markers(finalAnswer), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
+  assert.equal(chargedSharedPrefix(finalAnswer), null, 'the charge names no shared prefix');
 
   const withConnector = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
   withConnector.tools.push({
@@ -160,7 +184,9 @@ test('a tool between A and B that no shared shape sends keeps A and caches B for
     input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
   });
   const before = sharedPrefixMisses();
-  const shared = sharePromptPrefix(withConnector) as RenderedRequest;
+  const decision = sharePromptPrefix(withConnector);
+  const shared = decision.payload as RenderedRequest;
+  assert.equal(decision.sharedPrefix, null, 'the request carries no shared prefix');
   assert.equal(sharedPrefixMisses(), before, 'a tenant tool is not a miss');
   assert.equal(shared.system[0].text, sharedSystemBlock('system'), 'the constant block still opens the system prompt');
   assert.deepEqual(markers(shared), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
@@ -182,24 +208,25 @@ test('a request whose system block does not match goes out unchanged and counts 
   const mismatched = structuredClone(customer);
   mismatched.system[0].text = `Changed. ${mismatched.system[0].text}`;
   const before = sharedPrefixMisses();
-  assert.equal(sharePromptPrefix(mismatched), mismatched);
+  assert.deepEqual(sharePromptPrefix(mismatched), { payload: mismatched, sharedPrefix: null });
   assert.equal(sharedPrefixMisses(), before + 1);
 
   const changedTool = structuredClone(customer);
   changedTool.tools[12].description = `${changedTool.tools[12].description} Workspace ${ALPHA.workspace}.`;
-  assert.equal(sharePromptPrefix(changedTool), changedTool, 'universal tools other than the rendered ones');
+  assert.deepEqual(sharePromptPrefix(changedTool), { payload: changedTool, sharedPrefix: null },
+    'universal tools other than the rendered ones');
   assert.equal(sharedPrefixMisses(), before + 2);
-  assert.notEqual(sharePromptPrefix(structuredClone(customer)), customer, 'the unchanged request shares');
+  assert.equal(sharePromptPrefix(structuredClone(customer)).sharedPrefix, 'system/interactive_streaming', 'the unchanged request shares');
 
   const intentCheck = { model: 'claude-opus-5-5', system: [{ type: 'text', text: 'Classify.' }], messages: [] };
-  assert.equal(sharePromptPrefix(intentCheck), intentCheck);
+  assert.deepEqual(sharePromptPrefix(intentCheck), { payload: intentCheck, sharedPrefix: null });
   assert.equal(sharedPrefixMisses(), before + 2, 'a request that is not a Slack turn is not a miss');
 });
 
 test('the last user block keeps a 5-minute marker after the 1-hour ones', async () => {
   const longRetention = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
   longRetention.messages.at(-1).content.at(-1).cache_control = ONE_HOUR;
-  const shared = sharePromptPrefix(longRetention) as RenderedRequest;
+  const shared = sharePromptPrefix(longRetention).payload as RenderedRequest;
   assert.deepEqual(markers(shared).at(-1), 'user 5m');
   assert.deepEqual(shared.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
 });
@@ -229,28 +256,38 @@ for (const [name, variant, unmounted] of [
   });
 }
 
-test('sharedPrefixRequests sends the bytes rendered turns send, and its tools match a fresh render', async () => {
+test('sharedPrefixRequests sends the bytes rendered turns send under the ID their charges report, and its tools match a fresh render', async () => {
   const update = process.env.UPDATE_SHARED_PREFIX === '1';
-  const snapshot: { tools: unknown[]; shapes: Record<string, unknown>; models: Record<string, unknown> } = {
-    tools: [], shapes: {}, models: {},
+  const snapshot: { tools: unknown[]; segments: Record<string, unknown[]>; models: Record<string, unknown> } = {
+    tools: [], segments: {}, models: {},
   };
   for (const model of SNAPSHOT_MODELS) {
     const prewarms = update ? [] : sharedPrefixRequests(model);
     if (!update) {
-      assert.deepEqual(prewarms.map(({ kind, shape }) => `${kind} ${shape}`),
-        ['system interactive', 'system interactive_streaming', 'user interactive', 'user interactive_streaming']);
+      assert.deepEqual(prewarms.map(({ id }) => id), [
+        'system/interactive', 'system/interactive_streaming', 'system/interactive_image', 'system/interactive_streaming_image',
+        'user/interactive', 'user/interactive_streaming', 'user/interactive_image', 'user/interactive_streaming_image',
+      ]);
+      for (const { id, kind, shape } of prewarms) assert.equal(id, `${kind}/${shape}`);
     }
     for (const agentKind of ['system', 'user'] as AgentKind[]) {
-      for (const shape of SHARED_PREFIX_SHAPES) {
+      for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
         const real = await render({ ...ALPHA, model, agentKind, ...SHAPE_VARIANTS[shape] });
         const { model: _model, max_tokens: _max, stream: _stream, system: _system, tools, messages: _messages, ...settings } = real;
         assert.deepEqual(Object.keys(settings).sort(), ['output_config', 'service_tier', 'thinking']);
         const anchor = anchorIndex(real);
         snapshot.tools = withoutMarkers(tools.slice(0, anchor + 1)) as unknown[];
-        snapshot.shapes[shape] = withoutMarkers(tools.slice(anchor + 1));
+        const afterAnchor = withoutMarkers(tools.slice(anchor + 1)) as any[];
+        for (const [segment, names] of Object.entries(SEGMENT_TOOLS)) {
+          const segmentTools = afterAnchor.filter((tool) => names.includes(tool.name));
+          if (segmentTools.length > 0) snapshot.segments[segment] = segmentTools;
+        }
         snapshot.models[model] = settings;
         if (update) continue;
-        const { request } = prewarms.find((prewarm) => prewarm.kind === agentKind && prewarm.shape === shape)!;
+        const prewarm = prewarms.find(({ id }) => id === chargedSharedPrefix(real));
+        assert.ok(prewarm, `${model} ${agentKind} ${shape}: the real request's charge names a pre-warmed prefix`);
+        assert.deepEqual([prewarm.kind, prewarm.shape], [agentKind, shape]);
+        const { request } = prewarm;
         assert.equal(JSON.stringify(request.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
         assert.deepEqual(request.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
         for (const [key, value] of Object.entries(settings)) assert.deepEqual(request[key], value, `${model}: ${key}`);

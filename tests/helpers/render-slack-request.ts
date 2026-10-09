@@ -9,7 +9,10 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { SharedPrefixId } from '../../src/agents/shared-prefix.ts';
+
 process.env.ANTHROPIC_API_KEY = 'render-only-not-a-key';
+process.env.OPENAI_API_KEY = 'render-only-not-a-key';
 process.env.SLACK_STATE_DB_PATH = join(mkdtempSync(join(tmpdir(), 'render-slack-request-')), 'state.db');
 
 const Anthropic = (await import('@anthropic-ai/sdk')).default as any;
@@ -44,11 +47,14 @@ export interface SlackRequestVariant {
   member?: boolean;
   /** The delivery the render answers: the Slack message, or the file-delivery check appended after it. */
   delivery?: 'message' | 'file_delivery_check';
+  imageModel?: string;
 }
 
 export const USER_AGENT_ID = 'agent_brief_writer';
 
 let captured: unknown;
+let charged: SharedPrefixId | null | undefined;
+const chargedPrefixes = new WeakMap<RenderedRequest, SharedPrefixId | null>();
 const blockedUrls: string[] = [];
 Anthropic.Messages.prototype.create = function (params: unknown) {
   captured = structuredClone(params);
@@ -75,6 +81,9 @@ const identity: any = getIdentityStore();
 store.getAgent = async () => currentAgent();
 store.listConnectionAccounts = async () => [];
 store.listAgentConnectionBindings = async () => [];
+store.getWorkspaceModelRole = async (workspaceId: string, role: string) => role === 'image' && current!.imageModel
+  ? { workspaceId, role, modelId: current!.imageModel, revision: 1, createdAt: 0, updatedAt: 0 }
+  : undefined;
 identity.getOrganization = async () => ({ id: 'org', slackTeamId: current!.workspace });
 identity.getMembership = async () => ({ id: 'member', organizationId: 'org', status: 'active', userId: 'user' });
 identity.getMembershipAccessOverlay = async () => undefined;
@@ -86,7 +95,9 @@ configurePlatformFunding({
   ...NO_RUN_FEES,
   funding: async () => current!.funding ?? 'platform',
   admit: async () => 'admitted',
-  charge: async () => {},
+  charge: async (_record: unknown, sharedPrefix: SharedPrefixId | null) => {
+    charged = sharedPrefix;
+  },
 } as any);
 
 /** Network requests the renders attempted; empty unless egress leaked. */
@@ -94,9 +105,16 @@ export function blockedNetworkCalls(): readonly string[] {
   return blockedUrls;
 }
 
+export function chargedSharedPrefix(request: RenderedRequest): SharedPrefixId | null {
+  const charged = chargedPrefixes.get(request);
+  if (charged === undefined) throw new Error('The render was not charged to the platform.');
+  return charged;
+}
+
 export async function renderSlackRequest(variant: SlackRequestVariant): Promise<RenderedRequest> {
   current = variant;
   captured = undefined;
+  charged = undefined;
   const agent = currentAgent();
   const conversationKind = variant.conversationKind ?? 'channel';
   const messageTs = (Number(variant.thread) + 0.0001).toFixed(6);
@@ -144,5 +162,6 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
     if (!captured) throw error;
   }
   if (!captured) throw new Error('No Anthropic request was captured.');
+  if (charged !== undefined) chargedPrefixes.set(captured as RenderedRequest, charged);
   return captured as RenderedRequest;
 }
