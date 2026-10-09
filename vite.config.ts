@@ -154,6 +154,9 @@ export function chickpeaWorkerViteConfig(command: 'build' | 'serve', host?: Chic
       ...(host ? { emptyOutDir: true } : {}),
       copyPublicDir: false,
       minify: 'oxc',
+      // Better Auth dispatches on error.name, which jose derives from the class
+      // name; without this, revoking an expired access token answers 500.
+      rolldownOptions: { output: { keepNames: true } },
     },
     ...(local ? {
       optimizeDeps: {
