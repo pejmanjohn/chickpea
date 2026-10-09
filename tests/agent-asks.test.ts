@@ -490,7 +490,7 @@ test('a delivered reply that mentions a teammate admits one ask per Agent, up to
       // "stop" is an ordinary turn for the asked Agent.
       await ask('3000.000302', '<!subteam^SFINANCE|@finance> stop');
       assert.equal(jobs.length, 3);
-      assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE|@finance> stop');
+      assert.equal(jobs.at(-1)?.turn.text, '<!subteam^SFINANCE> stop');
       assert.equal(jobs.at(-1)?.midRunReceipt, undefined);
       assert.equal(posts.length, 0, 'no steering reply');
 

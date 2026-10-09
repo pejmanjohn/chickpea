@@ -111,6 +111,7 @@ function turnMayAskAgents(
     agentMayAskTeammates(assignment.agent);
 }
 
+// Unlike SLACK_HANDLE_WORD, a `|` before the `@` matches: a live mention's label asks.
 const HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:-])@([A-Za-z0-9_-]+)/gu;
 
 /**

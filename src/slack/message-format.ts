@@ -347,6 +347,15 @@ function liveAgentMention(userGroupId: string, handle: string): string {
   return `<!subteam^${userGroupId}|@${handle}>`;
 }
 
+/**
+ * A delivered reply as Slack returns it on read, where a mention has no
+ * label. A model that later reads the reply copies this form, which never
+ * stays live.
+ */
+export function slackReadbackText(text: string): string {
+  return text.replace(/<!subteam\^([^<>|\n]+)\|[^<>\n]*>/g, '<!subteam^$1>');
+}
+
 /** Plain `@handle` words of listed Agents, as live mentions. */
 function linkAgentHandleWords(text: string, live: SlackLiveAgentHandles): string {
   return text.replace(SLACK_HANDLE_WORD, (word, handle: string) => {

@@ -666,8 +666,10 @@ test('the record holds an Agent\'s mention as Slack returns it, so quoting the r
       client: client as never, turn: turn(), sharedAppReads: true, state: GRANTING_STATE, record: store,
     });
     assert.equal(client.calls.length, 0);
-    const read = context.messages.find((message) => message.ts === '1005.000100');
+    const assembled = await assembleRetainedSlackContext(context, turn(), { store, agentId: 'agent_oncall' });
+    const read = assembled.messages.find((message) => message.ts === '1005.000100');
     assert.equal(read?.text, '<!subteam^SFINANCE> what did we bill in Q3?');
+    assert.doesNotMatch(assembleSlackPrompt(turn(), assembled), /\|@finance>/);
     assert.deepEqual(mentionedHandleWords(canonicalSlackMarkdownText(`> ${read?.text}`, live)), []);
     assert.deepEqual(mentionedHandleWords(canonicalSlackMarkdownText(`It asked: ${read?.text}`, live)), []);
   });

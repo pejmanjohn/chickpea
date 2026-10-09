@@ -7,6 +7,7 @@ import type {
 } from '../config/types.ts';
 import { MAX_SLACK_PUBLIC_HANDOFF_MESSAGES } from '../config/types.ts';
 import type { NormalizedSlackTurn, SlackMessageEvent } from './types.ts';
+import { slackReadbackText } from './message-format.ts';
 import { slackFileSummaries, slackMessageText } from './message-text.ts';
 import { slackImageRefs, threadImageRef } from './thread-images.ts';
 import {
@@ -93,7 +94,8 @@ export async function recordDeliveredSlackAgentMessage(
     messageTs: delivery.messageTs,
     role: 'agent',
     agentId: assignment.agentId,
-    text: delivery.text,
+    // Later turns read this row in place of Slack's copy; quoting it must not ask.
+    text: slackReadbackText(delivery.text),
     ...(delivery.images?.length ? { images: delivery.images } : {}),
   });
 }

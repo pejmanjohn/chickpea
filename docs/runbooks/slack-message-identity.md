@@ -270,7 +270,9 @@ that Agent (see [Agent conversations](agent-conversations.md)). A user-group
 mention the model wrote or copied, such as `<!subteam^ID>` quoted from a
 Slack message, stays inert and reads as `@handle`, so quoting a message asks
 nobody. Only the exact live form this renderer writes stays live when a reply
-renders again. The built-in Chickpea asks
+renders again. The thread record and an asked Agent's ask keep a delivered
+reply as Slack returns it, with `<!subteam^ID>` and no label, so a model
+never reads the live form. The built-in Chickpea asks
 nobody, so every handle in its reply stays inert. Every other user group stays
 inert, and code keeps its literal characters. A handle word changes only once
 it is complete, so streamed prefixes stay prefixes of the final text.
