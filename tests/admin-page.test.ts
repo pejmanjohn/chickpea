@@ -393,7 +393,13 @@ type ProviderSummaryFixture = {
   subscriptionAvailable?: boolean;
   subscriptionProtocol?: 'chatgpt-plan' | 'codex';
   subscription?: OpenAiSubscriptionStatusFixture;
+  platformFunded?: boolean;
 };
+type ModelReadinessFixture =
+  | null
+  | 'credential_missing'
+  | 'funding_not_offered'
+  | { unavailable: 'model_unsupported'; message: string };
 type ModelProviderFixture = {
   id: string;
   configured: boolean;
@@ -568,6 +574,8 @@ function runAdminPageHarness(
     deferModelCatalogStatus?: boolean;
     modelCatalogRefreshError?: { status: number; error: string; message?: string };
     modelProviders?: ModelProviderFixture[];
+    /** The server's readiness answer per model; others answer from the provider's key. */
+    modelReadiness?: Record<string, ModelReadinessFixture>;
     workspaceDefault?: WorkspaceDefaultFixture | null;
     workspaceDefaultPutError?: { status: number; error: string; current?: WorkspaceDefaultFixture };
     attachSelectionValue?: string;
@@ -704,6 +712,7 @@ function runAdminPageHarness(
   usageApiCalls: string[];
   scheduledApiCalls: string[];
   fetchCalls: Array<{ path: string; method: string }>;
+  modelReadinessRequests: string[];
   channelListCalls: string[];
   providerKeyPosts: Array<{ id: string; key: string }>;
   providerKeyDeletes: string[];
@@ -1577,6 +1586,7 @@ function runAdminPageHarness(
     }],
   };
   const fetchCalls: Array<{ path: string; method: string }> = [];
+  const modelReadinessRequests: string[] = [];
   const fetch = (path: string, options?: { method?: string; body?: string; headers?: Record<string, string>; cache?: string }): Promise<FakeResponse> => {
     const method = options?.method ?? 'GET';
     fetchCalls.push({ path, method });
@@ -2682,20 +2692,34 @@ function runAdminPageHarness(
         }),
       );
     }
-    if (path === '/admin/api/models') {
+    const listedModelProviders = () => {
       const workersAiEnabled = providerState.find((provider) => provider.id === 'workers-ai')?.enabled !== false;
-      return Promise.resolve(jsonResponse({
-        providers: (modelProviders ?? []).filter(
-          (provider) => workersAiEnabled || provider.id !== 'cloudflare',
-        ).map((provider) => {
-          const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
-          const summary = providerState.find((candidate) => candidate.id === summaryId);
-          return {
-            ...provider,
-            configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
-          };
-        }),
-      }));
+      return (modelProviders ?? []).filter(
+        (provider) => workersAiEnabled || provider.id !== 'cloudflare',
+      ).map((provider) => {
+        const summaryId = provider.id === 'cloudflare' ? 'workers-ai' : provider.id;
+        const summary = providerState.find((candidate) => candidate.id === summaryId);
+        return {
+          ...provider,
+          configured: provider.configured || summary?.status === 'stored' || summary?.status === 'env',
+        };
+      });
+    };
+    if (path === '/admin/api/models') {
+      return Promise.resolve(jsonResponse({ providers: listedModelProviders() }));
+    }
+    if (path.startsWith('/admin/api/models/readiness?')) {
+      const modelId = new URLSearchParams(path.slice(path.indexOf('?'))).get('modelId') ?? '';
+      modelReadinessRequests.push(modelId);
+      const providerId = modelId.slice(0, modelId.indexOf('/'));
+      const answer = harnessOptions.modelReadiness && modelId in harnessOptions.modelReadiness
+        ? harnessOptions.modelReadiness[modelId]
+        : listedModelProviders().some((provider) => provider.id === providerId && provider.configured)
+          ? null
+          : 'credential_missing';
+      return Promise.resolve(jsonResponse(
+        answer !== null && typeof answer === 'object' ? { modelId, ...answer } : { modelId, unavailable: answer },
+      ));
     }
     if (path === '/admin/api/workspace-model-default') {
       if (method === 'PUT') {
@@ -3148,6 +3172,7 @@ function runAdminPageHarness(
     usageApiCalls,
     scheduledApiCalls,
     fetchCalls,
+    modelReadinessRequests,
     channelListCalls,
     providerKeyPosts,
     providerKeyDeletes,
@@ -13914,6 +13939,268 @@ test('Settings tells a credits workspace to choose another model when its defaul
   assert.match(html, /Repair required/);
   assert.match(html, /<p class="hint">Not available on Chickpea's models\. Choose another model\.<\/p>/);
   assert.doesNotMatch(html, /Review anthropic provider settings/);
+});
+
+const OFFERED_MODEL = 'anthropic/claude-opus-5-5';
+const UNOFFERED_MODEL = 'anthropic/claude-opus-4-1';
+const NO_KEY_WARNING = '<p class="field-error">No key for this provider yet — replies with this model will fail until one is added in Settings.</p>';
+const NOT_OFFERED_HINT = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
+const ANTHROPIC_WITHOUT_KEY: ModelProviderFixture = {
+  id: 'anthropic',
+  configured: false,
+  source: 'via ANTHROPIC_API_KEY',
+  suggestions: [OFFERED_MODEL],
+};
+
+function agentModelField(html: string): string {
+  const start = html.indexOf('<label class="field-label" for="p-model">');
+  const end = html.indexOf('<div class="field"><label class="field-label" for="p-image-model">', start);
+  assert.ok(start >= 0 && end > start, 'the Agent Model field renders before the Image model field');
+  return html.slice(start, end);
+}
+
+async function agentModelTab(options: {
+  model: string;
+  hosted: boolean;
+  modelProviders?: ModelProviderFixture[];
+  modelReadiness?: Record<string, ModelReadinessFixture>;
+}) {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=model',
+    agents: [{ ...releaseAgent, model: options.model }],
+    modelProviders: options.modelProviders ?? [ANTHROPIC_WITHOUT_KEY],
+    ...(options.modelReadiness ? { modelReadiness: options.modelReadiness } : {}),
+    providers: ['anthropic', 'openai', 'openrouter'].map((id) => ({ id, status: 'missing', modelCount: null })),
+    selfHosted: !options.hosted,
+    browserOffered: !options.hosted,
+  });
+  await flushAsync();
+  return harness;
+}
+
+test('on Chickpea\'s models an Agent pinned to an offered model shows no key warning', async () => {
+  const harness = await agentModelTab({ model: OFFERED_MODEL, hosted: true, modelReadiness: { [OFFERED_MODEL]: null } });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.match(field, /<span class="badge-src">Pinned<\/span><span class="mono hint">anthropic\/claude-opus-5-5<\/span>/);
+  assert.doesNotMatch(field, /field-error|No key|Not available/);
+});
+
+test('on Chickpea\'s models an Agent pinned to a model Chickpea does not offer shows the default card\'s hint', async () => {
+  const harness = await agentModelTab({
+    model: UNOFFERED_MODEL,
+    hosted: true,
+    modelReadiness: { [UNOFFERED_MODEL]: 'funding_not_offered' },
+  });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.includes(NOT_OFFERED_HINT), field);
+  assert.doesNotMatch(field, /field-error|No key/);
+});
+
+test('an own-key workspace with no key keeps the No key warning on a pinned Agent', async () => {
+  const harness = await agentModelTab({ model: OFFERED_MODEL, hosted: true });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.endsWith(`${NO_KEY_WARNING}</div>`), field);
+  assert.doesNotMatch(field, /Not available/);
+});
+
+test('a keyless own-key Agent pinned to a model the catalog dropped shows the server\'s reason', async () => {
+  const dropped = 'openai/gpt-4.1-mini-2025-04-14';
+  const message = 'The active OpenAI API-key catalog does not support this model.';
+  const harness = await agentModelTab({
+    model: dropped,
+    hosted: true,
+    modelProviders: [{
+      id: 'openai',
+      configured: false,
+      source: 'via OPENAI_API_KEY',
+      suggestions: ['openai/gpt-6-sol'],
+      authMethods: { activeMethod: 'api_key', apiKeyConfigured: false, subscription: { state: 'disconnected', updatedAt: 0 } },
+    }],
+    modelReadiness: { [dropped]: { unavailable: 'model_unsupported', message } },
+  });
+
+  const field = agentModelField(harness.app.innerHTML);
+  assert.ok(field.endsWith(`Settings &nearr;</button></p><p class="field-error">${message}</p></div>`), field);
+  assert.doesNotMatch(field, /No key|Not available/);
+});
+
+test('standalone keeps every Agent model warning it shows today', async () => {
+  const subscription = (state: 'connected' | 'disconnected'): ModelProviderFixture => ({
+    id: 'openai',
+    configured: state === 'connected',
+    source: 'ChatGPT subscription',
+    suggestions: ['openai/gpt-5.4'],
+    authMethods: {
+      activeMethod: 'subscription',
+      apiKeyConfigured: false,
+      subscription: state === 'connected'
+        ? { state, updatedAt: 1_800_000_005_000, accountFingerprint: 'oas_safe_fixture', connectedAt: 1_800_000_005_000 }
+        : { state, updatedAt: 1_800_000_005_000 },
+    },
+  });
+  const cases: Array<{ model: string; modelProviders: ModelProviderFixture[]; warning: string }> = [
+    { model: OFFERED_MODEL, modelProviders: [ANTHROPIC_WITHOUT_KEY], warning: NO_KEY_WARNING },
+    { model: OFFERED_MODEL, modelProviders: [{ ...ANTHROPIC_WITHOUT_KEY, configured: true }], warning: '' },
+    {
+      model: 'acme/model-1',
+      modelProviders: [ANTHROPIC_WITHOUT_KEY],
+      warning: '<p class="field-error">Free text accepted; provider not detected in this install.</p>',
+    },
+    {
+      model: 'openai/gpt-4o',
+      modelProviders: [subscription('connected')],
+      warning: '<p class="field-error">This OpenAI model is not available through the selected ChatGPT subscription.</p>',
+    },
+    {
+      model: 'openai/gpt-5.4',
+      modelProviders: [subscription('disconnected')],
+      warning: '<p class="field-error">The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings.</p>',
+    },
+    { model: 'openai/gpt-5.4', modelProviders: [subscription('connected')], warning: '' },
+  ];
+  for (const { model, modelProviders, warning } of cases) {
+    const harness = await agentModelTab({ model, hosted: false, modelProviders });
+    const field = agentModelField(harness.app.innerHTML);
+    assert.ok(field.endsWith(`Settings &nearr;</button></p>${warning}</div>`), `${model}: ${field}`);
+  }
+});
+
+test('the Agent Model field asks about a typed model once its picker closes', async () => {
+  const harness = await agentModelTab({
+    model: OFFERED_MODEL,
+    hosted: true,
+    modelReadiness: { [OFFERED_MODEL]: null, [UNOFFERED_MODEL]: 'funding_not_offered' },
+  });
+  const { click, input, keydown } = harness.listeners;
+  assert.ok(click && input && keydown);
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL]);
+
+  click({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, 'anthropic/claude-opus-4') });
+  input({ target: inputTarget({ 'data-action': 'profile-model' }, UNOFFERED_MODEL) });
+  await flushAsync();
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL], 'nothing is asked while the picker is open');
+  assert.doesNotMatch(agentModelField(harness.app.innerHTML), /Not available/);
+
+  keydown({ key: 'Escape', target: actionTarget({ 'data-action': 'profile-model' }), preventDefault() {} });
+  await flushAsync();
+  assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL, UNOFFERED_MODEL]);
+  assert.ok(agentModelField(harness.app.innerHTML).includes(NOT_OFFERED_HINT));
+});
+
+const PLATFORM_ANTHROPIC: ModelProviderFixture = {
+  id: 'anthropic',
+  configured: true,
+  source: 'Chickpea’s models',
+  suggestions: [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5'],
+};
+const PLATFORM_OPENROUTER: ModelProviderFixture = {
+  id: 'openrouter',
+  configured: true,
+  source: 'Chickpea’s models',
+  suggestions: ['openrouter/deepseek/deepseek-v4.1-flash', 'openrouter/z-ai/glm-5.3-flash', 'openrouter/moonshotai/kimi-k3'],
+};
+const HOSTED_PROVIDERS_WITHOUT_KEYS: ProviderSummaryFixture[] = ['anthropic', 'openai', 'openrouter'].map((id) => ({
+  id,
+  status: 'missing',
+  modelCount: null,
+  ...(id === 'openai' ? { activeAuthMethod: 'api_key' as const, subscriptionAvailable: false } : {}),
+}));
+
+test('on Chickpea\'s models the Agent model picker lists the models Chickpea offers', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/agents/agent_release',
+    initialSearch: '?tab=model',
+    agents: [{ ...releaseAgent, model: OFFERED_MODEL }],
+    modelProviders: [PLATFORM_ANTHROPIC, PLATFORM_OPENROUTER],
+    anthropicModels: [{ id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }],
+    openrouterFavorites: [],
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+
+  const list = harness.app.innerHTML.match(/<div class="combo-list" role="listbox">[\s\S]*?<div class="combo-settings">/)?.[0] ?? '';
+  assert.match(list, /<div class="combo-group">anthropic<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.match(list, /<div class="combo-group">openrouter<span class="src">· Chickpea’s models<\/span><\/div>/);
+  assert.deepEqual(
+    [...list.matchAll(/data-action="pick-model" data-model="([^"]+)"/g)].map((match) => match[1]),
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
+    'OpenRouter lists the models Chickpea offers with no starred model',
+  );
+  assert.doesNotMatch(list, /no providers configured|Add or connect a provider/);
+});
+
+test('on Chickpea\'s models the Workspace default offers the same models as the Agent picker', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    modelProviders: [PLATFORM_ANTHROPIC, PLATFORM_OPENROUTER],
+    openrouterFavorites: [],
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+    workspaceDefault: {
+      workspaceId: 'T_CREDITS',
+      modelId: OFFERED_MODEL,
+      revision: 1,
+      provenance: 'admin_selected',
+      runtimeContract: 'chickpea-v1',
+      live: true,
+      inheritingAgentCount: 0,
+      health: { status: 'ready', providerId: 'anthropic' },
+    },
+  });
+  await flushAsync();
+
+  const select = harness.app.innerHTML.match(/<select class="input mono" id="workspace-default-model"[\s\S]*?<\/select>/)?.[0] ?? '';
+  assert.deepEqual(
+    [...select.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1]),
+    [OFFERED_MODEL, 'anthropic/claude-sonnet-5-5', ...PLATFORM_OPENROUTER.suggestions],
+  );
+});
+
+test('on Chickpea\'s models each provider card says they are in use and an own key is optional', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS.map((provider) => ({ ...provider, platformFunded: true })),
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+
+  for (const id of ['anthropic', 'openai', 'openrouter']) {
+    const card = harness.app.innerHTML.match(new RegExp(`<article class="prov-row provider-card[^"]*" data-provider-card="${id}">[\\s\\S]*?</article>`))?.[0] ?? '';
+    assert.ok(card.includes('<span class="badge badge-neutral"><span class="dot"></span>Chickpea&rsquo;s models</span>'), `${id}: ${card}`);
+    assert.ok(card.includes('<p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p>'), `${id}: ${card}`);
+    assert.ok(card.includes(`<button type="button" class="btn btn-soft btn-sm" data-action="prov-add-key" data-provider="${id}">Add key</button>`), `${id}: ${card}`);
+    assert.doesNotMatch(card, /Key needed|Platform billing requires|Add your OpenRouter key/);
+  }
+});
+
+test('an own-key workspace with no key keeps its Key needed provider cards', async () => {
+  const harness = runAdminPageHarness({
+    initialPath: '/admin/settings/providers',
+    providers: HOSTED_PROVIDERS_WITHOUT_KEYS,
+    selfHosted: false,
+    browserOffered: false,
+  });
+  await flushAsync();
+
+  for (const id of ['anthropic', 'openai', 'openrouter']) {
+    const card = harness.app.innerHTML.match(new RegExp(`<article class="prov-row provider-card[^"]*" data-provider-card="${id}">[\\s\\S]*?</article>`))?.[0] ?? '';
+    assert.ok(card.includes('<span class="badge badge-off"><span class="dot"></span>Key needed</span>'), `${id}: ${card}`);
+    assert.ok(card.includes(`<button type="button" class="btn btn-primary btn-sm" data-action="prov-add-key" data-provider="${id}">Add key</button>`), `${id}: ${card}`);
+    assert.doesNotMatch(card, /Chickpea&rsquo;s models|No API key needed/);
+  }
+  assert.match(harness.app.innerHTML, /<p class="provider-card-muted">Platform billing requires an API key here\.<\/p>/);
+  assert.match(harness.app.innerHTML, /Add your OpenRouter key\. Chickpea validates it with/);
 });
 
 test('the left rail keeps one coherent section switcher and section-specific navigation', async () => {

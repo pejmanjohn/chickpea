@@ -29,6 +29,8 @@
   // Hosted: where Settings › GitHub lives, and what it says until an account is connected.
   var GITHUB_SETTINGS_PATH = "/admin/settings/github";
   var GITHUB_INSTALL_COPY = "Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.";
+  var NOT_OFFERED_HINT_HTML = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
+  var PLATFORM_PROVIDER_COPY_HTML = '<div class="provider-card-copy"><p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p></div>';
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
   var MANAGED_CONNECTOR_PRESETS = CONFIG.managedConnectorPresets;
@@ -356,6 +358,7 @@
     // the static suggestions for it (offline).
     modelPickerOpen: false,
     modelPickerFilter: "",
+    modelReadiness: null,
     // The Agent image field reuses the combobox shape with its own open/filter
     // state so the two pickers can never share or cross-populate options.
     imageModelPickerOpen: false,
@@ -797,6 +800,7 @@
     state.websiteLoginDialog = null;
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
+    state.modelReadiness = null;
     state.imageModelPickerOpen = false;
     state.imageModelPickerFilter = "";
     state.agentScheduleDeleteConfirm = null;
@@ -4864,7 +4868,6 @@
     if (draft.canEdit === false) {
       return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
     }
-    var warning = modelWarning(model);
     var open = state.modelPickerOpen;
     // Click-to-open combobox (F6): the input is always the current pin; clicking
     // or focusing it opens the grouped options popover below, and typing filters.
@@ -4876,7 +4879,7 @@
       (open ? modelPickerHtml(model) : "") +
       '</div>' +
       '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
-      (warning ? '<p class="field-error">' + esc(warning) + '</p>' : "") +
+      modelWarningHtml(model) +
       '</div>';
   }
 
@@ -8293,10 +8296,10 @@
 
   // Build the dynamic specifier list for one configured picker provider.
   // anthropic/openai render their FULL live model list (prefix "anthropic/" /
-  // "openai/"); openrouter/workers-ai render only starred FAVORITES ("openrouter/"
-  // / "cloudflare/"). A dynamic source that is not yet fetched (null) or whose
-  // fetch failed falls back to the provider's static suggestions, so the group is
-  // never empty mid-load or offline. openModelPicker kicks the lazy fetches.
+  // "openai/"). A live list that is not yet fetched (null) or whose fetch failed
+  // falls back to the provider's suggestions, so the group is never empty
+  // mid-load or offline. openModelPicker kicks the lazy fetches. Every other
+  // provider renders the server's suggestions, which carry the starred models.
   function pickerModelsFor(provider, adminId) {
     var suggestions = (provider.suggestions || []).slice();
     if (adminId === "anthropic" || adminId === "openai") {
@@ -8304,18 +8307,7 @@
       if (live && state.providerModelsError[adminId] !== true) {
         return live.map(function (m) { return adminId + "/" + m.id; });
       }
-      return suggestions;
     }
-    if (adminId === "openrouter" || adminId === "workers-ai") {
-      var favs = state.favorites[adminId];
-      var prefix = adminId === "workers-ai" ? "cloudflare/" : "openrouter/";
-      if (favs != null) {
-        return favs.map(function (favId) { return prefix + favId; });
-      }
-      // Favorites not yet loaded: fall back to static suggestions mid-load.
-      return suggestions;
-    }
-    // Any other (custom) provider: static suggestions only.
     return suggestions;
   }
 
@@ -10243,7 +10235,7 @@
     var repair = health.status !== "repair_required"
       ? ""
       : health.code === "funding_not_offered"
-        ? '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>'
+        ? NOT_OFFERED_HINT_HTML
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
     var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
@@ -10472,11 +10464,13 @@
   }
 
   function providerCardStatusHtml(summary) {
+    if (summary.platformFunded) return '<div class="prov-status"><span class="badge badge-neutral"><span class="dot"></span>Chickpea&rsquo;s models</span></div>';
     var connected = summary.status === "stored" || summary.status === "env";
     return '<div class="prov-status"><span class="badge ' + (connected ? "badge-on" : "badge-off") + '"><span class="dot"></span>' + (connected ? "Connected" : "Key needed") + '</span></div>';
   }
 
   function providerCardCopyHtml(id, summary, meta) {
+    if (summary.platformFunded) return PLATFORM_PROVIDER_COPY_HTML;
     var connected = summary.status === "stored" || summary.status === "env";
     var count = providerModelCount(id, summary);
     if (!connected) {
@@ -10701,7 +10695,7 @@
         '<button type="button" class="btn btn-soft btn-sm" data-action="prov-change-key" data-provider="' + esc(id) + '">Change key&hellip;</button>' +
         '<button type="button" class="btn btn-danger btn-sm" data-action="prov-remove" data-provider="' + esc(id) + '">Remove key&hellip;</button></div></details>';
     }
-    return '<div class="prov-actions"><button type="button" class="btn btn-primary btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
+    return '<div class="prov-actions"><button type="button" class="btn ' + (summary.platformFunded ? "btn-soft" : "btn-primary") + ' btn-sm" data-action="prov-add-key" data-provider="' + esc(id) + '">Add key</button></div>';
   }
 
   function validateEndpointPath(id) {
@@ -10817,8 +10811,10 @@
       return '<div class="prov-body fav-provider-body fav-provider-editor">' + editor + '<div class="provider-card-footer">' + providerActionsHtml(id, providerSummary, state.provUi[id] || {}) + '</div></div>';
     }
     var intro = "";
-    if (id === "openrouter") {
-      var connected = providerSummary.status === "stored" || providerSummary.status === "env";
+    var connected = providerSummary.status === "stored" || providerSummary.status === "env";
+    if (id === "openrouter" && providerSummary.platformFunded) {
+      intro = PLATFORM_PROVIDER_COPY_HTML;
+    } else if (id === "openrouter") {
       intro = '<div class="provider-step-list"><div class="provider-step' + (connected ? ' complete' : '') + '"><span class="provider-step-number">' + (connected ? '&#10003;' : '1') + '</span><span>Add your OpenRouter key. Chickpea validates it with <span class="mono">GET /auth/key</span>.</span></div>' +
         '<div class="provider-step' + (favs.length ? ' complete' : ' pending') + '"><span class="provider-step-number">' + (favs.length ? '&#10003;' : '2') + '</span><span>Choose the models to show in pickers' + (favs.length ? '.' : ' &middot; 0 chosen.') + '</span></div></div>';
     } else {
@@ -12062,23 +12058,17 @@
   var modelPickerControls = createModelPickerControls({
     stateKey: "modelPicker",
     draftKey: "model",
-    // Lazily fetch the dynamic lists the chat picker renders (F5): the FULL
-    // model list for anthropic/openai and the starred favorites for
-    // openrouter/workers-ai. The picker can open without ever visiting
+    // Lazily fetch the FULL model list the chat picker renders for
+    // anthropic/openai (F5). The picker can open without ever visiting
     // Settings, so it kicks its own loads here, guarded so nothing re-fetches.
-    // loadProviderModels/loadFavorites re-render while the picker is open
+    // loadProviderModels re-renders while the picker is open
     // (state.modelPickerOpen).
     onOpen: function () {
       (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
         if (!provider.configured) return;
         var adminId = pickerAdminIdFor(provider.id);
-        if (adminId == null) return;
         if (adminId === "anthropic" || adminId === "openai") {
           if (state.providerModels[adminId] == null) loadProviderModels(adminId);
-        } else if (adminId === "openrouter" || adminId === "workers-ai") {
-          // Favorites drive these groups; the model list is only needed by the
-          // Settings favorites manager, not the picker, so load favorites only.
-          if (state.favorites[adminId] == null) loadFavorites(adminId);
         }
       });
     }
@@ -12779,24 +12769,47 @@
     return copy;
   }
 
-  function modelWarning(model) {
+  function modelWarningHtml(model) {
     if (!model || model.indexOf("/") < 1) return "";
+    var answer = modelReadiness(model) || {};
+    if (answer.unavailable === "funding_not_offered") return NOT_OFFERED_HINT_HTML;
+    var warning = modelWarning(model, answer);
+    return warning ? '<p class="field-error">' + esc(warning) + '</p>' : "";
+  }
+
+  function modelReadiness(model) {
+    var slot = state.modelReadiness;
+    if (slot && slot.model === model) return slot.answer;
+    // Skip while the picker is open, since a request per keystroke would flash the warning.
+    if (state.modelPickerOpen) return null;
+    slot = state.modelReadiness = { model: model, answer: null };
+    api("/admin/api/models/readiness?modelId=" + encodeURIComponent(model)).then(function (body) {
+      return body && body.unavailable ? body : null;
+    }).catch(function () {
+      return null;
+    }).then(function (answer) {
+      if (state.modelReadiness !== slot) return;
+      slot.answer = answer;
+      if (answer) renderPreservingPagePosition();
+    });
+    return null;
+  }
+
+  function modelWarning(model, answer) {
     var provider = model.slice(0, model.indexOf("/"));
     var entry = state.models.providers.find(function (item) { return item.id === provider; });
     if (!entry) return "Free text accepted; provider not detected in this install.";
-    if (provider === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription") {
-      if ((entry.suggestions || []).indexOf(model) < 0) {
-        return "This OpenAI model is not available through the selected ChatGPT subscription.";
-      }
-      if (!entry.configured) {
-        return "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings.";
-      }
-      return "";
+    var subscription = provider === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription";
+    if (subscription && (entry.suggestions || []).indexOf(model) < 0) {
+      return "This OpenAI model is not available through the selected ChatGPT subscription.";
     }
+    if (answer.unavailable === "model_unsupported") return answer.message;
+    if (answer.unavailable !== "credential_missing") return "";
     // Known provider, no key: the pin will save, but every reply fails with a
     // sanitized provider error — say so here instead of letting it surprise.
-    if (!entry.configured) return "No key for this provider yet — replies with this model will fail until one is added in Settings.";
-    return "";
+    return subscription
+      ? "The selected ChatGPT subscription is not connected — OpenAI calls will fail until it is connected in Settings."
+      : "No key for this provider yet — replies with this model will fail until one is added in Settings.";
   }
 
   function slugId(name) {

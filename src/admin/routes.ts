@@ -318,8 +318,10 @@ import {
   pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
+  type ModelProviderUnavailableReason,
   type ModelResolvableAgent,
 } from '../config/model-policy.ts';
+import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
 import {
   resolveOpenAiAuthMethod,
   saveOpenAiAuthMethod,
@@ -6629,7 +6631,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // Workers AI binding show ONLY the user's starred favorites (curated in the
   // Settings managers), so this route folds those favorites into their
   // suggestions — the per-provider search/favorites endpoints stay the editors.
-  app.get('/admin/api/models', async (c) => {
+  const chatPickerProviders = async (c: Context, funding?: ModelRequestFundingSource) => {
     const settingsStore = settings(c);
     await refreshCatalog(c, false);
     // A deployment serving many offers its installations no subscription lane.
@@ -6646,8 +6648,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       ? (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settingsStore))).models.map(model => ({ ...model, canonical: `openai/${model.id}` }))
       : activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined);
     const anthropicApiModels = activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined);
+    const runtimeProviders = await modelProviders(c);
     const providers = await Promise.all(
-      (await modelProviders(c))
+      runtimeProviders
         .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
         .map(async (provider) => {
         if (provider.id === 'openai') {
@@ -6694,7 +6697,48 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return provider;
         }),
     );
-    return c.json({ providers });
+    const resolvedFunding = funding ?? await installationFunding(c.env as PlatformEnv | undefined);
+    if (resolvedFunding !== 'platform') return providers;
+    // Chickpea's models are a lane like the ChatGPT subscription. They need no
+    // key or starred model, and serve only the models with a current price.
+    const unavailable = await chatModelReadiness(c, resolvedFunding);
+    return Promise.all(providers.map(async (provider) => {
+      const candidates = uniqueStrings([
+        ...provider.suggestions,
+        ...(runtimeProviders.find(({ id }) => id === provider.id)?.suggestions ?? []),
+      ]);
+      const served = await Promise.all(candidates.map(async (model) => !(await unavailable(model))));
+      const suggestions = candidates.filter((_, index) => served[index]);
+      return { ...provider, configured: suggestions.length > 0, source: PLATFORM_MODELS_SOURCE, suggestions };
+    }));
+  };
+
+  app.get('/admin/api/models', async (c) => c.json({ providers: await chatPickerProviders(c) }));
+
+  // Everything one request's readiness answers share, the funding read included.
+  const chatModelReadiness = async (c: Context, funding?: ModelRequestFundingSource) => {
+    const settingsStore = settings(c);
+    const platformEnv = c.env as PlatformEnv | undefined;
+    await loadModelCatalog(settingsStore, platformEnv);
+    const [resolvedFunding, openAiAuthMethod, workersAiEnabled, openAiSubscription, runtimeProviders] = await Promise.all([
+      funding ?? installationFunding(platformEnv),
+      resolveOpenAiAuthMethod(settingsStore),
+      getWorkersAiEnabled(settingsStore),
+      chatSubscriptionStatus(settingsStore, platformEnv),
+      modelProviders(c),
+    ]);
+    const input = {
+      runtimeProviders, platformEnv, openAiAuthMethod, workersAiEnabled, openAiSubscription, settingsStore,
+      funding: resolvedFunding,
+    };
+    return (modelId: string) => chatModelUnavailable(modelId, modelId.slice(0, modelId.indexOf('/')), input);
+  };
+
+  app.get('/admin/api/models/readiness', async (c) => {
+    const modelId = c.req.query('modelId') ?? '';
+    if (modelId.indexOf('/') < 1) return invalidRequest(c);
+    const answer = await (await chatModelReadiness(c))(modelId);
+    return c.json({ modelId, ...(answer ?? { unavailable: null }) });
   });
 
   // The image role's picker source, kept separate from the chat model list so a
@@ -7094,10 +7138,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (err) {
         return internalError(c, err);
       }
+      const funding = await installationFunding(platformEnv);
+      const served = funding === 'platform'
+        ? new Set((await chatPickerProviders(c, funding)).filter(({ configured }) => configured).map(({ id }) => id))
+        : new Set<string>();
       return c.json({
         providers: PROVIDER_KEY_IDS.map((id) => ({
           ...providerSummary(id, sources[id], platformEnv),
           ...(id === 'openai' ? { activeAuthMethod, subscriptionAvailable: false } : {}),
+          ...(served.has(id) ? { platformFunded: true } : {}),
         })),
       });
     }
@@ -7370,6 +7419,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const platformEnv = c.env as PlatformEnv | undefined;
       const settingsStore = settings(c);
+      const funding = id === 'anthropic' || id === 'openai' ? await installationFunding(platformEnv) : undefined;
+      if (funding === 'platform') {
+        const served = (await chatPickerProviders(c, funding)).find((provider) => provider.id === id)?.suggestions ?? [];
+        return c.json({ provider: id, models: served.map((model) => ({ id: model.slice(id.length + 1) })), cached: true });
+      }
       if (id === 'openai' && !deploymentServesManyInstallations(platformEnv) &&
           await resolveOpenAiAuthMethod(settingsStore) === 'subscription') {
         if (isCloudflareTarget()) {
@@ -12076,6 +12130,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     c.req.path.startsWith('/admin/api/agents/') ||
     (c.req.method === 'GET' && [
       '/admin/api/models',
+      '/admin/api/models/readiness',
       // The per-Agent image field reads its options here, so an Agent editor
       // needs the same access it has to the chat model list.
       '/admin/api/image-models',
@@ -12735,6 +12790,30 @@ function chatModelProviderReady(providerId: string, input: {
   return providerReady && workersAiReady;
 }
 
+type ChatModelReadinessInput = Parameters<typeof chatModelProviderReady>[1] & {
+  settingsStore: SettingsStore;
+  funding: ModelRequestFundingSource;
+};
+
+type ChatModelUnavailable =
+  | { unavailable: 'model_unsupported'; message: string }
+  | { unavailable: ModelProviderUnavailableReason };
+
+async function chatModelUnavailable(
+  modelId: string,
+  providerId: string,
+  input: ChatModelReadinessInput,
+): Promise<ChatModelUnavailable | undefined> {
+  const message = await activeCatalogCompatibilityError(modelId, input.openAiAuthMethod, input.settingsStore, input.platformEnv);
+  if (message) return { unavailable: 'model_unsupported', message };
+  const unavailable = await modelProviderUnavailable(
+    pricedModelRoute(modelId, 'standard_input_output'),
+    () => chatModelProviderReady(providerId, input),
+    input.funding,
+  );
+  return unavailable ? { unavailable } : undefined;
+}
+
 /**
  * Why a chat model cannot fill the coding role right now, if it cannot: the
  * active catalog must serve it and its provider must be ready, exactly as for
@@ -12759,7 +12838,6 @@ async function codingModelChoiceError(input: {
   if (incompatible) return incompatible;
   const unavailable = await modelProviderUnavailable(
     pricedModelRoute(input.modelId, 'standard_input_output'),
-    input.platformEnv,
     async () => {
       // A key-lane provider is ready when the turn's own key lookup finds a key,
       // so Admin never calls ready what a turn would silently replace.
@@ -12775,6 +12853,7 @@ async function codingModelChoiceError(input: {
         openAiSubscription,
       });
     },
+    installationFunding(input.platformEnv),
   );
   if (!unavailable) return undefined;
   return unavailable === 'funding_not_offered'
@@ -12783,6 +12862,7 @@ async function codingModelChoiceError(input: {
 }
 
 const PLATFORM_NOT_OFFERED_TEXT = "Not available on Chickpea's models. Choose another model.";
+const PLATFORM_MODELS_SOURCE = 'Chickpea’s models';
 
 function chatModelProviderId(modelId: string): string | undefined {
   const separator = modelId.indexOf('/');
@@ -12802,12 +12882,14 @@ async function workspaceModelDefaultProjection(input: {
     openAiAuthMethod,
     workersAiEnabled,
     openAiSubscription,
+    funding,
   ] = await Promise.all([
     input.configStore.getWorkspaceModelDefault(input.installation.workspaceId),
     input.configStore.listUserAgents(),
     resolveOpenAiAuthMethod(input.settingsStore),
     getWorkersAiEnabled(input.settingsStore),
     chatSubscriptionStatus(input.settingsStore, input.platformEnv),
+    installationFunding(input.platformEnv),
   ]);
   const modelId = workspaceDefault?.modelId ?? null;
   const separator = modelId?.indexOf('/') ?? -1;
@@ -12820,7 +12902,7 @@ async function workspaceModelDefaultProjection(input: {
       code: 'workspace_default_missing',
       repairPath: '/admin/settings/providers',
     };
-  } else if (!providerId || await activeCatalogCompatibilityError(modelId, openAiAuthMethod, input.settingsStore, input.platformEnv)) {
+  } else if (!providerId) {
     health = {
       status: 'repair_required',
       providerId,
@@ -12828,23 +12910,21 @@ async function workspaceModelDefaultProjection(input: {
       repairPath: '/admin/settings/providers',
     };
   } else {
-    const unavailable = await modelProviderUnavailable(
-      pricedModelRoute(modelId, 'standard_input_output'),
-      input.platformEnv,
-      () => chatModelProviderReady(providerId, {
-        runtimeProviders: input.runtimeProviders,
-        platformEnv: input.platformEnv,
-        openAiAuthMethod,
-        workersAiEnabled,
-        openAiSubscription,
-      }),
-    );
-    health = unavailable
+    const answer = await chatModelUnavailable(modelId, providerId, {
+      runtimeProviders: input.runtimeProviders,
+      platformEnv: input.platformEnv,
+      openAiAuthMethod,
+      workersAiEnabled,
+      openAiSubscription,
+      settingsStore: input.settingsStore,
+      funding,
+    });
+    health = answer
       ? {
           status: 'repair_required',
           providerId,
           // A platform-funded installation never uses a saved key, so only another model repairs it.
-          code: unavailable === 'funding_not_offered' ? 'funding_not_offered' : 'provider_unavailable',
+          code: answer.unavailable === 'credential_missing' ? 'provider_unavailable' : answer.unavailable,
           repairPath: '/admin/settings/providers',
         }
       : { status: 'ready', providerId };

@@ -61,7 +61,7 @@ import { AgentPromptFailure, agentFailureText, promptSlackThreadAgent } from '..
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
 import type { ModelRequestRecord } from '../src/usage/model-requests.ts';
-import { priceCatalogFor } from '../src/usage/pricing/catalog.ts';
+import { priceCatalogFor, RELEASE_PRICE_CATALOGS } from '../src/usage/pricing/catalog.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
@@ -809,6 +809,147 @@ test('Admin reads a credits installation\'s Workspace default as ready with no s
       { ...NOT_OFFERED, providerId: 'cloudflare' },
       'credits serve only a provider the deployment offers',
     );
+  });
+});
+
+test('Admin reads an Agent model on a credits installation as ready by its price, and on its own key by its key', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const unavailable = async (modelId: string) => {
+    const response = await request(`/admin/api/models/readiness?modelId=${encodeURIComponent(modelId)}`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { modelId: string; unavailable: string | null };
+    assert.equal(body.modelId, modelId);
+    return body.unavailable;
+  };
+  const DROPPED = 'openai/gpt-4.1-mini-2025-04-14';
+  const DROPPED_ANSWER = {
+    modelId: DROPPED,
+    unavailable: 'model_unsupported',
+    message: 'The active OpenAI API-key catalog does not support this model.',
+  };
+  const dropped = async () => (await request(`/admin/api/models/readiness?modelId=${encodeURIComponent(DROPPED)}`)).json();
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'credits serve a priced model with no saved key');
+    assert.equal(await unavailable('anthropic/claude-opus-4-1'), 'funding_not_offered', 'credits serve only a priced model');
+    assert.deepEqual(
+      await dropped(),
+      DROPPED_ANSWER,
+      'a priced model the active catalog does not serve is refused first, with the reason, as the Workspace default reads it',
+    );
+    assert.equal(
+      await unavailable('cloudflare/@cf/zai-org/glm-5.2'),
+      'funding_not_offered',
+      'credits serve only a provider the deployment offers',
+    );
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.equal(await unavailable(`anthropic/${SONNET}`), 'funding_not_offered', 'credits serve only a current price');
+    t.mock.timers.setTime(NOW);
+    fakePort({ funding: async () => 'customer' });
+    assert.equal(await unavailable(`anthropic/${SONNET}`), 'credential_missing', 'a customer-funded installation needs its own key');
+    assert.deepEqual(await dropped(), DROPPED_ANSWER, 'a keyless own key hears the catalog reason before the missing key');
+  });
+});
+
+test('on a credits installation Admin lists the models Chickpea\'s models serve and marks the providers they cover', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    return (await response.json()) as T;
+  };
+  type Listed = { id: string; configured: boolean; source: string; suggestions: string[] };
+  const anthropic = async () =>
+    (await read<{ providers: Listed[] }>('/admin/api/models')).providers.find(({ id }) => id === 'anthropic')!;
+  const cards = async () =>
+    (await read<{ providers: Array<{ id: string; platformFunded?: boolean }> }>('/admin/api/providers')).providers;
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const served = await anthropic();
+    assert.equal(served.configured, true, 'Chickpea\'s models serve Anthropic with no saved key');
+    assert.equal(served.source, 'Chickpea’s models');
+    assert.ok(served.suggestions.includes(`anthropic/${SONNET}`));
+    for (const model of served.suggestions) {
+      const readiness = await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(model)}`);
+      assert.equal(readiness.unavailable, null, `${model} is listed only when the readiness rule serves it`);
+    }
+    assert.deepEqual(
+      (await read<{ models: Array<{ id: string }> }>('/admin/api/providers/anthropic/models')).models.map(({ id }) => `anthropic/${id}`),
+      served.suggestions,
+      'the picker\'s live list on Chickpea\'s models is the same list',
+    );
+    assert.deepEqual((await cards()).map(({ id, platformFunded }) => [id, platformFunded]), [
+      ['anthropic', true],
+      ['openai', true],
+      ['openrouter', true],
+    ]);
+
+    t.mock.timers.setTime(AFTER_SONNET_PRICE_STALE);
+    assert.ok(!(await anthropic()).suggestions.includes(`anthropic/${SONNET}`), 'a stale price leaves the list');
+    t.mock.timers.setTime(NOW);
+
+    fakePort({ funding: async () => 'customer' });
+    const ownKey = await anthropic();
+    assert.equal(ownKey.configured, false, 'a customer-funded installation needs its own key');
+    assert.notEqual(ownKey.source, 'Chickpea’s models');
+    assert.ok(ownKey.suggestions.includes(`anthropic/${SONNET}`));
+    assert.ok((await cards()).every((card) => !('platformFunded' in card)));
+  });
+});
+
+test('on a credits installation Admin lists the OpenRouter models Chickpea\'s models price, with no key or starred model', async (t) => {
+  const { request } = await creditsAdmin(t);
+  const read = async <T>(path: string): Promise<T> => {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    return (await response.json()) as T;
+  };
+  type Listed = { id: string; configured: boolean; suggestions: string[] };
+  const listed = async () => (await read<{ providers: Listed[] }>('/admin/api/models')).providers;
+  const marked = async () =>
+    (await read<{ providers: Array<{ id: string; platformFunded?: boolean }> }>('/admin/api/providers')).providers
+      .filter(({ platformFunded }) => platformFunded).map(({ id }) => id);
+
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    fakePort();
+    const openrouter = (await listed()).find(({ id }) => id === 'openrouter')!;
+    assert.equal(openrouter.configured, true);
+    for (const chosen of ['deepseek/deepseek-v4.1-flash', 'z-ai/glm-5.3-flash', 'moonshotai/kimi-k3']) {
+      assert.ok(openrouter.suggestions.includes(`openrouter/${chosen}`), `${chosen} is listed: ${openrouter.suggestions.join(', ')}`);
+    }
+    for (const model of openrouter.suggestions) {
+      const readiness = await read<{ unavailable: string | null }>(`/admin/api/models/readiness?modelId=${encodeURIComponent(model)}`);
+      assert.equal(readiness.unavailable, null, `${model} is listed only when the readiness rule serves it`);
+    }
+    assert.ok((await marked()).includes('openrouter'));
+
+    t.mock.timers.setTime(Math.max(...RELEASE_PRICE_CATALOGS.map(({ staleAfter }) => staleAfter)));
+    assert.deepEqual(
+      (await listed()).filter(({ configured, suggestions }) => configured || suggestions.length > 0).map(({ id }) => id),
+      [],
+      'with no current price Chickpea\'s models list nothing',
+    );
+    assert.deepEqual(await marked(), [], 'and mark no provider card');
+  });
+});
+
+test('each Admin model request on a credits installation asks the funding port once', async (t) => {
+  const { request } = await creditsAdmin(t);
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    for (const path of [
+      '/admin/api/models',
+      '/admin/api/providers',
+      '/admin/api/providers/anthropic/models',
+      `/admin/api/models/readiness?modelId=${encodeURIComponent(`anthropic/${SONNET}`)}`,
+      '/admin/api/workspace-model-default',
+    ]) {
+      const calls = fakePort();
+      const response = await request(path);
+      assert.equal(response.status, 200, path);
+      assert.equal(calls.funding.length, 1, `${path} asked the funding port ${calls.funding.length} times`);
+    }
   });
 });
 
