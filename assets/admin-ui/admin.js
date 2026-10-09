@@ -8296,10 +8296,10 @@
 
   // Build the dynamic specifier list for one configured picker provider.
   // anthropic/openai render their FULL live model list (prefix "anthropic/" /
-  // "openai/"); openrouter/workers-ai render only starred FAVORITES ("openrouter/"
-  // / "cloudflare/"). A dynamic source that is not yet fetched (null) or whose
-  // fetch failed falls back to the provider's static suggestions, so the group is
-  // never empty mid-load or offline. openModelPicker kicks the lazy fetches.
+  // "openai/"). A live list that is not yet fetched (null) or whose fetch failed
+  // falls back to the provider's suggestions, so the group is never empty
+  // mid-load or offline. openModelPicker kicks the lazy fetches. Every other
+  // provider renders the server's suggestions, which carry the starred models.
   function pickerModelsFor(provider, adminId) {
     var suggestions = (provider.suggestions || []).slice();
     if (adminId === "anthropic" || adminId === "openai") {
@@ -8307,18 +8307,7 @@
       if (live && state.providerModelsError[adminId] !== true) {
         return live.map(function (m) { return adminId + "/" + m.id; });
       }
-      return suggestions;
     }
-    if (adminId === "openrouter" || adminId === "workers-ai") {
-      var favs = state.favorites[adminId];
-      var prefix = adminId === "workers-ai" ? "cloudflare/" : "openrouter/";
-      if (favs != null) {
-        return favs.map(function (favId) { return prefix + favId; });
-      }
-      // Favorites not yet loaded: fall back to static suggestions mid-load.
-      return suggestions;
-    }
-    // Any other (custom) provider: static suggestions only.
     return suggestions;
   }
 
@@ -12069,23 +12058,17 @@
   var modelPickerControls = createModelPickerControls({
     stateKey: "modelPicker",
     draftKey: "model",
-    // Lazily fetch the dynamic lists the chat picker renders (F5): the FULL
-    // model list for anthropic/openai and the starred favorites for
-    // openrouter/workers-ai. The picker can open without ever visiting
+    // Lazily fetch the FULL model list the chat picker renders for
+    // anthropic/openai (F5). The picker can open without ever visiting
     // Settings, so it kicks its own loads here, guarded so nothing re-fetches.
-    // loadProviderModels/loadFavorites re-render while the picker is open
+    // loadProviderModels re-renders while the picker is open
     // (state.modelPickerOpen).
     onOpen: function () {
       (state.models && state.models.providers ? state.models.providers : []).forEach(function (provider) {
         if (!provider.configured) return;
         var adminId = pickerAdminIdFor(provider.id);
-        if (adminId == null) return;
         if (adminId === "anthropic" || adminId === "openai") {
           if (state.providerModels[adminId] == null) loadProviderModels(adminId);
-        } else if (adminId === "openrouter" || adminId === "workers-ai") {
-          // Favorites drive these groups; the model list is only needed by the
-          // Settings favorites manager, not the picker, so load favorites only.
-          if (state.favorites[adminId] == null) loadFavorites(adminId);
         }
       });
     }
