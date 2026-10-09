@@ -45,7 +45,8 @@ export type SlackScheduleToolOperation =
 
 export type SlackScheduleActionOutcome =
   | RoutineScheduleActionResult
-  | { outcome: 'pending'; actionId: string };
+  | { outcome: 'pending'; actionId: string }
+  | { outcome: 'confirmation_required'; proposalId: string };
 
 export interface SlackScheduleActionRpcRequest {
   signal: SlackManagementSignal;
@@ -74,6 +75,9 @@ export async function invokeSlackScheduleAction(input: {
   const digest = managementOperationDigest([validated]);
   const actionId = scheduleActionId(input.signal.turnJobId, digest);
   const publicIdempotencyKey = `schedule-action:${actionId}`;
+  if (!input.signal.requesterText?.trim()) {
+    return proposeScheduleAction(input, validated, publicIdempotencyKey);
+  }
   const storageIdempotencyKey = managementStorageIdempotencyKey(
     input.context,
     publicIdempotencyKey,
@@ -139,15 +143,38 @@ export async function invokeSlackScheduleAction(input: {
     : settled.result!;
 }
 
+/**
+ * Another Agent's ask started this turn, so no message of the person's asked
+ * for this work. The service holds it as a proposal that only the person's
+ * own reply approves; nothing enters the schedule-action ledger.
+ */
+async function proposeScheduleAction(
+  input: Parameters<typeof invokeSlackScheduleAction>[0],
+  operation: SlackScheduleManagementOperation,
+  idempotencyKey: string,
+): Promise<SlackScheduleActionOutcome> {
+  const result = await input.dependencies.service.applyWorkspaceChanges({
+    context: input.context,
+    idempotencyKey,
+    operations: [operation],
+    acknowledgementOwner: 'caller',
+  });
+  const outcome = result.status === 'clarification_required' ? undefined : result.outcomes[0];
+  if (outcome?.disposition === 'confirmation_required' && outcome.proposalId) {
+    return { outcome: 'confirmation_required', proposalId: outcome.proposalId };
+  }
+  return {
+    outcome: 'failed',
+    code: safeFailureCode(outcome?.code ?? outcome?.disposition ?? 'schedule_failed'),
+  };
+}
+
 /** Interpret language in the model; bind scope and defaults here before durable admission. */
 async function bindScheduleOperationToRequester(
   signal: SlackManagementSignal,
   operation: SlackScheduleToolOperation,
   routines: Pick<RoutineStore, 'getRoutine' | 'listRevisions'>,
 ): Promise<SlackScheduleManagementOperation> {
-  if (!signal.requesterText?.trim()) {
-    throw new ManagementError('invalid_request', 'Scheduled work requires the trusted current Slack request.');
-  }
   let previous: RoutineDefinition | undefined;
   if (operation.kind !== 'save_routine' || operation.routineId) {
     if (typeof operation.routineId !== 'string' || !operation.routineId.trim()) {
@@ -287,6 +314,8 @@ async function applyClaimedScheduleAction(input: {
       idempotencyKey: input.publicIdempotencyKey,
       operations: [input.operation],
       acknowledgementOwner: 'caller',
+      // Admitted only on the person's own message (see invokeSlackScheduleAction).
+      approvalBasis: 'explicit_requester_command',
     });
     if (result.status === 'clarification_required') {
       throw new Error('A schedule operation returned Agent identity clarification.');

@@ -15,7 +15,9 @@ import {
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   createAgentAskCollector,
+  handBackMayRemember,
   mentionedHandleWords,
+  personAsksToRemember,
   personRequestText,
   type SlackAgentAskRequest,
 } from '../src/slack/agent-asks.ts';
@@ -111,7 +113,7 @@ test('the collector hands over handle-bearing replies once, after delivery, and 
   assert.equal(requests.length, 1);
   assert.deepEqual(requests[0], {
     turn: {
-      workspaceId: 'T1', channelId: 'C1', threadTs: '100.1', messageTs: '100.2', userId: 'U1',
+      workspaceId: 'T1', channelId: 'C1', threadTs: '100.1', messageTs: '100.2', userId: 'U1', text: 'hello',
       channelType: 'channel', requesterTimezone: 'America/New_York',
     },
     fromAgentId: 'agent_support',
@@ -697,6 +699,58 @@ test('a chained ask carries the thread\'s Agent, and its answer comes back to it
     assert.equal(jobs[3]!.turn.agentAsk?.handedBack, true);
     assert.equal(posts.length, 0);
   }, { grantLegal: true });
+});
+
+test('a person\'s request to remember travels with the exchange\'s asks and lets only the hand-back save', async () => {
+  await withGatewayLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev8150', eventTime: 8150,
+      event: {
+        type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '8150.000100',
+        text: '<!subteam^SSUPPORT|@support> find out from finance what order 4821 was charged and remember it',
+      },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const state = stores.slackState as unknown as { recordTurnAttempt(id: string, n: number): Promise<void> };
+    const reply = async (job: TurnJob, messageTs: string, text: string, asks: boolean) => {
+      await state.recordTurnAttempt(job.id, 1);
+      await processSlackAgentAsks({
+        turn: job.turn,
+        fromAgentId: job.assignment.agentId,
+        ...(job.assignment.threadGuest ? {} : { fromThreadOwner: true as const }),
+        deliveries: asks ? [{ messageTs, text }] : [],
+        ...(job.assignment.threadGuest ? { answer: { messageTs, text } } : {}),
+      }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    };
+    // Support asks Finance, whose answer goes back to Support.
+    await reply(jobs[0]!, '8150.000200', '@finance what was order 4821 charged?', true);
+    const financeJob = jobs[1]!;
+    assert.equal(financeJob.turn.agentAsk?.personAskedToRemember, true);
+    assert.equal(handBackMayRemember(financeJob.turn, financeJob.assignment), false, 'Finance was asked by an Agent');
+    await reply(financeJob, '8150.000300', 'It was charged $129.', false);
+    const back = jobs[2]!;
+    assert.equal(back.assignment.agentId, 'agent_support');
+    assert.equal(back.turn.agentAsk?.handedBack, true);
+    assert.equal(back.turn.agentAsk?.personAskedToRemember, true);
+    assert.equal(handBackMayRemember(back.turn, back.assignment), true);
+    assert.equal(handBackMayRemember(back.turn, { threadGuest: true }), false);
+  });
+});
+
+test('a person asks to remember only in their own words, never in a link or a handle', () => {
+  for (const text of [
+    'find out from @finance and remember it',
+    'Please keep this in mind for next quarter.',
+    'forget the old refund address',
+    'save that to your memory',
+    'make a note of the Q3 total',
+  ]) assert.equal(personAsksToRemember(text), true, text);
+  for (const text of [
+    undefined,
+    'ask @finance what Q3 was',
+    'read <https://example.com/remember-me|this page>',
+    'loop in <!subteam^SREMEMBER|@remember-team>',
+    'note: the refund is pending',
+  ]) assert.equal(personAsksToRemember(text), false, String(text));
 });
 
 test('a handed-back answer is dropped when a person gave the thread to another Agent meanwhile', async () => {

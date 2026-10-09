@@ -194,6 +194,7 @@ import {
   AGENT_ASK_TURN_LIMIT,
   agentAskOrigin,
   agentSlackHandle,
+  exchangePersonAskedToRemember,
   isHandedBackTurn,
   mentionedHandleWords,
   type SlackAgentAskRequest,
@@ -1475,6 +1476,7 @@ export async function processSlackAgentAsks(
     };
   }
   const originMessageTs = agentAskOrigin(asking);
+  const personAskedToRemember = exchangePersonAskedToRemember(asking);
   const fromHandle = agentSlackHandle(from)?.handle;
   for (const { agent, delivery } of targets) {
     // The asked Agent reads the ask as a person's mention arrives, so quoting it asks nobody.
@@ -1499,6 +1501,7 @@ export async function processSlackAgentAsks(
         ...(handedBack
           ? { handedBack: true as const }
           : threadOwnerAgentId ? { threadOwnerAgentId } : {}),
+        ...(personAskedToRemember ? { personAskedToRemember: true as const } : {}),
       },
     };
     const payload: SlackEventFixture = {

@@ -3476,6 +3476,7 @@ test(`a successful own-turn memory write ${verb} ${scenario.name}`, async () => 
       agentId: agent.id, workspaceId, channelId: turn.channelId,
       threadTs: turn.threadTs, conversationKind: 'im' as const,
       slackUserId: turn.userId, eventId: turn.eventId, messageTs: turn.messageTs, turnJobId,
+      requesterText: turn.text,
     };
     const performWrite = () => executeSlackMemoryUpdate({
       signal, memoryEpoch: expectedRevision + 1,

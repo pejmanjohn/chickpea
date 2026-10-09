@@ -38,6 +38,7 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   'turnJobId',
   'conversationKind',
   'requesterText',
+  'personAskedToRemember',
   'requesterTimezone',
   // The per-turn `img:N` inventory: both renders must address the same
   // handles, so a referenced image still resolves after the analysis.

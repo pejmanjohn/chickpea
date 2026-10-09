@@ -88,6 +88,7 @@ const SIGNAL_ATTRIBUTE_KEYS = [
 const SIGNAL_OPTIONAL_ATTRIBUTE_KEYS = [
   'conversationKind',
   'requesterText',
+  'personAskedToRemember',
   'requesterTimezone',
   'attachmentFileIds',
   'attachmentIntakeStatus',
@@ -148,6 +149,11 @@ export interface SlackManagementSignal {
   admittedListIds?: readonly string[];
   /** Trusted current Slack message body, carried outside model-selected tool input. */
   requesterText?: string;
+  /**
+   * A hand-back to the thread's own Agent in an exchange the person started
+   * by asking it to remember or forget something. Host-set, never model text.
+   */
+  personAskedToRemember?: true;
   /** Verified Slack profile timezone, supplied by the host. */
   requesterTimezone?: string;
 }
@@ -483,6 +489,9 @@ function followOnNoticeFromScheduleResult(
       kind: 'pending',
       text: 'The requested scheduled work is still being set up; its final outcome will be posted here.',
     };
+  }
+  if (result.outcome === 'confirmation_required') {
+    return { kind: 'pending', text: 'A separate requested change still needs approval.' };
   }
   return {
     kind: 'failure',
@@ -892,6 +901,7 @@ export function parseSlackManagementSignal(
     ...(delivery.attributes.requesterText
       ? { requesterText: boundedAttribute(delivery.attributes.requesterText, 'requesterText', 40_000) }
       : {}),
+    ...(delivery.attributes.personAskedToRemember === 'true' ? { personAskedToRemember: true as const } : {}),
     ...(delivery.attributes.requesterTimezone
       ? { requesterTimezone: boundedAttribute(delivery.attributes.requesterTimezone, 'requesterTimezone', 64) }
       : {}),
@@ -926,6 +936,7 @@ export async function resolveSlackManagementActor(
       messageTs: signal.messageTs,
       eventId: signal.eventId,
       ...(signal.requesterText ? { requestText: signal.requesterText } : {}),
+      ...(signal.personAskedToRemember ? { personAskedToRemember: true as const } : {}),
       ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
       agentId: signal.agentId,
     },
@@ -1348,6 +1359,13 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
       outcome: 'pending',
       actionId: result.actionId,
       instruction: 'The action is durably recovering. Say that it is still being set up; the final outcome will be posted to this thread.',
+    };
+  }
+  if (result.outcome === 'confirmation_required') {
+    return {
+      outcome: 'confirmation_required',
+      proposalId: result.proposalId,
+      instruction: 'Nothing was scheduled or changed. Another Agent\'s ask started this turn, so the person who started the exchange must approve this scheduled work in their own reply. State exactly what would be scheduled or changed and ask them to approve it. Once they approve in their own reply, call confirm_workspace_change with proposalId.',
     };
   }
   return {

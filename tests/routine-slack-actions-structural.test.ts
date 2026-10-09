@@ -5,13 +5,16 @@ import { personRequestText } from '../src/slack/agent-asks.ts';
 
 const base = { kind: 'save_routine', requiredConnectionAccountIds: [], itemId: 'schedule', agentId: 'agent_test', workspaceId: 'T_TEST', destination: { kind: 'current_dm_thread' }, name: 'TOEFL update', description: 'Bookings update', taskText: 'Report current TOEFL bookings using SQL Dash.', schedule: { kind: 'in', minutes: 5 }, timezone: 'UTC', outputPolicy: 'post' };
 const previous = { id: 'routine_test', workspaceId: 'T_TEST', channelId: 'D_TEST', destination: { kind: 'direct_thread' }, deletedAt: null, name: 'Original', description: 'Original description', taskText: 'Report TOEFL bookings using SQL Dash.', timezone: 'America/Los_Angeles', outputPolicy: 'post_on_change', triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', version: 2 };
+function scheduleInput(requesterText: string | undefined, patch: Record<string, unknown>, timezone: string | undefined, stored: unknown, management: unknown, service?: unknown) {
+  const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1788987692.474889', conversationKind: 'im', slackUserId: 'U_TEST', eventId: 'Ev_test', messageTs: '1788988012.030979', turnJobId: 'turn_test', ...(requesterText === undefined ? {} : { requesterText }), requesterTimezone: timezone };
+  return { signal, operation: { ...base, ...patch }, context: { organizationId: 'org_test', userId: 'user_test', membershipId: 'member_test', origin: { kind: 'slack', ...signal } }, dependencies: { now: () => Date.UTC(2030, 5, 10), routines: { getRoutine: async () => stored, listRevisions: async () => [{ version: 2, definition: previous }], listRoutines: async () => [stored] }, management, service } } as any;
+}
 async function admitted(requesterText: string | undefined, patch: Record<string, unknown> = {}, timezone?: string, stored: unknown = previous) {
   let captured: any;
   const stop = new Error('before reservation');
-  const signal = { agentId: 'agent_test', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1788987692.474889', conversationKind: 'im', slackUserId: 'U_TEST', eventId: 'Ev_test', messageTs: '1788988012.030979', turnJobId: 'turn_test', ...(requesterText === undefined ? {} : { requesterText }), requesterTimezone: timezone };
   // Only the real pre-admission path runs. Persistence is verified separately with stores.
-  const input: any = { signal, operation: { ...base, ...patch }, context: { organizationId: 'org_test', userId: 'user_test', membershipId: 'member_test', origin: { kind: 'slack', ...signal } }, dependencies: { now: () => Date.UTC(2030, 5, 10), routines: { getRoutine: async () => stored, listRevisions: async () => [{ version: 2, definition: previous }], listRoutines: async () => [stored] }, management: { reserveRequest: async (request: any) => { captured = request.operations[0]; throw stop; } } } };
-  try { await invokeSlackScheduleAction(input); } catch (error) { if (error !== stop) throw error; }
+  const management = { reserveRequest: async (request: any) => { captured = request.operations[0]; throw stop; } };
+  try { await invokeSlackScheduleAction(scheduleInput(requesterText, patch, timezone, stored, management)); } catch (error) { if (error !== stop) throw error; }
   assert.ok(captured);
   return captured;
 }
@@ -55,7 +58,7 @@ test('missing control IDs and unavailable expected revisions produce fixed valid
   await assert.rejects(admitted('change it', { routineId: 'routine_test', expectedVersion: 99, taskText: undefined }), /Inspect it again/);
 });
 
-test('an ask cannot schedule, control, or run work with the asking Agent\'s words', async () => {
+test('an ask cannot schedule, control, or run work with the asking Agent\'s words: it only proposes it', async () => {
   const words = 'give me an update on TOEFL bookings in 5 minutes and pause the old one';
   const control = { kind: 'control_routine', routineId: 'routine_test', expectedVersion: 2, action: 'pause' };
   const run = { kind: 'run_routine', routineId: 'routine_test' };
@@ -63,6 +66,14 @@ test('an ask cannot schedule, control, or run work with the asking Agent\'s word
   const ask = { text: words, agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1788988000.000001' } };
   for (const patch of [{}, control, run]) {
     assert.ok(await admitted(personRequestText(person), patch));
-    await assert.rejects(admitted(personRequestText(ask), patch), /requires the trusted current Slack request/);
+    const management = { reserveRequest: async () => assert.fail('an ask never enters the schedule-action ledger') };
+    let applied: any;
+    const service = { applyWorkspaceChanges: async (request: any) => {
+      applied = request;
+      return { status: 'pending', outcomes: [{ itemId: request.operations[0].itemId, operationKind: request.operations[0].kind, disposition: 'confirmation_required', proposalId: 'proposal_test' }] };
+    } };
+    const result = await invokeSlackScheduleAction(scheduleInput(personRequestText(ask), patch, undefined, previous, management, service));
+    assert.deepEqual(result, { outcome: 'confirmation_required', proposalId: 'proposal_test' });
+    assert.equal(applied.approvalBasis, undefined, 'the service decides; nothing vouches for the Agent\'s words');
   }
 });

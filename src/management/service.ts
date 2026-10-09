@@ -2043,6 +2043,12 @@ export class WorkspaceManagementService {
     input: ConfirmWorkspaceChangeInput,
   ): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
+    if (actor.origin.kind === 'slack' && !actor.origin.requestText?.trim()) {
+      throw new ManagementError(
+        'forbidden',
+        'Only the person\'s own message can approve this change. Ask them to approve it in a reply.',
+      );
+    }
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
     if (changeSet) {
       try {
@@ -3673,13 +3679,20 @@ export class WorkspaceManagementService {
     } = {},
   ) {
     if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
+    // Another Agent's ask started a Slack turn that carries no message of the
+    // person's: what it writes waits for the person's approval.
+    const askTurn = actor.origin.kind === 'slack' && !actor.origin.requestText?.trim();
     if (operation.kind === 'update_agent_memory') {
       const agent = await this.requireEditableAgent(actor, operation.agentId);
       const memory = await this.requireAgentMemory(operation.agentId);
       if (memory.revision !== operation.expectedRevision) {
         throw new ManagementError('revision_conflict', 'The Agent memory changed.');
       }
-      return { actor, operation, currentAgent: agent, agentEditable: true };
+      return {
+        actor, operation, currentAgent: agent, agentEditable: true,
+        withoutPersonRequest: askTurn &&
+          !(actor.origin.kind === 'slack' && actor.origin.personAskedToRemember === true),
+      };
     }
     if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
         operation.kind === 'run_routine' ||
@@ -3690,7 +3703,12 @@ export class WorkspaceManagementService {
           ? { allowIdempotentSaveReplay: true }
           : {}),
       });
-      return { actor, operation, agentEditable: true };
+      // A schedule action admitted on the person's message vouches for itself,
+      // including on a retry, whose context no longer carries that message.
+      return {
+        actor, operation, agentEditable: true,
+        withoutPersonRequest: askTurn && options.approvalBasis !== 'explicit_requester_command',
+      };
     }
     if (operation.kind === 'remove_provider_credential') {
       if (actor.role === 'member') return { actor, operation, adminRequired: true };

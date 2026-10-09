@@ -231,6 +231,19 @@ test('a Flue Slack signal carries requester text only for a person\'s own messag
       agentAsk: { ...ask, threadOwnerAgentId: 'agent_canary', handedBack: true },
     });
     assert.equal('requesterText' in handedBack, false);
+    assert.equal('personAskedToRemember' in handedBack, false);
+    // The person asked to remember: only the hand-back to the thread's own Agent says so.
+    const remembering = dispatchAttributes('turn_remembering-signal', {
+      ...turn(), eventId: 'Ev_canary_remember', messageTs: '100.006', source: 'agent_mention',
+      agentAsk: { ...ask, handedBack: true, personAskedToRemember: true },
+    });
+    assert.equal(remembering.personAskedToRemember, 'true');
+    assert.equal('requesterText' in remembering, false);
+    const askedToRemember = dispatchAttributes('turn_asked-remember-signal', {
+      ...turn(), eventId: 'Ev_canary_ask_remember', messageTs: '100.007', source: 'agent_mention',
+      agentAsk: { ...ask, threadOwnerAgentId: 'agent_finance', personAskedToRemember: true },
+    });
+    assert.equal('personAskedToRemember' in askedToRemember, false);
   } finally {
     db.close();
   }
