@@ -115,7 +115,7 @@ export function classifyAgentPresenceError(error: unknown): AgentPresenceError {
   if (HANDLE_COLLISION_ERRORS.has(error.code)) {
     return new AgentPresenceError(
       'handle_collision',
-      'That Slack handle or user-group name is already in use.',
+      'That Slack handle is already in use.',
       common,
     );
   }

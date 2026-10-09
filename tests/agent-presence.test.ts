@@ -56,7 +56,8 @@ test('Slack create-time handle collisions retain safe alternative suggestions', 
         actorSlackUserId: 'UADA',
       }),
       (error: unknown) => error instanceof AgentPresenceError &&
-        error.code === 'handle_collision' && error.suggestions[0] === 'support-2',
+        error.code === 'handle_collision' && error.suggestions[0] === 'support-2' &&
+        error.message === 'That Slack handle is already in use.',
     );
   } finally {
     config.close();
@@ -71,6 +72,7 @@ test('Slack name and handle collisions each name their own fix', () => {
   );
   assert.equal(name.code, 'name_collision');
   assert.equal(name.slackCode, 'name_already_exists');
+  assert.equal(name.message, 'A Slack user group already has this Agent’s name. Rename the Agent, then retry.');
   assert.deepEqual(agentPresenceRecovery(name, qa), {
     title: 'A Slack user group is already named “QA fixtures”',
     explanation: 'Rename this Agent, then press Retry.',
@@ -83,6 +85,7 @@ test('Slack name and handle collisions each name their own fix', () => {
   );
   assert.equal(handle.code, 'handle_collision');
   assert.equal(handle.slackCode, 'handle_already_exists');
+  assert.equal(handle.message, 'That Slack handle is already in use.');
   assert.deepEqual(agentPresenceRecovery(handle, qa), {
     title: '@qa-fixtures is already in use',
     explanation: 'Slack handles are workspace-global across members and user groups. The Agent is saved.',
