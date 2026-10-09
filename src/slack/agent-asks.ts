@@ -1,4 +1,7 @@
-import type { CustomAgentConfig, ResolvedAssignment } from '../config/types.ts';
+import { agentAppIsLive } from '../config/types.ts';
+import type { CustomAgentConfig, ResolvedAssignment,
+  SlackAgentAddress,
+} from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
@@ -78,24 +81,39 @@ export function isLaterCoAddressedTurn(turn: Pick<NormalizedSlackTurn, 'coAddres
 }
 
 /**
- * The handle an Agent is asked by, with the user group Slack renders it
- * with: only an Agent whose handle is published has one.
+ * The handle an Agent is asked by, with how Slack writes it live: the user
+ * group of a published handle, or the bot user of the Agent's own live app.
  */
 export function agentSlackHandle(
   agent: Pick<CustomAgentConfig, 'slackPresence'>,
-): { handle: string; userGroupId: string } | undefined {
-  const userGroupId = agent.slackPresence?.userGroupId;
-  return userGroupId ? { handle: agent.slackPresence!.normalizedHandle, userGroupId } : undefined;
+): ({ handle: string } & SlackAgentAddress) | undefined {
+  const presence = agent.slackPresence;
+  if (agentAppIsLive(presence)) return { handle: presence.normalizedHandle, botUserId: presence.app.botUserId };
+  const userGroupId = presence?.userGroupId;
+  return userGroupId ? { handle: presence.normalizedHandle, userGroupId } : undefined;
 }
 
 /**
  * Whether this Agent's replies may ask other Agents. Only user Agents ask:
  * the built-in Chickpea lists and describes Agents, so a handle in its reply
- * names that Agent and never asks it. An Agent with its own Slack app posts
- * as another bot, whose messages this app's admission drops, so it asks no one.
+ * names that Agent and never asks it.
  */
-export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind' | 'slackPresence'>): boolean {
-  return agent.kind === 'user' && agent.slackPresence?.kind !== 'agent_app';
+export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
+  return agent.kind === 'user';
+}
+
+const BOT_USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/** The bot users a delivered message mentions outside code; which are Agents' own apps is the host's to decide. */
+export function mentionedBotUsers(text: string): string[] {
+  const ids: string[] = [];
+  text.split(SLACK_CODE_SEGMENT).forEach((segment, index) => {
+    if (index % 2 === 1) return;
+    for (const match of segment.matchAll(BOT_USER_MENTION)) {
+      if (!ids.includes(match[1]!)) ids.push(match[1]!);
+    }
+  });
+  return ids;
 }
 
 /**
@@ -163,7 +181,7 @@ export function createAgentAskCollector(input: {
     note(delivery) {
       if (!eligible || flushed) return;
       if (answersOwner) answer ??= { messageTs: delivery.messageTs, text: delivery.text };
-      if (mentionedHandleWords(delivery.text).length === 0) return;
+      if (mentionedHandleWords(delivery.text).length === 0 && mentionedBotUsers(delivery.text).length === 0) return;
       if (deliveries.some(({ messageTs }) => messageTs === delivery.messageTs)) return;
       deliveries.push({ messageTs: delivery.messageTs, text: delivery.text });
     },

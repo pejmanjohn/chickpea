@@ -182,12 +182,16 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
   }
 });
 
-test('an Agent app is neither an ask target nor an asker', () => {
+test('a live Agent app is addressed by its bot user, a waiting one not at all, and both may ask', () => {
   const app = agent('agent_support', 'Support', agentApp('support', ACTIVE));
+  const waiting = agent('agent_billing', 'Billing', agentApp('billing', {
+    state: 'needs_attention', at: NOW, startedBy: 'UOWNER', reason: 'app_removed', resume: 'icon_set', app: APP,
+  }));
   const group = agent('agent_finance', 'Finance', userGroup('finance', 'S2'));
-  assert.equal(agentSlackHandle(app), undefined);
+  assert.deepEqual(agentSlackHandle(app), { handle: 'support', botUserId: 'UBOT' });
+  assert.equal(agentSlackHandle(waiting), undefined);
   assert.deepEqual(agentSlackHandle(group), { handle: 'finance', userGroupId: 'S2' });
-  assert.equal(agentMayAskTeammates(app), false);
+  assert.equal(agentMayAskTeammates(app), true);
   assert.equal(agentMayAskTeammates(group), true);
 });
 

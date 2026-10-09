@@ -17,6 +17,13 @@ import { isSlackContentMessageSubtype } from './message-subtypes.ts';
 
 interface SlackTurnNormalizationOptions {
   botUserId?: string;
+  /** The other bots this installation answers as: a message by one of them is this installation's own. */
+  siblingBotUserIds?: readonly string[];
+}
+
+function isOwnBot(options: SlackTurnNormalizationOptions, user: unknown): boolean {
+  return typeof user === 'string' && user !== '' &&
+    (user === options.botUserId || (options.siblingBotUserIds?.includes(user) ?? false));
 }
 
 /** Strip Slack's transport wrapper into the credential-free runtime envelope. */
@@ -69,7 +76,7 @@ export function normalizeSlackTurn(
     if (isSlackSystemUser(payload.event.user)) {
       return { status: 'ignored', reason: 'slack_system_user' };
     }
-    if (options.botUserId && payload.event.user === options.botUserId) {
+    if (isOwnBot(options, payload.event.user)) {
       return { status: 'ignored', reason: 'self_message' };
     }
     // The self-check above only catches this app's own user id. Any OTHER app
@@ -107,7 +114,7 @@ export function normalizeSlackTurn(
     if (isSlackSystemUser(event.user)) {
       return { status: 'ignored', reason: 'slack_system_user' };
     }
-    if (options.botUserId && event.user === options.botUserId) {
+    if (isOwnBot(options, event.user)) {
       return { status: 'ignored', reason: 'self_message' };
     }
     if (event.item.type !== 'message' || !event.item.channel || !event.item.ts) {
@@ -147,7 +154,7 @@ export function normalizeSlackTurn(
   if (isSlackSystemUser(event.user)) {
     return { status: 'ignored', reason: 'slack_system_user' };
   }
-  if (options.botUserId && event.user === options.botUserId) {
+  if (isOwnBot(options, event.user)) {
     return { status: 'ignored', reason: 'self_message' };
   }
   const attachmentSet = normalizeSlackAttachments(event);

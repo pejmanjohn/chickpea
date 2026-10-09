@@ -291,6 +291,15 @@ export interface AgentAppPresence extends AgentPresenceBase {
 /** Desired and observed Slack address state owned directly by an Agent. */
 export type AgentSlackPresence = UserGroupPresence | AgentAppPresence;
 
+export type ActiveAgentApp = Extract<AgentAppLifecycle, { state: 'active' }>;
+
+/** An Agent whose own Slack app is installed and answering. */
+export function agentAppIsLive(
+  presence: AgentSlackPresence | undefined,
+): presence is AgentAppPresence & { app: ActiveAgentApp } {
+  return presence?.kind === 'agent_app' && presence.app.state === 'active';
+}
+
 export interface CustomAgentConfig {
   id: string;
   /** System Agents are product-owned and never appear in user-Agent administration. */
@@ -927,12 +936,12 @@ export interface ResolvedAssignment {
   modelCredential?: ModelCredentialAttribution;
 }
 
-export interface AgentTeammate {
-  name: string;
-  handle: string;
-  /** Slack writes a live mention of the handle with this user group. */
-  userGroupId: string;
-}
+/** How Slack writes a live mention of an Agent: its user group, or its own app's bot user. */
+export type SlackAgentAddress =
+  | { userGroupId: string }
+  | { botUserId: string };
+
+export type AgentTeammate = { name: string; handle: string } & SlackAgentAddress;
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
 // resolved model/provider/instructions. Declaring the relation lets a

@@ -1655,6 +1655,7 @@ async function runTurnAttempt(
           client,
           turn,
           ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
+          ...(teammateBotUserIds(assignment).length ? { siblingBotUserIds: teammateBotUserIds(assignment) } : {}),
           sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
@@ -2873,6 +2874,11 @@ function resolveMemoryDeliveryText(
  * no frozen presentation. A `chickpea` owner posts as the installation's
  * bot: no custom name or avatar reaches Slack, and its footer names Chickpea.
  */
+/** The bot users of the teammates with their own Slack apps: their replies in this thread are Agents' replies. */
+function teammateBotUserIds(assignment: Pick<ResolvedAssignment, 'teammates'>): string[] {
+  return (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
+}
+
 export function turnReplySender(
   assignment: ResolvedAssignment,
   visibleOwner: SlackPresentationOwner | undefined,

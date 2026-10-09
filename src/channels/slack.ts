@@ -10,6 +10,7 @@ import {
   type AgentAppBotCredentials,
   type AgentSlackAppHandoff,
   agentAppBotCredentials,
+  agentAppIsLive,
   endAgentSlackApp,
 } from '../slack/agent-apps/index.ts';
 
@@ -203,6 +204,7 @@ import {
   agentAskOrigin,
   agentSlackHandle,
   isHandedBackTurn,
+  mentionedBotUsers,
   mentionedHandleWords,
   type SlackAgentAskRequest,
 } from '../slack/agent-asks.ts';
@@ -664,6 +666,12 @@ export async function serveAgentAppSlackDelivery(
   }).routes.find((candidate) => candidate.path === path);
   if (!route) throw new Error(`Slack channel lost its ${path} route`);
   return route.handler(c, async () => {});
+}
+
+/** The bot users of this installation: its own, and every live Agent app's. */
+function tenantBotUserIds(agents: readonly CustomAgentConfig[], installationBotUserId: string | undefined): string[] {
+  const ids = agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []);
+  return installationBotUserId ? [installationBotUserId, ...ids] : ids;
 }
 
 /** The verified payload names this app and this installation's workspace, or it is nobody's. */
@@ -1550,14 +1558,20 @@ export async function processSlackAgentAsks(
   const from = agents.find((agent) => agent.id === request.fromAgentId);
   if (!from) return;
   const byHandle = new Map<string, CustomAgentConfig>();
+  const byBotUser = new Map<string, CustomAgentConfig>();
   for (const agent of agents) {
-    const handle = agentSlackHandle(agent)?.handle;
-    if (agent.kind === 'user' && handle) byHandle.set(handle, agent);
+    const address = agentSlackHandle(agent);
+    if (agent.kind !== 'user' || !address) continue;
+    byHandle.set(address.handle, agent);
+    if ('botUserId' in address) byBotUser.set(address.botUserId, agent);
   }
   const targets: Array<{ agent: CustomAgentConfig; delivery: SlackAgentAskRequest['deliveries'][number] }> = [];
   for (const delivery of request.deliveries) {
-    for (const word of mentionedHandleWords(delivery.text)) {
-      const agent = byHandle.get(word);
+    const mentioned = [
+      ...mentionedHandleWords(delivery.text).map((word) => byHandle.get(word)),
+      ...mentionedBotUsers(delivery.text).map((botUserId) => byBotUser.get(botUserId)),
+    ];
+    for (const agent of mentioned) {
       if (!agent || agent.id === from.id || targets.some((target) => target.agent.id === agent.id)) continue;
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
@@ -2581,6 +2595,9 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
+  // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
+  const siblingBotUserIds = ask ? [] : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId)
+    .filter((id) => id !== resolvedBotUserId);
   // A host-addressed turn is built by the host: an ask's from a delivered
   // Agent reply, which Slack event normalization would ignore as an
   // app-authored post; a co-addressed one from the person's normalized turn.
@@ -2588,6 +2605,7 @@ async function processSlackEvent(
     ? { status: 'runnable' as const, turn: ask.turn }
     : normalizeSlackTurn(payload, {
         ...(resolvedBotUserId ? { botUserId: resolvedBotUserId } : {}),
+        ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}),
       });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;

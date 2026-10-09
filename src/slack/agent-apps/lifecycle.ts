@@ -7,10 +7,10 @@ import type {
   AgentAppResume,
   AgentPresenceDesiredState,
   AgentPresenceHealth,
-  AgentSlackPresence,
 } from '../../config/types.ts';
 
 export type {
+  ActiveAgentApp,
   AgentAppAttention,
   AgentAppIcon,
   AgentAppLifecycle,
@@ -18,8 +18,7 @@ export type {
   AgentAppRecord,
   AgentAppResume,
 } from '../../config/types.ts';
-
-export type ActiveAgentApp = Extract<AgentAppLifecycle, { state: 'active' }>;
+export { agentAppIsLive } from '../../config/types.ts';
 
 /** How long a `creating` record may wait for Slack's answer before the create is ambiguous. */
 export const CREATE_SETTLE_MS = 60_000;
@@ -272,10 +271,4 @@ function healthOf(app: AgentAppLifecycle): AgentPresenceHealth {
 /** Read boundary: the stored flags never outrank the lifecycle they summarize. */
 export function normalizeAgentAppPresence(stored: AgentAppPresence): AgentAppPresence {
   return { ...stored, desiredState: desiredStateOf(stored.app), health: healthOf(stored.app) };
-}
-
-export function agentAppIsLive(
-  presence: AgentSlackPresence | undefined,
-): presence is AgentAppPresence & { app: ActiveAgentApp } {
-  return presence?.kind === 'agent_app' && presence.app.state === 'active';
 }
