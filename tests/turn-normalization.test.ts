@@ -99,6 +99,16 @@ test('Slack turn normalization classifies mentions, owned-thread replies, and DM
   assert.equal(unsupportedGroupDm.reason, 'unsupported_channel_type');
 });
 
+test('a direct message without a channel type is a DM turn, so turns built from it stay DM turns', () => {
+  const event = dmMessage({ event_id: 'Ev_DM_NO_CHANNEL_TYPE' });
+  delete event.event.channel_type;
+  assert.ok(event.event.channel.startsWith('D'));
+  const dm = normalizeSlackTurn(event, { botUserId: 'UBOT' });
+  assert.ok(dm.status === 'runnable');
+  assert.equal(dm.turn.source, 'dm_message');
+  assert.equal(dm.turn.channelType, 'im');
+});
+
 test('Agent View message context is stripped before ordinary DM normalization', () => {
   const options = { botUserId: 'UBOT' };
   const absent = dmMessage();
