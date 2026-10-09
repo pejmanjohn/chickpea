@@ -21,7 +21,7 @@ import {
   CHICKPEA_WORDMARK_HTML,
 } from '../brand/chickpea-mark.ts';
 import type { SlackSetupTransaction } from '../identity/types.ts';
-import { onboardingSteps, type OnboardingStep, type OnboardingStepId } from './onboarding-steps.ts';
+import { onboardingStepIndex, onboardingSteps, type OnboardingStep, type OnboardingStepId } from './onboarding-steps.ts';
 import type { SlackAppManifest } from '../slack/app-manifest.ts';
 import {
   ADMIN_UI_SCRIPT_PATH,
@@ -78,6 +78,16 @@ export function adminUiConfig(input: {
   };
 }
 
+/** The same step bar Admin's script paints, so the server's first paint already shows every step. */
+function onboardingOrientationHtml(steps: readonly OnboardingStep[], current: number, githubDone: boolean): string {
+  const items = steps.map((step, index) => {
+    const done = index < current || (githubDone && step.id === 'github');
+    const active = !done && index === current;
+    return `<li class="${done ? 'complete' : active ? 'active' : ''}"${active ? ' aria-current="step"' : ''}><span class="onboarding-step-dot">${done ? '&#10003;' : index + 1}</span><span class="onboarding-step-label">${escapeHtml(step.label)}</span></li>`;
+  }).join('');
+  return `<ol class="onboarding-orientation${steps.length < 4 ? ' onboarding-orientation-short' : ''}" role="list" aria-label="Onboarding progress">${items}</ol>`;
+}
+
 function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
   // A JSON island is inert data, but `</script` inside a string would still
   // end the element early; escaping `<` closes that off for every value.
@@ -87,6 +97,7 @@ function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
 export interface AdminOnboardingPage {
   initial: Readonly<Record<string, unknown>> | null;
   githubConnectPath: string | null;
+  githubReturned?: boolean;
 }
 
 export function renderAdminPage(
@@ -114,14 +125,21 @@ export function renderAdminPage(
   // Tests and fixtures render without a build; the authenticated route passes
   // the content hash so browsers never pair a new shell with a cached script.
   const assetVersion = options.assetVersion ?? 'dev';
+  const onChickpeaModels = options.billingOffered === true && options.installationOwner === true;
   const onboarding = options.onboarding && {
-    ...options.onboarding,
+    initial: options.onboarding.initial,
+    githubConnectPath: options.onboarding.githubConnectPath,
     steps: onboardingSteps({
       selfHosted,
-      onChickpeaModels: options.billingOffered === true && options.installationOwner === true,
+      onChickpeaModels,
       githubOffered: options.onboarding.githubConnectPath !== null,
     }),
   };
+  const onboardingProgress = onboarding && options.onboarding && onboardingOrientationHtml(
+    onboarding.steps,
+    onboardingStepIndex(onboarding.steps, onboarding.initial?.stage, onChickpeaModels),
+    options.onboarding.githubReturned === true && onboarding.initial?.stage === 'connect_github',
+  );
   // No referrer policy: the browser default sends other sites only Admin's
   // origin, never a path. `same-origin` or `no-referrer` would also send
   // `Origin: null` on cross-origin form POSTs, such as the GitHub App manifest
@@ -137,7 +155,7 @@ ${CHICKPEA_FAVICON_HTML}
 <link rel="stylesheet" href="${adminUiAssetUrl(ADMIN_UI_STYLESHEET_PATH, assetVersion)}">
 </head>
 <body>
-${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand">${CHICKPEA_MARK_HTML}${CHICKPEA_WORDMARK_HTML}</div>${targetChip ? `<span class="onboarding-environment">${escapeHtml(targetChip)}</span>` : ''}</div></div></main></div>` : `<div id="app" class="frame primary-admin-shell" aria-busy="true">
+${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand">${CHICKPEA_MARK_HTML}${CHICKPEA_WORDMARK_HTML}</div>${targetChip ? `<span class="onboarding-environment">${escapeHtml(targetChip)}</span>` : ''}</div>${onboardingProgress}</div></main></div>` : `<div id="app" class="frame primary-admin-shell" aria-busy="true">
   <header class="topbar">
     <div class="brand">
       ${CHICKPEA_MARK_HTML}

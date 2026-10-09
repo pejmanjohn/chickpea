@@ -305,6 +305,10 @@ test('the onboarding page arrives with the journey and its steps, painted as onb
   const owner = await adminPageEntry(signup.admin(await signup.ownerPrincipal())('/admin/onboarding'));
   assert.deepEqual(owner.onboarding?.steps, [{ id: 'slack', label: 'Add to Slack' }, { id: 'try', label: 'Try Chickpea' }],
     'an Owner where the host sells Chickpea\'s models');
+  assert.ok(owner.html.slice(0, owner.html.indexOf('<script')).includes('</div><ol class="onboarding-orientation onboarding-orientation-short" role="list" aria-label="Onboarding progress">' +
+    '<li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Add to Slack</span></li>' +
+    '<li class=""><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Try Chickpea</span></li></ol></div></main>'),
+    'the step bar is in the server\'s first paint, before the script runs');
   const admin = await adminPageEntry(signup.admin(principalFor('admin'))('/admin/onboarding'));
   assert.deepEqual(admin.onboarding?.steps.map(({ id }) => id), ['slack', 'provider', 'model', 'try'], 'an Admin chooses no funding');
   assert.deepEqual(host.chosen, [], 'opening the page sets nothing up');

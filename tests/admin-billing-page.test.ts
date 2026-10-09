@@ -229,7 +229,7 @@ async function harness(options: {
     }
     return response({ error: 'not_found' }, 404);
   };
-  const script = renderAdminPage({
+  const serverHtml = renderAdminPage({
     usageAdminUi: true,
     workspaceAdminUi: role !== 'member',
     installationOwner: owner,
@@ -239,8 +239,10 @@ async function harness(options: {
     onboarding: start.pathname === '/admin/onboarding' ? {
       initial: role === 'member' || options.onboardingUnread === true ? null : onboarding,
       githubConnectPath: options.selfHosted ?? !options.billingOffered ? null : onboarding.githubConnectPath as string ?? null,
+      githubReturned: !(options.selfHosted ?? !options.billingOffered) && start.searchParams.get('github') === 'connected',
     } : undefined,
-  }).match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  });
+  const script = serverHtml.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   vm.runInNewContext(script, {
     console, Date: PageDate, document, fetch, clearTimeout,
@@ -275,7 +277,7 @@ async function harness(options: {
     await flush();
   };
   return {
-    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey, firePoll,
+    html: () => html, renders, timerDelays, requests, assigned, location, click, saveKey, firePoll, serverHtml,
     portCalls: billing?.calls ?? [], releasePlatform: () => releasePlatform(), releaseModels: () => releaseModels(),
   };
 }
@@ -1048,4 +1050,30 @@ test('Try checks for Chickpea\'s first reply every second for two minutes, then 
   await page.firePoll();
   assert.deepEqual(polls(), [1000, 1000, 5000, 15000], 'every fifteen seconds after ten minutes');
   assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 3);
+});
+
+const stepBar = (html: string) => html.match(/<ol class="onboarding-orientation[\s\S]*?<\/ol>/)?.[0];
+
+test('the server paints the same step bar the script paints first, at every stage and in every mode', async () => {
+  const stages = ['choose_provider', 'choose_model', 'connect_github', 'try', 'complete'];
+  const modes: Array<[string, { billingOffered: boolean; selfHosted?: boolean; github?: string }]> = [
+    ['Chickpea\'s models with GitHub', { billingOffered: true, github: '/github/connect' }],
+    ['Chickpea\'s models without GitHub', { billingOffered: true }],
+    ['own key, hosted, with GitHub', { billingOffered: false, selfHosted: false, github: '/github/connect' }],
+    ['standalone', { billingOffered: false, selfHosted: true }],
+  ];
+  for (const [mode, { billingOffered, selfHosted, github }] of modes) {
+    for (const stage of stages) {
+      for (const search of stage === 'connect_github' ? ['', '?github=connected'] : ['']) {
+        const onboarding = { ...TRY, stage, ...(github ? { githubConnectPath: github } : {}) };
+        const page = await harness({
+          path: `/admin/onboarding${search}`, billingOffered, ...(selfHosted === undefined ? {} : { selfHosted }),
+          summary: NO_PLAN, onboarding, platformHeld: true,
+        });
+        const server = stepBar(page.serverHtml.slice(0, page.serverHtml.indexOf('<script')));
+        assert.ok(server, `${mode} at ${stage}${search}: the server paints a step bar`);
+        assert.equal(server, stepBar(page.renders[0]!), `${mode} at ${stage}${search}`);
+      }
+    }
+  }
 });

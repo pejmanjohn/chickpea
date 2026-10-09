@@ -6203,7 +6203,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     } catch {
       console.warn('[chickpea] Onboarding state unavailable');
     }
-    return adminPage(c, { initial, githubConnectPath: await onboardingGithubConnectPath(c) });
+    return adminPage(c, {
+      initial,
+      githubConnectPath: await onboardingGithubConnectPath(c),
+      githubReturned: deploymentTenancy(c.env as PlatformEnv | undefined) === 'installation' &&
+        c.req.query('github') === 'connected',
+    });
   });
 
   app.post('/admin/logout', async (c) => {
