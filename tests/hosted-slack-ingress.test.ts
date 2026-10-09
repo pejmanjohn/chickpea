@@ -36,6 +36,7 @@ import {
   syncHostedWorkspaceInstallation,
 } from '../src/slack/hosted-installation.ts';
 import { withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
+import { createSlackInteractionAck, withSlackInteractionAck } from '../src/slack/interaction-ack.ts';
 import { SLACK_PENDING_ENVELOPE_SETTING } from '../src/slack/installation-handshake.ts';
 import {
   invalidateSlackInstallationCredentialCache,
@@ -58,7 +59,9 @@ import {
   PRIVATE_CHANNEL_SETUP_AGENT_ACTION,
   PRIVATE_CHANNEL_SETUP_CHOICE_BLOCK,
 } from '../src/slack/private-channel-setup.ts';
-import { uiActionId, uiBlockId } from '../src/slack/ui/surface.ts';
+import { validateRequestForm } from '../src/slack/ui/presentation-tools.ts';
+import { formFieldActionId, formFieldBlockId } from '../src/slack/ui/render-form.ts';
+import { uiActionId, uiBlockId, uiSurfaceId } from '../src/slack/ui/surface.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
@@ -459,6 +462,69 @@ test('every runtime Slack path of a hosted installation acts as its own bot', as
     assert.deepEqual(tokensUsed(h.calls), [BOT_TOKEN], JSON.stringify(h.calls.map(({ method }) => method)));
     assert.deepEqual(failures.filter((line) => /installation|standalone|credential/i.test(line)), [],
       'no path asked for another slot');
+  });
+});
+
+test('a hosted modal\'s field errors are Slack\'s answer only while the host has not acknowledged it', async (t) => {
+  await withHostedInstallation(t, async (h) => {
+    const now = Date.now();
+    const surfaceId = uiSurfaceId('turn_feedback', 'form:1');
+    await h.stores.slackState.executeUiSurface!({
+      kind: 'put_surface',
+      record: {
+        id: surfaceId, namespace: 'ui', workspaceId: TEAM, channelId: 'C1',
+        threadTs: '1800000000.000100', conversationThreadTs: '1800000000.000100', conversationKind: 'channel',
+        agentId: 'agent_support', turnJobId: 'turn_feedback', requesterUserId: 'U1',
+        spec: {
+          kind: 'form',
+          form: validateRequestForm({
+            title: 'Support feedback',
+            fields: [
+              { key: 'experience', label: 'Overall experience', type: 'text', required: true },
+              { key: 'email', label: 'Your email', type: 'email' },
+            ],
+          }),
+        },
+        status: 'open', messageTs: '1800000000.000200', createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+      },
+    });
+    const submit = (env: PlatformEnv) => h.deliver('interactions', {
+      type: 'view_submission', api_app_id: APP.appId, team: { id: TEAM }, user: { id: 'U1' },
+      view: {
+        id: 'V1', callback_id: 'chickpea.ui.v1.form', private_metadata: surfaceId,
+        state: {
+          values: {
+            [formFieldBlockId(surfaceId, 0)]: { [formFieldActionId(0)]: { type: 'plain_text_input', value: 'Great' } },
+            [formFieldBlockId(surfaceId, 1)]: { [formFieldActionId(1)]: { type: 'email_text_input', value: 'not an email' } },
+          },
+        },
+      },
+    }, { env });
+    const notices = () => h.calls.filter(({ method }) => method === 'chat.postEphemeral').map(({ body }) => body.get('text'));
+
+    // Checked in time: Core claims the acknowledgement, so the host waits for
+    // its errors and the modal stays open showing them.
+    const inTime = createSlackInteractionAck(new Request('https://hosted.example'));
+    const kept = await submit(withSlackInteractionAck(h.env, inTime));
+    assert.deepEqual(await kept.json(), {
+      response_action: 'errors', errors: { [formFieldBlockId(surfaceId, 1)]: 'Enter an email address.' },
+    });
+    assert.equal(inTime.claim(), false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(notices(), []);
+
+    // Checked just after the host's deadline: the host has already closed the
+    // modal with its empty 200, so Core's answer is empty too and the person
+    // hears privately what to fix.
+    const late = createSlackInteractionAck(new Request('https://hosted.example'));
+    assert.equal(late.claim(), true);
+    const closed = await submit(withSlackInteractionAck(h.env, late));
+    assert.equal(closed.status, 200);
+    assert.equal(await closed.text(), '');
+    await h.settle(() => notices().length === 1);
+    assert.deepEqual(notices(), ['Not sent yet. Press Fill in, fix these, then press Submit again:\n• Your email: Enter an email address.']);
+    const card = await h.stores.slackState.executeUiSurface!({ kind: 'get_surface', id: surfaceId });
+    assert.equal(card.kind === 'surface' ? card.surface?.status : undefined, 'open');
   });
 });
 
