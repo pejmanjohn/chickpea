@@ -36,10 +36,12 @@ function openAiApiModel(
   };
 }
 
-function anthropicApiModel(
-  cost: Model<string>['cost'],
-  supportsTemperature: boolean,
-): Model<'anthropic-messages'> {
+/**
+ * Every model on these profiles refuses a temperature, and Opus 5.5, Sonnet
+ * 5.5 and Fable 5.1 refuse disabled thinking at any effort, so `off: null`
+ * makes a call without a thinking level omit it instead of disabling it.
+ */
+function anthropicApiModel(cost: Model<string>['cost']): Model<'anthropic-messages'> {
   return {
     id: 'catalog-candidate',
     name: 'Catalog candidate',
@@ -51,11 +53,8 @@ function anthropicApiModel(
     cost,
     contextWindow: 1_000_000,
     maxTokens: 128_000,
-    thinkingLevelMap: { xhigh: 'xhigh' },
-    compat: {
-      forceAdaptiveThinking: true,
-      ...(supportsTemperature ? {} : { supportsTemperature: false }),
-    },
+    thinkingLevelMap: { off: null, xhigh: 'xhigh' },
+    compat: { forceAdaptiveThinking: true, supportsTemperature: false },
   };
 }
 
@@ -92,14 +91,8 @@ const COMPILED_MODEL_PROFILES: Record<CompiledModelProfileId, Model<string>> = {
   'openai-platform-responses-luna-tier@1': openAiApiModel(
     { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
   ),
-  'anthropic-messages-opus-tier@1': anthropicApiModel(
-    { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-    false,
-  ),
-  'anthropic-messages-sonnet-tier@1': anthropicApiModel(
-    { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-    true,
-  ),
+  'anthropic-messages-opus-tier@1': anthropicApiModel({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }),
+  'anthropic-messages-sonnet-tier@1': anthropicApiModel({ input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }),
   'openai-codex-responses-standard@1': subscriptionModel(),
   'openai-codex-responses-text-only@1': subscriptionModel(128_000, ['text']),
 };

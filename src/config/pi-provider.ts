@@ -283,6 +283,15 @@ const BUILTIN_API_STREAMS: Partial<Record<Api, () => ProviderStreams>> = {
 };
 
 /**
+ * A stateless side call (the intent check, a visual check) runs without
+ * thinking where the model allows it. A model that cannot turn thinking off
+ * (`off: null`) thinks at low effort instead of refusing the request.
+ */
+export function sideCallThinking(model: Model<Api>): { reasoning?: 'low' } {
+  return model.reasoning && model.thinkingLevelMap?.off === null ? { reasoning: 'low' } : {};
+}
+
+/**
  * Streams for a resolved model without pi-ai's compat dispatcher. The
  * registered app provider wins (it carries Chickpea's model access and
  * attachment policy); a built-in catalog provider Flue registered at boot
