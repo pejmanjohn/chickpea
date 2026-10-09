@@ -390,7 +390,18 @@ export class AgentPresenceReconciler {
   }
 
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */
-  async reconcile(agentId: string, attempt = 0): Promise<CustomAgentConfig> {
+  async reconcile(agentId: string): Promise<CustomAgentConfig> {
+    const before = await this.dependencies.config.getAgent(agentId);
+    const wasLive = before.slackPresence?.health === 'healthy' &&
+      Boolean(before.slackPresence.userGroupId);
+    const reconciled = await this.reconcileOnce(agentId, 0);
+    if (!wasLive) {
+      await this.announce('published', reconciled.id, (announce) => announce.published(reconciled));
+    }
+    return reconciled;
+  }
+
+  private async reconcileOnce(agentId: string, attempt: number): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
     if (agent.lifecycle === 'archived') {
@@ -522,7 +533,7 @@ export class AgentPresenceReconciler {
           { retryable: true },
         );
       }
-      return this.reconcile(current.id, attempt + 1);
+      return this.reconcileOnce(current.id, attempt + 1);
     }
     return config.updateAgent(
       current.id,
