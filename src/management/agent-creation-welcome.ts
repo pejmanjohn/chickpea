@@ -45,16 +45,13 @@ export async function selectAgentCreationConnectors(input: {
   const candidates: AgentCreationConnectorCandidate[] = [];
   const notices: AgentCreationConnectorNotice[] = [];
   const selected = new Set<string>();
-  // A service requested before a clarifying question is absent from the
-  // current message; the new Agent's own prose then anchors it, after every
-  // mention the current message anchors.
-  const anchoredTexts = [input.requestText, input.agentCorpus];
+  const anchorTextsByPriority = [input.requestText, input.agentCorpus];
   const mentions = input.explicitMentions.flatMap((raw) => {
     const matches = matchingConnectorCatalogPresets(raw, catalog);
     const anchors = matches.length === 1
       ? [raw, ...connectorCatalogLookupNames(matches[0]!)]
       : [raw];
-    for (const [rank, text] of anchoredTexts.entries()) {
+    for (const [rank, text] of anchorTextsByPriority.entries()) {
       const index = anchors.reduce<number | undefined>((earliest, anchor) => {
         const candidate = affirmativeMentionIndex(text, anchor);
         if (candidate === undefined) return earliest;

@@ -5006,7 +5006,7 @@ test('choosing a suggested handle publishes it and finishes the Channel add it b
     const { agent: collided } = await reloaded.json() as Record<string, any>;
     assert.deepEqual(collided.slackPresenceRecovery.suggestions, ['support-team', 'support-2', 'support-3']);
     assert.deepEqual(collided.slackPresenceRecovery.steps, [
-      'Choose an available handle below, or type another one and save.',
+      'Choose a suggested handle below, or type another one and save.',
     ]);
 
     const rehandled = await supportAgentRequest(fixture.app, 'PATCH', '', {

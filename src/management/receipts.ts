@@ -726,7 +726,6 @@ function isChickpeaIntroduction(
 
 function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): string {
   const incomplete = receipt.publication?.incomplete ?? [];
-  // Without a published handle the welcome always posts as Chickpea.
   if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt);
   const description = receipt.agentDescription
     ? boundedSlackText(receipt.agentDescription, 400)
@@ -801,7 +800,6 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): str
   return lines.join('\n\n');
 }
 
-// Compatibility proposal welcomes carry their View Agent link as setupUrl.
 function viewAgentLinkUrl(receipt: ManagementAgentCreatedWelcome): string | undefined {
   return receipt.viewAgentUrl ?? receipt.setupUrl;
 }

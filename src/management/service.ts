@@ -4516,9 +4516,6 @@ export class WorkspaceManagementService {
     } catch (error) {
       let publicationError = error;
       if (error instanceof AgentPresenceError && error.code === 'handle_collision') {
-        // The Agent is already committed: a failed recovery is reported on
-        // its handle, never as a failed creation. A variation can still
-        // collide with a member username the suggestions could not see.
         for (const suggestion of error.suggestions.slice(0, 3)) {
           try {
             await this.selectAvailableAgentHandle(
@@ -5326,7 +5323,6 @@ interface CreatedAgentPublication {
   handleChange?: ManagementItemOutcome['handleChange'];
 }
 
-// Derived from the operation, so a resumed creation reports the same change.
 function withHandleChange(
   operation: ManagementOperation,
   agent: CustomAgentConfig,

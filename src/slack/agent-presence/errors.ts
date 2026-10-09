@@ -228,7 +228,7 @@ export function agentPresenceRecovery(
       title: `@${handle} is already in use`,
       explanation: 'Slack handles are shared across the whole workspace, so a person or a Slack user group already uses this one. The Agent is saved.',
       steps: suggestions.length > 0
-        ? ['Choose an available handle below, or type another one and save.']
+        ? ['Choose a suggested handle below, or type another one and save.']
         : ['Type another handle and save.'],
       actionLabel: 'Retry',
       ...(suggestions.length > 0 ? { suggestions } : {}),

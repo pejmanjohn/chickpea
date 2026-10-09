@@ -4136,13 +4136,13 @@ const takenHandleAgent = {
   slackPresenceRecovery: {
     title: '@support is already in use',
     explanation: 'Slack handles are shared across the whole workspace, so a person or a Slack user group already uses this one. The Agent is saved.',
-    steps: ['Choose an available handle below, or type another one and save.'],
+    steps: ['Choose a suggested handle below, or type another one and save.'],
     actionLabel: 'Retry',
     suggestions: takenHandleSuggestions,
   },
 };
 
-test('a taken Slack handle offers each available handle as a one-click save', async () => {
+test('a taken Slack handle offers each suggested handle as a one-click save', async () => {
   const harness = runAdminPageHarness({
     agents: [takenHandleAgent],
     deferAgentPatch: true,
@@ -4168,7 +4168,7 @@ test('a taken Slack handle offers each available handle as a one-click save', as
   click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': takenHandleAgent.id }) });
   assert.match(
     harness.app.innerHTML,
-    /@support is already in use[\s\S]*?Choose an available handle below[\s\S]*?Available handles[\s\S]*?data-action="agent-presence-handle"[\s\S]*?data-action="agent-presence-retry"/,
+    /@support is already in use[\s\S]*?Choose a suggested handle below[\s\S]*?Suggested handles[\s\S]*?data-action="agent-presence-handle"[\s\S]*?data-action="agent-presence-retry"/,
   );
   assert.deepEqual(offeredHandles(), takenHandleSuggestions.map((handle) => ({ handle, label: handle, disabled: false })));
 
@@ -4184,7 +4184,7 @@ test('a taken Slack handle offers each available handle as a one-click save', as
 
   harness.resolveAgentPatch();
   await flushAsync();
-  assert.doesNotMatch(harness.app.innerHTML, /already in use|Available handles|agent-presence-handle/);
+  assert.doesNotMatch(harness.app.innerHTML, /already in use|Suggested handles|agent-presence-handle/);
   assert.match(harness.app.innerHTML, /id="p-handle" type="text" maxlength="80" value="support-team"/);
   assert.match(harness.app.innerHTML, /data-action="profile-instructions">Unsaved instructions\.<\/textarea>/);
 });

@@ -2340,7 +2340,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       transport: await agentSlackTransport(c, workspaceId),
     });
     if (agent.slackPresence?.desiredState === 'disabled') return reconciler.retry(agent.id);
-    // A plain retry would publish the handle but leave a failed Channel add pending.
     const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
       (grant) => grant.agentId === agent.id && grant.workspaceId === workspaceId &&
         grant.status !== 'active',

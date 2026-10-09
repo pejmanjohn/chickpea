@@ -2164,8 +2164,6 @@ test('duplicate clarification ignores Agents the member cannot edit', async () =
   }
 });
 
-// Slack refuses a taken handle. Visible user groups seed the suggestions;
-// member usernames also collide but are invisible to that list.
 function fakeHandlePublisher(
   f: Awaited<ReturnType<typeof createManagementAdapterFixture>>,
   taken: { userGroups: ReadonlySet<string>; usernames?: ReadonlySet<string> },

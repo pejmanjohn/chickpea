@@ -111,7 +111,7 @@ test('a handle collision keeps its suggestions only until the next outcome', asy
   }
 });
 
-test('renaming a published Agent to a handle Slack already uses offers available handles', async () => {
+test('renaming a published Agent to a handle Slack already uses offers suggested handles', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const transport = new FakeSlackTransport();
   try {
@@ -181,7 +181,7 @@ test('Slack name and handle collisions each name their own fix', () => {
   assert.deepEqual(agentPresenceRecovery(handle, saved), {
     title: '@qa-fixtures is already in use',
     explanation,
-    steps: ['Choose an available handle below, or type another one and save.'],
+    steps: ['Choose a suggested handle below, or type another one and save.'],
     actionLabel: 'Retry',
     suggestions: ['qa-fixtures-team'],
   });
