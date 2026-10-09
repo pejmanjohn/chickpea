@@ -404,17 +404,11 @@ export class AgentPresenceReconciler {
         // group found before this Agent ever entered pending state is a
         // workspace-global collision, never an ownership signal.
         if (presence.errorCode !== 'user_group_create_ambiguous' && !presence.userGroupId) {
-          const collision = new AgentPresenceError(
+          throw new AgentPresenceError(
             'handle_collision',
             `@${normalizedHandle} is already in use.`,
-            {
-              suggestions: alternativeAgentHandles(
-                normalizedHandle,
-                new Set(groups.map((candidate) => candidate.handle)),
-              ),
-            },
+            { suggestions: suggestedHandles(normalizedHandle, groups) },
           );
-          throw collision;
         }
         if (!hasAmbiguousCreateOwnershipProof({ slackPresence: presence }, handleMatch)) {
           throw new AgentPresenceError(
@@ -459,20 +453,14 @@ export class AgentPresenceReconciler {
             { retryable: true },
           );
         }
-        const classified = classifyAgentPresenceError(error);
-        if (classified.code === 'handle_collision') {
-          throw new AgentPresenceError('handle_collision', classified.message, {
-            suggestions: alternativeAgentHandles(
-              normalizedHandle,
-              new Set(groups.map((candidate) => candidate.handle)),
-            ),
-            ...(classified.slackCode ? { slackCode: classified.slackCode } : {}),
-          });
-        }
-        throw error;
+        throw withHandleSuggestions(error, normalizedHandle, groups);
       }
     } else {
-      group = await this.updateGroupIfNeeded(group, agent, normalizedHandle);
+      try {
+        group = await this.updateGroupIfNeeded(group, agent, normalizedHandle);
+      } catch (error) {
+        throw withHandleSuggestions(error, normalizedHandle, groups);
+      }
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
     let current = await config.getAgent(agent.id);
@@ -727,6 +715,23 @@ async function enableUserGroup(transport: SlackTransport, userGroupId: string): 
     if (error instanceof SlackTransportError && error.code === 'already_enabled') return;
     throw error;
   }
+}
+
+function suggestedHandles(handle: string, groups: readonly SlackUserGroup[]): string[] {
+  return alternativeAgentHandles(handle, new Set(groups.map((group) => group.handle)));
+}
+
+function withHandleSuggestions(
+  error: unknown,
+  handle: string,
+  groups: readonly SlackUserGroup[],
+): unknown {
+  const classified = classifyAgentPresenceError(error);
+  if (classified.code !== 'handle_collision') return error;
+  return new AgentPresenceError(classified.code, classified.message, {
+    ...classified.options,
+    suggestions: suggestedHandles(handle, groups),
+  });
 }
 
 function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {

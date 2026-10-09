@@ -111,6 +111,39 @@ test('a handle collision keeps its suggestions only until the next outcome', asy
   }
 });
 
+test('renaming a published Agent to a handle Slack already uses offers available handles', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  try {
+    await config.createAgent(agent('agent_support', 'Support', 'support'));
+    const reconciler = new AgentPresenceReconciler({ config, transport, now: () => NOW });
+    await reconciler.reconcile('agent_support');
+    transport.groups.push(
+      { id: 'S_OPS', name: 'Ops', handle: 'ops', disabled: false },
+      { id: 'S_OPS_2', name: 'Ops two', handle: 'ops-2', disabled: false },
+    );
+    const published = await config.getAgent('agent_support');
+    await config.updateAgent(published.id, {
+      slackPresence: { ...published.slackPresence!, requestedHandle: 'ops', normalizedHandle: 'ops' },
+    }, published.revision);
+
+    await assert.rejects(
+      () => reconciler.retry('agent_support'),
+      (error: unknown) => error instanceof AgentPresenceError &&
+        error.code === 'handle_collision' &&
+        error.slackCode === 'handle_already_exists' &&
+        error.message === 'That Slack handle is already in use.' &&
+        error.suggestions.join() === 'ops-team,ops-3,ops-4',
+    );
+    const presence = (await config.getAgent('agent_support')).slackPresence;
+    assert.equal(presence?.errorCode, 'handle_collision');
+    assert.deepEqual(presence?.handleSuggestions, ['ops-team', 'ops-3', 'ops-4']);
+    assert.equal(transport.groups[0]?.handle, 'support', 'the refused rename keeps the published handle');
+  } finally {
+    config.close();
+  }
+});
+
 test('Slack name and handle collisions each name their own fix', () => {
   const qa = agent('agent_qa', 'QA fixtures', 'qa-fixtures');
 
@@ -888,6 +921,9 @@ class FakeSlackTransport implements SlackTransport {
   }
   async updateUserGroup(id: string, patch: Partial<SlackUserGroup>) {
     const group = this.requiredGroup(id);
+    if (this.groups.some((other) => other.id !== id && other.handle === patch.handle)) {
+      throw new SlackTransportError('usergroups.update', 'handle_already_exists');
+    }
     Object.assign(group, patch);
     return { ...group };
   }
