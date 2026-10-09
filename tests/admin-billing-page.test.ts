@@ -919,24 +919,25 @@ test('hosted onboarding on Chickpea\'s models goes from Add to Slack to Try Chic
   assert.equal(platformRequests(page.requests), 1);
   assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
   assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Try Chickpea<\/span><\/li><\/ol>$/);
-  assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Meet Chickpea in Slack<\/h1>/);
+  assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Say hi to Chickpea in Slack<\/h1>/);
   assert.doesNotMatch(page.html(), /Choose your model provider|Choose your model/);
 
   const reload = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: TRY });
-  assert.match(reload.html(), /Meet Chickpea in Slack/);
+  assert.match(reload.html(), /Say hi to Chickpea in Slack/);
   assert.deepEqual(stepLabels(reload.html()), ['Add to Slack', 'Try Chickpea']);
   assert.equal(platformRequests(reload.requests), 0, 'a journey at Try sets nothing up again');
 });
 
 test('while Chickpea sets up, the card says so, and nothing else asks again', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true });
-  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>'));
+  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' +
+    '<div class="onboarding-illustration" data-illustration="setup" aria-hidden="true"></div></section>'));
   assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
-  await page.click({ 'data-action': 'copy-onboarding-prompt' });
+  await page.click({ 'data-action': 'toggle-swap' });
   assert.equal(platformRequests(page.requests), 1, 'a render while it runs sends nothing more');
   page.releasePlatform();
   await flush();
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
   assert.equal(platformRequests(page.requests), 1);
 });
 
@@ -961,7 +962,7 @@ test('setup that does not finish offers Try again, never the provider steps, and
 
   await page.click({ 'data-action': 'onboarding-platform-retry' });
   assert.equal(platformRequests(page.requests), 2);
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
 });
 
 test('the failed setup card names the route\'s error code, and shows no code line when the response has none', async () => {
@@ -975,13 +976,13 @@ test('the failed setup card names the route\'s error code, and shows no code lin
   assert.match(uncoded.html(), /Setup did not finish/);
   assert.doesNotMatch(uncoded.html(), /Code:/);
   await uncoded.click({ 'data-action': 'onboarding-platform-retry' });
-  assert.match(uncoded.html(), /Meet Chickpea in Slack/);
+  assert.match(uncoded.html(), /Say hi to Chickpea in Slack/);
 });
 
 test('a journey already past the provider step sets up the same way', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: { ...CHOOSE_PROVIDER, stage: 'choose_model', providerId: 'openai' } });
   assert.equal(platformRequests(page.requests), 1, 'a journey already past the provider sets up too');
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
 });
 
 
@@ -1006,10 +1007,10 @@ test('on Chickpea\'s models the step bar is the same from the first paint to Chi
 
 test('the boot\'s other requests never move a journey back once setup moved it on', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, bootHeld: true });
-  assert.match(page.html(), /Meet Chickpea in Slack/, 'setup finished before the boot\'s requests');
+  assert.match(page.html(), /Say hi to Chickpea in Slack/, 'setup finished before the boot\'s requests');
   page.releaseBoot();
   await flush();
-  assert.match(page.html(), /Meet Chickpea in Slack/);
+  assert.match(page.html(), /Say hi to Chickpea in Slack/);
   assert.equal(page.requests.filter(({ path, method }) => method === 'GET' && path === '/admin/api/onboarding').length, 0,
     'the page carries the journey, so nothing asks for it again');
   assert.equal(platformRequests(page.requests), 1);

@@ -13427,14 +13427,46 @@ test('onboarding skips channel publication, validates a provider, requires a mod
   assert.equal(harness.onboardingTryPosts.at(-1)?.expectedDefaultRevision, 2);
   assert.match(harness.app.innerHTML, /Try Chickpea/);
   assert.match(harness.app.innerHTML, /https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN/);
-  assert.match(harness.app.innerHTML, /Waiting for Chickpea to reply…/);
-  assert.doesNotMatch(harness.app.innerHTML, /Waiting for Chickpea to reply&amp;hellip;/);
-  assert.match(
-    harness.app.innerHTML,
-    /Hi Chickpea\. I&#39;m on the marketing team\. What&#39;s a good first teammate for us\?/,
-  );
-  assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard"[^>]*>Proceed to Dashboard<\/button>/);
+  assert.match(harness.app.innerHTML, /<p class="onboarding-status" role="status">This page moves on when Chickpea replies<\/p>/);
+  assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard">Go to dashboard<\/button>/);
   assert.match(harness.app.innerHTML, /Step 4 of 4/);
+});
+
+test('Try Chickpea asks for one thing: open Slack, or go to the dashboard when already chatting there', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/onboarding', onboarding: onboardingAt('try', '/github/connect') });
+  await flushAsync();
+  const deepLink = 'https://slack.com/app_redirect?app=A_CHICKPEA&amp;team=T_DESIGN';
+  assert.ok(harness.app.innerHTML.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel onboarding-panel-wide">' +
+    '<p class="onboarding-eyebrow">Step 5 of 5</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
+    '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
+    `<div class="onboarding-actions"><a class="btn btn-primary" href="${deepLink}" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>Open Slack to start talking to Chickpea</a></div>` +
+    '<p class="onboarding-status" role="status">This page moves on when Chickpea replies</p>' +
+    '<div class="onboarding-try-dashboard"><p><strong>Already chatting in Slack?</strong> Head to your dashboard anytime.</p>' +
+    '<button type="button" class="btn btn-soft" data-action="onboarding-proceed-dashboard">Go to dashboard</button></div>' +
+    '<div class="onboarding-illustration" data-illustration="try" aria-hidden="true"></div></section></div>'));
+  assert.doesNotMatch(harness.app.innerHTML, /onboarding-success-icon|onboarding-prompt|Suggested first message|Swap in your own team|marketing team|Copy|Waiting for Chickpea|Proceed to Dashboard/);
+  const styles = adminUiStylesheet();
+  for (const rule of ['.onboarding-try-dashboard {', '.onboarding-try-dashboard p {']) assert.ok(styles.includes(rule), rule);
+  assert.doesNotMatch(styles, /onboarding-prompt|onboarding-success-icon|\.onboarding-success \{/, 'the old Try styles are gone');
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-proceed-dashboard' }) });
+  assert.match(harness.app.innerHTML, /data-action="onboarding-proceed-dashboard" disabled>Opening dashboard&hellip;<\/button>/);
+});
+
+test('every hosted onboarding card holds one empty illustration slot, hidden until art arrives', async () => {
+  const panels: Array<[string, OnboardingFixture, string]> = [
+    ['github', onboardingAt('connect_github', '/github/connect'), ''],
+    ['github-connected', onboardingAt('connect_github', '/github/connect'), '?github=connected'],
+    ['try', onboardingAt('try', '/github/connect'), ''],
+    ['ready', onboardingAt('complete', '/github/connect'), ''],
+  ];
+  for (const [name, onboarding, initialSearch] of panels) {
+    const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/onboarding', initialSearch, onboarding });
+    await flushAsync();
+    const slots = harness.app.innerHTML.match(/<div class="onboarding-illustration"[^>]*><\/div>/g) ?? [];
+    assert.deepEqual(slots, [`<div class="onboarding-illustration" data-illustration="${name}" aria-hidden="true"></div>`], name);
+  }
+  assert.match(adminUiStylesheet(), /\.onboarding-illustration:empty \{ display: none; \}/);
 });
 
 test('Node onboarding sends OpenAI subscription setup through Settings and accepts the selected subscription', async () => {
@@ -13499,7 +13531,7 @@ test('Node onboarding sends OpenAI subscription setup through Settings and accep
   });
   await flushAsync();
   assert.equal(connected.onboardingTryPosts.at(-1)?.modelId, 'openai/gpt-5.6-sol');
-  assert.match(connected.app.innerHTML, /Meet Chickpea in Slack/);
+  assert.match(connected.app.innerHTML, /Say hi to Chickpea in Slack/);
 });
 
 test('subscription onboarding offers ChatGPT before API keys on Cloudflare', async () => {
@@ -13734,7 +13766,7 @@ test('completed onboarding confirms the DM and hands off to the dashboard', asyn
   assert.match(harness.app.innerHTML, /<h1 class="onboarding-title">Chickpea is ready<\/h1>/);
   assert.doesNotMatch(harness.app.innerHTML, /aria-label="Admin navigation"/);
   assert.match(harness.app.innerHTML, /data-action="onboarding-open-dashboard"[^>]*>Open dashboard<\/button>/);
-  assert.match(harness.app.innerHTML, /href="https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN"/);
+  assert.match(harness.app.innerHTML, /<a class="btn btn-soft" href="https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN" target="_blank" rel="noopener noreferrer"><span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"><\/span>Keep chatting in Slack<\/a>/);
   assert.doesNotMatch(harness.app.innerHTML, /readonly value=|Copy message/);
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-open-dashboard' }) });
   assert.match(harness.app.innerHTML, /aria-label="Admin navigation"/);
@@ -19489,7 +19521,7 @@ test('the step bar shows the same steps from the first paint to the end, whateve
 
 test('the onboarding page paints its real step first, and a provider step waits quietly for the providers', async () => {
   const trying = runAdminPageHarness({ ...HOSTED_ADMIN, ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try') });
-  assert.match(trying.renderHistory[0]!, /Meet Chickpea in Slack/);
+  assert.match(trying.renderHistory[0]!, /Say hi to Chickpea in Slack/);
   assert.doesNotMatch(trying.renderHistory.join(''), /Loading setup/);
   await flushAsync();
   assert.equal(trying.fetchCalls.filter(({ path }) => path === '/admin/api/onboarding').length, 0, 'the page already carries the journey');
@@ -19508,7 +19540,7 @@ test('the onboarding page paints its real step first, and a provider step waits 
   const unread = runAdminPageHarness({ ...hostedOnboardingProviders, initialPath: '/admin/onboarding', onboarding: onboardingAt('try'), onboardingEmbedded: false });
   assert.match(unread.renderHistory[0]!, /Loading setup&hellip;/, 'a page without the journey says it is loading it');
   await flushAsync();
-  assert.match(unread.app.innerHTML, /Meet Chickpea in Slack/);
+  assert.match(unread.app.innerHTML, /Say hi to Chickpea in Slack/);
 });
 
 test('hosted pages carry no deployment environment label; standalone keeps it on onboarding', async () => {
@@ -19548,7 +19580,7 @@ test('hosted onboarding offers Connect GitHub (optional) after the model; Skip f
     'the GitHub mark leads the button');
   assert.match(adminUiStylesheet(), /\.github-connect-mark \{/);
   assert.match(step, /data-action="onboarding-github-skip">Skip for now<\/button>/);
-  assert.doesNotMatch(step, /Meet Chickpea in Slack/);
+  assert.doesNotMatch(step, /Say hi to Chickpea in Slack/);
 
   const before = harness.fetchCalls.length;
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'onboarding-github-skip' }) });
@@ -19557,7 +19589,7 @@ test('hosted onboarding offers Connect GitHub (optional) after the model; Skip f
   assert.equal(harness.onboardingGithubPosts[0]?.expectedRevision, harness.onboardingTryPosts.length ? JSON.stringify({ ...harness.onboardingTryPosts[0], tryStartedAt: 1_800_000_000_000 }) : undefined);
   const skipCalls = harness.fetchCalls.slice(before).filter(({ method }) => method !== 'GET');
   assert.deepEqual(skipCalls, [{ path: '/admin/api/onboarding/github', method: 'POST' }], 'nothing else is written');
-  assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 5 of 5<\/p><h1 class="onboarding-title">Meet Chickpea in Slack<\/h1>/);
+  assert.match(harness.app.innerHTML, /<p class="onboarding-eyebrow">Step 5 of 5<\/p><h1 class="onboarding-title">Say hi to Chickpea in Slack<\/h1>/);
   assert.doesNotMatch(harness.app.innerHTML, /GitHub connected\./, 'a skip is not a connect');
 });
 

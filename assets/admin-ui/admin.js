@@ -55,7 +55,6 @@
   });
   var API_CONNECTION_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
   var GOOGLE_WORKSPACE_SCOPES = CONFIG.googleWorkspaceScopes;
-  var ONBOARDING_PROMPT = "Hi Chickpea. I'm on the marketing team. What's a good first teammate for us?";
   var MCP_CLIENTS_LOAD_ERROR = "Couldn’t load client settings. Reopen Settings to retry.";
   var MODELS_NOT_LOADED = { providers: [] };
   var CHANNEL_TRY_PROMPT = "@Chickpea Give me three useful ways you can help this channel, each with an example prompt I could try next.";
@@ -225,7 +224,6 @@
     onboarding: ONBOARDING_PAGE.initial,
     onboardingError: "",
     onboardingBusy: false,
-    onboardingNotice: "",
     onboardingPlatformErrorCode: "",
     onboardingProviderSelected: "",
     onboardingProviderKey: "",
@@ -2786,7 +2784,7 @@
         (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
     }
-    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1></section>';
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' + onboardingIllustrationHtml("setup") + '</section>';
   }
 
   function onboardingProviderHtml() {
@@ -2877,24 +2875,28 @@
     var slackAppId = state.onboarding && state.onboarding.slackAppId;
     if (!workspace || !slackAppId) return '<div class="empty"><p class="field-error">The Chickpea conversation is unavailable. Reconnect Slack and try again.</p></div>';
     var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
+    var slackLogo = '<span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>';
     if (complete) {
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
         '<h1 class="onboarding-title">Chickpea is ready</h1>' +
         '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
-        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Keep chatting in Slack</a></div></section>';
+        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Keep chatting in Slack</a></div>' +
+        onboardingIllustrationHtml("ready") + '</section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide"><div class="onboarding-success"><span class="onboarding-success-icon" aria-hidden="true">&#10003;</span><div>' +
-      '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Meet Chickpea in Slack</h1>' +
-      '<p class="onboarding-lede">Open a direct message with Chickpea and ask for a first teammate. Chickpea suggests a few that work on day one, and its first reply confirms that everything is working.</p></div></div>' +
-      '<div class="onboarding-prompt-box"><p class="onboarding-prompt-label">Suggested first message</p><p class="onboarding-prompt">' + esc(ONBOARDING_PROMPT) + '</p>' +
-      '<p class="onboarding-prompt-hint">Swap in your own team before you send it.</p>' +
-      '<input id="onboarding-prompt" type="text" hidden readonly value="' + esc(ONBOARDING_PROMPT) + '">' +
-      '<p class="onboarding-status" role="status">' + esc(state.onboardingNotice || 'Waiting for Chickpea to reply…') + '</p></div>' +
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
+      '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
+      '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Open Slack to start talking to Chickpea</a></div>' +
+      '<p class="onboarding-status" role="status">This page moves on when Chickpea replies</p>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
-      '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">Message Chickpea in Slack</a>' +
-      '<button type="button" class="btn btn-soft" data-action="copy-onboarding-prompt">Copy message</button>' +
-      '<button type="button" class="btn btn-ghost" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Proceed to Dashboard') + '</button></div></section>';
+      '<div class="onboarding-try-dashboard"><p><strong>Already chatting in Slack?</strong> Head to your dashboard anytime.</p>' +
+      '<button type="button" class="btn btn-soft" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Go to dashboard') + '</button></div>' +
+      onboardingIllustrationHtml("try") + '</section>';
+  }
+
+  // Empty until onboarding has its art; the stylesheet hides an empty slot.
+  function onboardingIllustrationHtml(name) {
+    return '<div class="onboarding-illustration" data-illustration="' + name + '" aria-hidden="true"></div>';
   }
 
   // Hosted onboarding offers Connect GitHub (optional) between the model and
@@ -2937,13 +2939,15 @@
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">' + esc(onboardingGithubAccountsText()) + '</span>' +
         '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">GitHub is connected</h1>' +
         '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' + error +
-        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div></section>';
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div>' +
+        onboardingIllustrationHtml("github-connected") + '</section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Let Agents work on your code</h1>' +
       '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' + error +
       '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy, githubMarkHtml()) +
-      '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div></section>';
+      '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div>' +
+      onboardingIllustrationHtml("github") + '</section>';
   }
 
   function githubMarkHtml() {
@@ -13163,7 +13167,6 @@
     }).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
-      state.onboardingNotice = "";
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
@@ -13204,7 +13207,6 @@
     }).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
-      state.onboardingNotice = "";
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
@@ -13225,7 +13227,6 @@
     postJson("/admin/api/onboarding/platform", "POST", {}).then(function (body) {
       state.onboarding = body;
       state.onboardingBusy = false;
-      state.onboardingNotice = "";
       render();
     }).catch(function (error) {
       state.onboardingBusy = false;
@@ -13246,20 +13247,6 @@
       });
       render();
     }).catch(function () {});
-  }
-
-  function copyOnboardingPrompt() {
-    var copyFailed = function () {
-      state.onboardingNotice = "Copy failed. Select the prompt and copy it manually.";
-      render();
-    };
-    if (!navigator.clipboard || !navigator.clipboard.writeText) { copyFailed(); return; }
-    try {
-      Promise.resolve(navigator.clipboard.writeText(ONBOARDING_PROMPT)).then(function () {
-        state.onboardingNotice = "Prompt copied.";
-        render();
-      }).catch(copyFailed);
-    } catch (_) { copyFailed(); }
   }
 
   function copyChannelPrompt() {
@@ -13820,7 +13807,6 @@
     if (action === "onboarding-github-skip" || action === "onboarding-github-next") { settleOnboardingGithub(); }
     if (action === "onboarding-proceed-dashboard") { proceedFromOnboardingTry(); }
     if (action === "onboarding-open-dashboard") { enterProfiles(null); }
-    if (action === "copy-onboarding-prompt") { copyOnboardingPrompt(); }
     if (action === "open-coding-agents") { openSettings("agents-clients"); }
     if (action === "mcp-clients-retry") { openSettings("agents-clients"); }
     if (action === "mcp-client-pick") {
