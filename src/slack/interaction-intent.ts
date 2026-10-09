@@ -2,7 +2,7 @@ import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { withStatelessModelAccess } from '../config/installation-model-access.ts';
-import { providerStreamsForModel, sideCallThinking } from '../config/pi-provider.ts';
+import { providerStreamsForModel, sideCallOptions } from '../config/pi-provider.ts';
 import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { getSettingsStore, type PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -489,7 +489,7 @@ async function promptSlackInteractionIntentAgent(
       model,
       interactionClassifierContext(context),
       // No temperature: most catalog models refuse one.
-      { maxTokens: 1024, ...sideCallThinking(model), maxRetries: 0 },
+      { ...sideCallOptions(model, 512), maxRetries: 0 },
     ).result(),
   );
   if (response.stopReason === 'error') {
