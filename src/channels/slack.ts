@@ -4055,6 +4055,9 @@ async function handleMemberJoinedChannel(
     return;
   }
 
+  // A join with no inviter is Chickpea joining itself to add an Agent, and
+  // that Agent greets the Channel. The onboarding is for a person's invite.
+  if (!event.inviter || event.inviter === resolvedBotUserId) return;
   // Public courtesy messages retain the existing enabled-grant and setting gates.
   if (!publicWelcomeEnabled) return;
   try {
