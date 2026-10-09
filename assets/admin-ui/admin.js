@@ -2598,11 +2598,18 @@
       }).join("") + '</div>';
   }
 
+  function billingPeriodEndText(billing) {
+    var pending = billing.pendingChange;
+    if (pending && pending.kind === "ends") return ' Ends ' + esc(pending.on) + '.';
+    if (pending && pending.kind === "plan") return ' Changes to the ' + esc(pending.planName) + ' on ' + esc(pending.on) + '.';
+    return billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '';
+  }
+
   function billingPlanSectionHtml(billing) {
     var plan = billing.plan;
     var summary = plan
       ? '<p><strong>' + esc(plan.name) + '</strong></p><p class="hint">' + esc(plan.price) + ' a month' + (plan.included ? ' includes ' + esc(plan.included) + ' of usage.' : '.') +
-        (billing.period ? ' Renews ' + esc(billing.period.end) + '.' : '') + '</p>'
+        billingPeriodEndText(billing) + '</p>'
       : '<p class="hint">No plan</p>';
     return '<section class="usage-section"><div class="usage-section-head"><div><h2 class="section-title">Plan</h2>' + summary + '</div></div>' +
       '<div class="billing-actions">' + billingButtonHtml("billing-change-plan", plan ? "Change plan" : "Choose a plan", "", "plan", "btn-soft") +

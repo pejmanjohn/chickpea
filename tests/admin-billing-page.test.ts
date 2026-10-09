@@ -17,7 +17,7 @@ import {
 } from '../src/config/platform-billing.ts';
 import type { ProviderKeyId } from '../src/config/provider-keys.ts';
 import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import { NO_PLAN, OWN_KEY_NO_PLAN, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
+import { NO_PLAN, OWN_KEY_NO_PLAN, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 interface FakeResponse {
   ok: boolean;
@@ -270,6 +270,11 @@ function lede(html: string): string {
   return decoded(/<h1 class="page-title">Plan<\/h1><p class="hint">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
 }
 
+/** The sentence under the plan's name in the Plan section. */
+function planTerms(html: string): string {
+  return decoded(/<h2 class="section-title">Plan<\/h2><p><strong>[^<]*<\/strong><\/p><p class="hint">([^<]*)<\/p>/.exec(html)?.[1] ?? '');
+}
+
 const fundingWrites = (requests: Array<{ path: string }>) => requests.filter((request) => request.path === '/admin/api/billing/funding');
 const billingWrites = (requests: Array<{ path: string; method: string; body: unknown }>) =>
   requests.filter((request) => request.path.startsWith('/admin/api/billing/')).map((request) => [request.method, request.path, request.body]);
@@ -345,6 +350,30 @@ test('a Member on a plan with no recorded period sees the plan by name, not no p
   assert.equal(lede(html), PLAN_LEDE);
   assert.match(html, /<span class="usage-card-label">Plan<\/span><span class="usage-card-value">Team<\/span>/);
   assertHides(html, 'No plan');
+});
+
+test('a plan cancelled in Stripe\'s portal says when it ends, and a downgrade names the plan it changes to, in place of when it renews', async () => {
+  const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_ENDING })).html();
+  assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 7.');
+  const downgrading = (await harness({ path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING })).html();
+  assert.equal(planTerms(downgrading), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 7.');
+});
+
+test('a plan that renews unchanged still says when it renews, whether the host leaves out the pending change or sends none', async () => {
+  for (const summary of [TEAM_PLAN, { ...TEAM_PLAN, pendingChange: null }]) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary })).html();
+    assert.equal(planTerms(html), '$200 a month includes $240 of usage. Renews Nov 7.');
+  }
+});
+
+test('a plan with no recorded period still says when it ends or which plan it changes to', async () => {
+  for (const [pendingChange, terms] of [
+    [TEAM_ENDING.pendingChange!, 'Ends Nov 7.'],
+    [TEAM_DOWNGRADING.pendingChange!, 'Changes to the Chickpea $50 plan on Nov 7.'],
+  ] as const) {
+    const html = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...PLAN_NO_PERIOD, pendingChange } })).html();
+    assert.equal(planTerms(html), `$200 a month includes $240 of usage. ${terms}`);
+  }
 });
 
 test('each Stripe button asks the host for a Stripe page and opens the URL it returns', async () => {
@@ -575,6 +604,14 @@ test('every date reads as its UTC day, whatever timezone the server and browser 
     summary: { ...FROZEN, extraUsage: { ...FROZEN.extraUsage!, expiresAt: new Date('2027-10-07T23:30:00Z') } },
   })).html();
   assertShows(frozen, 'available when you renew, until Oct 7, 2027');
+  for (const at of [new Date('2026-11-07T00:30:00Z'), new Date('2026-11-07T23:30:00Z')]) {
+    const ending = (await harness({ path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { kind: 'ends', at } } })).html();
+    assert.equal(planTerms(ending), '$200 a month includes $240 of usage. Ends Nov 7.');
+    const changing = (await harness({
+      path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, pendingChange: { ...TEAM_DOWNGRADING.pendingChange!, at } },
+    })).html();
+    assert.equal(planTerms(changing), '$200 a month includes $240 of usage. Changes to the Chickpea $50 plan on Nov 7.');
+  }
 });
 
 test('a plan the host cannot read says so, with a retry', async () => {
@@ -762,6 +799,8 @@ test('no Plan page or onboarding state uses words the customer never sees', asyn
     ['trial', { path: '/admin/plan', billingOffered: true, summary: { ...TEAM_PLAN, trial: TRIAL.trial } }, []],
     ['trial without a plan', { path: '/admin/plan', billingOffered: true, summary: TRIAL }, []],
     ['plan with no period', { path: '/admin/plan', billingOffered: true, summary: PLAN_NO_PERIOD }, [{ 'data-action': 'billing-change-plan' }]],
+    ['plan ending', { path: '/admin/plan', billingOffered: true, summary: TEAM_ENDING }, []],
+    ['plan changing', { path: '/admin/plan', billingOffered: true, summary: TEAM_DOWNGRADING }, []],
     ['member, plan with no period', { path: '/admin/plan', billingOffered: true, owner: false, summary: PLAN_NO_PERIOD }, []],
     ['own key without a plan', { path: '/admin/plan', billingOffered: true, summary: OWN_KEY_NO_PLAN }, [{ 'data-action': 'billing-change-plan' }, { 'data-action': 'billing-use-platform' }]],
     ['member, own key without a plan', { path: '/admin/plan', billingOffered: true, owner: false, summary: OWN_KEY_NO_PLAN }, []],
