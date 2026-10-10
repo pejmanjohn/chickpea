@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
+import { isOwnerSession } from '../auth/permissions.ts';
 import { requestPrincipal } from '../auth/service.ts';
 import { requireInstallationScope } from '../config/installation-scope.ts';
 import {
@@ -29,6 +30,8 @@ interface BillingAdminApiOptions {
   /** Display names keyed by Chickpea membership ID. */
   personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
   ownKeyFacts: (c: Context) => Promise<OwnKeyFacts>;
+  /** After an Owner switches to Chickpea's models, sets what onboarding sets with them. */
+  choseChickpeaModels: (c: Context) => Promise<void>;
 }
 
 /** What paying with the installation's own key would rely on. */
@@ -127,6 +130,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
       }
     }
     await port.chooseFunding(installationId, parsed.output.funding);
+    if (parsed.output.funding === 'platform') await options.choseChickpeaModels(c);
     return c.json(await view(c, port, installationId));
   }));
 
@@ -249,10 +253,9 @@ function keyProvider(model: string | undefined): ProviderKeyId | undefined {
   return provider && isProviderKeyId(provider) ? provider : undefined;
 }
 
-/** Whether the request is an Owner's own session: only Owners buy. */
+/** Only an Owner's own session buys. */
 function isOwner(c: Context): boolean {
-  const principal = requestPrincipal(c.req.raw);
-  return Boolean(principal && !principal.machine && principal.role === 'owner');
+  return isOwnerSession(requestPrincipal(c.req.raw));
 }
 
 async function withBilling(

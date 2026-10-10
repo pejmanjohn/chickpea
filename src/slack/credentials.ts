@@ -305,10 +305,11 @@ function slackApiBase(): string {
  * workerd fetch quirks solved in `createSlackWebClient` require, so this runs
  * unmodified on the Cloudflare target.
  */
-export async function slackAuthTest(botToken: string): Promise<SlackAuthTestResult> {
+export async function slackAuthTest(botToken: string, signal?: AbortSignal): Promise<SlackAuthTestResult> {
   const response = await fetch(`${slackApiBase()}/auth.test`, {
     method: 'POST',
     headers: { authorization: `Bearer ${botToken}` },
+    ...(signal ? { signal } : {}),
   });
   const body = (await response.json()) as Record<string, unknown>;
   return parseSlackAuthTest(
