@@ -489,7 +489,7 @@ async function promptSlackInteractionIntentAgent(
       model,
       interactionClassifierContext(context),
       // No temperature: most catalog models refuse one.
-      { ...sideCallOptions(model, 512), maxRetries: 0 },
+      { ...sideCallOptions(model, 512), maxRetries: 0, onPayload: cacheInstructionsOnly },
     ).result(),
   );
   if (response.stopReason === 'error') {
@@ -533,6 +533,30 @@ function interactionClassifierContext(context: SlackInteractionIntentContext): C
     systemPrompt: SLACK_INTERACTION_CLASSIFIER_INSTRUCTIONS,
     messages: [{ role: 'user', content: message, timestamp: Date.now() }],
   };
+}
+
+/**
+ * Keeps the cache marker on the classifier instructions, which every call
+ * shares and a call minutes later reads, and drops the one on the classified
+ * message, which no later call repeats: its cache write is never read. The
+ * instructions are the `system` field, or a system or developer message on
+ * an OpenAI-compatible route.
+ */
+function cacheInstructionsOnly(payload: unknown): unknown {
+  if (!isRecord(payload) || !Array.isArray(payload.messages)) return payload;
+  return {
+    ...payload,
+    messages: payload.messages.map((message: unknown) =>
+      !isRecord(message) || message.role === 'system' || message.role === 'developer' || !Array.isArray(message.content)
+        ? message
+        : { ...message, content: message.content.map(withoutCacheMarker) }),
+  };
+}
+
+function withoutCacheMarker(block: unknown): unknown {
+  if (!isRecord(block) || !('cache_control' in block)) return block;
+  const { cache_control: _marker, ...rest } = block;
+  return rest;
 }
 
 function assistantText(message: AssistantMessage): string {

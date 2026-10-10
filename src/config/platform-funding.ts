@@ -272,10 +272,15 @@ function logAtMostEachMinute(event: string): void {
   console.warn(JSON.stringify({ component: 'platform_funding', event }));
 }
 
-/** Whether an error is a credits refusal, however it travelled (a Flue failure carries only its text). */
+/**
+ * Whether an error is Chickpea's credits refusal, however it travelled: a Flue
+ * failure carries only its text, so the parenthesized code in a message counts.
+ * Without a port nothing refuses for credits, so a provider's own error that
+ * uses the word is never taken for one.
+ */
 export function isCreditsExhausted(error: unknown): boolean {
-  return errorChainIncludes(error, (link) => link instanceof CreditsExhaustedError ||
-    [link.message, link.type].some((text) => typeof text === 'string' && text.includes(CREDITS_EXHAUSTED_CODE)));
+  return port !== undefined && errorChainIncludes(error, (link) => link instanceof CreditsExhaustedError ||
+    (typeof link.message === 'string' && link.message.includes(`(${CREDITS_EXHAUSTED_CODE})`)));
 }
 
 export function resetPlatformFundingForTests(options: { now?: () => number } = {}): void {

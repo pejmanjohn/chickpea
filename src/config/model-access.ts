@@ -510,7 +510,7 @@ type SentRequest = Pick<ModelRequestEnd, 'requestId' | 'route' | 'model' | 'fund
 interface ListPriceMode {
   pin(payload: Record<string, unknown>): Record<string, unknown>;
   /** Sets the cache breakpoints that let a Slack turn read a prefix other workspaces wrote. */
-  sharePrefix?(payload: Record<string, unknown>): Promise<SharedPrefixDecision>;
+  sharePrefix?(payload: Record<string, unknown>, requestId: string): Promise<SharedPrefixDecision>;
   readonly listPricedServiceTiers: readonly string[];
   readonly listPricedInferenceGeos: readonly string[];
 }
@@ -520,12 +520,12 @@ const LIST_PRICE_MODES = {
     pin: ({ inference_geo: _geo, speed: _speed, ...payload }) => ({ ...payload, service_tier: 'standard_only' }),
     // Loaded on first use: every module the shared instructions come from
     // imports this one. Without it the request goes out as built.
-    sharePrefix: async (payload) => {
+    sharePrefix: async (payload, requestId) => {
       const shared = await import('../agents/shared-prefix.ts').catch((error: unknown) => {
         console.warn('[chickpea] shared prompt prefix unavailable', { error: error instanceof Error ? error.name : 'unknown' });
         return undefined;
       });
-      return shared ? shared.sharePromptPrefix(payload) : { payload, sharedPrefix: null };
+      return shared ? shared.sharePromptPrefix(payload, requestId) : { payload, sharedPrefix: null };
     },
     listPricedServiceTiers: ['standard'],
     // Older models serve without a region and report `not_available`.
@@ -578,7 +578,7 @@ export function modelAccessRequest<TModel extends Model<Api>, TOptions extends S
   const listPriced = platformGrant && listPricedProvider(platformGrant.providerId);
   const reporting = providerId === 'openrouter' ? 'openrouter' : listPriced;
   const reader = reporting && providerReportReader(reporting, options?.fetch);
-  const priced = listPriced && listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced]);
+  const priced = listPriced && listPricedPayload(options?.onPayload, LIST_PRICE_MODES[listPriced], request.requestId);
   const send = (start: (model: TModel) => AssistantMessageEventStream) =>
     sendRequest(cell, sent, request, platformGrant, reader, priced, start);
   if (!bound) return { model, options, redact: (stream) => stream, send };
@@ -714,7 +714,11 @@ interface ListPricedPayload {
   sharedPrefix(): SharedPrefixId | null | undefined;
 }
 
-function listPricedPayload(callerHook: StreamOptions['onPayload'], mode: ListPriceMode): ListPricedPayload {
+function listPricedPayload(
+  callerHook: StreamOptions['onPayload'],
+  mode: ListPriceMode,
+  requestId: string,
+): ListPricedPayload {
   let sharedPrefix: SharedPrefixId | null | undefined;
   return {
     onPayload: async (payload, model) => {
@@ -722,7 +726,7 @@ function listPricedPayload(callerHook: StreamOptions['onPayload'], mode: ListPri
       const composed = returned === undefined ? payload : returned;
       if (!isRecord(composed)) throw new Error('A platform-funded request payload is not an object.');
       const pinned = mode.pin(composed);
-      const decision = mode.sharePrefix ? await mode.sharePrefix(pinned) : { payload: pinned, sharedPrefix: null };
+      const decision = mode.sharePrefix ? await mode.sharePrefix(pinned, requestId) : { payload: pinned, sharedPrefix: null };
       sharedPrefix = decision.sharedPrefix;
       return decision.payload;
     },

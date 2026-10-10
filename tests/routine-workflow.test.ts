@@ -31,6 +31,7 @@ import {
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   configurePlatformFunding,
+  CreditsExhaustedError,
   platformCredentialRefId,
   resetPlatformFundingForTests,
   type CreditBackReason,
@@ -450,8 +451,11 @@ test('routine settlement persists measured cached tokens in the occurrence row',
   } finally { store.close(); }
 });
 
-test('a scheduled run refused for credits is recorded as failed with the credits reason, once', async () => {
+test('a scheduled run refused for credits is recorded as failed with the credits reason, once', async (t) => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
+  resetPlatformFundingForTests();
+  configurePlatformFunding({ ...NO_RUN_FEES, funding: async () => 'platform', admit: async () => 'admitted', charge: async () => {} });
+  t.after(() => resetPlatformFundingForTests());
   try {
     const fixture = await admittedFixture(store, 'credits_exhausted');
     const events: string[] = [];
@@ -654,6 +658,12 @@ const PROVIDER_FAILED = () => new AgentRunError({
   submissionId: 'submission_test',
   cause: { type: 'operation_failed', message: 'dispatch(submission_test) failed: the model provider returned an error.' },
 });
+/** A provider's own billing error that happens to use the same word as Chickpea's refusal. */
+const PROVIDER_CREDITS_TEXT = () => new AgentRunError({
+  outcome: 'failed',
+  submissionId: 'submission_test',
+  cause: { type: 'credits_exhausted', message: 'dispatch(submission_test) failed: 402 {"error":{"code":"credits_exhausted"}}' },
+});
 
 /**
  * One hosted scheduled run against a host port that records its fee posts
@@ -840,6 +850,24 @@ test('a scheduled run that ran out of usage, before or after a tool call, is not
   for (const { creditBacks, messages } of [before, after]) {
     assert.deepEqual(creditBacks, []);
     assert.equal(JSON.stringify(messages).includes(CREDITED_BACK), false);
+  }
+});
+
+test('a scheduled run gets the out-of-usage notice only for a hosted installation\'s credits refusal', async (t) => {
+  const ordinary = ['failed', 'tool_failed', 'The routine could not complete safely.'];
+  const cases = [
+    ['standalone_provider_text', { port: false, env: {} }, PROVIDER_CREDITS_TEXT, ordinary],
+    ['standalone_refusal_text', { port: false, env: {} }, OUT_OF_USAGE, ordinary],
+    ['hosted_provider_text', {}, PROVIDER_CREDITS_TEXT, ordinary],
+    ['hosted_flue_refusal', {}, OUT_OF_USAGE, ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]],
+    ['hosted_refusal', {}, () => new CreditsExhaustedError(), ['failed', 'spend_limited', CREDITS_EXHAUSTED_TEXT]],
+  ] as const;
+  for (const [suffix, setup, error, expected] of cases) {
+    const { run, messages } = await scheduledRunSettlement(t, suffix, {
+      ...setup, handle: () => fakeHandle({ readError: error() }),
+    });
+    assert.deepEqual([run?.status, run?.failureClass, run?.publicError], expected, suffix);
+    assert.equal(JSON.stringify(messages).includes(CREDITS_EXHAUSTED_TEXT), expected[1] === 'spend_limited', suffix);
   }
 });
 
