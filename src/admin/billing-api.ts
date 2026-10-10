@@ -30,6 +30,8 @@ interface BillingAdminApiOptions {
   /** Display names keyed by Chickpea membership ID. */
   personNames: (c: Context) => Promise<ReadonlyMap<string, string>>;
   ownKeyFacts: (c: Context) => Promise<OwnKeyFacts>;
+  /** After an Owner switches to Chickpea's models, sets what onboarding sets with them. */
+  choseChickpeaModels: (c: Context) => Promise<void>;
 }
 
 /** What paying with the installation's own key would rely on. */
@@ -128,6 +130,7 @@ export function createBillingAdminApi(options: BillingAdminApiOptions): Hono {
       }
     }
     await port.chooseFunding(installationId, parsed.output.funding);
+    if (parsed.output.funding === 'platform') await options.choseChickpeaModels(c);
     return c.json(await view(c, port, installationId));
   }));
 

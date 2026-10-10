@@ -1734,6 +1734,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const PLATFORM_DEFAULT_IMAGE_MODEL_ID: ImageModelId = OPENAI_API_IMAGE_DEFAULT_MODEL_ID;
   const initializeAuthenticatedWorkspaceImageDefault = async (
     c: Context,
     modelId: ImageModelId,
@@ -1750,6 +1751,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workspaceId: organization.slackTeamId,
         modelId,
         membershipId: principal.membershipId,
+      };
+    });
+  };
+  // Chickpea's models come with their default image model, when the workspace
+  // has chosen none and Chickpea's models serve it.
+  const initializeChickpeaImageDefault = async (
+    c: Context,
+    workspaceId: string,
+    membershipId: string | undefined,
+  ): Promise<void> => {
+    await initializeWorkspaceImageDefaultBestEffort(async () => {
+      const profile = findImageModel(PLATFORM_DEFAULT_IMAGE_MODEL_ID);
+      if (!profile || !await imageModelProfileReady(profile, c.env as PlatformEnv | undefined, settings(c))) {
+        return undefined;
+      }
+      return {
+        config: store(c),
+        workspaceId,
+        modelId: PLATFORM_DEFAULT_IMAGE_MODEL_ID,
+        ...(membershipId ? { membershipId } : {}),
       };
     });
   };
@@ -6387,6 +6408,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         agents: agents.filter((agent) => agent.lifecycle === 'active' && agent.enabled),
       };
     },
+    choseChickpeaModels: async (c) => {
+      const installation = await modelDefaultInstallation(store(c));
+      if (installation) {
+        await initializeChickpeaImageDefault(c, installation.workspaceId, principalByContext.get(c)?.membershipId);
+      }
+    },
   }));
   app.route('/admin/api', createWorkAdminApi({
     store: work,
@@ -10413,7 +10440,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const PLATFORM_DEFAULT_MODEL = { providerId: 'anthropic', modelId: 'anthropic/claude-opus-5-5' } as const;
-  const PLATFORM_DEFAULT_IMAGE_MODEL_ID: ImageModelId = OPENAI_API_IMAGE_DEFAULT_MODEL_ID;
 
   app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
@@ -10440,21 +10466,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           modelId: PLATFORM_DEFAULT_MODEL.modelId,
           expectedDefaultRevision: (await store(c).getWorkspaceModelDefault(slack.teamId))?.revision ?? 0,
         });
-        if (started.ok) {
-          const workspaceId = slack.teamId;
-          await initializeWorkspaceImageDefaultBestEffort(async () => {
-            const profile = findImageModel(PLATFORM_DEFAULT_IMAGE_MODEL_ID);
-            if (!profile || !await imageModelProfileReady(profile, c.env as PlatformEnv | undefined, settings(c))) {
-              return undefined;
-            }
-            return {
-              config: store(c),
-              workspaceId,
-              modelId: PLATFORM_DEFAULT_IMAGE_MODEL_ID,
-              membershipId: principal.membershipId,
-            };
-          });
-        }
+        if (started.ok) await initializeChickpeaImageDefault(c, slack.teamId, principal.membershipId);
         return started;
       } catch (error) {
         const raced = await readOnboardingJourney(settings(c));

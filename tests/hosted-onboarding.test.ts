@@ -694,15 +694,18 @@ test('a Member, an Admin, a finished journey, or a host with no billing port cha
   assert.equal((await json(startOnPlatform(admin))).stage, 'complete');
   assert.equal((await signup.journey())!.revision, complete.revision);
   assert.deepEqual(host.chosen, [], 'nothing is asked of the host');
+  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'nor is an image model chosen');
   const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'platform' }) });
   assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
   assert.deepEqual(host.chosen, ['platform']);
+  const image = await signup.config.getWorkspaceModelRole(TEAM, 'image');
+  assert.equal(image?.modelId, 'openai/gpt-image-2.5-flare', 'the switch chooses the image model onboarding would have');
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
   await beginOnboardingJourney(signup.settings);
   assert.equal((await startOnPlatform(admin)).status, 404, 'no port, nothing to choose');
-  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'no port, no image model');
+  assert.deepEqual(await signup.config.getWorkspaceModelRole(TEAM, 'image'), image, 'no port, no change to the image model');
 });
 
 test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {

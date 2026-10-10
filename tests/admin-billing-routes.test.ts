@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
+import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-default.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { rotateInstallationModelCredential } from '../src/config/model-credential-refs.ts';
 import {
@@ -12,12 +13,14 @@ import {
   type CheckoutRequest,
   type PlatformBillingPort,
 } from '../src/config/platform-billing.ts';
+import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
+import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { NO_PLAN, OWN_KEY_NO_PLAN, PERIOD, PLAN_NO_PERIOD, STARTER_PLAN, TEAM_DOWNGRADING, TEAM_ENDING, TEAM_PLAN, usd } from './helpers/billing-summaries.ts';
 
 const TOKEN = 'billing-admin-token';
@@ -56,9 +59,9 @@ const people = {
   recordAuthAudit: async () => undefined,
 } as unknown as IdentityStore;
 
-function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort; anthropicKeySaved?: boolean }) {
+function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort; anthropicKeySaved?: boolean; config?: SqliteConfigStore }) {
   configurePlatformBilling(options.port);
-  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const config = options.config ?? new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   const usage = new SqliteUsageStore(':memory:');
   t.after(() => { configurePlatformBilling(undefined); config.close(); settings.close(); usage.close(); });
@@ -214,6 +217,51 @@ test('an Owner switches an own-key installation to Chickpea\'s models, and switc
     assert.deepEqual(view.meter, TEAM_STATUS.meter);
   }
   assert.deepEqual(calls, [['chooseFunding', INSTALLATION, 'platform'], ['chooseFunding', INSTALLATION, 'platform']]);
+});
+
+/** A host whose funding follows the Plan page's switch, for a workspace with an image role as given. */
+async function switchingHost(t: TestContext, funding: BillingSummary['funding'], image?: { modelId?: string }) {
+  let summary: BillingSummary = { ...TEAM_PLAN, funding };
+  const { port } = fakePort(summary, {
+    summary: async () => summary,
+    chooseFunding: async (_installationId, next) => { summary = { ...summary, funding: next }; },
+  });
+  configurePlatformFunding({
+    funding: async () => summary.funding === 'platform' ? 'platform' : 'customer',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+  });
+  t.after(() => resetPlatformFundingForTests());
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  await config.ensureWorkspaceInstallation({ workspaceId: 'T_BILLING', transportMode: 'direct', teamId: 'T_BILLING' });
+  const chosen = image ? await config.putWorkspaceModelRole({ workspaceId: 'T_BILLING', role: 'image', ...image }, 0) : undefined;
+  return { request: admin(t, { port, config, anthropicKeySaved: true }), config, chosen };
+}
+
+test('switching to Chickpea\'s models from the Plan page chooses the image model onboarding chooses, when none is chosen', async (t) => {
+  const { request, config } = await switchingHost(t, 'own_key');
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 200);
+  const image = await config.getWorkspaceModelRole('T_BILLING', 'image');
+  assert.equal(image?.modelId, OPENAI_API_IMAGE_DEFAULT_MODEL_ID);
+  assert.equal(image?.lastChangedByMembershipId, 'membership_owner');
+});
+
+for (const [kept, image] of [
+  ['another image model', { modelId: 'openai/gpt-image-2.5-sunburst' }],
+  ['an image role set to Not set', {}],
+] as const) {
+  test(`switching to Chickpea's models from the Plan page keeps ${kept}`, async (t) => {
+    const { request, config, chosen } = await switchingHost(t, 'own_key', image);
+    assert.equal((await request('/admin/api/billing/funding', post({ funding: 'platform' }))).status, 200);
+    assert.deepEqual(await config.getWorkspaceModelRole('T_BILLING', 'image'), chosen);
+  });
+}
+
+test('switching to your own key from the Plan page chooses no image model', async (t) => {
+  const { request, config } = await switchingHost(t, 'platform');
+  assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 200);
+  assert.equal(await config.getWorkspaceModelRole('T_BILLING', 'image'), undefined);
 });
 
 test('switching to your own key below the lowest plan for it, or with no plan, is refused before the port is asked', async (t) => {
