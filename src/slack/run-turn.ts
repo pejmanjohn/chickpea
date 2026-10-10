@@ -36,6 +36,7 @@ import {
   type AppStores,
 } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
+import type { ConfigStore } from '../config/store.ts';
 import {
   abandonTurnSurfaces,
   deliverHostApprovalSurfaces,
@@ -133,6 +134,7 @@ import type {
 } from './turn-job-types.ts';
 import { slackContextSinceWatermark, threadContinuityNote } from './thread-continuity.ts';
 import { hydrateTurnSlackContext } from './turn-context-reads.ts';
+import { listAgentAppBots } from './agent-app-bots.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from './read-budget.ts';
 import { resolveSlackContextNames } from './context-names.ts';
 import type { FlueDispatchReceiptV1 } from './turn-job-types.ts';
@@ -1405,7 +1407,7 @@ async function runTurnAttempt(
       // pending and the alarm re-armed forever behind a live "Thinking…"
       // status. Mirror the post-run lease fence: one sanitized final, the
       // status cleared, and a terminal delivery outcome.
-      logMemoryLeaseFailure('before_run', assignment.agentId);
+      logMemoryLeaseFailure('before_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
@@ -1647,8 +1649,9 @@ async function runTurnAttempt(
     const frozenHandoff = continuation
       ? []
       : runtimePlanDecision?.runtimePlan.handoffContext ?? assignment.handoffContext ?? [];
+    const turnConfig = options.appStores?.config ?? getConfigStore(platformEnv);
     const threadRecord = assignment.runtimeContract === 'chickpea-v1' && frozenHandoff.length === 0
-      ? options.appStores?.config ?? getConfigStore(platformEnv)
+      ? turnConfig
       : undefined;
     const hydratedContext = frozenHandoff.length > 0
       ? currentMessageOnlyContext(turn)
@@ -1656,7 +1659,7 @@ async function runTurnAttempt(
           client,
           turn,
           ...(installationContext ? { botUserId: installationContext.botUserId } : {}),
-          ...(teammateBotUserIds(assignment).length ? { siblingBotUserIds: teammateBotUserIds(assignment) } : {}),
+          siblingBotUserIds: await siblingBotUserIds(assignment, installationContext?.botUserId, turnConfig, turn.workspaceId),
           sharedAppReads,
           state: options.appStores?.slackState ?? getSlackStateStore(platformEnv),
           ...(threadRecord ? { record: threadRecord } : {}),
@@ -2167,7 +2170,7 @@ async function runTurnAttempt(
     await preparedMemory?.confirmInjection();
     const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
-      logMemoryLeaseFailure('after_run', assignment.agentId);
+      logMemoryLeaseFailure('after_run', assignment.agentId, preparedMemory.quarantined === true);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
@@ -2873,15 +2876,31 @@ function resolveMemoryDeliveryText(
 /**
  * The operator's line for a turn whose memory lease ends it in the generic
  * failure notice; the notice itself says nothing more (see
- * docs/runbooks/runtime-observability.md).
+ * docs/runbooks/runtime-observability.md). A quarantined turn's lease always
+ * fails, so it says the memory was quarantined instead.
  */
-function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: string): void {
-  console.warn({ event: 'chickpea.turn.agent_failure', reason: 'memory_delivery_lease_rejected', stage, agentId });
+function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: string, quarantined: boolean): void {
+  const reason = quarantined ? 'memory_quarantined' : 'memory_delivery_lease_rejected';
+  console.warn({ event: 'chickpea.turn.agent_failure', reason, stage, agentId });
 }
 
-/** The bot users of the teammates with their own Slack apps: their replies in this thread are Agents' replies. */
-function teammateBotUserIds(assignment: Pick<ResolvedAssignment, 'teammates'>): string[] {
-  return (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
+/**
+ * The other bots whose posts in this turn's context are Agents' replies:
+ * teammates' own apps and, with the Agent-app port, every bot this
+ * installation answers as other than the one reading.
+ */
+async function siblingBotUserIds(
+  assignment: Pick<ResolvedAssignment, 'teammates'>,
+  readerBotUserId: string | undefined,
+  config: Pick<ConfigStore, 'listAgents' | 'getWorkspaceInstallation'>,
+  workspaceId: string,
+): Promise<string[]> {
+  const teammates = (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
+  const appBots = await listAgentAppBots(config);
+  const installationBot = appBots.length ? (await config.getWorkspaceInstallation(workspaceId))?.botUserId : undefined;
+  const bots = new Set([...teammates, ...(installationBot ? [installationBot] : []), ...appBots.map((bot) => bot.botUserId)]);
+  if (readerBotUserId) bots.delete(readerBotUserId);
+  return [...bots];
 }
 
 /**

@@ -42,10 +42,17 @@ The Agent then answers its direct messages, mentions of its bot, and clicks on
 its own messages as that bot. Its replies post with the app's bot token under
 the app's name and icon, with no `username` or `icon_url`: the app does not
 ask for `chat:write.customize`. Files it uploads belong to its bot. While the
-app is live its bot counts as the installation's own: the memory lease accepts
-it as the Agent's delivering bot, and its posts echoed back by Slack are not
-recorded again as another app's. When the app is broken, the Agent's turn ends
-unavailable; it never falls back to Chickpea's bot. Other Agents ask it by its
+app is live, the memory lease accepts its bot as the Agent's delivering bot.
+While Chickpea's record names the app's bot, uninstalling included, that bot
+counts as the installation's own: its posts echoed back by Slack are not
+recorded again as another app's, a thread handed over from the Agent without
+a thread record carries them as that Agent's, and every Agent's Slack context
+reads them as an Agent's, not an app's. When the app is broken, the Agent's
+turn ends unavailable; it never posts as Chickpea's bot. Its Slack reading
+tools read as its bot too, so it reads the Channels its bot is in. A Channel
+its bot is not in is refused with a note that its own app is missing there,
+even where Chickpea's bot is. While the app is not live, its reads use
+Chickpea's bot. Other Agents ask it by its
 bot user (`<@U…>`) instead of a user group. A person's Channel message that
 mentions its bot beside other Agents is answered by each, once, in the order
 named, as long as each Agent's own bot is in the Channel (see
