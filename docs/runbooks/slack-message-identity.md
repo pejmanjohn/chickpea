@@ -81,6 +81,11 @@ that Channel.
   agents, and `chickpea.agent_app.bot_left_out` logs Slack's reason. Apps
   created before `channels:join` was requested are refused the join
   (`missing_scope`) and reported the same way.
+- In a public Channel, the bot that was brought in posts the Agent's welcome
+  after it joins, whichever way the Agent was added. The welcome posts once,
+  when the grant becomes active: adding the Agent again, a retry, or the bot's
+  own `member_joined_channel` posts nothing more. A bot left out of the
+  Channel posts no welcome.
 - Removing the bot from a Channel leaves the Agent's grant there.
 - Slack's own Add never brings Chickpea's bot into the Channel. The welcome
   says thread replies need no mention only when Chickpea's bot is in that

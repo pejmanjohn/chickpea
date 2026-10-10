@@ -13,6 +13,9 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
+import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
+import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
+import type { ManagementActorContext } from '../src/management/types.ts';
 import {
   type AgentSlackAppsHost,
   agentSlackAppIngress,
@@ -90,7 +93,7 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
 
 /**
  * `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read.
- * `notMemberOf` names, per bot token, the Channels that bot is not in; every bot is in every other Channel.
+ * `notMemberOf` names, per bot token, the Channels that bot is not in until it joins one; every bot is in every other Channel.
  * `privateChannels` are private; every other Channel is public.
  * `refuse` answers a call, keyed `<method> <token>`, with that Slack error.
  */
@@ -164,6 +167,7 @@ async function withHarness(
   await writeAppSecrets(secrets(), AGENT_APP, support.id, { clientSecret: 'client-secret', signingSecret: AGENT_SECRET, botToken: AGENT_BOT }, null);
 
   const calls: SlackCall[] = [];
+  const outside = new Map(Object.entries(options.notMemberOf ?? {}).map(([token, channels]) => [token, new Set(channels)]));
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
@@ -177,6 +181,7 @@ async function withHarness(
     const channel = body.get('channel') ?? '';
     const refusal = options.refuse?.[`${method} ${token}`];
     if (refusal) return Response.json({ ok: false, error: refusal });
+    if (method === 'conversations.join') outside.get(token ?? '')?.delete(channel);
     const answer = method === 'auth.test'
       ? { ok: true, team_id: TEAM, user_id: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, team: 'Tenant' }
       : method === 'users.info'
@@ -185,7 +190,7 @@ async function withHarness(
           ? { ok: true, channel: channel.startsWith('C')
             ? {
               id: channel, name: 'team', is_channel: true, is_private: options.privateChannels?.includes(channel) ?? false,
-              is_member: !options.notMemberOf?.[token ?? '']?.includes(channel), is_archived: false,
+              is_member: !outside.get(token ?? '')?.has(channel), is_archived: false,
             }
             : { id: channel, is_im: true, user: 'U1' } }
           : method === 'conversations.join'
@@ -194,7 +199,7 @@ async function withHarness(
             ? {
               ok: true,
               members: ['U1', 'U2', ...([[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER]] as const)
-                .flatMap(([botToken, botUser]) => options.notMemberOf?.[botToken]?.includes(channel) ? [] : [botUser])],
+                .flatMap(([botToken, botUser]) => outside.get(botToken)?.has(channel) ? [] : [botUser])],
               response_metadata: { next_cursor: '' },
             }
             : method === 'conversations.open'
@@ -605,6 +610,7 @@ test("a tenant's end that cannot tell the Owner about a left app still uninstall
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
 const SUPPORT_WELCOME = 'Hi, I’m *Support*.\n\nMention <@UAGENTBOT> to start a thread with me. I only join conversations that mention me';
+const SUPPORT_WELCOME_IN_THREADS = `${SUPPORT_WELCOME}, and once I’m in a thread you can keep going there without the mention.`;
 
 function slackPosts(h: Harness, method: 'chat.postMessage' | 'chat.postEphemeral'): URLSearchParams[] {
   return h.calls.filter((call) => call.method === method).map((call) => call.body);
@@ -620,7 +626,7 @@ test("an Owner's Slack Add of the Agent's bot adds the Agent to that Channel, an
   assert.equal(grants[0]?.createdByMembershipId, owner?.membership.id, 'added on behalf of the person who added the bot');
   const [welcome] = slackPosts(h, 'chat.postMessage');
   assert.equal(welcome?.get('channel'), 'C2');
-  assert.equal(welcome?.get('text'), `${SUPPORT_WELCOME}, and once I’m in a thread you can keep going there without the mention.`,
+  assert.equal(welcome?.get('text'), SUPPORT_WELCOME_IN_THREADS,
     "Chickpea's bot is in the Channel, so a thread's unmentioned replies reach the Agent");
   assert.equal(welcome?.get('username'), null, 'no persona: the app posts as itself');
   assert.equal(welcome?.get('icon_url'), null);
@@ -789,6 +795,58 @@ test("Admin's Add to channels brings the app Agent's own bot into a public Chann
   assert.equal(agentAppPresenceHooks(h.base), undefined, 'without the port there is nothing to bring in');
 }));
 
+test("Admin's Add to channels welcomes a public Channel once, as the app Agent's own bot, after that bot has joined", async (t) => withHarness(t, async (h) => {
+  const added = await addInAdmin(h, 'agent_support', 'C2');
+  assert.equal(added.status, 201);
+  assert.equal(added.body.appBot, 'in_channel');
+  assert.deepEqual(joins(h), [[MAIN_BOT, 'C2'], [AGENT_BOT, 'C2']], 'neither bot was in the Channel');
+  const welcomes = h.calls.filter((call) => call.method === 'chat.postMessage');
+  assert.deepEqual(welcomes.map((call) => [call.token, call.body.get('channel'), call.body.get('text')]), [[AGENT_BOT, 'C2', SUPPORT_WELCOME_IN_THREADS]],
+    "the Agent greets as its own bot, and Chickpea's bot, now in the Channel, brings it the thread's unmentioned replies");
+  assert.equal(welcomes[0]?.body.get('username'), null, 'no persona: the app posts as itself');
+  assert.equal(welcomes[0]?.body.get('icon_url'), null);
+  const agentBotCall = (method: string) => h.calls.findIndex((call) => call.method === method && call.token === AGENT_BOT);
+  assert.ok(agentBotCall('conversations.join') < agentBotCall('chat.postMessage'), 'the welcome follows the bot into the Channel');
+
+  const admin = await ownerAdmin(h);
+  assert.equal((await addInAdmin(h, 'agent_support', 'C2')).status, 201);
+  const retried = await admin('/admin/api/agents/agent_support/slack/retry', { method: 'POST', body: JSON.stringify({ workspaceId: TEAM }) });
+  assert.equal(retried.status, 200, await retried.clone().text());
+  assert.equal((await h.deliver('events', { ...joinEvent({ inviter: undefined }), event_id: 'EvSelfJoin' })).status, 200);
+  assert.equal((await h.deliver('events', { ...joinEvent(), event_id: 'EvAddedAgain' })).status, 200);
+  assert.equal(slackPosts(h, 'chat.postMessage').length, 1,
+    "one welcome per grant: adding again, a retry, the bot's own join and a later Slack Add post nothing more");
+}, { notMemberOf: { [MAIN_BOT]: ['C2'], [AGENT_BOT]: ['C2'] } }));
+
+test("asking Chickpea to add the app Agent greets the Channel the same way", async (t) => withHarness(t, async (h) => {
+  const owner = (await h.stores.identity.resolveSlackIdentity(TEAM, 'U1'))!;
+  const adapter = {
+    service: createLiveWorkspaceManagementService(h.base),
+    resolveContext: async (): Promise<ManagementActorContext> => ({
+      userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'x1-admin-welcome' },
+    }),
+  };
+  const applied = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
+    idempotencyKey: 'add-support-c2',
+    operations: [{ itemId: 'reach', kind: 'grant_agent_channel', workspaceId: TEAM, channelId: 'C2', agentId: 'agent_support', expectedRevision: 0 }],
+  });
+  const proposalId = (applied as { result?: { outcomes?: Array<{ proposalId?: string }> } }).result?.outcomes?.[0]?.proposalId;
+  assert.ok(proposalId, JSON.stringify(applied));
+  const confirmed = await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', { proposalId });
+  assert.equal((confirmed as { result?: { status?: string } }).result?.status, 'completed', JSON.stringify(confirmed));
+  assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage').map((call) => [call.token, call.body.get('channel'), call.body.get('text')]),
+    [[AGENT_BOT, 'C2', SUPPORT_WELCOME_IN_THREADS]]);
+}, { notMemberOf: { [MAIN_BOT]: ['C2'], [AGENT_BOT]: ['C2'] } }));
+
+test("with the switch off, Admin's Add of an app Agent greets nobody, as before", async (t) => withHarness(t, async (h) => {
+  configureAgentSlackApps(undefined);
+  const added = await addInAdmin(h, 'agent_support', 'C2');
+  assert.equal(added.status, 201);
+  assert.equal(added.body.appBot, undefined);
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'nothing brings the app bot in, so nothing posts as it');
+}));
+
 test("when Admin's Add cannot bring the app's bot into a private Channel, its result says so and the reason is logged", async (t) => withHarness(t, async (h) => {
   const warn = t.mock.method(console, 'warn', () => undefined);
   const added = await addInAdmin(h, 'agent_support', 'C3');
@@ -796,6 +854,7 @@ test("when Admin's Add cannot bring the app's bot into a private Channel, its re
   assert.equal(added.body.appBot, 'left_out');
   assert.equal((await h.stores.config.listAgentChannelGrants(TEAM, 'C3'))[0]?.status, 'active');
   assert.deepEqual(joins(h), [], 'a bot cannot join a private Channel');
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'nobody is welcomed');
   assert.deepEqual(botsLeftOut(warn.mock.calls), [{
     event: 'chickpea.agent_app.bot_left_out', agentId: 'agent_support', appId: AGENT_APP, channelId: 'C3', reason: 'private_channel',
   }]);
@@ -814,6 +873,7 @@ test("an app whose bot Slack will not let join a public Channel is reported the 
   assert.equal(added.body.appBot, 'left_out');
   assert.deepEqual(joins(h), [[AGENT_BOT, 'C2']]);
   assert.deepEqual(botsLeftOut(warn.mock.calls).map((line) => (line as { reason: string }).reason), ['missing_scope']);
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'a bot outside the Channel cannot greet it');
 }, { refuse: { [`conversations.join ${AGENT_BOT}`]: 'missing_scope' } }));
 
 /** An Owner's click on the not-in-channel offer's Add button, as Chickpea's own app receives it. */
@@ -837,6 +897,8 @@ test("Chickpea's in-Slack Add brings the app's bot in too, and says plainly when
   assert.equal((await h.deliverToChickpea(addClick('C2', 'agent_support'), 'interactions')).status, 200);
   assert.deepEqual(await ephemeralNotes(h), [SUPPORT_READY]);
   assert.deepEqual(joins(h), [[AGENT_BOT, 'C2']]);
+  assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage').map((call) => [call.token, call.body.get('channel'), call.body.get('text')]),
+    [[AGENT_BOT, 'C2', SUPPORT_WELCOME_IN_THREADS]], "the click reached Chickpea's own app, and the Agent still greets as its own bot");
 }));
 
 test("Chickpea's in-Slack Add that leaves the app's bot out tells the person how to add it", async (t) => withHarness(t, async (h) => {
@@ -844,6 +906,7 @@ test("Chickpea's in-Slack Add that leaves the app's bot out tells the person how
   assert.equal((await h.deliverToChickpea(addClick('C2', 'agent_support'), 'interactions')).status, 200);
   assert.deepEqual(await ephemeralNotes(h), ["To let @support answer here, add it from the channel's Add people or agents."]);
   assert.equal((await h.stores.config.listAgentChannelGrants(TEAM, 'C2'))[0]?.status, 'active');
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), []);
 }, { refuse: { [`conversations.join ${AGENT_BOT}`]: 'missing_scope' } }));
 
 test("the Owner's App Home reads the permission bar's fact: without the user-group token Finance's offer sends the Owner to Admin", async (t) => withHarness(t, async (h) => {

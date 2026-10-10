@@ -117,7 +117,7 @@ export function createLiveWorkspaceManagementService(
     return new AgentPresenceReconciler({
       config: config as ConfigStore,
       transport,
-      announce: await livePresenceAnnouncements({ env, settings, identity, management, transport }),
+      announce: await livePresenceAnnouncements({ env, settings, identity, management, transport, installationBot: transport }),
       ...(agentApps ? { agentApps } : {}),
     });
   };

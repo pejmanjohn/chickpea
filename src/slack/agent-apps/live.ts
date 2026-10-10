@@ -200,13 +200,12 @@ export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPre
       const presence = agent.slackPresence;
       if (!agentAppIsLive(presence)) return undefined;
       const appId = presence.app.app.appId;
-      const reason = await agentAppExecutionBot(env, agent.id).then(
-        (lookup) => lookup.kind === 'live' ? botLeftOutReason(createDirectSlackTransport(lookup.bot.botToken, undefined), channel) : 'bot_unavailable',
-        () => 'bot_unavailable',
-      );
-      if (!reason) return 'in_channel';
+      const lookup = await agentAppExecutionBot(env, agent.id).catch(() => undefined);
+      const bot = lookup?.kind === 'live' ? createDirectSlackTransport(lookup.bot.botToken, undefined) : undefined;
+      const reason = bot ? await botLeftOutReason(bot, channel) : 'bot_unavailable';
+      if (bot && !reason) return { placement: 'in_channel', transport: bot };
       console.warn({ event: 'chickpea.agent_app.bot_left_out', agentId: agent.id, appId, channelId: channel.id, reason });
-      return 'left_out';
+      return { placement: 'left_out' };
     },
   };
 }
