@@ -3533,9 +3533,9 @@ button.capability-pill { cursor: pointer; }
 }
 /* The Agents page's welcome for Owners and Admins, until the workspace has
    its first Agent, and the ready-made Agents below it (and below the list). */
-.main-inner.first-agent-main { max-width: 980px; }
+.main-inner.first-agent-main { container-name: first-agent-main; max-width: 980px; }
 .first-agent, .ready-made { font-family: var(--admin-visual-font); }
-.first-agent { background: linear-gradient(135deg, #fbefd6, #f7e2ad); border-radius: 24px; container: first-agent / inline-size; padding: 30px 36px 32px; }
+.first-agent { background: linear-gradient(135deg, #fbefd6, #f7e2ad); border-radius: 24px; padding: 30px 36px 32px; }
 .first-agent-head { align-items: center; display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 190px; }
 .first-agent-art { height: 190px; margin: -24px 0 -34px; width: 190px; }
 .first-agent-eyebrow { color: #8a6410; font-size: .78rem; font-weight: 700; letter-spacing: .12em; margin: 0; text-transform: uppercase; }
@@ -3561,18 +3561,52 @@ button.capability-pill { cursor: pointer; }
 .first-agent-mark:first-child { margin-left: 0; }
 .first-agent-mark svg { height: 15px; width: 15px; }
 .first-agent .sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
-/* Titles and actions never wrap: below the width three full tiles need, the
-   tiles tighten, and below what three tight tiles need, they stack. */
-@container first-agent (max-width: 905px) {
-  .first-agent-way { gap: 10px; padding: 12px; }
-  .first-agent-way-icon { width: 56px; }
+/* Titles and actions never wrap. As the card narrows, the tiles tighten their
+   chips, gaps and titles, then put the chip above the title, and stack only
+   once three no longer fit. The widths are the card's, which is the window
+   less 434 px with the full sidebar, or less 314 px at 1000 px and below. */
+@container first-agent-main (max-width: 977px) {
+  .first-agent { padding-inline: 24px; }
+  .first-agent-ways { gap: 10px; }
+  .first-agent-way { gap: 8px; padding: 12px; }
+  .first-agent-way-icon { height: 40px; width: 48px; }
+  .first-agent-way-icon img { height: 24px; width: 24px; }
+  .first-agent-way-icon .slack-logo-image { height: 20px; width: 20px; }
+  .first-agent-way-title { font-size: .9rem; }
+  .first-agent-way-go { font-size: .84rem; }
+  .first-agent-mark { height: 20px; margin-left: -8px; width: 20px; }
+  .first-agent-mark svg { height: 12px; width: 12px; }
+}
+/* The title shrinks with the card, from .9rem down to 12px. */
+@container first-agent-main (max-width: 819px) {
+  .first-agent { padding-inline: 18px; }
+  .first-agent-ways { gap: 8px; }
+  .first-agent-way { gap: 6px; padding: 10px 9px; }
+  .first-agent-way-icon { border-radius: 10px; height: 34px; width: 38px; }
+  .first-agent-way-icon img { height: 20px; width: 20px; }
+  .first-agent-way-icon .slack-logo-image { height: 16px; width: 16px; }
+  .first-agent-way-title { font-size: clamp(12px, 2.84cqw - 7px, .9rem); }
+  .first-agent-way-go { font-size: .78rem; }
+  .first-agent-mark { height: 16px; margin-left: -6px; width: 16px; }
+  .first-agent-mark svg { height: 10px; width: 10px; }
+}
+@container first-agent-main (max-width: 662px) {
+  .first-agent-way { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .first-agent-way-title { font-size: clamp(12px, 2.84cqw - 3.2px, .875rem); }
+}
+@container first-agent-main (max-width: 528px) {
+  .first-agent { padding-inline: 24px; }
+  .first-agent-ways { gap: 12px; grid-auto-flow: row; }
+  .first-agent-way { align-items: center; flex-direction: row; gap: 10px; padding: 12px; }
+  .first-agent-way-icon { border-radius: 12px; height: 44px; width: 56px; }
+  .first-agent-way-icon img { height: 28px; width: 28px; }
+  .first-agent-way-icon .slack-logo-image { height: 22px; width: 22px; }
+  .first-agent-way-title { font-size: 1rem; }
+  .first-agent-way-go { font-size: .88rem; }
   .first-agent-mark { height: 22px; margin-left: -9px; width: 22px; }
   .first-agent-mark svg { height: 13px; width: 13px; }
 }
-@container first-agent (max-width: 851px) {
-  .first-agent-ways { grid-auto-flow: row; }
-}
-@container first-agent (max-width: 275px) {
+@container first-agent-main (max-width: 307px) {
   .first-agent-way { gap: 8px; }
   .first-agent-way-icon { width: 48px; }
   .first-agent-mark { height: 20px; margin-left: -8px; width: 20px; }

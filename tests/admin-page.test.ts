@@ -20097,6 +20097,39 @@ test('standalone gets the welcome with each way that works there, and no hosted 
     'without a Slack app or a public address, only the way that works');
 });
 
+test('the welcome keeps its three ways in one row on laptops, tightening rather than wrapping, and stacks them on phones', () => {
+  const page = renderAdminPage();
+  assert.match(page, /\.main-inner\.first-agent-main\s*\{[^}]*container-name:\s*first-agent-main;[^}]*max-width:\s*980px;/);
+  assert.match(page, /\.first-agent-way-title\s*\{[^}]*white-space:\s*nowrap;/);
+  assert.match(page, /\.first-agent-way-go\s*\{[^}]*white-space:\s*nowrap;/);
+  const tiers = [...page.matchAll(/@container first-agent-main \(max-width: (\d+)px\) \{([\s\S]*?)\n\}/g)]
+    .map(([, width, rules]) => ({ maxWidth: Number(width), rules: rules! }));
+  // Later tiers win, as in the cascade.
+  const declared = (card: number, selector: string, property: string) => {
+    let value: string | undefined;
+    for (const tier of tiers.filter(({ maxWidth }) => card <= maxWidth)) {
+      for (const [, body] of tier.rules.matchAll(new RegExp(`^\\s*${selector.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`, 'gm'))) {
+        value = body!.match(new RegExp(`${property}:\\s*([^;]+);`))?.[1] ?? value;
+      }
+    }
+    return value;
+  };
+  // With the full sidebar the card is the window less 434 px: a 292 px sidebar,
+  // the shell's 24 px gap and right padding, and the main panel's 46 px sides.
+  for (const window of [1440, 1366, 1280, 1100]) {
+    const card = Math.min(980, window - 434);
+    assert.notEqual(declared(card, '.first-agent-ways', 'grid-auto-flow'), 'row', `${window} px: three across`);
+    assert.notEqual(declared(card, '.first-agent-way', 'flex-direction'), 'column', `${window} px: the chip stays beside the title`);
+  }
+  assert.equal(declared(980, '.first-agent-way-title', 'font-size'), undefined, 'the approved sizes at full width');
+  assert.equal(declared(846, '.first-agent-way-title', 'font-size'), '.9rem');
+  assert.match(declared(666, '.first-agent-way-title', 'font-size') ?? '', /^clamp\(12px, /, 'narrower, the title shrinks to a floor');
+  assert.equal(declared(560, '.first-agent-ways', 'grid-auto-flow'), undefined, 'below the floor the chip goes above, still three across');
+  assert.equal(declared(560, '.first-agent-way', 'flex-direction'), 'column');
+  assert.equal(declared(390 - 62, '.first-agent-ways', 'grid-auto-flow'), 'row', 'a phone stacks them');
+  assert.equal(declared(390 - 62, '.first-agent-way', 'flex-direction'), 'row');
+});
+
 test('Members see the normal Agents page: no welcome and no ready-made Agents', async () => {
   for (const [who, options] of [['hosted Member', HOSTED_ADMIN], ['standalone Member', {}]] as const) {
     const harness = runAdminPageHarness({ ...options, workspaceAdminUi: false, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
