@@ -403,7 +403,9 @@ type ModelReadinessFixture =
   | null
   | 'credential_missing'
   | 'funding_not_offered'
-  | { unavailable: 'model_unsupported'; message: string };
+  | { unavailable: 'model_unsupported'; message: string }
+  /** The readiness request fails. */
+  | { status: 503 };
 type ModelProviderFixture = {
   id: string;
   configured: boolean;
@@ -2749,6 +2751,9 @@ function runAdminPageHarness(
         : listedModelProviders().some((provider) => provider.id === providerId && provider.configured)
           ? null
           : 'credential_missing';
+      if (answer !== null && typeof answer === 'object' && 'status' in answer) {
+        return Promise.resolve(jsonResponse({ error: 'internal_error' }, answer.status));
+      }
       return Promise.resolve(jsonResponse(
         answer !== null && typeof answer === 'object' ? { modelId, ...answer } : { modelId, unavailable: answer },
       ));
@@ -14278,6 +14283,30 @@ test('a keyless own-key Agent pinned to a model the catalog dropped shows the se
   const field = agentModelField(harness.app.innerHTML);
   assert.ok(field.endsWith(`Settings &nearr;</button></p><p class="field-error">${message}</p></div>`), field);
   assert.doesNotMatch(field, /No key|Not available/);
+});
+
+test('a failed readiness request keeps the No key warning a keyless own key or standalone Agent shows', async () => {
+  for (const hosted of [true, false]) {
+    const harness = await agentModelTab({ model: OFFERED_MODEL, hosted, modelReadiness: { [OFFERED_MODEL]: { status: 503 } } });
+    assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL]);
+    const field = agentModelField(harness.app.innerHTML);
+    assert.ok(field.endsWith(`Settings &nearr;</button></p>${NO_KEY_WARNING}</div>`), `${hosted ? 'own key' : 'standalone'}: ${field}`);
+  }
+});
+
+test('a failed readiness request adds no warning of its own', async () => {
+  const cases: Array<[string, ModelProviderFixture]> = [
+    ['a keyed provider', { ...ANTHROPIC_WITHOUT_KEY, configured: true }],
+    ['Chickpea\'s models, even for a provider they serve nothing from', { ...ANTHROPIC_WITHOUT_KEY, configured: false, source: 'Chickpea’s models', suggestions: [] }],
+  ];
+  for (const [label, provider] of cases) {
+    const harness = await agentModelTab({
+      model: OFFERED_MODEL, hosted: true, modelProviders: [provider], modelReadiness: { [OFFERED_MODEL]: { status: 503 } },
+    });
+    assert.deepEqual(harness.modelReadinessRequests, [OFFERED_MODEL], label);
+    const field = agentModelField(harness.app.innerHTML);
+    assert.ok(field.endsWith('Settings &nearr;</button></p></div>'), `${label}: ${field}`);
+  }
 });
 
 test('standalone keeps every Agent model warning it shows today', async () => {
