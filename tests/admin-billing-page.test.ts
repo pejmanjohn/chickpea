@@ -1,3 +1,5 @@
+import './helpers/non-utc-time-zone.ts';
+
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import vm from 'node:vm';
@@ -631,9 +633,10 @@ test('the meter\'s dollar figures give its percentage', async () => {
 });
 
 test('every date reads as its UTC day, whatever timezone the server and browser run in', async () => {
+  assert.equal(new Date('2026-11-07T23:30:00Z').getDate(), 8, 'this file runs where a late UTC hour is the next day');
   const edges: BillingSummary = {
     ...TEAM_PLAN,
-    period: { start: new Date('2026-10-07T00:30:00Z'), end: new Date('2026-11-07T23:30:00Z') },
+    period: { start: new Date('2026-10-07T23:30:00Z'), end: new Date('2026-11-07T23:30:00Z') },
     trial: { remainingMicros: usd(32.5), expiresAt: new Date('2026-11-06T23:30:00Z') },
   };
   const plan = (await harness({ path: '/admin/plan', billingOffered: true, summary: edges })).html();

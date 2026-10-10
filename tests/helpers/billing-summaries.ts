@@ -24,6 +24,7 @@ export const NO_PLAN: BillingSummary = {
   funding: 'platform',
   plan: null,
   period: null,
+  pendingChange: null,
   planUsage: null,
   rollover: null,
   extraUsage: null,
