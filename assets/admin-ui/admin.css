@@ -202,6 +202,7 @@ button, input, textarea, select { font: inherit; }
 }
 .field-label { color: var(--text); display: block; font-size: 0.8125rem; font-weight: 700; }
 .hint { color: var(--text-3); font-size: 0.8125rem; text-wrap: pretty; }
+.sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
 .empty-inline { display: grid; gap: 4px; }
 .empty-inline .hint { margin: 0; }
 .mono { font-family: var(--mono); font-size: 0.75rem; }
@@ -573,6 +574,9 @@ button, input, textarea, select { font: inherit; }
 .onboarding-shell { background: var(--bg); display: grid; grid-template-columns: minmax(0, 44fr) minmax(0, 56fr); min-height: 100dvh; width: 100%; }
 .onboarding-shell > .onboarding-shell-inner:only-child { grid-column: 1 / -1; }
 .onboarding-shell-inner { display: flex; flex-direction: column; min-width: 0; padding: 34px clamp(28px, 5vw, 72px) 48px; }
+/* The scene and step bar are ONBOARDING_SCENE_CSS in src/admin/onboarding-scenes.ts,
+   which the Slack journey pages and the Slack app guide carry too. Change them
+   there; a test keeps this copy identical. */
 .onboarding-tone-gold { --tone: #f7e2ad; --tone-deep: #e6b445; --tone-ink: #7a5410; }
 .onboarding-tone-apricot { --tone: #f9d7b8; --tone-deep: #e58d4e; --tone-ink: #8a4a18; }
 .onboarding-tone-sage { --tone: #dce8d0; --tone-deep: #86a86f; --tone-ink: #3f6330; }
@@ -584,7 +588,27 @@ button, input, textarea, select { font: inherit; }
 .onboarding-arch::before { background: color-mix(in srgb, var(--tone-deep) 55%, #2a1d10 45%); border-radius: calc(var(--arch) * .442) calc(var(--arch) * .442) 10px 10px; content: ""; inset: calc(var(--arch) * .058); position: absolute; }
 .onboarding-arch::after { background: color-mix(in srgb, var(--tone-deep) 70%, #000 10%); border-radius: 12px; bottom: calc(var(--arch) * -.058); content: ""; height: calc(var(--arch) * .068); left: -18%; opacity: .55; position: absolute; right: -18%; z-index: -1; }
 .onboarding-pose { bottom: -1.5%; height: auto; left: 50%; max-width: none; position: absolute; transform: translateX(-50%); width: 105%; }
-.onboarding-caption { color: var(--tone-ink); font-family: var(--display); font-size: clamp(1.5rem, 2.2vw, 2rem); font-weight: 800; line-height: 1.1; margin: calc(var(--arch) * .1 + 18px) 0 0; position: relative; text-align: center; text-wrap: balance; }
+.onboarding-caption { color: var(--tone-ink); font-family: var(--display, "Baloo 2", Quicksand, system-ui, sans-serif); font-size: clamp(1.5rem, 2.2vw, 2rem); font-weight: 800; line-height: 1.1; margin: calc(var(--arch) * .1 + 18px) 0 0; position: relative; text-align: center; text-wrap: balance; }
+.onboarding-orientation { display: grid; gap: 10px; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; list-style: none; max-width: 680px; padding: 0; }
+.onboarding-orientation:has(> li:nth-child(5)) li { font-size: .875rem; }
+.onboarding-orientation li { color: #6b5c42; display: flex; flex-direction: column; font-size: .9375rem; font-weight: 700; gap: 4px; min-width: 0; }
+.onboarding-orientation li::before { background: rgba(59, 50, 32, .1); border-radius: 99px; content: ""; height: 6px; margin-bottom: 6px; }
+.onboarding-orientation li.complete::before { background: #6fa25b; }
+.onboarding-orientation li.active::before { background: #dda033; }
+.onboarding-orientation li.active, .onboarding-orientation li.complete { color: #3b3220; }
+.onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.onboarding-step-note { color: #6b5c42; font-size: .8125rem; font-weight: 600; }
+@media (max-width: 720px) {
+  .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
+  .onboarding-arch { border-radius: 42px 42px 10px 10px; }
+  .onboarding-arch::before { border-radius: 37px 37px 5px 5px; }
+  .onboarding-arch::after { border-radius: 6px; }
+  .onboarding-caption { font-size: 1.375rem; margin: 0; text-align: left; }
+  .onboarding-orientation { gap: 6px; }
+  .onboarding-orientation li { font-size: .8125rem; }
+  .onboarding-step-note { display: none; }
+  .onboarding-orientation:has(> li:nth-child(4)) .onboarding-step-label { clip: rect(0 0 0 0); height: 1px; overflow: hidden; position: absolute; width: 1px; }
+}
 .onboarding-confetti { inset: 0; overflow: hidden; pointer-events: none; position: absolute; z-index: 1; }
 .onboarding-confetti i { animation: onboarding-confetti 9s linear infinite; border-radius: 5px; height: 18px; opacity: .85; position: absolute; top: -24px; width: 10px; }
 .onboarding-confetti i:nth-child(5n + 1) { background: #dda033; }
@@ -619,15 +643,7 @@ button, input, textarea, select { font: inherit; }
 .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 40px; width: 40px; }
 .onboarding-brand .brand-wordmark { height: 32px; }
 .onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .8125rem; }
-.onboarding-orientation { display: grid; gap: 10px; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; list-style: none; margin: 48px 0 0; max-width: 680px; padding: 0; }
-.onboarding-orientation:has(> li:nth-child(5)) li { font-size: .875rem; }
-.onboarding-orientation li { color: var(--text-2); display: flex; flex-direction: column; font-size: .9375rem; font-weight: 700; gap: 4px; min-width: 0; }
-.onboarding-orientation li::before { background: var(--line); border-radius: 99px; content: ""; height: 6px; margin-bottom: 6px; }
-.onboarding-orientation li.complete::before { background: var(--ok-solid); }
-.onboarding-orientation li.active::before { background: var(--ember); }
-.onboarding-orientation li.active, .onboarding-orientation li.complete { color: var(--text); }
-.onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.onboarding-step-note { color: var(--text-2); font-size: .8125rem; font-weight: 600; }
+.onboarding-orientation { margin: 48px 0 0; }
 .onboarding-stage { display: flex; flex: 1; flex-direction: column; justify-content: center; padding: 24px 0; }
 .onboarding-panel { max-width: 640px; width: 100%; }
 .onboarding-eyebrow { color: var(--ember-deep); font-size: .78rem; font-weight: 700; letter-spacing: .12em; margin: 0 0 10px; text-transform: uppercase; }
@@ -765,18 +781,11 @@ button, input, textarea, select { font: inherit; }
   .onboarding-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 1fr; }
   .onboarding-shell-inner { display: contents; }
   .onboarding-brand-row { grid-column: 1; grid-row: 1; min-height: 0; padding: 14px 20px 0; position: relative; z-index: 2; }
-  .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; grid-column: 1; grid-row: 1 / 3; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
+  .onboarding-scene { grid-column: 1; grid-row: 1 / 3; }
   .onboarding-orientation { grid-row: 3; }
   .onboarding-stage { grid-row: 4; }
-  .onboarding-arch { border-radius: 42px 42px 10px 10px; }
-  .onboarding-arch::before { border-radius: 37px 37px 5px 5px; }
-  .onboarding-arch::after { border-radius: 6px; }
-  .onboarding-caption { font-size: 1.375rem; margin: 0; text-align: left; }
-  .onboarding-orientation { gap: 6px; margin: 18px 20px 0; }
-  .onboarding-orientation li { font-size: .8125rem; }
+  .onboarding-orientation { margin: 18px 20px 0; }
   .onboarding-orientation li::before { margin-bottom: 2px; }
-  .onboarding-step-note { display: none; }
-  .onboarding-orientation:has(> li:nth-child(4)) .onboarding-step-label { clip: rect(0 0 0 0); height: 1px; overflow: hidden; position: absolute; width: 1px; }
   .onboarding-stage { justify-content: flex-start; padding: 22px 20px 40px; }
   .onboarding-environment { display: none; }
   .onboarding-paths { grid-template-columns: minmax(0, 1fr); margin-top: 22px; }
@@ -1416,7 +1425,6 @@ details[open].advanced summary::before {
 .workspace-default-shelf .workspace-default-copy { gap: 5px; }
 .workspace-default-shelf .workspace-default-control { align-items: center; grid-template-columns: minmax(0, 1fr) auto; }
 .workspace-default-shelf .workspace-default-control .field { gap: 0; }
-.workspace-default-shelf .workspace-default-control .sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
 .workspace-default-shelf .workspace-default-control .input { background: var(--bg); min-height: 44px; }
 .workspace-default-shelf .workspace-default-control .btn { min-height: 44px; padding-inline: 18px; }
 .workspace-default-shelf .workspace-default-timing { margin-top: 2px; }
@@ -3592,7 +3600,9 @@ button.capability-pill { cursor: pointer; }
 .first-agent-mark { background: #fff; border: 1px solid #ece3d0; border-radius: 50%; box-shadow: 0 1px 2px rgba(59, 50, 32, .1); color: #111; display: grid; height: 25px; margin-left: -10px; place-items: center; width: 25px; }
 .first-agent-mark:first-child { margin-left: 0; }
 .first-agent-mark svg { height: 15px; width: 15px; }
-.first-agent .sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
+.first-agent-manual { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.first-agent-prompt { background: #fff; field-sizing: content; font-size: .9rem; line-height: 1.5; resize: none; }
+.first-agent-prompt-note { color: #6b5c42; font-size: .85rem; margin: 0; }
 /* Titles and actions never wrap. As the card narrows, the tiles tighten their
    chips, gaps and titles, then put the chip above the title, and stack only
    once three no longer fit. The widths are the card's, which is the window

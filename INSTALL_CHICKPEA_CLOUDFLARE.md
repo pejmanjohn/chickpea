@@ -445,9 +445,9 @@ conversation contents into the repository.
 
 Return to the original Chickpea tab and check for **Chickpea replied in Slack**
 and **Chickpea is ready!**. Use **Check again** if the page offers it, or refresh
-after observing the reply. Open the dashboard and verify signed-in access.
-**Go to dashboard** marks onboarding complete and opens the dashboard;
-the installing agent still needs to verify a real Slack reply.
+after observing the reply. Choose **Open dashboard** and verify signed-in
+access. On the Try step, **Go to dashboard** marks onboarding complete before
+any reply, so the installing agent still needs to verify a real Slack reply.
 
 If the first message fails, preserve its error and timing before changing
 anything. Diagnose the selected deployment, make a supported setup correction,

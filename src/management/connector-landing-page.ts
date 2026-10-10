@@ -1,3 +1,4 @@
+import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../assets/fonts.ts';
 import { escapeHtml } from '../security/html-escape.ts';
 import { CHICKPEA_FAVICON_HTML, CHICKPEA_WORDMARK_CSS, CHICKPEA_WORDMARK_HTML } from '../brand/chickpea-mark.ts';
 import { CONNECTOR_LOGOS } from '../config/connector-logos.ts';
@@ -451,7 +452,7 @@ function monogram(value: string): string {
   return (parts[0] ?? '?').slice(0, 2).toUpperCase();
 }
 
-const PAGE_CSS = `
+const PAGE_CSS = `${fontFaceCss(CONNECTOR_PAGE_FONTS)}
 :root {
   ${CHICKPEA_WORDMARK_CSS}
   --canvas: #f4ebd8;

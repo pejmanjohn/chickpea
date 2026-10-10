@@ -263,6 +263,7 @@
     mcpClientPick: "claude-code",
     // The welcome's copy button shows a check for a moment after a copy.
     firstAgentPromptCopied: false,
+    firstAgentPromptManual: false,
     connectorSettings: { provider: null, catalog: [], canConfigure: false, recoveryMode: false, impact: { accounts: 0, schedules: 0 }, loading: false, busy: "", error: "", notice: "", key: "", editing: false, confirm: "" },
     providerSettingsRequestId: 0,
     settingsError: "",
@@ -2782,13 +2783,13 @@
 
   function onboardingPlatformSetupHtml() {
     if (state.onboardingError) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
         '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
         (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
     }
     var workspaceName = state.onboarding && state.onboarding.workspace && state.onboarding.workspace.name;
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
       '<h1 class="onboarding-title">' + (workspaceName ? 'Setting up Chickpea in ' + esc(workspaceName) : 'Setting up Chickpea&hellip;') + '</h1>' +
       '<p class="onboarding-lede">Chickpea is unpacking in your workspace. This takes a few seconds.</p>' +
       '<div class="onboarding-progress" aria-hidden="true"><i></i></div></section>';
@@ -2816,7 +2817,7 @@
     var panel = selected
       ? '<div class="onboarding-provider-config"><h2>' + (configured ? 'Use ' : 'Connect ') + esc(selected.name) + '</h2><p class="hint">' + esc(description) + '</p>' + onboardingProviderConfigurationHtml(selected, configured) + '</div>'
       : '<div class="onboarding-provider-config onboarding-provider-config-empty"><p class="hint">Choose the provider you want Chickpea to use. Each option shows the setup it needs.</p></div>';
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
       '<h1 class="onboarding-title">Choose your model provider</h1>' +
       '<p class="onboarding-lede">Choose a provider, then finish the setup it needs.</p>' +
       '<div class="onboarding-provider-tabs" role="group" aria-label="Model provider">' + tabs + '</div>' + panel +
@@ -2866,7 +2867,7 @@
       if (recommendation && model === recommendation.model) label += recommendation.caveat ? " \u00b7 free default" : " \u00b7 recommended";
       return '<option value="' + esc(model) + '"' + (model === state.onboardingModelSelected ? ' selected' : '') + '>' + esc(label) + '</option>';
     }).join("");
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
       '<h1 class="onboarding-title">Choose your model</h1>' +
       '<p class="onboarding-lede">Pick the ' + esc(provider.name) + ' model Chickpea should use for replies. You can change this later.</p>' +
       '<div class="onboarding-model-provider"><span class="onboarding-model-provider-identity">' + onboardingProviderLogoHtml(provider) + '<span class="onboarding-model-provider-copy"><span>' + esc(provider.name) + '</span><span class="onboarding-model-provider-status">Connected</span></span></span><button type="button" class="btn btn-soft" data-action="onboarding-change-provider">Change provider</button></div>' +
@@ -2884,13 +2885,13 @@
     var deepLink = slackAppDmHref(slackAppId, workspace.id);
     var slackLogo = '<span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>';
     if (complete) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Chickpea replied in Slack</span>' +
+      return '<section class="onboarding-panel"><span class="onboarding-success-badge">Chickpea replied in Slack</span>' +
         '<p class="onboarding-eyebrow">All set</p><h1 class="onboarding-title">Chickpea is ready!</h1>' +
         '<p class="onboarding-lede">Your setup works. Next, give your team its first Agent, in Slack or in the dashboard.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
         '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
       '<div class="onboarding-paths">' +
       '<div class="onboarding-path onboarding-path-primary"><h2>Going to Slack now</h2><p>Opens your DM with Chickpea. Its hello is already there.</p>' +
@@ -2936,12 +2937,12 @@
     var busy = state.onboardingBusy;
     var error = state.onboardingError ? '<p class="field-error" role="alert">' + esc(state.onboardingError) + '</p>' : '';
     if (onboardingGithubConnected()) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">' + esc(onboardingGithubAccountsText()) + '</span>' +
+      return '<section class="onboarding-panel"><span class="onboarding-success-badge">' + esc(onboardingGithubAccountsText()) + '</span>' +
         '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">GitHub is connected</h1>' +
         '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' + error +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
+    return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Let Agents work on your code</h1>' +
       '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' + error +
       '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-github", busy, githubMarkHtml()) +
@@ -2965,18 +2966,18 @@
 
   function onboardingMainHtml() {
     if (state.onboardingError && !state.onboarding) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
+      return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup could not load</h1><p class="field-error">' + esc(state.onboardingError) + '</p><div class="onboarding-actions"><button type="button" class="btn btn-soft" data-action="retry-onboarding">Try again</button></div></section>';
     }
-    if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
+    if (!state.onboarding || hostedSlackStep()) return '<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Loading setup&hellip;</h1></section>';
     if (state.onboarding.stage === "connect_slack") return onboardingConnectHtml();
     if (state.onboarding.stage === "choose_provider" || state.onboarding.stage === "choose_model") {
       if (onboardingOnChickpeaModels()) return onboardingPlatformSetupHtml();
       if (state.models === MODELS_NOT_LOADED && state.onboardingModelsError) {
-        return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+        return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
           '<h1 class="onboarding-title">Model providers could not load</h1><p class="field-error" role="alert">Check your connection, then try again.</p>' +
           '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-models-retry">Try again</button></div></section>';
       }
-      if (state.models === MODELS_NOT_LOADED) return '<section class="onboarding-panel onboarding-panel-wide" aria-busy="true"></section>';
+      if (state.models === MODELS_NOT_LOADED) return '<section class="onboarding-panel" aria-busy="true"></section>';
     }
     if (state.onboarding.stage === "choose_provider") return onboardingProviderHtml();
     if (state.onboarding.stage === "choose_model") return onboardingModelHtml();
@@ -4864,7 +4865,6 @@
 
   // ---- The first visit: the welcome on Agents ------------------------------
 
-  // Opens the Chickpea app's DM in Slack for whoever follows the link.
   function slackAppDmHref(appId, teamId) {
     return appId && teamId
       ? "https://slack.com/app_redirect?app=" + encodeURIComponent(appId) + "&team=" + encodeURIComponent(teamId)
@@ -4879,7 +4879,6 @@
     '<span class="first-agent-mark first-agent-mark-cursor"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M22.106 5.68L12.5.135a.998.998 0 00-.998 0L1.893 5.68a.84.84 0 00-.419.726v11.186c0 .3.16.577.42.727l9.607 5.547a.999.999 0 00.998 0l9.608-5.547a.84.84 0 00.42-.727V6.407a.84.84 0 00-.42-.726zm-.603 1.176L12.228 22.92c-.063.108-.228.064-.228-.061V12.34a.59.59 0 00-.295-.51l-9.11-5.26c-.107-.062-.063-.228.062-.228h18.55c.264 0 .428.286.296.514z"/></svg></span></span>';
   var copyFirstAgentPromptTimer = null;
 
-  // Owners and Admins meet the welcome until the workspace has an Agent of its own.
   function firstAgentWelcomeShown() {
     return WORKSPACE_ADMIN_UI && state.agents.length === 0;
   }
@@ -4898,9 +4897,14 @@
       ways += firstAgentWayHtml('<a class="first-agent-way" href="' + esc(slackHref) + '" target="_blank" rel="noopener noreferrer">',
         '<span class="slack-logo-image" aria-hidden="true"></span>', "In Slack", 'Open Slack <span aria-hidden="true">→</span>') + '</a>';
     }
+    var manual = "";
     if (FIRST_RUN.prompt) {
       ways += firstAgentWayHtml('<button type="button" class="first-agent-way" id="first-agent-copy" data-action="first-agent-copy-prompt">',
         CODING_AGENT_MARKS, "With your coding agent", "Copy the prompt " + (state.firstAgentPromptCopied ? FIRST_AGENT_CHECK_ICON : FIRST_AGENT_COPY_ICON)) + '</button>';
+      if (state.firstAgentPromptManual) {
+        manual = '<div class="first-agent-manual"><textarea class="input first-agent-prompt" id="first-agent-prompt" readonly rows="3" aria-label="The prompt" aria-describedby="first-agent-prompt-note">' + esc(FIRST_RUN.prompt) + '</textarea>' +
+          '<p class="first-agent-prompt-note" id="first-agent-prompt-note">Couldn’t reach the clipboard. The prompt is selected, so press ⌘C or Ctrl+C to copy it.</p></div>';
+      }
     }
     return '<section class="first-agent" aria-labelledby="first-agent-title"><div class="first-agent-head"><div>' +
       '<p class="first-agent-eyebrow">Welcome' + (FIRST_RUN.firstName ? ", " + esc(FIRST_RUN.firstName) : "") + '</p>' +
@@ -4908,8 +4912,7 @@
       '<p class="first-agent-lede">Agents are teammates with their own @handle, instructions and tools. Whichever way you pick, the Agent shows up in Slack and here.</p></div>' +
       '<img class="first-agent-art" src="/onboarding/team.webp" alt="" width="190" height="190"></div>' +
       '<p class="first-agent-lead"><b>Pick one way to create it</b> <span>Each builds the same Agent</span></p>' +
-      '<div class="first-agent-ways">' + ways + '</div>' +
-      '<span class="sr-only" role="status" aria-live="polite">' + (state.firstAgentPromptCopied ? "Prompt copied" : "") + '</span></section>';
+      '<div class="first-agent-ways">' + ways + '</div>' + manual + '</section>';
   }
 
   function readyMadeHtml(title) {
@@ -4926,7 +4929,7 @@
   function openReadyMadeAgent(id) {
     var starter = STARTER_AGENTS.find(function (candidate) { return candidate.id === id; });
     if (starter) {
-      openNewProfile({ name: starter.name, handle: starter.handle, description: starter.description, instructions: starter.instructions });
+      openNewProfile({ name: starter.name, handle: starter.handle, description: starter.description, instructions: starter.instructions, avatar: starter.avatar });
     }
   }
 
@@ -4940,22 +4943,39 @@
     }).catch(function () {});
   }
 
-  // A check replaces the copy icon for a moment; no note appears.
   function copyFirstAgentPrompt() {
     var prompt = FIRST_RUN.prompt;
-    if (!prompt || !navigator.clipboard || !navigator.clipboard.writeText) return;
+    if (!prompt) return;
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { showFirstAgentPrompt(); return; }
     try {
       Promise.resolve(navigator.clipboard.writeText(prompt)).then(function () {
         if (copyFirstAgentPromptTimer !== null) window.clearTimeout(copyFirstAgentPromptTimer);
         state.firstAgentPromptCopied = true;
+        announce("Prompt copied");
         renderPreservingPagePosition();
         copyFirstAgentPromptTimer = window.setTimeout(function () {
           copyFirstAgentPromptTimer = null;
           state.firstAgentPromptCopied = false;
+          announce("");
           renderPreservingPagePosition();
         }, 1500);
-      }).catch(function () {});
-    } catch (_) { /* the browser refused; the icon stays */ }
+      }).catch(showFirstAgentPrompt);
+    } catch (_) { showFirstAgentPrompt(); }
+  }
+
+  function showFirstAgentPrompt() {
+    state.firstAgentPromptManual = true;
+    renderPreservingPagePosition();
+    var field = document.getElementById("first-agent-prompt");
+    if (field && field.focus) field.focus();
+    if (field && field.select) field.select();
+  }
+
+  // The shell's status line sits outside #app, so a render never replaces it
+  // and screen readers hear each change.
+  function announce(text) {
+    var status = document.getElementById("admin-status");
+    if (status) status.textContent = text;
   }
 
   // ---- Overview (card 09) --------------------------------------------------
@@ -8146,10 +8166,15 @@
     var duplicateNote = draft.duplicateSourceName
       ? '<div class="callout"><div><p class="field-label">Copied from ' + esc(draft.duplicateSourceName) + '</p><p class="hint">Behavior and skills are copied. Channel access, connections, repositories, memory, and schedules stay separate until you grant them.</p></div></div>'
       : '';
+    var heading = '<span class="agent-kicker">Agent</span><h1 class="page-title">New Agent</h1>' +
+      '<p class="hint">Define reusable behavior first. After saving, add this Agent to a Channel and try it in Slack.</p>';
+    if (draft.avatar) {
+      heading = '<div class="agent-profile-identity"><span class="agent-profile-avatar agent-profile-avatar-static"><img class="agent-profile-avatar-image" src="/chickpea-avatars/agent-defaults/' + esc(draft.avatar) + '" alt=""></span>' +
+        '<div style="display:flex; flex-direction:column; gap:6px;">' + heading + '</div></div>';
+    }
     return '<div style="display:flex; flex-direction:column; gap:6px;">' +
       '<button type="button" class="link-btn" style="align-self:flex-start;" data-action="profiles-back">&larr; Agents</button>' +
-      '<span class="agent-kicker">Agent</span><h1 class="page-title">New Agent</h1>' +
-      '<p class="hint">Define reusable behavior first. After saving, add this Agent to a Channel and try it in Slack.</p></div>' + duplicateNote +
+      heading + '</div>' + duplicateNote +
       '<section class="section"><div class="section-head"><div><h2 class="section-title">Details</h2></div></div>' +
       '<div class="form-grid">' +
       profileNameFieldHtml(draft) +
@@ -17308,6 +17333,7 @@
     else {
       if (draft.model) body.model = draft.model;
       if (draft.imageModel) body.imageModel = draft.imageModel;
+      if (draft.avatar) body.avatar = draft.avatar;
       body.id = slugId(draft.name);
     }
     var secretAgentId = isEdit ? draft.id : body.id;

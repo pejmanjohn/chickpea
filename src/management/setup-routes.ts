@@ -2935,7 +2935,7 @@ function setupResponseHeaders(c: Context): void {
   c.header('X-Frame-Options', 'DENY');
   c.header('Cross-Origin-Opener-Policy', 'same-origin');
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-setup'; connect-src 'self'; img-src 'self' data:; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'");
+  c.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'nonce-setup'; connect-src 'self'; img-src 'self' data:; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'");
 }
 
 function sameOriginMutation(c: Context): boolean {

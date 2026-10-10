@@ -35,6 +35,12 @@ export const FONT_ASSET_PATHS = Object.values(FONT_FILES).flatMap((files) => fil
 /** The Slack journey pages: Baloo 2 headings and Quicksand text. */
 export const JOURNEY_FONTS: FontWeights = { 'Baloo 2': [600, 700, 800], Quicksand: [500, 600, 700] };
 
+/** The MCP sign-in pages and /connect: Quicksand text, and /connect's snippets in JetBrains Mono. */
+export const CONNECT_FONTS: FontWeights = { Quicksand: [400, 700], 'JetBrains Mono': [400] };
+
+/** The connector and setup pages: Baloo 2 headings and Quicksand text. */
+export const CONNECTOR_PAGE_FONTS: FontWeights = { 'Baloo 2': [700, 800], Quicksand: [400, 700] };
+
 /** Admin and the Slack app guide, which also set code in JetBrains Mono. */
 export const ADMIN_FONTS: FontWeights = {
   'Baloo 2': [500, 600, 700, 800], Quicksand: [400, 500, 600, 700], 'JetBrains Mono': [400, 500],

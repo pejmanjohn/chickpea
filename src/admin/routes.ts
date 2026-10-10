@@ -576,7 +576,11 @@ import {
 import {
   prepareGeneratedGatewayAgentAvatar,
 } from '../slack/agent-presence/gateway-avatar.ts';
-import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
+import {
+  DEFAULT_AGENT_AVATAR_FILES,
+  defaultAgentAvatarSeedFor,
+  nextDefaultAgentAvatarSeed,
+} from '../slack/agent-presence/default-avatar-pool.ts';
 import {
   AgentPresenceError,
   agentPresenceRecovery,
@@ -1409,6 +1413,8 @@ const agentSchema = v.object({
   apiConnections: v.optional(apiConnectionsSchema, []),
   repositories: v.optional(repositoriesSchema, []),
   websiteLogins: v.optional(websiteLoginsSchema, []),
+  // A ready-made Agent keeps the default avatar its row shows.
+  avatar: v.optional(v.picklist(DEFAULT_AGENT_AVATAR_FILES)),
 });
 
 const agentPatchSchema = v.object({
@@ -2379,19 +2385,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     return updated;
   };
-  const slackWorkspaceDescriptor = async (c: Context): Promise<{
-    teamId: string;
-    teamName?: string;
-  } | undefined> => {
-    const organization = await identity(c).getOrganization();
-    if (!organization?.slackTeamId) return undefined;
-    const teamId = organization.slackTeamId;
+  // Installs store no workspace name until something asks Slack for it here.
+  const slackWorkspaceName = async (c: Context, teamId: string): Promise<string | undefined> => {
     if (options.slackAdmissionService && !options.slackCredentials && !options.slackTransport) {
-      return { teamId };
+      return undefined;
     }
     const settingsStore = settings(c);
     const storedTeamName = (await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
-    if (storedTeamName) return { teamId, teamName: storedTeamName };
+    if (storedTeamName) return storedTeamName;
 
     const installation = await store(c).getWorkspaceInstallation(teamId);
     if (installation || options.slackTransport) {
@@ -2401,7 +2402,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         if (live?.teamId === teamId && live.teamName?.trim()) {
           const teamName = live.teamName.trim().slice(0, 120);
           await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
-          return { teamId, teamName };
+          return teamName;
         }
       } catch {
         // Workspace metadata is presentation-only. Keep the connected install
@@ -2410,24 +2411,34 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     const credentials = slackCredentialDependencies(c);
-    if (!credentials) return { teamId };
+    if (!credentials) return undefined;
     try {
       const resolved = await resolveSlackInstallationCredentials(
         slackInstallationCredentialId(c.env as PlatformEnv | undefined),
         c.env as PlatformEnv | undefined,
         credentials,
       );
-      if (!resolved.botToken) return { teamId };
+      if (!resolved.botToken) return undefined;
       const live = await slackAuthTest(resolved.botToken);
       if (live.ok && live.teamId === teamId && live.teamName?.trim()) {
         const teamName = live.teamName.trim().slice(0, 120);
         await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
-        return { teamId, teamName };
+        return teamName;
       }
-      return { teamId };
+      return undefined;
     } catch {
-      return { teamId };
+      return undefined;
     }
+  };
+  const slackWorkspaceDescriptor = async (c: Context): Promise<{
+    teamId: string;
+    teamName?: string;
+  } | undefined> => {
+    const organization = await identity(c).getOrganization();
+    if (!organization?.slackTeamId) return undefined;
+    const teamId = organization.slackTeamId;
+    const teamName = await slackWorkspaceName(c, teamId);
+    return teamName ? { teamId, teamName } : { teamId };
   };
   const channelDirectories = new WeakMap<object, ChannelDirectoryCache<Awaited<ReturnType<SlackTransport["listChannels"]>>>>();
   const discoverSlackChannels = async (
@@ -6185,8 +6196,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
-  // The Agents page welcomes an Owner or Admin by first name until the
-  // workspace has its first Agent; the script decides when it shows.
   const adminFirstRun = async (c: Context, principal: AuthPrincipal): Promise<AdminFirstRun> => {
     const origin = connectOrigin(requestOrigin(c));
     let firstName: string | null = null;
@@ -8044,16 +8053,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return avatar?.kind === 'generated' ? [avatar.seed ?? existing.id] : [];
       });
       const currentPresence = agent.slackPresence!;
+      const avatarNonce = currentPresence.avatar.seed ?? randomUUID();
       agent = {
         ...agent,
         slackPresence: {
           ...currentPresence,
           avatar: {
             ...currentPresence.avatar,
-            seed: nextDefaultAgentAvatarSeed(
-              existingGeneratedSeeds,
-              currentPresence.avatar.seed ?? randomUUID(),
-            ),
+            seed: parsed.output.avatar
+              ? defaultAgentAvatarSeedFor(parsed.output.avatar, avatarNonce)
+              : nextDefaultAgentAvatarSeed(existingGeneratedSeeds, avatarNonce),
           },
         },
         apiConnections: await normalizeApiOAuthPatch(
@@ -10030,10 +10039,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const connected =
       Boolean(installation) && installation?.health !== 'revoked' &&
       credentials.botToken !== 'missing' && appConnected;
+    const teamId = teamInfo.teamId ?? installation?.workspaceId;
     return {
       connected,
-      teamId: teamInfo.teamId ?? installation?.workspaceId,
-      teamName: teamInfo.teamName,
+      teamId,
+      // Setting up names the workspace on a fresh install's first read.
+      teamName: teamInfo.teamName ??
+        (connected && teamId ? await slackWorkspaceName(c, teamId) : undefined),
       appId: installation?.appId,
     };
   };

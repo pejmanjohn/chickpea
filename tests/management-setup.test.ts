@@ -28,6 +28,7 @@ import { OPENAI_API_IMAGE_DEFAULT_MODEL_ID } from '../src/config/initial-image-d
 import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { CONNECTOR_PAGE_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { formatManagementSetupReceipt } from '../src/management/receipts.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
@@ -160,6 +161,8 @@ test('the initiating member claims one authenticated browser and completes an ex
     assert.deepEqual(unstyledClasses(claimHtml), []);
     assert.equal(initial.headers.get('referrer-policy'), 'no-referrer');
     assert.match(initial.headers.get('content-security-policy') ?? '', /default-src 'none'/);
+    assert.match(initial.headers.get('content-security-policy') ?? '', /(?:^|; )font-src 'self'(?:;|$)/);
+    assert.ok(claimHtml.includes(`<style>${fontFaceCss(CONNECTOR_PAGE_FONTS)}\n`), 'the page loads the fonts its style names');
 
     const crossOrigin = await app.request(`http://localhost/setup/${setupId}/exchange`, {
       method: 'POST',
