@@ -7,7 +7,7 @@ const HOSTILE = { name: '<!channel> & <@U123> <https://evil.test|click>', handle
 const LINKS = { agentId: 'agent_support', allowUrl: 'https://cloud.test/allow', tokenPageUrl: 'https://core.test/token' };
 const KINDS: AgentAppMessageKind[] = [
   'allow', 'ready', 'archived_left', 'handle_release_failed', 'ambiguous_create', 'create_refused', 'slack_busy',
-  'urls_refused', 'config_token_needed', 'app_removed',
+  'urls_refused', 'config_token_needed', 'app_removed', 'uninstall_failed',
 ];
 
 function sectionText(kind: AgentAppMessageKind): string {

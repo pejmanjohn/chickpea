@@ -1,4 +1,5 @@
 import type {
+  ActiveAgentApp,
   AgentAppAttention,
   AgentAppIcon,
   AgentAppLifecycle,
@@ -43,6 +44,8 @@ export type AgentAppEvent =
   | { type: 'archive'; at: number; hasBotToken: boolean }
   | { type: 'uninstalled'; at: number }
   | { type: 'uninstall_refused'; at: number }
+  /** Slack never answered the uninstall of a live app, so it is still installed. */
+  | { type: 'uninstall_unanswered'; at: number; restore: ActiveAgentApp }
   | { type: 'deleted'; at: number }
   | { type: 'try_again'; at: number; startedBy: string; manifestFingerprint: string };
 
@@ -196,6 +199,10 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
             app: app.app,
             ...(app.botUserId ? { botUserId: app.botUserId } : {}),
           })
+        : WRONG_STATE;
+    case 'uninstall_unanswered':
+      return app.state === 'uninstalling' && app.next === 'uninstall' && event.restore.app.appId === app.app.appId
+        ? event.restore
         : WRONG_STATE;
     case 'deleted':
       return app.state === 'uninstalling' && app.next === 'delete' ? { state: 'deleted' } : WRONG_STATE;

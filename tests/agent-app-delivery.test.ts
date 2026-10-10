@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import { markSlackInstallationEnded, serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
-import { closeNodeStateStores, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
+import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentAppLifecycle, CustomAgentConfig } from '../src/config/types.ts';
 import {
   type AgentSlackAppsHost,
@@ -278,6 +278,22 @@ test('an app_uninstalled ends only that Agent app: the bot token goes, the Owner
   assert.equal(await endAgentSlackApp(h.base, AGENT_APP, dmEvent({}, { type: 'app_uninstalled' })), 'ignored', 'ending twice changes nothing');
   assert.equal((await h.deliver('events', dmEvent())).status, 200);
   assert.equal(h.calls.filter((call) => call.token === AGENT_BOT).length, 0, 'a removed app runs nothing as its bot');
+}));
+
+test('ingress facts for an app whose secrets cannot be opened are none, and logged; a store outage still throws', async (t) => withHarness(t, async (h) => {
+  // The store's facade forwards a patch to its logic object; deleting it restores the method.
+  const settings = getSettingsStore(h.base) as unknown as Record<string, unknown>;
+  settings.getEncryptedCredentialRevision = async () => { throw new Error('realm unreachable'); };
+  await assert.rejects(() => agentSlackAppIngress(h.base, AGENT_APP), /realm unreachable/, 'an outage is retried by the host');
+  delete settings.getEncryptedCredentialRevision;
+
+  const stored = await readAppSecrets(h.secrets(), AGENT_APP);
+  assert.ok(stored);
+  await writeAppSecrets({ ...h.secrets(), keyring: generateCredentialKeyring('key_lost') }, AGENT_APP, 'agent_support', stored.secrets, stored.revision);
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined, 'the host acknowledges instead of asking Slack to retry forever');
+  assert.ok(warn.mock.calls.some((call) => String(call.arguments[0]).includes(AGENT_APP)), 'the unreadable app is logged by ID');
+  assert.equal(warn.mock.calls.some((call) => JSON.stringify(call.arguments).includes(AGENT_SECRET)), false);
 }));
 
 test("a revoked installation serves none of its Agent apps' deliveries and offers no ingress facts", async (t) => withHarness(t, async (h) => {

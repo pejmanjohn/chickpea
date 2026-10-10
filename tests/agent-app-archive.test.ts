@@ -29,7 +29,7 @@ class FakeSlack implements AgentAppSlackApi {
   rotations = 0;
   uninstalls: Array<{ clientId: string; clientSecret: string; botToken: string }> = [];
   deletes: Array<{ token: string; appId: string }> = [];
-  refuseUninstall = false;
+  refuseUninstall: string | undefined;
   refuseDelete: string | undefined;
   async rotate() {
     this.rotations += 1;
@@ -40,7 +40,7 @@ class FakeSlack implements AgentAppSlackApi {
   async setIcon(): Promise<never> { throw new Error('not in this unit'); }
   async exchange(): Promise<never> { throw new Error('not in this unit'); }
   async uninstall(input: { clientId: string; clientSecret: string; botToken: string }) {
-    if (this.refuseUninstall) throw new SlackRefused('apps.uninstall', 'invalid_client_id');
+    if (this.refuseUninstall) throw new SlackRefused('apps.uninstall', this.refuseUninstall);
     this.uninstalls.push(input);
     return 'removed' as const;
   }
@@ -123,7 +123,7 @@ test('archiving an Agent app uninstalls, deletes with a rotated token, hands the
 
 test('a refused uninstall refuses the archive and leaves the Agent unarchived with its app recorded', async (t) => {
   const f = await fixture(t);
-  f.slack.refuseUninstall = true;
+  f.slack.refuseUninstall = 'invalid_client_id';
   await assert.rejects(() => f.reconciler.archive('agent_support'), (error: unknown) =>
     error instanceof AgentPresenceError &&
     error.message === "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.");
@@ -134,10 +134,27 @@ test('a refused uninstall refuses the archive and leaves the Agent unarchived wi
   assert.equal(presence?.kind === 'agent_app' && presence.app.state === 'needs_attention' && presence.app.reason, 'uninstall_failed');
   assert.deepEqual(f.slack.deletes, []);
   assert.ok((await readAppSecrets(f.secrets, APP.appId))?.secrets.botToken, 'the token is kept for the retry');
+  assert.deepEqual(f.transport.posted, [{
+    channelId: 'D_UOWNER', text: "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.",
+  }], 'the Owner is told, since Support no longer answers');
 
-  f.slack.refuseUninstall = false;
+  f.slack.refuseUninstall = undefined;
   const archived = await f.reconciler.archive('agent_support');
   assert.equal(archived.lifecycle, 'archived', 'Try again through archive finishes it');
+  assert.equal(f.slack.uninstalls.length, 1);
+});
+
+test('Slack limiting the uninstall refuses the archive for now and leaves the app live, with nothing for the Owner', async (t) => {
+  const f = await fixture(t);
+  f.slack.refuseUninstall = 'ratelimited';
+  await assert.rejects(() => f.reconciler.archive('agent_support'), AgentPresenceError);
+  const agent = await f.config.getAgent('agent_support');
+  assert.equal(agent.lifecycle, 'active');
+  assert.deepEqual(agent.slackPresence?.kind === 'agent_app' && agent.slackPresence.app, LIVE, 'the app is live as it was');
+  assert.deepEqual(f.transport.posted, []);
+
+  f.slack.refuseUninstall = undefined;
+  assert.equal((await f.reconciler.archive('agent_support')).lifecycle, 'archived');
   assert.equal(f.slack.uninstalls.length, 1);
 });
 

@@ -107,6 +107,33 @@ test("Chickpea's ingress ignores a Channel message mentioning a live Agent-app b
   }
 });
 
+test("a Channel message naming a user-group Agent and an Agent-app bot goes to the user-group Agent on Chickpea's ingress and to the app Agent on its own, each once", async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    const text = '<!subteam^SFINANCE|@finance> and <@UBOTSUP> compare';
+    const chickpea = await resolveAgentRoute({ turn: turn({ text, source: 'agent_mention' }), surface: 'channel', actor, config: store });
+    assert.equal(chickpea.kind, 'routed');
+    if (chickpea.kind !== 'routed') return;
+    assert.equal(chickpea.source, 'agent_handle');
+    assert.equal(chickpea.assignment.agentId, finance.id, 'Finance answers on Chickpea, as before the app existed');
+    assert.equal(chickpea.coAddressed, undefined, 'Support is not asked to answer here too');
+
+    const app = await resolveAgentRoute({
+      turn: turn({ text }), surface: 'channel', actor, config: store, agentApp: { agentId: support.id }, authorizeUserAgent: allowUserAgent,
+    });
+    assert.equal(app.kind, 'routed');
+    if (app.kind !== 'routed') return;
+    assert.equal(app.source, 'agent_app');
+    assert.equal(app.assignment.agentId, support.id, 'Support answers through its own app');
+    assert.equal(app.coAddressed, undefined, 'Finance is not asked to answer there too');
+
+    const botOnly = await resolveAgentRoute({ turn: turn({ text: '<@UBOTSUP> compare', source: 'implicit_thread_reply' }), surface: 'channel', actor, config: store });
+    assert.deepEqual(botOnly, { kind: 'ignore' }, "a message for the app bot alone is still the app's");
+  } finally {
+    store.close();
+  }
+});
+
 test('user-group routing is unchanged beside an Agent app', async () => {
   const { store, finance } = await fixture();
   try {

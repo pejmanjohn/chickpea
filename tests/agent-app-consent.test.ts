@@ -158,9 +158,15 @@ test('a bad, expired or reused state, another Owner, or a cancelled grant are re
     assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
     return pageText(await response.text());
   };
-  assert.match(await refused({ code: 'c', state: 'garbage' }, OWNER, 410), /That link has expired/);
-  assert.match(await refused({ code: 'c', state: `agent_support.${crypto.randomUUID()}` }, OWNER, 410), /That link has expired/);
-  assert.match(await refused({ code: 'c', state: `agent_other.${state.split('.')[1]}` }, OWNER, 410), /That link has expired/);
+  /** The page's one paragraph is the whole sentence, with a tag's space on each side. */
+  const says = (page: string, sentence: string) => assert.ok(page.includes(` ${sentence} `), page);
+  const nameless = 'That link has expired. Open your messages with Chickpea and choose Allow again.';
+  says(await refused({ code: 'c', state: 'garbage' }, OWNER, 410), nameless);
+  says(
+    await refused({ code: 'c', state: `agent_support.${crypto.randomUUID()}` }, OWNER, 410),
+    'That link has expired. Choose Allow Support in Slack again from your messages with Chickpea.',
+  );
+  says(await refused({ code: 'c', state: `agent_other.${state.split('.')[1]}` }, OWNER, 410), nameless);
   assert.match(await refused({ code: 'c', state }, 'UOWNER2', 403), /Only the Owner who started this can finish it/);
   f.clock.now = NOW + CONSENT_TTL_MS;
   assert.match(await refused({ code: 'c', state }, OWNER, 410), /That link has expired/);

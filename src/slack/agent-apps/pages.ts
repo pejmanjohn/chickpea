@@ -83,14 +83,17 @@ const DM_COPY = {
       `${name}'s Slack app was removed from this workspace, so @${handle} can't answer there. Choose Allow to add it back.`,
     buttons: allow,
   },
-  /** Shown in Admin as the archive refusal; no message. */
-  uninstall_failed: undefined,
+  /** The archive refusal Admin shows, sent too because the Agent no longer answers. */
+  uninstall_failed: {
+    text: archiveRefusedCopy,
+    buttons: () => [],
+  },
   archived_left: {
     text: ({ name }) =>
       `${name} is archived and its Slack app is removed from this workspace. Chickpea couldn't delete the app itself, so delete ${name} in Your Apps in Slack.`,
     buttons: () => [yourApps],
   },
-} satisfies Record<AgentAppMessageKind, Copy | undefined>;
+} satisfies Record<AgentAppMessageKind, Copy>;
 
 export type ConsentOutcome =
   | 'cancelled'
@@ -123,6 +126,11 @@ const CONSENT_STATUS = {
 
 export function consentPage(outcome: ConsentOutcome, names: AgentAppNames): Response {
   return noticePage(CONSENT_COPY[outcome](names), CONSENT_STATUS[outcome]);
+}
+
+/** The Expired page for a callback whose state names no Agent. */
+export function unnamedExpiredPage(): Response {
+  return noticePage('That link has expired. Open your messages with Chickpea and choose Allow again.', CONSENT_STATUS.expired);
 }
 
 /** A plain page with one sentence; nothing on it is a diagnostic. */
@@ -177,18 +185,17 @@ export function archiveRefusedCopy(names: Pick<AgentAppNames, 'name'>): string {
 }
 
 /**
- * The DM for one outcome, or undefined when that outcome has no message. The
- * copy is prose with no markup of its own, so the whole sentence is escaped
- * once: an Agent's name can hold mention or link syntax, and a bare `@handle`
- * would otherwise ping a user group of that name. Button labels are plain text.
+ * The DM for one outcome. The copy is prose with no markup of its own, so the
+ * whole sentence is escaped once: an Agent's name can hold mention or link
+ * syntax, and a bare `@handle` would otherwise ping a user group of that name.
+ * Button labels are plain text.
  */
 export function agentAppMessage(
   kind: AgentAppMessageKind,
   names: AgentAppNames,
   links: AgentAppLinks,
-): { text: string; blocks: unknown[] } | undefined {
+): { text: string; blocks: unknown[] } {
   const copy = DM_COPY[kind];
-  if (!copy) return undefined;
   const text = escapeMrkdwn(copy.text(names));
   const buttons = copy.buttons(links, names);
   const blocks: unknown[] = [{ type: 'section', text: { type: 'mrkdwn', text } }];

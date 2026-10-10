@@ -46,6 +46,11 @@ app is broken, the Agent's turn ends unavailable; it never falls back to
 Chickpea's bot. Other Agents ask it by its bot user (`<@U…>`) instead of a user
 group. Code lives in `src/slack/agent-apps/`.
 
+The app's manifest subscribes to no `message.channels` event. A thread
+follow-up in a Channel that does not mention the app's bot reaches the Agent
+only through Chickpea's thread-owner routing, so only when Chickpea's bot is in
+that Channel.
+
 ### How it is turned on
 
 Core serves the feature only when its host installs the port with

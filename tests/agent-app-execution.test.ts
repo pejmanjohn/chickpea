@@ -7,12 +7,13 @@ import { test, type TestContext } from 'node:test';
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
-import { closeNodeStateStores, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
+import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
 import type { AgentAppLifecycle, AgentSlackPresence, CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
 import { type AgentSlackAppsHost, configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
-import { withAgentAppExecution } from '../src/slack/agent-apps/index.ts';
-import { writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
-import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
+import { AgentSlackApps, type AgentAppTransport, withAgentAppExecution } from '../src/slack/agent-apps/index.ts';
+import { saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { type AgentAppSlackApi, createAgentAppSlackApi, SlackUnavailable } from '../src/slack/agent-apps/slack-api.ts';
+import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { selectSlackPresentationOwner } from '../src/slack/claim-store.ts';
 import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import {
@@ -20,8 +21,10 @@ import {
   type SlackInstallationExecutionContext,
 } from '../src/slack/installation-execution.ts';
 import { invalidateSlackInstallationCredentialCache } from '../src/slack/installation-credentials.ts';
-import { turnReplySender } from '../src/slack/run-turn.ts';
+import { turnReplySender, type RunTurnOptions } from '../src/slack/run-turn.ts';
 import { toContextMessages } from '../src/slack/thread-context.ts';
+import { executeTurnJob, type TurnExecutionOptions, type TurnExecutionPorts } from '../src/slack/turn-executor.ts';
+import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { WebClient } from '@slack/web-api';
 
 const TEAM = 'TTENANT1';
@@ -167,6 +170,98 @@ test("the installation's own refusal wins over a live app: a revoked or gated in
   assert.deepEqual(h.baseCalls, [TEAM], 'the installation is checked before the Agent bot is considered');
   await assert.rejects(() => refused(TEAM, 'agent_support'), (error: unknown) =>
     error instanceof SlackInstallationUnavailableError && error.reasonCode === 'installation_revoked', 'a refusal is not cached as a context');
+}));
+
+test("one realm read timeout during an app Agent's DM turn retries the turn instead of parking it for recovery", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  // The store's facade forwards a patch to its logic object; deleting it restores the method.
+  const settings = getSettingsStore(h.env) as unknown as Record<string, unknown>;
+  settings.getEncryptedCredentialRevision = async () => {
+    delete settings.getEncryptedCredentialRevision;
+    throw new Error('realm read timed out');
+  };
+  const calls: string[] = [];
+  const contexts: Array<SlackInstallationExecutionContext | undefined> = [];
+  const retries: Array<number | undefined> = [];
+  const record = (name: string) => async () => { calls.push(name); };
+  const ports = {
+    env: h.env,
+    turnJobs: {
+      recordAttempt: record('recordAttempt'), markRecoveryRequired: record('markRecoveryRequired'),
+      markDelivered: record('markDelivered'), markError: record('markError'), recordInteractionIntent: record('recordInteractionIntent'),
+    },
+    slack: { setActiveWork: record('setActiveWork'), release: record('release') },
+    config: {}, presentationState: { getRunPresentation: async () => undefined }, settingsStore: { getSetting: async () => undefined },
+    usageStore: {}, workStore: {}, appStores: {}, managementApproval: () => ({}), telemetry: { capture: () => undefined },
+    resolveInstallation: h.resolve, sandboxBinding: () => undefined,
+    runTurn: async (_turn: unknown, _assignment: unknown, _env: unknown, options: RunTurnOptions) => {
+      contexts.push(options.installationContext);
+      await options.onDelivered?.('completed' as never);
+    },
+  } as unknown as TurnExecutionPorts;
+  const options: TurnExecutionOptions = { latency: { lane: 'cloudflare', executor: 'alarm' }, onRetry: (afterMs) => { retries.push(afterMs); } };
+  const job = {
+    id: 'turn_dm', evtKey: 'evt:dm', msgKey: 'msg:dm',
+    turn: { workspaceId: TEAM, channelId: 'D1', channelType: 'im', threadTs: '1.1', messageTs: '1.1', userId: 'U1', text: 'hello', source: 'dm_message', eventId: 'Ev1' },
+    assignment: { agentId: 'agent_support' }, executionAuthority: 'legacy', attempts: 0, progress: {},
+  } as unknown as PendingTurnJob;
+
+  assert.equal(await executeTurnJob(job, ports, options), false, 'the turn waits for its retry');
+  assert.deepEqual(retries, [0], 'a retry is asked for');
+  assert.equal(calls.length, 0, 'the turn is not parked in recovery');
+
+  assert.equal(await executeTurnJob(job, ports, options), true, 'the retry answers');
+  assert.equal(contexts[0]?.botToken, AGENT_BOT, "as the Agent's own bot");
+  assert.equal(calls.includes('markRecoveryRequired'), false);
+}));
+
+test("Slack not answering an archive's uninstall leaves the Agent answering as its own bot, and archiving again finishes", async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  const uninstalls: string[] = [];
+  const deletes: string[] = [];
+  let unavailable = 1;
+  const slack = {
+    rotate: async () => ({ accessToken: 'xoxe.xoxp-1-access', refreshToken: 'xoxe-1-refresh-2', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 }),
+    uninstall: async ({ botToken }: { botToken: string }) => {
+      uninstalls.push(botToken);
+      if (unavailable > 0) { unavailable -= 1; throw new SlackUnavailable('apps.uninstall', 'http_502'); }
+      return 'removed' as const;
+    },
+    delete: async (_token: string, appId: string) => { deletes.push(appId); return 'deleted' as const; },
+  } as unknown as AgentAppSlackApi;
+  const keyring = loadCredentialKeyring();
+  assert.equal(await saveConfigurationToken(
+    { credentials: h.stores.settings as unknown as EncryptedCredentialStore, keyring, slack }, TEAM, 'xoxe-1-pasted-token-0000',
+  ), 'saved');
+  const posted: string[] = [];
+  const transport = {
+    disableUserGroup: async () => assert.fail('no user group is touched'),
+    enableUserGroup: async () => assert.fail('no user group is touched'),
+    openDirectConversation: async (userId: string) => ({ id: `D_${userId}`, private: true, member: true, archived: false }),
+    postMessage: async (input: { channelId: string; text: string }) => { posted.push(input.text); return { channelId: input.channelId, ts: '1.0' }; },
+  } as unknown as AgentAppTransport;
+  const service = new AgentSlackApps({
+    env: h.env, stores: { config: h.stores.config, settings: h.stores.settings as AppStores['settings'] & EncryptedCredentialStore },
+    host: HOST, transport, slack, keyring,
+  });
+
+  const live = await h.stores.config.getAgent('agent_support');
+  await assert.rejects(() => service.retire(live), (error: unknown) =>
+    error instanceof AgentPresenceError &&
+    error.message === "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.");
+  const kept = (await h.stores.config.getAgent('agent_support')).slackPresence;
+  assert.deepEqual(kept?.kind === 'agent_app' && kept.app, LIVE, 'the app is live as it was');
+  assert.equal(kept?.desiredState, 'active');
+  assert.equal(kept?.health, 'healthy');
+  assert.equal((await h.resolve(TEAM, 'agent_support')).botToken, AGENT_BOT, "the Agent still answers as its own bot");
+  assert.deepEqual(posted, [], 'a Slack that did not answer is not news for the Owner');
+  assert.deepEqual(deletes, []);
+
+  const retired = await service.retire(await h.stores.config.getAgent('agent_support'));
+  assert.equal(retired.outcome, 'removed', 'archiving again finishes');
+  assert.deepEqual(uninstalls, [AGENT_BOT, AGENT_BOT], 'the uninstall was retried');
+  assert.deepEqual(deletes, [APP_ID]);
+  assert.equal(retired.agent.slackPresence?.kind, undefined, 'the handle is back with its user group');
 }));
 
 test('without the port the resolver is the base resolver, even for an Agent whose record names an app', async (t) => withHarness(t, async (h) => {

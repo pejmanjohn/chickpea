@@ -14,7 +14,7 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
-import { readAppSecrets, type SecretDeps } from './secrets.ts';
+import { AgentAppSecretsUnreadable, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
 import { AgentSlackApps, type AgentAppTransport } from './service.ts';
 import { createAgentAppSlackApi } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -47,7 +47,8 @@ async function agentAppExecutionBot(env: PlatformEnv | undefined, agentId: strin
   if (!agent || presence?.kind !== 'agent_app') return { kind: 'not_app' };
   if (!agentAppIsLive(presence)) return { kind: 'unavailable' };
   const appId = presence.app.app.appId;
-  const stored = await readAppSecrets(secretDeps(env), appId).catch(() => undefined);
+  // Only an envelope that cannot be opened makes the app unavailable; a realm read that fails is retried with the turn.
+  const stored = await readAppSecrets(secretDeps(env), appId).catch(unreadableAsNone);
   if (!stored?.secrets.botToken) return { kind: 'unavailable' };
   return {
     kind: 'live',
@@ -107,14 +108,21 @@ export function withAgentAppExecution(
   };
 }
 
-/** What a host needs before it trusts a delivery for this app; undefined for an unknown or deleted app. */
+/**
+ * What a host needs before it trusts a delivery for this app; undefined for an
+ * unknown or deleted app, or one whose secrets cannot be opened, so the host
+ * acknowledges rather than asking Slack to retry a delivery nothing can verify.
+ */
 export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Promise<AgentSlackAppIngress | undefined> {
   const stores = resolveStores(env);
   const agent = (await stores.config.listAgents()).find((candidate) =>
     candidate.slackPresence?.kind === 'agent_app' && agentAppRecord(candidate.slackPresence.app)?.appId === appId
   );
   if (!agent) return undefined;
-  const stored = await readAppSecrets(secretDeps(env), appId);
+  const stored = await readAppSecrets(secretDeps(env), appId).catch((error: unknown) => {
+    if (error instanceof AgentAppSecretsUnreadable) console.warn(`[chickpea] agent_app_secrets_unreadable ${JSON.stringify({ appId })}`);
+    return unreadableAsNone(error);
+  });
   if (!stored) return undefined;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   const teamId = workspace?.teamId ?? workspace?.workspaceId;

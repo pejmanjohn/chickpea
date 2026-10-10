@@ -9,7 +9,8 @@ export type AgentAppRouteSelection = { kind: 'select'; agentId: string } | { kin
 /**
  * An Agent app's own ingress selects its Agent. On Chickpea's ingress a
  * Channel message that mentions a live Agent-app bot is that bot's to answer,
- * so it is ignored here; the same text in Chickpea's DM is Chickpea's.
+ * so it is ignored there unless the caller finds a user-group Agent named in it
+ * too; the same text in Chickpea's DM is Chickpea's.
  */
 export function agentAppRouteSelection(
   turn: Pick<NormalizedSlackTurn, 'text'>,

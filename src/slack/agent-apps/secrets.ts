@@ -52,6 +52,12 @@ export class AgentAppSecretsUnreadable extends Error {
   }
 }
 
+/** An envelope that cannot be opened reads as no secrets; a store that cannot be reached still throws. */
+export function unreadableAsNone(error: unknown): undefined {
+  if (error instanceof AgentAppSecretsUnreadable) return undefined;
+  throw error;
+}
+
 /** A compare-and-set on the realm lost to another writer. */
 export class LostRevision extends Error {
   readonly name = 'LostRevision';

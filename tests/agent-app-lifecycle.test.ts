@@ -66,6 +66,8 @@ const events = {
   archive_without_token: { type: 'archive', at: AT, hasBotToken: false },
   uninstalled: { type: 'uninstalled', at: AT },
   uninstall_refused: { type: 'uninstall_refused', at: AT },
+  uninstall_unanswered: { type: 'uninstall_unanswered', at: AT, restore: states.active },
+  uninstall_unanswered_other_app: { type: 'uninstall_unanswered', at: AT, restore: { ...states.active, app: { appId: 'A0OTHER', clientId: '9.9' } } },
   deleted: { type: 'deleted', at: AT },
   try_again: { type: 'try_again', at: AT, startedBy: 'UOWNER2', manifestFingerprint: 'f4' },
 } satisfies Record<string, AgentAppEvent>;
@@ -121,6 +123,7 @@ const allowed: Record<string, AgentAppTransition> = {
   'active -> archive_without_token': { state: 'uninstalling', at: AT, startedBy: 'UOWNER', app: APP, botUserId: 'UBOT', next: 'delete' },
   'uninstalling_uninstall -> uninstalled': { ...states.uninstalling_uninstall, at: AT, next: 'delete' },
   'uninstalling_uninstall -> uninstall_refused': { ...states.attention_uninstall, at: AT },
+  'uninstalling_uninstall -> uninstall_unanswered': states.active,
   'uninstalling_uninstall -> archive_with_token': states.uninstalling_uninstall,
   'uninstalling_uninstall -> archive_without_token': states.uninstalling_uninstall,
   'uninstalling_delete -> deleted': { state: 'deleted' },

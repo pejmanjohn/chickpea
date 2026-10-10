@@ -245,9 +245,13 @@ export async function resolveAgentRoute(
   }
 
   const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);
-  if (appSelection?.kind === 'ignore') return { kind: 'ignore' };
-
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
+  // A message that also names one of this installation's user-group Agents is
+  // still that Agent's here; the app's bot answers it on the app's own ingress.
+  if (appSelection?.kind === 'ignore' && !mentionedGroupIds.some((groupId) => agentClaimsByGroupId.has(groupId))) {
+    return { kind: 'ignore' };
+  }
+  const appAgentId = appSelection?.kind === 'select' ? appSelection.agentId : undefined;
   // A group that is not one of this installation's Agents (people, or another
   // app's Agent) is ordinary text: the message goes where it would without it.
   const mentionedAgents = mentionedGroupIds
@@ -290,7 +294,7 @@ export async function resolveAgentRoute(
   // reachable by this person here, or none is asked; the first is checked
   // below as the routed Agent.
   const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
-  if (addressed.length > 1 && !input.appHomeAgentId && !appSelection) {
+  if (addressed.length > 1 && !input.appHomeAgentId && appAgentId === undefined) {
     for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
@@ -306,9 +310,9 @@ export async function resolveAgentRoute(
 
   let source: AgentRouteSource;
   let selected: CustomAgentConfig | undefined;
-  if (appSelection) {
+  if (appAgentId !== undefined) {
     source = 'agent_app';
-    selected = agentsById.get(appSelection.agentId);
+    selected = agentsById.get(appAgentId);
   } else if (input.appHomeAgentId) {
     source = 'app_home';
     selected = agentsById.get(input.appHomeAgentId);
