@@ -223,7 +223,7 @@ export function renderSlackJourneyPage(input: {
   rootAttributes?: string;
   /** The onboarding step bar, under the brand row; steps before `current` show as done. */
   progress?: { steps: readonly OnboardingStep[]; current: OnboardingStepId } | undefined;
-  /** Who is signed in, in a success card above the eyebrow. */
+  /** A success card above the eyebrow, such as the Slack workspace a person signed in to. */
   badge?: string | undefined;
   /** Onboarding's split screen: this scene on the left, the page on the right. */
   scene?: OnboardingSceneId | undefined;

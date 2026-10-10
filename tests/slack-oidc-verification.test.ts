@@ -103,7 +103,7 @@ async function idToken(shape: TokenShape = {}): Promise<string> {
     .sign(shape.key ?? privateKey);
 }
 
-async function gatewayFor(credentials: SlackOidcCredentials, token: string, team = 'TACME') {
+async function gatewayFor(credentials: SlackOidcCredentials, token: string, team = 'TACME', userInfo: Record<string, unknown> = {}) {
   const jwk: JWK = await exportJWK(publicKey);
   Object.assign(jwk, { kid: 'slack-key-1', alg: 'RS256', use: 'sig' });
   const requests: Request[] = [];
@@ -121,6 +121,7 @@ async function gatewayFor(credentials: SlackOidcCredentials, token: string, team
         return json({
           ok: true, sub: 'UOWNER', name: 'Acme Owner',
           'https://slack.com/team_id': team, 'https://slack.com/user_id': 'UOWNER',
+          ...userInfo,
         });
       }
       if (request.url === 'https://slack.com/api/users.info') {
@@ -179,6 +180,27 @@ test('the ID token must carry the nonce, access-token hash, issuer, audience and
       gateway.exchangeAndVerify({ attempt: attempt({ credentialRevision: revision }), code: 'code', nonce: NONCE }),
       rejectsWith('workspace_mismatch'),
     );
+  } finally {
+    identity.close();
+  }
+});
+
+test('the proof carries the workspace name Slack sends, trimmed and bounded, and none when Slack sends none', async () => {
+  const { identity, credentials } = store();
+  try {
+    const port = standaloneSlackOidcCredentials(credentials);
+    const binding = attempt({ credentialRevision: await standaloneInstallation(credentials) });
+    const verify = async (teamName: unknown) => {
+      const { gateway } = await gatewayFor(port, await idToken(), 'TACME', { 'https://slack.com/team_name': teamName });
+      return gateway.exchangeAndVerify({ attempt: binding, code: 'code', nonce: NONCE });
+    };
+    assert.deepEqual(await verify('  Chickpea Amber  '), {
+      slackTeamId: 'TACME', slackUserId: 'UOWNER', displayName: 'Acme Owner', teamName: 'Chickpea Amber',
+    });
+    assert.equal((await verify('W'.repeat(500))).teamName, 'W'.repeat(120));
+    for (const none of [undefined, '', '   ', 42, null, ['Chickpea Amber']]) {
+      assert.equal('teamName' in await verify(none), false, JSON.stringify(none));
+    }
   } finally {
     identity.close();
   }

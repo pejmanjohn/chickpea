@@ -288,13 +288,13 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   const html = renderSlackJourneyPage({
     ...base,
     progress: { steps: onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true }), current: 'github' },
-    badge: 'Signed in with Slack as <Ana & "Bo">',
+    badge: 'Acme <Ops> & "Co"',
   });
   const progress = '<ol class="auth-progress" role="list" aria-label="Onboarding progress">' +
     '<li class="auth-progress-done"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Done</span></li>' +
     '<li class="auth-progress-current" aria-current="step"><span class="onboarding-step-label">Connect GitHub</span><span class="onboarding-step-note">Optional</span></li>' +
     '<li><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
-  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Signed in with Slack as &lt;Ana &amp; &quot;Bo&quot;&gt;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
+  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Acme &lt;Ops&gt; &amp; &quot;Co&quot;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
   assert.ok(html.includes(`</div>${progress}${badge}<p class="auth-eyebrow">Step 2 of 3</p>`), 'brand row, steps, badge, then the eyebrow');
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   const classes = new Set([...`${progress}${badge}`.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
@@ -334,7 +334,7 @@ test('a host\'s onboarding page can be a split screen: the scene on the left, br
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true });
   const html = renderSlackJourneyPage({
     surface: 'add-to-slack', eyebrow: 'Step 1 of 3', title: 'Now add Chickpea to Slack', body: '<p>Body</p>',
-    progress: { steps, current: 'slack' }, badge: 'Signed in with Slack as Ana', scene: 'add-to-slack',
+    progress: { steps, current: 'slack' }, badge: 'Violet', scene: 'add-to-slack',
   });
   const body = html.slice(html.indexOf('<body'));
   assert.match(body, /^<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand"><div class="auth-brand">[\s\S]*?<\/div><\/div><aside class="onboarding-scene onboarding-tone-apricot" data-scene="add-to-slack">[\s\S]*?<p class="onboarding-caption">Bags packed\. Where to\?<\/p><\/aside><main class="auth-card" aria-labelledby="auth-title"><ol class="auth-progress"[\s\S]*?<\/ol><div class="auth-body"><div class="auth-badge">[\s\S]*?<p class="auth-eyebrow">Step 1 of 3<\/p>/);
