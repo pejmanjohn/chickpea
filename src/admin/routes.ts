@@ -2389,6 +2389,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c: Context,
     agent: CustomAgentConfig,
     actor: { principal: AuthPrincipal; slackUserId: string; slackTeamId: string },
+    options: { edited?: boolean } = {},
   ): Promise<CustomAgentConfig> => {
     const workspaceId = actor.slackTeamId;
     const transport = await agentSlackTransport(c, workspaceId);
@@ -2399,7 +2400,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         grant.status !== 'active',
     );
     if (pendingGrants.length === 0) return reconciler.retry(agent.id);
-    let updated = agent;
+    // An edit reaches Slack's user group first: a pending Channel add's own
+    // publish needs the editor in that Channel, and must not hold the edit back.
+    let updated = options.edited ? await reconciler.retry(agent.id) : agent;
     for (const pendingGrant of pendingGrants) {
       updated = (await reconciler.publish({
         workspaceId,
@@ -9662,7 +9665,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
       if (reconcilePresence) {
         try {
-          updated = await reconcileAgentSlackPresence(c, updated, await agentActor(c));
+          updated = await reconcileAgentSlackPresence(c, updated, await agentActor(c), { edited: true });
         } catch (error) {
           const classified = classifyAgentPresenceError(error);
           updated = await configStore.getAgent(agentId);
