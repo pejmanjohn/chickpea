@@ -102,10 +102,12 @@ the port on its staging deployment only, behind its own staging-only switch.
 
 ### The configuration token's limits
 
-- Slack lets each person hold one configuration token per workspace. An Owner
-  who builds their own Slack apps in that workspace should not paste it: their
-  tools and Chickpea would keep replacing each other's token. Another Owner
-  should do this step.
+- Slack caps how many configuration tokens one person holds in a workspace,
+  and leaves the workspace out of Generate Token's picker once the cap is
+  reached. The Owner deletes a token they no longer use under Your App
+  Configuration Tokens, or another Owner does this step. Separate tokens rotate
+  independently, so Chickpea's token and the Owner's own tools never replace
+  each other's.
 - The token can manage every app its person created in the workspace.
   Chickpea changes only the apps it creates for Agents.
 - Chickpea cannot revoke the token: revoking the access token leaves the

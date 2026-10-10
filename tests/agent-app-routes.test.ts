@@ -100,7 +100,8 @@ test('the token page and its form are for Owners with the port, and 404 without 
   assert.match(html, /name="refreshToken" type="password"/);
   assert.match(html, /Starts with xoxe-/);
   assert.match(html, /Create Support(&#39;|')s Slack app/);
-  assert.match(html, /Slack lets each person hold one configuration token per workspace/);
+  assert.match(html, /<p>If Slack doesn(&#39;|')t offer this workspace when you choose Generate Token, you already hold as many tokens as Slack allows there\. Delete one you no longer use under Your App Configuration Tokens, or ask another Owner to do this step\.<\/p>/);
+  assert.equal(html.includes('replacing each other'), false);
   assert.match(html, /Chickpea only changes the apps it creates for your Agents/);
   assert.equal(html.includes('Remove the configuration token'), false, 'nothing to remove yet');
 
