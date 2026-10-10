@@ -11,6 +11,7 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import { onboardingSteps } from '../src/admin/onboarding-steps.ts';
+import { fontFaceCss, JOURNEY_FONTS } from '../src/assets/fonts.ts';
 import type { SlackSetupTransaction } from '../src/identity/types.ts';
 import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
@@ -317,14 +318,15 @@ test('the shell step bar marks every step done before the current one, and none 
   assert.deepEqual(states('github'), ['auth-progress-done:Add to Slack:Done', 'auth-progress-done:Choose provider:Done', 'auth-progress-done:Choose model:Done', 'auth-progress-current:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
 });
 
-test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, which the auth pages\' policy allows', async () => {
+test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, served by Chickpea itself', async () => {
   const pages = [
     renderSlackJourneyPage({ surface: 's', eyebrow: 'E', title: 'T', body: '' }),
     renderSlackSignInPage('/admin'),
     renderSlackOwnerCompletePage('/admin'),
   ];
   for (const html of pages) {
-    assert.match(html, /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/css2\?family=Baloo\+2:wght@600;700;800&amp;family=Quicksand:wght@500;600;700&amp;display=swap">/);
+    assert.ok(html.includes(`<style>\n${fontFaceCss(JOURNEY_FONTS)}\n`), 'the shell declares its own font faces first');
+    assert.doesNotMatch(html, /<link rel="(?:stylesheet|preconnect)"|fonts\.googleapis|fonts\.gstatic/);
     assert.match(html, /body\{[^}]*font-family:Quicksand,/);
     assert.match(html, /\.auth-title\{[^}]*font-family:"Baloo 2",/);
   }

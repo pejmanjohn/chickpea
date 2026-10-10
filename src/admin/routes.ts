@@ -11712,7 +11712,7 @@ function authResponseHeaders(c: Context): void {
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   c.header(
     'Content-Security-Policy',
-    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data: https://*.slack-edge.com https://secure.gravatar.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; font-src 'self'; connect-src 'self'; img-src 'self' data: https://*.slack-edge.com https://secure.gravatar.com; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   );
 }
 
