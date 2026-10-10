@@ -1,4 +1,9 @@
-import type { CustomAgentConfig, ResolvedAssignment } from '../config/types.ts';
+import {
+  agentAppIsLive,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+  type SlackAgentAddress,
+} from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
 import type { NormalizedSlackTurn } from './types.ts';
 
@@ -78,14 +83,16 @@ export function isLaterCoAddressedTurn(turn: Pick<NormalizedSlackTurn, 'coAddres
 }
 
 /**
- * The handle an Agent is asked by, with the user group Slack renders it
- * with: only an Agent whose handle is published has one.
+ * The handle an Agent is asked by, with how Slack writes it live: the user
+ * group of a published handle, or the bot user of the Agent's own live app.
  */
 export function agentSlackHandle(
   agent: Pick<CustomAgentConfig, 'slackPresence'>,
-): { handle: string; userGroupId: string } | undefined {
-  const userGroupId = agent.slackPresence?.userGroupId;
-  return userGroupId ? { handle: agent.slackPresence!.normalizedHandle, userGroupId } : undefined;
+): ({ handle: string } & SlackAgentAddress) | undefined {
+  const presence = agent.slackPresence;
+  if (agentAppIsLive(presence)) return { handle: presence.normalizedHandle, botUserId: presence.app.botUserId };
+  const userGroupId = presence?.userGroupId;
+  return userGroupId ? { handle: presence.normalizedHandle, userGroupId } : undefined;
 }
 
 /**
@@ -95,6 +102,20 @@ export function agentSlackHandle(
  */
 export function agentMayAskTeammates(agent: Pick<CustomAgentConfig, 'kind'>): boolean {
   return agent.kind === 'user';
+}
+
+const BOT_USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/** The bot users a delivered message mentions outside code; which are Agents' own apps is the host's to decide. */
+export function mentionedBotUsers(text: string): string[] {
+  const ids: string[] = [];
+  text.split(SLACK_CODE_SEGMENT).forEach((segment, index) => {
+    if (index % 2 === 1) return;
+    for (const match of segment.matchAll(BOT_USER_MENTION)) {
+      if (!ids.includes(match[1]!)) ids.push(match[1]!);
+    }
+  });
+  return ids;
 }
 
 /**

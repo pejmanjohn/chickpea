@@ -260,6 +260,7 @@ test('an authenticated unknown group repairs a proven interrupted-create mapping
       lifecycle: 'needs_attention',
       slackPresence: {
         ...support.slackPresence!,
+        kind: 'user_group',
         userGroupId: 'SOLD',
         health: 'needs_attention',
         errorCode: 'user_group_create_ambiguous',
@@ -362,7 +363,7 @@ test('a stored group id with competing Agent claims fails closed without a direc
   const { store, finance } = await fixture();
   try {
     await store.updateAgent(finance.id, {
-      slackPresence: { ...finance.slackPresence!, userGroupId: 'SSUPPORT' },
+      slackPresence: { ...finance.slackPresence!, kind: 'user_group', userGroupId: 'SSUPPORT' },
     }, finance.revision);
     let lookups = 0;
     const resolved = await resolveAgentRoute({
@@ -391,6 +392,7 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
       lifecycle: 'needs_attention',
       slackPresence: {
         ...support.slackPresence!,
+        kind: 'user_group',
         userGroupId: 'SOLD',
         desiredState: 'active',
         health: 'needs_attention',
@@ -443,7 +445,7 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
         name: 'competing group claim',
         agents: [
           proven,
-          { ...finance, slackPresence: { ...finance.slackPresence!, userGroupId: group.id } },
+          { ...finance, slackPresence: { ...finance.slackPresence!, kind: 'user_group', userGroupId: group.id } },
         ],
         grants: [grant],
       },
@@ -485,6 +487,7 @@ test('directory repair turns a concurrent Agent edit into a retryable safe denia
       lifecycle: 'needs_attention',
       slackPresence: {
         ...support.slackPresence!,
+        kind: 'user_group',
         userGroupId: 'SOLD',
         desiredState: 'active',
         health: 'needs_attention',

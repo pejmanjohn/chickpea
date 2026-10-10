@@ -47,6 +47,8 @@ export interface SlackInstallationExecutionContext {
 
 export type SlackInstallationExecutionResolver = (
   workspaceId: string,
+  /** The Agent the turn runs as; one with its own Slack app answers as that bot. */
+  agentId?: string,
 ) => Promise<SlackInstallationExecutionContext>;
 
 export type SlackInstallationAccessVerifier = (

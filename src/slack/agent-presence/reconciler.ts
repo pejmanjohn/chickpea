@@ -3,6 +3,8 @@ import type {
   AgentChannelGrant,
   AgentSlackPresence,
   CustomAgentConfig,
+  PendingUserGroupCreate,
+  UserGroupPresence,
 } from '../../config/types.ts';
 import {
   SlackTransportError,
@@ -21,6 +23,8 @@ interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
   announce: AgentPresenceAnnouncements | null;
+  /** Retires an Agent's own Slack app before the Agent is archived; absent on a host without Agent apps. */
+  agentApps?: { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> };
   now?: () => number;
 }
 
@@ -216,6 +220,7 @@ async function repairMentionedAgentUserGroupOnce(
     agent.enabled &&
     agent.lifecycle !== 'archived' &&
     agent.lifecycle !== 'draft' &&
+    agent.slackPresence?.kind !== 'agent_app' &&
     agent.slackPresence?.desiredState === 'active' &&
     normalizeAgentHandle(
       agent.slackPresence.normalizedHandle ||
@@ -239,7 +244,7 @@ async function repairMentionedAgentUserGroupOnce(
     return { kind: 'unknown' };
   }
 
-  const presence = agent.slackPresence!;
+  const presence = userGroupPresence(agent);
   try {
     const repaired = await input.config.updateAgent(
       agent.id,
@@ -374,7 +379,7 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
-    if (pendingGrant.status !== 'active') {
+    if (pendingGrant.status !== 'active' && published.slackPresence?.kind !== 'agent_app') {
       await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
         workspaceId: input.workspaceId,
         channelId: input.channelId,
@@ -391,7 +396,7 @@ export class AgentPresenceReconciler {
     const before = await this.dependencies.config.getAgent(agentId);
     const wasLive = handleIsLive(before);
     const reconciled = await this.reconcileOnce(agentId, 0);
-    if (!wasLive) {
+    if (!wasLive && handleIsLive(reconciled)) {
       await this.announceBestEffort('handleWentLive', reconciled.id, (announce) => announce.handleWentLive(reconciled));
     }
     return reconciled;
@@ -404,6 +409,7 @@ export class AgentPresenceReconciler {
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be reconciled.');
     }
     const presence = requiredPresence(agent);
+    if (presence.kind === 'agent_app') return agent;
     const normalizedHandle = normalizeAgentHandle(presence.requestedHandle || agent.name);
     agent = await config.updateAgent(
       agent.id,
@@ -454,7 +460,7 @@ export class AgentPresenceReconciler {
         agent.id,
         {
           slackPresence: {
-            ...requiredPresence(agent),
+            ...userGroupPresence(agent),
             pendingCreate,
           },
         },
@@ -492,7 +498,7 @@ export class AgentPresenceReconciler {
       if (group.disabled) group = await transport.enableUserGroup(group.id);
     }
     let current = await config.getAgent(agent.id);
-    const currentPresence = requiredPresence(current);
+    const currentPresence = userGroupPresence(current);
     if (current.lifecycle === 'archived' || currentPresence.desiredState === 'disabled') {
       if (!group.disabled) await transport.disableUserGroup(group.id);
       throw new AgentPresenceError('slack_operation_failed', 'Archived Agents cannot be reconciled.');
@@ -530,7 +536,7 @@ export class AgentPresenceReconciler {
         lifecycle: 'active',
         enabled: true,
         slackPresence: {
-          ...withoutPendingCreate(withoutPresenceErrors(requiredPresence(current))),
+          ...withoutPendingCreate(withoutPresenceErrors(userGroupPresence(current))),
           requestedHandle: presence.requestedHandle || normalizedHandle,
           normalizedHandle,
           desiredState: 'active',
@@ -574,6 +580,16 @@ export class AgentPresenceReconciler {
         'slack_operation_failed',
         `Choose a replacement default Agent before archiving ${agent.name}.`,
       );
+    }
+    if (agent.slackPresence?.kind === 'agent_app') {
+      const { agentApps } = this.dependencies;
+      if (!agentApps) {
+        throw new AgentPresenceError(
+          'slack_operation_failed',
+          `Chickpea couldn't remove ${agent.name}'s Slack app, so ${agent.name} is not archived. Try again in a minute.`,
+        );
+      }
+      agent = await agentApps.retire(agent);
     }
     const presence = requiredPresence(agent);
     agent = await config.updateAgent(
@@ -791,23 +807,30 @@ function requiredPresence(agent: CustomAgentConfig): AgentSlackPresence {
   return agent.slackPresence;
 }
 
+/** The presence a user-group step writes; an Agent that got its own Slack app mid-flight is refused. */
+function userGroupPresence(agent: CustomAgentConfig): UserGroupPresence {
+  const presence = requiredPresence(agent);
+  if (presence.kind === 'agent_app') throw new Error(`Agent ${agent.id} has its own Slack app`);
+  return presence;
+}
+
 type PresenceErrorField = 'errorCode' | 'errorDetail' | 'handleSuggestions';
 
-function withoutPresenceErrors(
-  presence: AgentSlackPresence,
-): Omit<AgentSlackPresence, PresenceErrorField> {
+type WithoutPresenceErrors<P> = P extends AgentSlackPresence ? Omit<P, PresenceErrorField> : never;
+
+function withoutPresenceErrors<P extends AgentSlackPresence>(presence: P): WithoutPresenceErrors<P> {
   const {
     errorCode: _errorCode,
     errorDetail: _errorDetail,
     handleSuggestions: _handleSuggestions,
     ...clean
   } = presence;
-  return clean;
+  return clean as WithoutPresenceErrors<P>;
 }
 
 function withoutPendingCreate(
-  presence: Omit<AgentSlackPresence, PresenceErrorField>,
-): Omit<AgentSlackPresence, PresenceErrorField | 'pendingCreate'> {
+  presence: WithoutPresenceErrors<UserGroupPresence>,
+): Omit<UserGroupPresence, PresenceErrorField | 'pendingCreate'> {
   const { pendingCreate: _pendingCreate, ...clean } = presence;
   return clean;
 }
@@ -823,7 +846,7 @@ function hasAmbiguousCreateOwnershipProof(
 
 function matchesAmbiguousCreateLease(
   group: SlackUserGroup,
-  lease: AgentSlackPresence['pendingCreate'],
+  lease: PendingUserGroupCreate | undefined,
 ): boolean {
   if (!lease || group.updatedAt === undefined) return false;
   return group.name === lease.name &&

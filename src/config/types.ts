@@ -184,30 +184,120 @@ export interface AgentAvatarRevision {
   generatedSeedHistory?: Array<{ throughRevision: number; seed: string }>;
 }
 
-/** Desired and observed Slack address state owned directly by an Agent. */
-export interface AgentSlackPresence {
+export interface AgentPresenceBase {
   requestedHandle: string;
   normalizedHandle: string;
   desiredState: AgentPresenceDesiredState;
   health: AgentPresenceHealth;
   avatar: AgentAvatarRevision;
-  userGroupId?: string;
-  /**
-   * Durable evidence recorded immediately before a non-idempotent
-   * `usergroups.create` call. Slack has no idempotency key for that API, so a
-   * retry may adopt a matching group only when its immutable preflight facts
-   * prove that it was created by the ambiguous attempt.
-   */
-  pendingCreate?: {
-    name: string;
-    handle: string;
-    description: string;
-    startedAt: number;
-  };
   errorCode?: string;
   errorDetail?: string;
   handleSuggestions?: string[];
   observedAt?: number;
+}
+
+/**
+ * Durable evidence recorded immediately before a non-idempotent
+ * `usergroups.create` call. Slack has no idempotency key for that API, so a
+ * retry may adopt a matching group only when its immutable preflight facts
+ * prove that it was created by the ambiguous attempt.
+ */
+export interface PendingUserGroupCreate {
+  name: string;
+  handle: string;
+  description: string;
+  startedAt: number;
+}
+
+/** An Agent addressed through a Slack user group. Stored JSON without `kind` is this shape. */
+export interface UserGroupPresence extends AgentPresenceBase {
+  kind?: 'user_group';
+  userGroupId?: string;
+  pendingCreate?: PendingUserGroupCreate;
+}
+
+/** The Slack app Chickpea created for one Agent, without its secrets. */
+export interface AgentAppRecord {
+  appId: string;
+  clientId: string;
+}
+
+export type AgentAppIcon = 'agent_avatar' | 'default_avatar' | 'not_set';
+
+/** Where the sequence picks up after an Owner chooses Try again. */
+export type AgentAppResume = 'releasing_handle' | 'creating' | 'created' | 'icon_set' | 'uninstalling';
+
+export type AgentAppAttention =
+  | 'handle_release_failed'
+  | 'ambiguous_create'
+  | 'create_refused'
+  | 'slack_busy'
+  | 'urls_refused'
+  | 'config_token_needed'
+  | 'app_removed'
+  | 'uninstall_failed';
+
+export type AgentAppLifecycle =
+  | { state: 'releasing_handle'; at: number; startedBy: string }
+  /** Written before the create call, which has no idempotency key. */
+  | { state: 'creating'; at: number; startedBy: string; manifestFingerprint: string }
+  | { state: 'created'; at: number; startedBy: string; app: AgentAppRecord }
+  | { state: 'urls_set'; at: number; startedBy: string; app: AgentAppRecord }
+  | { state: 'icon_set'; at: number; startedBy: string; app: AgentAppRecord; icon: AgentAppIcon }
+  | {
+      state: 'awaiting_consent';
+      at: number;
+      startedBy: string;
+      app: AgentAppRecord;
+      icon: AgentAppIcon;
+      allowDm: { channelId: string; ts: string };
+      consent?: { nonceDigest: string; owner: string; expiresAt: number };
+    }
+  | {
+      state: 'active';
+      at: number;
+      app: AgentAppRecord;
+      icon: AgentAppIcon;
+      botUserId: string;
+      installedAt: number;
+      installedBy: string;
+    }
+  | { state: 'uninstalling'; at: number; startedBy: string; app: AgentAppRecord; botUserId?: string; next: 'uninstall' | 'delete' }
+  | {
+      state: 'needs_attention';
+      at: number;
+      startedBy: string;
+      reason: AgentAppAttention;
+      resume: AgentAppResume;
+      app?: AgentAppRecord;
+      icon?: AgentAppIcon;
+      botUserId?: string;
+    };
+
+/**
+ * An Agent with its own Slack app. `app` is the source of truth; the base's
+ * `desiredState` and `health` are derived from it on every read, so no stored
+ * flag can disagree with the lifecycle.
+ */
+export interface AgentAppPresence extends AgentPresenceBase {
+  kind: 'agent_app';
+  app: AgentAppLifecycle;
+  /** The user group that held the handle; retire re-enables it. */
+  released?: { userGroupId: string };
+  userGroupId?: never;
+  pendingCreate?: never;
+}
+
+/** Desired and observed Slack address state owned directly by an Agent. */
+export type AgentSlackPresence = UserGroupPresence | AgentAppPresence;
+
+export type ActiveAgentApp = Extract<AgentAppLifecycle, { state: 'active' }>;
+
+/** An Agent whose own Slack app is installed and answering. */
+export function agentAppIsLive(
+  presence: AgentSlackPresence | undefined,
+): presence is AgentAppPresence & { app: ActiveAgentApp } {
+  return presence?.kind === 'agent_app' && presence.app.state === 'active';
 }
 
 export interface CustomAgentConfig {
@@ -846,12 +936,12 @@ export interface ResolvedAssignment {
   modelCredential?: ModelCredentialAttribution;
 }
 
-export interface AgentTeammate {
-  name: string;
-  handle: string;
-  /** Slack writes a live mention of the handle with this user group. */
-  userGroupId: string;
-}
+/** How Slack writes a live mention of an Agent: its user group, or its own app's bot user. */
+export type SlackAgentAddress =
+  | { userGroupId: string }
+  | { botUserId: string };
+
+export type AgentTeammate = { name: string; handle: string } & SlackAgentAddress;
 
 // A snapshot IS a resolved assignment frozen at a thread's first turn, plus the
 // resolved model/provider/instructions. Declaring the relation lets a

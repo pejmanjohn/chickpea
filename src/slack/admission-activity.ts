@@ -35,7 +35,9 @@ export async function presentAdmittedSlackActivity(
 ): Promise<boolean> {
   const agentName = input.owner.kind === 'selected_agent'
     ? input.owner.persona.name
-    : 'Chickpea';
+    : input.owner.kind === 'agent_app'
+      ? input.owner.agentName
+      : 'Chickpea';
   const agentView = new SlackAgentViewPresentation({
     client: input.client,
     state: input.state,

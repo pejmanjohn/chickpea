@@ -56,7 +56,7 @@ function pendingJob(overrides: Partial<PendingTurnJob> = {}): PendingTurnJob {
 }
 
 /** Ports that record every write; `runTurn` follows the given script. */
-function fakePorts(script: RunTurnScript, installation?: () => Promise<unknown>) {
+function fakePorts(script: RunTurnScript, installation?: (workspaceId: string, agentId?: string) => Promise<unknown>) {
   const calls: string[] = [];
   const runs: RunTurnOptions[] = [];
   const record = (name: string) => (...args: unknown[]) => {
@@ -690,4 +690,14 @@ test('a given-up turn with no receipt asks the host nothing', async (t) => {
   );
   assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
   assert.deepEqual(creditBacks, []);
+});
+
+test("the installation is resolved for the turn's Agent, so an Agent with its own app answers as its bot", async () => {
+  const seen: Array<[string, string | undefined]> = [];
+  const h = fakePorts(async (options) => { await options.onDelivered?.('completed' as never); }, async (workspaceId: string, agentId?: string) => {
+    seen.push([workspaceId, agentId]);
+    return { workspaceId, client: {} as WebClient } as never;
+  });
+  assert.equal(await executeTurnJob(pendingJob(), h.ports, h.options), true);
+  assert.deepEqual(seen, [['T1', 'analyst']]);
 });

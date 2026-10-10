@@ -9,7 +9,9 @@ export type SlackCredentialPurpose =
   | 'gateway_delivery_key'
   | 'managed_connector_project_key'
   | 'chatgpt_plan'
-  | 'website_login';
+  | 'website_login'
+  | 'agent_slack_app'
+  | 'slack_configuration_token';
 
 /**
  * The purpose of an installation's model provider key. It is not a Slack

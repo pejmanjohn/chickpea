@@ -272,6 +272,7 @@ test('a Slack creation freezes one welcome with connector handoffs and its publi
     await f.config.updateAgent(created.id, {
       slackPresence: {
         ...created.slackPresence!,
+        kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
         userGroupId: 'SDECKWELCOME',
@@ -569,6 +570,7 @@ test('a creation that took a handle variation tells the requester both handles',
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
             ...current.slackPresence!,
+            kind: 'user_group',
             desiredState: 'active',
             health: 'healthy',
             userGroupId: 'S_SUPPORT_TEAM',

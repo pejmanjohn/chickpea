@@ -183,7 +183,7 @@ export function agentTeammateHandles(
 ): ReadonlyMap<string, string> | undefined {
   const teammates = askableTeammates(assignment);
   return teammates.length
-    ? new Map(teammates.map(({ handle, userGroupId }) => [handle, userGroupId]))
+    ? new Map(teammates.map((teammate) => [teammate.handle, 'userGroupId' in teammate ? teammate.userGroupId : teammate.botUserId]))
     : undefined;
 }
 

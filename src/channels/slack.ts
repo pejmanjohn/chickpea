@@ -3,9 +3,20 @@ import {
   createSlackChannel,
   type SlackChannel,
   type SlackChannelOptions,
+  type SlackInteractionPayload,
 } from '@flue/slack';
 import { createChannelRouter } from '@flue/runtime';
 import type { Context } from 'hono';
+import {
+  type AgentAppBotCredentials,
+  type AgentSlackAppHandoff,
+  agentAppBotCredentials,
+  agentAppHomeRows,
+  agentAppIsLive,
+  agentSlackAppsHost,
+  endAgentSlackApp,
+  handleAgentAppHomeAction,
+} from '../slack/agent-apps/index.ts';
 
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
@@ -55,6 +66,7 @@ import {
 import type {
   CustomAgentConfig,
   ResolvedAssignment,
+  WorkspaceInstallation,
 } from '../config/types.ts';
 import {
   resolveSlackBehaviorSettings,
@@ -196,6 +208,7 @@ import {
   agentAskOrigin,
   agentSlackHandle,
   isHandedBackTurn,
+  mentionedBotUsers,
   mentionedHandleWords,
   type SlackAgentAskRequest,
 } from '../slack/agent-asks.ts';
@@ -396,6 +409,10 @@ function channelForInstallation(
   signingSecret: string,
   credentialRevision: string | null,
   key = credentialRevision ?? 'current',
+  handlers: Pick<SlackChannelOptions, 'events' | 'interactions'> = {
+    events: handleDirectSlackEvents(credentialRevision),
+    interactions: handleDirectSlackInteractions(),
+  },
 ): SlackChannel {
   const cached = verifiedChannels.get(key);
   if (cached?.signingSecret === signingSecret) return cached.channel;
@@ -405,8 +422,7 @@ function channelForInstallation(
     channel: createSlackChannel({
       signingSecret,
       bodyLimit: MAX_SLACK_INGRESS_BYTES,
-      events: handleDirectSlackEvents(credentialRevision),
-      interactions: handleDirectSlackInteractions(),
+      ...handlers,
     }),
   };
   verifiedChannels.set(key, entry);
@@ -631,6 +647,152 @@ export const channel: SlackChannel = {
   parseInstanceId: (id) => installedChannel().parseInstanceId(id),
 };
 
+/**
+ * One delivery for an Agent's own Slack app, handed in by a host with the
+ * app's signing secret. It is verified again here, keyed by the app, and runs
+ * as the Agent's bot on this direct installation.
+ */
+export async function serveAgentAppSlackDelivery(
+  c: Context,
+  handoff: Extract<AgentSlackAppHandoff, { kind: 'delivery' }>,
+): Promise<Response> {
+  const path = new URL(c.req.url).pathname.endsWith('/interactions') ? '/interactions' : '/events';
+  if (path === '/events') {
+    const ingress = await readSlackIngressBody(c.req.raw);
+    if (!ingress.ok) {
+      return c.json({ error: ingress.status === 413 ? 'request_too_large' : 'invalid_request' }, ingress.status);
+    }
+    c.req.raw = requestWithBufferedBody(c.req.raw, ingress.body);
+  }
+  const route = channelForInstallation(handoff.signingSecret, null, `agent:${handoff.appId}`, {
+    events: handleAgentAppSlackEvents(handoff),
+    interactions: handleAgentAppSlackInteractions(handoff),
+  }).routes.find((candidate) => candidate.path === path);
+  if (!route) throw new Error(`Slack channel lost its ${path} route`);
+  return route.handler(c, async () => {});
+}
+
+/**
+ * An Owner's App Home or DM control of an Agent app (give, finish, try again):
+ * handled with the installation's bot and the Owner's role, then the App
+ * Home is published again. False when the click is none of them.
+ */
+async function serveAgentAppHomeAction(
+  c: Parameters<NonNullable<SlackChannelOptions['interactions']>>[0]['c'],
+  payload: SlackInteractionPayload,
+): Promise<boolean> {
+  const platformEnv = c.env as PlatformEnv | undefined;
+  const workspaceId = payload.team?.id;
+  const userId = payload.user?.id;
+  if (!workspaceId || !userId) return false;
+  return handleAgentAppHomeAction({
+    env: platformEnv,
+    payload,
+    viewer: async () => {
+      const stores = resolveStores(platformEnv);
+      const installation = await stores.config.getWorkspaceInstallation(workspaceId);
+      if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked') return undefined;
+      const credentials = await directSlackCredentials(c, platformEnv);
+      if (credentials instanceof Response) return undefined;
+      const botUserId = await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
+      if (!botUserId) return undefined;
+      const transport = createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken);
+      const actor = await resolveAgentRoutingActor({ workspaceId, userId, botUserId, transport, stores });
+      return {
+        role: actor.principal?.role,
+        republish: () => publishAgentAppHome({ workspaceId, userId, stores, transport, botUserId, actor, platformEnv }),
+      };
+    },
+  });
+}
+
+/** The bot users of this installation: its own, and every live Agent app's. */
+function tenantBotUserIds(agents: readonly CustomAgentConfig[], installationBotUserId: string | undefined): string[] {
+  const ids = agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []);
+  return installationBotUserId ? [installationBotUserId, ...ids] : ids;
+}
+
+/** The verified payload names this app and this installation's workspace, or it is nobody's. */
+async function agentAppDeliveryInstallation(
+  payload: { api_app_id?: unknown },
+  teamId: string | undefined,
+  handoff: Extract<AgentSlackAppHandoff, { kind: 'delivery' }>,
+  platformEnv: PlatformEnv | undefined,
+): Promise<WorkspaceInstallation | undefined> {
+  if (payload.api_app_id !== handoff.appId || !teamId) return undefined;
+  const installation = await resolveStores(platformEnv).config.getWorkspaceInstallation(teamId);
+  if (!installation || installation.transportMode !== 'direct' || installation.health === 'revoked') return undefined;
+  return installation;
+}
+
+function agentAppExecution(bot: AgentAppBotCredentials, platformEnv: PlatformEnv | undefined): SlackEventExecution {
+  return {
+    transport: createDirectSlackTransport(bot.botToken, undefined),
+    client: createSlackWebClient(bot.botToken),
+    botUserId: bot.botUserId,
+    stores: resolveStores(platformEnv),
+    agentApp: { agentId: bot.agentId },
+  };
+}
+
+function handleAgentAppSlackEvents(
+  handoff: Extract<AgentSlackAppHandoff, { kind: 'delivery' }>,
+): NonNullable<SlackChannelOptions['events']> {
+  return async ({ c, payload }) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const route = hostedSlackEventRoute(payload);
+    const installation = await agentAppDeliveryInstallation(
+      payload, route.route === 'installation' ? route.teamId : undefined, handoff, platformEnv,
+    );
+    if (!installation) return c.json({ error: 'not_found' }, 404);
+    // The installation's own credential gate stands for its Agent apps: a tenant in recovery serves nothing.
+    const gate = await directSlackCredentials(c, platformEnv);
+    if (gate instanceof Response) return gate;
+    const eventType = payload.type === 'event_callback' && payload.event && typeof payload.event === 'object'
+      ? (payload.event as { type?: unknown }).type
+      : undefined;
+    if (eventType === 'app_uninstalled' || eventType === 'tokens_revoked') {
+      await endAgentSlackApp(platformEnv ?? {}, handoff.appId, payload as unknown as Record<string, unknown>);
+      return;
+    }
+    const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
+    if (!bot) return;
+    await processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, agentAppExecution(bot, platformEnv));
+  };
+}
+
+function handleAgentAppSlackInteractions(
+  handoff: Extract<AgentSlackAppHandoff, { kind: 'delivery' }>,
+): NonNullable<SlackChannelOptions['interactions']> {
+  return async ({ c, payload }) => {
+    const platformEnv = c.env as PlatformEnv | undefined;
+    const route = hostedSlackInteractionRoute(payload);
+    const installation = await agentAppDeliveryInstallation(
+      payload, route.route === 'installation' ? route.teamId : undefined, handoff, platformEnv,
+    );
+    if (!installation) return c.json({ error: 'not_found' }, 404);
+    const gate = await directSlackCredentials(c, platformEnv);
+    if (gate instanceof Response) return gate;
+    const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
+    if (!bot) return;
+    const execution = agentAppExecution(bot, platformEnv);
+    const context: SlackUiContext = {
+      appId: handoff.appId, platformEnv, stores: execution.stores!, client: execution.client, transport: execution.transport,
+      execution, botUserId: bot.botUserId,
+    };
+    const uiAction = parseSlackUiBlockAction(payload);
+    if (uiAction && isModalControl(parseUiControl(uiAction)) && await openSlackUiModal(uiAction, context)) return;
+    if (uiAction) {
+      detach(c, handleSlackUiAction({ ...context, action: uiAction }).catch((error) => {
+        console.error('[chickpea] Slack click failed:', sanitizeError(error));
+      }));
+      return;
+    }
+    const submission = parseSlackUiViewSubmission(payload);
+    if (submission) return receiveSlackUiViewSubmission(c, submission, platformEnv, context);
+  };
+}
+
 function handleDirectSlackEvents(
   credentialRevision: string | null,
 ): NonNullable<SlackChannelOptions['events']> {
@@ -704,6 +866,7 @@ function handleDirectSlackEvents(
             transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
             client: createSlackWebClient(credentials.botToken ?? ''),
             ...(botUserId ? { botUserId } : {}),
+            platformEnv,
           }).catch((error) => {
             console.error('[chickpea] App Home publish failed:', sanitizeError(error));
           }),
@@ -774,6 +937,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       }));
       return;
     }
+    if (await serveAgentAppHomeAction(c, payload)) return;
     const selection = parseAgentAppHomeSelection(payload);
     if (!selection) return;
     const platformEnv = c.env as PlatformEnv | undefined;
@@ -960,6 +1124,7 @@ async function openAgentAppHome(input: {
   transport: SlackTransport;
   client: Pick<SlackUiClient, 'assistant'>;
   botUserId?: string;
+  platformEnv?: PlatformEnv | undefined;
 }): Promise<void> {
   if (!input.botUserId) return;
   const messages = input.event.tab === 'messages';
@@ -988,6 +1153,7 @@ async function openAgentAppHome(input: {
       transport: input.transport,
       botUserId: input.botUserId,
       actor,
+      platformEnv: input.platformEnv,
     }),
   ]);
 }
@@ -1013,6 +1179,7 @@ async function publishAgentAppHome(input: {
   botUserId?: string;
   unavailableNotice?: boolean;
   actor?: ResolvedAgentRoutingActor;
+  platformEnv?: PlatformEnv | undefined;
 }): Promise<void> {
   if (!input.botUserId) return;
   const installation = await input.stores.config.getWorkspaceInstallation(input.workspaceId);
@@ -1043,6 +1210,11 @@ async function publishAgentAppHome(input: {
     userId: input.userId,
     view: agentDirectoryAppHome(visible, {
       unavailableNotice: input.unavailableNotice === true,
+      rowExtras: await agentAppHomeRows({
+        env: input.platformEnv,
+        viewer: { role: actor.principal?.role },
+        agents: visible,
+      }),
     }),
   });
 }
@@ -1273,6 +1445,8 @@ interface SlackEventExecution {
   client: ReturnType<typeof createSlackWebClient>;
   botUserId: string;
   stores?: AppStores;
+  /** The Agent whose own Slack app received this delivery: it runs as that bot on a direct installation. */
+  agentApp?: { agentId: string };
   enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
   /** A durable upstream inbox owns retry when local turn persistence fails. */
   durableIngress?: boolean;
@@ -1331,6 +1505,7 @@ export async function processGatewaySlackEnvelope(
       transport,
       client,
       botUserId: installation.botUserId,
+      platformEnv,
     });
     return 'accepted';
   }
@@ -1432,14 +1607,20 @@ export async function processSlackAgentAsks(
   const from = agents.find((agent) => agent.id === request.fromAgentId);
   if (!from) return;
   const byHandle = new Map<string, CustomAgentConfig>();
+  const byBotUser = new Map<string, CustomAgentConfig>();
   for (const agent of agents) {
-    const handle = agentSlackHandle(agent)?.handle;
-    if (agent.kind === 'user' && handle) byHandle.set(handle, agent);
+    const address = agentSlackHandle(agent);
+    if (agent.kind !== 'user' || !address) continue;
+    byHandle.set(address.handle, agent);
+    if ('botUserId' in address) byBotUser.set(address.botUserId, agent);
   }
   const targets: Array<{ agent: CustomAgentConfig; delivery: SlackAgentAskRequest['deliveries'][number] }> = [];
   for (const delivery of request.deliveries) {
-    for (const word of mentionedHandleWords(delivery.text)) {
-      const agent = byHandle.get(word);
+    const mentioned = [
+      ...mentionedHandleWords(delivery.text).map((word) => byHandle.get(word)),
+      ...mentionedBotUsers(delivery.text).map((botUserId) => byBotUser.get(botUserId)),
+    ];
+    for (const agent of mentioned) {
       if (!agent || agent.id === from.id || targets.some((target) => target.agent.id === agent.id)) continue;
       if (targets.length < AGENT_ASK_MAX_TARGETS) targets.push({ agent, delivery });
     }
@@ -2129,10 +2310,14 @@ async function openDirectSlackUiModal(
   appId: string,
   platformEnv: PlatformEnv | undefined,
 ): Promise<boolean> {
+  const context = parseUiControl(action) ? await directSlackUiContext(action.workspaceId, appId, platformEnv) : undefined;
+  return context ? openSlackUiModal(action, context) : false;
+}
+
+async function openSlackUiModal(action: SlackUiAction, context: SlackUiContext): Promise<boolean> {
   try {
     const control = parseUiControl(action);
-    const context = control ? await directSlackUiContext(action.workspaceId, appId, platformEnv) : undefined;
-    if (!control || !context) return false;
+    if (!control) return false;
     const view = modalForClick(action, await readUiSurface(context.stores, control.surfaceId));
     if (!view) return false;
     await context.client.views.open({
@@ -2160,9 +2345,18 @@ async function receiveDirectSlackUiViewSubmission(
   appId: string,
   platformEnv: PlatformEnv | undefined,
 ): Promise<Response | undefined> {
+  return receiveSlackUiViewSubmission(c, submission, platformEnv, directSlackUiContext(submission.workspaceId, appId, platformEnv));
+}
+
+async function receiveSlackUiViewSubmission(
+  c: Parameters<NonNullable<SlackChannelOptions['interactions']>>[0]['c'],
+  submission: SlackUiViewSubmission,
+  platformEnv: PlatformEnv | undefined,
+  pendingContext: SlackUiContext | undefined | Promise<SlackUiContext | undefined>,
+): Promise<Response | undefined> {
   const surfaceId = viewSubmissionSurfaceId(submission);
   const [context, surface] = await Promise.all([
-    directSlackUiContext(submission.workspaceId, appId, platformEnv),
+    pendingContext,
     surfaceId ? readUiSurface(resolveStores(platformEnv), surfaceId) : undefined,
   ]);
   const reading = readViewSubmission(submission, context ? surface : undefined);
@@ -2416,7 +2610,7 @@ async function processSlackEvent(
   const behavior = await resolveSlackBehaviorSettings(platformEnv, stores.settings);
   const installation = await stores.config.getWorkspaceInstallation(payload.team_id);
   if (!installation || installation.health === 'revoked') return;
-  if (execution && installation.transportMode !== 'gateway') return;
+  if (execution && !execution.agentApp && installation.transportMode !== 'gateway') return;
   if (!execution && installation.transportMode !== 'direct') return;
   if (
     !ask &&
@@ -2450,6 +2644,10 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
+  // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
+  const siblingBotUserIds = ask || !agentSlackAppsHost()
+    ? []
+    : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId).filter((id) => id !== resolvedBotUserId);
   // A host-addressed turn is built by the host: an ask's from a delivered
   // Agent reply, which Slack event normalization would ignore as an
   // app-authored post; a co-addressed one from the person's normalized turn.
@@ -2457,6 +2655,7 @@ async function processSlackEvent(
     ? { status: 'runnable' as const, turn: ask.turn }
     : normalizeSlackTurn(payload, {
         ...(resolvedBotUserId ? { botUserId: resolvedBotUserId } : {}),
+        ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}),
       });
   if (normalization.status !== 'runnable') return;
   const turn = normalization.turn;
@@ -2554,6 +2753,7 @@ async function processSlackEvent(
         turn,
         surface,
         actor: agentRoutingActor.routing,
+        ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
         config: store,
         transport: runtimeTransport,
         ...(ask ? { askAgentId: ask.targetAgentId } : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),

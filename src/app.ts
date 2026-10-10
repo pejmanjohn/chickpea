@@ -1,4 +1,5 @@
 import { GATEWAY_HTTP_PATH, handleHttpDeliveryRequest } from './slack/gateway/http-delivery.ts';
+import { createAgentSlackAppRoutes } from './slack/agent-apps/index.ts';
 import { deploymentTenancy } from './config/installation-scope.ts';
 import { tagStateStub } from './config/state-rpc.ts';
 import { instrument } from '@flue/runtime';
@@ -55,7 +56,7 @@ import {
   observeResponseMetadata,
   responseMetadataInterceptor,
 } from './usage/response-metadata.ts';
-import { answerSlackRecoveryEventsProof, channel } from './channels/slack.ts';
+import { answerSlackRecoveryEventsProof, channel, serveAgentAppSlackDelivery } from './channels/slack.ts';
 import { SLACK_EVENTS_PATH } from './slack/app-manifest.ts';
 import {
   bootstrapRuntimeProviders,
@@ -248,6 +249,7 @@ app.route('/', createAdminRoutes({
   onOAuthContinuationReady: resumeOAuthContinuation,
   productTelemetry: productTelemetryForRequest,
 }));
+app.route('/', createAgentSlackAppRoutes({ serveDelivery: serveAgentAppSlackDelivery }));
 app.route('/channels/slack', channel.route());
 
 export default app;

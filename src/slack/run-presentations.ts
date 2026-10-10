@@ -152,6 +152,8 @@ interface SlackPresentationPersona {
 
 export type SlackPresentationOwner =
   | { kind: 'selected_agent'; persona: SlackPresentationPersona }
+  /** The Agent posts as its own Slack app's bot: its name, and never a persona override. */
+  | { kind: 'agent_app'; agentName: string }
   | { kind: 'chickpea' };
 
 export type SlackPresentationReceiptCertainty =
@@ -3479,7 +3481,7 @@ function validatePersona(persona: SlackPresentationPersona): void {
 }
 
 function validateOwner(owner: SlackPresentationOwner): void {
-  if (!owner || (owner.kind !== 'selected_agent' && owner.kind !== 'chickpea')) {
+  if (!owner || (owner.kind !== 'selected_agent' && owner.kind !== 'chickpea' && owner.kind !== 'agent_app')) {
     throw stateError('invalid_input', 'Visible owner is invalid.');
   }
   if (owner.kind === 'selected_agent') {
@@ -3489,6 +3491,8 @@ function validateOwner(owner: SlackPresentationOwner): void {
     validatePersona(owner.persona);
   } else if ('persona' in owner && owner.persona !== undefined) {
     throw stateError('invalid_input', 'Chickpea owner must use the base-app identity.');
+  } else if (owner.kind === 'agent_app' && (typeof owner.agentName !== 'string' || !owner.agentName.trim())) {
+    throw stateError('invalid_input', 'Agent-app owner requires the Agent name.');
   }
 }
 

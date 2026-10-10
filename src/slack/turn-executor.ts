@@ -152,8 +152,8 @@ export interface TurnExecutionPorts {
   /** Where observed activity for this turn lands; the module default otherwise. */
   statusRegistry?: SlackStatusRegistry;
   telemetry: ProductTelemetryCapture;
-  /** Current credentials for one Slack installation. */
-  resolveInstallation(workspaceId: string): Promise<SlackInstallationExecutionContext>;
+  /** Current credentials for one Slack installation, as the bot the Agent answers as. */
+  resolveInstallation(workspaceId: string, agentId?: string): Promise<SlackInstallationExecutionContext>;
   /**
    * A coding Sandbox Durable Object (a thread's, or a guest's own), once per
    * identity it may run under; none when this deployment has no Sandbox binding.
@@ -227,7 +227,7 @@ export async function executeTurnJob(
   }
   let installationContext: SlackInstallationExecutionContext;
   try {
-    installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn));
+    installationContext = await ports.resolveInstallation(effectiveTurnSlackInstallationId(job.turn), job.assignment.agentId);
     await verifySlackInstallationTurnAccess(installationContext, job.turn);
   } catch (error) {
     const unavailable = normalizeSlackInstallationExecutionError(
