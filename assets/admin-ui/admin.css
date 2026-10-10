@@ -3581,7 +3581,7 @@ button.capability-pill { cursor: pointer; }
 @media (max-width: 740px) {
   .first-agent { padding: 22px 16px 18px; }
   /* The art stays beside the eyebrow and title; the lede runs full width below. */
-  .first-agent-head { align-items: center; column-gap: 12px; grid-template-columns: minmax(0, 1fr) 88px; }
+  .first-agent-head { align-items: center; gap: 0 12px; grid-template-columns: minmax(0, 1fr) 88px; }
   .first-agent-head > div { display: contents; }
   .first-agent-eyebrow { grid-column: 1; grid-row: 1; }
   .first-agent-title { font-size: 1.9rem; grid-column: 1; grid-row: 2; }
