@@ -948,7 +948,7 @@ test('hosted onboarding on Chickpea\'s models goes from Add to Slack to Try Chic
 
 test('while Chickpea sets up, the page says it is moving into the workspace, as step 1, and nothing else asks again', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true });
-  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 1 of 2</p><h1 class="onboarding-title">Setting up Chickpea in Acme</h1>' +
+  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Step 1 of 2</p><h1 class="onboarding-title">Setting up Chickpea in Acme</h1>' +
     '<p class="onboarding-lede">Chickpea is unpacking in your workspace. This takes a few seconds.</p>' +
     '<div class="onboarding-progress" aria-hidden="true"><i></i></div></section>'));
   assert.match(page.html(), /data-scene="setting-up"[\s\S]*<p class="onboarding-caption">Moving in…<\/p>/);
@@ -974,7 +974,7 @@ test('with Connect GitHub offered, it is the step between Add to Slack and Try C
 test('setup that does not finish offers Try again, never the provider steps, and Try again reaches Try', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformFailures: 1 });
   assert.equal(platformRequests(page.requests), 1);
-  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
+  assert.ok(page.html().includes('<section class="onboarding-panel"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setup did not finish</h1>' +
     '<p class="field-error" role="alert">Chickpea could not finish setting up. Try again.</p>' +
     '<p class="hint">Code: internal_error</p>' +
     '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>'));

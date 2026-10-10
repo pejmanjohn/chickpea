@@ -13,6 +13,7 @@ import {
   connectPrompt,
   firstAgentPrompt,
 } from '../src/management/connect.ts';
+import { CONNECT_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
 import { PUBLIC_ASSET_PATHS } from '../src/assets/public-assets.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
@@ -71,6 +72,9 @@ test('both public connect routes serve cacheable, sniff-proof documents', async 
   assert.ok(html.includes(`<script nonce="${nonce}">`), 'page script carries the header nonce');
   assert.match(policy, /default-src 'none'/);
   assert.match(policy, /frame-ancestors 'none'/);
+
+  assert.match(policy, /(?:^|; )font-src 'self'(?:;|$)/);
+  assert.ok(html.includes(`<style>${fontFaceCss(CONNECT_FONTS)}\n`), 'the page loads the fonts its style names');
 
   // A second request gets a fresh nonce rather than a reused constant.
   const again = await connectMd(`${ORIGIN}/connect`);

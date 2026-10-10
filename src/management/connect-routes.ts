@@ -42,7 +42,7 @@ export function createConnectRoutes(): Hono {
     const nonce = globalThis.crypto.randomUUID().replace(/-/g, '');
     publicHeaders(c);
     c.header('Content-Type', 'text/html; charset=utf-8');
-    c.header('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+    c.header('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'nonce-${nonce}'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
     c.header('X-Frame-Options', 'DENY');
     return c.body(connectPageHtml(origin, nonce));
   });
