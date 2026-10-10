@@ -5,7 +5,9 @@ export {
   type AgentAppBotCredentials,
   agentAppBotCredentials,
   agentAppHomeRows,
+  agentAppPlacementFacts,
   agentAppRetirement,
+  agentDmPlacementFacts,
   handleAgentAppHomeAction,
   withAgentAppExecution,
 } from './live.ts';

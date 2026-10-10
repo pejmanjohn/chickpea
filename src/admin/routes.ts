@@ -2,6 +2,7 @@ import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, c
 import {
   type AgentSlackAppAdminDeps,
   agentAppRetirement,
+  agentDmPlacementFacts,
   createAgentSlackAppAdminRoutes,
   isAgentSlackAppTokenApiPath,
 } from '../slack/agent-apps/index.ts';
@@ -2566,7 +2567,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workspaceId: actor.slackTeamId,
         grants,
         ...(activeAgentGrants.length > 0
-          ? { transport: await agentSlackTransport(c, actor.slackTeamId) }
+          ? {
+              transport: await agentDmPlacementFacts(
+                c.env as PlatformEnv | undefined,
+                agent,
+                await agentSlackTransport(c, actor.slackTeamId),
+              ),
+            }
           : {}),
       });
     } catch {

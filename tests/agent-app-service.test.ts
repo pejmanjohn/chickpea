@@ -281,6 +281,9 @@ test('a start frees the handle, creates without URLs, stores the secrets, adds t
   assert.equal(update.appId, 'A0APP1');
   const { event_subscriptions: subscriptions, interactivity, ...unchanged } = update.manifest.settings;
   assert.deepEqual(subscriptions, { request_url: HOST.requestUrls('inst_a', 'A0APP1').events, bot_events: [...AGENT_APP_BOT_EVENTS] });
+  assert.ok(subscriptions?.bot_events.includes('member_joined_channel'), "Slack's own Add of the bot reaches the Agent");
+  assert.ok(['channels:read', 'groups:read', 'mpim:read'].every((scope) => createManifest.oauth_config.scopes.bot.includes(scope)),
+    'with the scopes that event needs');
   assert.deepEqual(interactivity, { is_enabled: true, request_url: HOST.requestUrls('inst_a', 'A0APP1').interactions });
   assert.deepEqual({ ...update.manifest, settings: unchanged }, createManifest, 'the update repeats everything the create set');
 

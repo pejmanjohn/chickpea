@@ -13,6 +13,7 @@ import {
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppIsLive,
+  agentAppPlacementFacts,
   agentSlackAppsHost,
   endAgentSlackApp,
   handleAgentAppHomeAction,
@@ -82,6 +83,7 @@ import {
   listPrivatelyUsableAgents,
   resolvePrivateAgentAccess,
   type PrivateAgentActor,
+  type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
 import {
   agentAppHomeStarterMessage,
@@ -234,7 +236,7 @@ import {
   addAgentToChannel,
   offerAgentForChannel,
   parseAgentChannelAddClick,
-  type AgentChannelAddClick,
+  type AgentChannelAddRequest,
 } from '../slack/agent-channel-offer.ts';
 import { selectSlackExecutionAuthority } from '../work/authority.ts';
 import { opaqueId } from '../work/admission.ts';
@@ -726,13 +728,20 @@ async function agentAppDeliveryInstallation(
   return installation;
 }
 
-function agentAppExecution(bot: AgentAppBotCredentials, platformEnv: PlatformEnv | undefined): SlackEventExecution {
+function agentAppExecution(
+  bot: AgentAppBotCredentials,
+  platformEnv: PlatformEnv | undefined,
+  installationBotToken: string | undefined,
+): SlackEventExecution {
+  const transport = createDirectSlackTransport(bot.botToken, undefined);
+  const installationBot = installationBotToken ? createDirectSlackTransport(installationBotToken, undefined) : undefined;
   return {
-    transport: createDirectSlackTransport(bot.botToken, undefined),
+    transport,
     client: createSlackWebClient(bot.botToken),
     botUserId: bot.botUserId,
     stores: resolveStores(platformEnv),
     agentApp: { agentId: bot.agentId },
+    ...(installationBot ? { installationBot, placementFacts: agentAppPlacementFacts(transport, installationBot) } : {}),
   };
 }
 
@@ -758,7 +767,7 @@ function handleAgentAppSlackEvents(
     }
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
-    await processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, agentAppExecution(bot, platformEnv));
+    await processSlackEvent(payload as unknown as SlackEventFixture, platformEnv, agentAppExecution(bot, platformEnv, gate.botToken));
   };
 }
 
@@ -776,7 +785,7 @@ function handleAgentAppSlackInteractions(
     if (gate instanceof Response) return gate;
     const bot = await agentAppBotCredentials(platformEnv, handoff.agentId, handoff.appId);
     if (!bot) return;
-    const execution = agentAppExecution(bot, platformEnv);
+    const execution = agentAppExecution(bot, platformEnv, gate.botToken);
     const context: SlackUiContext = {
       appId: handoff.appId, platformEnv, stores: execution.stores!, client: execution.client, transport: execution.transport,
       execution, botUserId: bot.botUserId,
@@ -1448,6 +1457,10 @@ interface SlackEventExecution {
   stores?: AppStores;
   /** The Agent whose own Slack app received this delivery: it runs as that bot on a direct installation. */
   agentApp?: { agentId: string };
+  /** Chickpea's own bot, beside an Agent app's `transport`. */
+  installationBot?: SlackTransport;
+  /** Where Agents' private-use placements are read when not through `transport` (agentAppPlacementFacts). */
+  placementFacts?: PrivateAgentPlacementFacts;
   enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
   /** A durable upstream inbox owns retry when local turn persistence fails. */
   durableIngress?: boolean;
@@ -1939,7 +1952,7 @@ async function sendUiNotice(
 async function handleSlackUiAction(input: SlackUiContext & { action: SlackUiAction }): Promise<void> {
   const { action, stores, client } = input;
   const addClick = parseAgentChannelAddClick(action);
-  if (addClick) return addMentionedAgentToChannel({ ...input, click: addClick });
+  if (addClick) return addRequestedAgentToChannel({ ...input, request: addClick });
   const control = parseUiControl(action);
   // Link buttons also send block_actions, and so does choosing a value in a
   // form's field (in a message or a modal); only Submit answers a form.
@@ -2198,18 +2211,20 @@ function surfaceMessenger(
   };
 }
 
-/** The offer's Add button: Admin's Add to channels, from Slack. */
-async function addMentionedAgentToChannel(
-  input: SlackUiContext & { click: AgentChannelAddClick },
+/** The offer's Add button, or Slack's own Add of an Agent's app bot: Admin's Add to channels, from Slack. */
+async function addRequestedAgentToChannel(
+  input: Pick<SlackUiContext, 'platformEnv' | 'stores' | 'client' | 'transport' | 'gateway' | 'botUserId' | 'execution'> & {
+    request: AgentChannelAddRequest;
+  },
 ): Promise<void> {
-  const { click, stores, transport, botUserId, platformEnv } = input;
+  const { request, stores, transport, botUserId, platformEnv } = input;
   if (!botUserId) return;
-  await addAgentToChannel(click, {
+  await addAgentToChannel(request, {
     claim: (key) => stores.slackState.claim(key),
     resolveActor: () => resolveAgentRoutingActor({
-      workspaceId: click.workspaceId,
-      userId: click.userId,
-      channelId: click.channelId,
+      workspaceId: request.workspaceId,
+      userId: request.userId,
+      channelId: request.channelId,
       botUserId,
       transport,
       stores,
@@ -2221,8 +2236,8 @@ async function addMentionedAgentToChannel(
     identity: stores.identity,
     publish: async (agent, principal) => {
       const prepared = await prepareGeneratedGatewayAgentAvatar({
-        workspaceId: click.workspaceId,
-        installation: await stores.config.getWorkspaceInstallation(click.workspaceId),
+        workspaceId: request.workspaceId,
+        installation: await stores.config.getWorkspaceInstallation(request.workspaceId),
         agent,
         publish: (candidate) =>
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
@@ -2233,14 +2248,15 @@ async function addMentionedAgentToChannel(
         transport,
         announce: await livePresenceAnnouncements({
           env: platformEnv, settings: stores.settings, identity: stores.identity,
-          management: stores.management, transport,
+          management: stores.management, transport, botUserId,
+          ...(input.execution?.installationBot ? { installationBot: input.execution.installationBot } : {}),
         }),
       }).publish({
-        workspaceId: click.workspaceId,
-        channelId: click.channelId,
+        workspaceId: request.workspaceId,
+        channelId: request.channelId,
         agentId: prepared.id,
         actorMembershipId: principal.membershipId,
-        actorSlackUserId: click.userId,
+        actorSlackUserId: request.userId,
       });
     },
     adminUrl: async () => {
@@ -2767,7 +2783,7 @@ async function processSlackEvent(
           workspaceId: turn.workspaceId,
           grants: await store.listAgentChannelGrants(turn.workspaceId),
           actor: privateAgentActor(agentRoutingActor!, turn.userId),
-          transport: runtimeTransport,
+          transport: execution?.placementFacts ?? runtimeTransport,
         }),
       });
       if (routed.kind === 'ignore') return;
@@ -3121,7 +3137,7 @@ async function processSlackEvent(
         surface,
         actor: agentRoutingActor,
         config: stores.config,
-        transport: runtimeTransport,
+        placementFacts: execution?.placementFacts ?? runtimeTransport,
       })
     : Promise.resolve(false);
   // An eligible message posted while its thread's run is in progress gets
@@ -3927,7 +3943,7 @@ async function processSlackStopButton(
         surface,
         actor,
         config: stores.config,
-        transport,
+        placementFacts: transport,
       }),
       turn,
       state,
@@ -4093,7 +4109,7 @@ async function mayUseRunningSlackAgent(input: {
   surface: AssignmentSurface;
   actor: ResolvedAgentRoutingActor;
   config: AppStores['config'];
-  transport: SlackTransport;
+  placementFacts: PrivateAgentPlacementFacts;
 }): Promise<boolean> {
   const { turn, config, actor } = input;
   const agent = await config.getAgent(input.agentId).catch((err: unknown) => {
@@ -4112,7 +4128,7 @@ async function mayUseRunningSlackAgent(input: {
       workspaceId: turn.workspaceId,
       grants: await config.listAgentChannelGrants(turn.workspaceId),
       actor: privateAgentActor(actor, turn.userId),
-      transport: input.transport,
+      transport: input.placementFacts,
     }),
   });
 }
@@ -4353,6 +4369,27 @@ async function handleMemberJoinedChannel(
 
   const workspaceId = payload.team_id ?? event.team;
   if (!workspaceId) return;
+  if (execution?.agentApp) {
+    // A person adding the Agent's own bot with Slack's Add asks for the Agent here, as the offer's button does.
+    if (event.user !== execution.botUserId || !event.inviter) return;
+    const { agentId } = execution.agentApp;
+    try {
+      // A grant from before the app, or an earlier Add, already has the Agent here: the bot only completes it.
+      const grants = await stores.config.listAgentChannelGrants(workspaceId, event.channel);
+      if (grants.some((grant) => grant.agentId === agentId && grant.status === 'active')) return;
+      await addRequestedAgentToChannel({
+        platformEnv, stores, execution,
+        client: execution.client, transport: execution.transport, botUserId: execution.botUserId,
+        request: {
+          workspaceId, userId: event.inviter, channelId: event.channel, threadTs: null,
+          agentId, requestId: payload.event_id,
+        },
+      });
+    } catch (error) {
+      console.warn('[chickpea] Agent app Channel add could not finish:', sanitizeError(error));
+    }
+    return;
+  }
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installedBotUserId, credentials, platformEnv);
   const client = execution?.client ?? (

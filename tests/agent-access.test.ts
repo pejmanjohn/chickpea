@@ -7,6 +7,7 @@ import {
   resolvePrivateAgentAccess,
   resolvePrivateAgentAudience,
 } from '../src/slack/agent-access.ts';
+import { agentAppPlacementFacts } from '../src/slack/agent-apps/index.ts';
 import {
   SlackTransportError,
   type SlackChannel,
@@ -196,6 +197,53 @@ test('unknown or unusable active placements fail closed without creator fallback
       actor: { ...fullMember, membershipId: 'creator' },
       transport: transport({ channels: { C1: fact } }),
     }), { status: 'unavailable', audience: 'unavailable' });
+  }
+});
+
+test("an app Agent's placement counts where its own bot or Chickpea's is in the Channel, and fails closed where neither is", async () => {
+  const selected = agent('app', { creatorMembershipId: 'creator' });
+  const access = (grants: AgentChannelGrant[], own: ReturnType<typeof transport>, chickpea: ReturnType<typeof transport>) =>
+    resolvePrivateAgentAccess({ agent: selected, workspaceId: 'T1', grants, actor: fullMember, transport: agentAppPlacementFacts(own, chickpea) });
+  const notInPrivate = new SlackTransportError('conversations.info', 'channel_not_found');
+
+  const ownCalls: string[] = [];
+  const chickpeaCalls: string[] = [];
+  assert.deepEqual(await access(
+    [grant(selected.id, 'C_PUBLIC')],
+    transport({ calls: ownCalls, channels: { C_PUBLIC: channel('C_PUBLIC', { member: false }) } }),
+    transport({ calls: chickpeaCalls, channels: { C_PUBLIC: channel('C_PUBLIC') } }),
+  ), { status: 'allowed', audience: 'workspace_members' }, "a grant made while Chickpea's bot was the Agent's voice");
+  assert.deepEqual([ownCalls, chickpeaCalls], [['lookup:C_PUBLIC'], ['lookup:C_PUBLIC']]);
+
+  chickpeaCalls.length = 0;
+  assert.deepEqual(await access(
+    [grant(selected.id, 'C_PUBLIC')],
+    transport({ channels: { C_PUBLIC: channel('C_PUBLIC') } }),
+    transport({ calls: chickpeaCalls, channels: { C_PUBLIC: channel('C_PUBLIC', { member: false }) } }),
+  ), { status: 'allowed', audience: 'workspace_members' }, "a Channel Slack's own Add put only the app's bot in");
+  assert.deepEqual(chickpeaCalls, [], "Chickpea's bot is read only where the app's bot is not in the Channel");
+
+  assert.deepEqual(await access(
+    [grant(selected.id, 'C_PRIVATE')],
+    transport({ channels: { C_PRIVATE: notInPrivate }, memberChannels: new Set(['C_PUBLIC']) }),
+    transport({ channels: { C_PRIVATE: channel('C_PRIVATE', { private: true }) }, memberChannels: new Set(['C_PRIVATE']) }),
+  ), { status: 'allowed', audience: 'private_channel_members' }, "a private Channel only Chickpea's bot sees, with the person in it");
+
+  assert.deepEqual(await access(
+    [grant(selected.id, 'C_PRIVATE')],
+    transport({ channels: { C_PRIVATE: channel('C_PRIVATE', { private: true }) }, memberChannels: new Set(['C_PRIVATE']) }),
+    transport({ channels: { C_PRIVATE: notInPrivate }, memberChannels: new Error('Slack unavailable') }),
+  ), { status: 'unavailable', audience: 'unavailable' }, "a person's Channels that one bot cannot list are unknown");
+
+  for (const [own, chickpea] of [
+    [channel('C1', { member: false }), channel('C1', { member: false })],
+    [notInPrivate, notInPrivate],
+    [channel('C1', { archived: true }), new Error('Slack unavailable')],
+  ] as const) {
+    assert.deepEqual(await resolvePrivateAgentAccess({
+      agent: selected, workspaceId: 'T1', grants: [grant(selected.id, 'C1')], actor: { ...fullMember, membershipId: 'creator' },
+      transport: agentAppPlacementFacts(transport({ channels: { C1: own } }), transport({ channels: { C1: chickpea } })),
+    }), { status: 'unavailable', audience: 'unavailable' }, 'a placement neither bot is in fails closed, the creator too');
   }
 });
 

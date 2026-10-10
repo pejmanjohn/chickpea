@@ -86,9 +86,9 @@ export type SlackAppManifest = SlackAppManifestShape<{
  */
 export type SlackAppCreateManifest = SlackAppManifestShape<{ event_subscriptions?: never; interactivity?: never }>;
 
-/** What an Agent's own Slack app subscribes to: its mentions, its DMs, and its own end. */
+/** What an Agent's own Slack app subscribes to: its mentions, its DMs, its bot joining a Channel, and its own end. */
 export const AGENT_APP_BOT_EVENTS: readonly string[] = Object.freeze([
-  'app_mention', 'message.im', 'app_uninstalled', 'tokens_revoked',
+  'app_mention', 'member_joined_channel', 'message.im', 'app_uninstalled', 'tokens_revoked',
 ]);
 export const SLACK_APP_DESCRIPTION_MAX_LENGTH = 140;
 
