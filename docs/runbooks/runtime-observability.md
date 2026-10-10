@@ -482,6 +482,18 @@ this line is for the operator. It carries no token, secret, or URL.
 
 Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
 
+## Deliveries that add no turn
+
+A Slack event, or another delivery of the same message, that routing accepted
+but whose turn was admitted already logs one structured `console.info` object
+with `event: "chickpea.turn.not_admitted"`, `reason: "already_admitted"`, the
+routed `agentId`, and `delivery`: `installation` (Chickpea's own app) or
+`agent_app` (an Agent's own Slack app). Nothing is posted in Slack for it. One
+line per Channel mention of Chickpea is expected, since Slack sends that
+mention as two events. A line naming an Agent that never answered the message
+points at routing: both deliveries of a message should admit the same turns.
+Filter a bounded capture with `wrangler tail --search turn.not_admitted`.
+
 ## Memory lease failures
 
 A turn whose memory lease is refused ends with the generic notice that the

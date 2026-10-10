@@ -2981,6 +2981,15 @@ async function processSlackEvent(
     turn.contextMode = 'thread';
   }
   let claimsHeldByCanonicalAdmission = false;
+  // Without canonical admission the turn takes its claims itself.
+  const claimLegacyTurn = async (): Promise<boolean> => {
+    if (await state.claim(evtKey)) {
+      if (await state.claim(msgKey)) return true;
+      await state.release(evtKey);
+    }
+    logTurnAlreadyAdmitted(assignment.agentId, execution);
+    return false;
+  };
   let canonicalRunId: string | undefined;
   let canonicalTurnJob: TurnJob | undefined;
 
@@ -3435,6 +3444,7 @@ async function processSlackEvent(
         });
         if (!result.claimed) {
           if (ui) ui.outcome = 'answered';
+          else logTurnAlreadyAdmitted(assignment.agentId, execution);
           return;
         }
         if ('agentAskLimitReached' in result) {
@@ -3484,11 +3494,7 @@ async function processSlackEvent(
         // U3 is deliberately observational. Preserve the existing product path
         // while surfacing a body-free operator gap for follow-up.
         console.error('[chickpea] shadow Work admission failed:', sanitizeError(err));
-        if (!(await state.claim(evtKey))) return;
-        if (!(await state.claim(msgKey))) {
-          await state.release(evtKey);
-          return;
-        }
+        if (!(await claimLegacyTurn())) return;
       }
       if (!steered) break;
       const settled = await settleSlackSteering({
@@ -3505,12 +3511,8 @@ async function processSlackEvent(
       await releaseSteeringMessage(state, evtKey, msgKey);
       steering = undefined;
     }
-  } else {
-    if (!(await state.claim(evtKey))) return;
-    if (!(await state.claim(msgKey))) {
-      await state.release(evtKey);
-      return;
-    }
+  } else if (!(await claimLegacyTurn())) {
+    return;
   }
 
   if (steering && !claimsHeldByCanonicalAdmission) {
@@ -3700,6 +3702,20 @@ async function processSlackEvent(
   await wake;
 }
 
+
+/**
+ * A routed turn whose Slack event, or another delivery of its message (the
+ * same mention heard by a second bot), was admitted already. Nothing more is
+ * posted for it, so the operator log is where a turn that never runs shows.
+ */
+function logTurnAlreadyAdmitted(agentId: string, execution: SlackEventExecution | undefined): void {
+  console.info({
+    event: 'chickpea.turn.not_admitted',
+    reason: 'already_admitted',
+    agentId,
+    delivery: execution?.agentApp ? 'agent_app' : 'installation',
+  });
+}
 
 type SlackSteeringAdmission = Extract<TurnSteeringRequest, { kind: 'stop' | 'check_in' }>;
 

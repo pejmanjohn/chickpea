@@ -46,8 +46,11 @@ app is live its bot counts as the installation's own: the memory lease accepts
 it as the Agent's delivering bot, and its posts echoed back by Slack are not
 recorded again as another app's. When the app is broken, the Agent's turn ends
 unavailable; it never falls back to Chickpea's bot. Other Agents ask it by its
-bot user (`<@U…>`) instead of a user group. Code lives in
-`src/slack/agent-apps/`.
+bot user (`<@U…>`) instead of a user group. A person's Channel message that
+mentions its bot beside other Agents is answered by each, once, in the order
+named (see
+[Mentioning several Agents at once](agent-conversations.md#mentioning-several-agents-at-once)).
+Code lives in `src/slack/agent-apps/`.
 
 The app's manifest subscribes to no `message.channels` event. A thread
 follow-up in a Channel that does not mention the app's bot reaches the Agent

@@ -52,6 +52,13 @@ turn, in the order the message named them, and each sees the answers before
 its own. The first Agent keeps the thread: a later reply that mentions nobody
 goes to it. The others answer as guests, as when an Agent asks them.
 
+In a Channel, an Agent with its own Slack app is mentioned by its bot, and
+that mention counts here like a handle. Chickpea's bot and the app's bot both
+receive such a message, and either delivery routes it the same way: the
+first to arrive admits every Agent it names, in order, and the other adds
+nothing. A message that mentions only Agent-app bots is answered on those
+apps' own deliveries.
+
 Every mentioned Agent must be available to that person where they wrote: in
 a Channel, granted there; in a direct message, one they may use privately.
 If one is not, nobody answers and the person gets the usual note that the

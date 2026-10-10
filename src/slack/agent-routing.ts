@@ -6,7 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
-import { agentAppRouteSelection } from './agent-apps/index.ts';
+import { agentAppRouteSelection, liveAgentAppBots } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
@@ -246,8 +246,8 @@ export async function resolveAgentRoute(
 
   const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
-  // A message that also names one of this installation's user-group Agents is
-  // still that Agent's here; the app's bot answers it on the app's own ingress.
+  // A message that also names one of this installation's user-group Agents
+  // addresses every Agent it names, here as on the app's own ingress.
   if (appSelection?.kind === 'ignore' && !mentionedGroupIds.some((groupId) => agentClaimsByGroupId.has(groupId))) {
     return { kind: 'ignore' };
   }
@@ -292,9 +292,16 @@ export async function resolveAgentRoute(
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests. Every one must be
   // reachable by this person here, or none is asked; the first is checked
-  // below as the routed Agent.
-  const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
-  if (addressed.length > 1 && !input.appHomeAgentId && appAgentId === undefined) {
+  // below as the routed Agent. In a Channel a live Agent app's bot is its
+  // Agent's handle. Chickpea's bot and that app's bot each hear such a
+  // message and route it alike, so whichever hears it first admits every
+  // Agent it names and the other delivery finds the message taken.
+  const addressed = (surface === 'channel'
+    ? agentsNamed(turn.text, agentsByGroupId, liveAgentAppBots(agents))
+    : mentionedAgents).slice(0, MAX_ADDRESSED_AGENTS);
+  const severalAgents = addressed.length > 1 && !input.appHomeAgentId &&
+    (appAgentId === undefined || surface === 'channel');
+  if (severalAgents) {
     for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
@@ -310,7 +317,10 @@ export async function resolveAgentRoute(
 
   let source: AgentRouteSource;
   let selected: CustomAgentConfig | undefined;
-  if (appAgentId !== undefined) {
+  if (severalAgents) {
+    source = 'agent_handle';
+    selected = addressed[0];
+  } else if (appAgentId !== undefined) {
     source = 'agent_app';
     selected = agentsById.get(appAgentId);
   } else if (input.appHomeAgentId) {
@@ -368,9 +378,25 @@ export async function resolveAgentRoute(
     activeGrants,
     currentRoute,
   }), addressed.map(({ id }) => id));
-  return source === 'agent_handle' && addressed.length > 1
+  return severalAgents
     ? { ...routed, coAddressed: { agents: addressed.map(addressedAgent), position: 0 } }
     : routed;
+}
+
+const AGENT_ADDRESS = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/** The Agents a Channel message names by user group or by live app bot, once each, in the order it names them. */
+function agentsNamed(
+  text: string,
+  byGroupId: ReadonlyMap<string, CustomAgentConfig>,
+  byBotUserId: ReadonlyMap<string, CustomAgentConfig>,
+): CustomAgentConfig[] {
+  const named = new Map<string, CustomAgentConfig>();
+  for (const [, groupId, userId] of text.matchAll(AGENT_ADDRESS)) {
+    const agent = groupId ? byGroupId.get(groupId) : byBotUserId.get(userId!);
+    if (agent && !named.has(agent.id)) named.set(agent.id, agent);
+  }
+  return [...named.values()];
 }
 
 /**

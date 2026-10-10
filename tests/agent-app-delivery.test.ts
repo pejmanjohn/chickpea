@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
-import { Hono } from 'hono';
+import { Hono, type ExecutionContext } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
-import { markSlackInstallationEnded, serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
+import { channel as slackChannel, markSlackInstallationEnded, serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
 import { closeNodeStateStores, getSettingsStore, resolveStores, type AppStores, type PlatformEnv } from '../src/config/state-backend.ts';
@@ -66,6 +66,8 @@ interface Harness {
   delivery: PlatformEnv;
   installedAt: number;
   deliver(kind: 'events' | 'interactions', body: unknown, options?: { env?: PlatformEnv; secret?: string }): Promise<Response>;
+  /** The same Slack event as Chickpea's own app receives it; settles once the work it detaches is done. */
+  deliverToChickpea(body: unknown): Promise<Response>;
   secrets(): { credentials: EncryptedCredentialStore; keyring: ReturnType<typeof loadCredentialKeyring>; slack: ReturnType<typeof createAgentAppSlackApi> };
 }
 
@@ -184,22 +186,30 @@ async function withHarness(
 
   const ingress = new Hono();
   ingress.route('/', createAgentSlackAppRoutes({ serveDelivery: serveAgentAppSlackDelivery }));
+  ingress.route('/channels/slack', slackChannel.route());
+  const signed = (path: string, raw: string, secret: string, env: PlatformEnv, ctx?: ExecutionContext) => {
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const signature = createHmac('sha256', secret).update(`v0:${timestamp}:${raw}`).digest('hex');
+    const contentType = path.endsWith('/events') ? 'application/json' : 'application/x-www-form-urlencoded';
+    return ingress.request(path, {
+      method: 'POST',
+      headers: { 'content-type': contentType, 'x-slack-request-timestamp': timestamp, 'x-slack-signature': `v0=${signature}` },
+      body: raw,
+    }, env, ctx);
+  };
   const delivery = withAgentSlackAppHandoff(base, { kind: 'delivery', agentId: support.id, appId: AGENT_APP, signingSecret: AGENT_SECRET });
   await run({
     stores, calls, base, delivery, installedAt, secrets,
     async deliver(kind, body, options = {}) {
       const raw = kind === 'events' ? JSON.stringify(body) : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
-      const timestamp = String(Math.floor(Date.now() / 1_000));
-      const signature = createHmac('sha256', options.secret ?? AGENT_SECRET).update(`v0:${timestamp}:${raw}`).digest('hex');
-      return ingress.request(`/channels/slack/agent-apps/${kind}`, {
-        method: 'POST',
-        headers: {
-          'content-type': kind === 'events' ? 'application/json' : 'application/x-www-form-urlencoded',
-          'x-slack-request-timestamp': timestamp,
-          'x-slack-signature': `v0=${signature}`,
-        },
-        body: raw,
-      }, options.env ?? delivery);
+      return signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery);
+    },
+    async deliverToChickpea(body) {
+      const detached: Promise<unknown>[] = [];
+      const ctx: ExecutionContext = { waitUntil: (task) => { detached.push(task); }, passThroughOnException() {}, props: {} };
+      const response = await signed('/channels/slack/events', JSON.stringify(body), MAIN_APP.signingSecret, withHostedSlackApp(base, MAIN_APP), ctx);
+      await Promise.all(detached);
+      return response;
     },
   });
 }
@@ -222,6 +232,22 @@ function joinEvent(event: Record<string, unknown> = {}) {
     authorizations: [{ team_id: TEAM, user_id: AGENT_BOT_USER, is_bot: true, is_enterprise_install: false }],
     event: { type: 'member_joined_channel', user: AGENT_BOT_USER, channel: 'C2', channel_type: 'C', team: TEAM, inviter: 'U1', ...event },
   };
+}
+
+/** One person's Channel message as each bot hears it: Chickpea's app as a message, the Agent app's bot as its mention. */
+function channelMessage(ts: string, text: string) {
+  const now = Math.floor(Date.now() / 1_000);
+  const heard = (type: 'message' | 'app_mention', appId: string, botUserId: string) => ({
+    type: 'event_callback', event_id: `Ev${type}${ts}`, event_time: now, team_id: TEAM, api_app_id: appId,
+    authorizations: [{ team_id: TEAM, user_id: botUserId, is_bot: true, is_enterprise_install: false }],
+    event: { type, channel: 'C1', channel_type: 'channel', user: 'U1', text, ts, event_ts: ts },
+  });
+  return { chickpea: heard('message', MAIN_APP.appId, 'UBOT'), app: heard('app_mention', AGENT_APP, AGENT_BOT_USER) };
+}
+
+/** The operator lines for deliveries that added no turn. */
+function notAdmitted(calls: ReadonlyArray<{ arguments: unknown[] }>): unknown[] {
+  return calls.flatMap(({ arguments: [line] }) => (line as { event?: unknown } | undefined)?.event === 'chickpea.turn.not_admitted' ? [line] : []);
 }
 
 /** The first undelivered turn that matches, once detached admission has written it. */
@@ -392,6 +418,60 @@ test("a click on the app Agent's approval card reaches that Agent, as the thread
     'agent_finance',
     'the click never takes the thread over',
   );
+}));
+
+test('a Channel message naming the app Agent and a user-group Agent is answered once by each, first-named first, whichever bot hears it first', async (t) => withHarness(t, async (h) => {
+  const supportFirst = `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`;
+  const financeFirst = `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare our refund numbers`;
+  const cases = [
+    { ts: '1900000200.000100', text: supportFirst, named: ['agent_support', 'agent_finance'], heardFirst: 'chickpea' },
+    { ts: '1900000300.000100', text: supportFirst, named: ['agent_support', 'agent_finance'], heardFirst: 'app' },
+    { ts: '1900000400.000100', text: financeFirst, named: ['agent_finance', 'agent_support'], heardFirst: 'chickpea' },
+    { ts: '1900000500.000100', text: financeFirst, named: ['agent_finance', 'agent_support'], heardFirst: 'app' },
+  ] as const;
+  const info = t.mock.method(console, 'info', () => undefined);
+  for (const { ts, text, named, heardFirst } of cases) {
+    const label = `${named[0]} named first, ${heardFirst === 'app' ? "the app's bot" : 'Chickpea'} heard first`;
+    const message = channelMessage(ts, text);
+    info.mock.resetCalls();
+    for (const ingress of heardFirst === 'app' ? ['app', 'chickpea'] : ['chickpea', 'app']) {
+      const response = ingress === 'app' ? await h.deliver('events', message.app) : await h.deliverToChickpea(message.chickpea);
+      assert.equal(response.status, 200);
+    }
+    assert.deepEqual(
+      notAdmitted(info.mock.calls),
+      [{ event: 'chickpea.turn.not_admitted', reason: 'already_admitted', agentId: named[0], delivery: heardFirst === 'app' ? 'installation' : 'agent_app' }],
+      `${label}: the later delivery adds no turn, and says so in the operator log`,
+    );
+    const turns = (await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts);
+    assert.deepEqual(
+      turns.map((job) => [job.assignment.agentId, job.assignment.threadGuest === true, job.turn.coAddressed?.position]),
+      [[named[0], false, 0], [named[1], true, 1]],
+      `${label}: each Agent answers once, the first one named first and the other after it as its guest`,
+    );
+    assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', ts))?.agentId, named[0], `${label}: the first one named keeps the thread`);
+  }
+}));
+
+test('a later delivery of a message the fallback lane admitted adds no turn and is logged too', async (t) => withHarness(t, async (h) => {
+  const state = h.stores.slackState;
+  const admitCanonical = state.admitCanonical.bind(state);
+  state.admitCanonical = async (input) => {
+    if (!input.msgKey.includes(':ask-')) throw new Error('canonical admission unavailable');
+    return await admitCanonical(input);
+  };
+  t.mock.method(console, 'error', () => undefined);
+  const info = t.mock.method(console, 'info', () => undefined);
+  const ts = '1900000600.000100';
+  const message = channelMessage(ts, `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`);
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+
+  const turns = (await state.listPendingTurns!()).filter((job) => job.turn.messageTs === ts);
+  assert.deepEqual(turns.map((job) => job.assignment.agentId), ['agent_support', 'agent_finance'], 'each Agent answers once');
+  assert.deepEqual(notAdmitted(info.mock.calls), [
+    { event: 'chickpea.turn.not_admitted', reason: 'already_admitted', agentId: 'agent_support', delivery: 'agent_app' },
+  ]);
 }));
 
 test("the Agent's own reply, echoed back by Slack, stays its Agent's row in the thread record", async (t) => withHarness(t, async (h) => {

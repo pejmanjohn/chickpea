@@ -6,6 +6,11 @@ const USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
 export type AgentAppRouteSelection = { kind: 'select'; agentId: string } | { kind: 'ignore' };
 
+/** Each live Agent app's bot user, to its Agent: in a Channel, mentioning that bot addresses the Agent. */
+export function liveAgentAppBots(agents: readonly CustomAgentConfig[]): ReadonlyMap<string, CustomAgentConfig> {
+  return new Map(agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [[agent.slackPresence.app.botUserId, agent]] : []));
+}
+
 /**
  * An Agent app's own ingress selects its Agent. On Chickpea's ingress a
  * Channel message that mentions a live Agent-app bot is that bot's to answer,
@@ -20,9 +25,7 @@ export function agentAppRouteSelection(
 ): AgentAppRouteSelection | undefined {
   if (agentApp) return { kind: 'select', agentId: agentApp.agentId };
   if (surface !== 'channel') return undefined;
-  const liveBots = new Set(
-    agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []),
-  );
+  const liveBots = liveAgentAppBots(agents);
   if (liveBots.size === 0) return undefined;
   for (const match of turn.text.matchAll(USER_MENTION)) {
     if (liveBots.has(match[1]!)) return { kind: 'ignore' };
