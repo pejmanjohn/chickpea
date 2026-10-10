@@ -168,7 +168,10 @@ export function createLiveWorkspaceManagementService(
       try {
         return await (await presenceReconciler(user.slackTeamId)).retry(agent.id);
       } catch (error) {
-        if (!(error instanceof AgentPresenceError)) throw error;
+        // Retry cannot fix a taken handle or a name Slack finds too long, so
+        // the update fails and the service puts the Agent back.
+        if (!(error instanceof AgentPresenceError) || error.code === 'handle_collision' ||
+            error.slackCode === 'name_too_long') throw error;
         return config.getAgent(agent.id);
       }
     },
