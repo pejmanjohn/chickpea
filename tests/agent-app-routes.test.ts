@@ -13,6 +13,7 @@ import { AgentSlackApps, createAgentSlackAppRoutes } from '../src/slack/agent-ap
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
 
 const TOKEN = 'admin-token';
 const TEAM = 'T_TEST';
@@ -48,7 +49,7 @@ function agent(id: string): CustomAgentConfig {
 }
 
 /** A service whose Slack and main bot never answer; the page and its gate are what these tests watch. */
-function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, slack: Partial<AgentAppSlackApi> = {}) {
+function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, slack: Partial<AgentAppSlackApi> = {}, permissionMissing = false) {
   const refuse = (name: string) => async (): Promise<never> => { throw new Error(`unexpected ${name}`); };
   const api = {
     rotate: refuse('rotate'), create: refuse('create'), update: refuse('update'), setIcon: refuse('setIcon'),
@@ -63,17 +64,21 @@ function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, s
       openDirectConversation: async (user) => { calls.push(`dm:${user}`); return { id: `D_${user}`, private: true, member: true, archived: false }; },
       postMessage: async (input) => { calls.push(`post:${input.channelId}`); return { channelId: input.channelId, ts: '1.0' }; },
     },
+    userGroupPermissionMissing: async () => permissionMissing,
   });
   return { service, calls };
 }
 
-async function adminApp(t: TestContext, options: { role?: AuthPrincipal['role']; port?: boolean; slack?: Partial<AgentAppSlackApi> } = {}) {
+async function adminApp(
+  t: TestContext,
+  options: { role?: AuthPrincipal['role']; port?: boolean; slack?: Partial<AgentAppSlackApi>; permissionMissing?: boolean } = {},
+) {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); configureAgentSlackApps(undefined); });
   const support = await config.createAgent(agent('agent_support'));
   await config.ensureWorkspaceInstallation({ workspaceId: TEAM, teamId: TEAM, transportMode: 'direct', defaultAgentId: support.id, runtimeContract: 'chickpea-v1' });
-  const { service, calls } = fakeService(config, settings, options.slack);
+  const { service, calls } = fakeService(config, settings, options.slack, options.permissionMissing);
   configureAgentSlackApps(options.port === false ? undefined : HOST);
   const app = createAdminRoutes({
     store: config, settings,
@@ -100,7 +105,8 @@ test('the token page and its form are for Owners with the port, and 404 without 
   assert.match(html, /name="refreshToken" type="password"/);
   assert.match(html, /Starts with xoxe-/);
   assert.match(html, /Create Support(&#39;|')s Slack app/);
-  assert.match(html, /Slack lets each person hold one configuration token per workspace/);
+  assert.match(html, /<p>If Slack doesn(&#39;|')t offer this workspace when you choose Generate Token, you already hold as many tokens as Slack allows there\. Delete one you no longer use under Your App Configuration Tokens, or ask another Owner to do this step\.<\/p>/);
+  assert.equal(html.includes('replacing each other'), false);
   assert.match(html, /Chickpea only changes the apps it creates for your Agents/);
   assert.equal(html.includes('Remove the configuration token'), false, 'nothing to remove yet');
 
@@ -134,9 +140,12 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   const owner = await adminApp(t, {
     slack: {
       rotate: async (refreshToken) => { rotations.push(refreshToken); return { accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: team, expiresAt: Date.now() + 3_600_000 }; },
-      create: async () => ({ appId: 'A0APP1', clientId: '1.c', clientSecret: 'cs', signingSecret: 'ss' }),
-      update: async () => undefined,
-      setIcon: async () => 'set',
+      create: async (_token, manifest) => {
+        refuseLikeSlack('apps.manifest.create', manifest);
+        return { appId: 'A0APP1', clientId: '1.c', clientSecret: 'cs', signingSecret: 'ss' };
+      },
+      update: async (_token, _appId, manifest) => { refuseLikeSlack('apps.manifest.update', manifest); },
+      setIcon: async () => undefined,
     },
   });
   const api = '/admin/api/agents/agent_support/slack-app/token';
@@ -159,7 +168,7 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   assert.equal(html.includes('xoxe-1-good-token-0000'), false, 'the token never echoes');
   assert.deepEqual(owner.calls, ['disable:S1', 'dm:UOWNER', 'post:D_UOWNER']);
   const presence = (await owner.config.getAgent('agent_support')).slackPresence;
-  assert.equal(presence?.kind, 'agent_app');
+  assert.equal(presence?.kind === 'agent_app' && presence.app.state, 'awaiting_consent', 'Slack accepted the create and the update');
 
   const again = await owner.request(api, owner.form({ action: 'create' }));
   assert.equal(again.status, 409);
@@ -169,9 +178,29 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   assert.match(await withToken.text(), /Remove the configuration token/);
   const removed = await owner.request(api, owner.form({ action: 'remove' }));
   assert.equal(removed.status, 200);
-  assert.match(await removed.text(), /Chickpea deleted its copy of your configuration token\. To revoke it in Slack too, open Your Apps and choose Delete token under Your App Configuration Tokens\./);
+  const removal = await removed.text();
+  assert.match(removal, /<p>Chickpea deleted its copy of your configuration token\. To revoke it in Slack too, open Your Apps and choose Delete token for every configuration token listed for this workspace, since Slack can list more than one\. Then reload Your Apps and check that none is left\.<\/p>/);
+  assert.equal(removal.includes('choose Delete token under'), false, 'the old single-token line is gone');
+  assert.match(removal, /href="https:\/\/api\.slack\.com\/apps"[^>]*>Open Your Apps in Slack</);
   assert.equal(await owner.service.hasConfigurationToken(), false);
   assert.equal(rotations.length, 2, 'removal makes no Slack call');
+});
+
+test("without the Owner's user-group permission a pasted token is kept, nothing starts, and the page sends the Owner to Admin's update", async (t) => {
+  const owner = await adminApp(t, {
+    permissionMissing: true,
+    slack: { rotate: async () => ({ accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: TEAM, expiresAt: Date.now() + 3_600_000 }) },
+  });
+  const response = await owner.request('/admin/api/agents/agent_support/slack-app/token', owner.form({ action: 'paste', refreshToken: 'xoxe-1-good-token-0000' }));
+  assert.equal(response.status, 409);
+  const html = await response.text();
+  assert.match(html, /<p>Chickpea needs one more Slack permission to give @support its own Slack app\. In Chickpea Admin, choose Update in Slack, then choose Give @support its own Slack app in Chickpea(&#39;|')s Home tab\.<\/p>/);
+  assert.match(html, /<a class="auth-link" href="\/admin">Open Chickpea<\/a>/);
+  assert.equal(html.includes('Creating Support'), false);
+  assert.equal(html.includes('Try again'), false);
+  assert.deepEqual(owner.calls, ['dm:UOWNER', 'post:D_UOWNER'], 'the Owner is told in Slack too, and no handle is released');
+  assert.equal(await owner.service.hasConfigurationToken(), true, 'the token is kept for the next start');
+  assert.equal((await owner.config.getAgent('agent_support')).slackPresence?.kind, undefined);
 });
 
 test('the public allow and callback paths exist only with the port and an Owner handoff', async (t) => {

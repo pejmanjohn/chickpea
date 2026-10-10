@@ -19,12 +19,24 @@ import {
 } from './errors.ts';
 import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 
+/** What the reconciler asks of an Agent's own Slack app; absent on a host without Agent apps. */
+export interface AgentAppPresenceHooks {
+  /** Retires the app before the Agent is archived. */
+  retire(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
+  /** Brings a live app's bot into a Channel the Agent was added to; undefined for an Agent without one. */
+  bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBot | undefined>;
+}
+
+/** A live app's bot after publishing: in the Channel, with a transport that posts as it, or left out. */
+export type AgentAppBot =
+  | { placement: 'in_channel'; transport: Pick<SlackTransport, 'postMessage'> }
+  | { placement: 'left_out' };
+
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
   announce: AgentPresenceAnnouncements | null;
-  /** Retires an Agent's own Slack app before the Agent is archived; absent on a host without Agent apps. */
-  agentApps?: { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> };
+  agentApps?: AgentAppPresenceHooks;
   now?: () => number;
 }
 
@@ -39,6 +51,8 @@ interface PublishAgentInput {
 interface AgentPublicationResult {
   agent: CustomAgentConfig;
   grant: AgentChannelGrant;
+  /** For an Agent with its own live Slack app: whether that app's bot is in the Channel. */
+  appBot?: AgentAppBot['placement'];
 }
 
 type MentionRepairConfig = Pick<
@@ -379,16 +393,18 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
-    if (pendingGrant.status !== 'active' && published.slackPresence?.kind !== 'agent_app') {
+    const appBot = await this.dependencies.agentApps?.bringBotIn(published, { id: input.channelId, private: channel.private });
+    if (pendingGrant.status !== 'active') {
       await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
         workspaceId: input.workspaceId,
         channelId: input.channelId,
         channelIsPrivate: channel.private,
         agent: published,
         grantRevision: grant.revision,
+        ...(appBot?.placement === 'in_channel' ? { appBot: appBot.transport } : {}),
       }));
     }
-    return { agent: published, grant };
+    return { agent: published, grant, ...(appBot ? { appBot: appBot.placement } : {}) };
   }
 
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */

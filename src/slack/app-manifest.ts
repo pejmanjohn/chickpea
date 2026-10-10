@@ -43,7 +43,7 @@ const CONTROL_PLANE_EVENTS = Object.freeze([
   ...SHARED_BOT_EVENTS, 'app_uninstalled', 'tokens_revoked', 'user_change',
 ] as const);
 
-export interface SlackAppManifest {
+interface SlackAppManifestShape<Settings> {
   display_information: { name: string; description: string; background_color: string };
   features: {
     app_home: {
@@ -61,9 +61,7 @@ export interface SlackAppManifest {
     redirect_urls?: string[];
     scopes: { bot: string[]; user?: string[] };
   };
-  settings: {
-    event_subscriptions: { request_url?: string; bot_events: string[] };
-    interactivity?: { is_enabled: boolean; request_url?: string };
+  settings: Settings & {
     org_deploy_enabled: boolean;
     socket_mode_enabled: boolean;
     token_rotation_enabled: boolean;
@@ -71,11 +69,39 @@ export interface SlackAppManifest {
   };
 }
 
-/** What an Agent's own Slack app subscribes to: its mentions, its DMs, and its own end. */
+export interface SlackAppRequestUrls {
+  events: string;
+  interactions: string;
+}
+
+/** An app with its Request URLs, which Slack requires for event subscriptions and interactivity (Socket Mode is never on). */
+export type SlackAppManifest = SlackAppManifestShape<{
+  event_subscriptions: { request_url: string; bot_events: string[] };
+  interactivity: { is_enabled: boolean; request_url: string };
+}>;
+
+/**
+ * What creates an Agent's app. Its Request URLs name the app's ID, which only
+ * the create answers, so it carries neither section; the first update adds both.
+ */
+export type SlackAppCreateManifest = SlackAppManifestShape<{ event_subscriptions?: never; interactivity?: never }>;
+
+/** What an Agent's own Slack app subscribes to: its mentions, its DMs, its bot joining a Channel, and its own end. */
 export const AGENT_APP_BOT_EVENTS: readonly string[] = Object.freeze([
-  'app_mention', 'message.im', 'app_uninstalled', 'tokens_revoked',
+  'app_mention', 'member_joined_channel', 'message.im', 'app_uninstalled', 'tokens_revoked',
 ]);
 export const SLACK_APP_DESCRIPTION_MAX_LENGTH = 140;
+
+/** One Agent's own app: no sign-in, its handle as the bot's name, its own scopes and events, no Home tab. */
+export interface AgentAppManifestIntent {
+  appName: string;
+  /** The Agent's handle, which Slack's bot name allows (a-z, 0-9, `-`, `_`, `.`). */
+  botDisplayName: string;
+  description: string;
+  redirectUri: string;
+  scopes: readonly string[];
+  events: readonly string[];
+}
 
 export type SlackAppManifestIntent =
   | {
@@ -84,34 +110,15 @@ export type SlackAppManifestIntent =
       appName?: string;
       botDisplayName?: string;
     }
-  | {
-      /** One Agent's own app: no sign-in, no URLs until the app exists, its own scopes and events. */
-      kind: 'agent_app';
-      appName: string;
-      botDisplayName: string;
-      description: string;
-      redirectUri: string;
-      urls?: { events: string; interactions: string };
-      scopes: readonly string[];
-      events: readonly string[];
-    };
+  | ({ kind: 'agent_app'; urls: SlackAppRequestUrls } & AgentAppManifestIntent);
 
 /** Sole typed builder for the native Slack apps Chickpea creates: the workspace's, and an Agent's own. */
 export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppManifest {
   if (intent.kind === 'agent_app') {
-    return manifestCore({
-      appName: requiredName(intent.appName, 'Slack app name', SLACK_APP_NAME_MAX_LENGTH),
-      botDisplayName: requiredName(intent.botDisplayName, 'Slack bot display name', SLACK_BOT_DISPLAY_NAME_MAX_LENGTH),
-      description: requiredName(intent.description, 'Slack app description', SLACK_APP_DESCRIPTION_MAX_LENGTH),
-      ...(intent.urls ? { requestUrl: intent.urls.events, interactionUrl: intent.urls.interactions } : {}),
-      botEvents: [...intent.events],
-      scopes: intent.scopes,
-      includeOidc: false,
-      redirectUrls: [intent.redirectUri],
-    });
+    return withRequestUrls(agentAppCreateManifest(intent), intent.urls, intent.events);
   }
   const origin = safeOrigin(intent.origin);
-  return manifestCore({
+  return withRequestUrls(manifestCore({
     appName: requiredName(
       intent.appName ?? 'Chickpea', 'Slack app name', SLACK_APP_NAME_MAX_LENGTH,
     ),
@@ -121,14 +128,29 @@ export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppM
       SLACK_BOT_DISPLAY_NAME_MAX_LENGTH,
     ),
     description: 'A self-hosted, model-agnostic AI agent for Slack.',
-    requestUrl: `${origin}${SLACK_EVENTS_PATH}`,
-    interactionUrl: `${origin}${SLACK_INTERACTIONS_PATH}`,
-    botEvents: [...CONTROL_PLANE_EVENTS],
+    homeTab: true,
     includeOidc: true,
     redirectUrls: [
       `${origin}${SLACK_BOT_OAUTH_CALLBACK_PATH}`,
       `${origin}${SLACK_OIDC_CALLBACK_PATH}`,
     ],
+  }), {
+    events: `${origin}${SLACK_EVENTS_PATH}`,
+    interactions: `${origin}${SLACK_INTERACTIONS_PATH}`,
+  }, CONTROL_PLANE_EVENTS);
+}
+
+/** The manifest that creates an Agent's app, before its Request URLs exist. */
+export function agentAppCreateManifest(intent: AgentAppManifestIntent): SlackAppCreateManifest {
+  return manifestCore({
+    appName: requiredName(intent.appName, 'Slack app name', SLACK_APP_NAME_MAX_LENGTH),
+    botDisplayName: requiredName(intent.botDisplayName, 'Slack bot display name', SLACK_BOT_DISPLAY_NAME_MAX_LENGTH),
+    description: requiredName(intent.description, 'Slack app description', SLACK_APP_DESCRIPTION_MAX_LENGTH),
+    // Nothing publishes an Agent app's Home tab, so it would only ever be empty.
+    homeTab: false,
+    scopes: intent.scopes,
+    includeOidc: false,
+    redirectUrls: [intent.redirectUri],
   });
 }
 
@@ -146,7 +168,7 @@ export function slackManifestPrefillUrl(manifest: SlackAppManifest): string {
   }`;
 }
 
-export function slackManifestFingerprint(manifest: SlackAppManifest): string {
+export function slackManifestFingerprint(manifest: SlackAppManifest | SlackAppCreateManifest): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(manifest)).digest('hex')}`;
 }
 
@@ -208,13 +230,11 @@ function manifestCore(input: {
   appName: string;
   botDisplayName: string;
   description: string;
-  requestUrl?: string;
-  interactionUrl?: string;
-  botEvents: string[];
+  homeTab: boolean;
   scopes?: readonly string[];
   includeOidc: boolean;
   redirectUrls?: string[];
-}): SlackAppManifest {
+}): SlackAppCreateManifest {
   return {
     display_information: {
       name: input.appName,
@@ -223,7 +243,7 @@ function manifestCore(input: {
     },
     features: {
       app_home: {
-        home_tab_enabled: true,
+        home_tab_enabled: input.homeTab,
         messages_tab_enabled: true,
         messages_tab_read_only_enabled: false,
       },
@@ -251,15 +271,26 @@ function manifestCore(input: {
       },
     },
     settings: {
-      event_subscriptions: {
-        ...(input.requestUrl ? { request_url: input.requestUrl } : {}),
-        bot_events: input.botEvents,
-      },
-      interactivity: { is_enabled: true, ...(input.interactionUrl ? { request_url: input.interactionUrl } : {}) },
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,
       is_mcp_enabled: false,
+    },
+  };
+}
+
+/** The two sections lead `settings`, as they always have, so a workspace app's stored fingerprint still matches. */
+function withRequestUrls(
+  manifest: SlackAppCreateManifest,
+  urls: SlackAppRequestUrls,
+  botEvents: readonly string[],
+): SlackAppManifest {
+  return {
+    ...manifest,
+    settings: {
+      event_subscriptions: { request_url: urls.events, bot_events: [...botEvents] },
+      interactivity: { is_enabled: true, request_url: urls.interactions },
+      ...manifest.settings,
     },
   };
 }

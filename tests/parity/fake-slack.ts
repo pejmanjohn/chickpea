@@ -3,6 +3,7 @@ import { createHash, sign as signBytes } from 'node:crypto';
 import { AddressInfo } from 'node:net';
 
 import { REQUIRED_SLACK_BOT_SCOPES } from '../../src/slack/scopes.ts';
+import { slackManifestRefusal } from '../helpers/slack-manifest-rules.ts';
 
 /**
  * In-memory fake Slack + fake Cloudflare Workers AI backend.
@@ -792,22 +793,26 @@ export class FakeSlackBackend {
         if (body.app_id !== this.oauth.appId || !this.appManifest) return { ok: false, error: 'invalid_app_id' };
         if (method === 'apps.manifest.export') return { ok: true, manifest: this.appManifest };
         if (!body.manifest || typeof body.manifest !== 'object') return { ok: false, error: 'invalid_manifest' };
+        const refusedUpdate = slackManifestRefusal(body.manifest);
+        if (refusedUpdate) return refusedUpdate;
         this.appManifest = body.manifest;
         return { ok: true, app_id: this.oauth.appId };
       }
-      case 'apps.manifest.create':
-        if (this.oauth && bearer(headers) === this.oauth.configurationToken) this.appManifest = body.manifest;
-        return this.oauth && bearer(headers) === this.oauth.configurationToken
-          ? {
-              ok: true,
-              app_id: this.oauth.appId,
-              credentials: {
-                client_id: this.oauth.clientId,
-                client_secret: this.oauth.clientSecret,
-                signing_secret: this.oauth.signingSecret,
-              },
-            }
-          : { ok: false, error: 'invalid_auth' };
+      case 'apps.manifest.create': {
+        if (!this.oauth || bearer(headers) !== this.oauth.configurationToken) return { ok: false, error: 'invalid_auth' };
+        const refusedCreate = slackManifestRefusal(body.manifest);
+        if (refusedCreate) return refusedCreate;
+        this.appManifest = body.manifest;
+        return {
+          ok: true,
+          app_id: this.oauth.appId,
+          credentials: {
+            client_id: this.oauth.clientId,
+            client_secret: this.oauth.clientSecret,
+            signing_secret: this.oauth.signingSecret,
+          },
+        };
+      }
       case 'apps.icon.set': {
         // Only an app this configuration token created.
         if (!this.oauth || bearer(headers) !== this.oauth.configurationToken) return { ok: false, error: 'invalid_auth' };

@@ -13,6 +13,7 @@ import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { SlackTransportError, type SlackTransport, type SlackUserGroup } from '../src/slack/transport/types.ts';
+import { captureSlackRefusals } from './helpers/agent-app-refusals.ts';
 
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
@@ -95,7 +96,10 @@ async function fixture(t: TestContext, options: { token?: boolean; botToken?: bo
   const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now });
   const reconciler = new AgentPresenceReconciler({
     config, transport: transport as unknown as SlackTransport, announce: null, now: () => clock.now,
-    agentApps: { retire: async (current) => (await service.retire(current)).agent },
+    agentApps: {
+      retire: async (current) => (await service.retire(current)).agent,
+      bringBotIn: async () => { throw new Error('archive brings no bot in'); },
+    },
   });
   return { config, settings, secrets, slack, transport, clock, service, reconciler, agent };
 }
@@ -122,11 +126,15 @@ test('archiving an Agent app uninstalls, deletes with a rotated token, hands the
 });
 
 test('a refused uninstall refuses the archive and leaves the Agent unarchived with its app recorded', async (t) => {
+  const refusals = captureSlackRefusals(t);
   const f = await fixture(t);
   f.slack.refuseUninstall = 'invalid_client_id';
   await assert.rejects(() => f.reconciler.archive('agent_support'), (error: unknown) =>
     error instanceof AgentPresenceError &&
     error.message === "Chickpea couldn't remove Support's Slack app, so Support is not archived. Try again in a minute.");
+  assert.deepEqual(refusals.map(({ step, agentId, appId, code }) => ({ step, agentId, appId, code })), [
+    { step: 'uninstall', agentId: 'agent_support', appId: APP.appId, code: 'invalid_client_id' },
+  ]);
   const agent = await f.config.getAgent('agent_support');
   assert.equal(agent.lifecycle, 'active');
   const presence = agent.slackPresence;
@@ -159,9 +167,11 @@ test('Slack limiting the uninstall refuses the archive for now and leaves the ap
 });
 
 test('Slack limiting the delete refuses the archive for now instead of leaving the app behind', async (t) => {
+  const refusals = captureSlackRefusals(t);
   const f = await fixture(t);
   f.slack.refuseDelete = 'ratelimited';
   await assert.rejects(() => f.reconciler.archive('agent_support'), AgentPresenceError);
+  assert.deepEqual(refusals.map(({ step, appId, code }) => ({ step, appId, code })), [{ step: 'delete', appId: APP.appId, code: 'ratelimited' }]);
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.kind === 'agent_app' && presence.app.state === 'uninstalling' && presence.app.next, 'delete');
   assert.deepEqual(f.transport.posted, [], 'nobody is told to delete it by hand');

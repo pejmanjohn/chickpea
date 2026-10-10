@@ -13,6 +13,7 @@ import { type AgentAppGrant, type AgentAppSlackApi, SlackRefused, SlackUnavailab
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { escapeMrkdwn } from '../src/slack/ui/text.ts';
+import { captureSlackRefusals } from './helpers/agent-app-refusals.ts';
 
 const NOW = 1_800_000_000_000;
 const TEAM = 'TACME';
@@ -30,6 +31,7 @@ class FakeSlack implements AgentAppSlackApi {
   uninstalls = 0;
   grant: Partial<AgentAppGrant> = {};
   fail: Error | undefined;
+  refuseUninstall: SlackRefused | undefined;
   async rotate(): Promise<never> { throw new Error('not in this unit'); }
   async create(): Promise<never> { throw new Error('not in this unit'); }
   async update(): Promise<never> { throw new Error('not in this unit'); }
@@ -42,7 +44,11 @@ class FakeSlack implements AgentAppSlackApi {
       scopes: [...AGENT_APP_BOT_SCOPES], ...this.grant,
     };
   }
-  async uninstall() { this.uninstalls += 1; return 'removed' as const; }
+  async uninstall() {
+    this.uninstalls += 1;
+    if (this.refuseUninstall) throw this.refuseUninstall;
+    return 'removed' as const;
+  }
   async delete(): Promise<never> { throw new Error('not in this unit'); }
 }
 
@@ -203,11 +209,28 @@ test('a grant for the wrong workspace, app or person, or with missing permission
   }
 });
 
+test('an undo Slack refuses is logged, and the Owner still gets the page', async (t) => {
+  const refusals = captureSlackRefusals(t);
+  const f = await fixture(t);
+  f.slack.grant = { teamId: 'TOTHER' };
+  f.slack.refuseUninstall = new SlackRefused('apps.uninstall', 'invalid_client_id');
+  const state = await open(f);
+  const response = await f.service.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
+  assert.match(pageText(await response.text()), /different Slack workspace/);
+  assert.deepEqual(refusals.map(({ step, agentId, appId, code }) => ({ step, agentId, appId, code })), [
+    { step: 'uninstall', agentId: 'agent_support', appId: APP.appId, code: 'invalid_client_id' },
+  ]);
+});
+
 test("Slack refusing the code expires the link, and Slack not answering says so", async (t) => {
+  const refusals = captureSlackRefusals(t);
   const refused = await fixture(t);
   refused.slack.fail = new SlackRefused('oauth.v2.access', 'invalid_code');
   const state = await open(refused);
   assert.equal((await refused.service.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER)).status, 410);
+  assert.deepEqual(refusals.map(({ step, agentId, appId, code }) => ({ step, agentId, appId, code })), [
+    { step: 'exchange', agentId: 'agent_support', appId: APP.appId, code: 'invalid_code' },
+  ]);
   const down = await fixture(t);
   down.slack.fail = new SlackUnavailable('oauth.v2.access', 'network_error');
   const downState = await open(down);

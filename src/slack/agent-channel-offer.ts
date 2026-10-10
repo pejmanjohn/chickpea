@@ -33,17 +33,19 @@ interface AddingActor {
   principal?: AuthPrincipal;
 }
 
-export interface AgentChannelAddClick {
+/** Someone asking for an Agent in a Channel: the offer's Add click, or Slack's own Add of the Agent's app bot. */
+export interface AgentChannelAddRequest {
   workspaceId: string;
   userId: string;
   channelId: string;
   threadTs: string | null;
   agentId: string;
-  actionTs: string;
+  /** The click's action_ts, or the join event's ID: a redelivery of either is answered once. */
+  requestId: string;
 }
 
 /** Parsing grants no authority. */
-export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAddClick | undefined {
+export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAddRequest | undefined {
   if (action.actionId !== AGENT_CHANNEL_ADD_ACTION || action.containerType !== 'message' ||
       !action.channelId || !action.value || !isAgentId(action.value)) return undefined;
   return {
@@ -52,14 +54,15 @@ export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAd
     channelId: action.channelId,
     threadTs: action.threadTs,
     agentId: action.value,
-    actionTs: action.actionTs,
+    requestId: action.actionTs,
   };
 }
 
 /**
  * Tells the person who mentioned `agent` in a Channel it has not been added
  * to, privately and where they wrote. Someone who may add it gets a button
- * that does; anyone else learns who can.
+ * that does; anyone else learns who can. When the bot the Agent posts as is
+ * what is missing, the button could not bring that bot in, so nobody gets it.
  */
 export async function offerAgentForChannel(input: {
   workspaceId: string;
@@ -68,6 +71,7 @@ export async function offerAgentForChannel(input: {
   /** The thread the mention was in, when it was a reply. */
   threadTs?: string;
   agent: CustomAgentConfig;
+  postingBotAbsent?: boolean;
   actor: AddingActor;
   identity: OfferIdentity;
   transport: Pick<SlackTransport, 'lookupChannel'>;
@@ -77,7 +81,10 @@ export async function offerAgentForChannel(input: {
   const notInChannel = `@${handle} isn’t in <#${input.channelId}> yet.`;
   let text: string;
   let blocks: SlackBlock[] | undefined;
-  if (canEditAgent(input.actor.principal, input.agent)) {
+  const mayAdd = canEditAgent(input.actor.principal, input.agent);
+  if (mayAdd && input.postingBotAbsent) {
+    text = notInChannel;
+  } else if (mayAdd) {
     const channelName = await input.transport.lookupChannel(input.channelId)
       .then(({ name }) => name, () => undefined);
     text = notInChannel;
@@ -108,36 +115,37 @@ export async function offerAgentForChannel(input: {
 }
 
 export interface AgentChannelAddDependencies {
-  /** First wins, so a redelivered click is answered once. */
+  /** First wins, so a redelivered request is answered once. */
   claim(key: string): Promise<boolean>;
-  /** The clicker in this Channel, read now rather than when the button was sent. */
+  /** The person asking, in this Channel, read now rather than when the button was sent. */
   resolveActor(): Promise<AddingActor>;
   getAgent(agentId: string): Promise<CustomAgentConfig | undefined>;
   identity: OfferIdentity;
-  /** Adds the Agent to the Channel exactly as Admin's Add to channels does. */
-  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<void>;
+  /** Adds the Agent to the Channel exactly as Admin's Add to channels does; `bot_left_out` when its own app's bot is not there. */
+  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out'>;
   adminUrl(): Promise<string | undefined>;
   client: EphemeralClient;
 }
 
-/** A click on the offer's button: Admin's authority check, then Admin's publish. */
+/** A request to add an Agent to a Channel: Admin's authority check, then Admin's publish. */
 export async function addAgentToChannel(
-  click: AgentChannelAddClick,
+  request: AgentChannelAddRequest,
   deps: AgentChannelAddDependencies,
 ): Promise<void> {
-  const key = ['agent-channel-add', click.workspaceId, click.channelId, click.agentId, click.userId, click.actionTs];
+  const key = ['agent-channel-add', request.workspaceId, request.channelId, request.agentId, request.userId, request.requestId];
   if (!await deps.claim(key.join(':'))) return;
-  const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(click.agentId)]);
+  const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(request.agentId)]);
   const handle = agent?.kind === 'user' ? agentSlackHandle(agent)?.handle : undefined;
   let text: string;
   if (!agent || !handle || !actor.routing.fullMember || !actor.routing.channelMember) {
     text = 'That Agent is not available here.';
   } else if (!actor.principal || !canEditAgent(actor.principal, agent)) {
-    text = `${askOwnersToAdd(await namedOwners(deps.identity, click.workspaceId))} to add @${handle} to this channel.`;
+    text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add @${handle} to this channel.`;
   } else {
     try {
-      await deps.publish(agent, actor.principal);
-      text = `@${handle} is ready in this channel. Mention @${handle} to start a conversation.`;
+      text = await deps.publish(agent, actor.principal) === 'bot_left_out'
+        ? `To let @${handle} answer here, add it from the channel's Add people or agents.`
+        : `@${handle} is ready in this channel. Mention @${handle} to start a conversation.`;
     } catch {
       const url = await deps.adminUrl().catch(() => undefined);
       text = `I couldn’t add @${handle} to this channel. Open Chickpea to add it there.` +
@@ -145,10 +153,10 @@ export async function addAgentToChannel(
     }
   }
   await deps.client.chat.postEphemeral({
-    channel: click.channelId,
-    user: click.userId,
+    channel: request.channelId,
+    user: request.userId,
     text,
-    ...(click.threadTs ? { thread_ts: click.threadTs } : {}),
+    ...(request.threadTs ? { thread_ts: request.threadTs } : {}),
   });
 }
 
