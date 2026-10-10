@@ -3596,7 +3596,7 @@ button.capability-pill { cursor: pointer; }
 /* Titles and actions never wrap. As the card narrows, the tiles tighten their
    chips, gaps and titles, then put the chip above the title, and stack only
    once three no longer fit. The widths are the card's, which is the window
-   less 434 px with the full sidebar, or less 314 px at 1000 px and below. */
+   less 434 px with the full sidebar, or less 316 px at 1000 px and below. */
 @container first-agent-main (max-width: 977px) {
   .first-agent { padding-inline: 24px; }
   .first-agent-ways { gap: 10px; }
