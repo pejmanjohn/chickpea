@@ -15,13 +15,16 @@ export async function readBoundedRequestBody(
   const declared = request.headers.get('content-length');
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {
+      await cancelRequestBody(request);
       return { ok: false, reason: 'invalid_content_length' };
     }
     const declaredBytes = Number(declared);
     if (!Number.isSafeInteger(declaredBytes)) {
+      await cancelRequestBody(request);
       return { ok: false, reason: 'invalid_content_length' };
     }
     if (declaredBytes > maxSize) {
+      await cancelRequestBody(request);
       return { ok: false, reason: 'body_too_large' };
     }
   }
@@ -52,6 +55,12 @@ export async function readBoundedRequestBody(
     offset += chunk.byteLength;
   }
   return { ok: true, body };
+}
+
+async function cancelRequestBody(request: Request): Promise<void> {
+  try {
+    await request.body?.cancel();
+  } catch {}
 }
 
 export function requestWithBufferedBody(request: Request, body: Uint8Array): Request {
