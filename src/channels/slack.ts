@@ -159,6 +159,7 @@ import {
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
+import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from '../slack/read-budget.ts';
 import {
   assembleRetainedSlackContext,
@@ -2622,8 +2623,15 @@ async function processSlackEvent(
       payload.event,
     )
   ) return;
+  // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
+  const tenantBots = ask || !agentSlackAppsHost()
+    ? []
+    : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId);
   if (!ask && installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
-    await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, installation.botUserId);
+    await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, {
+      ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
+      siblingBotUserIds: tenantBots,
+    });
   }
   const credentials = execution
     ? ({ connectionRevision: null } as ResolvedSlackInstallationCredentials)
@@ -2644,10 +2652,7 @@ async function processSlackEvent(
 
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
-  // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
-  const siblingBotUserIds = ask || !agentSlackAppsHost()
-    ? []
-    : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId).filter((id) => id !== resolvedBotUserId);
+  const siblingBotUserIds = tenantBots.filter((id) => id !== resolvedBotUserId);
   // A host-addressed turn is built by the host: an ask's from a delivered
   // Agent reply, which Slack event normalization would ignore as an
   // app-authored post; a co-addressed one from the person's normalized turn.
@@ -4522,14 +4527,14 @@ async function recordAgentThreadMessage(
   config: Pick<ConfigStore, 'getAgentThreadRoute' | 'putSlackPublicContext'>,
   workspaceId: string,
   event: SlackMessageEvent,
-  botUserId: string | undefined,
+  self: SlackContextSelf,
 ): Promise<void> {
   try {
     await recordSlackThreadEventMessage(
       config,
       workspaceId,
       event,
-      botUserId ? { botUserId } : {},
+      self,
       async (rootTs) => Boolean(await config.getAgentThreadRoute(workspaceId, event.channel, rootTs)),
     );
   } catch {

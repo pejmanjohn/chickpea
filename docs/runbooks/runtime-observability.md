@@ -482,6 +482,21 @@ this line is for the operator. It carries no token, secret, or URL.
 
 Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
 
+## Memory lease failures
+
+A turn whose memory lease is refused ends with the generic notice that the
+agent run failed before completion. Before posting it, Core logs one
+structured `console.warn` object with `event: "chickpea.turn.agent_failure"`,
+`reason: "memory_delivery_lease_rejected"`, the `agentId`, and `stage`:
+`before_run` (refused before the model ran) or `after_run` (refused before the
+answer was delivered). The lease holds while the Agent is enabled, the
+installation is not revoked, the bot delivering the reply is the
+installation's or the Agent's own live app's, the Agent's memory is unchanged
+since the turn read it, and, in a Channel, the Agent's grant stands and both
+the person and that bot are members. The turn's preceding `memory_metric`
+lines show `delivery_lease` and any `quarantine` reason. Filter with
+`wrangler tail --search agent_failure`.
+
 ## Connection logs
 
 MCP connector traffic and OAuth credential renewal each log one structured

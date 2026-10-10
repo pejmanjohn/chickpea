@@ -41,10 +41,13 @@ An Owner can give one Agent its own Slack app in the customer's workspace.
 The Agent then answers its direct messages, mentions of its bot, and clicks on
 its own messages as that bot. Its replies post with the app's bot token under
 the app's name and icon, with no `username` or `icon_url`: the app does not
-ask for `chat:write.customize`. Files it uploads belong to its bot. When the
-app is broken, the Agent's turn ends unavailable; it never falls back to
-Chickpea's bot. Other Agents ask it by its bot user (`<@U…>`) instead of a user
-group. Code lives in `src/slack/agent-apps/`.
+ask for `chat:write.customize`. Files it uploads belong to its bot. While the
+app is live its bot counts as the installation's own: the memory lease accepts
+it as the Agent's delivering bot, and its posts echoed back by Slack are not
+recorded again as another app's. When the app is broken, the Agent's turn ends
+unavailable; it never falls back to Chickpea's bot. Other Agents ask it by its
+bot user (`<@U…>`) instead of a user group. Code lives in
+`src/slack/agent-apps/`.
 
 The app's manifest subscribes to no `message.channels` event. A thread
 follow-up in a Channel that does not mention the app's bot reaches the Agent

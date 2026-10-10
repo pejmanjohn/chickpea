@@ -1405,6 +1405,7 @@ async function runTurnAttempt(
       // pending and the alarm re-armed forever behind a live "Thinking…"
       // status. Mirror the post-run lease fence: one sanitized final, the
       // status cleared, and a terminal delivery outcome.
+      logMemoryLeaseFailure('before_run', assignment.agentId);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
@@ -2166,6 +2167,7 @@ async function runTurnAttempt(
     await preparedMemory?.confirmInjection();
     const leaseValid = acknowledgeMemoryUpdate || (await preparedMemory?.validateLease() ?? true);
     if (preparedMemory?.ownerBound && !leaseValid && !recoveredText) {
+      logMemoryLeaseFailure('after_run', assignment.agentId);
       await statusTurn.prepareFinal();
       await presenter.deliverFinal(AGENT_FAILURE_TEXT, 'plain_text', 'error');
       await finishStatus('failure');
@@ -2866,6 +2868,15 @@ function resolveMemoryDeliveryText(
 ): string {
   if (leaseValid) return draft;
   return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
+}
+
+/**
+ * The operator's line for a turn whose memory lease ends it in the generic
+ * failure notice; the notice itself says nothing more (see
+ * docs/runbooks/runtime-observability.md).
+ */
+function logMemoryLeaseFailure(stage: 'before_run' | 'after_run', agentId: string): void {
+  console.warn({ event: 'chickpea.turn.agent_failure', reason: 'memory_delivery_lease_rejected', stage, agentId });
 }
 
 /** The bot users of the teammates with their own Slack apps: their replies in this thread are Agents' replies. */
