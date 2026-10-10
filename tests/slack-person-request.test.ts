@@ -9,6 +9,7 @@ import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
+import { startedByAgentAsk } from '../src/management/service.ts';
 import type {
   ManagementApplyResult,
   ManagementOperation,
@@ -295,6 +296,27 @@ test('a person\'s message without words of its own is still the person\'s turn, 
     await assert.rejects(invokeSlackScheduleAction({
       signal: blank, context: await resolveSlackManagementActor(blank, f.identity),
       operation: { ...saveRoutine(workspaceId, desk.id, 'Blank'), kind: 'save_routine' } as never,
+      dependencies: { management: f.management, routines: f.routines, service: f.service },
+    }), /requires the trusted current Slack request/);
+  } finally {
+    f.close();
+  }
+});
+
+test('an empty message is the person\'s turn at the Slack seam and in the service alike', async () => {
+  const { f, createAgent, signal, tool } = await setup('person-empty-text');
+  try {
+    const desk = await createAgent('agent_desk');
+    const empty = signal(desk.id, { text: '', eventId: 'Ev_EMPTY', messageTs: PERSON_MESSAGE });
+    assert.equal(empty.requesterText, '', 'the delivered signal keeps the person\'s empty text');
+    const actor = await resolveSlackManagementActor(empty, f.identity);
+    assert.equal(startedByAgentAsk(actor), false, 'the service sees the person\'s turn the seam saw');
+
+    assert.equal(onlyOutcome(await tool(empty, 'apply_workspace_changes',
+      slackMemoryUpdateArguments(empty, { expectedRevision: 0, body: 'Notes are in the thread.' }))).disposition, 'applied');
+    await assert.rejects(invokeSlackScheduleAction({
+      signal: empty, context: actor,
+      operation: { ...saveRoutine(f.owner.binding.slackTeamId, desk.id, 'Empty'), kind: 'save_routine' } as never,
       dependencies: { management: f.management, routines: f.routines, service: f.service },
     }), /requires the trusted current Slack request/);
   } finally {

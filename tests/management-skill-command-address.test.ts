@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import type { ParsedSkillSource } from '../src/config/skill-import.ts';
+import type { AgentSlackPresence } from '../src/config/types.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import {
   invokeSlackWorkspaceManagementTool,
@@ -15,6 +16,7 @@ const BOT_USER_ID = 'UCHICKPEA1';
 const SPROUT_GROUP_ID = 'SSPROUT1';
 const OTHER_GROUP_ID = 'SOTHER1';
 const PERSON_USER_ID = 'UPERSON1';
+const APP_BOT_USER_ID = 'UAPPBOT1';
 const UPSTREAM_SOURCE =
   'https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/skills/unslop';
 
@@ -25,12 +27,17 @@ const ADDRESSED_HERE = [
   { label: "Chickpea's mention", prefix: `<@${BOT_USER_ID}> ` },
 ] as const;
 
+const ADDRESSED_TO_APP = [
+  { label: 'no mention', prefix: '' },
+  { label: "the Agent app's bot", prefix: `<@${APP_BOT_USER_ID}> ` },
+] as const;
+
 const ADDRESSED_ELSEWHERE = [
   { label: "another Agent's handle", prefix: `<!subteam^${OTHER_GROUP_ID}> ` },
   { label: "a person's mention", prefix: `<@${PERSON_USER_ID}> ` },
 ] as const;
 
-async function skillCommandFixture(suffix: string) {
+async function skillCommandFixture(suffix: string, runtimeContract: 'legacy' | 'chickpea-v1' = 'chickpea-v1') {
   const f = await createManagementAdapterFixture(suffix, {
     resolveSkillImport: async (source: ParsedSkillSource) => ({
       owner: source.owner,
@@ -51,14 +58,11 @@ async function skillCommandFixture(suffix: string) {
       skipped: 0,
     }),
   });
-  await f.config.ensureWorkspaceInstallation({
-    workspaceId: f.admin.user.slackTeamId,
-    transportMode: 'direct',
-    teamId: f.admin.user.slackTeamId,
-    appId: 'ACHICKPEA1',
-    botUserId: BOT_USER_ID,
-  });
-  const withHandle = async (id: string, name: string, userGroupId: string) => {
+  const withPresence = async (
+    id: string,
+    name: string,
+    presence: (created: AgentSlackPresence) => AgentSlackPresence,
+  ) => {
     const created = await f.config.createAgent({
       id,
       name,
@@ -84,17 +88,33 @@ async function skillCommandFixture(suffix: string) {
       repositories: [],
     });
     return await f.config.updateAgent(created.id, {
-      slackPresence: {
-        ...created.slackPresence!,
-        kind: 'user_group',
-        desiredState: 'active',
-        health: 'healthy',
-        userGroupId,
-      },
+      slackPresence: presence(created.slackPresence!),
     }, created.revision);
   };
+  const withHandle = (id: string, name: string, userGroupId: string) => withPresence(id, name, (created) => ({
+    ...created, kind: 'user_group', desiredState: 'active', health: 'healthy', userGroupId,
+  }));
   const sprout = await withHandle('agent_skill_command_sprout', 'Sprout', SPROUT_GROUP_ID);
   await withHandle('agent_skill_command_other', 'Other', OTHER_GROUP_ID);
+  const appy = await withPresence('agent_skill_command_appy', 'Appy', (created) => ({
+    ...created,
+    kind: 'agent_app',
+    desiredState: 'active',
+    health: 'healthy',
+    app: {
+      state: 'active', at: 1, app: { appId: 'AAPPY1', clientId: 'AAPPY1.client' }, icon: 'agent_avatar',
+      botUserId: APP_BOT_USER_ID, installedAt: 1, installedBy: PERSON_USER_ID,
+    },
+  }) as AgentSlackPresence);
+  // A legacy installation needs an active Agent before it exists.
+  await f.config.ensureWorkspaceInstallation({
+    workspaceId: f.admin.user.slackTeamId,
+    transportMode: 'direct',
+    teamId: f.admin.user.slackTeamId,
+    appId: 'ACHICKPEA1',
+    botUserId: BOT_USER_ID,
+    runtimeContract,
+  });
   let sequence = 0;
   const send = <TName extends 'manage_agent_skill' | 'undo_workspace_change' | 'import_skill'>(
     agentId: string,
@@ -126,10 +146,10 @@ async function skillCommandFixture(suffix: string) {
       } as WorkspaceManagementToolArguments[TName],
     });
   };
-  const skills = async () =>
-    (await f.config.getAgent(sprout.id)).skills.map(({ name, enabled, instructions }) =>
+  const skills = async (agentId = sprout.id) =>
+    (await f.config.getAgent(agentId)).skills.map(({ name, enabled, instructions }) =>
       ({ name, enabled, instructions }));
-  return { f, sprout, send, skills };
+  return { f, sprout, appy, send, skills };
 }
 
 const ORIGINAL_SKILLS = [
@@ -137,49 +157,58 @@ const ORIGINAL_SKILLS = [
   { name: 'keep-me', enabled: true, instructions: 'Remain installed.' },
 ];
 
-test('a skill command addressed to the routed Agent or Chickpea changes the skill', async () => {
-  const { f, sprout, send, skills } = await skillCommandFixture('skill-command-addressed');
-  try {
-    for (const { label, prefix } of ADDRESSED_HERE) {
-      const disabled = await send(sprout.id, `${prefix}disable the unslop skill`,
+async function assertAddressedCommandsApply(
+  { f, send, skills }: Awaited<ReturnType<typeof skillCommandFixture>>,
+  agentId: string,
+  prefixes: readonly { label: string; prefix: string }[],
+) {
+    for (const { label, prefix } of prefixes) {
+      const disabled = await send(agentId, `${prefix}disable the unslop skill`,
         'manage_agent_skill', { action: 'disable', skillName: 'unslop' });
       assert.equal(disabled.ok, true, `disable after ${label}`);
-      assert.equal((await skills())[0]!.enabled, false, `disable after ${label}`);
+      assert.equal((await skills(agentId))[0]!.enabled, false, `disable after ${label}`);
 
-      const enabled = await send(sprout.id, `${prefix}enable the unslop skill`,
+      const enabled = await send(agentId, `${prefix}enable the unslop skill`,
         'manage_agent_skill', { action: 'enable', skillName: 'unslop' });
       assert.equal(enabled.ok, true, `enable after ${label}`);
-      assert.equal((await skills())[0]!.enabled, true, `enable after ${label}`);
+      assert.equal((await skills(agentId))[0]!.enabled, true, `enable after ${label}`);
 
-      const removed = await send(sprout.id, `${prefix}remove the unslop skill`,
+      const removed = await send(agentId, `${prefix}remove the unslop skill`,
         'manage_agent_skill', { action: 'remove', skillName: 'unslop' });
       assert.equal(removed.ok, true, `remove after ${label}`);
-      assert.deepEqual((await skills()).map(({ name }) => name), ['keep-me'], `remove after ${label}`);
+      assert.deepEqual((await skills(agentId)).map(({ name }) => name), ['keep-me'], `remove after ${label}`);
 
       const operationId = (removed as { ok: true; result: { operationId: string } }).result.operationId;
-      const undone = await send(sprout.id, `${prefix}undo`,
+      const undone = await send(agentId, `${prefix}undo`,
         'undo_workspace_change', { operationId });
       assert.equal(undone.ok, true, `undo after ${label}`);
       assert.equal((undone as { ok: true; result: { status: string } }).result.status, 'completed',
         `undo after ${label}`);
-      assert.deepEqual(await skills(), ORIGINAL_SKILLS, `undo after ${label}`);
+      assert.deepEqual(await skills(agentId), ORIGINAL_SKILLS, `undo after ${label}`);
 
-      const replaced = await send(sprout.id, `${prefix}replace unslop from <${UPSTREAM_SOURCE}|unslop>`,
+      const replaced = await send(agentId, `${prefix}replace unslop from <${UPSTREAM_SOURCE}|unslop>`,
         'import_skill', {
           source: UPSTREAM_SOURCE,
           replaceExisting: true,
           guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
         });
       assert.equal(replaced.ok, true, `replace after ${label}`);
-      assert.equal((await skills())[0]!.instructions, 'Use the new upstream procedure.',
+      assert.equal((await skills(agentId))[0]!.instructions, 'Use the new upstream procedure.',
         `replace after ${label}`);
-      const current = await f.config.getAgent(sprout.id);
-      await f.config.updateAgent(sprout.id, {
+      const current = await f.config.getAgent(agentId);
+      await f.config.updateAgent(agentId, {
         skills: current.skills.map((skill) => skill.name === 'unslop'
           ? { name: 'unslop', description: 'Rewrite plainly.', instructions: 'Preserve this local procedure.', enabled: true }
           : skill),
       }, current.revision);
     }
+}
+
+test('a skill command addressed to the routed Agent or Chickpea changes the skill', async () => {
+  const fixture = await skillCommandFixture('skill-command-addressed');
+  const { f, sprout, send, skills } = fixture;
+  try {
+    await assertAddressedCommandsApply(fixture, sprout.id, ADDRESSED_HERE);
 
     const fromChickpea = await send(CHICKPEA_AGENT_ID,
       `<@${BOT_USER_ID}> remove the unslop skill from Sprout`,
@@ -235,5 +264,92 @@ test('a skill command addressed to another Agent or a person changes nothing', a
     }
   } finally {
     f.close();
+  }
+});
+
+test('replace and undo count only in a message addressed to this Agent', async () => {
+  const { f, sprout, send, skills } = await skillCommandFixture('skill-command-replace-undo-elsewhere');
+  try {
+    const removed = await send(sprout.id, 'remove the unslop skill',
+      'manage_agent_skill', { action: 'remove', skillName: 'unslop' });
+    assert.equal(removed.ok, true);
+    const operationId = (removed as { ok: true; result: { operationId: string } }).result.operationId;
+    const removedSkills = await skills();
+
+    for (const words of [
+      `<@${PERSON_USER_ID}>, undo`,
+      `<!subteam^${OTHER_GROUP_ID}>, undo`,
+      `thanks <@${PERSON_USER_ID}>, undo`,
+    ]) {
+      const undo = await send(sprout.id, words, 'undo_workspace_change', { operationId });
+      assert.equal(undo.ok, true, words);
+      assert.equal((undo as { ok: true; result: { status: string } }).result.status,
+        'confirmation_required', words);
+      assert.deepEqual(await skills(), removedSkills, words);
+    }
+    const undone = await send(sprout.id, 'undo', 'undo_workspace_change', { operationId });
+    assert.equal((undone as { ok: true; result: { status: string } }).result.status, 'completed');
+    assert.deepEqual(await skills(), ORIGINAL_SKILLS);
+
+    const replace = (words: string) => send(sprout.id, words, 'import_skill', {
+      source: UPSTREAM_SOURCE,
+      replaceExisting: true,
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    });
+    const command = `replace unslop from <${UPSTREAM_SOURCE}|unslop>`;
+    for (const words of [
+      `<!subteam^${OTHER_GROUP_ID}> ${command}`,
+      `<@${PERSON_USER_ID}> ${command}`,
+      `fyi <@${PERSON_USER_ID}> ${command}`,
+    ]) {
+      const refused = await replace(words);
+      assert.equal(refused.ok, false, words);
+      assert.match((refused as { ok: false; error: { message: string } }).error.message,
+        /Replacement needs a new requester message/, words);
+      assert.deepEqual(await skills(), ORIGINAL_SKILLS, words);
+    }
+    assert.equal((await replace(command)).ok, true);
+    assert.equal((await skills())[0]!.instructions, 'Use the new upstream procedure.');
+  } finally {
+    f.close();
+  }
+});
+
+test('an installation on the legacy runtime reads the same address', async () => {
+  const { f, sprout, send, skills } = await skillCommandFixture('skill-command-legacy', 'legacy');
+  try {
+    for (const { label, prefix } of ADDRESSED_HERE) {
+      const removed = await send(sprout.id, `${prefix}remove the unslop skill`,
+        'manage_agent_skill', { action: 'remove', skillName: 'unslop' });
+      assert.equal(removed.ok, true, `remove after ${label}`);
+      const operationId = (removed as { ok: true; result: { operationId: string } }).result.operationId;
+      const undone = await send(sprout.id, `${prefix}undo`, 'undo_workspace_change', { operationId });
+      assert.equal((undone as { ok: true; result: { status: string } }).result.status, 'completed',
+        `undo after ${label}`);
+      assert.deepEqual(await skills(), ORIGINAL_SKILLS, `undo after ${label}`);
+    }
+  } finally {
+    f.close();
+  }
+});
+
+test('from Chickpea, a skill command must name the Agent it changes', async () => {
+  const { f, sprout, send, skills } = await skillCommandFixture('skill-command-chickpea-target');
+  try {
+    const unnamed = await send(CHICKPEA_AGENT_ID, `<@${BOT_USER_ID}> remove the unslop skill`,
+      'manage_agent_skill', { agentId: sprout.id, action: 'remove', skillName: 'unslop' });
+    assert.equal(unnamed.ok, false);
+    assert.deepEqual(await skills(), ORIGINAL_SKILLS);
+  } finally {
+    f.close();
+  }
+});
+
+test('a skill command addressed to an Agent\'s own app bot changes the skill', async () => {
+  const fixture = await skillCommandFixture('skill-command-agent-app');
+  try {
+    await assertAddressedCommandsApply(fixture, fixture.appy.id, ADDRESSED_TO_APP);
+  } finally {
+    fixture.f.close();
   }
 });

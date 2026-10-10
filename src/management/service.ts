@@ -34,8 +34,10 @@ import {
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountPolicy,
+  agentAppIsLive,
   type CustomAgentConfig,
   type SkillConfig,
+  type WorkspaceInstallation,
 } from '../config/types.ts';
 import {
   parseSkillSource,
@@ -69,7 +71,7 @@ import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
-import { stripResolvedSlackCommandAddress } from '../slack/command-address.ts';
+import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
@@ -106,6 +108,7 @@ import {
   formatSlackChangeSetProposal,
   formatSlackSkillImportProposal,
 } from './slack-presentation.ts';
+import type { SlackManagementSignal } from './slack-tools.ts';
 import {
   agentAuthoringArtifactClass,
   emitManagementMetric,
@@ -571,7 +574,7 @@ export class WorkspaceManagementService {
       };
     }
     if (existing &&
-        !explicitSkillReplacementRequest(await this.routedSlackRequestText(actor), skill)) {
+        !explicitSkillReplacementRequest(requestAddressedHere(actor), skill)) {
       throw new ManagementError(
         'invalid_request',
         `Replacement needs a new requester message that says \`replace ${skill.name} from ${skill.sourceUrl}\`. No change was made.`,
@@ -1871,6 +1874,7 @@ export class WorkspaceManagementService {
           operationKind: operation.kind,
           disposition: 'failed',
           code: mutationErrorCode(error),
+          ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
           ...(error instanceof ManagementError && error.code === 'model_provider_unavailable'
             ? { warning: error.message }
             : {}),
@@ -2278,6 +2282,7 @@ export class WorkspaceManagementService {
                   operationKind: operation.kind,
                   disposition: 'failed',
                   code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
+                  ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
                 });
           }
         }
@@ -2515,8 +2520,7 @@ export class WorkspaceManagementService {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
     await this.assertRevisionMap(undo.resultingRevisions);
-    const explicitSlackUndo = actor.origin.kind === 'slack' &&
-      requesterExplicitlyRequestsUndo(await this.routedSlackRequestText(actor));
+    const explicitSlackUndo = requesterExplicitlyRequestsUndo(requestAddressedHere(actor));
     const originalRequest = actor.origin.kind === 'mcp'
       ? await this.stores.management.getRequest(input.operationId)
       : undefined;
@@ -2863,10 +2867,14 @@ export class WorkspaceManagementService {
     );
     if (installation?.runtimeContract !== 'chickpea-v1') {
       const { actingAgentId: _legacyActingAgentId, ...legacyContext } = context;
+      const routedAgent = context.origin.agentId
+        ? await optionalAgent(this.stores.config, context.origin.agentId)
+        : undefined;
       return {
         ...legacyContext,
         origin: context.origin,
         role: membership.role,
+        commandAddress: slackCommandAddress(installation, routedAgent),
       };
     }
     const routedAgentId = context.origin.agentId;
@@ -2887,6 +2895,7 @@ export class WorkspaceManagementService {
       actingAgentId,
       origin: { ...context.origin, agentId: actingAgentId },
       role: membership.role,
+      commandAddress: slackCommandAddress(installation, actingAgent),
     };
   }
 
@@ -3053,34 +3062,18 @@ export class WorkspaceManagementService {
     change: ReversibleSkillChange,
     targetAgent: CustomAgentConfig,
   ): Promise<boolean> {
-    const editableAgentNames = actor.origin.kind === 'slack' &&
-        actor.origin.agentId === CHICKPEA_AGENT_ID
+    const systemSlackRoute = actor.origin.kind === 'slack' && actor.origin.agentId === CHICKPEA_AGENT_ID;
+    const editableAgentNames = systemSlackRoute
       ? (await this.editableAgents(actor)).map(({ name }) => name)
       : [targetAgent.name];
-    if (actor.origin.kind === 'slack' && actor.origin.agentId === CHICKPEA_AGENT_ID &&
-        editableAgentNames.filter((name) =>
-          name.trim().toLowerCase() === targetAgent.name.trim().toLowerCase()).length !== 1) {
+    if (systemSlackRoute && editableAgentNames.filter((name) =>
+      name.trim().toLowerCase() === targetAgent.name.trim().toLowerCase()).length !== 1) {
       return false;
     }
-    return explicitRequesterSkillChange(actor, await this.routedSlackRequestText(actor), change, {
+    return explicitRequesterSkillChange(requestAddressedHere(actor), systemSlackRoute, change, {
       targetAgentName: targetAgent.name,
       installedSkillNames: targetAgent.skills.map(({ name }) => name),
       editableAgentNames,
-    });
-  }
-
-  private async routedSlackRequestText(
-    actor: LiveManagementActor,
-  ): Promise<string | undefined> {
-    const { origin } = actor;
-    if (origin.kind !== 'slack' || !origin.requestText) return undefined;
-    const [installation, agent] = await Promise.all([
-      this.stores.config.getWorkspaceInstallation(origin.workspaceId),
-      origin.agentId ? optionalAgent(this.stores.config, origin.agentId) : undefined,
-    ]);
-    return stripResolvedSlackCommandAddress(origin.requestText, {
-      botUserId: installation?.botUserId,
-      agentUserGroupId: agent?.slackPresence?.userGroupId,
     });
   }
 
@@ -4967,7 +4960,40 @@ export class WorkspaceManagementService {
     }
     await this.stores.prepareAgentUpdate?.(current, patch);
     const agent = await this.stores.config.updateAgent(agentId, patch, expectedRevision);
-    return this.stores.reconcileAgentUpdate?.({ actor, previous: current, agent, patch }) ?? agent;
+    if (!this.stores.reconcileAgentUpdate) return agent;
+    try {
+      return await this.stores.reconcileAgentUpdate({ actor, previous: current, agent, patch });
+    } catch (error) {
+      throw refusedAgentUpdate(error, await this.putBackRefusedUpdate(current, agent, patch), agent);
+    }
+  }
+
+  /**
+   * Slack kept the Agent's group as it was, so put back what the refused
+   * update wrote, field by field and only where its value is still there: an
+   * edit that landed during the Slack call stays. Undefined when edits kept
+   * landing and the put-back gave up.
+   */
+  private async putBackRefusedUpdate(
+    previous: CustomAgentConfig,
+    written: CustomAgentConfig,
+    patch: ConfigAgentPatch,
+  ): Promise<CustomAgentConfig | undefined> {
+    for (let attempt = 1; ; attempt += 1) {
+      const latest = await this.stores.config.getAgent(previous.id);
+      const putBack = refusedUpdatePutBack(previous, written, latest, patch);
+      if (!putBack) return latest;
+      try {
+        return await this.stores.config.updateAgent(previous.id, putBack, latest.revision);
+      } catch (error) {
+        if (!(error instanceof AgentRevisionConflictError)) throw error;
+        if (attempt === 3) {
+          console.warn('[chickpea:management] refused Agent update not put back after repeated conflicts',
+            JSON.stringify({ agentId: previous.id }));
+          return undefined;
+        }
+      }
+    }
   }
 
   private async reconcileConfirmed(
@@ -5370,6 +5396,77 @@ function requestedAgentHandle(operation: ManagementOperation): string | undefine
   return operation.kind === 'create_agent'
     ? normalizeAgentHandle(operation.agent.requestedHandle ?? operation.agent.name)
     : undefined;
+}
+
+/** What a refused update and its failed reconcile write to an Agent's user-group presence. */
+const RECONCILED_PRESENCE_FIELDS = [
+  'requestedHandle', 'normalizedHandle', 'health', 'errorCode', 'errorDetail',
+  'handleSuggestions', 'observedAt', 'pendingCreate',
+] as const;
+
+function refusedUpdatePutBack(
+  previous: CustomAgentConfig,
+  written: CustomAgentConfig,
+  latest: CustomAgentConfig,
+  patch: ConfigAgentPatch,
+): ConfigAgentPatch | undefined {
+  const putBack: Record<string, unknown> = {};
+  for (const key of Object.keys(patch) as (keyof ConfigAgentPatch)[]) {
+    if (key === 'slackPresence' || canonicalJson(latest[key]) !== canonicalJson(written[key])) continue;
+    putBack[key] = key === 'model' ? previous.model ?? null : previous[key];
+  }
+  const presence = latest.slackPresence;
+  if (presence && presence.kind !== 'agent_app' &&
+      previous.slackPresence && previous.slackPresence.kind !== 'agent_app' &&
+      latest.lifecycle !== 'archived' &&
+      presence.requestedHandle === written.slackPresence?.requestedHandle) {
+    const restored: Record<string, unknown> = { ...presence };
+    for (const field of RECONCILED_PRESENCE_FIELDS) {
+      const value = previous.slackPresence[field];
+      if (value === undefined) delete restored[field];
+      else restored[field] = value;
+    }
+    putBack.slackPresence = restored;
+    if (latest.lifecycle === 'needs_attention' && previous.lifecycle !== 'needs_attention') {
+      putBack.lifecycle = previous.lifecycle;
+    }
+  }
+  return Object.keys(putBack).length > 0 ? putBack as ConfigAgentPatch : undefined;
+}
+
+/** Slack refused an Agent's new handle or name; the message tells the model why. */
+class AgentUpdateRefused extends AgentPresenceError {}
+
+function refusedAgentUpdate(
+  error: unknown,
+  kept: CustomAgentConfig | undefined,
+  requested: CustomAgentConfig,
+): unknown {
+  if (!(error instanceof AgentPresenceError)) return error;
+  const unsettled = 'Other edits to this Agent landed at the same time, so read it again before saying what changed.';
+  if (error.code === 'handle_collision') {
+    const handle = normalizeAgentHandle(requested.slackPresence?.requestedHandle || requested.name);
+    const next = error.suggestions.length > 0
+      ? `Free handles: ${error.suggestions.map((suggestion) => `@${suggestion}`).join(', ')}. Offer these, or ask for another handle.`
+      : 'Ask for another handle.';
+    return new AgentUpdateRefused(
+      error.code,
+      kept
+        ? `@${handle} is already taken in this Slack workspace, so nothing changed and the Agent keeps @${kept.slackPresence?.normalizedHandle}. ${next}`
+        : `@${handle} is already taken in this Slack workspace. ${unsettled} ${next}`,
+      error.options,
+    );
+  }
+  if (error.slackCode === 'name_too_long') {
+    return new AgentUpdateRefused(
+      error.code,
+      kept
+        ? 'Slack refused this name because it is too long for a Slack user group, so nothing changed and the Agent keeps its name. Ask for a shorter name.'
+        : `Slack refused this name because it is too long for a Slack user group. ${unsettled} Ask for a shorter name.`,
+      error.options,
+    );
+  }
+  return error;
 }
 
 function isHandleCollision(error: unknown): error is AgentPresenceError {
@@ -6026,11 +6123,26 @@ export const PERSON_APPROVED_ON_ASK: ReadonlySet<ManagementOperation['kind']> = 
 
 /**
  * A Slack turn another Agent's ask started: it carries no requester text,
- * while every person's turn carries their message (a file alone is read as
- * the host's request to inspect it).
+ * while every person's turn carries their message, even an empty one (a file
+ * alone is read as the host's request to inspect it). The Slack seams decide
+ * with this same check, on the origin `slackManagementOrigin` gives the service.
  */
 export function startedByAgentAsk(actor: Pick<ManagementActorContext, 'origin'>): boolean {
   return actor.origin.kind === 'slack' && actor.origin.requestText === undefined;
+}
+
+export function slackManagementOrigin(signal: SlackManagementSignal): ManagementOrigin {
+  return {
+    kind: 'slack',
+    workspaceId: signal.workspaceId,
+    channelId: signal.channelId,
+    threadTs: signal.threadTs,
+    messageTs: signal.messageTs,
+    eventId: signal.eventId,
+    ...(signal.requesterText === undefined ? {} : { requestText: signal.requesterText }),
+    ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
+    agentId: signal.agentId,
+  };
 }
 
 function routineMutation(routine: RoutineDefinition): ImmediateMutation {
@@ -6246,8 +6358,8 @@ function reversibleLocalSkillChange(
 }
 
 function explicitRequesterSkillChange(
-  actor: LiveManagementActor,
   requestText: string | undefined,
+  systemSlackRoute: boolean,
   change: ReversibleSkillChange,
   context: {
     targetAgentName: string;
@@ -6255,8 +6367,7 @@ function explicitRequesterSkillChange(
     editableAgentNames: readonly string[];
   },
 ): boolean {
-  if (actor.origin.kind !== 'slack' || !requestText) return false;
-  const systemSlackRoute = actor.origin.agentId === CHICKPEA_AGENT_ID;
+  if (!requestText) return false;
   const request = normalizedRequesterText(requestText.replace(/\r?\n/g, ';'));
   const actionText = maskExactWord(
     maskExactWord(request, change.name),
@@ -6328,6 +6439,32 @@ function exactSkillChangeSuffix(
   return new RegExp(
     `^(?:\\s+skill)?(?:\\s+(?:from|on|for)\\s+${escapedTarget})?${courtesyTail}$`,
   ).test(spacedSuffix);
+}
+
+function slackCommandAddress(
+  installation: Pick<WorkspaceInstallation, 'botUserId'> | undefined,
+  agent: Pick<CustomAgentConfig, 'slackPresence'> | undefined,
+): SlackCommandAddress {
+  // An Agent with its own live Slack app is mentioned as that app's bot.
+  const botUserId = agentAppIsLive(agent?.slackPresence)
+    ? agent.slackPresence.app.botUserId
+    : installation?.botUserId;
+  return {
+    ...(botUserId ? { botUserId } : {}),
+    ...(agent?.slackPresence?.userGroupId ? { agentUserGroupId: agent.slackPresence.userGroupId } : {}),
+  };
+}
+
+/**
+ * The person's Slack message without the routed Agent's leading mention, when
+ * the message is addressed to that Agent. A message that mentions anyone else
+ * is addressed to them, so no explicit-command check reads it.
+ */
+function requestAddressedHere(actor: LiveManagementActor): string | undefined {
+  const { origin } = actor;
+  if (origin.kind !== 'slack' || !origin.requestText) return undefined;
+  const text = stripResolvedSlackCommandAddress(origin.requestText, actor.commandAddress);
+  return /<[@!][^>]*>/.test(text) ? undefined : text;
 }
 
 function requesterExplicitlyRequestsUndo(requestText: string | undefined): boolean {

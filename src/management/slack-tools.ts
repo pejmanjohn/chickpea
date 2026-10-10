@@ -39,7 +39,12 @@ import {
   revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
-import { PERSON_APPROVED_ON_ASK, WorkspaceManagementService } from './service.ts';
+import {
+  PERSON_APPROVED_ON_ASK,
+  slackManagementOrigin,
+  startedByAgentAsk,
+  WorkspaceManagementService,
+} from './service.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
@@ -893,9 +898,9 @@ export function parseSlackManagementSignal(
   return {
     ...values,
     ...(conversationKind ? { conversationKind } : {}),
-    ...(delivery.attributes.requesterText
-      ? { requesterText: boundedAttribute(delivery.attributes.requesterText, 'requesterText', 40_000) }
-      : {}),
+    ...(delivery.attributes.requesterText === undefined
+      ? {}
+      : { requesterText: boundedAttribute(delivery.attributes.requesterText, 'requesterText', 40_000) }),
     ...(delivery.attributes.requesterTimezone
       ? { requesterTimezone: boundedAttribute(delivery.attributes.requesterTimezone, 'requesterTimezone', 64) }
       : {}),
@@ -922,17 +927,7 @@ export async function resolveSlackManagementActor(
     membershipId: resolution.membership.id,
     organizationId: resolution.membership.organizationId,
     actingAgentId: signal.agentId,
-    origin: {
-      kind: 'slack',
-      workspaceId: signal.workspaceId,
-      channelId: signal.channelId,
-      threadTs: signal.threadTs,
-      messageTs: signal.messageTs,
-      eventId: signal.eventId,
-      ...(signal.requesterText ? { requestText: signal.requesterText } : {}),
-      ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
-      agentId: signal.agentId,
-    },
+    origin: slackManagementOrigin(signal),
   };
 }
 
@@ -960,7 +955,7 @@ export async function invokeSlackWorkspaceManagementTool<
     };
   }
   const personApproves = input.name === 'apply_workspace_changes' &&
-    input.signal.requesterText === undefined &&
+    startedByAgentAsk({ origin: slackManagementOrigin(input.signal) }) &&
     (input.args as WorkspaceManagementToolArguments['apply_workspace_changes']).operations
       .some(({ kind }) => PERSON_APPROVED_ON_ASK.has(kind));
   if (personApproves) return proposeAskTurnChanges(input);
