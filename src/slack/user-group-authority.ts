@@ -77,11 +77,10 @@ export function ownerUserGroupToken(
   settings: SettingsStore,
 ): OwnerUserGroupToken | undefined {
   const { userGroupToken: token, connectionRevision: revision } = credentials;
-  if (!token) return undefined;
+  if (!token || !revision) return undefined;
   return {
     token,
     dead: async () => {
-      if (!revision) return;
       try {
         await addSettingStringSetValues(settings, DEAD_OWNER_TOKEN_REVISIONS, [revision]);
       } catch (error) {
