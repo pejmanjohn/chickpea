@@ -14,6 +14,9 @@ export function tokenPagePath(agentId: string): string {
 export function tokenApiPath(agentId: string): string {
   return `/admin/api/agents/${encodeURIComponent(agentId)}/slack-app/token`;
 }
+
+/** Where Admin shows its Slack permissions bar with Update in Slack; the bar is on every Admin page. */
+export const ADMIN_PATH = '/admin';
 export const TRY_AGAIN_ACTION = 'agent_app_try_again';
 
 export interface AgentAppNames {
@@ -25,9 +28,10 @@ export interface AgentAppLinks {
   agentId: string;
   allowUrl?: string;
   tokenPageUrl?: string;
+  adminUrl?: string;
 }
 
-export type AgentAppMessageKind = 'allow' | 'ready' | 'archived_left' | AgentAppAttention;
+export type AgentAppMessageKind = 'allow' | 'ready' | 'archived_left' | 'permission_needed' | AgentAppAttention;
 
 type Button =
   | { label: string; url: string }
@@ -42,6 +46,16 @@ const tryAgain = (links: AgentAppLinks): Button => ({ label: 'Try again', action
 const yourApps: Button = { label: 'Open Your Apps in Slack', url: YOUR_APPS_URL };
 const allow = (links: AgentAppLinks, names: AgentAppNames): Button[] =>
   links.allowUrl ? [{ label: `Allow ${names.name} in Slack`, url: links.allowUrl }] : [];
+const openAdmin = (adminUrl: string | undefined): Button[] => adminUrl ? [{ label: 'Open Chickpea', url: adminUrl }] : [];
+
+/**
+ * Freeing an Agent's handle needs the Owner's user-group permission, which an
+ * Owner adds with Admin's Update in Slack. Until then nothing starts, and
+ * there is no Try again: it could not succeed.
+ */
+export function permissionNeededCopy({ handle }: Pick<AgentAppNames, 'handle'>): string {
+  return `Chickpea needs one more Slack permission to give @${handle} its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @${handle} its own Slack app in Chickpea's Home tab.`;
+}
 
 const refused: Copy = {
   text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,
@@ -73,6 +87,10 @@ const DM_COPY = {
   slack_busy: {
     text: () => 'Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.',
     buttons: (links) => [tryAgain(links)],
+  },
+  permission_needed: {
+    text: permissionNeededCopy,
+    buttons: (links) => openAdmin(links.adminUrl),
   },
   config_token_needed: {
     text: ({ name }) => `Chickpea needs a new Slack refresh token to finish ${name}'s app.`,
@@ -148,6 +166,7 @@ export const STALLED_AFTER_MS = 2 * 60_000;
 
 export type AgentAppHomeRow =
   | { kind: 'offer'; tokenPageUrl: string | undefined }
+  | { kind: 'permission_needed'; adminUrl: string | undefined }
   | { kind: 'setting_up' }
   | { kind: 'stalled' }
   | { kind: 'waiting' }
@@ -155,6 +174,8 @@ export type AgentAppHomeRow =
   | { kind: 'attention' };
 
 const HOME_COPY = {
+  permission_needed: ({ handle }: AgentAppNames) =>
+    `Chickpea needs one more Slack permission to give @${handle} its own Slack app. In Chickpea Admin, choose Update in Slack.`,
   setting_up: ({ handle }: AgentAppNames) => `Setting up @${handle}'s own Slack app.`,
   stalled: ({ handle }: AgentAppNames) => `Setting up @${handle}'s Slack app stopped partway.`,
   waiting: ({ handle }: AgentAppNames) => `@${handle}'s Slack app is ready to add. Open your messages with Chickpea to allow it.`,
@@ -175,9 +196,11 @@ export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, a
       : button(label, { action_id: START_APP_ACTION, value: agentId })];
   }
   const line = { type: 'context', elements: [{ type: 'mrkdwn', text: escapeMrkdwn(HOME_COPY[row.kind](names)) }] };
-  return row.kind === 'stalled'
-    ? [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })]
-    : [line];
+  if (row.kind === 'stalled') return [line, button('Finish setting up', { action_id: FINISH_APP_ACTION, value: agentId })];
+  if (row.kind === 'permission_needed' && row.adminUrl) {
+    return [line, button('Open Chickpea', { url: row.adminUrl, action_id: `agent_app_admin_${agentId}` })];
+  }
+  return [line];
 }
 
 export function archiveRefusedCopy(names: Pick<AgentAppNames, 'name'>): string {

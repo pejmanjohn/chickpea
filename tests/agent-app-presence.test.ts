@@ -13,6 +13,7 @@ import { agentAppIsLive, normalizeAgentAppPresence } from '../src/slack/agent-ap
 import type { AgentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import {
+  type AgentAppBot,
   AgentPresenceReconciler,
   repairMentionedAgentUserGroup,
 } from '../src/slack/agent-presence/reconciler.ts';
@@ -181,7 +182,62 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
     }));
     assert.deepEqual((await reconciler.reconcile('agent_billing')).slackPresence, settingUp, 'an app still being set up has not gone live');
     assert.deepEqual(transport.calls, []);
-    assert.deepEqual(announce.announced, []);
+    assert.deepEqual(announce.announced, ['joinedChannel'], 'only the new grant is announced; the announcements decide who greets');
+  } finally {
+    config.close();
+  }
+});
+
+test("publishing an Agent brings its own app's bot into the Channel through the host, before the welcome, and reports where it is", async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const channels = {
+    C_PUBLIC: { id: 'C_PUBLIC', name: 'support', private: false, member: true, archived: false },
+    C_PRIVATE: { id: 'C_PRIVATE', name: 'secret', private: true, member: true, archived: false },
+  };
+  const transport = slackThatRefuses({
+    async lookupChannel(id: string) { return channels[id as keyof typeof channels]; },
+    async channelHasMember() { return true; },
+  });
+  const order: string[] = [];
+  const welcomedBy: unknown[] = [];
+  const announce = {
+    async joinedChannel(input) { order.push('welcome'); welcomedBy.push(input.appBot); },
+    async handleWentLive() { throw new Error('publish announces no handle'); },
+  } satisfies AgentPresenceAnnouncements;
+  const appBot = { postMessage: async () => ({ channelId: 'C_PUBLIC', ts: '1.0' }) };
+  try {
+    await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE));
+    const asked: Array<[string, string, boolean]> = [];
+    let placement: AgentAppBot | undefined = { placement: 'in_channel', transport: appBot };
+    const reconciler = new AgentPresenceReconciler({
+      config, transport, announce, now: () => NOW,
+      agentApps: {
+        async retire() { throw new Error('publish retires nothing'); },
+        async bringBotIn(agent, channel) {
+          order.push('bring in');
+          asked.push([agent.id, channel.id, channel.private]);
+          return placement;
+        },
+      },
+    });
+    const publish = (channelId: string) => reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId, actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    assert.equal((await publish('C_PUBLIC')).appBot, 'in_channel');
+    assert.deepEqual(order, ['bring in', 'welcome']);
+    assert.deepEqual(welcomedBy, [appBot], 'the welcome is offered the bot that was brought in');
+    placement = { placement: 'left_out' };
+    const left = await publish('C_PRIVATE');
+    assert.equal(left.appBot, 'left_out');
+    assert.equal(left.grant.status, 'active', 'the Agent is added either way');
+    assert.deepEqual(welcomedBy, [appBot, undefined], 'a bot left out is offered nothing to greet with');
+    assert.deepEqual(asked, [['agent_support', 'C_PUBLIC', false], ['agent_support', 'C_PRIVATE', true]]);
+    placement = undefined;
+    assert.equal('appBot' in await publish('C_PUBLIC'), false, 'an Agent without a live app has nothing to report');
+    assert.equal('appBot' in await new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_PUBLIC', actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    }), false, 'without a host for Agent apps nothing is brought in');
+    assert.deepEqual(transport.calls, []);
   } finally {
     config.close();
   }
@@ -257,6 +313,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
           retired.push(current.id);
           return config.updateAgent(current.id, { slackPresence: { ...userGroup('support', 'S1'), desiredState: 'disabled' } }, current.revision);
         },
+        async bringBotIn() { throw new Error('archive brings no bot in'); },
       },
     }).archive('agent_support');
     assert.deepEqual(retired, ['agent_support']);

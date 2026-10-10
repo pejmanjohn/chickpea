@@ -27,6 +27,8 @@ export type AgentAppStep =
 export type AgentAppEvent =
   | { type: 'handle_released'; at: number; manifestFingerprint: string }
   | { type: 'handle_release_refused'; at: number }
+  /** Slack refused the release because the installation lacks the Owner's user-group permission. */
+  | { type: 'handle_permission_missing'; at: number }
   | { type: 'created'; at: number; app: AgentAppRecord }
   | { type: 'create_refused'; at: number; reason: 'create_refused' | 'slack_busy' }
   | { type: 'create_ambiguous'; at: number }
@@ -58,10 +60,16 @@ export interface AgentAppDeleted {
   readonly state: 'deleted';
 }
 
-export type AgentAppTransition = AgentAppLifecycle | AgentAppDeleted | AgentAppRefusal;
+/** Nothing changed in Slack, so the start is undone and the presence returns to its user group as it was. */
+export interface AgentAppWithdrawn {
+  readonly state: 'withdrawn';
+}
+
+export type AgentAppTransition = AgentAppLifecycle | AgentAppDeleted | AgentAppWithdrawn | AgentAppRefusal;
 
 const WRONG_STATE: AgentAppRefusal = { refused: 'wrong_state' };
 const CREATE_SETTLING: AgentAppRefusal = { refused: 'create_settling' };
+const WITHDRAWN: AgentAppWithdrawn = { state: 'withdrawn' };
 
 export function isRefusal(result: AgentAppTransition): result is AgentAppRefusal {
   return 'refused' in result;
@@ -114,6 +122,8 @@ export function transition(app: AgentAppLifecycle, event: AgentAppEvent): AgentA
       return app.state === 'releasing_handle'
         ? attention(app.startedBy, at, 'handle_release_failed', 'releasing_handle')
         : WRONG_STATE;
+    case 'handle_permission_missing':
+      return app.state === 'releasing_handle' ? WITHDRAWN : WRONG_STATE;
     case 'created':
       return app.state === 'creating'
         ? { state: 'created', at, startedBy: app.startedBy, app: event.app }

@@ -27,19 +27,22 @@ type AgentAccessTransport = Pick<
   'lookupChannel' | 'listChannels' | 'listMemberChannels'
 >;
 
+/** The Slack facts one Agent's access is decided from: its placed Channels, and the person's. */
+export type PrivateAgentPlacementFacts = Pick<SlackTransport, 'lookupChannel' | 'listMemberChannels'>;
+
 interface PrivateAgentAccessInput {
   agent: CustomAgentConfig;
   workspaceId: string;
   grants: readonly AgentChannelGrant[];
   actor: PrivateAgentActor;
-  transport: AgentAccessTransport;
+  transport: PrivateAgentPlacementFacts;
 }
 
 interface PrivateAgentAudienceInput {
   agent: CustomAgentConfig;
   workspaceId: string;
   grants: readonly AgentChannelGrant[];
-  transport?: AgentAccessTransport;
+  transport?: PrivateAgentPlacementFacts;
 }
 
 interface PrivateAgentDirectoryInput {
@@ -168,7 +171,7 @@ function agentIsEligible(agent: CustomAgentConfig): boolean {
 
 async function collectTargetedFacts(
   grants: readonly AgentChannelGrant[],
-  transport: AgentAccessTransport,
+  transport: Pick<SlackTransport, 'lookupChannel'>,
 ): Promise<ReadonlyMap<string, SlackChannel | undefined>> {
   const facts = new Map<string, SlackChannel | undefined>();
   let firstFailure: unknown;

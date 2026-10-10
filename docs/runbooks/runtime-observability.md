@@ -465,6 +465,50 @@ bounded capture with `wrangler tail --search steering.` or, on Node,
 `grep "steering\."`. See [Slack steering](slack-steering.md#operator-view)
 for the retry warnings and the durable stop record.
 
+## Agent app refusals
+
+Each refusal Slack gives an Agent's own Slack app (see
+[Slack message identity](slack-message-identity.md#an-agent-with-its-own-slack-app))
+logs one structured `console.warn` object with `event:
+"chickpea.agent_app.slack_refused"`. The Owner sees only the step's message;
+this line is for the operator. It carries no token, secret, or URL.
+
+| Field | Value |
+| --- | --- |
+| `step` | `rotate` (configuration token), `release_handle`, `create`, `update` (adds the Request URLs), `icon`, `exchange` (the Allow callback), `uninstall`, `delete` |
+| `agentId`, `appId` | The Agent and its Slack app, or `null` before Slack names the app; `rotate` names neither |
+| `code` | Slack's error code, such as `invalid_manifest` or `ratelimited` |
+| `errors` | Slack's `{ message, pointer }` list, as sent with `invalid_manifest`: at most five entries of 200 characters each, any URL replaced by `<url>` |
+
+Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
+
+## Deliveries that add no turn
+
+A Slack event, or another delivery of the same message, that routing accepted
+but whose turn was admitted already logs one structured `console.info` object
+with `event: "chickpea.turn.not_admitted"`, `reason: "already_admitted"`, the
+routed `agentId`, and `delivery`: `installation` (Chickpea's own app) or
+`agent_app` (an Agent's own Slack app). Nothing is posted in Slack for it. One
+line per Channel mention of Chickpea is expected, since Slack sends that
+mention as two events. A line naming an Agent that never answered the message
+points at routing: both deliveries of a message should admit the same turns.
+Filter a bounded capture with `wrangler tail --search turn.not_admitted`.
+
+## Memory lease failures
+
+A turn whose memory lease is refused ends with the generic notice that the
+agent run failed before completion. Before posting it, Core logs one
+structured `console.warn` object with `event: "chickpea.turn.agent_failure"`,
+`reason: "memory_delivery_lease_rejected"`, the `agentId`, and `stage`:
+`before_run` (refused before the model ran) or `after_run` (refused before the
+answer was delivered). The lease holds while the Agent is enabled, the
+installation is not revoked, the bot delivering the reply is the
+installation's or the Agent's own live app's, the Agent's memory is unchanged
+since the turn read it, and, in a Channel, the Agent's grant stands and both
+the person and that bot are members. The turn's preceding `memory_metric`
+lines show `delivery_lease` and any `quarantine` reason. Filter with
+`wrangler tail --search agent_failure`.
+
 ## Connection logs
 
 MCP connector traffic and OAuth credential renewal each log one structured

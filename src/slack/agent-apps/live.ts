@@ -1,14 +1,18 @@
 import { UnknownAgentError } from '../../config/errors.ts';
 import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
+import { hostedSlackUpdateGrantsUserGroupToken } from '../hosted-permissions.ts';
 import { slackInstallationCredentialId } from '../hosted-slack-app.ts';
-import { resolveSlackInstallationCredentials } from '../installation-credentials.ts';
+import { type ResolvedSlackInstallationCredentials, resolveSlackInstallationCredentials } from '../installation-credentials.ts';
 import {
   SlackInstallationUnavailableError,
   type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../installation-execution.ts';
+import type { PrivateAgentPlacementFacts } from '../agent-access.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
+import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
@@ -109,6 +113,49 @@ export function withAgentAppExecution(
 }
 
 /**
+ * Where an app Agent's private-use placements are read on its own app's
+ * delivery. The Agent works in a Channel through its own bot (mentions) or
+ * Chickpea's (replies in its threads), and a grant made before it had an app
+ * was checked against Chickpea's bot: a Channel counts as joined when either
+ * bot is in it, and a person's Channels are those either bot can see.
+ */
+export function agentAppPlacementFacts(
+  own: PrivateAgentPlacementFacts,
+  chickpea: PrivateAgentPlacementFacts,
+): PrivateAgentPlacementFacts {
+  return {
+    async lookupChannel(channelId) {
+      const mine = await own.lookupChannel(channelId).catch(() => undefined);
+      if (mine?.member) return mine;
+      return chickpea.lookupChannel(channelId).catch((error: unknown) => {
+        if (mine) return mine;
+        throw error;
+      });
+    },
+    async listMemberChannels(userId) {
+      const [mine, theirs] = await Promise.all([own.listMemberChannels(userId), chickpea.listMemberChannels(userId)]);
+      return new Set([...mine, ...theirs]);
+    },
+  };
+}
+
+/**
+ * Where Admin reads an Agent's DM audience: the placement facts its own app's
+ * deliveries decide from while that app is live, so Admin and Slack agree;
+ * Chickpea's bot alone for any other Agent, or without the port.
+ */
+export async function agentDmPlacementFacts(
+  env: PlatformEnv | undefined,
+  agent: CustomAgentConfig,
+  chickpea: PrivateAgentPlacementFacts,
+): Promise<PrivateAgentPlacementFacts> {
+  if (!agentSlackAppsHost() || agent.slackPresence?.kind !== 'agent_app') return chickpea;
+  const lookup = await agentAppExecutionBot(env, agent.id);
+  if (lookup.kind !== 'live') return chickpea;
+  return agentAppPlacementFacts(createDirectSlackTransport(lookup.bot.botToken, undefined), chickpea);
+}
+
+/**
  * What a host needs before it trusts a delivery for this app; undefined for an
  * unknown or deleted app, or one whose secrets cannot be opened, so the host
  * acknowledges rather than asking Slack to retry a delivery nothing can verify.
@@ -141,15 +188,46 @@ export async function endAgentSlackAppLive(
   return (await liveAgentSlackApps(env, host)).end(appId, payload);
 }
 
-/** The reconciler's archive hook: present only with the port. */
-export function agentAppRetirement(env: PlatformEnv | undefined): { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> } | undefined {
+/** The reconciler's hooks for an Agent's own app: present only with the port. */
+export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPresenceHooks | undefined {
   const host = agentSlackAppsHost();
   if (!host) return undefined;
   return {
     async retire(agent) {
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
     },
+    async bringBotIn(agent, channel) {
+      const presence = agent.slackPresence;
+      if (!agentAppIsLive(presence)) return undefined;
+      const appId = presence.app.app.appId;
+      const lookup = await agentAppExecutionBot(env, agent.id).catch(() => undefined);
+      const bot = lookup?.kind === 'live' ? createDirectSlackTransport(lookup.bot.botToken, undefined) : undefined;
+      const reason = bot ? await botLeftOutReason(bot, channel) : 'bot_unavailable';
+      if (bot && !reason) return { placement: 'in_channel', transport: bot };
+      console.warn({ event: 'chickpea.agent_app.bot_left_out', agentId: agent.id, appId, channelId: channel.id, reason });
+      return { placement: 'left_out' };
+    },
   };
+}
+
+/**
+ * Why the app's bot is not in the Channel after trying, or undefined when it
+ * is. It joins a public Channel itself; only someone in a private Channel can
+ * add it there, so for one of those it is only looked for.
+ */
+async function botLeftOutReason(
+  bot: Pick<SlackTransport, 'joinPublicChannel' | 'lookupChannel'>,
+  channel: { id: string; private: boolean },
+): Promise<string | undefined> {
+  try {
+    if (!channel.private) {
+      await bot.joinPublicChannel(channel.id);
+      return undefined;
+    }
+    return (await bot.lookupChannel(channel.id)).member ? undefined : 'private_channel';
+  } catch (error) {
+    return error instanceof SlackTransportError ? error.code : 'failed';
+  }
 }
 
 /** Tenant end: every Agent app of this installation, each reported, none throwing. */
@@ -215,30 +293,38 @@ const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAI
 /** The service over an installation's live stores, main bot and public URL. */
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);
+  const credentials = installationCredentials(env);
   return new AgentSlackApps({
     env,
     stores: { config: stores.config, settings: getSettingsStore(env) },
     host,
-    transport: mainBotTransport(env),
+    transport: mainBotTransport(credentials),
     publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
+    userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
 }
 
 /**
- * The installation's own bot, read only when a step needs it (an Owner's DM,
- * the handle's user group). Uninstalling and deleting an app use that app's
- * credentials and the configuration token, so they go on when this bot's
- * credentials cannot be read.
+ * The installation's own credentials, read only when a step needs them (an
+ * Owner's DM, the handle's user group, the permission it needs). Uninstalling
+ * and deleting an app use that app's credentials and the configuration token,
+ * so they go on when these cannot be read.
  */
-function mainBotTransport(env: PlatformEnv | undefined): AgentAppTransport {
-  let resolved: Promise<AgentAppTransport> | undefined;
-  const bot = (): Promise<AgentAppTransport> => {
+function installationCredentials(env: PlatformEnv | undefined): () => Promise<ResolvedSlackInstallationCredentials> {
+  let resolved: Promise<ResolvedSlackInstallationCredentials> | undefined;
+  return () => {
     if (!resolved) {
-      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env)
-        .then((credentials) => createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken));
+      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
       resolved.catch(() => { resolved = undefined; });
     }
     return resolved;
+  };
+}
+
+function mainBotTransport(credentials: () => Promise<ResolvedSlackInstallationCredentials>): AgentAppTransport {
+  const bot = async (): Promise<AgentAppTransport> => {
+    const { botToken, userGroupToken } = await credentials();
+    return createDirectSlackTransport(botToken ?? '', userGroupToken);
   };
   return {
     disableUserGroup: async (id) => (await bot()).disableUserGroup(id),

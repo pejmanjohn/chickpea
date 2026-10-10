@@ -1,7 +1,8 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
 import {
   type AgentSlackAppAdminDeps,
-  agentAppRetirement,
+  agentAppPresenceHooks,
+  agentDmPlacementFacts,
   createAgentSlackAppAdminRoutes,
   isAgentSlackAppTokenApiPath,
 } from '../slack/agent-apps/index.ts';
@@ -2342,6 +2343,14 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         store(c).updateAgent(agentId, patch, expectedRevision),
     });
   };
+  const presenceReconciler = (
+    c: Context,
+    transport: SlackTransport,
+    announce: AgentPresenceAnnouncements | null,
+  ): AgentPresenceReconciler => {
+    const agentApps = agentAppPresenceHooks(c.env as PlatformEnv | undefined);
+    return new AgentPresenceReconciler({ config: store(c), transport, announce, ...(agentApps ? { agentApps } : {}) });
+  };
   const reconcileAgentSlackPresence = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -2349,11 +2358,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   ): Promise<CustomAgentConfig> => {
     const workspaceId = actor.slackTeamId;
     const transport = await agentSlackTransport(c, workspaceId);
-    const reconciler = new AgentPresenceReconciler({
-      config: store(c),
-      transport,
-      announce: presenceAnnouncements(c, transport),
-    });
+    const reconciler = presenceReconciler(c, transport, presenceAnnouncements(c, transport));
     if (agent.slackPresence?.desiredState === 'disabled') return reconciler.retry(agent.id);
     const pendingGrants = (await store(c).listAgentChannelGrants()).filter(
       (grant) => grant.agentId === agent.id && grant.workspaceId === workspaceId &&
@@ -2566,7 +2571,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workspaceId: actor.slackTeamId,
         grants,
         ...(activeAgentGrants.length > 0
-          ? { transport: await agentSlackTransport(c, actor.slackTeamId) }
+          ? {
+              transport: await agentDmPlacementFacts(
+                c.env as PlatformEnv | undefined,
+                agent,
+                await agentSlackTransport(c, actor.slackTeamId),
+              ),
+            }
           : {}),
       });
     } catch {
@@ -2585,6 +2596,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const origin = agentAvatarOrigin(c);
     return agentPresenceAnnouncements({
       transport,
+      installationBot: transport,
       welcomeOnJoin: async () => (await resolveSlackBehaviorSettings(
         c.env as PlatformEnv | undefined,
         settings(c),
@@ -9675,12 +9687,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         parsed.output.workspaceId,
       );
       const transport = await agentSlackTransport(c, parsed.output.workspaceId);
-      const reconciler = new AgentPresenceReconciler({
-        config: store(c),
-        transport,
-        announce: presenceAnnouncements(c, transport),
-      });
-      const result = await reconciler.publish({
+      const result = await presenceReconciler(c, transport, presenceAnnouncements(c, transport)).publish({
         workspaceId: parsed.output.workspaceId,
         agentId,
         channelId: parsed.output.channelId,
@@ -9690,6 +9697,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       return c.json({
         grant: result.grant,
         agent: await agentAdminProjectionForRequest(c, result.agent),
+        ...(result.appBot ? { appBot: result.appBot } : {}),
       }, 201);
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -9764,14 +9772,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const archiveOptions = parsed.output.replacementDefaultAgentId
         ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
         : {};
-      const agentApps = agentAppRetirement(c.env as PlatformEnv | undefined);
       const updated = current.slackPresence?.userGroupId || current.slackPresence?.kind === 'agent_app'
-        ? await new AgentPresenceReconciler({
-            config: store(c),
-            transport: await agentSlackTransport(c, actor.slackTeamId),
-            announce: null,
-            ...(agentApps ? { agentApps } : {}),
-          }).archive(agentId, archiveOptions)
+        ? await presenceReconciler(c, await agentSlackTransport(c, actor.slackTeamId), null).archive(agentId, archiveOptions)
         : await store(c).archiveAgent(agentId, {
             expectedRevision: current.revision,
             ...archiveOptions,

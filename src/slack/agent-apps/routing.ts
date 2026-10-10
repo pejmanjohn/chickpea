@@ -1,10 +1,20 @@
 import type { CustomAgentConfig } from '../../config/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppIsLive } from './lifecycle.ts';
 
 const USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
 export type AgentAppRouteSelection = { kind: 'select'; agentId: string } | { kind: 'ignore' };
+
+/**
+ * The bot an Agent posts as through its own Slack app: its app's bot while
+ * that app is live and the host serves Agent apps. Undefined for any other
+ * Agent, and for every Agent without the port, which then posts as Chickpea's.
+ */
+export function agentAppPostingBot(agent: CustomAgentConfig): string | undefined {
+  return agentSlackAppsHost() && agentAppIsLive(agent.slackPresence) ? agent.slackPresence.app.botUserId : undefined;
+}
 
 /**
  * An Agent app's own ingress selects its Agent. On Chickpea's ingress a

@@ -1008,6 +1008,7 @@ test('an Agent’s Channel welcome names it, mentions its live handle, and bound
     description: 'Answers customer questions & escalates <urgent> ones. Ping @here for outages.',
     handle: 'help',
     userGroupId: 'S_HELP',
+    hearsThreadReplies: true,
   });
   assert.equal(described, [
     'Hi, I’m *Support*. Answers customer questions &amp; escalates &lt;urgent&gt; ones. Ping @⁠here for outages.',
@@ -1019,6 +1020,7 @@ test('an Agent’s Channel welcome names it, mentions its live handle, and bound
     description: '  ',
     handle: 'help',
     userGroupId: 'S_HELP',
+    hearsThreadReplies: true,
   });
   assert.equal(bare, `Hi, I’m *Support*.\n\n${mention}`);
 
@@ -1027,8 +1029,18 @@ test('an Agent’s Channel welcome names it, mentions its live handle, and bound
     description: 'x'.repeat(500),
     handle: 'help',
     userGroupId: 'S_HELP',
+    hearsThreadReplies: true,
   });
   assert.equal(long.split('\n\n')[0], `Hi, I’m *Support*. ${'x'.repeat(400)}`);
+
+  const appBot = renderAgentChannelWelcome({
+    name: 'Support',
+    description: undefined,
+    handle: 'help',
+    botUserId: 'U_HELP',
+    hearsThreadReplies: false,
+  });
+  assert.equal(appBot, 'Hi, I’m *Support*.\n\nMention <@U_HELP> to start a thread with me. I only join conversations that mention me.');
 });
 
 test('unassigned-Channel hint names the bot, explains the silence, and links Configure', () => {

@@ -22,7 +22,7 @@ import {
   normalizeAgentHandle,
 } from '../src/slack/agent-presence/handles.ts';
 import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
-import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
+import { type AgentAppPresenceHooks, AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import {
   SlackTransportError,
   type SlackTransport,
@@ -923,9 +923,13 @@ function crc32(value: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function announcing(transport: FakeSlackTransport, options: { welcomeOnJoin?: boolean } = {}) {
+function announcing(
+  transport: FakeSlackTransport,
+  options: { welcomeOnJoin?: boolean; installationBot?: Pick<SlackTransport, 'lookupChannel'> } = {},
+) {
   return agentPresenceAnnouncements({
     transport,
+    installationBot: options.installationBot,
     welcomeOnJoin: async () => options.welcomeOnJoin ?? true,
     avatarUrl: (candidate) => `https://avatars.example/${candidate.id}.png`,
     management: { queueOwedAgentWelcome: async () => ({ outcome: 'none' }) },
@@ -959,6 +963,8 @@ test('publishing into a public Channel posts one top-level welcome under the Age
     assert.deepEqual(post!.persona, { name: 'Support', avatarUrl: 'https://avatars.example/agent_support.png' });
     assert.match(post!.text, /^Hi, I’m \*Support\*\. Answers support questions\.\n\n/);
     assert.match(post!.text, /Mention <!subteam\^S1\|@help> to start a thread with me/);
+    assert.ok(post!.text.endsWith('once I’m in a thread you can keep going there without the mention.'),
+      "a user-group Agent hears its threads through Chickpea's bot, which posted the welcome");
     assert.equal(
       post!.idempotencyKey,
       `agent-channel-welcome:TACME:C_SUPPORT:agent_support:${result.grant.revision}`,
@@ -1014,6 +1020,88 @@ test('republishing an active grant, a private Channel, and welcome-off post no w
     }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_QUIET' });
     assert.equal(quietResult.grant.status, 'active');
     assert.deepEqual(quiet.posts, [], 'the welcome setting is honored');
+  } finally {
+    config.close();
+  }
+});
+
+async function createAppAgent(config: SqliteConfigStore): Promise<void> {
+  const created = await config.createAgent({ ...agent('agent_support', 'Support', 'help'), description: 'Answers support questions.' });
+  await config.updateAgent(created.id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: 'help', normalizedHandle: 'help', desiredState: 'active', health: 'healthy',
+      avatar: created.slackPresence!.avatar, released: { userGroupId: 'S1' },
+      app: {
+        state: 'active', at: 1, app: { appId: 'A0HELP', clientId: '1.client' }, icon: 'agent_avatar',
+        botUserId: 'UHELPBOT', installedAt: 1, installedBy: 'UADA',
+      },
+    },
+  }, created.revision);
+}
+
+/** The host's hooks for an app Agent whose bot, `bot`, is brought into every Channel. */
+function bringingIn(bot: Pick<SlackTransport, 'postMessage'>): AgentAppPresenceHooks {
+  return {
+    async retire() { throw new Error('publish retires nothing'); },
+    async bringBotIn() { return { placement: 'in_channel', transport: bot }; },
+  };
+}
+
+test('an Agent with its own Slack app greets a public Channel only as its own bot once that bot is in, without a persona', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const chickpea = new FakeSlackTransport();
+  chickpea.channel.member = true;
+  const ownBot = new FakeSlackTransport();
+  try {
+    await createAppAgent(config);
+
+    const withoutBot = await new AgentPresenceReconciler({
+      config, transport: chickpea, announce: announcing(chickpea),
+    }).publish(PUBLISH_SUPPORT);
+    assert.equal(withoutBot.grant.status, 'active');
+    assert.deepEqual(chickpea.posts, [], "with no bot of its own brought in, nothing greets: Chickpea's bot cannot post as the app");
+
+    const result = await new AgentPresenceReconciler({
+      config, transport: chickpea, announce: announcing(chickpea), agentApps: bringingIn(ownBot),
+    }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_OWN' });
+    assert.deepEqual(chickpea.posts, []);
+    assert.equal(ownBot.posts.length, 1);
+    const [post] = ownBot.posts;
+    assert.equal(post!.channelId, 'C_OWN');
+    assert.equal(post!.persona, undefined, 'the app posts under its own name and icon');
+    assert.match(post!.text, /^Hi, I’m \*Support\*\. Answers support questions\.\n\n/);
+    assert.match(post!.text, /Mention <@UHELPBOT> to start a thread with me/);
+    assert.equal(post!.idempotencyKey, `agent-channel-welcome:TACME:C_OWN:agent_support:${result.grant.revision}`);
+  } finally {
+    config.close();
+  }
+});
+
+test("an app Agent's welcome promises unmentioned thread replies only where Chickpea's bot is known to be in the Channel", async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.channel.member = true;
+  const ownBot = new FakeSlackTransport();
+  const chickpeaIn = (member: boolean): Pick<SlackTransport, 'lookupChannel'> => ({
+    lookupChannel: async (id) => ({ id, private: false, member, archived: false }),
+  });
+  const cases: Array<[string, Pick<SlackTransport, 'lookupChannel'> | undefined, boolean]> = [
+    ['C_IN', chickpeaIn(true), true],
+    ['C_OUT', chickpeaIn(false), false],
+    ['C_UNREAD', { lookupChannel: async () => { throw new SlackTransportError('conversations.info', 'ratelimited', { retryable: true }); } }, false],
+    ['C_UNKNOWN', undefined, false],
+  ];
+  try {
+    await createAppAgent(config);
+    for (const [channelId, installationBot, promised] of cases) {
+      await new AgentPresenceReconciler({
+        config, transport, announce: announcing(transport, installationBot ? { installationBot } : {}), agentApps: bringingIn(ownBot),
+      }).publish({ ...PUBLISH_SUPPORT, channelId });
+      const text = ownBot.posts.find((post) => post.channelId === channelId)?.text ?? '';
+      assert.equal(text.endsWith(promised
+        ? 'I only join conversations that mention me, and once I’m in a thread you can keep going there without the mention.'
+        : 'I only join conversations that mention me.'), true, `${channelId}: ${text}`);
+    }
   } finally {
     config.close();
   }

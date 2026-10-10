@@ -7,10 +7,19 @@ import {
   SlackUnavailable,
   createAgentAppSlackApi,
 } from '../src/slack/agent-apps/slack-api.ts';
-import { buildSlackAppManifest } from '../src/slack/app-manifest.ts';
+import { AGENT_APP_BOT_EVENTS, agentAppCreateManifest, buildSlackAppManifest } from '../src/slack/app-manifest.ts';
+import { AGENT_APP_BOT_SCOPES } from '../src/slack/scopes.ts';
+import { slackManifestRefusal } from './helpers/slack-manifest-rules.ts';
 
 const TOKEN = 'xoxe.xoxp-1-config-access-token';
-const MANIFEST = buildSlackAppManifest({ kind: 'workspace_app', origin: 'https://example.test' });
+const AGENT = {
+  appName: 'Support', botDisplayName: 'support', description: 'Support helps customers.',
+  redirectUri: 'https://cloud.test/slack/agent-apps/callback', scopes: AGENT_APP_BOT_SCOPES, events: AGENT_APP_BOT_EVENTS,
+};
+const CREATE_MANIFEST = agentAppCreateManifest(AGENT);
+const MANIFEST = buildSlackAppManifest({
+  kind: 'agent_app', ...AGENT, urls: { events: 'https://cloud.test/events', interactions: 'https://cloud.test/interactions' },
+});
 
 interface Seen {
   method: string;
@@ -73,28 +82,61 @@ test('rotate sends the refresh token as a form field and parses the new pair', a
 });
 
 test('create carries the manifest under the configuration token and tells a refusal from an unknown answer', async () => {
-  const { client, seen } = api(() => ok({
-    app_id: 'A0C8APP',
-    credentials: { client_id: '1.2', client_secret: 'cs', signing_secret: 'ss', verification_token: 'vt' },
-  }));
-  assert.deepEqual(await client.create(TOKEN, MANIFEST), { appId: 'A0C8APP', clientId: '1.2', clientSecret: 'cs', signingSecret: 'ss' });
+  const { client, seen } = api((request) => {
+    const refusal = slackManifestRefusal((request.body as { manifest?: unknown }).manifest);
+    return refusal ? Response.json(refusal) : ok({
+      app_id: 'A0C8APP',
+      credentials: { client_id: '1.2', client_secret: 'cs', signing_secret: 'ss', verification_token: 'vt' },
+    });
+  });
+  assert.deepEqual(await client.create(TOKEN, CREATE_MANIFEST), { appId: 'A0C8APP', clientId: '1.2', clientSecret: 'cs', signingSecret: 'ss' });
   assert.equal(seen[0]?.method, 'apps.manifest.create');
   assert.equal(seen[0]?.authorization, `Bearer ${TOKEN}`);
-  assert.deepEqual(seen[0]?.body, { manifest: MANIFEST });
+  assert.deepEqual(seen[0]?.body, { manifest: CREATE_MANIFEST });
 
   const noResult = (error: unknown): boolean => error instanceof Error && !error.message.includes(TOKEN);
-  await assert.rejects(() => api(() => refused('invalid_manifest')).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => refused('invalid_manifest')).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof SlackRefused && error.code === 'invalid_manifest' && noResult(error));
-  await assert.rejects(() => api(() => refused('ratelimited', 429)).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => refused('ratelimited', 429)).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof SlackRefused && error.code === 'ratelimited');
-  await assert.rejects(() => api(() => refused('internal_error', 500)).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => refused('internal_error', 500)).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof AmbiguousEffect && error.reason === 'internal_error' && noResult(error));
-  await assert.rejects(() => api(() => { throw new TypeError('fetch failed'); }).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => { throw new TypeError('fetch failed'); }).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof AmbiguousEffect && error.reason === 'network_error');
-  await assert.rejects(() => api(() => new Response('<html>', { status: 200 })).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => new Response('<html>', { status: 200 })).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof AmbiguousEffect && error.reason === 'invalid_slack_response');
-  await assert.rejects(() => api(() => ok({ app_id: 'A0C8APP' })).client.create(TOKEN, MANIFEST), (error: unknown) =>
+  await assert.rejects(() => api(() => ok({ app_id: 'A0C8APP' })).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
     error instanceof AmbiguousEffect && error.reason === 'incomplete_slack_success');
+});
+
+test("a refusal carries Slack's code and its errors list, bounded and without URLs", async () => {
+  const long = 'x'.repeat(500);
+  const answer = () => Response.json({
+    ok: false,
+    error: 'invalid_manifest',
+    errors: [
+      { message: 'Event Subscription requires either Request URL or Socket Mode Enabled', pointer: '/settings/event_subscriptions' },
+      { message: "Your URL https://cloud.test/channels/slack/agent-apps/inst/A0C8APP/path-token/events didn't respond\nin time", pointer: '/settings/event_subscriptions/request_url' },
+      { message: long, pointer: long },
+      { message: 7 },
+      'not an object',
+      { message: 'the sixth is dropped', pointer: '/sixth' },
+    ],
+  });
+  const bounded = [
+    { message: 'Event Subscription requires either Request URL or Socket Mode Enabled', pointer: '/settings/event_subscriptions' },
+    { message: "Your URL <url> didn't respond in time", pointer: '/settings/event_subscriptions/request_url' },
+    { message: 'x'.repeat(200), pointer: 'x'.repeat(200) },
+    { message: '', pointer: '' },
+    { message: '', pointer: '' },
+  ];
+  const carries = (method: string) => (error: unknown) =>
+    error instanceof SlackRefused && error.method === method && error.code === 'invalid_manifest' &&
+    JSON.stringify(error.errors) === JSON.stringify(bounded);
+  await assert.rejects(() => api(answer).client.create(TOKEN, CREATE_MANIFEST), carries('apps.manifest.create'));
+  await assert.rejects(() => api(answer).client.update(TOKEN, 'A0C8APP', MANIFEST), carries('apps.manifest.update'));
+  await assert.rejects(() => api(() => refused('invalid_auth')).client.create(TOKEN, CREATE_MANIFEST), (error: unknown) =>
+    error instanceof SlackRefused && error.code === 'invalid_auth' && error.errors.length === 0);
 });
 
 test('update names the app and the manifest, and a refusal is a refusal', async () => {
@@ -106,16 +148,17 @@ test('update names the app and the manifest, and a refusal is a refusal', async 
     error instanceof SlackRefused && error.code === 'invalid_manifest');
 });
 
-test('the icon upload is multipart and every outcome is one of three words', async () => {
+test('the icon upload is multipart, and a refusal is told from an outage', async () => {
   const png = new Uint8Array([137, 80, 78, 71]);
   const { client, seen } = api(() => ok({}));
-  assert.equal(await client.setIcon(TOKEN, 'A0C8APP', png), 'set');
+  await client.setIcon(TOKEN, 'A0C8APP', png);
   assert.equal(seen[0]?.method, 'apps.icon.set');
   assert.equal(seen[0]?.authorization, `Bearer ${TOKEN}`);
   assert.deepEqual(seen[0]?.body, { app_id: 'A0C8APP', file: 'blob:4' });
-  assert.equal(await api(() => refused('invalid_image')).client.setIcon(TOKEN, 'A0C8APP', png), 'refused');
-  assert.equal(await api(() => refused('service_unavailable', 503)).client.setIcon(TOKEN, 'A0C8APP', png), 'failed');
-  assert.equal(await api(() => { throw new TypeError('fetch failed'); }).client.setIcon(TOKEN, 'A0C8APP', png), 'failed');
+  await assert.rejects(() => api(() => refused('invalid_image')).client.setIcon(TOKEN, 'A0C8APP', png), (error: unknown) =>
+    error instanceof SlackRefused && error.code === 'invalid_image');
+  await assert.rejects(() => api(() => refused('service_unavailable', 503)).client.setIcon(TOKEN, 'A0C8APP', png), SlackUnavailable);
+  await assert.rejects(() => api(() => { throw new TypeError('fetch failed'); }).client.setIcon(TOKEN, 'A0C8APP', png), SlackUnavailable);
 });
 
 test("exchange uses the app's own client credentials and parses the grant", async () => {
