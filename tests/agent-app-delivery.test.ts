@@ -28,7 +28,8 @@ import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installatio
 import { withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
 import { invalidateSlackInstallationCredentialCache, writeHostedSlackBotCredentials } from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
-import { uiActionId, uiBlockId, uiValue } from '../src/slack/ui/surface.ts';
+import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
+import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation', SLACK_TAG_PUBLIC_URL: 'https://hosted.example' };
@@ -60,7 +61,7 @@ interface Harness {
 function userAgent(id: string, name: string, handle: string): CustomAgentConfig {
   return {
     id, kind: 'user', revision: 1, name, instructions: `You are ${name}.`, enabled: true, lifecycle: 'active',
-    editPolicy: 'creator_and_admins', configurationGeneration: 1,
+    editPolicy: 'creator_and_admins', configurationGeneration: 1, model: 'local-stub/agent-app',
     slackPresence: {
       requestedHandle: handle, normalizedHandle: handle, desiredState: 'active', health: 'healthy',
       avatar: { kind: 'generated', revision: 1, seed: id }, userGroupId: `S${handle.toUpperCase()}`,
@@ -97,7 +98,7 @@ async function withHarness(t: TestContext, run: (harness: Harness) => Promise<vo
   });
   const base = scopeInstallationEnv(HOSTED, { installationId: 'inst_tenant_a' });
   const stores = resolveStores(base);
-  await createSlackOwner(stores.identity, { teamId: TEAM, userId: 'U1' });
+  const owner = await createSlackOwner(stores.identity, { teamId: TEAM, userId: 'U1' });
   await writeHostedSlackBotCredentials({ state: stores.identity, keyring: loadCredentialKeyring() }, null, {
     botToken: MAIN_BOT, botUserId: 'UBOT', appId: MAIN_APP.appId, teamId: TEAM,
     grantedScopes: ['chat:write', 'users:read'], validatedAt: Date.now(),
@@ -106,6 +107,13 @@ async function withHarness(t: TestContext, run: (harness: Harness) => Promise<vo
   const installedAt = Date.now() - 60_000;
   const support = await stores.config.createAgent(userAgent('agent_support', 'Support', 'support'));
   await stores.config.createAgent(userAgent('agent_finance', 'Finance', 'finance'));
+  await stores.config.putChannel({ workspaceId: TEAM, channelId: 'C1', label: 'team', lifecycle: 'active' }, 0);
+  for (const agentId of ['agent_support', 'agent_finance']) {
+    await stores.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId: 'C1', agentId, status: 'active',
+      createdByMembershipId: owner.membership.id, channelLabel: 'team', channelIsPrivate: false,
+    }, 0);
+  }
   const live: AgentAppLifecycle = {
     state: 'active', at: installedAt, app: { appId: AGENT_APP, clientId: '1.client' }, icon: 'agent_avatar',
     botUserId: AGENT_BOT_USER, installedAt, installedBy: 'U1',
@@ -136,7 +144,9 @@ async function withHarness(t: TestContext, run: (harness: Harness) => Promise<vo
       : method === 'users.info'
         ? { ok: true, user: { id: user, team_id: TEAM, name: user, deleted: false, is_bot: false, is_app_user: false, is_restricted: false, is_ultra_restricted: false, is_stranger: false } }
         : method === 'conversations.info'
-          ? { ok: true, channel: { id: body.get('channel'), is_im: true, user: 'U1' } }
+          ? { ok: true, channel: body.get('channel')?.startsWith('C')
+            ? { id: body.get('channel'), name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false }
+            : { id: body.get('channel'), is_im: true, user: 'U1' } }
           : method === 'conversations.members'
             ? { ok: true, members: ['U1', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
             : method === 'conversations.open'
@@ -179,6 +189,16 @@ function dmEvent(patch: Record<string, unknown> = {}, event: Record<string, unkn
   };
 }
 
+/** The first undelivered turn that matches, once detached admission has written it. */
+async function pendingTurn(stores: AppStores, matches: (job: PendingTurnJob) => boolean): Promise<PendingTurnJob | undefined> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const job = (await stores.slackState.listPendingTurns!()).find(matches);
+    if (job) return job;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return undefined;
+}
+
 async function appOf(stores: AppStores): Promise<AgentAppLifecycle | undefined> {
   const presence = (await stores.config.getAgent('agent_support')).slackPresence;
   return presence?.kind === 'agent_app' ? presence.app : undefined;
@@ -199,14 +219,16 @@ test("a delivery is served only with the port and a delivery handoff, verified w
   assert.equal(served.status, 200);
   const info = h.calls.filter((call) => call.method === 'users.info');
   assert.ok(info.length > 0, 'the delivery was admitted and the person looked up');
+  assert.equal((await pendingTurn(h.stores, () => true))?.assignment.agentId, 'agent_support', "a message to the Agent's bot is the Agent's turn");
   assert.ok(info.every((call) => call.token === AGENT_BOT), "admission runs as the Agent's own bot");
   assert.equal(h.calls.some((call) => call.token === MAIN_BOT), false, 'the workspace bot is never used for an Agent app delivery');
 }));
 
 test("an interaction is served the same way and runs with the Agent's client", async (t) => withHarness(t, async (h) => {
-  const surfaceId = 'ui_surface_agent_1';
+  const surfaceId = uiSurfaceId('msg:D1:1900000000.000050', 'host-approval:1');
   const click = {
     type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
+    container: { type: 'message', channel_id: 'D1', message_ts: '1900000000.000050', is_ephemeral: false },
     channel: { id: 'D1' }, message: { ts: '1900000000.000050', thread_ts: '1900000000.000050' },
     actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: '1900000000.000060' }],
   };
@@ -216,8 +238,8 @@ test("an interaction is served the same way and runs with the Agent's client", a
   assert.equal((await h.deliver('interactions', { ...click, team: { id: 'TOTHER' } })).status, 404, 'another workspace');
   assert.equal(h.calls.length, 0);
   assert.equal((await h.deliver('interactions', click)).status, 200);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(h.calls.some((call) => call.token === MAIN_BOT), false, "a click on the Agent's message never uses the workspace bot");
+  for (let attempt = 0; attempt < 100 && !h.calls.length; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(h.calls.map((call) => call.method), ['chat.postEphemeral'], 'a click on a closed card is told so privately');
   assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "every call the click makes is the Agent's");
 }));
 
@@ -262,4 +284,61 @@ test("a revoked installation serves none of its Agent apps' deliveries and offer
   })).status, 404);
   assert.equal(h.calls.length, 0, 'nothing runs as the Agent bot once the installation is gone');
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined);
+}));
+
+test("a click on the app Agent's approval card reaches that Agent, as the thread's owner or its guest, and runs as its bot", async (t) => withHarness(t, async (h) => {
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.ok(owner);
+  const clickSupportCard = async (threadTs: string, threadOwner: string, actionTs: string) => {
+    await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs, agentId: threadOwner, agentGeneration: 1 });
+    const scope = `slack:${TEAM}:C1:${threadTs}:agent:agent_support`;
+    const proposalId = `proposal_${threadOwner}`;
+    await h.stores.management.putChangeSetProposal({
+      proposalId, organizationId: owner.membership.organizationId,
+      actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+      originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
+      guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+      operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_support', expectedRevision: 0, body: 'Refunds go to account 99.' }],
+      preview: { summary: 'Preview', changes: [], missingSetup: [] },
+      targetRevisions: { 'memory:agent_support': 0 }, at: Date.now(),
+    });
+    const cardTs = `${threadTs.split('.')[0]}.000300`;
+    const surfaceId = uiSurfaceId(`msg:C1:${threadTs}`, 'host-approval:1');
+    const now = Date.now();
+    await h.stores.slackState.executeUiSurface!({
+      kind: 'put_surface',
+      record: {
+        id: surfaceId, namespace: 'host', workspaceId: TEAM, channelId: 'C1', threadTs, conversationThreadTs: threadTs,
+        conversationKind: 'channel', agentId: 'agent_support', turnJobId: `msg:C1:${threadTs}`, requesterUserId: 'U1',
+        spec: { kind: 'approval', approval: 'workspace_change', proposalId },
+        status: 'open', messageTs: cardTs, createdAt: now, updatedAt: now, expiresAt: now + 60_000,
+      },
+    });
+    h.calls.length = 0;
+    const clicked = await h.deliver('interactions', {
+      type: 'block_actions', api_app_id: AGENT_APP, team: { id: TEAM }, user: { id: 'U1' }, trigger_id: 'trigger-1',
+      container: { type: 'message', channel_id: 'C1', message_ts: cardTs, is_ephemeral: false },
+      channel: { id: 'C1' }, message: { ts: cardTs, thread_ts: threadTs },
+      actions: [{ type: 'button', action_id: uiActionId('host', 'approval', 0), block_id: uiBlockId('host', surfaceId, 1), value: uiValue(surfaceId, 0), action_ts: actionTs }],
+    });
+    assert.equal(clicked.status, 200);
+    const job = await pendingTurn(h.stores, (pending) => pending.turn.threadTs === threadTs);
+    assert.ok(job, 'the click became a turn');
+    assert.equal(job.assignment.agentId, 'agent_support', 'the Agent whose card it is answers the click');
+    assert.equal(job.turn.managementApprovalProposalId, proposalId, "the person's click is the approval");
+    assert.ok(h.calls.length > 0);
+    assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "the click is handled with the Agent's own bot");
+    return job;
+  };
+
+  const own = await clickSupportCard('1900000000.000050', 'agent_support', '1900000000.000060');
+  assert.notEqual(own.assignment.threadGuest, true, "in its own thread the Agent answers as the thread's Agent");
+
+  const guest = await clickSupportCard('1900000100.000050', 'agent_finance', '1900000100.000060');
+  assert.equal(guest.assignment.threadGuest, true, "in another Agent's thread it answers as a guest");
+  assert.equal(
+    (await h.stores.config.getAgentThreadRoute(TEAM, 'C1', '1900000100.000050'))?.agentId,
+    'agent_finance',
+    'the click never takes the thread over',
+  );
 }));

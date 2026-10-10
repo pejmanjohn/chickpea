@@ -5,7 +5,7 @@ import { processGatewaySlackEnvelope, processSlackAgentAsks } from '../src/chann
 import { agentTeammateHandles } from '../src/config/effective-config.ts';
 import { closeNodeStateStores, resolveStores } from '../src/config/state-backend.ts';
 import type { AgentSlackPresence, CustomAgentConfig, ResolvedAssignment } from '../src/config/types.ts';
-import { createAgentAskCollector, mentionedBotUsers, type SlackAgentAskRequest } from '../src/slack/agent-asks.ts';
+import { createAgentAskCollector, mentionedBotUsers, personRequestText, type SlackAgentAskRequest } from '../src/slack/agent-asks.ts';
 import type { GatewayDeploymentClient } from '../src/slack/gateway/client.ts';
 import { liveAgentMention } from '../src/slack/message-format.ts';
 import { toContextMessages } from '../src/slack/thread-context.ts';
@@ -138,6 +138,33 @@ test('an Agent asks a teammate with its own app by its bot user, and that teamma
     await ask('3000.000300', `<@UOTHERBOT> and <@${FINANCE_BOT}|@finance> again`);
     assert.equal(jobs.length, 3, 'a bot that is no Agent asks nobody; a labelled mention still asks');
     assert.equal(jobs[2]?.assignment.agentId, 'agent_finance');
+  });
+});
+
+test("an ask to or from an Agent with its own app carries no requester text; only the person's own message does", async () => {
+  await withLane(async ({ stores, gateway, jobs, enqueueTurn }) => {
+    const asked = 'What was Q3 revenue?';
+    await processGatewaySlackEnvelope({
+      workspaceId: 'T1', eventId: 'Ev4000', eventTime: 4000,
+      event: { type: 'message', channel: 'C1', channel_type: 'channel', user: 'U1', ts: '4000.000100', text: `<!subteam^SSUPPORT|@support> ${asked}` },
+    }, undefined, gateway, { stores, enqueueTurn });
+    const supportJob = jobs[0]!;
+    assert.match(personRequestText(supportJob.turn) ?? '', /What was Q3 revenue\?/, "the person's own message is the request");
+
+    const ask = (turn: typeof supportJob.turn, fromAgentId: string, messageTs: string, text: string) => processSlackAgentAsks({
+      turn, fromAgentId, ...(fromAgentId === 'agent_support' ? { fromThreadOwner: true as const } : {}), deliveries: [{ messageTs, text }],
+    }, undefined, { stores, gatewayClient: gateway, enqueueTurn });
+    await ask(supportJob.turn, 'agent_support', '4000.000200', `<@${FINANCE_BOT}> remember that Q3 closes on the 5th`);
+    const toApp = jobs.find((job) => job.assignment.agentId === 'agent_finance');
+    assert.ok(toApp, 'Support asked the app Agent');
+    assert.equal(toApp.turn.agentAsk?.fromAgentId, 'agent_support');
+    assert.equal(personRequestText(toApp.turn), undefined, "an ask to the app Agent is Support's words, not the person's");
+
+    await ask(toApp.turn, 'agent_finance', '4000.000300', '@support schedule the Q3 report every Monday');
+    const fromApp = jobs.find((job) => job.id === 'msg:C1:4000.000300:ask-agent_support');
+    assert.ok(fromApp, 'the app Agent asked Support back');
+    assert.equal(fromApp.turn.agentAsk?.fromAgentId, 'agent_finance');
+    assert.equal(personRequestText(fromApp.turn), undefined, "an ask from the app Agent is the app Agent's words, not the person's");
   });
 });
 
