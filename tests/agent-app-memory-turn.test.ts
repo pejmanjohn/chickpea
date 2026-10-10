@@ -282,7 +282,8 @@ test('a memory lease that ends a turn in the generic failure logs one operator l
 
   // The turn already holds the app's bot (resolved once per Agent) when the archive starts.
   await startUninstalling(h);
-  const ended = await runAsTheAppBot(h, dmTurn(6), async () => assert.fail('the model never runs'));
+  const ended = await runAsTheAppBot(h, dmTurn(6));
+  assert.equal(ended.memoryBlocks.length, 0, 'the model never ran');
   assert.ok(ended.posted.includes(AGENT_FAILURE_TEXT), 'the app is being uninstalled');
   assert.deepEqual(failures().slice(1), [
     { event: 'chickpea.turn.agent_failure', reason: 'memory_delivery_lease_rejected', stage: 'before_run', agentId: h.agent.id },
