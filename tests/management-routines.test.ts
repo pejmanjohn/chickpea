@@ -228,6 +228,7 @@ test('a routed Agent manages and inspects only its own routines', async () => {
     eventId: `Ev_SELF_ROUTINE_${++sequence}`,
     messageTs: '600.2',
     turnJobId: `turn_SELF_ROUTINE_${sequence}`,
+    requesterText: 'Yes, go ahead.',
   };
   const routineOperation = (agentId: string, itemId: string) => ({
     itemId,
@@ -396,7 +397,7 @@ test('private DM routines need no deployment flag and use trusted thread managem
       agentId, workspaceId: 'T_DIRECT_ROUTINE', channelId: 'D_DIRECT_OWNER',
       conversationKind, threadTs, slackUserId: owner.binding.slackUserId,
       eventId: `Ev_DIRECT_${++sequence}`, messageTs: `${sequence}.2`,
-      turnJobId: `turn_DIRECT_${sequence}`,
+      turnJobId: `turn_DIRECT_${sequence}`, requesterText: 'Yes, go ahead.',
     });
     const createOperation = {
       itemId: 'private-schedule', kind: 'save_routine' as const, requiredConnectionAccountIds: [],
@@ -670,7 +671,7 @@ test('identical relative DM follow-ups create fresh future schedules repeatedly'
       agentId: support.id, workspaceId: 'T_RELATIVE_ROUTINE', channelId: 'D_RELATIVE_OWNER',
       conversationKind: 'im' as const, threadTs: '100.1', slackUserId: owner.binding.slackUserId,
       eventId: `Ev_RELATIVE_${++sequence}`, messageTs: `${sequence}.2`,
-      turnJobId: `turn_RELATIVE_${sequence}`,
+      turnJobId: `turn_RELATIVE_${sequence}`, requesterText: 'Yes, go ahead.',
     });
     // The exact payload the guide asks for on "Check this again in 5 minutes
     // and tell me anything new": relative lead time, fresh routine, no

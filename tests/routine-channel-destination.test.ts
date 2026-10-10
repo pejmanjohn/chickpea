@@ -142,7 +142,7 @@ test('Channel creation separates request thread from saved delivery and edits pr
   }
 });
 
-test('a schedule saved on an ask records no source request instead of the asking Agent\'s words', async () => {
+test('a schedule is saved with the person\'s request as its source, and an ask cannot save one directly', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
@@ -176,29 +176,27 @@ test('a schedule saved on an ask records no source request instead of the asking
         conversationKind: 'channel',
         slackUserId: owner.binding.slackUserId,
       }), identity);
-    const savedProvenance = async (
+    const save = async (
       turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs'>,
       name: string,
-    ) => {
-      const saved = await service.applyWorkspaceChanges({
-        context: await actorFor(turn), idempotencyKey: `save-${turn.eventId}`, acknowledgementOwner: 'caller',
-        operations: [{ ...operation, name }],
-      });
-      assert.ok(saved.status === 'completed');
-      const routineId = saved.outcomes[0]?.changed?.find(({ kind }) => kind === 'routine')?.id;
-      assert.ok(routineId);
-      return (await routines.listRevisions(routineId))[0]?.provenance;
-    };
+    ) => await service.applyWorkspaceChanges({
+      context: await actorFor(turn), idempotencyKey: `save-${turn.eventId}`, acknowledgementOwner: 'caller',
+      operations: [{ ...operation, name }],
+    });
 
-    const person = await savedProvenance({ eventId: 'Ev_PERSON', messageTs: '1787874272.000100', text: words }, 'Digest');
+    const saved = await save({ eventId: 'Ev_PERSON', messageTs: '1787874272.000100', text: words }, 'Digest');
+    assert.ok(saved.status === 'completed');
+    const routineId = saved.outcomes[0]?.changed?.find(({ kind }) => kind === 'routine')?.id;
+    assert.ok(routineId);
+    const person = (await routines.listRevisions(routineId))[0]?.provenance;
     assert.equal(person?.requestText, words);
     assert.equal(person?.eventId, 'Ev_PERSON');
 
-    const asked = await savedProvenance({
+    await assert.rejects(save({
       eventId: 'Ev_ASK', messageTs: '1787874273.000100', text: words,
       agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1787874270.000001' },
-    }, 'Asked digest');
-    assert.equal(asked, null);
+    }, 'Asked digest'), /only through a proposal the person approves/);
+    assert.deepEqual((await routines.listRoutines()).map(({ name }) => name), ['Digest']);
   } finally {
     routines.close(); management.close(); config.close(); identity.close();
   }

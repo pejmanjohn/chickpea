@@ -68,7 +68,7 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
       agentId: agent.id, workspaceId: f.admin.binding.slackTeamId,
       channelId: 'D_MEMORY_TOOL', threadTs: '400.1',
       slackUserId: f.admin.binding.slackUserId, eventId: 'Ev_memory',
-      messageTs: '400.1', turnJobId: 'turn_memory',
+      messageTs: '400.1', turnJobId: 'turn_memory', requesterText: 'Remember that the warehouse opens at nine.',
     };
     const args = slackMemoryUpdateArguments(signal, { expectedRevision: 0, body: 'The warehouse opens at nine.' });
     assert.equal(args.operations[0]?.kind, 'update_agent_memory');
@@ -209,7 +209,7 @@ test('memory receipts only claim preserved context for a verbatim addition to th
   }
 });
 
-test('an ask turn writes memory immediately, exactly as a person\'s turn does, without requester text', async () => {
+test('an ask turn proposes a memory write the person did not ask for; a person\'s turn writes it immediately', async () => {
   const f = await createManagementAdapterFixture('memory-ask');
   try {
     const save = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
@@ -229,16 +229,9 @@ test('an ask turn writes memory immediately, exactly as a person\'s turn does, w
         args: slackMemoryUpdateArguments(signal, { expectedRevision: 0, body: 'The warehouse opens at nine.' }),
       });
       assert.ok(saved.ok);
-      const hint = appliedMemoryReceipt(saved.result, agent.id);
-      assert.ok(hint, `${name}: the write applied immediately`);
       const actor = await resolveSlackManagementActor(signal, f.identity);
-      const acknowledged = await verifyMemoryUpdateAcknowledgement({
-        hint, agentId: agent.id, turnJobId: signal.turnJobId,
-        getOperation: (id) => f.service.getOperation(actor, id),
-        validateReceiptLease: async (revision) => revision === (await f.memory.getAgentMemory(agent.id)).revision,
-      });
       const memory = await f.memory.getAgentMemory(agent.id);
-      return { origin: actor.origin, acknowledged, body: memory.body, revision: memory.revision };
+      return { origin: actor.origin, hint: appliedMemoryReceipt(saved.result, agent.id), body: memory.body };
     };
     const words = 'Remember that the warehouse opens at nine.';
     const person = await save('person', { text: words });
@@ -247,12 +240,13 @@ test('an ask turn writes memory immediately, exactly as a person\'s turn does, w
       agentAsk: { fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '600.1' },
     });
     assert.equal(person.origin.kind === 'slack' && person.origin.requestText, words);
+    assert.ok(person.hint, 'the person\'s own request writes immediately');
+    assert.equal(person.body, 'The warehouse opens at nine.');
     assert.equal(ask.origin.kind === 'slack' && 'requestText' in ask.origin, false);
-    const { origin: _personOrigin, ...personWrite } = person;
-    const { origin: _askOrigin, ...askWrite } = ask;
-    assert.deepEqual(personWrite, { acknowledged: true, body: 'The warehouse opens at nine.', revision: 1 });
-    assert.deepEqual(askWrite, personWrite);
+    assert.equal(ask.hint, undefined, 'an Agent\'s words write nothing');
+    assert.equal(ask.body, '');
   } finally {
     f.close();
   }
 });
+

@@ -39,7 +39,8 @@ import {
   revokeSetupLinkValibotSchema,
   undoWorkspaceChangeValibotSchema,
 } from './schemas.ts';
-import { WorkspaceManagementService } from './service.ts';
+import { PERSON_APPROVED_ON_ASK, WorkspaceManagementService } from './service.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
 import { createLiveWorkspaceManagementService } from './live-service.ts';
 import {
   invokeWorkspaceManagementTool,
@@ -483,6 +484,9 @@ function followOnNoticeFromScheduleResult(
       kind: 'pending',
       text: 'The requested scheduled work is still being set up; its final outcome will be posted here.',
     };
+  }
+  if (result.outcome === 'confirmation_required') {
+    return { kind: 'pending', text: 'A separate requested change still needs approval.' };
   }
   return {
     kind: 'failure',
@@ -955,6 +959,11 @@ export async function invokeSlackWorkspaceManagementTool<
       },
     };
   }
+  const personApproves = input.name === 'apply_workspace_changes' &&
+    input.signal.requesterText === undefined &&
+    (input.args as WorkspaceManagementToolArguments['apply_workspace_changes']).operations
+      .some(({ kind }) => PERSON_APPROVED_ON_ASK.has(kind));
+  if (personApproves) return proposeAskTurnChanges(input);
   const result = await invokeWorkspaceManagementTool({
     service: input.service,
     resolveContext: () => resolveSlackManagementActor(input.signal, input.identity),
@@ -966,6 +975,34 @@ export async function invokeSlackWorkspaceManagementTool<
     });
   }
   return result;
+}
+
+const PERSON_APPROVAL_INSTRUCTION = 'Nothing was applied. Another Agent\'s ask started this turn, so the person who started the exchange approves these changes. Send presentation.slack verbatim and say what it would change. The person approves with the Approve button or by replying "approve"; do not call confirm_workspace_change yourself.';
+
+/**
+ * Another Agent's ask started this turn, so its schedule and memory writes
+ * wait for the person: the whole batch becomes one proposal, and the
+ * approval applies exactly what its preview shows.
+ */
+async function proposeAskTurnChanges(input: {
+  signal: SlackManagementSignal;
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  service: WorkspaceManagementService;
+  args: unknown;
+}): Promise<WorkspaceManagementToolResult> {
+  const { idempotencyKey, operations } = input.args as WorkspaceManagementToolArguments['apply_workspace_changes'];
+  const result = await invokeWorkspaceManagementTool({
+    service: input.service,
+    resolveContext: () => resolveSlackManagementActor(input.signal, input.identity),
+  }, 'propose_workspace_changes', {
+    idempotencyKey,
+    guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    authoringReason: 'agent_edit',
+    operations,
+  });
+  return result.ok
+    ? { ...result, result: { ...(result.result as object), instruction: PERSON_APPROVAL_INSTRUCTION } }
+    : result;
 }
 
 async function invokeLiveSlackTool<TName extends WorkspaceManagementToolName>(
@@ -1348,6 +1385,14 @@ export function scheduleActionToolResult(result: SlackScheduleActionOutcome): Re
       outcome: 'pending',
       actionId: result.actionId,
       instruction: 'The action is durably recovering. Say that it is still being set up; the final outcome will be posted to this thread.',
+    };
+  }
+  if (result.outcome === 'confirmation_required') {
+    return {
+      outcome: 'confirmation_required',
+      proposalId: result.proposalId,
+      presentation: { slack: result.preview },
+      instruction: PERSON_APPROVAL_INSTRUCTION,
     };
   }
   return {

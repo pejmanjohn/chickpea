@@ -280,6 +280,7 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     eventId: 'Ev_AUTHORING',
     messageTs: '100.2',
     turnJobId: 'turn_AUTHORING',
+    requesterText: 'Yes, go ahead.',
   };
   try {
     const operation: ManagementOperation = {
@@ -484,6 +485,7 @@ test('a top-level DM approval confirms the same pending proposal without model c
     eventId: 'Ev_DM_PROPOSAL',
     messageTs: '100.1',
     turnJobId: 'turn_DM_PROPOSAL',
+    requesterText: 'Yes, go ahead.',
   };
   try {
     const proposed = await invokeSlackWorkspaceManagementTool({
@@ -1448,6 +1450,7 @@ test('a Channel-origin create reports the Agent revision its source-Channel publ
       threadTs: '1800000000.000002',
       conversationKind: 'channel',
       agentId: CHICKPEA_AGENT_ID,
+      requestText: 'Yes, go ahead.',
     },
   };
   const service = new WorkspaceManagementService({
@@ -2790,7 +2793,7 @@ test('a pending workspace proposal can be approved after the former expiration w
     userId: f.admin.user.id,
     membershipId: f.admin.membership.id,
     organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'slack', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1.0' },
+    origin: { kind: 'slack', workspaceId: 'T_TEST', channelId: 'D_TEST', threadTs: '1.0', requestText: 'Yes, go ahead.', },
   };
   const service = new WorkspaceManagementService({
     identity: f.identity,
@@ -3356,6 +3359,7 @@ test('confirmed publication may import a live Slack Channel that is not in Chick
       workspaceId: f.owner.binding.slackTeamId,
       channelId: 'CNEWINSLACK',
       threadTs: '1710000000.000001',
+      requestText: 'Yes, go ahead.',
     },
   };
   const { requestedHandle: _requestedHandle, ...storedAgent } = agentInput;
