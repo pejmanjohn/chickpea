@@ -1,14 +1,19 @@
 import type { CustomAgentConfig } from '../../config/types.ts';
 import type { NormalizedSlackTurn } from '../types.ts';
+import { agentSlackAppsHost } from './host.ts';
 import { agentAppIsLive } from './lifecycle.ts';
 
 const USER_MENTION = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
 
 export type AgentAppRouteSelection = { kind: 'select'; agentId: string } | { kind: 'ignore' };
 
-/** Each live Agent app's bot user, to its Agent: in a Channel, mentioning that bot addresses the Agent. */
-export function liveAgentAppBots(agents: readonly CustomAgentConfig[]): ReadonlyMap<string, CustomAgentConfig> {
-  return new Map(agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [[agent.slackPresence.app.botUserId, agent]] : []));
+/**
+ * The bot an Agent posts as through its own Slack app: its app's bot while
+ * that app is live and the host serves Agent apps. Undefined for any other
+ * Agent, and for every Agent without the port, which then posts as Chickpea's.
+ */
+export function agentAppPostingBot(agent: CustomAgentConfig): string | undefined {
+  return agentSlackAppsHost() && agentAppIsLive(agent.slackPresence) ? agent.slackPresence.app.botUserId : undefined;
 }
 
 /**
@@ -25,7 +30,9 @@ export function agentAppRouteSelection(
 ): AgentAppRouteSelection | undefined {
   if (agentApp) return { kind: 'select', agentId: agentApp.agentId };
   if (surface !== 'channel') return undefined;
-  const liveBots = liveAgentAppBots(agents);
+  const liveBots = new Set(
+    agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []),
+  );
   if (liveBots.size === 0) return undefined;
   for (const match of turn.text.matchAll(USER_MENTION)) {
     if (liveBots.has(match[1]!)) return { kind: 'ignore' };

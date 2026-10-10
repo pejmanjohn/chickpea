@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { AgentSlackPresence } from '../src/config/types.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
@@ -24,6 +25,16 @@ const liveApp: AgentSlackPresence = {
   avatar: { kind: 'generated', revision: 1, seed: 'support' }, released: { userGroupId: 'SSUPPORT' },
   app: { state: 'active', at: NOW, app: { appId: 'A0APP1', clientId: '1.c' }, icon: 'agent_avatar', botUserId: 'UBOTSUP', installedAt: NOW, installedBy: 'UOWNER' },
 };
+
+/** The host serves Agent apps, as the hosting service's port does, for one test. */
+function serveAgentApps(t: TestContext): void {
+  configureAgentSlackApps({
+    requestUrls: () => ({ events: 'https://host.test/e', interactions: 'https://host.test/i' }),
+    redirectUri: 'https://host.test/callback',
+    allowUrl: (agentId) => `https://host.test/allow/${agentId}`,
+  });
+  t.after(() => configureAgentSlackApps(undefined));
+}
 
 async function fixture(options: { grant?: boolean } = {}) {
   const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
@@ -107,7 +118,8 @@ test("Chickpea's ingress ignores a Channel message mentioning a live Agent-app b
   }
 });
 
-test("a Channel message naming a user-group Agent and an Agent-app bot routes alike on either bot's delivery: the first named takes it and the other answers after", async () => {
+test("a Channel message naming a user-group Agent and an Agent-app bot routes alike on either bot's delivery: the first named takes it and the other answers after", async (t) => {
+  serveAgentApps(t);
   const { store, support, finance } = await fixture();
   try {
     const cases = [
@@ -142,7 +154,8 @@ test("a Channel message naming a user-group Agent and an Agent-app bot routes al
   }
 });
 
-test('a Channel message naming an app Agent without a grant there answers nobody, on either bot\'s delivery', async () => {
+test('a Channel message naming an app Agent without a grant there answers nobody, on either bot\'s delivery', async (t) => {
+  serveAgentApps(t);
   const { store, support } = await fixture({ grant: false });
   try {
     const text = '<!subteam^SFINANCE|@finance> and <@UBOTSUP> compare';

@@ -175,7 +175,12 @@ async function withHarness(
             }
             : { id: channel, is_im: true, user: 'U1' } }
           : method === 'conversations.members'
-            ? { ok: true, members: ['U1', 'U2', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
+            ? {
+              ok: true,
+              members: ['U1', 'U2', ...([[MAIN_BOT, 'UBOT'], [AGENT_BOT, AGENT_BOT_USER]] as const)
+                .flatMap(([botToken, botUser]) => options.notMemberOf?.[botToken]?.includes(channel) ? [] : [botUser])],
+              response_metadata: { next_cursor: '' },
+            }
             : method === 'conversations.open'
               ? { ok: true, channel: { id: 'DOWNER' } }
               : method.startsWith('chat.')
@@ -438,11 +443,6 @@ test('a Channel message naming the app Agent and a user-group Agent is answered 
       const response = ingress === 'app' ? await h.deliver('events', message.app) : await h.deliverToChickpea(message.chickpea);
       assert.equal(response.status, 200);
     }
-    assert.deepEqual(
-      notAdmitted(info.mock.calls),
-      [{ event: 'chickpea.turn.not_admitted', reason: 'already_admitted', agentId: named[0], delivery: heardFirst === 'app' ? 'installation' : 'agent_app' }],
-      `${label}: the later delivery adds no turn, and says so in the operator log`,
-    );
     const turns = (await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts);
     assert.deepEqual(
       turns.map((job) => [job.assignment.agentId, job.assignment.threadGuest === true, job.turn.coAddressed?.position]),
@@ -450,8 +450,73 @@ test('a Channel message naming the app Agent and a user-group Agent is answered 
       `${label}: each Agent answers once, the first one named first and the other after it as its guest`,
     );
     assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', ts))?.agentId, named[0], `${label}: the first one named keeps the thread`);
+    assert.deepEqual(
+      notAdmitted(info.mock.calls),
+      [{ event: 'chickpea.turn.not_admitted', reason: 'already_admitted', agentId: named[0], delivery: heardFirst === 'app' ? 'installation' : 'agent_app' }],
+      `${label}: the later delivery adds no turn, and says so in the operator log`,
+    );
   }
 }));
+
+test("without the port a Channel message naming the app Agent's bot and a user-group Agent is the user-group Agent's alone, as before", async (t) => withHarness(t, async (h) => {
+  configureAgentSlackApps(undefined);
+  for (const [ts, text] of [
+    ['1900000700.000100', `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`],
+    ['1900000800.000100', `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare our refund numbers`],
+  ] as const) {
+    assert.equal((await h.deliverToChickpea(channelMessage(ts, text).chickpea)).status, 200);
+    const turns = (await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts);
+    assert.deepEqual(
+      turns.map((job) => [job.assignment.agentId, job.assignment.threadGuest === true, job.turn.coAddressed]),
+      [['agent_finance', false, undefined]],
+      "no app is served, so its bot addresses nobody and no turn of the app Agent would post as Chickpea's bot",
+    );
+  }
+}));
+
+/** The private notes a Channel message got, as [the bot that posted it, its text, whether it has a button]. */
+function channelNotes(h: Harness): Array<[string | undefined, string | null, boolean]> {
+  return h.calls.filter((call) => call.method === 'chat.postEphemeral' && call.body.get('channel') === 'C1')
+    .map((call) => [call.token, call.body.get('text'), call.body.get('blocks')?.includes('"button"') === true]);
+}
+
+/** Both orders of naming the app Agent's bot and Finance's user group. */
+const MIXED_TEXTS = [
+  `<!subteam^SFINANCE|@finance> and <@${AGENT_BOT_USER}> compare our refund numbers`,
+  `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`,
+];
+
+test("a mixed message where Chickpea's bot is not in the Channel tells the person Finance is not there, and nobody answers", async (t) => withHarness(t, async (h) => {
+  for (const [index, text] of MIXED_TEXTS.entries()) {
+    const ts = `1900000900.00010${index}`;
+    h.calls.length = 0;
+    // Only the app's bot is in the Channel, so only it hears the message.
+    assert.equal((await h.deliver('events', channelMessage(ts, text).app)).status, 200);
+    assert.deepEqual((await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts), [],
+      "no turn is admitted for an Agent whose reply Chickpea's bot could never post here");
+    assert.deepEqual(channelNotes(h), [[AGENT_BOT, '@finance isn’t in <#C1> yet.', false]],
+      "the person hears it once, from the bot that heard them, with no Add button that would leave Chickpea's bot out");
+  }
+
+  await h.stores.config.deleteAgentChannelGrant(TEAM, 'C1', 'agent_finance');
+  h.calls.length = 0;
+  assert.equal((await h.deliver('events', channelMessage('1900000900.000200', MIXED_TEXTS[0]!).app)).status, 200);
+  assert.deepEqual(channelNotes(h), [[AGENT_BOT, '@finance isn’t in <#C1> yet.', false]],
+    "without its grant either, an Add that granted it would still leave Chickpea's bot out, so there is no button");
+}, { notMemberOf: { [MAIN_BOT]: ['C1'] } }));
+
+test("a mixed message where the app Agent's bot is not in the Channel tells the person Support is not there, and nobody answers", async (t) => withHarness(t, async (h) => {
+  for (const [index, text] of MIXED_TEXTS.entries()) {
+    const ts = `1900001000.00010${index}`;
+    h.calls.length = 0;
+    // Only Chickpea's bot is in the Channel, so only it hears the message.
+    assert.equal((await h.deliverToChickpea(channelMessage(ts, text).chickpea)).status, 200);
+    assert.deepEqual((await h.stores.slackState.listPendingTurns!()).filter((job) => job.turn.messageTs === ts), [],
+      "no turn is admitted for an Agent whose reply its own bot could never post here");
+    assert.deepEqual(channelNotes(h), [[MAIN_BOT, '@support isn’t in <#C1> yet.', false]],
+      "the person hears it once, from the bot that heard them, with no Add button: only Slack's Add brings an app's bot in");
+  }
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
 
 test('a later delivery of a message the fallback lane admitted adds no turn and is logged too', async (t) => withHarness(t, async (h) => {
   const state = h.stores.slackState;

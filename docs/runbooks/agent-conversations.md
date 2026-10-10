@@ -57,12 +57,22 @@ that mention counts here like a handle. Chickpea's bot and the app's bot both
 receive such a message, and either delivery routes it the same way: the
 first to arrive admits every Agent it names, in order, and the other adds
 nothing. A message that mentions only Agent-app bots is answered on those
-apps' own deliveries.
+apps' own deliveries. Without the host's Agent-app port (see
+[How it is turned on](slack-message-identity.md#how-it-is-turned-on)) no app
+is served, so its bot's mention addresses nobody, as before Agents had apps.
+A group DM counts as a Channel here: Slack sends a mention there only as
+`app_mention`, without a conversation type.
 
 Every mentioned Agent must be available to that person where they wrote: in
 a Channel, granted there; in a direct message, one they may use privately.
 If one is not, nobody answers and the person gets the usual note that the
-Agent is not available here, once per message. One message addresses at most
+Agent is not available here, once per message. In a Channel each Agent also
+answers as its own bot, its app's or Chickpea's, so that bot must be in the
+Channel. When it is not, nobody answers, and the person is told privately,
+once, that the Agent isn't in the Channel yet. The note has no Add button,
+because granting the Agent would not bring its bot in. Chickpea's bot comes
+in with Admin's Add to channels or `/invite`, and an app's bot with Slack's
+Add people or agents. One message addresses at most
 6 Agents. Approve, stop, and other commands in such a message apply to the
 first Agent only. These answers are a person's request, so they do not count
 toward the limit on asks between Agents, and only the person's message sets

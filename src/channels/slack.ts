@@ -14,6 +14,7 @@ import {
   agentAppHomeRows,
   agentAppIsLive,
   agentAppPlacementFacts,
+  agentAppPostingBot,
   agentSlackAppsHost,
   endAgentSlackApp,
   handleAgentAppHomeAction,
@@ -2785,6 +2786,11 @@ async function processSlackEvent(
           actor: privateAgentActor(agentRoutingActor!, turn.userId),
           transport: execution?.placementFacts ?? runtimeTransport,
         }),
+        // The bot that heard this message is in the Channel; another is asked about through it.
+        postingBotInChannel: async (agent) => {
+          const bot = agentAppPostingBot(agent) ?? (execution?.agentApp ? installation.botUserId : resolvedBotUserId);
+          return !bot || bot === resolvedBotUserId || runtimeTransport.channelHasMember(turn.channelId, bot);
+        },
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
@@ -2796,6 +2802,7 @@ async function processSlackEvent(
           userId: turn.userId,
           ...(turn.threadTs !== turn.messageTs ? { threadTs: turn.threadTs } : {}),
           agent: routed.agent,
+          ...(routed.postingBotAbsent ? { postingBotAbsent: true } : {}),
           actor,
           identity: stores.identity,
           transport: runtimeTransport,
