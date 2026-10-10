@@ -35,6 +35,79 @@ and a halted one. An ephemeral reply has no readback: `conversations.replies`
 never returns it. Check it as the asker and confirm a second person in the
 thread does not see it.
 
+## An Agent with its own Slack app
+
+An Owner can give one Agent its own Slack app in the customer's workspace.
+The Agent then answers its direct messages, mentions of its bot, and clicks on
+its own messages as that bot. Its replies post with the app's bot token under
+the app's name and icon, with no `username` or `icon_url`: the app does not
+ask for `chat:write.customize`. Files it uploads belong to its bot. When the
+app is broken, the Agent's turn ends unavailable; it never falls back to
+Chickpea's bot. Other Agents ask it by its bot user (`<@U…>`) instead of a user
+group. Code lives in `src/slack/agent-apps/`.
+
+### How it is turned on
+
+Core serves the feature only when its host installs the port with
+`configureAgentSlackApps` (`src/slack/agent-apps/host.ts`). Core never
+installs it. A self-hosted install, direct or gateway, shows no control for it,
+answers 404 on `/channels/slack/agent-apps/*` and on the Admin token page and
+its API, and never reads an Agent app's secrets. The hosting service installs
+the port on its staging deployment only, behind its own staging-only switch.
+
+### What the Owner does
+
+1. On the Agent's row in Chickpea's App Home, the Owner chooses **Give @handle
+   its own Slack app**. Only Owners see the row.
+2. The first time in a workspace, the button opens the Owner-only page
+   `/admin/agents/<agentId>/slack-app`. In Slack, the Owner opens Your Apps,
+   chooses Generate Token under Your App Configuration Tokens, picks the
+   workspace, and pastes the Refresh Token. Chickpea rotates it once, refuses an
+   access token or another workspace's token, and stores the new pair
+   encrypted. Later Agents need only the click.
+3. Chickpea disables the Agent's user group so the handle is free, creates the
+   app without request URLs, records it, stores its secrets, adds the request
+   URLs, sets the icon, and messages the Owner with **Allow** in Slack.
+4. Allow opens Slack's consent screen; the link it starts is good for 15
+   minutes. Chickpea exchanges the code with the app's own credentials. It
+   undoes a grant from another person, workspace or app, or one missing a
+   permission. A good grant makes the app live and sends the Owner to the
+   Agent's messages.
+5. A refused step messages the Owner with **Try again**. A sequence that
+   stopped for two minutes shows **Finish setting up** in App Home. An unknown
+   answer to the create call never retries by itself: the Owner deletes any
+   app they do not recognize in Your Apps, then chooses Try again.
+
+### Archive, uninstall, and tenant end
+
+- Archiving the Agent uninstalls its app, deletes the app with the
+  configuration token, and gives the handle back to the Agent's user group,
+  disabled. Restoring the Agent brings the handle back. When Slack refuses the
+  uninstall, the archive is refused too. Without a stored token, the app's
+  definition stays and the Owner is told to delete it in Your Apps.
+- When someone removes the app in Slack (`app_uninstalled`, or
+  `tokens_revoked` naming its bot), only that Agent's app ends: its bot token
+  is dropped and the Owner is told, and Allow adds it back. The workspace's
+  installation and other Agents are unchanged.
+- When a tenant ends, the host retires every Agent app before the workspace's
+  own uninstall and records each outcome.
+
+### The configuration token's limits
+
+- Slack lets each person hold one configuration token per workspace. An Owner
+  who builds their own Slack apps in that workspace should not paste it: their
+  tools and Chickpea would keep replacing each other's token. Another Owner
+  should do this step.
+- The token can manage every app its person created in the workspace.
+  Chickpea changes only the apps it creates for Agents.
+- Chickpea cannot revoke the token: revoking the access token leaves the
+  refresh token working. **Remove the configuration token** on the token page
+  deletes Chickpea's copy only, and the Owner then deletes the token under Your
+  App Configuration Tokens. Agent apps already created keep working; archiving
+  one later leaves its definition for the Owner.
+- When the stored refresh token is spent, the sequence stops and the Owner is
+  asked to paste a new one.
+
 ## Verified protocol findings
 
 These are observations from a controlled comparison on September 10, 2026 using

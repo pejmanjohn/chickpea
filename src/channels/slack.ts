@@ -13,6 +13,7 @@ import {
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppIsLive,
+  agentSlackAppsHost,
   endAgentSlackApp,
   handleAgentAppHomeAction,
 } from '../slack/agent-apps/index.ts';
@@ -865,6 +866,7 @@ function handleDirectSlackEvents(
             transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
             client: createSlackWebClient(credentials.botToken ?? ''),
             ...(botUserId ? { botUserId } : {}),
+            platformEnv,
           }).catch((error) => {
             console.error('[chickpea] App Home publish failed:', sanitizeError(error));
           }),
@@ -1122,6 +1124,7 @@ async function openAgentAppHome(input: {
   transport: SlackTransport;
   client: Pick<SlackUiClient, 'assistant'>;
   botUserId?: string;
+  platformEnv?: PlatformEnv | undefined;
 }): Promise<void> {
   if (!input.botUserId) return;
   const messages = input.event.tab === 'messages';
@@ -1150,6 +1153,7 @@ async function openAgentAppHome(input: {
       transport: input.transport,
       botUserId: input.botUserId,
       actor,
+      platformEnv: input.platformEnv,
     }),
   ]);
 }
@@ -1501,6 +1505,7 @@ export async function processGatewaySlackEnvelope(
       transport,
       client,
       botUserId: installation.botUserId,
+      platformEnv,
     });
     return 'accepted';
   }
@@ -2640,8 +2645,9 @@ async function processSlackEvent(
   const resolvedBotUserId = execution?.botUserId ??
     await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
   // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
-  const siblingBotUserIds = ask ? [] : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId)
-    .filter((id) => id !== resolvedBotUserId);
+  const siblingBotUserIds = ask || !agentSlackAppsHost()
+    ? []
+    : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId).filter((id) => id !== resolvedBotUserId);
   // A host-addressed turn is built by the host: an ask's from a delivered
   // Agent reply, which Slack event normalization would ignore as an
   // app-authored post; a co-addressed one from the person's normalized turn.
