@@ -740,7 +740,7 @@ test('legacy handoff fallback draws on the shared read budget and labels other a
     async rateLimited() {},
   };
   const turn = threadTurn({ messageTs: '2000.0000' });
-  const options = { readGate: gate, self: { botUserId: 'UBOT' } };
+  const options = { readGate: gate, botUserId: 'UBOT' };
   assert.deepEqual(await hydrateSlackPublicHandoffFallback(client as never, turn, 'agent_previous', options), [
     { messageTs: '1001.0000', role: 'app', text: 'checkout is down' },
     { messageTs: '1002.0000', role: 'agent', agentId: 'agent_previous', text: 'Looking' },

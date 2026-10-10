@@ -12,7 +12,6 @@ import {
   type AgentSlackAppHandoff,
   agentAppBotCredentials,
   agentAppHomeRows,
-  agentAppIsLive,
   agentAppPlacementFacts,
   agentAppPresenceHooks,
   agentAppPostingBot,
@@ -162,6 +161,7 @@ import {
 } from '../slack/node-turn-relay.ts';
 import { slackSemanticActivityStatusEnabled } from '../slack/semantic-status-flag.ts';
 import { hydrateSlackPublicHandoffFallback } from '../slack/web-client-context.ts';
+import { type AgentAppBot, listAgentAppBots } from '../slack/agent-app-bots.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
 import type { SlackContextSelf } from '../slack/thread-context.ts';
 import { createSlackReadGate, sharesSlackAppReadBudget } from '../slack/read-budget.ts';
@@ -711,9 +711,9 @@ async function serveAgentAppHomeAction(
   });
 }
 
-/** The bot users of this installation: its own, and every live Agent app's. */
-function tenantBotUserIds(agents: readonly CustomAgentConfig[], installationBotUserId: string | undefined): string[] {
-  const ids = agents.flatMap((agent) => agentAppIsLive(agent.slackPresence) ? [agent.slackPresence.app.botUserId] : []);
+/** The bot users of this installation: its own, and every Agent app's. */
+function tenantBotUserIds(appBots: readonly AgentAppBot[], installationBotUserId: string | undefined): string[] {
+  const ids = appBots.map((bot) => bot.botUserId);
   return installationBotUserId ? [installationBotUserId, ...ids] : ids;
 }
 
@@ -1328,10 +1328,12 @@ async function resolvedAgentAvatarUrl(
   platformEnv: PlatformEnv | undefined,
 ): Promise<string | undefined> {
   const installationId = agentAvatarInstallation(platformEnv);
-  if (agent.slackPresence?.avatar.url && !installationId) return agent.slackPresence.avatar.url;
-  // Every admitted turn and App Home seed passes here first, with the
+  // A stored URL needs the origin only to name its installation. Otherwise
+  // every admitted turn and App Home seed passes here first, with the
   // request's (or the state store's local) stores: the one backfill point.
-  const origin = await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
+  const origin = agent.slackPresence?.avatar.url && !installationId
+    ? undefined
+    : await resolveSlackPublicUrl(platformEnv, stores.settings, stores.identity);
   return agentAvatarUrlForPresentation(agent, origin, installationId);
 }
 
@@ -1775,6 +1777,8 @@ async function admitCoAddressedTurns(input: {
   turn: NormalizedSlackTurn;
   platformEnv: PlatformEnv | undefined;
   execution: SlackEventExecution | undefined;
+  /** Whether a turn with this ID is queued already; its Agent is then skipped. */
+  queued?: (turnJobId: string) => Promise<boolean>;
 }): Promise<void> {
   const { turn } = input;
   const addressed = turn.coAddressed;
@@ -1782,6 +1786,7 @@ async function admitCoAddressedTurns(input: {
   if (addressed?.position !== 0) return;
   for (const [position, agent] of addressed.agents.entries()) {
     if (position === 0) continue;
+    if (await input.queued?.(askMessageKey(turn.channelId, turn.messageTs, agent.agentId))) continue;
     // Copied field by field: by now admission has stamped the first turn with
     // what only it may carry (an approval, a click, its interaction intent).
     const coTurn: NormalizedSlackTurn = {
@@ -1807,6 +1812,33 @@ async function admitCoAddressedTurns(input: {
       { turn: coTurn, targetAgentId: agent.agentId },
     );
   }
+}
+
+/**
+ * Another delivery of a message whose first Agent's turn is queued. The
+ * delivery that admitted it may have stopped before admitting the other
+ * Agents the message named, so this admits each one not queued yet; a
+ * delivery after one that finished adds nothing. A message whose claims a
+ * stop or a refusal took has no first turn queued, and so no others.
+ */
+async function resumeCoAddressedTurns(input: {
+  payload: SlackEventFixture;
+  turn: NormalizedSlackTurn;
+  platformEnv: PlatformEnv | undefined;
+  execution: SlackEventExecution | undefined;
+  state: SlackStateStore;
+  msgKey: string;
+}): Promise<void> {
+  const { state, turn } = input;
+  if (turn.coAddressed?.position !== 0 || !state.turnJobView) return;
+  const queued = async (turnJobId: string) => (await state.turnJobView!(turnJobId)).status !== 'missing';
+  if (!(await queued(input.msgKey))) return;
+  await admitCoAddressedTurns({ ...input, queued });
+}
+
+/** The claim key, and the queued turn's ID, of one Agent's turn on a message another Agent's turn holds. */
+function askMessageKey(channelId: string, messageTs: string, agentId: string): string {
+  return `msg:${channelId}:${messageTs}:ask-${agentId}`;
 }
 
 /**
@@ -2645,10 +2677,9 @@ async function processSlackEvent(
       payload.event,
     )
   ) return;
-  // Every bot Chickpea answers as here is itself: the installation's, and each live Agent app's.
-  const tenantBots = ask || !agentSlackAppsHost()
-    ? []
-    : tenantBotUserIds(await stores.config.listAgents(), installation.botUserId);
+  // Every bot Chickpea answers as here is itself: the installation's, and each Agent app's.
+  const appBots = ask ? [] : await listAgentAppBots(stores.config);
+  const tenantBots = ask || !agentSlackAppsHost() ? [] : tenantBotUserIds(appBots, installation.botUserId);
   if (!ask && installation.runtimeContract === 'chickpea-v1' && payload.event.type === 'message') {
     await recordAgentThreadMessage(stores.config, payload.team_id, payload.event, {
       ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
@@ -2715,7 +2746,7 @@ async function processSlackEvent(
   // Several Agents can answer one message (asked by a reply, or mentioned
   // together by a person): each Agent's turn on it is its own.
   const msgKey = ask
-    ? `msg:${turn.channelId}:${turn.messageTs}:ask-${ask.targetAgentId}`
+    ? askMessageKey(turn.channelId, turn.messageTs, ask.targetAgentId)
     : `msg:${turn.channelId}:${turn.messageTs}`;
 
   let assignment: ResolvedAssignment;
@@ -2868,7 +2899,8 @@ async function processSlackEvent(
               workspaceId: turn.workspaceId,
               gated: sharesSlackAppReadBudget({ transportMode: installation.transportMode, env: platformEnv }),
             }),
-            ...(installation.botUserId ? { self: { botUserId: installation.botUserId } } : {}),
+            ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
+            agentAppBots: appBots,
           },
         );
         await store.putAgentThreadRoute({
@@ -3000,6 +3032,7 @@ async function processSlackEvent(
       await state.release(evtKey);
     }
     logTurnAlreadyAdmitted(assignment.agentId, execution);
+    await resumeCoAddressedTurns({ payload, turn, platformEnv, execution, state, msgKey });
     return false;
   };
   let canonicalRunId: string | undefined;
@@ -3455,8 +3488,12 @@ async function processSlackEvent(
             : {}),
         });
         if (!result.claimed) {
-          if (ui) ui.outcome = 'answered';
-          else logTurnAlreadyAdmitted(assignment.agentId, execution);
+          if (ui) {
+            ui.outcome = 'answered';
+          } else {
+            logTurnAlreadyAdmitted(assignment.agentId, execution);
+            await resumeCoAddressedTurns({ payload, turn, platformEnv, execution, state, msgKey });
+          }
           return;
         }
         if ('agentAskLimitReached' in result) {

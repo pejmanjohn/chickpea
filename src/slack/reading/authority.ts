@@ -4,7 +4,7 @@ import { CHICKPEA_AGENT_ID } from '../../config/agent-id.ts';
 import { isRecord } from '../../security/content-validation.ts';
 import { slackPlatformErrorCode } from '../errors.ts';
 import { channelIncludesMember, type SlackApiInput, type SlackApiResult } from '../transport/shared.ts';
-import { isConversationUnavailableError, SlackReadError } from './errors.ts';
+import { isConversationUnavailableError, SLACK_READ_AGENT_APP_INVITE, SlackReadError } from './errors.ts';
 
 /** What Slack says about a conversation, reduced to what authority needs. */
 export interface SlackReadConversationFacts {
@@ -31,6 +31,8 @@ export interface SlackReadAuthorityPorts {
   workspaceId: string;
   /** @Chickpea itself: reads only the current conversation. */
   managementAgent: boolean;
+  /** The Agent reads as its own Slack app's bot, so a channel without that bot needs it, not Chickpea's. */
+  agentAppBot?: boolean;
   requesterSlackUserId: string;
   current: SlackReadCurrentConversation;
   /** Throws a SlackReadError when the requester or the Agent is no longer active. */
@@ -89,7 +91,7 @@ export async function authorizeSlackRead(
   // answer may differ from "not available".
   if (!(await ports.isMember(channelId, ports.requesterSlackUserId))) throw new SlackReadError('not_available');
   if (!(await ports.hasActiveGrant(channelId))) throw new SlackReadError('needs_agent_access');
-  if (!target.member) throw new SlackReadError('needs_bot_invite');
+  if (!target.member) throw new SlackReadError('needs_bot_invite', ports.agentAppBot ? SLACK_READ_AGENT_APP_INVITE : undefined);
   return {
     id: channelId,
     ...(target.name ? { name: target.name } : {}),
@@ -150,6 +152,7 @@ export function slackReadAuthorityPorts(input: {
   requesterSlackUserId: string;
   current: SlackReadCurrentConversation;
   client: Pick<WebClient, 'conversations'>;
+  agentAppBot?: boolean;
   assertActive: SlackReadAuthorityPorts['assertActive'];
   hasActiveGrant: SlackReadAuthorityPorts['hasActiveGrant'];
 }): SlackReadAuthorityPorts {
@@ -160,6 +163,7 @@ export function slackReadAuthorityPorts(input: {
   return {
     workspaceId: input.workspaceId,
     managementAgent: input.agentId === CHICKPEA_AGENT_ID,
+    ...(input.agentAppBot ? { agentAppBot: true } : {}),
     requesterSlackUserId: input.requesterSlackUserId,
     current: input.current,
     assertActive: input.assertActive,
