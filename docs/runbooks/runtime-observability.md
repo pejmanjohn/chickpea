@@ -465,6 +465,23 @@ bounded capture with `wrangler tail --search steering.` or, on Node,
 `grep "steering\."`. See [Slack steering](slack-steering.md#operator-view)
 for the retry warnings and the durable stop record.
 
+## Agent app refusals
+
+Each refusal Slack gives an Agent's own Slack app (see
+[Slack message identity](slack-message-identity.md#an-agent-with-its-own-slack-app))
+logs one structured `console.warn` object with `event:
+"chickpea.agent_app.slack_refused"`. The Owner sees only the step's message;
+this line is for the operator. It carries no token, secret, or URL.
+
+| Field | Value |
+| --- | --- |
+| `step` | `rotate` (configuration token), `release_handle`, `create`, `update` (adds the Request URLs), `icon`, `exchange` (the Allow callback), `uninstall`, `delete` |
+| `agentId`, `appId` | The Agent and its Slack app, or `null` before Slack names the app; `rotate` names neither |
+| `code` | Slack's error code, such as `invalid_manifest` or `ratelimited` |
+| `errors` | Slack's `{ message, pointer }` list, as sent with `invalid_manifest`: at most five entries of 200 characters each, any URL replaced by `<url>` |
+
+Filter a bounded capture with `wrangler tail --search agent_app.slack_refused`.
+
 ## Connection logs
 
 MCP connector traffic and OAuth credential renewal each log one structured

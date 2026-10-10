@@ -70,9 +70,14 @@ the port on its staging deployment only, behind its own staging-only switch.
    workspace, and pastes the Refresh Token. Chickpea rotates it once, refuses an
    access token or another workspace's token, and stores the new pair
    encrypted. Later Agents need only the click.
-3. Chickpea disables the Agent's user group so the handle is free, creates the
-   app without request URLs, records it, stores its secrets, adds the request
-   URLs, sets the icon, and messages the Owner with **Allow** in Slack.
+3. Chickpea disables the Agent's user group so the handle is free and creates
+   the app, with the Agent's handle as its bot's name. The create carries no
+   event subscriptions or interactivity: Slack refuses either without a
+   Request URL, and the URLs name the app's ID. Chickpea records the app,
+   stores its secrets, then adds both with an update. Slack checks the Events
+   URL with `url_verification`, which the host answers only after verifying it
+   with the stored signing secret. Chickpea then sets the icon and messages the
+   Owner with **Allow** in Slack.
 4. Allow opens Slack's consent screen; the link it starts is good for 15
    minutes. Chickpea exchanges the code with the app's own credentials. It
    undoes a grant from another person, workspace or app, or one missing a
@@ -102,10 +107,12 @@ the port on its staging deployment only, behind its own staging-only switch.
 
 ### The configuration token's limits
 
-- Slack lets each person hold one configuration token per workspace. An Owner
-  who builds their own Slack apps in that workspace should not paste it: their
-  tools and Chickpea would keep replacing each other's token. Another Owner
-  should do this step.
+- Slack caps how many configuration tokens one person holds in a workspace,
+  and leaves the workspace out of Generate Token's picker once the cap is
+  reached. The Owner deletes a token they no longer use under Your App
+  Configuration Tokens, or another Owner does this step. Separate tokens rotate
+  independently, so Chickpea's token and the Owner's own tools never replace
+  each other's.
 - The token can manage every app its person created in the workspace.
   Chickpea changes only the apps it creates for Agents.
 - Chickpea cannot revoke the token: revoking the access token leaves the

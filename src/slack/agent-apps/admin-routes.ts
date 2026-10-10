@@ -121,7 +121,7 @@ function tokenPage(agent: CustomAgentConfig, tokenStored: boolean, error?: Token
         <button class="auth-button" type="submit">Remove the configuration token</button>
       </form>`
     : `<p>In Slack, open Your Apps. Under Your App Configuration Tokens, choose Generate Token, pick this workspace, then copy the Refresh Token.</p>
-      <p>Slack lets each person hold one configuration token per workspace. If you already use one for your own Slack apps, ask another Owner to do this step, or Chickpea and your tools will keep replacing each other's token.</p>
+      <p>If Slack doesn't offer this workspace when you choose Generate Token, you already hold as many tokens as Slack allows there. Delete one you no longer use under Your App Configuration Tokens, or ask another Owner to do this step.</p>
       ${yourApps}
       <form method="post" action="${action}">
         <input type="hidden" name="action" value="paste">

@@ -13,6 +13,7 @@ import { AgentSlackApps, createAgentSlackAppRoutes } from '../src/slack/agent-ap
 import type { AgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
+import { refuseLikeSlack } from './helpers/slack-manifest-rules.ts';
 
 const TOKEN = 'admin-token';
 const TEAM = 'T_TEST';
@@ -100,7 +101,8 @@ test('the token page and its form are for Owners with the port, and 404 without 
   assert.match(html, /name="refreshToken" type="password"/);
   assert.match(html, /Starts with xoxe-/);
   assert.match(html, /Create Support(&#39;|')s Slack app/);
-  assert.match(html, /Slack lets each person hold one configuration token per workspace/);
+  assert.match(html, /<p>If Slack doesn(&#39;|')t offer this workspace when you choose Generate Token, you already hold as many tokens as Slack allows there\. Delete one you no longer use under Your App Configuration Tokens, or ask another Owner to do this step\.<\/p>/);
+  assert.equal(html.includes('replacing each other'), false);
   assert.match(html, /Chickpea only changes the apps it creates for your Agents/);
   assert.equal(html.includes('Remove the configuration token'), false, 'nothing to remove yet');
 
@@ -134,9 +136,12 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   const owner = await adminApp(t, {
     slack: {
       rotate: async (refreshToken) => { rotations.push(refreshToken); return { accessToken: 'xoxe.xoxp-1-a', refreshToken: 'xoxe-1-r', teamId: team, expiresAt: Date.now() + 3_600_000 }; },
-      create: async () => ({ appId: 'A0APP1', clientId: '1.c', clientSecret: 'cs', signingSecret: 'ss' }),
-      update: async () => undefined,
-      setIcon: async () => 'set',
+      create: async (_token, manifest) => {
+        refuseLikeSlack('apps.manifest.create', manifest);
+        return { appId: 'A0APP1', clientId: '1.c', clientSecret: 'cs', signingSecret: 'ss' };
+      },
+      update: async (_token, _appId, manifest) => { refuseLikeSlack('apps.manifest.update', manifest); },
+      setIcon: async () => undefined,
     },
   });
   const api = '/admin/api/agents/agent_support/slack-app/token';
@@ -159,7 +164,7 @@ test('a pasted token is checked with Slack, refused with the right sentence, and
   assert.equal(html.includes('xoxe-1-good-token-0000'), false, 'the token never echoes');
   assert.deepEqual(owner.calls, ['disable:S1', 'dm:UOWNER', 'post:D_UOWNER']);
   const presence = (await owner.config.getAgent('agent_support')).slackPresence;
-  assert.equal(presence?.kind, 'agent_app');
+  assert.equal(presence?.kind === 'agent_app' && presence.app.state, 'awaiting_consent', 'Slack accepted the create and the update');
 
   const again = await owner.request(api, owner.form({ action: 'create' }));
   assert.equal(again.status, 409);

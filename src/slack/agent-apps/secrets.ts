@@ -12,7 +12,7 @@ import {
   encryptSlackSecretEnvelope,
   workspaceCredentialContext,
 } from '../secret-envelope.ts';
-import { type AgentAppSlackApi, SlackRefused } from './slack-api.ts';
+import { type AgentAppSlackApi, SlackRefused, logSlackRefusal } from './slack-api.ts';
 
 export interface AgentAppSecrets {
   clientSecret: string;
@@ -235,8 +235,9 @@ export async function saveConfigurationToken(
   try {
     rotated = await d.slack.rotate(token);
   } catch (error) {
-    if (error instanceof SlackRefused) return 'rejected';
-    throw error;
+    if (!(error instanceof SlackRefused)) throw error;
+    logSlackRefusal('rotate', {}, error);
+    return 'rejected';
   }
   if (rotated.teamId !== teamId) return 'other_workspace';
   const pair = { accessToken: rotated.accessToken, refreshToken: rotated.refreshToken, expiresAt: rotated.expiresAt };
@@ -303,6 +304,7 @@ async function rotateHolding(
     rotated = await d.slack.rotate(pair.refreshToken);
   } catch (error) {
     if (!(error instanceof SlackRefused)) throw error;
+    logSlackRefusal('rotate', {}, error);
     const latest = await readPair(d, teamId);
     if (latest && latest.pair.refreshToken !== pair.refreshToken && usable(latest.pair, now)) {
       return latest.pair.accessToken;
