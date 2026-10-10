@@ -4963,11 +4963,30 @@ export class WorkspaceManagementService {
     try {
       return await this.stores.reconcileAgentUpdate({ actor, previous: current, agent, patch });
     } catch (error) {
-      // Slack kept the Agent's group as it was, so the Agent goes back too and
-      // the failed update changes nothing.
-      const latest = await this.stores.config.getAgent(agentId);
-      await this.stores.config.updateAgent(agentId, fullAgentPatch(current), latest.revision);
-      throw refusedAgentUpdate(error, current, agent);
+      throw refusedAgentUpdate(error, await this.putBackRefusedUpdate(current, agent, patch), agent);
+    }
+  }
+
+  /**
+   * Slack kept the Agent's group as it was, so put back what the refused
+   * update wrote, field by field and only where its value is still there: an
+   * edit that landed during the Slack call stays.
+   */
+  private async putBackRefusedUpdate(
+    previous: CustomAgentConfig,
+    written: CustomAgentConfig,
+    patch: ConfigAgentPatch,
+  ): Promise<CustomAgentConfig> {
+    for (let attempt = 1; ; attempt += 1) {
+      const latest = await this.stores.config.getAgent(previous.id);
+      const putBack = refusedUpdatePutBack(previous, written, latest, patch);
+      if (!putBack) return latest;
+      try {
+        return await this.stores.config.updateAgent(previous.id, putBack, latest.revision);
+      } catch (error) {
+        if (!(error instanceof AgentRevisionConflictError)) throw error;
+        if (attempt === 3) return this.stores.config.getAgent(previous.id);
+      }
     }
   }
 
@@ -5371,6 +5390,42 @@ function requestedAgentHandle(operation: ManagementOperation): string | undefine
   return operation.kind === 'create_agent'
     ? normalizeAgentHandle(operation.agent.requestedHandle ?? operation.agent.name)
     : undefined;
+}
+
+/** What a refused update and its failed reconcile write to an Agent's user-group presence. */
+const RECONCILED_PRESENCE_FIELDS = [
+  'requestedHandle', 'normalizedHandle', 'health', 'errorCode', 'errorDetail',
+  'handleSuggestions', 'observedAt', 'pendingCreate',
+] as const;
+
+function refusedUpdatePutBack(
+  previous: CustomAgentConfig,
+  written: CustomAgentConfig,
+  latest: CustomAgentConfig,
+  patch: ConfigAgentPatch,
+): ConfigAgentPatch | undefined {
+  const putBack: Record<string, unknown> = {};
+  for (const key of Object.keys(patch) as (keyof ConfigAgentPatch)[]) {
+    if (key === 'slackPresence' || canonicalJson(latest[key]) !== canonicalJson(written[key])) continue;
+    putBack[key] = key === 'model' ? previous.model ?? null : previous[key];
+  }
+  const presence = latest.slackPresence;
+  if (presence && presence.kind !== 'agent_app' &&
+      previous.slackPresence && previous.slackPresence.kind !== 'agent_app' &&
+      latest.lifecycle !== 'archived' &&
+      presence.requestedHandle === written.slackPresence?.requestedHandle) {
+    const restored: Record<string, unknown> = { ...presence };
+    for (const field of RECONCILED_PRESENCE_FIELDS) {
+      const value = previous.slackPresence[field];
+      if (value === undefined) delete restored[field];
+      else restored[field] = value;
+    }
+    putBack.slackPresence = restored;
+    if (latest.lifecycle === 'needs_attention' && previous.lifecycle !== 'needs_attention') {
+      putBack.lifecycle = previous.lifecycle;
+    }
+  }
+  return Object.keys(putBack).length > 0 ? putBack as ConfigAgentPatch : undefined;
 }
 
 /** Slack refused an Agent's new handle or name; the message tells the model why. */

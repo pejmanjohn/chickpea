@@ -31,11 +31,19 @@ function fakeSlackWorkspace(t: TestContext) {
     { id: 'S0SUPPORT', name: 'Customer Support', handle: 'support', description: '', date_update: 1, date_delete: 0 },
     { id: 'S0DESK', name: 'Desk', handle: 'desk', description: 'Desk Agent', date_update: 1, date_delete: 0 },
   ];
+  const slack = {
+    groups,
+    /** Runs once inside the next usergroups.update, as an edit landing during the Slack call. */
+    duringUpdate: undefined as (() => Promise<void>) | undefined,
+  };
   t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const method = new URL(request.url).pathname.split('/').at(-1);
     if (method === 'usergroups.list') return Response.json({ ok: true, usergroups: groups });
     if (method !== 'usergroups.update') throw new Error(`Unexpected Slack call: ${method}`);
+    const during = slack.duringUpdate;
+    slack.duringUpdate = undefined;
+    await during?.();
     const form = new URLSearchParams(await request.text());
     const group = groups.find(({ id }) => id === form.get('usergroup'));
     if (!group) return Response.json({ ok: false, error: 'no_such_subteam' });
@@ -48,7 +56,7 @@ function fakeSlackWorkspace(t: TestContext) {
     Object.assign(group, { name, handle, description: form.get('description') ?? group.description, date_update: 2 });
     return Response.json({ ok: true, usergroup: group });
   });
-  return { groups };
+  return slack;
 }
 
 async function renameFixture(t: TestContext) {
@@ -128,16 +136,21 @@ async function renameFixture(t: TestContext) {
     const agent = await f.config.getAgent('agent_desk');
     return {
       name: agent.name,
+      instructions: agent.instructions,
+      enabled: agent.enabled,
       lifecycle: agent.lifecycle,
       handle: agent.slackPresence?.normalizedHandle,
       requestedHandle: agent.slackPresence?.requestedHandle,
       health: agent.slackPresence?.health,
     };
   };
-  return { slack, tool, renameArgs, update, desk };
+  return { f, slack, tool, renameArgs, update, desk };
 }
 
-const DESK = { name: 'Desk', lifecycle: 'active', handle: 'desk', requestedHandle: 'desk', health: 'healthy' };
+const DESK = {
+  name: 'Desk', instructions: 'Answer the front desk.', enabled: true,
+  lifecycle: 'active', handle: 'desk', requestedHandle: 'desk', health: 'healthy',
+};
 
 test('renaming an Agent onto a taken Slack handle fails to the model and keeps the handle it had', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
@@ -215,5 +228,82 @@ test('an approved rename onto a taken handle fails to the model and changes neit
     assert.match(outcome?.instruction ?? '', kept);
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
+  });
+});
+
+test('an edit that lands during a refused rename\'s Slack call survives the put-back', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    slack.duringUpdate = async () => {
+      const current = await f.config.getAgent('agent_desk');
+      await f.config.updateAgent('agent_desk', {
+        instructions: 'Answer the front desk and the phones.', enabled: false,
+      }, current.revision);
+    };
+
+    const outcome = await update('change Desk to @support', { requestedHandle: 'support' });
+    assert.deepEqual({ disposition: outcome.disposition, code: outcome.code }, { disposition: 'failed', code: 'handle_collision' });
+    assert.deepEqual(await desk(), { ...DESK, instructions: 'Answer the front desk and the phones.', enabled: false });
+  });
+});
+
+test('a rename that lands during a refused rename\'s Slack call is not undone', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    slack.duringUpdate = async () => {
+      const current = await f.config.getAgent('agent_desk');
+      await f.config.updateAgent('agent_desk', {
+        name: 'Front Desk',
+        slackPresence: { ...current.slackPresence!, requestedHandle: 'frontdesk', normalizedHandle: 'frontdesk' },
+      }, current.revision);
+    };
+
+    const outcome = await update('change Desk to @support', { requestedHandle: 'support' });
+    assert.deepEqual({ disposition: outcome.disposition, code: outcome.code }, { disposition: 'failed', code: 'handle_collision' });
+    const after = await desk();
+    assert.deepEqual(
+      { name: after.name, handle: after.handle, requestedHandle: after.requestedHandle },
+      { name: 'Front Desk', handle: 'frontdesk', requestedHandle: 'frontdesk' },
+    );
+    assert.match(outcome.instruction ?? '', /^@support is already taken in this Slack workspace, so nothing changed and the Agent keeps @frontdesk\./);
+  });
+});
+
+test('a name that lands during a refused name change is kept', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    slack.duringUpdate = async () => {
+      const current = await f.config.getAgent('agent_desk');
+      await f.config.updateAgent('agent_desk', { name: 'Front Desk' }, current.revision);
+    };
+
+    const outcome = await update('rename Desk to a very long name', { name: 'Front Desk for every visitor question and booking' });
+    assert.equal(outcome.disposition, 'failed');
+    assert.deepEqual(await desk(), { ...DESK, name: 'Front Desk' });
+  });
+});
+
+test('a rename that lands between the put-back\'s read and write is not undone either', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    const updateAgent = f.config.updateAgent.bind(f.config);
+    let raceArmed = false;
+    slack.duringUpdate = async () => { raceArmed = true; };
+    f.config.updateAgent = async (agentId, patch, expectedRevision) => {
+      if (raceArmed && patch.lifecycle === 'active') {
+        raceArmed = false;
+        const current = await f.config.getAgent(agentId);
+        await updateAgent(agentId, {
+          slackPresence: { ...current.slackPresence!, requestedHandle: 'frontdesk', normalizedHandle: 'frontdesk' },
+        }, current.revision);
+      }
+      return updateAgent(agentId, patch, expectedRevision);
+    };
+
+    const outcome = await update('change Desk to @support', { requestedHandle: 'support' });
+    assert.equal(raceArmed, false, 'the put-back was attempted');
+    assert.equal(outcome.code, 'handle_collision');
+    const after = await desk();
+    assert.deepEqual({ handle: after.handle, requestedHandle: after.requestedHandle }, { handle: 'frontdesk', requestedHandle: 'frontdesk' });
   });
 });
