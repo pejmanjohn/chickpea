@@ -6,7 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
-import { agentAppRouteSelection } from './agent-apps/index.ts';
+import { agentAppPostingBot, agentAppRouteSelection } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
@@ -47,8 +47,11 @@ export type AgentRoutingResult =
       reason: AgentRoutingDenialReason;
       alternatives: AgentRouteAlternative[];
     }
-  /** A Channel member mentioned an active Agent that has not been added to this Channel. */
-  | { kind: 'not_in_channel'; agent: CustomAgentConfig }
+  /**
+   * A Channel member mentioned an active Agent that has not been added to
+   * this Channel, or whose posting bot is not in it (`postingBotAbsent`).
+   */
+  | { kind: 'not_in_channel'; agent: CustomAgentConfig; postingBotAbsent?: true }
   | {
       kind: 'routed';
       source: AgentRouteSource;
@@ -101,6 +104,12 @@ interface ResolveAgentRouteInput {
    * group id is absent from the stored Agent map. */
   transport?: Pick<SlackTransport, 'lookupUserGroup'>;
   userGroupLookupLimiter?: AgentUserGroupLookupLimiter;
+  /**
+   * Whether the bot an Agent posts as (its own app's, or Chickpea's) is in
+   * this conversation. A message naming several Agents reaches some of them
+   * through another Agent's bot.
+   */
+  postingBotInChannel?: (agent: CustomAgentConfig) => Promise<boolean>;
   /** Live placement-derived authority for the selected user-created Agent. */
   authorizeUserAgent?: (
     agent: CustomAgentConfig,
@@ -246,8 +255,8 @@ export async function resolveAgentRoute(
 
   const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
-  // A message that also names one of this installation's user-group Agents is
-  // still that Agent's here; the app's bot answers it on the app's own ingress.
+  // A message that also names one of this installation's user-group Agents
+  // addresses every Agent it names, here as on the app's own ingress.
   if (appSelection?.kind === 'ignore' && !mentionedGroupIds.some((groupId) => agentClaimsByGroupId.has(groupId))) {
     return { kind: 'ignore' };
   }
@@ -292,9 +301,24 @@ export async function resolveAgentRoute(
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests. Every one must be
   // reachable by this person here, or none is asked; the first is checked
-  // below as the routed Agent.
-  const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
-  if (addressed.length > 1 && !input.appHomeAgentId && appAgentId === undefined) {
+  // below as the routed Agent. In a Channel an Agent app's bot is its
+  // Agent's handle while the host serves that app. Chickpea's bot and that
+  // app's bot each hear such a message and route it alike, so whichever hears
+  // it first admits every Agent it names and the other delivery finds the
+  // message taken.
+  const addressed = (surface === 'channel'
+    ? agentsNamed(turn.text, agentsByGroupId, agents)
+    : mentionedAgents).slice(0, MAX_ADDRESSED_AGENTS);
+  const severalAgents = addressed.length > 1 && !input.appHomeAgentId &&
+    (appAgentId === undefined || surface === 'channel');
+  // Each of them answers as its own bot: its app's, or Chickpea's. An Agent
+  // this person could use or be offered here whose bot is not in the Channel
+  // is not in it either: its reply could not be posted, and an Add that only
+  // grants it would leave that bot out.
+  const postingBotAbsent = async (agent: CustomAgentConfig, access: AgentAccess): Promise<boolean> =>
+    severalAgents && (access === 'allowed' || access === 'not_in_channel') &&
+    input.postingBotInChannel !== undefined && !await input.postingBotInChannel(agent);
+  if (severalAgents) {
     for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
@@ -304,13 +328,17 @@ export async function resolveAgentRoute(
         workspaceManagementRoute: false,
         ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
       });
+      if (await postingBotAbsent(agent, access)) return { kind: 'not_in_channel', agent, postingBotAbsent: true };
       if (access !== 'allowed') return refusal(agent, access, available, true);
     }
   }
 
   let source: AgentRouteSource;
   let selected: CustomAgentConfig | undefined;
-  if (appAgentId !== undefined) {
+  if (severalAgents) {
+    source = 'agent_handle';
+    selected = addressed[0];
+  } else if (appAgentId !== undefined) {
     source = 'agent_app';
     selected = agentsById.get(appAgentId);
   } else if (input.appHomeAgentId) {
@@ -354,6 +382,9 @@ export async function resolveAgentRoute(
       : false,
     ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
   });
+  if (selected && await postingBotAbsent(selected, access)) {
+    return { kind: 'not_in_channel', agent: selected, postingBotAbsent: true };
+  }
   if (!selected || access !== 'allowed') {
     return refusal(selected, access, available, source === 'agent_handle' || source === 'agent_app');
   }
@@ -368,9 +399,29 @@ export async function resolveAgentRoute(
     activeGrants,
     currentRoute,
   }), addressed.map(({ id }) => id));
-  return source === 'agent_handle' && addressed.length > 1
+  return severalAgents
     ? { ...routed, coAddressed: { agents: addressed.map(addressedAgent), position: 0 } }
     : routed;
+}
+
+const AGENT_ADDRESS = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/** The Agents a Channel message names by user group or by served app bot, once each, in the order it names them. */
+function agentsNamed(
+  text: string,
+  byGroupId: ReadonlyMap<string, CustomAgentConfig>,
+  agents: readonly CustomAgentConfig[],
+): CustomAgentConfig[] {
+  const byBotUserId = new Map(agents.flatMap((agent) => {
+    const bot = agentAppPostingBot(agent);
+    return bot ? [[bot, agent] as const] : [];
+  }));
+  const named = new Map<string, CustomAgentConfig>();
+  for (const [, groupId, userId] of text.matchAll(AGENT_ADDRESS)) {
+    const agent = groupId ? byGroupId.get(groupId) : byBotUserId.get(userId!);
+    if (agent && !named.has(agent.id)) named.set(agent.id, agent);
+  }
+  return [...named.values()];
 }
 
 /**

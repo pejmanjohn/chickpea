@@ -11,6 +11,6 @@ export {
   handleAgentAppHomeAction,
   withAgentAppExecution,
 } from './live.ts';
-export { agentAppRouteSelection } from './routing.ts';
+export { agentAppPostingBot, agentAppRouteSelection } from './routing.ts';
 export { createAgentSlackAppRoutes } from './routes.ts';
 export { AgentSlackApps, type AgentAppTransport } from './service.ts';

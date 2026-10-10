@@ -61,7 +61,8 @@ export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAd
 /**
  * Tells the person who mentioned `agent` in a Channel it has not been added
  * to, privately and where they wrote. Someone who may add it gets a button
- * that does; anyone else learns who can.
+ * that does; anyone else learns who can. When the bot the Agent posts as is
+ * what is missing, the button could not bring that bot in, so nobody gets it.
  */
 export async function offerAgentForChannel(input: {
   workspaceId: string;
@@ -70,6 +71,7 @@ export async function offerAgentForChannel(input: {
   /** The thread the mention was in, when it was a reply. */
   threadTs?: string;
   agent: CustomAgentConfig;
+  postingBotAbsent?: boolean;
   actor: AddingActor;
   identity: OfferIdentity;
   transport: Pick<SlackTransport, 'lookupChannel'>;
@@ -79,7 +81,10 @@ export async function offerAgentForChannel(input: {
   const notInChannel = `@${handle} isn’t in <#${input.channelId}> yet.`;
   let text: string;
   let blocks: SlackBlock[] | undefined;
-  if (canEditAgent(input.actor.principal, input.agent)) {
+  const mayAdd = canEditAgent(input.actor.principal, input.agent);
+  if (mayAdd && input.postingBotAbsent) {
+    text = notInChannel;
+  } else if (mayAdd) {
     const channelName = await input.transport.lookupChannel(input.channelId)
       .then(({ name }) => name, () => undefined);
     text = notInChannel;

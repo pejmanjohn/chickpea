@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { AgentSlackPresence } from '../src/config/types.ts';
+import { configureAgentSlackApps } from '../src/slack/agent-apps/host.ts';
 import { resolveAgentRoute } from '../src/slack/agent-routing.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 
@@ -24,6 +25,16 @@ const liveApp: AgentSlackPresence = {
   avatar: { kind: 'generated', revision: 1, seed: 'support' }, released: { userGroupId: 'SSUPPORT' },
   app: { state: 'active', at: NOW, app: { appId: 'A0APP1', clientId: '1.c' }, icon: 'agent_avatar', botUserId: 'UBOTSUP', installedAt: NOW, installedBy: 'UOWNER' },
 };
+
+/** The host serves Agent apps, as the hosting service's port does, for one test. */
+function serveAgentApps(t: TestContext): void {
+  configureAgentSlackApps({
+    requestUrls: () => ({ events: 'https://host.test/e', interactions: 'https://host.test/i' }),
+    redirectUri: 'https://host.test/callback',
+    allowUrl: (agentId) => `https://host.test/allow/${agentId}`,
+  });
+  t.after(() => configureAgentSlackApps(undefined));
+}
 
 async function fixture(options: { grant?: boolean } = {}) {
   const store = new SqliteConfigStore(':memory:', { agents: [createDemoStarterAgent()] });
@@ -107,28 +118,54 @@ test("Chickpea's ingress ignores a Channel message mentioning a live Agent-app b
   }
 });
 
-test("a Channel message naming a user-group Agent and an Agent-app bot goes to the user-group Agent on Chickpea's ingress and to the app Agent on its own, each once", async () => {
+test("a Channel message naming a user-group Agent and an Agent-app bot routes alike on either bot's delivery: the first named takes it and the other answers after", async (t) => {
+  serveAgentApps(t);
   const { store, support, finance } = await fixture();
   try {
-    const text = '<!subteam^SFINANCE|@finance> and <@UBOTSUP> compare';
-    const chickpea = await resolveAgentRoute({ turn: turn({ text, source: 'agent_mention' }), surface: 'channel', actor, config: store });
-    assert.equal(chickpea.kind, 'routed');
-    if (chickpea.kind !== 'routed') return;
-    assert.equal(chickpea.source, 'agent_handle');
-    assert.equal(chickpea.assignment.agentId, finance.id, 'Finance answers on Chickpea, as before the app existed');
-    assert.equal(chickpea.coAddressed, undefined, 'Support is not asked to answer here too');
-
-    const app = await resolveAgentRoute({
-      turn: turn({ text }), surface: 'channel', actor, config: store, agentApp: { agentId: support.id }, authorizeUserAgent: allowUserAgent,
-    });
-    assert.equal(app.kind, 'routed');
-    if (app.kind !== 'routed') return;
-    assert.equal(app.source, 'agent_app');
-    assert.equal(app.assignment.agentId, support.id, 'Support answers through its own app');
-    assert.equal(app.coAddressed, undefined, 'Finance is not asked to answer there too');
+    const cases = [
+      { ts: '100.1', text: '<!subteam^SFINANCE|@finance> and <@UBOTSUP> compare', named: [finance.id, support.id] },
+      { ts: '200.1', text: '<@UBOTSUP|support> and <!subteam^SFINANCE|@finance> compare', named: [support.id, finance.id] },
+      { ts: '300.1', text: '<@UBOTSUP> <!subteam^SFINANCE|@finance>, then <@UBOTSUP|support> again', named: [support.id, finance.id] },
+    ];
+    for (const { ts, text, named } of cases) {
+      const message = { text, messageTs: ts, threadTs: ts };
+      const deliveries = {
+        chickpea: await resolveAgentRoute({ turn: turn({ ...message, source: 'agent_mention' }), surface: 'channel', actor, config: store }),
+        app: await resolveAgentRoute({
+          turn: turn(message), surface: 'channel', actor, config: store, agentApp: { agentId: support.id }, authorizeUserAgent: allowUserAgent,
+        }),
+      };
+      for (const [delivery, routed] of Object.entries(deliveries)) {
+        assert.equal(routed.kind, 'routed');
+        if (routed.kind !== 'routed') return;
+        assert.equal(routed.assignment.agentId, named[0], `${delivery}: the Agent named first takes the message`);
+        assert.deepEqual(
+          [routed.coAddressed?.agents.map(({ agentId }) => agentId), routed.coAddressed?.position],
+          [named, 0],
+          `${delivery}: both Agents answer, in the order named, so either delivery admits the same turns`,
+        );
+      }
+    }
 
     const botOnly = await resolveAgentRoute({ turn: turn({ text: '<@UBOTSUP> compare', source: 'implicit_thread_reply' }), surface: 'channel', actor, config: store });
     assert.deepEqual(botOnly, { kind: 'ignore' }, "a message for the app bot alone is still the app's");
+  } finally {
+    store.close();
+  }
+});
+
+test('a Channel message naming an app Agent without a grant there answers nobody, on either bot\'s delivery', async (t) => {
+  serveAgentApps(t);
+  const { store, support } = await fixture({ grant: false });
+  try {
+    const text = '<!subteam^SFINANCE|@finance> and <@UBOTSUP> compare';
+    for (const routed of [
+      await resolveAgentRoute({ turn: turn({ text, source: 'agent_mention' }), surface: 'channel', actor, config: store }),
+      await resolveAgentRoute({ turn: turn({ text }), surface: 'channel', actor, config: store, agentApp: { agentId: support.id }, authorizeUserAgent: allowUserAgent }),
+    ]) {
+      assert.equal(routed.kind, 'not_in_channel');
+      assert.equal(routed.kind === 'not_in_channel' && routed.agent.id, support.id, 'Finance does not answer alone either');
+    }
   } finally {
     store.close();
   }
