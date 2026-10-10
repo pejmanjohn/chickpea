@@ -542,6 +542,8 @@ function runAdminPageHarness(
     slackChannelFailures?: number;
     putIsMember?: boolean;
     putAssignmentError?: { status: number; error: string; message?: string };
+    /** The Agent's own Slack app's bot could not be brought into the Channel it was added to. */
+    appBotLeftOut?: boolean;
     cloudflare?: boolean;
     installationOwner?: boolean;
     /** False renders a deployment serving many installations, which offers no browser. */
@@ -1115,6 +1117,7 @@ function runAdminPageHarness(
   const onboardingTryError = options.onboardingTryError;
   const putIsMember = options.putIsMember;
   const putAssignmentError = options.putAssignmentError;
+  const appBotLeftOut = options.appBotLeftOut;
   let slackChannelFailures = options.slackChannelFailures ?? 0;
   // Captured out here because the fetch parameter below is also named `options`
   // (the request init) and would otherwise shadow these harness fixtures.
@@ -2490,7 +2493,7 @@ function runAdminPageHarness(
           channels: current.concat(grant),
         };
       }
-      return Promise.resolve(jsonResponse({ grant, agent: existing }));
+      return Promise.resolve(jsonResponse({ grant, agent: existing, ...(appBotLeftOut ? { appBot: 'left_out' } : {}) }));
     }
     if (agentPatchMatch && method === 'PATCH') {
       const id = decodeURIComponent(agentPatchMatch[1] as string);
@@ -4561,6 +4564,21 @@ test('Add to channels lets publication reconcile public app membership', async (
   assert.doesNotMatch(harness.app.innerHTML, /Invite it to #new-channel in Slack/);
 });
 
+test("Add to channels says how to bring in an Agent's own Slack app when Chickpea could not", async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }]),
+    attachSelectionValue: 'C_NEW',
+    appBotLeftOut: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-channel-confirm' }) });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML,
+    /<span>Agent added to #new-channel\. To let @release-profile answer in #new-channel, add it from the channel&#39;s Add people or agents in Slack\.<\/span>/);
+});
+
 const CHECK_ICON_PATH_START = 'M12.416 3.376';
 
 function isSuccessNotice(html: string, text: string): boolean {
@@ -4950,6 +4968,24 @@ test('the truncated-list fallback carries the edited profile into Add channel', 
     agentId: 'agent_release',
     body: { workspaceId: 'T_DESIGN', channelId: 'C_NEW' },
   }]);
+});
+
+test("Add channel says how to bring in an Agent's own Slack app when Chickpea could not", async () => {
+  const harness = runAdminPageHarness({
+    slackConnection: connectedSlackFixture(),
+    slackChannels: channelsFixture([{ id: 'C_NEW', name: 'new-channel' }], true),
+    appBotLeftOut: true,
+  });
+  const click = await openReleaseAttachPicker(harness);
+  click({ target: actionTarget({ 'data-action': 'attach-new-channel', 'data-agent': 'agent_release' }) });
+  harness.listeners.submit!({
+    target: submitTarget({ 'data-action': 'add-channel-form' }, { channelSelect: 'C_NEW' }),
+    preventDefault() {},
+  });
+  await flushAsync();
+
+  assert.match(harness.app.innerHTML,
+    /To let @release-profile answer in #new-channel, add it from the channel&#39;s Add people or agents in Slack\./);
 });
 
 test('profile capability tabs switch the visible panel on click', async () => {

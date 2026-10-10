@@ -15832,6 +15832,13 @@
     return "#" + channelName + " was added, but the connected Slack app isn't a member of it yet, so it won't hear mentions there. Invite it to #" + channelName + " in Slack — no need to come back here.";
   }
 
+  // An Agent with its own Slack app answers as that app's bot. Chickpea cannot
+  // bring that bot into a private Channel, so a person adds it in Slack.
+  function appBotLeftOutText(agent, channelName) {
+    var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
+    return "To let @" + handle + " answer in #" + channelName + ", add it from the channel's Add people or agents in Slack.";
+  }
+
   function addChannel(formData) {
     var agent = agentById(state.addChannelAgentId) || firstAgent();
     var fail = function (message) { state.addChannelError = message; render(); };
@@ -15866,9 +15873,10 @@
       state.channelFormDraft.channelId = "";
       state.active = { workspaceId: workspaceId, channelId: channelId };
       state.channelScreen = "detail";
+      var channelName = normalizeChannelLabel((result && result.grant && result.grant.channelLabel) || label || channelId);
       state.addChannelInvite = result && result.grant && result.grant.status !== "active"
-        ? channelInviteWarning(normalizeChannelLabel(result.grant.channelLabel || label || channelId))
-        : "";
+        ? channelInviteWarning(channelName)
+        : result && result.appBot === "left_out" ? appBotLeftOutText(agent, channelName) : "";
       return refreshData();
     }).catch(function (error) { fail(addChannelErrorText(error)); });
   }
@@ -17597,11 +17605,13 @@
     postJson("/admin/api/agents/" + encodeURIComponent(draft.id) + "/channels", "POST", {
       workspaceId: workspaceId,
       channelId: channel.id
-    }).then(function () {
+    }).then(function (result) {
+      var label = normalizeChannelLabel(channel.name || channel.id);
       state.attachPicker = false;
       state.attachChannelSelected = "";
       state.attachError = "";
-      state.attachNotice = "Agent added to #" + normalizeChannelLabel(channel.name || channel.id) + ".";
+      state.attachNotice = "Agent added to #" + label + "." +
+        (result && result.appBot === "left_out" ? " " + appBotLeftOutText(draft, label) : "");
       return refreshData().then(function () {
         return loadVisibleAgentDetail(draft.id);
       });

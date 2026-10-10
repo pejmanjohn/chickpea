@@ -14,6 +14,7 @@ import {
   agentAppHomeRows,
   agentAppIsLive,
   agentAppPlacementFacts,
+  agentAppPresenceHooks,
   agentAppPostingBot,
   agentSlackAppsHost,
   endAgentSlackApp,
@@ -2244,7 +2245,8 @@ async function addRequestedAgentToChannel(
           (input.gateway ?? createGatewayDeploymentClient(platformEnv)).publishAvatar(candidate),
         updateAgent: (agentId, patch, revision) => stores.config.updateAgent(agentId, patch, revision),
       });
-      await new AgentPresenceReconciler({
+      const agentApps = agentAppPresenceHooks(platformEnv);
+      const published = await new AgentPresenceReconciler({
         config: stores.config,
         transport,
         announce: await livePresenceAnnouncements({
@@ -2252,6 +2254,7 @@ async function addRequestedAgentToChannel(
           management: stores.management, transport, botUserId,
           ...(input.execution?.installationBot ? { installationBot: input.execution.installationBot } : {}),
         }),
+        ...(agentApps ? { agentApps } : {}),
       }).publish({
         workspaceId: request.workspaceId,
         channelId: request.channelId,
@@ -2259,6 +2262,7 @@ async function addRequestedAgentToChannel(
         actorMembershipId: principal.membershipId,
         actorSlackUserId: request.userId,
       });
+      return published.appBot === 'left_out' ? 'bot_left_out' : 'added';
     },
     adminUrl: async () => {
       const origin = await resolveSlackPublicUrl(platformEnv, stores.settings);

@@ -12,7 +12,7 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { escapeHtml } from '../../security/html-escape.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
 import { liveAgentSlackApps } from './live.ts';
-import { tokenApiPath, YOUR_APPS_URL } from './pages.ts';
+import { ADMIN_PATH, permissionNeededCopy, tokenApiPath, YOUR_APPS_URL } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
 import { SlackUnavailable } from './slack-api.ts';
 
@@ -98,6 +98,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     }
     const started = await apps.start(agent.id, gated.slackUserId);
     if (started.kind === 'token_needed') return c.html(tokenPage(agent, false), 400);
+    if (started.kind === 'permission_needed') return c.html(permissionPage(agent), 409);
     if (started.kind === 'already_started') return c.html(tokenPage(agent, true, 'already_started'), 409);
     if (started.kind === 'not_eligible') return c.notFound();
     return c.html(creatingPage(agent));
@@ -151,11 +152,22 @@ function creatingPage(agent: CustomAgentConfig): string {
   });
 }
 
+function permissionPage(agent: CustomAgentConfig): string {
+  const handle = agent.slackPresence?.normalizedHandle ?? agent.id;
+  return renderSlackJourneyPage({
+    surface: 'agent-slack-app',
+    eyebrow: 'Chickpea',
+    title: 'Let Chickpea create Slack apps for your Agents',
+    body: `<p>${escapeHtml(permissionNeededCopy({ handle }))}</p><div class="auth-actions"><a class="auth-link" href="${ADMIN_PATH}">Open Chickpea</a></div>`,
+  });
+}
+
+/** Rotation leaves the earlier token listed until it expires, so Slack can list more than one. */
 function removedPage(): string {
   return renderSlackJourneyPage({
     surface: 'agent-slack-app',
     eyebrow: 'Chickpea',
     title: 'Let Chickpea create Slack apps for your Agents',
-    body: `<p>Chickpea deleted its copy of your configuration token. To revoke it in Slack too, open Your Apps and choose Delete token under Your App Configuration Tokens.</p>${yourApps}`,
+    body: `<p>Chickpea deleted its copy of your configuration token. To revoke it in Slack too, open Your Apps and choose Delete token for every configuration token listed for this workspace, since Slack can list more than one. Then reload Your Apps and check that none is left.</p>${yourApps}`,
   });
 }

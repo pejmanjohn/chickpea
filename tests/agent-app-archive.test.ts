@@ -96,7 +96,10 @@ async function fixture(t: TestContext, options: { token?: boolean; botToken?: bo
   const service = new AgentSlackApps({ env: ENV, stores: { config, settings }, host: HOST, transport, slack, keyring, now: () => clock.now });
   const reconciler = new AgentPresenceReconciler({
     config, transport: transport as unknown as SlackTransport, announce: null, now: () => clock.now,
-    agentApps: { retire: async (current) => (await service.retire(current)).agent },
+    agentApps: {
+      retire: async (current) => (await service.retire(current)).agent,
+      bringBotIn: async () => { throw new Error('archive brings no bot in'); },
+    },
   });
   return { config, settings, secrets, slack, transport, clock, service, reconciler, agent };
 }

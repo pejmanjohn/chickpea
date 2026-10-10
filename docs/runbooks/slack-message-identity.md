@@ -71,10 +71,21 @@ that Channel.
   already is, changes nothing.
 - Apps created before this change don't receive `member_joined_channel`,
   because Chickpea never updates an existing app's manifest.
+- Admin's Add to channels and the offer's Add button bring the app's bot in
+  as they add the Agent. The bot joins a public Channel itself, with the
+  app's `channels:join`; Chickpea's bot has no scope to invite it, and adding
+  one would ask every installation to approve it. A bot cannot join a private
+  Channel, so there Chickpea only checks that someone has added it. When the
+  bot is not in the Channel, the Agent is still added: Admin's result and the
+  offer's reply tell the person to add it from the channel's Add people or
+  agents, and `chickpea.agent_app.bot_left_out` logs Slack's reason. Apps
+  created before `channels:join` was requested are refused the join
+  (`missing_scope`) and reported the same way.
 - Removing the bot from a Channel leaves the Agent's grant there.
-- Neither path brings Chickpea's bot into the Channel. The welcome says thread
-  replies need no mention only when Chickpea's bot is in that Channel, as read
-  through Chickpea's bot; when Slack cannot say, it leaves that out.
+- Slack's own Add never brings Chickpea's bot into the Channel. The welcome
+  says thread replies need no mention only when Chickpea's bot is in that
+  Channel, as read through Chickpea's bot; when Slack cannot say, it leaves
+  that out.
 - On the app's own deliveries, who may message the Agent is decided from its
   Channels as read by its own bot, and then by Chickpea's: a Channel counts
   when either bot is in it. A grant made before the Agent had its own app,
@@ -119,6 +130,16 @@ the port on its staging deployment only, behind its own staging-only switch.
    answer to the create call never retries by itself: the Owner deletes any
    app they do not recognize in Your Apps, then chooses Try again.
 
+Disabling a user group needs the Owner's user-group permission, which the
+hosted permissions update grants; Admin's permissions bar reads the same fact.
+Until the installation holds it, an Agent with a user group cannot start, and
+Try again could not succeed, so none is offered. App Home shows a line linking
+to Admin in place of the button. A start is refused before anything changes,
+and the Owner is messaged the same link. A release Slack
+refuses with `permission_denied` while the permission is missing is handled the
+same way: the start is undone and the Agent keeps its user group, which Slack
+never changed. After **Update in Slack**, the Owner starts again from App Home.
+
 ### Archive, uninstall, and tenant end
 
 - Archiving the Agent uninstalls its app, deletes the app with the
@@ -146,11 +167,16 @@ the port on its staging deployment only, behind its own staging-only switch.
   each other's.
 - The token can manage every app its person created in the workspace.
   Chickpea changes only the apps it creates for Agents.
+- Chickpea rotates the pasted token at once, and Slack keeps listing the
+  rotated token under Your App Configuration Tokens until it expires (12
+  hours). So the list can show two rows for the workspace, both Chickpea's.
 - Chickpea cannot revoke the token: revoking the access token leaves the
   refresh token working. **Remove the configuration token** on the token page
-  deletes Chickpea's copy only, and the Owner then deletes the token under Your
-  App Configuration Tokens. Agent apps already created keep working; archiving
-  one later leaves its definition for the Owner.
+  deletes Chickpea's copy only. The Owner then chooses Delete token for every
+  configuration token listed for the workspace and reloads Your Apps to check
+  that none is left: the page can show a row as gone before a reload shows it
+  again. Agent apps already created keep working; archiving one later leaves
+  its definition for the Owner.
 - When the stored refresh token is spent, the sequence stops and the Owner is
   asked to paste a new one.
 

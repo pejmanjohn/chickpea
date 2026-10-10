@@ -1,8 +1,10 @@
 import { UnknownAgentError } from '../../config/errors.ts';
 import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
+import type { AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
+import { hostedSlackUpdateGrantsUserGroupToken } from '../hosted-permissions.ts';
 import { slackInstallationCredentialId } from '../hosted-slack-app.ts';
-import { resolveSlackInstallationCredentials } from '../installation-credentials.ts';
+import { type ResolvedSlackInstallationCredentials, resolveSlackInstallationCredentials } from '../installation-credentials.ts';
 import {
   SlackInstallationUnavailableError,
   type SlackInstallationExecutionContext,
@@ -10,6 +12,7 @@ import {
 } from '../installation-execution.ts';
 import type { PrivateAgentPlacementFacts } from '../agent-access.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
+import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
@@ -185,15 +188,47 @@ export async function endAgentSlackAppLive(
   return (await liveAgentSlackApps(env, host)).end(appId, payload);
 }
 
-/** The reconciler's archive hook: present only with the port. */
-export function agentAppRetirement(env: PlatformEnv | undefined): { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> } | undefined {
+/** The reconciler's hooks for an Agent's own app: present only with the port. */
+export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPresenceHooks | undefined {
   const host = agentSlackAppsHost();
   if (!host) return undefined;
   return {
     async retire(agent) {
       return (await (await liveAgentSlackApps(env, host)).retire(agent)).agent;
     },
+    async bringBotIn(agent, channel) {
+      const presence = agent.slackPresence;
+      if (!agentAppIsLive(presence)) return undefined;
+      const appId = presence.app.app.appId;
+      const reason = await agentAppExecutionBot(env, agent.id).then(
+        (lookup) => lookup.kind === 'live' ? botLeftOutReason(createDirectSlackTransport(lookup.bot.botToken, undefined), channel) : 'bot_unavailable',
+        () => 'bot_unavailable',
+      );
+      if (!reason) return 'in_channel';
+      console.warn({ event: 'chickpea.agent_app.bot_left_out', agentId: agent.id, appId, channelId: channel.id, reason });
+      return 'left_out';
+    },
   };
+}
+
+/**
+ * Why the app's bot is not in the Channel after trying, or undefined when it
+ * is. It joins a public Channel itself; only someone in a private Channel can
+ * add it there, so for one of those it is only looked for.
+ */
+async function botLeftOutReason(
+  bot: Pick<SlackTransport, 'joinPublicChannel' | 'lookupChannel'>,
+  channel: { id: string; private: boolean },
+): Promise<string | undefined> {
+  try {
+    if (!channel.private) {
+      await bot.joinPublicChannel(channel.id);
+      return undefined;
+    }
+    return (await bot.lookupChannel(channel.id)).member ? undefined : 'private_channel';
+  } catch (error) {
+    return error instanceof SlackTransportError ? error.code : 'failed';
+  }
 }
 
 /** Tenant end: every Agent app of this installation, each reported, none throwing. */
@@ -259,30 +294,38 @@ const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAI
 /** The service over an installation's live stores, main bot and public URL. */
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);
+  const credentials = installationCredentials(env);
   return new AgentSlackApps({
     env,
     stores: { config: stores.config, settings: getSettingsStore(env) },
     host,
-    transport: mainBotTransport(env),
+    transport: mainBotTransport(credentials),
     publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
+    userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
 }
 
 /**
- * The installation's own bot, read only when a step needs it (an Owner's DM,
- * the handle's user group). Uninstalling and deleting an app use that app's
- * credentials and the configuration token, so they go on when this bot's
- * credentials cannot be read.
+ * The installation's own credentials, read only when a step needs them (an
+ * Owner's DM, the handle's user group, the permission it needs). Uninstalling
+ * and deleting an app use that app's credentials and the configuration token,
+ * so they go on when these cannot be read.
  */
-function mainBotTransport(env: PlatformEnv | undefined): AgentAppTransport {
-  let resolved: Promise<AgentAppTransport> | undefined;
-  const bot = (): Promise<AgentAppTransport> => {
+function installationCredentials(env: PlatformEnv | undefined): () => Promise<ResolvedSlackInstallationCredentials> {
+  let resolved: Promise<ResolvedSlackInstallationCredentials> | undefined;
+  return () => {
     if (!resolved) {
-      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env)
-        .then((credentials) => createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken));
+      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
       resolved.catch(() => { resolved = undefined; });
     }
     return resolved;
+  };
+}
+
+function mainBotTransport(credentials: () => Promise<ResolvedSlackInstallationCredentials>): AgentAppTransport {
+  const bot = async (): Promise<AgentAppTransport> => {
+    const { botToken, userGroupToken } = await credentials();
+    return createDirectSlackTransport(botToken ?? '', userGroupToken);
   };
   return {
     disableUserGroup: async (id) => (await bot()).disableUserGroup(id),
