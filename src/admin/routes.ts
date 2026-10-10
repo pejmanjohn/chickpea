@@ -1,4 +1,10 @@
 import { planDependencies, planStatus, preparePlanConnection, pollPlanHandoff, completePlanHandoff, confirmPlanConnection, cancelPlanConnection, disconnectPlan, resolvePlanSession } from '../chatgpt-plan/connection.ts';
+import {
+  type AgentSlackAppAdminDeps,
+  agentAppRetirement,
+  createAgentSlackAppAdminRoutes,
+  isAgentSlackAppTokenApiPath,
+} from '../slack/agent-apps/index.ts';
 import { ChannelDirectoryCache } from '../slack/channel-directory-cache.ts';
 import { apiOAuthLifecycleDependencies } from '../connections/api-oauth-lifecycle.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
@@ -857,6 +863,8 @@ function adminEnvironmentTimestamp(input: unknown): input is string {
 }
 
 interface AdminRoutesOptions {
+  /** Test seam for the Agent Slack app token page: the service for an env. */
+  agentSlackApps?: AgentSlackAppAdminDeps['service'];
   updateFetch?: typeof fetch | undefined;
   // Injection seam for tests/harnesses: any async ConfigStore serves the
   // routes; absent, the platform backend is resolved per request (c.env is the
@@ -9756,11 +9764,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const archiveOptions = parsed.output.replacementDefaultAgentId
         ? { replacementDefaultAgentId: parsed.output.replacementDefaultAgentId }
         : {};
-      const updated = current.slackPresence?.userGroupId
+      const agentApps = agentAppRetirement(c.env as PlatformEnv | undefined);
+      const updated = current.slackPresence?.userGroupId || current.slackPresence?.kind === 'agent_app'
         ? await new AgentPresenceReconciler({
             config: store(c),
             transport: await agentSlackTransport(c, actor.slackTeamId),
             announce: null,
+            ...(agentApps ? { agentApps } : {}),
           }).archive(agentId, archiveOptions)
         : await store(c).archiveAgent(agentId, {
             expectedRevision: current.revision,
@@ -11124,6 +11134,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   app.get('/admin/sessions/*', (c) => c.redirect('/admin/channels'));
   app.get('/admin/profiles', (c) => c.notFound());
   app.get('/admin/profiles/*', (c) => c.notFound());
+  app.route('/', createAgentSlackAppAdminRoutes({
+    actor: agentActor,
+    getAgent: async (c, agentId) => {
+      try {
+        return await store(c).getAgent(agentId);
+      } catch (error) {
+        if (error instanceof UnknownAgentError) return undefined;
+        throw error;
+      }
+    },
+    ...(options.agentSlackApps ? { service: options.agentSlackApps } : {}),
+  }));
+
   app.get('/admin/*', (c) => {
     const pathname = new URL(c.req.url).pathname;
     if (pathname.startsWith('/admin/api/')) return c.notFound();
@@ -12191,7 +12214,7 @@ function machinePrincipalAllowed(c: Context): boolean {
 }
 
 function isHumanAuthFormMutation(c: Context): boolean {
-  return c.req.method === 'POST' && c.req.path === '/admin/logout';
+  return c.req.method === 'POST' && (c.req.path === '/admin/logout' || isAgentSlackAppTokenApiPath(c.req.path));
 }
 
 async function inspectionWithinSignal(

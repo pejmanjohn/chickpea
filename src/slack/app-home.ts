@@ -12,7 +12,7 @@ export function agentAppHomeStarterMessage(agentName: string): string {
 
 export function agentDirectoryAppHome(
   agents: readonly CustomAgentConfig[],
-  options: { unavailableNotice?: boolean } = {},
+  options: { unavailableNotice?: boolean; rowExtras?: ReadonlyMap<string, readonly object[]> } = {},
 ): View {
   const blocks: Array<Record<string, unknown>> = [
     {
@@ -65,6 +65,7 @@ export function agentDirectoryAppHome(
           accessibility_label: `Message ${agent.name}`,
         },
       });
+      for (const extra of options.rowExtras?.get(agent.id) ?? []) blocks.push(extra as Record<string, unknown>);
     }
     if (agents.length > 24) {
       blocks.push({

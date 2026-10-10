@@ -750,6 +750,7 @@ test('runTurn suppresses model prose and defers one immediate-creation welcome',
     await f.config.updateAgent(created.id, {
       slackPresence: {
         ...created.slackPresence!,
+        kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
         userGroupId: 'SRUNTURNDECK',
@@ -1087,6 +1088,7 @@ async function deferredWelcomeTurn(name: string) {
   await f.config.updateAgent(created.id, {
     slackPresence: {
       ...created.slackPresence!,
+      kind: 'user_group',
       desiredState: 'active',
       health: 'healthy',
       userGroupId: 'SWELCOMERUNDECK',

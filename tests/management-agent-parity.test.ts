@@ -1244,6 +1244,7 @@ test('one direct create publishes the Slack handle once and replays without dupl
       const agent = await f.config.updateAgent(agentId, {
         slackPresence: {
           ...current.slackPresence!,
+          kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
           userGroupId: 'SPAIDMARKETING',
@@ -1357,6 +1358,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
       const agent = await f.config.updateAgent(agentId, {
         slackPresence: {
           ...current.slackPresence!,
+          kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
           userGroupId: 'SPAIDMARKETING',
@@ -1566,6 +1568,7 @@ test('an interrupted direct create reconciles the already-published Agent on rep
           await target.updateAgent(created.id, {
             slackPresence: {
               ...created.slackPresence!,
+              kind: 'user_group',
               desiredState: 'active',
               health: 'healthy',
               userGroupId: 'SRECOVERED',
@@ -2019,6 +2022,7 @@ test('inferred Slack handle collision recovers one Agent with one stable alterna
         agent: await f.config.updateAgent(agentId, {
           slackPresence: {
             ...current.slackPresence!,
+            kind: 'user_group',
             desiredState: 'active',
             health: 'healthy',
             userGroupId: 'S_SUPPORT_TEAM',
@@ -2186,6 +2190,7 @@ function fakeHandlePublisher(
       agent: await f.config.updateAgent(agentId, {
         slackPresence: {
           ...current.slackPresence!,
+          kind: 'user_group',
           desiredState: 'active',
           health: 'healthy',
           userGroupId: `S_${handle.toUpperCase()}`,

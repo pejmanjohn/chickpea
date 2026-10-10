@@ -62,7 +62,7 @@ export interface SlackAppManifest {
     scopes: { bot: string[]; user?: string[] };
   };
   settings: {
-    event_subscriptions: { request_url: string; bot_events: string[] };
+    event_subscriptions: { request_url?: string; bot_events: string[] };
     interactivity?: { is_enabled: boolean; request_url?: string };
     org_deploy_enabled: boolean;
     socket_mode_enabled: boolean;
@@ -71,15 +71,45 @@ export interface SlackAppManifest {
   };
 }
 
-export interface SlackAppManifestIntent {
-  kind: 'workspace_app';
-  origin: string;
-  appName?: string;
-  botDisplayName?: string;
-}
+/** What an Agent's own Slack app subscribes to: its mentions, its DMs, and its own end. */
+export const AGENT_APP_BOT_EVENTS: readonly string[] = Object.freeze([
+  'app_mention', 'message.im', 'app_uninstalled', 'tokens_revoked',
+]);
+export const SLACK_APP_DESCRIPTION_MAX_LENGTH = 140;
 
-/** Sole typed builder for the one native Slack app installed per workspace. */
+export type SlackAppManifestIntent =
+  | {
+      kind: 'workspace_app';
+      origin: string;
+      appName?: string;
+      botDisplayName?: string;
+    }
+  | {
+      /** One Agent's own app: no sign-in, no URLs until the app exists, its own scopes and events. */
+      kind: 'agent_app';
+      appName: string;
+      botDisplayName: string;
+      description: string;
+      redirectUri: string;
+      urls?: { events: string; interactions: string };
+      scopes: readonly string[];
+      events: readonly string[];
+    };
+
+/** Sole typed builder for the native Slack apps Chickpea creates: the workspace's, and an Agent's own. */
 export function buildSlackAppManifest(intent: SlackAppManifestIntent): SlackAppManifest {
+  if (intent.kind === 'agent_app') {
+    return manifestCore({
+      appName: requiredName(intent.appName, 'Slack app name', SLACK_APP_NAME_MAX_LENGTH),
+      botDisplayName: requiredName(intent.botDisplayName, 'Slack bot display name', SLACK_BOT_DISPLAY_NAME_MAX_LENGTH),
+      description: requiredName(intent.description, 'Slack app description', SLACK_APP_DESCRIPTION_MAX_LENGTH),
+      ...(intent.urls ? { requestUrl: intent.urls.events, interactionUrl: intent.urls.interactions } : {}),
+      botEvents: [...intent.events],
+      scopes: intent.scopes,
+      includeOidc: false,
+      redirectUrls: [intent.redirectUri],
+    });
+  }
   const origin = safeOrigin(intent.origin);
   return manifestCore({
     appName: requiredName(
@@ -178,9 +208,10 @@ function manifestCore(input: {
   appName: string;
   botDisplayName: string;
   description: string;
-  requestUrl: string;
-  interactionUrl: string;
+  requestUrl?: string;
+  interactionUrl?: string;
   botEvents: string[];
+  scopes?: readonly string[];
   includeOidc: boolean;
   redirectUrls?: string[];
 }): SlackAppManifest {
@@ -216,12 +247,15 @@ function manifestCore(input: {
       ...(input.redirectUrls ? { redirect_urls: input.redirectUrls } : {}),
       scopes: {
         ...(input.includeOidc ? { user: ['openid', 'profile', 'email'] } : {}),
-        bot: [...SLACK_BOT_SCOPES],
+        bot: [...(input.scopes ?? SLACK_BOT_SCOPES)],
       },
     },
     settings: {
-      event_subscriptions: { request_url: input.requestUrl, bot_events: input.botEvents },
-      interactivity: { is_enabled: true, request_url: input.interactionUrl },
+      event_subscriptions: {
+        ...(input.requestUrl ? { request_url: input.requestUrl } : {}),
+        bot_events: input.botEvents,
+      },
+      interactivity: { is_enabled: true, ...(input.interactionUrl ? { request_url: input.interactionUrl } : {}) },
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,

@@ -38,7 +38,9 @@ import {
   type AgentReferenceSummary,
   type AgentScheduleReference,
   type AgentScheduleReferenceInput,
+  type AgentPresenceBase,
   type AgentSlackPresence,
+  type UserGroupPresence,
   type AgentThreadRoute,
   type AgentThreadRouteInput,
   type AgentCreateInput,
@@ -75,6 +77,7 @@ import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/sta
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
 import {
   isDefaultAgentAvatarSeed,
   nextDefaultAgentAvatarSeed,
@@ -3510,7 +3513,7 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
   };
 }
 
-function defaultAgentSlackPresence(agentId: string, name: string): AgentSlackPresence {
+function defaultAgentSlackPresence(agentId: string, name: string): AgentPresenceBase {
   const normalizedHandle = normalizeAgentHandle(name || agentId);
   return {
     requestedHandle: normalizedHandle,
@@ -3531,17 +3534,15 @@ function parseAgentSlackPresence(
   name: string,
 ): AgentSlackPresence {
   try {
-    const parsed = JSON.parse(raw ?? '{}') as Partial<AgentSlackPresence>;
+    const parsed = JSON.parse(raw ?? '{}') as Partial<AgentSlackPresence> | null;
     const fallback = defaultAgentSlackPresence(agentId, name);
     if (!parsed || typeof parsed !== 'object') return fallback;
-    return {
-      ...fallback,
-      ...parsed,
-      avatar: {
-        ...fallback.avatar,
-        ...(parsed.avatar ?? {}),
-      },
-    };
+    const avatar = { ...fallback.avatar, ...(parsed.avatar ?? {}) };
+    if (parsed.kind === 'agent_app') {
+      if (!parsed.app) return fallback;
+      return normalizeAgentAppPresence({ ...fallback, ...parsed, kind: 'agent_app', app: parsed.app, avatar });
+    }
+    return { ...fallback, ...(parsed as Partial<UserGroupPresence>), avatar };
   } catch {
     return defaultAgentSlackPresence(agentId, name);
   }

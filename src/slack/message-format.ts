@@ -333,8 +333,9 @@ function joinBroadcastWords(text: string): string {
 
 /**
  * Agent handles a reply may mention live: normalized handle to the Agent's
- * user-group id. Agent handles are zero-member user groups, so a live one
- * notifies nobody; it only renders as a mention and asks that Agent.
+ * user-group id, or to the bot user of its own Slack app. Agent handles are
+ * zero-member user groups, so a live one notifies nobody; it only renders
+ * as a mention and asks that Agent. A bot user renders as that bot's name.
  */
 export type SlackLiveAgentHandles = ReadonlyMap<string, string>;
 
@@ -343,8 +344,8 @@ export type SlackLiveAgentHandles = ReadonlyMap<string, string>;
 // a mention token), and not followed by more handle characters.
 const SLACK_HANDLE_WORD = /(?<![\p{L}\p{N}_.@/:|<-])@([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])/gu;
 
-export function liveAgentMention(userGroupId: string, handle: string): string {
-  return `<!subteam^${userGroupId}|@${handle}>`;
+export function liveAgentMention(id: string, handle: string): string {
+  return /^[UW]/.test(id) ? `<@${id}>` : `<!subteam^${id}|@${handle}>`;
 }
 
 /**

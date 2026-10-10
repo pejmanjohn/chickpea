@@ -86,6 +86,7 @@ async function skillCommandFixture(suffix: string) {
     return await f.config.updateAgent(created.id, {
       slackPresence: {
         ...created.slackPresence!,
+        kind: 'user_group',
         desiredState: 'active',
         health: 'healthy',
         userGroupId,

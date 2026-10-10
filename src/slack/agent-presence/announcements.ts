@@ -32,7 +32,7 @@ export function agentPresenceAnnouncements(deps: {
   return {
     async joinedChannel(input) {
       const live = agentSlackHandle(input.agent);
-      if (input.channelIsPrivate || !live || !(await deps.welcomeOnJoin())) return;
+      if (input.channelIsPrivate || !live || !('userGroupId' in live) || !(await deps.welcomeOnJoin())) return;
       const avatarUrl = deps.avatarUrl(input.agent);
       await deps.transport.postMessage({
         channelId: input.channelId,
@@ -49,7 +49,7 @@ export function agentPresenceAnnouncements(deps: {
     },
     async handleWentLive(agent) {
       const live = agentSlackHandle(agent);
-      if (!live) return;
+      if (!live || !('userGroupId' in live)) return;
       await deps.management.queueOwedAgentWelcome({
         agentId: agent.id,
         agentName: agent.name,

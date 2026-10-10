@@ -418,14 +418,14 @@ function slackApiMethodUrl(baseUrl: string | undefined, method: string, fallback
   return normalized ? `${normalized}/${method}` : fallback;
 }
 
-interface CreatedSlackApp {
+export interface CreatedSlackApp {
   appId: string;
   clientId: string;
   clientSecret: string;
   signingSecret: string;
 }
 
-function createdSlackApp(payload: Record<string, unknown>): CreatedSlackApp {
+export function createdSlackApp(payload: Record<string, unknown>): CreatedSlackApp {
   const credentials = record(payload.credentials);
   return {
     appId: bounded(payload.app_id, 'Slack app ID', 64),
@@ -459,7 +459,7 @@ function bounded(value: unknown, label: string, maximum: number): string {
   }
   return normalized;
 }
-function safeSlackError(value: unknown): string {
+export function safeSlackError(value: unknown): string {
   return typeof value === 'string' && /^[a-z0-9_]{1,128}$/.test(value) ? value : '';
 }
 function record(value: unknown): Record<string, unknown> {

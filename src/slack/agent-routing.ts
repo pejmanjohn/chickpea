@@ -6,6 +6,7 @@ import {
   type CustomAgentConfig,
   type ResolvedAssignment,
 } from '../config/types.ts';
+import { agentAppRouteSelection } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
@@ -19,6 +20,7 @@ import type { PrivateAgentAccessResult } from './agent-access.ts';
 
 type AgentRouteSurface = 'channel' | 'direct';
 type AgentRouteSource =
+  | 'agent_app'
   | 'agent_handle'
   | 'thread_owner'
   | 'default_agent'
@@ -86,6 +88,8 @@ interface ResolveAgentRouteInput {
   >;
   /** Trusted Agent seed from App Home interactivity, never Slack message text. */
   appHomeAgentId?: string;
+  /** The Agent whose own Slack app received this delivery; never Slack message text. */
+  agentApp?: { agentId: string };
   /**
    * Trusted host admission for one Agent already in this thread: the Agent
    * another Agent mentioned in a reply it delivered, or the Agent whose
@@ -240,7 +244,14 @@ export async function resolveAgentRoute(
     }, addressedIds);
   }
 
+  const appSelection = agentAppRouteSelection(turn, surface, agents, input.agentApp);
   const mentionedGroupIds = parseAgentUserGroupMentions(turn.text);
+  // A message that also names one of this installation's user-group Agents is
+  // still that Agent's here; the app's bot answers it on the app's own ingress.
+  if (appSelection?.kind === 'ignore' && !mentionedGroupIds.some((groupId) => agentClaimsByGroupId.has(groupId))) {
+    return { kind: 'ignore' };
+  }
+  const appAgentId = appSelection?.kind === 'select' ? appSelection.agentId : undefined;
   // A group that is not one of this installation's Agents (people, or another
   // app's Agent) is ordinary text: the message goes where it would without it.
   const mentionedAgents = mentionedGroupIds
@@ -283,7 +294,7 @@ export async function resolveAgentRoute(
   // reachable by this person here, or none is asked; the first is checked
   // below as the routed Agent.
   const addressed = mentionedAgents.slice(0, MAX_ADDRESSED_AGENTS);
-  if (addressed.length > 1 && !input.appHomeAgentId) {
+  if (addressed.length > 1 && !input.appHomeAgentId && appAgentId === undefined) {
     for (const agent of addressed.slice(1)) {
       const access = await agentAccess({
         agent,
@@ -299,7 +310,10 @@ export async function resolveAgentRoute(
 
   let source: AgentRouteSource;
   let selected: CustomAgentConfig | undefined;
-  if (input.appHomeAgentId) {
+  if (appAgentId !== undefined) {
+    source = 'agent_app';
+    selected = agentsById.get(appAgentId);
+  } else if (input.appHomeAgentId) {
     source = 'app_home';
     selected = agentsById.get(input.appHomeAgentId);
   } else if (mentionedAgents[0]) {
@@ -341,7 +355,7 @@ export async function resolveAgentRoute(
     ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
   });
   if (!selected || access !== 'allowed') {
-    return refusal(selected, access, available, source === 'agent_handle');
+    return refusal(selected, access, available, source === 'agent_handle' || source === 'agent_app');
   }
 
   const routed = await withTeammates(await commitSelectedAgentRoute({

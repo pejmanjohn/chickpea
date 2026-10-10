@@ -1139,7 +1139,7 @@ export class WebClientPresenter {
   }
 
   private persona(): { username?: string; icon_url?: string } {
-    if (this.target.visibleOwner?.kind === 'chickpea') return {};
+    if (this.target.visibleOwner?.kind === 'chickpea' || this.target.visibleOwner?.kind === 'agent_app') return {};
     if (this.target.visibleOwner?.kind === 'selected_agent') {
       return {
         username: this.target.visibleOwner.persona.name,

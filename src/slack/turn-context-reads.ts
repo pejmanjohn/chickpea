@@ -35,6 +35,8 @@ export async function hydrateTurnSlackContext(input: {
   /** Whether the installation's reads draw on a shared app's budget (sharesSlackAppReadBudget). */
   sharedAppReads: boolean;
   botUserId?: string;
+  /** The other bots this installation answers as; their rows read as Agents' too. */
+  siblingBotUserIds?: readonly string[];
   state?: Pick<SlackStateStore, 'reserveSlackRead' | 'applySlackReadCooldown'>;
   record?: ThreadRecordStore;
   /**
@@ -60,7 +62,14 @@ export async function hydrateTurnSlackContext(input: {
   const readGate = createSlackReadGate({ state: input.state, workspaceId: turn.workspaceId, gated });
   const context = await hydrateSlackContextViaWebClient(client, turn, {
     readGate,
-    ...(input.botUserId ? { self: { botUserId: input.botUserId } } : {}),
+    ...(input.botUserId || input.siblingBotUserIds?.length
+      ? {
+          self: {
+            ...(input.botUserId ? { botUserId: input.botUserId } : {}),
+            ...(input.siblingBotUserIds?.length ? { siblingBotUserIds: input.siblingBotUserIds } : {}),
+          },
+        }
+      : {}),
     ...(threadRecord ? { threadRecord } : {}),
     ...(input.maxMessages !== undefined ? { maxMessages: input.maxMessages } : {}),
     ...(input.maxPages !== undefined ? { maxPages: input.maxPages } : {}),
