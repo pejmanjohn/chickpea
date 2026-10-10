@@ -18,7 +18,7 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
-import { AgentAppSecretsUnreadable, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
+import { loggedUnreadableAsNone, readAppSecrets, type SecretDeps, unreadableAsNone } from './secrets.ts';
 import { AgentSlackApps, type AgentAppTransport } from './service.ts';
 import { createAgentAppSlackApi } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -77,10 +77,13 @@ export async function agentAppBotCredentials(
  * revoked, erased or gated installation) stands for the Agent app too.
  * Without the port it is the base resolver and never reads the realm. A
  * broken app throws, so a reply is never posted as Chickpea on its behalf.
+ * A caller whose base context refuses rate-limited calls passes
+ * `rejectRateLimitedCalls` so the app's client refuses them too.
  */
 export function withAgentAppExecution(
   base: SlackInstallationExecutionResolver,
   env: PlatformEnv | undefined,
+  options: { rejectRateLimitedCalls?: boolean } = {},
 ): SlackInstallationExecutionResolver {
   const contexts = new Map<string, Promise<SlackInstallationExecutionContext>>();
   return (workspaceId, agentId) => {
@@ -102,7 +105,7 @@ export function withAgentAppExecution(
           botToken: bot.botToken,
           botUserId: bot.botUserId,
           displayName: bot.displayName,
-          client: createSlackWebClient(bot.botToken),
+          client: createSlackWebClient(bot.botToken, options),
         };
       });
       contexts.set(key, context);
@@ -166,10 +169,7 @@ export async function agentAppIngressFacts(env: PlatformEnv, appId: string): Pro
     candidate.slackPresence?.kind === 'agent_app' && agentAppRecord(candidate.slackPresence.app)?.appId === appId
   );
   if (!agent) return undefined;
-  const stored = await readAppSecrets(secretDeps(env), appId).catch((error: unknown) => {
-    if (error instanceof AgentAppSecretsUnreadable) console.warn(`[chickpea] agent_app_secrets_unreadable ${JSON.stringify({ appId })}`);
-    return unreadableAsNone(error);
-  });
+  const stored = await readAppSecrets(secretDeps(env), appId).catch(loggedUnreadableAsNone);
   if (!stored) return undefined;
   const workspace = (await stores.config.listWorkspaceInstallations())[0];
   const teamId = workspace?.teamId ?? workspace?.workspaceId;
@@ -213,7 +213,8 @@ export function agentAppPresenceHooks(env: PlatformEnv | undefined): AgentAppPre
 /**
  * Why the app's bot is not in the Channel after trying, or undefined when it
  * is. It joins a public Channel itself; only someone in a private Channel can
- * add it there, so for one of those it is only looked for.
+ * add it there, so for one of those it is only looked for. Slack answers that
+ * look-up `channel_not_found` when the bot is not in the private Channel.
  */
 async function botLeftOutReason(
   bot: Pick<SlackTransport, 'joinPublicChannel' | 'lookupChannel'>,
@@ -226,7 +227,8 @@ async function botLeftOutReason(
     }
     return (await bot.lookupChannel(channel.id)).member ? undefined : 'private_channel';
   } catch (error) {
-    return error instanceof SlackTransportError ? error.code : 'failed';
+    if (!(error instanceof SlackTransportError)) return 'failed';
+    return channel.private && error.code === 'channel_not_found' ? 'private_channel' : error.code;
   }
 }
 

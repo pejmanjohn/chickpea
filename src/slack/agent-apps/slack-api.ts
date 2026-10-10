@@ -15,9 +15,12 @@ const MAX_PROBLEM_TEXT = 200;
 /** Slack answers these for a bot whose app is gone or whose token is dead. */
 const BOT_GONE = new Set(['account_inactive', 'invalid_auth', 'token_revoked', 'not_authed', 'app_not_installed']);
 
-/** One entry of the list Slack sends with `invalid_manifest`: what is wrong, and where in the manifest. */
+/**
+ * One entry of the list Slack sends with `invalid_manifest`: where in the
+ * manifest, and what is wrong unless saying so quotes the manifest itself.
+ */
 export interface SlackManifestProblem {
-  readonly message: string;
+  readonly message?: string;
   readonly pointer: string;
 }
 
@@ -113,7 +116,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   const base = options.apiBaseUrl?.trim().replace(/\/+$/, '') || SLACK_API;
   const url = (method: string): string => `${base}/${method}`;
 
-  async function call(method: string, init: RequestInit): Promise<Answer> {
+  async function call(method: string, init: RequestInit, manifest?: SlackAppCreateManifest | SlackAppManifest): Promise<Answer> {
     let response: Response;
     try {
       response = await fetchImpl(url(method), init);
@@ -141,7 +144,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     return {
       kind: 'refused',
       code: code || (response.status === 429 ? 'ratelimited' : `http_${response.status}`),
-      errors: manifestProblems(payload.errors),
+      errors: manifestProblems(payload.errors, manifest),
     };
   }
 
@@ -182,7 +185,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
 
     async create(token, manifest) {
-      const answer = await call('apps.manifest.create', json(token, { manifest }));
+      const answer = await call('apps.manifest.create', json(token, { manifest }), manifest);
       if (answer.kind === 'unavailable') throw new AmbiguousEffect('apps.manifest.create', answer.reason);
       if (answer.kind === 'refused') throw new SlackRefused('apps.manifest.create', answer.code, answer.errors);
       try {
@@ -193,7 +196,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
 
     async update(token, appId, manifest) {
-      settled('apps.manifest.update', await call('apps.manifest.update', json(token, { app_id: appId, manifest })));
+      settled('apps.manifest.update', await call('apps.manifest.update', json(token, { app_id: appId, manifest }), manifest));
     },
 
     async setIcon(token, appId, png) {
@@ -252,13 +255,27 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
 }
 
 
-/** Slack's `errors` list, bounded. A URL in it becomes `<url>`: a Request URL carries its app's path token. */
-function manifestProblems(value: unknown): SlackManifestProblem[] {
+/**
+ * Slack's `errors` list, bounded. A URL in it becomes `<url>`: a Request URL
+ * carries its app's path token. A message that quotes any of the manifest's
+ * own strings is dropped, since those hold the Agent's name and description.
+ */
+function manifestProblems(value: unknown, manifest: SlackAppCreateManifest | SlackAppManifest | undefined): SlackManifestProblem[] {
   if (!Array.isArray(value)) return [];
+  const quotable = manifest ? stringsIn(manifest) : [];
   return value.slice(0, MAX_PROBLEMS).map((entry) => {
     const problem = asRecord(entry);
-    return { message: problemText(problem.message), pointer: problemText(problem.pointer) };
+    const pointer = problemText(problem.pointer);
+    const message = typeof problem.message === 'string' ? problem.message.toLowerCase() : '';
+    return quotable.some((text) => message.includes(text)) ? { pointer } : { message: problemText(problem.message), pointer };
   });
+}
+
+/** Every non-blank string in `value`, lowercased. */
+function stringsIn(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value.toLowerCase()] : [];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  return value && typeof value === 'object' ? Object.values(value).flatMap(stringsIn) : [];
 }
 
 function problemText(value: unknown): string {

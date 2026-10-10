@@ -186,7 +186,7 @@ async function readingBot(
   agentId: string,
 ): Promise<SlackInstallationExecutionContext> {
   try {
-    return await withAgentAppExecution(async () => workspace, env)(workspace.workspaceId, agentId);
+    return await withAgentAppExecution(async () => workspace, env, { rejectRateLimitedCalls: true })(workspace.workspaceId, agentId);
   } catch (error) {
     if (error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable') return workspace;
     throw error;

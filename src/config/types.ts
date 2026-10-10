@@ -282,8 +282,12 @@ export type AgentAppLifecycle =
 export interface AgentAppPresence extends AgentPresenceBase {
   kind: 'agent_app';
   app: AgentAppLifecycle;
-  /** The user group that held the handle; retire re-enables it. */
-  released?: { userGroupId: string };
+  /**
+   * The user group that held the handle, and its state before the start.
+   * Retire re-enables the group; an undone start restores that state, which
+   * older records lack.
+   */
+  released?: { userGroupId: string; desiredState?: AgentPresenceDesiredState; health?: AgentPresenceHealth };
   userGroupId?: never;
   pendingCreate?: never;
 }

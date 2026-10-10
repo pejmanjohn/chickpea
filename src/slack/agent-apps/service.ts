@@ -74,6 +74,7 @@ import {
   deleteAppSecrets,
   deleteConfigurationToken,
   hasConfigurationToken,
+  loggedUnreadableAsNone,
   readAppSecrets,
   saveConfigurationToken,
   unreadableAsNone,
@@ -143,6 +144,14 @@ const MAX_COMMIT_RETRIES = 3;
 const ICON_MIN_PX = 512;
 const ICON_MAX_PX = 2_000;
 const GROUP_ALREADY_RELEASED = new Set(['already_disabled', 'no_such_subteam']);
+/**
+ * An app made before Chickpea asked for `channels:join` may be granted
+ * without it. Its bot then cannot join a Channel the Agent is added to, and
+ * is reported as left out there.
+ */
+const OLDER_APPS_LACK = 'channels:join';
+/** How Slack refuses a user-group change for want of a permission. */
+const PERMISSION_REFUSALS = new Set(['permission_denied', 'missing_scope', 'not_allowed']);
 
 export class AgentSlackApps {
   private readonly now: () => number;
@@ -186,7 +195,9 @@ export class AgentSlackApps {
       desiredState: 'active',
       health: 'pending',
       app: initialAgentApp(ownerSlackUserId, this.now()),
-      ...(presence.userGroupId ? { released: { userGroupId: presence.userGroupId } } : {}),
+      ...(presence.userGroupId
+        ? { released: { userGroupId: presence.userGroupId, desiredState: presence.desiredState, health: presence.health } }
+        : {}),
     });
     try {
       await config.updateAgent(agentId, { slackPresence: started }, agent.revision);
@@ -300,7 +311,7 @@ export class AgentSlackApps {
       await this.commit(agent, { type: 'consent_undone', at: now });
       return consentPage('cancelled', names);
     }
-    const stored = await readAppSecrets(this.secrets, app.appId);
+    const stored = await readAppSecrets(this.secrets, app.appId).catch(loggedUnreadableAsNone);
     if (!stored) return consentPage('expired', names);
     let grant;
     try {
@@ -327,7 +338,10 @@ export class AgentSlackApps {
     };
     if (grant.teamId !== teamId) { await undo(); return consentPage('other_workspace', names); }
     if (grant.appId !== app.appId || grant.installerUserId !== consent.owner) { await undo(); return consentPage('another_person', names); }
-    if (AGENT_APP_BOT_SCOPES.some((scope) => !grant.scopes.includes(scope))) { await undo(); return consentPage('missing_permissions', names); }
+    if (AGENT_APP_BOT_SCOPES.some((scope) => scope !== OLDER_APPS_LACK && !grant.scopes.includes(scope))) {
+      await undo();
+      return consentPage('missing_permissions', names);
+    }
     await writeAppSecrets(this.secrets, app.appId, agent.id, { ...stored.secrets, botToken: grant.botToken }, stored.revision);
     const granted = await this.commit(agent, {
       type: 'consent_granted', at: now, botUserId: grant.botUserId, installedBy: grant.installerUserId,
@@ -445,7 +459,7 @@ export class AgentSlackApps {
           if (!(error instanceof SlackTransportError)) throw error;
           if (!GROUP_ALREADY_RELEASED.has(error.code)) {
             logSlackRefusal('release_handle', { agentId: run.agent.id }, error);
-            if (error.code === 'permission_denied' && await this.userGroupPermissionMissing()) {
+            if (PERMISSION_REFUSALS.has(error.code) && await this.userGroupPermissionMissing()) {
               return {
                 event: { type: 'handle_permission_missing', at: run.now },
                 after: async () => {
@@ -724,10 +738,16 @@ function homeRowFor(
   }
 }
 
-/** The start is undone before Slack changed anything, so the handle's user group is as it was: enabled and the Agent's. */
+/**
+ * The start is undone before Slack changed anything, so the handle's user
+ * group is the Agent's again, as it stood before the start. A start recorded
+ * without that state comes back active but pending: how the group stood is
+ * unknown, so it is not shown as healthy.
+ */
 function withdrawnPresence(presence: AgentAppPresence): UserGroupPresence {
   const released = releasedPresence(presence);
-  return released.userGroupId ? { ...released, desiredState: 'active' } : released;
+  const before = presence.released;
+  return before ? { ...released, desiredState: before.desiredState ?? 'active', health: before.health ?? 'pending' } : released;
 }
 
 /** After the app is gone the handle returns to its user group, disabled; an Agent that never had one is unpublished. */
