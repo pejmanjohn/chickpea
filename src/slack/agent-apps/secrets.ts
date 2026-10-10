@@ -58,6 +58,14 @@ export function unreadableAsNone(error: unknown): undefined {
   throw error;
 }
 
+/** As `unreadableAsNone`, and names the app for the operator where no other trace of it would show. */
+export function loggedUnreadableAsNone(error: unknown): undefined {
+  if (error instanceof AgentAppSecretsUnreadable) {
+    console.warn(`[chickpea] agent_app_secrets_unreadable ${JSON.stringify({ appId: error.appId })}`);
+  }
+  return unreadableAsNone(error);
+}
+
 /** A compare-and-set on the realm lost to another writer. */
 export class LostRevision extends Error {
   readonly name = 'LostRevision';
@@ -252,13 +260,18 @@ export async function hasConfigurationToken(d: SecretDeps, teamId: string): Prom
   return (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId))) !== undefined;
 }
 
-/** Deletes Chickpea's stored pair and nothing in Slack. */
+/**
+ * Deletes Chickpea's stored pair and nothing in Slack. A rotation that writes
+ * first is deleted on the retry; throws LostRevision when a pair still stays.
+ */
 export async function deleteConfigurationToken(d: SecretDeps, teamId: string): Promise<'deleted' | 'none'> {
   const key = configurationTokenKey(teamId);
-  const record = await d.credentials.getEncryptedCredentialRevision(key);
-  if (!record) return 'none';
-  await d.credentials.deleteEncryptedCredentialRevision(key, record.revision);
-  return 'deleted';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const record = await d.credentials.getEncryptedCredentialRevision(key);
+    if (!record) return 'none';
+    if (await d.credentials.deleteEncryptedCredentialRevision(key, record.revision)) return 'deleted';
+  }
+  throw new LostRevision(key);
 }
 
 /** Runs `use` with a fresh access token; the rotation is claimed by compare-and-set first. Throws ConfigTokenNeeded. */

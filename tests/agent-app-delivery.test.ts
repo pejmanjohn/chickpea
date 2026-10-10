@@ -97,8 +97,10 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
 /**
  * `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read.
  * `notMemberOf` names, per bot token, the Channels that bot is not in until it joins one; every bot is in every other Channel.
- * `privateChannels` are private; every other Channel is public.
+ * `privateChannels` are private; every other Channel is public. As in Slack, a bot not in a private Channel is answered
+ *   `channel_not_found` when it looks the Channel up.
  * `refuse` answers a call, keyed `<method> <token>`, with that Slack error.
+ * `rateLimited` answers a call, keyed the same way, with HTTP 429 and a one-second Retry-After.
  * `history` and `replies` are the messages `conversations.history` and `conversations.replies` return.
  */
 async function withHarness(
@@ -109,6 +111,7 @@ async function withHarness(
     notMemberOf?: Partial<Record<string, readonly string[]>>;
     privateChannels?: readonly string[];
     refuse?: Partial<Record<string, string>>;
+    rateLimited?: readonly string[];
     history?: readonly Record<string, unknown>[];
     replies?: readonly Record<string, unknown>[];
   } = {},
@@ -187,6 +190,12 @@ async function withHarness(
     const channel = body.get('channel') ?? '';
     const refusal = options.refuse?.[`${method} ${token}`];
     if (refusal) return Response.json({ ok: false, error: refusal });
+    if (options.rateLimited?.includes(`${method} ${token}`)) {
+      return Response.json({ ok: false, error: 'ratelimited' }, { status: 429, headers: { 'retry-after': '1' } });
+    }
+    if (method === 'conversations.info' && options.privateChannels?.includes(channel) && outside.get(token ?? '')?.has(channel)) {
+      return Response.json({ ok: false, error: 'channel_not_found' });
+    }
     if (method === 'conversations.join') outside.get(token ?? '')?.delete(channel);
     const answer = method === 'auth.test'
       ? token === MAIN_BOT
@@ -818,6 +827,14 @@ test("an app Agent whose own bot isn't in a Channel is told its own app is missi
   assert.equal(refused?.code, 'needs_bot_invite');
   assert.equal(refused?.message, "This Agent's own Slack app is not in that channel yet. Someone in the channel can add it from the channel's Add people or agents.");
 }, { notMemberOf: { [AGENT_BOT]: ['C2'] }, history: C2_POSTS }));
+
+test("a read Slack rate-limits on the app Agent's own bot is refused at once, as on Chickpea's bot, rather than waiting it out", async (t) => withHarness(t, async (h) => {
+  const started = Date.now();
+  const { refused, tokens } = await readC2(h, 'agent_support');
+  assert.deepEqual(tokens, [AGENT_BOT]);
+  assert.equal(refused?.code, 'rate_limited');
+  assert.ok(Date.now() - started < 1_000, 'the read does not wait for Retry-After');
+}, { history: C2_POSTS, rateLimited: [`conversations.history ${AGENT_BOT}`] }));
 
 // Chickpea's shared app reads once a minute per workspace, so each case below reads in a workspace of its own.
 test("a user-group Agent reads as Chickpea's bot, as before, and reads an app Agent's posts as an Agent's", async (t) => withHarness(t, async (h) => {
