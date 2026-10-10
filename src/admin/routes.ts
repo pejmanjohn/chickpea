@@ -908,6 +908,7 @@ interface AdminRoutesOptions {
   }) => Promise<'match' | 'missing' | 'mismatch' | 'transient'>) | undefined;
   composioReconciliationTimeoutMs?: number | undefined;
   composioPreparationTimeoutMs?: number | undefined;
+  slackWorkspaceNameTimeoutMs?: number | undefined;
   /**
    * Explicit encrypted Slack credential realm for tests and embedded hosts.
    * Production resolves persistent TAG_STATE and its target keyring from the
@@ -997,6 +998,8 @@ interface AdminRoutesOptions {
 
 const MAX_SLACK_INSTALLATION_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+const SLACK_WORKSPACE_NAME_TIMEOUT_MS = 3_000;
+const SLACK_WORKSPACE_NAME_RETRY_MS = 60_000;
 const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
 const SLACK_OIDC_BROWSER_COOKIE = '__Secure-chickpea_slack_oidc';
 const SLACK_RECOVERY_BROWSER_COOKIE = '__Secure-chickpea_slack_recovery_browser';
@@ -2408,18 +2411,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return updated;
   };
   // Installs store no workspace name until something asks Slack for it here.
+  // Onboarding reads poll, so asking Slack holds off the next ask for a
+  // minute, unless the answer names the workspace.
+  const slackWorkspaceNameAskedAt = new Map<string, number>();
   const slackWorkspaceName = async (c: Context, teamId: string): Promise<string | undefined> => {
     if (options.slackAdmissionService && !options.slackCredentials && !options.slackTransport) {
       return undefined;
     }
-    const settingsStore = settings(c);
-    const storedTeamName = (await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
+    const storedTeamName = (await settings(c).getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
     if (storedTeamName) return storedTeamName;
-
+    const askedAt = slackWorkspaceNameAskedAt.get(teamId);
+    if (askedAt !== undefined && Date.now() - askedAt < SLACK_WORKSPACE_NAME_RETRY_MS) return undefined;
+    const teamName = await askSlackWorkspaceName(c, teamId);
+    if (teamName) slackWorkspaceNameAskedAt.delete(teamId);
+    return teamName;
+  };
+  const askSlackWorkspaceName = async (c: Context, teamId: string): Promise<string | undefined> => {
+    const settingsStore = settings(c);
     const installation = await store(c).getWorkspaceInstallation(teamId);
     if (installation || options.slackTransport) {
       try {
         const transport = await agentSlackTransport(c, teamId);
+        slackWorkspaceNameAskedAt.set(teamId, Date.now());
         const live = await transport.getWorkspaceInfo?.();
         if (live?.teamId === teamId && live.teamName?.trim()) {
           const teamName = live.teamName.trim().slice(0, 120);
@@ -2441,7 +2454,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         credentials,
       );
       if (!resolved.botToken) return undefined;
-      const live = await slackAuthTest(resolved.botToken);
+      slackWorkspaceNameAskedAt.set(teamId, Date.now());
+      const live = await slackAuthTest(
+        resolved.botToken,
+        AbortSignal.timeout(options.slackWorkspaceNameTimeoutMs ?? SLACK_WORKSPACE_NAME_TIMEOUT_MS),
+      );
       if (live.ok && live.teamId === teamId && live.teamName?.trim()) {
         const teamName = live.teamName.trim().slice(0, 120);
         await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
