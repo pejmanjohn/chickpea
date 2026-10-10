@@ -307,3 +307,56 @@ test('a rename that lands between the put-back\'s read and write is not undone e
     assert.deepEqual({ handle: after.handle, requestedHandle: after.requestedHandle }, { handle: 'frontdesk', requestedHandle: 'frontdesk' });
   });
 });
+
+test('a put-back that keeps losing to other edits gives up, logs it, and never says nothing changed', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    const warn = t.mock.method(console, 'warn', () => {});
+    const updateAgent = f.config.updateAgent.bind(f.config);
+    let refused = false;
+    let raced = 0;
+    slack.duringUpdate = async () => { refused = true; };
+    f.config.updateAgent = async (agentId, patch, expectedRevision) => {
+      if (refused && patch.lifecycle === 'active') {
+        raced += 1;
+        const current = await f.config.getAgent(agentId);
+        await updateAgent(agentId, { instructions: `Answer the front desk (${raced}).` }, current.revision);
+      }
+      return updateAgent(agentId, patch, expectedRevision);
+    };
+
+    const outcome = await update('change Desk to @support', { requestedHandle: 'support' });
+    assert.equal(raced, 3);
+    assert.equal(outcome.code, 'handle_collision');
+    assert.match(outcome.instruction ?? '', /^@support is already taken in this Slack workspace\. Other edits to this Agent landed at the same time, so read it again before saying what changed\. Free handles: /);
+    assert.doesNotMatch(outcome.instruction ?? '', /nothing changed/);
+    assert.ok(warn.mock.calls.some(({ arguments: [message] }) =>
+      message === '[chickpea:management] refused Agent update not put back after repeated conflicts'));
+    const after = await desk();
+    assert.deepEqual(
+      { instructions: after.instructions, handle: after.handle, lifecycle: after.lifecycle },
+      { instructions: 'Answer the front desk (3).', handle: 'support', lifecycle: 'needs_attention' },
+    );
+  });
+});
+
+test('a rename whose Slack update never starts is put back too', async (t) => {
+  await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
+    const { f, slack, update, desk } = await renameFixture(t);
+    const getUser = f.identity.getUser.bind(f.identity);
+    // The acting person's Slack user is bound to another workspace, so the
+    // update fails with channel_membership_required before any Slack call.
+    f.identity.getUser = async (userId) => {
+      const user = await getUser(userId);
+      return user && userId === f.admin.user.id ? { ...user, slackTeamId: 'T_ELSEWHERE' } : user;
+    };
+
+    const outcome = await update('change Desk to @frontdesk', { requestedHandle: 'frontdesk' });
+    assert.deepEqual(
+      { disposition: outcome.disposition, code: outcome.code, instruction: outcome.instruction },
+      { disposition: 'failed', code: 'channel_membership_required', instruction: undefined },
+    );
+    assert.deepEqual(await desk(), DESK);
+    assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.handle, 'desk');
+  });
+});

@@ -34,6 +34,7 @@ import {
   type ChannelConfig,
   type ConnectionAccount,
   type ConnectionAccountPolicy,
+  agentAppIsLive,
   type CustomAgentConfig,
   type SkillConfig,
   type WorkspaceInstallation,
@@ -4970,13 +4971,14 @@ export class WorkspaceManagementService {
   /**
    * Slack kept the Agent's group as it was, so put back what the refused
    * update wrote, field by field and only where its value is still there: an
-   * edit that landed during the Slack call stays.
+   * edit that landed during the Slack call stays. Undefined when edits kept
+   * landing and the put-back gave up.
    */
   private async putBackRefusedUpdate(
     previous: CustomAgentConfig,
     written: CustomAgentConfig,
     patch: ConfigAgentPatch,
-  ): Promise<CustomAgentConfig> {
+  ): Promise<CustomAgentConfig | undefined> {
     for (let attempt = 1; ; attempt += 1) {
       const latest = await this.stores.config.getAgent(previous.id);
       const putBack = refusedUpdatePutBack(previous, written, latest, patch);
@@ -4985,7 +4987,11 @@ export class WorkspaceManagementService {
         return await this.stores.config.updateAgent(previous.id, putBack, latest.revision);
       } catch (error) {
         if (!(error instanceof AgentRevisionConflictError)) throw error;
-        if (attempt === 3) return this.stores.config.getAgent(previous.id);
+        if (attempt === 3) {
+          console.warn('[chickpea:management] refused Agent update not put back after repeated conflicts',
+            JSON.stringify({ agentId: previous.id }));
+          return undefined;
+        }
       }
     }
   }
@@ -5433,10 +5439,11 @@ class AgentUpdateRefused extends AgentPresenceError {}
 
 function refusedAgentUpdate(
   error: unknown,
-  kept: CustomAgentConfig,
+  kept: CustomAgentConfig | undefined,
   requested: CustomAgentConfig,
 ): unknown {
   if (!(error instanceof AgentPresenceError)) return error;
+  const unsettled = 'Other edits to this Agent landed at the same time, so read it again before saying what changed.';
   if (error.code === 'handle_collision') {
     const handle = normalizeAgentHandle(requested.slackPresence?.requestedHandle || requested.name);
     const next = error.suggestions.length > 0
@@ -5444,14 +5451,18 @@ function refusedAgentUpdate(
       : 'Ask for another handle.';
     return new AgentUpdateRefused(
       error.code,
-      `@${handle} is already taken in this Slack workspace, so nothing changed and the Agent keeps @${kept.slackPresence?.normalizedHandle}. ${next}`,
+      kept
+        ? `@${handle} is already taken in this Slack workspace, so nothing changed and the Agent keeps @${kept.slackPresence?.normalizedHandle}. ${next}`
+        : `@${handle} is already taken in this Slack workspace. ${unsettled} ${next}`,
       error.options,
     );
   }
   if (error.slackCode === 'name_too_long') {
     return new AgentUpdateRefused(
       error.code,
-      'Slack refused this name because it is too long for a Slack user group, so nothing changed and the Agent keeps its name. Ask for a shorter name.',
+      kept
+        ? 'Slack refused this name because it is too long for a Slack user group, so nothing changed and the Agent keeps its name. Ask for a shorter name.'
+        : `Slack refused this name because it is too long for a Slack user group. ${unsettled} Ask for a shorter name.`,
       error.options,
     );
   }
@@ -6434,8 +6445,12 @@ function slackCommandAddress(
   installation: Pick<WorkspaceInstallation, 'botUserId'> | undefined,
   agent: Pick<CustomAgentConfig, 'slackPresence'> | undefined,
 ): SlackCommandAddress {
+  // An Agent with its own live Slack app is mentioned as that app's bot.
+  const botUserId = agentAppIsLive(agent?.slackPresence)
+    ? agent.slackPresence.app.botUserId
+    : installation?.botUserId;
   return {
-    ...(installation?.botUserId ? { botUserId: installation.botUserId } : {}),
+    ...(botUserId ? { botUserId } : {}),
     ...(agent?.slackPresence?.userGroupId ? { agentUserGroupId: agent.slackPresence.userGroupId } : {}),
   };
 }
