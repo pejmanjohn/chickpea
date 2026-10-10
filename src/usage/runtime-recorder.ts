@@ -356,6 +356,7 @@ interface RoutineUsageRecorderOptions {
   processEnv?: NodeJS.ProcessEnv;
   writeBudgetMs?: number;
   persistenceMode?: UsagePersistenceMode;
+  replaySettlementAt?: number;
   /** Outer occurrence wall-time boundary for durable owner writes. */
   deadlineAt?: number;
   now?: () => number;
@@ -623,7 +624,7 @@ export class RoutineUsageRecorder {
     const usageCompleteness: RecordUsageTerminalInput['usageCompleteness'] = usage
       ? 'complete'
       : 'not_reported';
-    const finishedAt = this.now();
+    const finishedAt = this.options.replaySettlementAt ?? this.now();
     const terminal = {
       operationId: this.admission.operationId,
       executionId: this.options.executionId,
@@ -648,7 +649,7 @@ export class RoutineUsageRecorder {
       totalTokens: usage?.totalTokens ?? null,
       usageUnknownReason: usage ? null : (input.unknownReason ?? 'usage_not_reported'),
     };
-    const terminalInput: RecordUsageTerminalInput = {
+    this.terminalInput = {
       ...terminal,
       ...estimateForRuntime(
         { ...terminal, cacheWrite1hTokens: usage?.cacheWrite1h ?? null },
@@ -656,9 +657,8 @@ export class RoutineUsageRecorder {
         this.options.processEnv,
       ),
     };
-    this.terminalInput = terminalInput;
     const outcome = await persistUsage(
-      () => this.options.store.recordTerminal(terminalInput),
+      () => this.writeTerminal(),
       this.budgetMs,
       {
         phase: 'terminal',
@@ -672,13 +672,33 @@ export class RoutineUsageRecorder {
     this.needsRepair ||= outcome !== 'recorded';
   }
 
+  private async writeTerminal(): Promise<unknown> {
+    if (this.options.replaySettlementAt !== undefined) {
+      const detail = await this.options.store.getOperation(this.admission.operationId);
+      const original = detail?.measurements.find(
+        (measurement) => measurement.executionId === this.terminalInput!.executionId,
+      );
+      if (original) {
+        this.terminalInput = {
+          ...this.terminalInput!,
+          observedAt: original.observedAt,
+          finishedAt: original.observedAt,
+          ...(this.runExecutionId || original.runExecutionId
+            ? { runExecutionId: this.runExecutionId ?? original.runExecutionId }
+            : {}),
+        };
+      }
+    }
+    return this.options.store.recordTerminal(this.terminalInput!);
+  }
+
   async repairAfterTerminal(): Promise<void> {
     if (!this.terminalInput || !this.needsRepair || this.repairAttempted) return;
     this.repairAttempted = true;
     const outcome = await persistUsage(
       async () => {
         await this.options.store.admitOperation(this.admission);
-        await this.options.store.recordTerminal(this.terminalInput!);
+        await this.writeTerminal();
       },
       this.budgetMs,
       {

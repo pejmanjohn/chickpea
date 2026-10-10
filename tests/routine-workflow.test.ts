@@ -2057,6 +2057,53 @@ test('routine Usage repairs failed admission and terminal persistence before com
   }
 });
 
+for (const replayReadOutage of [false, true]) {
+  test(`saved routine settlement replays Usage after delivery interruption${replayReadOutage ? ' and a usage read outage' : ''}`, async () => {
+    const routines = new SqliteRoutineStore(':memory:', () => NOW);
+    const usage = new SqliteUsageStore(':memory:');
+    const telemetry = telemetrySink();
+    try {
+      const fixture = await admittedFixture(routines, `usage_replay_${replayReadOutage}`);
+      const input = { env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
+      const deps = { ...offlineDependencies(), usageRecordingEnabled: true, usageStore: usage,
+        persistenceTelemetrySink: telemetry.sink };
+      const claim = routines.claimDelivery.bind(routines);
+      routines.claimDelivery = async () => { throw new Error('process interrupted'); };
+      await assert.rejects(executeRoutineOccurrence(input, {
+        ...deps, handle: fakeHandle({ reply: successfulReply() }),
+      }), /process interrupted/);
+      routines.claimDelivery = claim;
+      const before = await usage.getOperation(fixture.run.id);
+      assert.equal(before?.measurements.length, 1);
+      assert.equal((await routines.getRun(fixture.run.id))?.flueAgentSettlement?.outcome, 'completed');
+      telemetry.info.length = 0;
+      telemetry.errors.length = 0;
+      const getOperation = usage.getOperation.bind(usage);
+      let readFailed = false;
+      usage.getOperation = async (id) => {
+        if (replayReadOutage && !readFailed) {
+          readFailed = true;
+          throw new Error('temporary usage read outage');
+        }
+        return getOperation(id);
+      };
+      const dispatches: unknown[] = [];
+      assert.equal(await executeRoutineOccurrence(input, {
+        ...deps, now: () => NOW + 2_000, handle: fakeHandle({ dispatches }),
+      }), 'completed');
+      assert.deepEqual(dispatches, [], 'a saved settlement must not invoke the model again');
+      assert.equal((await routines.getRun(fixture.run.id))?.deliveryStatus, 'delivered');
+      assert.deepEqual((await usage.getOperation(fixture.run.id))?.measurements, before?.measurements);
+      assert.deepEqual(telemetry.errors, []);
+      assert.equal(telemetry.info.length, 1);
+      assert.match(telemetry.info[0]!, replayReadOutage ? /"usage":"repaired"/ : /"usage":"recorded"/);
+    } finally {
+      usage.close();
+      routines.close();
+    }
+  });
+}
+
 test('routine deadline bounds a stalled durable Usage owner before dispatch', { timeout: 5_000 }, async (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const routines = new SqliteRoutineStore(':memory:', () => NOW);
