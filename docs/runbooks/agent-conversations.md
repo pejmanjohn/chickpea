@@ -70,9 +70,9 @@ Agent is not available here, once per message. In a Channel each Agent also
 answers as its own bot, its app's or Chickpea's, so that bot must be in the
 Channel. When it is not, nobody answers, and the person is told privately,
 once, that the Agent isn't in the Channel yet. The note has no Add button,
-because granting the Agent would not bring its bot in. Chickpea's bot comes
-in with Admin's Add to channels or `/invite`, and an app's bot with Slack's
-Add people or agents. One message addresses at most
+because granting the Agent would not bring its bot in. Someone in the Channel
+adds the missing bot in Slack, for example with `/invite`. One message
+addresses at most
 6 Agents. Approve, stop, and other commands in such a message apply to the
 first Agent only. These answers are a person's request, so they do not count
 toward the limit on asks between Agents, and only the person's message sets
