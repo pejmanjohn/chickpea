@@ -32,7 +32,7 @@ export function nextDefaultAgentAvatarSeed(
   const leastUsed = Math.min(...useCounts);
   const candidates = useCounts.flatMap((count, index) => count === leastUsed ? [index] : []);
   const selected = candidates[stableHash(nonce) % candidates.length]!;
-  return `${SEED_PREFIX}:${String(selected + 1).padStart(2, '0')}:${nonce}`;
+  return defaultAgentAvatarSeedFor(DEFAULT_AGENT_AVATAR_FILES[selected]!, nonce);
 }
 
 /** The seed for one named default, as a ready-made Agent keeps its own. */
