@@ -3531,3 +3531,75 @@ button.capability-pill { cursor: pointer; }
   .sbx-copy-label { flex-basis: 100%; }
   .sbx-check-row .btn { width: 100%; }
 }
+/* The Agents page's welcome for Owners and Admins, until the workspace has
+   its first Agent, and the ready-made Agents below it (and below the list). */
+.main-inner.first-agent-main { max-width: 980px; }
+.first-agent, .ready-made { font-family: var(--admin-visual-font); }
+.first-agent { background: linear-gradient(135deg, #fbefd6, #f7e2ad); border-radius: 24px; container: first-agent / inline-size; padding: 30px 36px 32px; }
+.first-agent-head { align-items: center; display: grid; gap: 24px; grid-template-columns: minmax(0, 1fr) 190px; }
+.first-agent-art { height: 190px; margin: -24px 0 -34px; width: 190px; }
+.first-agent-eyebrow { color: #8a6410; font-size: .78rem; font-weight: 700; letter-spacing: .12em; margin: 0; text-transform: uppercase; }
+.first-agent-title { color: var(--text); font-family: "Baloo 2", var(--font); font-size: 2.4rem; font-weight: 800; letter-spacing: -.01em; line-height: 1.02; margin: 6px 0 8px; text-wrap: balance; }
+.first-agent-lede { color: #6b5c42; font-size: 1rem; line-height: 1.55; margin: 0; max-width: 62ch; text-wrap: pretty; }
+.first-agent-lead { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 22px 0 10px; }
+.first-agent-lead b { color: #3b3220; font-size: .98rem; }
+.first-agent-lead span { color: #8a7a5c; font-size: .85rem; }
+.first-agent-ways { display: grid; gap: 12px; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; }
+.first-agent-way { align-items: center; background: #fff; border: 1px solid #e3d7bf; border-radius: 16px; color: #3b3220; cursor: pointer; display: flex; font: inherit; gap: 12px; min-width: 0; padding: 14px 16px; text-align: left; text-decoration: none; }
+.first-agent-way:hover { border-color: #dda126; box-shadow: 0 0 0 4px rgba(221, 161, 38, .14); }
+.first-agent-way:focus-visible { outline: 2px solid var(--ember-press); outline-offset: 2px; }
+.first-agent-way-icon { background: #f8f1df; border-radius: 12px; display: grid; flex: none; height: 44px; place-items: center; width: 64px; }
+.first-agent-way-icon img { height: 28px; width: 28px; }
+.first-agent-way-icon .slack-logo-image { height: 22px; width: 22px; }
+.first-agent-way-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.first-agent-way-title { font-size: 1rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.first-agent-way-go { align-items: center; color: #8a6410; display: flex; font-size: .88rem; font-weight: 700; gap: 5px; white-space: nowrap; }
+.first-agent-copy-icon, .first-agent-check-icon { flex: none; height: 15px; width: 15px; }
+.first-agent-check-icon { color: #4f8a3f; }
+.first-agent-marks { display: flex; }
+.first-agent-mark { background: #fff; border: 1px solid #ece3d0; border-radius: 50%; box-shadow: 0 1px 2px rgba(59, 50, 32, .1); color: #111; display: grid; height: 25px; margin-left: -10px; place-items: center; width: 25px; }
+.first-agent-mark:first-child { margin-left: 0; }
+.first-agent-mark svg { height: 15px; width: 15px; }
+.first-agent .sr-only { clip: rect(0, 0, 0, 0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
+/* Titles and actions never wrap: below the width three full tiles need, the
+   tiles tighten, and below what three tight tiles need, they stack. */
+@container first-agent (max-width: 905px) {
+  .first-agent-way { gap: 10px; padding: 12px; }
+  .first-agent-way-icon { width: 56px; }
+  .first-agent-mark { height: 22px; margin-left: -9px; width: 22px; }
+  .first-agent-mark svg { height: 13px; width: 13px; }
+}
+@container first-agent (max-width: 851px) {
+  .first-agent-ways { grid-auto-flow: row; }
+}
+@container first-agent (max-width: 275px) {
+  .first-agent-way { gap: 8px; }
+  .first-agent-way-icon { width: 48px; }
+  .first-agent-mark { height: 20px; margin-left: -8px; width: 20px; }
+  .first-agent-mark svg { height: 12px; width: 12px; }
+}
+@media (max-width: 740px) {
+  .first-agent { padding: 22px 16px 18px; }
+  /* The art stays beside the eyebrow and title; the lede runs full width below. */
+  .first-agent-head { align-items: center; column-gap: 12px; grid-template-columns: minmax(0, 1fr) 88px; }
+  .first-agent-head > div { display: contents; }
+  .first-agent-eyebrow { grid-column: 1; grid-row: 1; }
+  .first-agent-title { font-size: 1.9rem; grid-column: 1; grid-row: 2; }
+  .first-agent-art { grid-column: 2; grid-row: 1 / 3; height: 88px; margin: 0; width: 88px; }
+  .first-agent-lede { grid-column: 1 / -1; grid-row: 3; }
+}
+.ready-made-head { align-items: baseline; display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: space-between; margin: 14px 0 14px; }
+.ready-made-head h2 { color: var(--text); font-size: 1.25rem; font-weight: 700; margin: 0; }
+.ready-made-head p { color: #7f7055; font-size: .92rem; margin: 0; }
+.ready-made-list { border-top: 1px solid #e8deca; list-style: none; margin: 0; padding: 0; }
+.ready-made-list li { align-items: center; border-bottom: 1px solid #e8deca; display: grid; gap: 16px; grid-template-columns: 52px minmax(0, 1fr) auto; padding: 16px 4px; }
+.ready-made-list img { border-radius: 14px; display: block; height: 52px; width: 52px; }
+.ready-made-list h3 { align-items: baseline; color: var(--text); display: flex; flex-wrap: wrap; font-size: 1.02rem; gap: 0 8px; margin: 0; }
+.ready-made-list h3 span { color: #7f7055; font-size: .86rem; font-weight: 500; }
+.ready-made-list p { color: #6b5c42; font-size: .9rem; margin: 2px 0 0; }
+.ready-made-set { background: none; border: 0; color: #8a6410; cursor: pointer; font-size: .92rem; font-weight: 700; padding: 0; white-space: nowrap; }
+.ready-made-set:hover { color: var(--ember-press); }
+@media (max-width: 740px) {
+  .ready-made-list li { gap: 12px; grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .ready-made-list img { border-radius: 12px; height: 44px; width: 44px; }
+}

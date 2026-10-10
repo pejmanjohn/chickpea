@@ -242,6 +242,7 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'onboarding', 'pose-coding-done.webp'), 'c0ef3ec1a6fa4cd5c49ff75fe43cfb16da65e7bde3bbf79691c13582c645b6ba'],
   [exportPath('assets', 'onboarding', 'pose-chat.webp'), 'b46f5490680416fb0dd7a69227618d7c77092ad16e55330e7391b764aa9487d7'],
   [exportPath('assets', 'onboarding', 'pose-celebrate.webp'), '54ded9a6cf84380fb51de436d3fe8a0bbd3c3d773156df04ee62120c756ac99a'],
+  [exportPath('assets', 'onboarding', 'team.webp'), '8edb31dee5d5f5b61bce8d4e88dbd5b7a02ad8d661e66751138c587c40cfcac6'],
   [exportPath('assets', 'connectors', 'bugsnag.png'), '3ae8846f2b32c318a4d88e47d862d961d7e33e44c1d9611118de4e4c868c722f'],
   [exportPath('assets', 'connectors', 'exa.png'), '277c9f6801afffd060b6891522b7a75062e7da677e439ea1bb7c2e697b35d770'],
   [exportPath('assets', 'connectors', 'fireflies.png'), 'de55a51173478c6412190b6af4867a7e2134a961aa423b569421f33674b714ac'],

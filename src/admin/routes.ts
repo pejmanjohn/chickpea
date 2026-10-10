@@ -22,6 +22,7 @@ import { supportReport, type InstallationDetails } from '../release/support-repo
 import { isRecord } from '../security/content-validation.ts';
 import {
   renderAdminPage,
+  type AdminFirstRun,
   type AdminOnboardingPage,
   renderSlackAccessDeniedPage,
   renderSlackAuthorizationHandoffPage,
@@ -54,6 +55,7 @@ import {
   ADMIN_PATH,
   ADMIN_SETTINGS_PATH,
   connectOrigin,
+  firstAgentPrompt,
 } from '../management/connect.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
@@ -6171,6 +6173,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  // The Agents page welcomes an Owner or Admin by first name until the
+  // workspace has its first Agent; the script decides when it shows.
+  const adminFirstRun = async (c: Context, principal: AuthPrincipal): Promise<AdminFirstRun> => {
+    const origin = connectOrigin(requestOrigin(c));
+    let firstName: string | null = null;
+    try {
+      firstName = (await identity(c).getUser(principal.userId))?.displayName?.trim().split(/\s+/)[0] || null;
+    } catch {
+      // The welcome reads "Welcome" without a name.
+    }
+    return { firstName, prompt: origin ? firstAgentPrompt(origin) : null };
+  };
+
   const adminPage = async (c: Context, onboarding?: AdminOnboardingPage): Promise<Response> => {
     const legacyTarget = legacyAgentAdminRedirect(c.req.url);
     if (legacyTarget) return c.redirect(legacyTarget, 302);
@@ -6179,17 +6194,19 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
     const standalone = deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation';
+    const workspaceAdminUi = Boolean(
+      principal && permissionForRole(principal.role).has('admin.configure'),
+    );
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
       installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
       browserOffered: standalone,
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
-      workspaceAdminUi: Boolean(
-        principal && permissionForRole(principal.role).has('admin.configure'),
-      ),
+      workspaceAdminUi,
       assetVersion: await adminUiAssetVersion(),
       onboarding,
+      firstRun: principal && workspaceAdminUi && !principal.machine ? await adminFirstRun(c, principal) : undefined,
     }));
   };
 
@@ -10717,6 +10734,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           connected,
           teamId: installation?.workspaceId ?? connectedTeamId ?? null,
           teamName: teamInfo.teamName ?? null,
+          appId: installation?.appId ?? null,
           transportMode: 'direct',
           health,
           healthDetail: installation?.healthDetail ?? null,
@@ -10760,6 +10778,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         connected: Boolean(installation) && (directConnected || gatewayConnected),
         teamId: installation?.workspaceId ?? connectedTeamId ?? null,
         teamName: teamInfo.teamName ?? null,
+        appId: installation?.appId ?? null,
         transportMode: installation?.transportMode ?? 'direct',
         health: effectiveHealth,
         healthDetail: effectiveHealthDetail,

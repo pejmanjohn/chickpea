@@ -11,6 +11,7 @@ import {
   connectOrigin,
   connectPageHtml,
   connectPrompt,
+  firstAgentPrompt,
 } from '../src/management/connect.ts';
 import { PUBLIC_ASSET_PATHS } from '../src/assets/public-assets.ts';
 
@@ -228,6 +229,14 @@ test('the page only references images the deployment actually serves', async () 
   for (const path of referenced) {
     assert.ok(PUBLIC_ASSET_PATHS.includes(path.replace(/^\//, '')), path);
   }
+});
+
+test('the first-Agent prompt is the connect line, then a request for the first Agent', () => {
+  assert.equal(
+    firstAgentPrompt(ORIGIN),
+    `Connect my coding agent to my Chickpea using ${ORIGIN}/connect.md, then help me create my first Chickpea Agent.`,
+  );
+  assert.ok(firstAgentPrompt(ORIGIN).startsWith(connectPrompt(ORIGIN)), 'the same guide line the connect page copies');
 });
 
 test('connectOrigin accepts a bare origin and nothing else', () => {

@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 
 import { adminUiStylesheet, renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/admin-ui.ts';
-import type { AdminOnboardingPage } from '../src/admin/page.ts';
+import type { AdminFirstRun, AdminOnboardingPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
@@ -134,6 +134,7 @@ type SlackConnectionFixture = {
   gateway?: { healthy: boolean; phase: string; detail: string | null; generation: number | null; versionId: string | null };
   teamId?: string | null;
   teamName?: string | null;
+  appId?: string | null;
   requestUrl: string;
   manifestUrl: string;
 };
@@ -255,8 +256,9 @@ function inlineScript(
   browserOffered = true,
   selfHosted = true,
   onboarding?: AdminOnboardingPage,
+  firstRun?: AdminFirstRun,
 ): string {
-  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding })
+  const script = renderAdminPage({ usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun })
     .match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script, 'admin page should include one inline script');
   return script;
@@ -685,6 +687,8 @@ function runAdminPageHarness(
     initialSessionStorage?: Record<string, string>;
     providerActionMenuCount?: number;
     popupsBlocked?: boolean;
+    /** The first-visit welcome's name and prompt, as the server renders them for Owners and Admins. */
+    firstRun?: AdminFirstRun;
   } = {},
 ): {
   app: FakeElement;
@@ -3097,6 +3101,7 @@ function runAdminPageHarness(
         initial: options.onboardingUnread === true || options.workspaceAdminUi === false ? null : options.onboarding ?? null,
         githubConnectPath: options.selfHosted === false ? options.onboarding?.githubConnectPath ?? null : null,
       } : undefined,
+      options.firstRun,
     ),
     {
       document,
@@ -3373,15 +3378,16 @@ function inlineScriptFor(
   browserOffered = true,
   selfHosted = true,
   onboarding?: AdminOnboardingPage,
+  firstRun?: AdminFirstRun,
 ): string {
-  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding);
+  if (!cloudflare) return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', {
     value: { userAgent: 'Cloudflare-Workers' },
     configurable: true,
   });
   try {
-    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding);
+    return inlineScript(usageAdminUi, workspaceAdminUi, installationOwner, browserOffered, selfHosted, onboarding, firstRun);
   } finally {
     if (previous) Object.defineProperty(globalThis, 'navigator', previous);
     else delete (globalThis as { navigator?: unknown }).navigator;
@@ -19927,4 +19933,194 @@ test('a Next that fails shows its error on the connected GitHub step and keeps N
   const posts = harness.fetchCalls.filter(({ path, method }) => path === '/admin/api/onboarding/github' && method === 'POST');
   assert.equal(posts.length, 1);
   assert.match(harness.app.innerHTML, /GitHub is connected[\s\S]*<p class="field-error" role="alert">Could not load setup\.<\/p><div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next">Next: try Chickpea<\/button>/);
+});
+
+// ---- The first visit: the welcome on Agents ---------------------------------
+
+const FIRST_AGENT_PROMPT = `Connect my coding agent to my Chickpea using ${MCP_ORIGIN}/connect.md, then help me create my first Chickpea Agent.`;
+const FIRST_RUN: AdminFirstRun = { firstName: 'Pejman', prompt: FIRST_AGENT_PROMPT };
+const SLACK_WITH_APP: SlackConnectionFixture = { ...connectedSlackFixture(), appId: 'A_CHICKPEA' };
+
+const firstAgentWelcome = (html: string) => html.match(/<section class="first-agent"[\s\S]*?<\/section>/)?.[0];
+const readyMadeSection = (html: string) => html.match(/<section class="ready-made"[\s\S]*?<\/section>/)?.[0];
+const wayTiles = (welcome: string) => [...welcome.matchAll(/<(?:a|button) [^>]*class="first-agent-way"[\s\S]*?<\/(?:a|button)>/g)].map(([tile]) => tile);
+const tileText = (tile: string) => visibleText(tile).trim();
+
+test('an Owner or Admin with no Agents yet gets the welcome, its three ways and the ready-made Agents', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  const welcome = firstAgentWelcome(html);
+  assert.ok(welcome, 'the welcome renders');
+  assert.match(welcome, /<p class="first-agent-eyebrow">Welcome, Pejman<\/p>/);
+  assert.match(welcome, /<h1 class="first-agent-title" id="first-agent-title">Let’s give Acme Inc its first Agent<\/h1>/);
+  assert.match(welcome, /<p class="first-agent-lede">Agents are teammates with their own @handle, instructions and tools\. Whichever way you pick, the Agent shows up in Slack and here\.<\/p>/);
+  assert.match(welcome, /<img class="first-agent-art" src="\/onboarding\/team\.webp" alt=""/);
+  assert.match(welcome, /<p class="first-agent-lead"><b>Pick one way to create it<\/b> <span>Each builds the same Agent<\/span><\/p>/);
+
+  const tiles = wayTiles(welcome);
+  assert.deepEqual(tiles.map(tileText), ['Here in the dashboard Set it up →', 'In Slack Open Slack →', 'With your coding agent Copy the prompt']);
+  for (const tile of tiles) {
+    assert.match(tile, /^<(?:a|button) [^>]*class="first-agent-way"[^>]*><span class="first-agent-way-icon"[^>]*>[\s\S]*?<\/span><span class="first-agent-way-text"><span class="first-agent-way-title">[^<]+<\/span><span class="first-agent-way-go">/, 'every tile: icon chip, title, action');
+  }
+  assert.match(tiles[0]!, /^<button type="button" class="first-agent-way" data-action="new-profile">/);
+  assert.match(tiles[0]!, /<img src="\/chickpea-mark-128\.png" alt="" width="28" height="28">/);
+  assert.match(tiles[1]!, /^<a class="first-agent-way" href="https:\/\/slack\.com\/app_redirect\?app=A_CHICKPEA&amp;team=T_DESIGN" target="_blank" rel="noopener noreferrer">/);
+  assert.match(tiles[1]!, /<span class="slack-logo-image" aria-hidden="true"><\/span>/);
+  assert.match(tiles[2]!, /^<button type="button" class="first-agent-way" id="first-agent-copy" data-action="first-agent-copy-prompt">/);
+  assert.deepEqual([...tiles[2]!.matchAll(/<span class="first-agent-mark first-agent-mark-([a-z]+)">/g)].map((match) => match[1]), ['claude', 'codex', 'cursor']);
+  assert.match(welcome, /<span class="sr-only" role="status" aria-live="polite"><\/span>/, 'a quiet live region for the copy');
+
+  const ready = readyMadeSection(html);
+  assert.ok(ready, 'the ready-made Agents render');
+  assert.ok(html.indexOf(ready) > html.indexOf(welcome), 'below the welcome');
+  assert.match(ready, /<h2 id="ready-made-title">Or start from a ready-made Agent<\/h2><p>It opens filled in\. Change anything before you create it\.<\/p>/);
+  assert.deepEqual([...ready.matchAll(/<h3 id="ready-made-([a-z-]+)">([^<]+) <span>(@[a-z]+)<\/span><\/h3>/g)].map((match) => `${match[1]} ${match[2]} ${match[3]}`),
+    ['support Support @helpdesk', 'code-helper Code helper @builder', 'weekly-digest Weekly digest @digest']);
+  assert.equal([...ready.matchAll(/data-action="ready-made-open"/g)].length, 3);
+  assert.match(ready, /<button type="button" class="ready-made-set" data-action="ready-made-open" data-starter="support" aria-describedby="ready-made-support">Set it up <span aria-hidden="true">→<\/span><\/button>/);
+  assert.match(ready, /<img src="\/chickpea-avatars\/agent-defaults\/01-sage\.png" alt="" width="52" height="52">/);
+
+  assert.doesNotMatch(html, /Getting started|No Agents yet|Workspace teammates/, 'no checklist and no empty list');
+});
+
+test('the welcome goes away once the workspace has an Agent; the ready-made Agents stay below the list', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [releaseAgent], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.equal(firstAgentWelcome(html), undefined);
+  assert.match(html, /<h1 class="page-title">Agents<\/h1>/);
+  assert.match(html, /Release Profile/);
+  const ready = readyMadeSection(html);
+  assert.ok(ready, 'the ready-made Agents stay');
+  assert.ok(html.indexOf(ready) > html.indexOf('Release Profile'), 'below the list');
+  assert.match(ready, /<h2 id="ready-made-title">Start from a ready-made Agent<\/h2><p>It opens filled in\. Change anything before you create it\.<\/p>/);
+  assert.doesNotMatch(html, /Getting started/);
+});
+
+test('the welcome names the workspace from its first paint: it waits for Slack status, and a failed read keeps what it can', async () => {
+  let answer: ((response: FakeResponse) => void) | undefined;
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], firstRun: FIRST_RUN,
+    settingsLoadFetch: (path) => path === '/admin/api/slack-connection' ? new Promise<FakeResponse>((resolve) => { answer = resolve; }) : undefined,
+  });
+  await flushAsync();
+  assert.ok(answer, 'Slack status is being read');
+  assert.equal(firstAgentWelcome(harness.app.innerHTML), undefined, 'no welcome before the workspace name is known');
+  assert.doesNotMatch(harness.app.innerHTML, /No Agents yet/);
+  assert.ok(harness.renderHistory.every((html) => !/Let’s give your workspace/.test(html)), 'never a placeholder name');
+  answer!(jsonResponse(SLACK_WITH_APP));
+  await flushAsync();
+  assert.match(firstAgentWelcome(harness.app.innerHTML) ?? '', /Let’s give Acme Inc its first Agent/);
+
+  const failed = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: null, firstRun: { firstName: null, prompt: FIRST_AGENT_PROMPT } });
+  await flushAsync();
+  const welcome = firstAgentWelcome(failed.app.innerHTML) ?? '';
+  assert.match(welcome, /<p class="first-agent-eyebrow">Welcome<\/p>/, 'no name, no comma');
+  assert.match(welcome, /Let’s give your workspace its first Agent/);
+  assert.deepEqual(wayTiles(welcome).map(tileText), ['Here in the dashboard Set it up →', 'With your coding agent Copy the prompt'], 'no Slack app to open');
+});
+
+test('Copy the prompt copies the first-Agent prompt, shows a check for a moment and saves nothing', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  const before = firstAgentWelcome(harness.app.innerHTML)!;
+  const writes = () => harness.fetchCalls.filter(({ method }) => method !== 'GET');
+  const writesBefore = writes().length;
+  assert.match(before, /<svg class="first-agent-copy-icon" [^>]*>/);
+  assert.doesNotMatch(before, /first-agent-check-icon/);
+
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'first-agent-copy-prompt' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, [FIRST_AGENT_PROMPT]);
+  const copied = firstAgentWelcome(harness.app.innerHTML)!;
+  assert.match(copied, /<svg class="first-agent-check-icon" [^>]*>/);
+  assert.doesNotMatch(copied, /first-agent-copy-icon/);
+  assert.match(copied, /<span class="sr-only" role="status" aria-live="polite">Prompt copied<\/span>/);
+  const checkIcon = copied.match(/<svg class="first-agent-check-icon"[\s\S]*?<\/svg>/)![0];
+  const copyIcon = before.match(/<svg class="first-agent-copy-icon"[\s\S]*?<\/svg>/)![0];
+  assert.equal(copied.replace(checkIcon, copyIcon).replace('>Prompt copied</span>', '></span>'), before, 'only the icon and the screen-reader line change: no toast, popover or note');
+  assert.equal(harness.locationPath(), '/admin/agents');
+  assert.equal(writes().length, writesBefore, 'nothing is posted or saved');
+
+  for (let index = 0; index < 10 && /first-agent-check-icon/.test(harness.app.innerHTML); index += 1) harness.runNextTimer();
+  assert.equal(firstAgentWelcome(harness.app.innerHTML), before, 'the copy icon comes back');
+  assert.equal(writes().length, writesBefore);
+});
+
+test('a copy the browser refuses shows no check', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN, clipboard: 'reject' });
+  await flushAsync();
+  const before = firstAgentWelcome(harness.app.innerHTML);
+  assert.ok(before);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'first-agent-copy-prompt' }) });
+  await flushAsync();
+  assert.deepEqual(harness.clipboardWrites, [FIRST_AGENT_PROMPT]);
+  assert.equal(firstAgentWelcome(harness.app.innerHTML), before);
+});
+
+test('a ready-made Agent opens the New Agent form filled in and creates nothing', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  const writes = () => harness.fetchCalls.filter(({ method }) => method !== 'GET').length;
+  const before = writes();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'ready-made-open', 'data-starter': 'support' }) });
+  await flushAsync();
+  assert.equal(harness.locationPath(), '/admin/agents/new');
+  const form = harness.app.innerHTML;
+  assert.match(form, /value="Support"/);
+  assert.match(form, /value="helpdesk"/);
+  assert.match(form, /Answers customer questions from your help center and drafts replies\./);
+  assert.match(form, /Help the team answer customer questions\./);
+  assert.equal(writes(), before, 'nothing is created until the form is saved');
+
+  const blank = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  blank.listeners.click?.({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  await flushAsync();
+  assert.equal(blank.locationPath(), '/admin/agents/new');
+  assert.doesNotMatch(blank.app.innerHTML, /value="Support"/, 'Here in the dashboard opens a blank form');
+});
+
+test('standalone gets the welcome with each way that works there, and no hosted copy', async () => {
+  const harness = runAdminPageHarness({ initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN, installationOwner: true });
+  await flushAsync();
+  const welcome = firstAgentWelcome(harness.app.innerHTML);
+  assert.ok(welcome, 'standalone Owners get it too');
+  assert.deepEqual(wayTiles(welcome).map(tileText), ['Here in the dashboard Set it up →', 'In Slack Open Slack →', 'With your coding agent Copy the prompt']);
+  const shown = visibleText(welcome + (readyMadeSection(harness.app.innerHTML) ?? ''));
+  assert.doesNotMatch(shown, /\b(plan|billing|usage|credits?|fees?|trial|subscription|sign up|hosted)\b/i);
+
+  const noSlackApp = runAdminPageHarness({ initialPath: '/admin/agents', agents: [], slackConnection: connectedSlackFixture(), firstRun: { firstName: 'Pejman', prompt: null } });
+  await flushAsync();
+  assert.deepEqual(wayTiles(firstAgentWelcome(noSlackApp.app.innerHTML) ?? '').map(tileText), ['Here in the dashboard Set it up →'],
+    'without a Slack app or a public address, only the way that works');
+});
+
+test('Members see the normal Agents page: no welcome and no ready-made Agents', async () => {
+  for (const [who, options] of [['hosted Member', HOSTED_ADMIN], ['standalone Member', {}]] as const) {
+    const harness = runAdminPageHarness({ ...options, workspaceAdminUi: false, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+    await flushAsync();
+    const html = harness.app.innerHTML;
+    assert.equal(firstAgentWelcome(html), undefined, who);
+    assert.equal(readyMadeSection(html), undefined, who);
+    assert.match(html, /<h1 class="page-title">Agents<\/h1>/, who);
+    assert.match(html, /No Agents yet/, who);
+  }
+});
+
+test('coming back after creating the first Agent in Slack or with a coding agent shows the list', async () => {
+  let agents: unknown[] = [];
+  const harness = runAdminPageHarness({
+    ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN,
+    settingsLoadFetch: (path, method) => path === '/admin/api/agents' && method === 'GET' ? Promise.resolve(jsonResponse({ agents })) : undefined,
+  });
+  await flushAsync();
+  assert.ok(firstAgentWelcome(harness.app.innerHTML));
+  agents = [releaseAgent];
+  harness.focusWindow();
+  await flushAsync();
+  assert.equal(firstAgentWelcome(harness.app.innerHTML), undefined);
+  assert.match(harness.app.innerHTML, /Release Profile/);
+  assert.ok(readyMadeSection(harness.app.innerHTML));
 });

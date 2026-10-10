@@ -143,6 +143,11 @@ export function connectPrompt(origin: string): string {
   return `Connect my coding agent to my Chickpea using ${connectGuideUrl(origin)}`;
 }
 
+/** The same line, asking the coding agent to go on and create the first Agent. Admin's first visit copies it. */
+export function firstAgentPrompt(origin: string): string {
+  return `${connectPrompt(origin)}, then help me create my first Chickpea Agent.`;
+}
+
 function fence(language: string, body: string): string {
   return `\`\`\`${language}\n${body}\n\`\`\``;
 }

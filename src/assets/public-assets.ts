@@ -5,6 +5,7 @@ export const ONBOARDING_ASSET_FILES = [
   'create-workspace.webp', 'events.webp', 'reinstall.webp',
   'signing-secret.webp', 'events-retry.webp',
   ...['hello', 'moving-in', 'setup', 'coding', 'coding-done', 'chat', 'celebrate'].map((pose) => `pose-${pose}.webp`),
+  'team.webp',
 ] as const;
 
 // The Admin application ships as static assets rather than inline markup so
