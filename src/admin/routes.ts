@@ -2596,6 +2596,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const origin = agentAvatarOrigin(c);
     return agentPresenceAnnouncements({
       transport,
+      installationBot: transport,
       welcomeOnJoin: async () => (await resolveSlackBehaviorSettings(
         c.env as PlatformEnv | undefined,
         settings(c),

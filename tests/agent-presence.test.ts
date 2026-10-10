@@ -22,7 +22,7 @@ import {
   normalizeAgentHandle,
 } from '../src/slack/agent-presence/handles.ts';
 import { agentPresenceAnnouncements } from '../src/slack/agent-presence/announcements.ts';
-import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
+import { type AgentAppPresenceHooks, AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
 import {
   SlackTransportError,
   type SlackTransport,
@@ -925,12 +925,11 @@ function crc32(value: Uint8Array): number {
 
 function announcing(
   transport: FakeSlackTransport,
-  options: { welcomeOnJoin?: boolean; botUserId?: string; installationBot?: Pick<SlackTransport, 'lookupChannel'> } = {},
+  options: { welcomeOnJoin?: boolean; installationBot?: Pick<SlackTransport, 'lookupChannel'> } = {},
 ) {
   return agentPresenceAnnouncements({
     transport,
-    ...(options.botUserId ? { botUserId: options.botUserId } : {}),
-    ...(options.installationBot ? { installationBot: options.installationBot } : {}),
+    installationBot: options.installationBot,
     welcomeOnJoin: async () => options.welcomeOnJoin ?? true,
     avatarUrl: (candidate) => `https://avatars.example/${candidate.id}.png`,
     management: { queueOwedAgentWelcome: async () => ({ outcome: 'none' }) },
@@ -1040,24 +1039,32 @@ async function createAppAgent(config: SqliteConfigStore): Promise<void> {
   }, created.revision);
 }
 
-test('an Agent with its own Slack app greets a public Channel only as its own bot, without a persona', async () => {
+/** The host's hooks for an app Agent whose bot, `bot`, is brought into every Channel. */
+function bringingIn(bot: Pick<SlackTransport, 'postMessage'>): AgentAppPresenceHooks {
+  return {
+    async retire() { throw new Error('publish retires nothing'); },
+    async bringBotIn() { return { placement: 'in_channel', transport: bot }; },
+  };
+}
+
+test('an Agent with its own Slack app greets a public Channel only as its own bot once that bot is in, without a persona', async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const chickpea = new FakeSlackTransport();
   chickpea.channel.member = true;
   const ownBot = new FakeSlackTransport();
-  ownBot.channel = { id: 'C_OWN', name: 'own', private: false, member: true, archived: false };
   try {
     await createAppAgent(config);
 
-    const viaChickpea = await new AgentPresenceReconciler({
+    const withoutBot = await new AgentPresenceReconciler({
       config, transport: chickpea, announce: announcing(chickpea),
     }).publish(PUBLISH_SUPPORT);
-    assert.equal(viaChickpea.grant.status, 'active');
-    assert.deepEqual(chickpea.posts, [], "Admin's publish, through Chickpea's bot, never greets for an Agent with its own app");
+    assert.equal(withoutBot.grant.status, 'active');
+    assert.deepEqual(chickpea.posts, [], "with no bot of its own brought in, nothing greets: Chickpea's bot cannot post as the app");
 
     const result = await new AgentPresenceReconciler({
-      config, transport: ownBot, announce: announcing(ownBot, { botUserId: 'UHELPBOT' }),
+      config, transport: chickpea, announce: announcing(chickpea), agentApps: bringingIn(ownBot),
     }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_OWN' });
+    assert.deepEqual(chickpea.posts, []);
     assert.equal(ownBot.posts.length, 1);
     const [post] = ownBot.posts;
     assert.equal(post!.channelId, 'C_OWN');
@@ -1072,8 +1079,9 @@ test('an Agent with its own Slack app greets a public Channel only as its own bo
 
 test("an app Agent's welcome promises unmentioned thread replies only where Chickpea's bot is known to be in the Channel", async () => {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const transport = new FakeSlackTransport();
+  transport.channel.member = true;
   const ownBot = new FakeSlackTransport();
-  ownBot.channel.member = true;
   const chickpeaIn = (member: boolean): Pick<SlackTransport, 'lookupChannel'> => ({
     lookupChannel: async (id) => ({ id, private: false, member, archived: false }),
   });
@@ -1087,7 +1095,7 @@ test("an app Agent's welcome promises unmentioned thread replies only where Chic
     await createAppAgent(config);
     for (const [channelId, installationBot, promised] of cases) {
       await new AgentPresenceReconciler({
-        config, transport: ownBot, announce: announcing(ownBot, { botUserId: 'UHELPBOT', ...(installationBot ? { installationBot } : {}) }),
+        config, transport, announce: announcing(transport, installationBot ? { installationBot } : {}), agentApps: bringingIn(ownBot),
       }).publish({ ...PUBLISH_SUPPORT, channelId });
       const text = ownBot.posts.find((post) => post.channelId === channelId)?.text ?? '';
       assert.equal(text.endsWith(promised

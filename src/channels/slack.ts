@@ -2251,8 +2251,9 @@ async function addRequestedAgentToChannel(
         transport,
         announce: await livePresenceAnnouncements({
           env: platformEnv, settings: stores.settings, identity: stores.identity,
-          management: stores.management, transport, botUserId,
-          ...(input.execution?.installationBot ? { installationBot: input.execution.installationBot } : {}),
+          management: stores.management, transport,
+          // On an Agent app's delivery, `transport` is that app's bot and Chickpea's rides beside it.
+          installationBot: input.execution?.agentApp ? input.execution.installationBot : transport,
         }),
         ...(agentApps ? { agentApps } : {}),
       }).publish({
@@ -2541,7 +2542,7 @@ function privateChannelSetupService(execution: PrivateChannelSetupExecution): Pr
         transport,
         announce: await livePresenceAnnouncements({
           env: execution.platformEnv, settings: stores.settings, identity: stores.identity,
-          management: stores.management, transport,
+          management: stores.management, transport, installationBot: transport,
         }),
       }).publish({
         workspaceId, channelId, agentId,

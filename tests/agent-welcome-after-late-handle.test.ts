@@ -126,6 +126,7 @@ function fixture() {
     now: () => NOW,
     announce: agentPresenceAnnouncements({
       transport,
+      installationBot: transport,
       welcomeOnJoin: async () => true,
       avatarUrl: () => undefined,
       management: {
