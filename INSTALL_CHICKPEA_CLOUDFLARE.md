@@ -422,7 +422,7 @@ That conversation counts; preserve its evidence and continue to signed-in
 Admin verification without sending a duplicate test. If no such reply has
 been observed, continue below.
 
-Choose **Message Chickpea in Slack** on the Try screen. Use its generated link
+Choose **Open Slack** on the Try screen. Use its generated link
 to reach the exact app in the installed workspace. In Slack, open the app's
 Messages conversation if it initially shows App Home.
 
@@ -443,10 +443,10 @@ or healthy HTTP endpoint is insufficient. Preserve the request permalink,
 reply permalink when available, and time in the private receipt without copying
 conversation contents into the repository.
 
-Return to the original Chickpea tab and check for **Reply confirmed in Slack**
-and **Chickpea is ready**. Use **Check again** if the page offers it, or refresh
+Return to the original Chickpea tab and check for **Chickpea replied in Slack**
+and **Chickpea is ready!**. Use **Check again** if the page offers it, or refresh
 after observing the reply. Open the dashboard and verify signed-in access.
-**Proceed to Dashboard** marks onboarding complete and opens the dashboard;
+**Go to dashboard** marks onboarding complete and opens the dashboard;
 the installing agent still needs to verify a real Slack reply.
 
 If the first message fails, preserve its error and timing before changing
