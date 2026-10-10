@@ -11,6 +11,7 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import { onboardingSteps } from '../src/admin/onboarding-steps.ts';
+import { fontFaceCss, JOURNEY_FONTS } from '../src/assets/fonts.ts';
 import type { SlackSetupTransaction } from '../src/identity/types.ts';
 import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
@@ -137,6 +138,20 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.doesNotMatch(owner, /configurationToken|Install Chickpea in Slack/);
 });
 
+test('the manual Slack app guide shows standalone onboarding\'s step bar, at Connect Slack', () => {
+  const html = renderSlackManualSetupPage({
+    setup: setup('awaiting_app_creation'), destination: '/admin/onboarding',
+    manifest: MANIFEST, manifestPrefillUrl: slackManifestPrefillUrl(MANIFEST),
+  });
+  assert.ok(html.includes('<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+    '<li class="active" aria-current="step"><span class="onboarding-step-label">Connect Slack</span><span class="onboarding-step-note">Your workspace</span></li>' +
+    '<li class=""><span class="onboarding-step-label">Choose provider</span></li>' +
+    '<li class=""><span class="onboarding-step-label">Choose model</span></li>' +
+    '<li class=""><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>'));
+  assert.doesNotMatch(html, /onboarding-step-dot|Add to Slack|Connect GitHub/, 'no hosted step reaches standalone');
+  assert.match(html, /\.onboarding-orientation li::before\{[^}]*height:6px/);
+});
+
 test('manual setup adopts credentials before the shared signed Events verification stage', () => {
   const html = renderSlackManualSetupPage({
     setup: setup('awaiting_app_creation'), destination: '/admin/onboarding',
@@ -161,7 +176,7 @@ test('manual setup adopts credentials before the shared signed Events verificati
   assert.match(html, /name="observedManifest"/);
   assert.match(html, /aria-label="Agent handle permissions"/);
   assert.match(html, /class="onboarding-prerequisite-title"/);
-  assert.match(html, /grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+  assert.match(html, /\.onboarding-orientation\{[^}]*grid-auto-columns:minmax\(0,1fr\);grid-auto-flow:column/, 'the four steps share the width equally');
   assert.match(html, /manifest already requests <code>usergroups:read<\/code> and <code>usergroups:write<\/code>/);
   assert.match(html, /separate workspace permission that a manifest cannot change/);
   assert.match(html, /Create and edit user groups/);
@@ -274,28 +289,63 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   const html = renderSlackJourneyPage({
     ...base,
     progress: { steps: onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true }), current: 'github' },
-    badge: 'Signed in with Slack as <Ana & "Bo">',
+    badge: 'Acme <Ops> & "Co"',
   });
   const progress = '<ol class="auth-progress" role="list" aria-label="Onboarding progress">' +
-    '<li class="auth-progress-done"><span class="auth-progress-dot">&#10003;</span><span class="auth-progress-label">Add to Slack</span></li>' +
-    '<li class="auth-progress-current" aria-current="step"><span class="auth-progress-dot">2</span><span class="auth-progress-label">Connect GitHub</span></li>' +
-    '<li><span class="auth-progress-dot">3</span><span class="auth-progress-label">Try Chickpea</span></li></ol>';
-  const badge = '<p class="auth-badge"><span class="auth-badge-check" aria-hidden="true">&#10003;</span>Signed in with Slack as &lt;Ana &amp; &quot;Bo&quot;&gt;</p>';
+    '<li class="auth-progress-done"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Done</span></li>' +
+    '<li class="auth-progress-current" aria-current="step"><span class="onboarding-step-label">Connect GitHub</span><span class="onboarding-step-note">Optional</span></li>' +
+    '<li><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
+  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Acme &lt;Ops&gt; &amp; &quot;Co&quot;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
   assert.ok(html.includes(`</div>${progress}${badge}<p class="auth-eyebrow">Step 2 of 3</p>`), 'brand row, steps, badge, then the eyebrow');
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   const classes = new Set([...`${progress}${badge}`.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
   for (const name of classes) assert.ok(style.includes(`.${name}`), `.${name} has a rule in the shell`);
 
   const plain = renderSlackJourneyPage(base);
-  assert.doesNotMatch(plain, /auth-progress|auth-badge/, 'a page with neither carries no new markup or styles');
+  assert.doesNotMatch(plain, /auth-progress|auth-badge|onboarding-scene|auth-split/, 'a page with neither carries no new markup or styles');
   assert.equal(renderSlackJourneyPage({ ...base, progress: undefined, badge: undefined }), plain);
   assert.equal(renderSlackJourneyPage({ ...base, badge: '   ' }), plain, 'an empty badge shows nothing');
 });
 
 test('the shell step bar marks every step done before the current one, and none after', () => {
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true });
-  const html = renderSlackJourneyPage({ surface: 'add-to-slack', eyebrow: 'Step 1 of 5', title: 'Add', body: '', progress: { steps, current: 'slack' } });
-  const states = [...html.matchAll(/<li( class="([^"]+)")?( aria-current="step")?><span class="auth-progress-dot">([^<]+)<\/span>/g)]
-    .map((match) => `${match[2] ?? 'pending'}:${match[4]}`);
-  assert.deepEqual(states, ['auth-progress-current:1', 'pending:2', 'pending:3', 'pending:4', 'pending:5']);
+  const states = (current: 'slack' | 'github') => {
+    const html = renderSlackJourneyPage({ surface: 'add-to-slack', eyebrow: 'Step 1 of 5', title: 'Add', body: '', progress: { steps, current } });
+    return [...html.matchAll(/<li( class="([^"]+)")?( aria-current="step")?><span class="onboarding-step-label">([^<]+)<\/span>(?:<span class="onboarding-step-note">([^<]+)<\/span>)?<\/li>/g)]
+      .map((match) => `${match[2] ?? 'pending'}:${match[4]}:${match[5] ?? ''}`);
+  };
+  assert.deepEqual(states('slack'), ['auth-progress-current:Add to Slack:Your workspace', 'pending:Choose provider:', 'pending:Choose model:', 'pending:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
+  assert.deepEqual(states('github'), ['auth-progress-done:Add to Slack:Done', 'auth-progress-done:Choose provider:Done', 'auth-progress-done:Choose model:Done', 'auth-progress-current:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
+});
+
+test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, served by Chickpea itself', async () => {
+  const pages = [
+    renderSlackJourneyPage({ surface: 's', eyebrow: 'E', title: 'T', body: '' }),
+    renderSlackSignInPage('/admin'),
+    renderSlackOwnerCompletePage('/admin'),
+  ];
+  for (const html of pages) {
+    assert.ok(html.includes(`<style>\n${fontFaceCss(JOURNEY_FONTS)}\n`), 'the shell declares its own font faces first');
+    assert.doesNotMatch(html, /<link rel="(?:stylesheet|preconnect)"|fonts\.googleapis|fonts\.gstatic/);
+    assert.match(html, /body\{[^}]*font-family:Quicksand,/);
+    assert.match(html, /\.auth-title\{[^}]*font-family:"Baloo 2",/);
+  }
+});
+
+test('a host\'s onboarding page can be a split screen: the scene on the left, brand, steps and the page on the right', () => {
+  const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true });
+  const html = renderSlackJourneyPage({
+    surface: 'add-to-slack', eyebrow: 'Step 1 of 3', title: 'Now add Chickpea to Slack', body: '<p>Body</p>',
+    progress: { steps, current: 'slack' }, badge: 'Violet', scene: 'add-to-slack',
+  });
+  const body = html.slice(html.indexOf('<body'));
+  assert.match(body, /^<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand"><div class="auth-brand">[\s\S]*?<\/div><\/div><aside class="onboarding-scene onboarding-tone-apricot" data-scene="add-to-slack">[\s\S]*?<p class="onboarding-caption">Bags packed\. Where to\?<\/p><\/aside><main class="auth-card" aria-labelledby="auth-title"><ol class="auth-progress"[\s\S]*?<\/ol><div class="auth-body"><div class="auth-badge">[\s\S]*?<p class="auth-eyebrow">Step 1 of 3<\/p>/);
+  assert.match(body, /<img class="onboarding-pose" src="\/onboarding\/pose-moving-in\.webp" alt=""/);
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  const classes = new Set([...body.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
+  for (const name of classes) assert.ok(style.includes(`.${name}`), `.${name} has a rule in the shell`);
+  assert.match(style, /@media\(max-width:720px\)\{\.auth-split\{grid-template-columns:minmax\(0,1fr\)/, 'a phone stacks the scene above the page');
+  const signIn = renderSlackJourneyPage({ surface: 'sign-in', eyebrow: 'Welcome', title: 'Sign in', body: '', scene: 'sign-in' });
+  assert.match(signIn, /data-scene="sign-in"[\s\S]*<p class="onboarding-caption">Hi! I’m Chickpea\.<\/p>/);
+  assert.doesNotMatch(signIn.slice(signIn.indexOf('<body')), /auth-progress|auth-badge/, 'sign-in has no steps and no signed-in card');
 });

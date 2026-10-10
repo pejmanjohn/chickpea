@@ -29,6 +29,7 @@ test('every public asset is served byte-identically without authentication', asy
       /\.m?js$/.test(path) ? 'text/javascript; charset=utf-8'
         : path.endsWith('.css') ? 'text/css; charset=utf-8'
         : path.endsWith('.webp') ? 'image/webp'
+        : path.endsWith('.woff2') ? 'font/woff2'
         : 'image/png',
     );
     assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');

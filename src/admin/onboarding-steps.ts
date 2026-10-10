@@ -6,6 +6,8 @@ export type OnboardingStepId = 'slack' | 'provider' | 'model' | 'github' | 'try'
 export interface OnboardingStep {
   id: OnboardingStepId;
   label: string;
+  /** Under the label until the step is done. */
+  note?: string;
 }
 
 export function onboardingSteps(input: {
@@ -14,13 +16,13 @@ export function onboardingSteps(input: {
   githubOffered: boolean;
 }): OnboardingStep[] {
   return [
-    { id: 'slack', label: input.selfHosted ? 'Connect Slack' : 'Add to Slack' },
+    { id: 'slack', label: input.selfHosted ? 'Connect Slack' : 'Add to Slack', note: 'Your workspace' },
     ...(input.onChickpeaModels ? [] : [
       { id: 'provider', label: 'Choose provider' },
       { id: 'model', label: 'Choose model' },
     ] as const),
-    ...(input.githubOffered && !input.selfHosted ? [{ id: 'github', label: 'Connect GitHub' }] as const : []),
-    { id: 'try', label: 'Try Chickpea' },
+    ...(input.githubOffered && !input.selfHosted ? [{ id: 'github', label: 'Connect GitHub', note: 'Optional' }] as const : []),
+    { id: 'try', label: 'Try Chickpea', note: 'Say hi' },
   ];
 }
 

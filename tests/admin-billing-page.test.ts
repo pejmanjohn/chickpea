@@ -906,24 +906,24 @@ function progress(html: string): string {
   return html.slice(start, html.indexOf('</ol>', start) + '</ol>'.length);
 }
 
-const TODAY_AT_CHOOSE_PROVIDER = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
-  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
-  '<li class="active" aria-current="step"><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Choose provider</span></li>' +
-  '<li class=""><span class="onboarding-step-dot">3</span><span class="onboarding-step-label">Choose model</span></li>' +
-  '<li class=""><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
-const TODAY_AT_TRY = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
-  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Connect Slack</span></li>' +
-  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose provider</span></li>' +
-  '<li class="complete"><span class="onboarding-step-dot">&#10003;</span><span class="onboarding-step-label">Choose model</span></li>' +
-  '<li class="active" aria-current="step"><span class="onboarding-step-dot">4</span><span class="onboarding-step-label">Try Chickpea</span></li></ol>';
+const STANDALONE_AT_CHOOSE_PROVIDER = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-label">Connect Slack</span><span class="onboarding-step-note">Done</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-label">Choose provider</span></li>' +
+  '<li class=""><span class="onboarding-step-label">Choose model</span></li>' +
+  '<li class=""><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
+const STANDALONE_AT_TRY = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+  '<li class="complete"><span class="onboarding-step-label">Connect Slack</span><span class="onboarding-step-note">Done</span></li>' +
+  '<li class="complete"><span class="onboarding-step-label">Choose provider</span><span class="onboarding-step-note">Done</span></li>' +
+  '<li class="complete"><span class="onboarding-step-label">Choose model</span><span class="onboarding-step-note">Done</span></li>' +
+  '<li class="active" aria-current="step"><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
 
-test('standalone keeps today\'s four onboarding steps byte for byte; hosted without Chickpea\'s models starts them at Add to Slack', async () => {
+test('standalone keeps its four onboarding steps, byte for byte; hosted without Chickpea\'s models starts them at Add to Slack', async () => {
   for (const [mode, selfHosted, first] of [['standalone', true, 'Connect Slack'], ['hosted without Chickpea\'s models', false, 'Add to Slack']] as const) {
     const firstStep = (bar: string) => bar.replace('>Connect Slack<', `>${first}<`);
     const choosing = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted });
-    assert.equal(progress(choosing.html()), firstStep(TODAY_AT_CHOOSE_PROVIDER), `${mode} at Choose provider`);
+    assert.equal(progress(choosing.html()), firstStep(STANDALONE_AT_CHOOSE_PROVIDER), `${mode} at Choose provider`);
     const trying = await harness({ path: '/admin/onboarding', billingOffered: false, selfHosted, onboarding: TRY });
-    assert.equal(progress(trying.html()), firstStep(TODAY_AT_TRY), `${mode} at Try`);
+    assert.equal(progress(trying.html()), firstStep(STANDALONE_AT_TRY), `${mode} at Try`);
   }
 });
 
@@ -936,7 +936,7 @@ test('hosted onboarding on Chickpea\'s models goes from Add to Slack to Try Chic
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN });
   assert.equal(platformRequests(page.requests), 1);
   assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
-  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Try Chickpea<\/span><\/li><\/ol>$/);
+  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-label">Try Chickpea<\/span><span class="onboarding-step-note">Say hi<\/span><\/li><\/ol>$/);
   assert.match(page.html(), /<p class="onboarding-eyebrow">Step 2 of 2<\/p><h1 class="onboarding-title">Say hi to Chickpea in Slack<\/h1>/);
   assert.doesNotMatch(page.html(), /Choose your model provider|Choose your model/);
 
@@ -946,10 +946,14 @@ test('hosted onboarding on Chickpea\'s models goes from Add to Slack to Try Chic
   assert.equal(platformRequests(reload.requests), 0, 'a journey at Try sets nothing up again');
 });
 
-test('while Chickpea sets up, the card says so, and nothing else asks again', async () => {
+test('while Chickpea sets up, the page says it is moving into the workspace, as step 1, and nothing else asks again', async () => {
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true });
-  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' +
-    '<div class="onboarding-illustration" data-illustration="setup" aria-hidden="true"></div></section>'));
+  assert.ok(page.html().includes('<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Step 1 of 2</p><h1 class="onboarding-title">Setting up Chickpea in Acme</h1>' +
+    '<p class="onboarding-lede">Chickpea is unpacking in your workspace. This takes a few seconds.</p>' +
+    '<div class="onboarding-progress" aria-hidden="true"><i></i></div></section>'));
+  assert.match(page.html(), /data-scene="setting-up"[\s\S]*<p class="onboarding-caption">Moving in…<\/p>/);
+  const unnamed = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true, onboarding: { ...CHOOSE_PROVIDER, workspace: { id: 'TACME', name: null } } });
+  assert.match(unnamed.html(), /<h1 class="onboarding-title">Setting up Chickpea&hellip;<\/h1>/, 'a workspace without a name is not named');
   assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Try Chickpea']);
   await page.click({ 'data-action': 'toggle-swap' });
   assert.equal(platformRequests(page.requests), 1, 'a render while it runs sends nothing more');
@@ -963,7 +967,7 @@ test('with Connect GitHub offered, it is the step between Add to Slack and Try C
   const github = { ...CHOOSE_PROVIDER, githubConnectPath: '/github/connect' };
   const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, onboarding: github });
   assert.deepEqual(stepLabels(page.html()), ['Add to Slack', 'Connect GitHub', 'Try Chickpea']);
-  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-dot">2<\/span><span class="onboarding-step-label">Connect GitHub<\/span><\/li>/);
+  assert.match(progress(page.html()), /<li class="active" aria-current="step"><span class="onboarding-step-label">Connect GitHub<\/span><span class="onboarding-step-note">Optional<\/span><\/li>/);
   assert.match(page.html(), /Let Agents work on your code/);
 });
 
@@ -1008,8 +1012,8 @@ test('on Chickpea\'s models the step bar is the same from the first paint to Chi
   for (const [githubConnectPath, steps] of [[undefined, ['Add to Slack', 'Try Chickpea']], ['/github/connect', ['Add to Slack', 'Connect GitHub', 'Try Chickpea']]] as const) {
     const github = githubConnectPath ? { githubConnectPath } : {};
     const page = await harness({ path: '/admin/onboarding', billingOffered: true, summary: NO_PLAN, platformHeld: true, onboarding: { ...CHOOSE_PROVIDER, ...github } });
-    assert.match(page.renders[0]!, /Setting up Chickpea&hellip;/, 'the first paint is already setting up');
-    assert.match(progress(page.renders[0]!), /<li class="active" aria-current="step"><span class="onboarding-step-dot">1<\/span><span class="onboarding-step-label">Add to Slack<\/span><\/li>/,
+    assert.match(page.renders[0]!, /Setting up Chickpea in Acme/, 'the first paint is already setting up');
+    assert.match(progress(page.renders[0]!), /<li class="active" aria-current="step"><span class="onboarding-step-label">Add to Slack<\/span><span class="onboarding-step-note">Your workspace<\/span><\/li>/,
       'setting up belongs to adding Chickpea to Slack');
     page.releasePlatform();
     await flush();
@@ -1053,8 +1057,9 @@ test('Try checks for Chickpea\'s first reply every second for two minutes, then 
 });
 
 const stepBar = (html: string) => html.match(/<ol class="onboarding-orientation[\s\S]*?<\/ol>/)?.[0];
+const scene = (html: string) => html.match(/<aside class="onboarding-scene[\s\S]*?<\/aside>/)?.[0];
 
-test('the server paints the same step bar the script paints first, at every stage and in every mode', async () => {
+test('the server paints the same scene and step bar the script paints first, at every stage and in every mode', async () => {
   const stages = ['choose_provider', 'choose_model', 'connect_github', 'try', 'complete'];
   const modes: Array<[string, { billingOffered: boolean; selfHosted?: boolean; github?: string }]> = [
     ['Chickpea\'s models with GitHub', { billingOffered: true, github: '/github/connect' }],
@@ -1073,6 +1078,9 @@ test('the server paints the same step bar the script paints first, at every stag
         const server = stepBar(page.serverHtml.slice(0, page.serverHtml.indexOf('<script')));
         assert.ok(server, `${mode} at ${stage}${search}: the server paints a step bar`);
         assert.equal(server, stepBar(page.renders[0]!), `${mode} at ${stage}${search}`);
+        const serverScene = scene(page.serverHtml.slice(0, page.serverHtml.indexOf('<script')));
+        assert.ok(serverScene, `${mode} at ${stage}${search}: the server paints the scene`);
+        assert.equal(serverScene, scene(page.renders[0]!), `${mode} at ${stage}${search}: the same scene`);
       }
     }
   }

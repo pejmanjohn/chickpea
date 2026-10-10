@@ -1,4 +1,36 @@
-@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Quicksand:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/baloo-2/devanagari.woff2) format("woff2");unicode-range:U+0900-097F,U+1CD0-1CF4,U+1CF7-1CF9,U+200C-200D,U+20A8,U+20B9,U+20F0,U+25CC,U+A830-A839,U+A8E0-A8FF,U+11B00-11B0A}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/baloo-2/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/baloo-2/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/baloo-2/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/baloo-2/devanagari.woff2) format("woff2");unicode-range:U+0900-097F,U+1CD0-1CF4,U+1CF7-1CF9,U+200C-200D,U+20A8,U+20B9,U+20F0,U+25CC,U+A830-A839,U+A8E0-A8FF,U+11B00-11B0A}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/baloo-2/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/baloo-2/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/baloo-2/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/baloo-2/devanagari.woff2) format("woff2");unicode-range:U+0900-097F,U+1CD0-1CF4,U+1CF7-1CF9,U+200C-200D,U+20A8,U+20B9,U+20F0,U+25CC,U+A830-A839,U+A8E0-A8FF,U+11B00-11B0A}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/baloo-2/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/baloo-2/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/baloo-2/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/baloo-2/devanagari.woff2) format("woff2");unicode-range:U+0900-097F,U+1CD0-1CF4,U+1CF7-1CF9,U+200C-200D,U+20A8,U+20B9,U+20F0,U+25CC,U+A830-A839,U+A8E0-A8FF,U+11B00-11B0A}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/baloo-2/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/baloo-2/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Baloo 2";font-style:normal;font-weight:800;font-display:swap;src:url(/fonts/baloo-2/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Quicksand";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/quicksand/quicksand.woff2) format("woff2")}
+@font-face{font-family:"Quicksand";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/quicksand/quicksand.woff2) format("woff2")}
+@font-face{font-family:"Quicksand";font-style:normal;font-weight:600;font-display:swap;src:url(/fonts/quicksand/quicksand.woff2) format("woff2")}
+@font-face{font-family:"Quicksand";font-style:normal;font-weight:700;font-display:swap;src:url(/fonts/quicksand/quicksand.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/cyrillic-ext.woff2) format("woff2");unicode-range:U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/cyrillic.woff2) format("woff2");unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/greek.woff2) format("woff2");unicode-range:U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url(/fonts/jetbrains-mono/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/cyrillic-ext.woff2) format("woff2");unicode-range:U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/cyrillic.woff2) format("woff2");unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/greek.woff2) format("woff2");unicode-range:U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/vietnamese.woff2) format("woff2");unicode-range:U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/latin-ext.woff2) format("woff2");unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C4,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url(/fonts/jetbrains-mono/latin.woff2) format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+/* The faces above are fontFaceCss(ADMIN_FONTS) from src/assets/fonts.ts; tests/fonts.test.ts keeps them equal. */
 
 :root {
   /* surfaces */
@@ -535,32 +567,94 @@ button, input, textarea, select { font: inherit; }
 .main:has(.slack-overview) { padding-top: 32px; }
 .main-inner { container-type: inline-size; display: flex; flex-direction: column; gap: 26px; margin: 0 auto; max-width: 760px; width: 100%; }
 .frame.onboarding-frame { height: auto; max-width: none; overflow: visible; }
-.onboarding-shell { isolation: isolate; min-height: 100dvh; width: 100%; }
-.onboarding-shell-inner { margin: 0 auto; max-width: 1500px; padding: 24px 28px 64px; width: 100%; }
-.onboarding-brand-row { align-items: center; display: flex; gap: 20px; justify-content: space-between; }
+/* Onboarding is a split screen: a tinted scene with Chickpea under the arch
+   on the left, and the brand, step bar and current step on the right. Below
+   720px the scene becomes a short band under the brand. */
+.onboarding-shell { background: var(--bg); display: grid; grid-template-columns: minmax(0, 44fr) minmax(0, 56fr); min-height: 100dvh; width: 100%; }
+.onboarding-shell > .onboarding-shell-inner:only-child { grid-column: 1 / -1; }
+.onboarding-shell-inner { display: flex; flex-direction: column; min-width: 0; padding: 34px clamp(28px, 5vw, 72px) 48px; }
+.onboarding-tone-gold { --tone: #f7e2ad; --tone-deep: #e6b445; --tone-ink: #7a5410; }
+.onboarding-tone-apricot { --tone: #f9d7b8; --tone-deep: #e58d4e; --tone-ink: #8a4a18; }
+.onboarding-tone-sage { --tone: #dce8d0; --tone-deep: #86a86f; --tone-ink: #3f6330; }
+.onboarding-tone-lilac { --tone: #e7ddf1; --tone-deep: #a189c2; --tone-ink: #5b4580; }
+.onboarding-tone-coral { --tone: #f8d6cc; --tone-deep: #d9705a; --tone-ink: #8c3a28; }
+.onboarding-scene { --arch: clamp(240px, 26vw, 380px); align-items: center; align-self: start; background: var(--tone); display: flex; flex-direction: column; height: 100dvh; isolation: isolate; justify-content: center; min-height: 560px; overflow: hidden; padding: 40px; position: sticky; top: 0; }
+.onboarding-scene::before { background: radial-gradient(60% 50% at 30% 20%, rgba(255, 255, 255, .45), transparent 70%), radial-gradient(50% 40% at 80% 90%, rgba(0, 0, 0, .05), transparent 70%); content: ""; inset: 0; position: absolute; z-index: -2; }
+.onboarding-arch { background: var(--tone-deep); border-radius: calc(var(--arch) / 2) calc(var(--arch) / 2) 26px 26px; box-shadow: inset 0 0 0 calc(var(--arch) * .058) color-mix(in srgb, var(--tone-deep) 70%, #000 12%); flex: none; height: calc(var(--arch) * 1.158); position: relative; width: var(--arch); }
+.onboarding-arch::before { background: color-mix(in srgb, var(--tone-deep) 55%, #2a1d10 45%); border-radius: calc(var(--arch) * .442) calc(var(--arch) * .442) 10px 10px; content: ""; inset: calc(var(--arch) * .058); position: absolute; }
+.onboarding-arch::after { background: color-mix(in srgb, var(--tone-deep) 70%, #000 10%); border-radius: 12px; bottom: calc(var(--arch) * -.058); content: ""; height: calc(var(--arch) * .068); left: -18%; opacity: .55; position: absolute; right: -18%; z-index: -1; }
+.onboarding-pose { bottom: -1.5%; height: auto; left: 50%; max-width: none; position: absolute; transform: translateX(-50%); width: 105%; }
+.onboarding-caption { color: var(--tone-ink); font-family: var(--display); font-size: clamp(1.5rem, 2.2vw, 2rem); font-weight: 800; line-height: 1.1; margin: calc(var(--arch) * .1 + 18px) 0 0; position: relative; text-align: center; text-wrap: balance; }
+.onboarding-confetti { inset: 0; overflow: hidden; pointer-events: none; position: absolute; z-index: 1; }
+.onboarding-confetti i { animation: onboarding-confetti 9s linear infinite; border-radius: 5px; height: 18px; opacity: .85; position: absolute; top: -24px; width: 10px; }
+.onboarding-confetti i:nth-child(5n + 1) { background: #dda033; }
+.onboarding-confetti i:nth-child(5n + 2) { background: #86a86f; }
+.onboarding-confetti i:nth-child(5n + 3) { background: #d9705a; }
+.onboarding-confetti i:nth-child(5n + 4) { background: #a189c2; }
+.onboarding-confetti i:nth-child(5n) { background: #e58d4e; }
+.onboarding-confetti i:nth-child(1) { animation-delay: -1s; left: 11%; }
+.onboarding-confetti i:nth-child(2) { animation-delay: -6.2s; left: 48%; }
+.onboarding-confetti i:nth-child(3) { animation-delay: -3.4s; left: 85%; }
+.onboarding-confetti i:nth-child(4) { animation-delay: -7.8s; left: 22%; }
+.onboarding-confetti i:nth-child(5) { animation-delay: -2.1s; left: 59%; }
+.onboarding-confetti i:nth-child(6) { animation-delay: -5.5s; left: 96%; }
+.onboarding-confetti i:nth-child(7) { animation-delay: -8.6s; left: 33%; }
+.onboarding-confetti i:nth-child(8) { animation-delay: -4.3s; left: 70%; }
+.onboarding-confetti i:nth-child(9) { animation-delay: -0.4s; left: 7%; }
+.onboarding-confetti i:nth-child(10) { animation-delay: -6.9s; left: 44%; }
+.onboarding-confetti i:nth-child(11) { animation-delay: -3s; left: 81%; }
+.onboarding-confetti i:nth-child(12) { animation-delay: -7.2s; left: 18%; }
+.onboarding-confetti i:nth-child(13) { animation-delay: -1.7s; left: 55%; }
+.onboarding-confetti i:nth-child(14) { animation-delay: -5s; left: 92%; }
+.onboarding-confetti i:nth-child(15) { animation-delay: -8.2s; left: 29%; }
+.onboarding-confetti i:nth-child(16) { animation-delay: -2.6s; left: 66%; }
+.onboarding-confetti i:nth-child(17) { animation-delay: -4.8s; left: 3%; }
+.onboarding-confetti i:nth-child(18) { animation-delay: -6.5s; left: 77%; }
+@keyframes onboarding-confetti {
+  from { transform: translate3d(0, 0, 0) rotate(0deg); }
+  to { transform: translate3d(28px, calc(100dvh + 48px), 0) rotate(540deg); }
+}
+.onboarding-brand-row { align-items: center; display: flex; gap: 20px; justify-content: space-between; min-height: 52px; }
 .onboarding-brand { align-items: center; color: var(--text); display: inline-flex; gap: 11px; min-width: 0; text-decoration: none; }
-.onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 36px; width: 36px; }
-.onboarding-brand .brand-wordmark { height: 31px; }
+.onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 40px; width: 40px; }
+.onboarding-brand .brand-wordmark { height: 32px; }
 .onboarding-environment { color: var(--text-3); font-family: var(--mono); font-size: .8125rem; }
-.onboarding-orientation { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; margin: 26px auto 0; max-width: 820px; padding: 0; width: 100%; }
-.onboarding-orientation-short { grid-auto-columns: minmax(0, 164px); grid-auto-flow: column; grid-template-columns: none; justify-content: center; }
-.onboarding-orientation li { min-width: 0; position: relative; text-align: center; }
-.onboarding-orientation li:not(:first-child)::before { background: var(--line-strong); content: ""; height: 2px; position: absolute; right: 50%; top: 18px; width: 100%; z-index: -1; }
-.onboarding-orientation li.complete:not(:first-child)::before,
-.onboarding-orientation li.active:not(:first-child)::before { background: var(--ember); }
-.onboarding-step-dot { background: var(--canvas); border: 2px solid var(--line-strong); border-radius: 50%; color: var(--text-3); display: grid; font-family: var(--mono); font-size: .875rem; font-variant-numeric: tabular-nums; height: 38px; margin: 0 auto 9px; place-items: center; width: 38px; }
-.complete .onboarding-step-dot { background: var(--ember); border-color: var(--ember); color: var(--text); }
-.active .onboarding-step-dot { background: var(--bg); border-color: var(--ember); box-shadow: 0 0 0 5px var(--ember-tint); color: var(--ember-deep); }
-.onboarding-step-label { color: var(--text-3); display: block; font-size: .875rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.active .onboarding-step-label, .complete .onboarding-step-label { color: var(--text); }
-.onboarding-stage { display: grid; min-height: 590px; padding-top: 32px; place-items: start center; }
-.onboarding-panel { background: var(--bg); border-radius: 28px; box-shadow: 0 4px 0 rgba(59, 50, 32, .11); padding: 42px 44px; width: min(82%, 1280px); }
-.onboarding-panel-wide { width: min(82%, 900px); }
-.onboarding-eyebrow { color: var(--ember-deep); font-family: var(--mono); font-size: .75rem; font-weight: 700; letter-spacing: .09em; margin: 0 0 12px; text-transform: uppercase; }
-.onboarding-title { color: var(--text); font-family: var(--display); font-size: clamp(2.25rem, 3.4vw, 2.875rem); font-weight: 700; letter-spacing: -.025em; line-height: 1; margin: 0; max-width: 24ch; text-wrap: balance; }
-.onboarding-lede { color: var(--text-2); font-size: 1.125rem; line-height: 1.5; margin: 14px 0 0; max-width: 58ch; text-wrap: pretty; }
-.onboarding-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
-.onboarding-actions .btn { min-height: 50px; padding: 11px 19px; }
+.onboarding-orientation { display: grid; gap: 10px; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; list-style: none; margin: 48px 0 0; max-width: 680px; padding: 0; }
+.onboarding-orientation:has(> li:nth-child(5)) li { font-size: .875rem; }
+.onboarding-orientation li { color: var(--text-2); display: flex; flex-direction: column; font-size: .9375rem; font-weight: 700; gap: 4px; min-width: 0; }
+.onboarding-orientation li::before { background: var(--line); border-radius: 99px; content: ""; height: 6px; margin-bottom: 6px; }
+.onboarding-orientation li.complete::before { background: var(--ok-solid); }
+.onboarding-orientation li.active::before { background: var(--ember); }
+.onboarding-orientation li.active, .onboarding-orientation li.complete { color: var(--text); }
+.onboarding-step-label, .onboarding-step-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.onboarding-step-note { color: var(--text-2); font-size: .8125rem; font-weight: 600; }
+.onboarding-stage { display: flex; flex: 1; flex-direction: column; justify-content: center; padding: 24px 0; }
+.onboarding-panel { max-width: 640px; width: 100%; }
+.onboarding-eyebrow { color: var(--ember-deep); font-size: .78rem; font-weight: 700; letter-spacing: .12em; margin: 0 0 10px; text-transform: uppercase; }
+.onboarding-title { color: var(--text); font-family: var(--display); font-size: clamp(2.25rem, 3.6vw, 3.3rem); font-weight: 800; letter-spacing: -.01em; line-height: 1.02; margin: 0; text-wrap: balance; }
+.onboarding-lede { color: var(--text-2); font-size: 1.1875rem; line-height: 1.55; margin: 14px 0 0; max-width: 34em; text-wrap: pretty; }
+.onboarding-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 14px; margin-top: 30px; }
+.onboarding-actions .btn { border-radius: 16px; font-size: 1.0625rem; min-height: 56px; padding: 12px 24px; }
+.btn-github { background: #24292f; box-shadow: 0 3px 0 #0d1117; color: #fff; }
+.btn-github:hover:not(:disabled) { background: #32383f; }
+.btn-github:active:not(:disabled) { box-shadow: 0 .5px 0 #0d1117; transform: translateY(2px); }
+.onboarding-progress { background: var(--well); border: 1px solid var(--line); border-radius: 999px; height: 10px; margin-top: 28px; max-width: 420px; overflow: hidden; }
+.onboarding-progress i { animation: onboarding-progress 1.6s ease-in-out infinite; background: linear-gradient(90deg, #e58d4e, var(--ember)); border-radius: 999px; display: block; height: 100%; width: 40%; }
+@keyframes onboarding-progress {
+  from { transform: translateX(-30%); }
+  to { transform: translateX(230%); }
+}
+.onboarding-paths { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 30px; }
+.onboarding-path { background: var(--well); border: 1px solid var(--line); border-radius: 18px; display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.onboarding-path-primary { background: var(--bg); border-color: var(--ember); box-shadow: 0 0 0 4px var(--ember-tint); }
+.onboarding-path h2 { color: var(--text); font-family: var(--display); font-size: 1.3rem; font-weight: 700; line-height: 1.15; margin: 0; }
+.onboarding-path p { color: var(--text-2); flex: 1; font-size: 1rem; line-height: 1.45; margin: 0; }
+.onboarding-path .btn { align-self: flex-start; border-radius: 14px; font-size: 1.0625rem; min-height: 52px; padding: 11px 22px; }
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-confetti { display: none; }
+  .onboarding-progress i { animation: none; width: 62%; }
+  .onboarding-status::before { animation: none; }
+}
 .onboarding-slack-logo { display: inline-block; flex: 0 0 auto; height: 23px; margin-right: 7px; width: 23px; }
 .github-connect-mark { flex: 0 0 auto; height: 20px; margin-right: 9px; width: 20px; }
 .onboarding-instructions { display: grid; gap: 32px; margin-top: 32px; }
@@ -660,27 +754,38 @@ button, input, textarea, select { font: inherit; }
 .onboarding-model-note.is-caveat .onboarding-model-note-badge { background: var(--ember-tint); color: var(--ember-press); }
 .onboarding-model-note .link-btn { font-size: inherit; font-weight: 700; }
 .onboarding-model-actions .btn-primary { min-width: 260px; }
-.onboarding-success-badge { align-items: center; background: var(--ok-tint); border-radius: 999px; color: #36592a; display: inline-flex; font-size: .8125rem; font-weight: 700; gap: 7px; margin-bottom: 16px; padding: 8px 12px; }
-.onboarding-success-badge::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; font-size: .6875rem; height: 18px; place-items: center; width: 18px; }
-.onboarding-status { color: var(--ok); font-size: .8125rem; font-weight: 700; margin: 14px 0 0; min-height: 20px; }
-.onboarding-try-dashboard { align-items: center; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 14px 24px; justify-content: space-between; margin-top: 30px; padding-top: 24px; }
-.onboarding-try-dashboard p { color: var(--text-2); flex: 1 1 260px; font-size: .9375rem; line-height: 1.5; margin: 0; }
-.onboarding-try-dashboard strong { color: var(--text); }
-.onboarding-illustration:empty { display: none; }
+.onboarding-success-badge { align-items: center; background: var(--ok-tint); border-radius: 999px; color: #36592a; display: inline-flex; font-size: .9375rem; font-weight: 700; gap: 9px; margin-bottom: 18px; padding: 7px 14px 7px 8px; }
+.onboarding-success-badge::before { background: var(--ok-solid); border-radius: 50%; color: white; content: "✓"; display: grid; font-size: .75rem; height: 22px; place-items: center; width: 22px; }
+.onboarding-status { align-items: center; color: var(--text-2); display: flex; font-size: 1rem; font-weight: 600; gap: 12px; margin: 22px 0 0; min-height: 20px; }
+.onboarding-status::before { animation: onboarding-waiting 1.4s ease-in-out infinite; background: radial-gradient(circle, var(--ember) 4px, transparent 4.5px) 0 50% / 13px 10px repeat-x; content: ""; flex: none; height: 10px; width: 36px; }
+@keyframes onboarding-waiting {
+  50% { opacity: .35; }
+}
 @media (max-width: 720px) {
-  .onboarding-shell-inner { padding: 20px 16px 45px; }
+  .onboarding-shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 1fr; }
+  .onboarding-shell-inner { display: contents; }
+  .onboarding-brand-row { grid-column: 1; grid-row: 1; min-height: 0; padding: 14px 20px 0; position: relative; z-index: 2; }
+  .onboarding-scene { --arch: 84px; align-self: stretch; flex-direction: row; gap: 18px; grid-column: 1; grid-row: 1 / 3; height: auto; justify-content: flex-start; min-height: 0; padding: 70px 24px 24px; position: relative; }
+  .onboarding-orientation { grid-row: 3; }
+  .onboarding-stage { grid-row: 4; }
+  .onboarding-arch { border-radius: 42px 42px 10px 10px; }
+  .onboarding-arch::before { border-radius: 37px 37px 5px 5px; }
+  .onboarding-arch::after { border-radius: 6px; }
+  .onboarding-caption { font-size: 1.375rem; margin: 0; text-align: left; }
+  .onboarding-orientation { gap: 6px; margin: 18px 20px 0; }
+  .onboarding-orientation li { font-size: .8125rem; }
+  .onboarding-orientation li::before { margin-bottom: 2px; }
+  .onboarding-step-note { display: none; }
+  .onboarding-orientation:has(> li:nth-child(4)) .onboarding-step-label { clip: rect(0 0 0 0); height: 1px; overflow: hidden; position: absolute; width: 1px; }
+  .onboarding-stage { justify-content: flex-start; padding: 22px 20px 40px; }
   .onboarding-environment { display: none; }
-  .onboarding-orientation { margin-top: 34px; }
-  .onboarding-step-dot { font-size: .75rem; height: 34px; width: 34px; }
-  .onboarding-orientation li:not(:first-child)::before { top: 16px; }
-  .onboarding-step-label { display: none; }
-  .onboarding-provider-tabs { border: 0; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+  .onboarding-paths { grid-template-columns: minmax(0, 1fr); margin-top: 22px; }
+  .onboarding-path { padding: 16px; }
+  .onboarding-provider-tabs { border: 0; gap: 8px; grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
   .onboarding-provider-tab { border: 1px solid var(--line-strong); border-radius: 12px; }
   .onboarding-provider-tab + .onboarding-provider-tab { border-left: 1px solid var(--line-strong); }
-  .onboarding-stage { min-height: 520px; padding-top: 28px; }
-  .onboarding-panel, .onboarding-panel-wide { border-radius: 22px; padding: 30px 22px; width: 100%; }
   .onboarding-brand .avatar, .onboarding-brand .avatar .pea { height: 34px; width: 34px; }
-  .onboarding-brand .brand-wordmark { height: 31px; }
+  .onboarding-brand .brand-wordmark { height: 28px; }
   .onboarding-title { font-size: 2.125rem; }
   .onboarding-lede { font-size: 1.0625rem; }
   .onboarding-instruction-title { font-size: 1rem; gap: 11px; grid-template-columns: 32px minmax(0, 1fr); }

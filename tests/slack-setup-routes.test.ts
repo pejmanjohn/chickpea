@@ -849,8 +849,11 @@ test('wrong-account login clears callback authority and returns a non-disclosing
     assert.equal(signIn.headers.get('cache-control'), 'no-store');
     assert.equal(signIn.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(signIn.headers.get('x-frame-options'), 'DENY');
-    assert.match(signIn.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
-    assert.doesNotMatch(await signIn.text(), /fonts\.googleapis|password|sign up/i);
+    const policy = signIn.headers.get('content-security-policy') ?? '';
+    assert.match(policy, /frame-ancestors 'none'/);
+    assert.match(policy, /style-src 'unsafe-inline'; font-src 'self';/, 'the sign-in page\'s fonts come only from Chickpea');
+    assert.doesNotMatch(policy, /fonts\.googleapis|fonts\.gstatic/);
+    assert.doesNotMatch(await signIn.text(), /fonts\.googleapis|fonts\.gstatic|password|sign up/i);
 
     const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({

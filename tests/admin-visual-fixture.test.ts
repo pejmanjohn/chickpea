@@ -637,7 +637,7 @@ test('Slack auth visual states render the production Slack-only journey without 
         /xox(?:b|p|e)-[A-Za-z0-9-]{8,}|route-client-secret|route-signing-secret|visual-setup-capability/,
         name,
       );
-      assert.doesNotMatch(html, /fonts\.googleapis|Forgot Password|Sign up|Cloudflare Access/i, name);
+      assert.doesNotMatch(html, /fonts\.googleapis|fonts\.gstatic|Forgot Password|Sign up|Cloudflare Access/i, name);
     }
   } finally {
     await fixture.close();

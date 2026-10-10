@@ -76,8 +76,10 @@ or introduce gradients on top of the felt texture.
   provider names, step numbers, modal titles)
 - UI / body: **Quicksand** — 500 body, 600 emphasis, 700 labels & buttons
 - Code / models / IDs: **JetBrains Mono** 400–500
-- Load: Google Fonts (`Baloo 2`, `Quicksand`, `JetBrains Mono`) — the live admin
-  stylesheet `@import`s them.
+- Load: Chickpea serves all three itself from `assets/fonts/`, under the SIL
+  Open Font License (each family's `OFL.txt` sits beside its files).
+  `src/assets/fonts.ts` declares the faces for the journey pages and Admin's
+  stylesheet; no page loads type from another origin.
 
 ## Shape & depth
 
