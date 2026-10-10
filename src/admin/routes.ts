@@ -2437,7 +2437,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       try {
         const transport = await agentSlackTransport(c, teamId);
         slackWorkspaceNameAskedAt.set(teamId, Date.now());
-        const live = await transport.getWorkspaceInfo?.();
+        // The transport takes no signal, so stop waiting rather than cancel.
+        const bound = AbortSignal.timeout(options.slackWorkspaceNameTimeoutMs ?? SLACK_WORKSPACE_NAME_TIMEOUT_MS);
+        const live = await Promise.race([
+          transport.getWorkspaceInfo?.(),
+          new Promise<undefined>((resolve) => bound.addEventListener('abort', () => resolve(undefined), { once: true })),
+        ]);
         if (live?.teamId === teamId && live.teamName?.trim()) {
           const teamName = live.teamName.trim().slice(0, 120);
           await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);

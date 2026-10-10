@@ -219,6 +219,42 @@ test('shared Slack connection backfills and persists the workspace display name'
   }
 });
 
+test('a workspace-name lookup the shared app never answers is cut off, and not asked again for a minute', async () => {
+  const transport = new FakeTransport();
+  let asks = 0;
+  transport.getWorkspaceInfo = () => {
+    asks += 1;
+    return new Promise(() => undefined);
+  };
+  const fixture = harness(transport, { slackWorkspaceNameTimeoutMs: 20 });
+  const read = async () => {
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const response = await Promise.race([
+      fixture.app.request('http://localhost/admin/api/slack-connection', { headers: auth() }),
+      new Promise<never>((_, reject) => {
+        guard = setTimeout(() => reject(new Error('the read waited on Slack')), 5_000);
+      }),
+    ]).finally(() => clearTimeout(guard));
+    assert.equal(response.status, 200);
+    return await response.json() as { connected: boolean; teamName: string | null };
+  };
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'gateway', appId: 'A_TEST',
+      botUserId: 'U_BOT', gatewayBindingId: 'binding_test',
+    });
+    const first = await read();
+    assert.equal(first.connected, true);
+    assert.equal(first.teamName ?? null, null);
+    await read();
+    assert.equal(asks, 1, 'the next read within a minute does not ask again');
+    assert.equal(await fixture.settings.getSetting('slack.teamName'), undefined);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('shared Slack connection read overlays live inbound health without persisting the probe', async () => {
   const fixture = harness();
   const env = {

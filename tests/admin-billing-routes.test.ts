@@ -59,7 +59,10 @@ const people = {
   recordAuthAudit: async () => undefined,
 } as unknown as IdentityStore;
 
-function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort; anthropicKeySaved?: boolean; config?: SqliteConfigStore }) {
+function admin(t: TestContext, options: {
+  role?: AuthPrincipal['role']; machine?: boolean; env?: Record<string, unknown>; port?: PlatformBillingPort;
+  anthropicKeySaved?: boolean; openaiKeySaved?: boolean; config?: SqliteConfigStore;
+}) {
   configurePlatformBilling(options.port);
   const config = options.config ?? new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -69,10 +72,13 @@ function admin(t: TestContext, options: { role?: AuthPrincipal['role']; machine?
     store: config, settings, usage,
     ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
   });
-  const keySaved = options.anthropicKeySaved
-    ? rotateInstallationModelCredential('anthropic', { kind: 'save', apiKey: 'sk-ant-billing-own-key' },
-      { env: options.env ?? HOSTED, settings, usage, keyring: useDeploymentKeyring(t) })
-    : undefined;
+  const keyring = options.anthropicKeySaved || options.openaiKeySaved ? useDeploymentKeyring(t) : undefined;
+  const save = (provider: 'anthropic' | 'openai', apiKey: string) => rotateInstallationModelCredential(
+    provider, { kind: 'save', apiKey }, { env: options.env ?? HOSTED, settings, usage, keyring: keyring! });
+  const keySaved = Promise.all([
+    options.anthropicKeySaved ? save('anthropic', 'sk-ant-billing-own-key') : undefined,
+    options.openaiKeySaved ? save('openai', 'sk-openai-billing-own-key') : undefined,
+  ]);
   return async (path: string, init: RequestInit = {}) => {
     await keySaved;
     return app.request(path, {
@@ -220,7 +226,12 @@ test('an Owner switches an own-key installation to Chickpea\'s models, and switc
 });
 
 /** A host whose funding follows the Plan page's switch, for a workspace with an image role as given. */
-async function switchingHost(t: TestContext, funding: BillingSummary['funding'], image?: { modelId?: string }) {
+async function switchingHost(
+  t: TestContext,
+  funding: BillingSummary['funding'],
+  image?: { modelId?: string },
+  keys: { openaiKeySaved?: boolean } = {},
+) {
   let summary: BillingSummary = { ...TEAM_PLAN, funding };
   const { port } = fakePort(summary, {
     summary: async () => summary,
@@ -236,7 +247,7 @@ async function switchingHost(t: TestContext, funding: BillingSummary['funding'],
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   await config.ensureWorkspaceInstallation({ workspaceId: 'T_BILLING', transportMode: 'direct', teamId: 'T_BILLING' });
   const chosen = image ? await config.putWorkspaceModelRole({ workspaceId: 'T_BILLING', role: 'image', ...image }, 0) : undefined;
-  return { request: admin(t, { port, config, anthropicKeySaved: true }), config, chosen };
+  return { request: admin(t, { port, config, anthropicKeySaved: true, ...keys }), config, chosen };
 }
 
 test('switching to Chickpea\'s models from the Plan page chooses the image model onboarding chooses, when none is chosen', async (t) => {
@@ -258,8 +269,8 @@ for (const [kept, image] of [
   });
 }
 
-test('switching to your own key from the Plan page chooses no image model', async (t) => {
-  const { request, config } = await switchingHost(t, 'platform');
+test('switching to your own key from the Plan page chooses no image model, even with an OpenAI key that could serve one', async (t) => {
+  const { request, config } = await switchingHost(t, 'platform', undefined, { openaiKeySaved: true });
   assert.equal((await request('/admin/api/billing/funding', post({ funding: 'own_key' }))).status, 200);
   assert.equal(await config.getWorkspaceModelRole('T_BILLING', 'image'), undefined);
 });
