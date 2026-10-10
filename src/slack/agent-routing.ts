@@ -11,6 +11,7 @@ import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
+import { normalizeAgentHandle } from './agent-presence/handles.ts';
 import {
   AgentUserGroupLookupLimiter,
   repairMentionedAgentUserGroup,
@@ -273,18 +274,19 @@ export async function resolveAgentRoute(
   )) {
     return denied('not_available', []);
   }
-  // Directory repair binds only an Agent granted in this Channel.
+  // Directory repair binds only an Agent granted in this Channel, and offers
+  // to add one that is not.
   if (
     surface === 'channel' &&
-    activeGrants.length > 0 &&
     mentionedGroupIds.length === 1 &&
     mentionedAgents.length === 0 &&
     input.transport
   ) {
+    const userGroupId = mentionedGroupIds[0]!;
     const repair = await repairMentionedAgentUserGroup({
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
-      userGroupId: mentionedGroupIds[0]!,
+      userGroupId,
       config,
       transport: input.transport,
       ...(input.userGroupLookupLimiter
@@ -297,6 +299,29 @@ export async function resolveAgentRoute(
       return resolveAgentRoute(input);
     }
     if (repair.kind === 'temporarily_unavailable') return denied('temporarily_unavailable', []);
+    if (repair.kind === 'not_in_channel') {
+      const access = await agentAccess({
+        agent: repair.agent,
+        surface,
+        actor,
+        activeGrants,
+        workspaceManagementRoute: false,
+        ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
+      });
+      return refusal(repair.agent, access, available, true);
+    }
+    if (repair.kind === 'lookup_failed') {
+      // Only a mention labelled with an Agent's handle hears that the address
+      // could not be checked; a group of people stays ordinary text.
+      if (mentionLabelNamesAgent(turn.text, userGroupId, agents)) return denied('temporarily_unavailable', []);
+      console.warn(JSON.stringify({
+        event: 'chickpea.agent_routing.group_lookup_failed',
+        reason: repair.reason,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        userGroupId,
+      }));
+    }
   }
   // Several handles address each of those Agents, in order: the first takes
   // the thread and the rest answer after it, as guests. Every one must be
@@ -402,6 +427,17 @@ export async function resolveAgentRoute(
   return severalAgents
     ? { ...routed, coAddressed: { agents: addressed.map(addressedAgent), position: 0 } }
     : routed;
+}
+
+/** Whether a group mention's own label, `<!subteam^ID|@handle>`, names one of this installation's Agents. */
+function mentionLabelNamesAgent(text: string, userGroupId: string, agents: readonly CustomAgentConfig[]): boolean {
+  const label = [...text.matchAll(/<!subteam\^([A-Z0-9]+)\|@?([^>]+)>/g)]
+    .find(([, id]) => id === userGroupId)?.[2];
+  if (!label) return false;
+  const handle = normalizeAgentHandle(label);
+  return agents.some((agent) =>
+    agent.kind === 'user' && agent.lifecycle !== 'archived' && agent.slackPresence?.normalizedHandle === handle
+  );
 }
 
 const AGENT_ADDRESS = /<!subteam\^([A-Z0-9]+)(?:\|[^>]*)?>|<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;

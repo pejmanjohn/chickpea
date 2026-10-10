@@ -62,12 +62,15 @@ type MentionRepairConfig = Pick<
 
 /**
  * `unknown`: the directory did not prove the group is this installation's
- * Agent here, so the mention is ordinary text (a group of people, another
- * app's Agent, or a lookup that failed). `temporarily_unavailable`: it is,
- * but binding it raced another change.
+ * Agent, so the mention is ordinary text (a group of people, another app's
+ * Agent, or a group someone else made with an Agent's handle).
+ * `not_in_channel`: it is, but that Agent has not been added here.
+ * `lookup_failed`: Slack was not asked or did not answer.
+ * `temporarily_unavailable`: binding it raced another change.
  */
 type MentionedAgentUserGroupRepairResult =
-  | { kind: 'repaired'; agent: CustomAgentConfig }
+  | { kind: 'repaired' | 'not_in_channel'; agent: CustomAgentConfig }
+  | { kind: 'lookup_failed'; reason: 'rate_limited' | 'failed' }
   | { kind: 'unknown' | 'temporarily_unavailable' };
 
 type UserGroupLookupResult =
@@ -218,6 +221,7 @@ async function repairMentionedAgentUserGroupOnce(
   limiter: AgentUserGroupLookupLimiter,
 ): Promise<MentionedAgentUserGroupRepairResult> {
   const lookup = await limiter.lookup(input.workspaceId, input.userGroupId, input.transport);
+  if (lookup.kind === 'rate_limited' || lookup.kind === 'failed') return { kind: 'lookup_failed', reason: lookup.kind };
   if (lookup.kind !== 'found') return { kind: 'unknown' };
   if (lookup.group.disabled) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
@@ -247,15 +251,17 @@ async function repairMentionedAgentUserGroupOnce(
     return { kind: 'unknown' };
   }
   const agent = candidates[0]!;
-  const activeGrants = grants.filter((grant) =>
-    grant.agentId === agent.id && grant.status === 'active'
-  );
+  // Anyone can make a group with an Agent's handle; only the one Chickpea's
+  // interrupted create made is this Agent's.
   const competingClaim = agents.some((candidate) =>
     candidate.id !== agent.id && candidate.slackPresence?.userGroupId === lookup.group.id
   );
-  if (activeGrants.length !== 1 || competingClaim) {
+  if (!hasAmbiguousCreateOwnershipProof(agent, lookup.group) || competingClaim) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
     return { kind: 'unknown' };
+  }
+  if (!grants.some((grant) => grant.agentId === agent.id && grant.status === 'active')) {
+    return { kind: 'not_in_channel', agent };
   }
 
   const presence = userGroupPresence(agent);
