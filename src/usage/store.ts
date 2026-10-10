@@ -801,14 +801,22 @@ export class UsageStoreLogic {
             { credentialRefId: input.credentialRefId, version: String(input.version) },
           );
         }
-        if (credential.label === input.label && credential.scopeLabel === input.scopeLabel) return credential;
+        if (credential.label === input.label) return credential;
         this.db.run(
-          'UPDATE usage_credentials SET label = ?, scope_label = ? WHERE credential_ref_id = ? AND version = ?',
+          'UPDATE usage_credentials SET label = ? WHERE credential_ref_id = ? AND version = ?',
           input.label,
-          input.scopeLabel,
           input.credentialRefId,
           input.version,
         );
+        const relabeledAt = this.now();
+        this.appendUsageAudit({
+          eventId: `usage:credential:${input.credentialRefId}:${input.version}:relabeled:${relabeledAt}`,
+          eventType: 'usage.credential_relabeled',
+          subjectId: input.credentialRefId,
+          subjectVersion: input.version,
+          createdAt: relabeledAt,
+          metadata: {},
+        });
         return requiredCredential(this.getCredentialRow(input.credentialRefId, input.version));
       }
       this.db.run(
@@ -1841,7 +1849,11 @@ function unpricedEstimate(
   return estimate.estimateCompleteness === 'unknown' || estimate.estimateCompleteness === 'partial';
 }
 
-/** Labels are display text, so only the rest identifies an epoch. */
+/**
+ * The label is display text, so the rest identifies an epoch. The scope label
+ * names the provider project or account the key belongs to: a new one under the
+ * same epoch would put earlier usage under it.
+ */
 function sameCredentialEpoch(
   credential: ModelCredentialRecord,
   input: PutModelCredentialInput,
@@ -1850,6 +1862,7 @@ function sameCredentialEpoch(
     credential.version === input.version &&
     credential.providerId === input.providerId &&
     credential.sourceKind === input.sourceKind &&
+    credential.scopeLabel === input.scopeLabel &&
     credential.unknownRotation === input.unknownRotation &&
     credential.activeFrom === input.activeFrom;
 }
