@@ -23,6 +23,8 @@ export interface AgentPresenceAnnouncements {
 
 export function agentPresenceAnnouncements(deps: {
   transport: Pick<SlackTransport, 'postMessage'>;
+  /** The bot user `transport` posts as, when the caller knows it: an Agent with its own app greets only as its bot. */
+  botUserId?: string;
   welcomeOnJoin(): Promise<boolean>;
   avatarUrl(agent: CustomAgentConfig): string | undefined;
   management: Pick<ManagementStore, 'queueOwedAgentWelcome'>;
@@ -32,17 +34,15 @@ export function agentPresenceAnnouncements(deps: {
   return {
     async joinedChannel(input) {
       const live = agentSlackHandle(input.agent);
-      if (input.channelIsPrivate || !live || !('userGroupId' in live) || !(await deps.welcomeOnJoin())) return;
-      const avatarUrl = deps.avatarUrl(input.agent);
+      if (input.channelIsPrivate || !live) return;
+      // An Agent with its own app greets as that app's bot, which cannot post under another name.
+      const ownBot = 'botUserId' in live;
+      if ((ownBot && live.botUserId !== deps.botUserId) || !(await deps.welcomeOnJoin())) return;
+      const avatarUrl = ownBot ? undefined : deps.avatarUrl(input.agent);
       await deps.transport.postMessage({
         channelId: input.channelId,
-        text: renderAgentChannelWelcome({
-          name: input.agent.name,
-          description: input.agent.description,
-          handle: live.handle,
-          userGroupId: live.userGroupId,
-        }),
-        persona: { name: input.agent.name, ...(avatarUrl ? { avatarUrl } : {}) },
+        text: renderAgentChannelWelcome({ name: input.agent.name, description: input.agent.description, ...live }),
+        ...(ownBot ? {} : { persona: { name: input.agent.name, ...(avatarUrl ? { avatarUrl } : {}) } }),
         idempotencyKey: `agent-channel-welcome:${input.workspaceId}:${input.channelId}:` +
           `${input.agent.id}:${input.grantRevision}`,
       });
@@ -67,11 +67,13 @@ export async function livePresenceAnnouncements(input: {
   identity: Pick<IdentityStore, 'getAuthControl'>;
   management: Pick<ManagementStore, 'queueOwedAgentWelcome'>;
   transport: Pick<SlackTransport, 'postMessage'>;
+  botUserId?: string;
 }): Promise<AgentPresenceAnnouncements> {
   const publicOrigin = await resolveSlackPublicUrl(input.env, input.settings, input.identity);
   const installationId = agentAvatarInstallation(input.env);
   return agentPresenceAnnouncements({
     transport: input.transport,
+    ...(input.botUserId ? { botUserId: input.botUserId } : {}),
     welcomeOnJoin: async () =>
       (await resolveSlackBehaviorSettings(input.env, input.settings)).welcomeOnJoin.value,
     avatarUrl: (agent) => agentAvatarUrlForPresentation(agent, publicOrigin, installationId),

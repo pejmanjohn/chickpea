@@ -33,17 +33,19 @@ interface AddingActor {
   principal?: AuthPrincipal;
 }
 
-export interface AgentChannelAddClick {
+/** Someone asking for an Agent in a Channel: the offer's Add click, or Slack's own Add of the Agent's app bot. */
+export interface AgentChannelAddRequest {
   workspaceId: string;
   userId: string;
   channelId: string;
   threadTs: string | null;
   agentId: string;
-  actionTs: string;
+  /** The click's action_ts, or the join event's ID: a redelivery of either is answered once. */
+  requestId: string;
 }
 
 /** Parsing grants no authority. */
-export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAddClick | undefined {
+export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAddRequest | undefined {
   if (action.actionId !== AGENT_CHANNEL_ADD_ACTION || action.containerType !== 'message' ||
       !action.channelId || !action.value || !isAgentId(action.value)) return undefined;
   return {
@@ -52,7 +54,7 @@ export function parseAgentChannelAddClick(action: SlackUiAction): AgentChannelAd
     channelId: action.channelId,
     threadTs: action.threadTs,
     agentId: action.value,
-    actionTs: action.actionTs,
+    requestId: action.actionTs,
   };
 }
 
@@ -108,9 +110,9 @@ export async function offerAgentForChannel(input: {
 }
 
 export interface AgentChannelAddDependencies {
-  /** First wins, so a redelivered click is answered once. */
+  /** First wins, so a redelivered request is answered once. */
   claim(key: string): Promise<boolean>;
-  /** The clicker in this Channel, read now rather than when the button was sent. */
+  /** The person asking, in this Channel, read now rather than when the button was sent. */
   resolveActor(): Promise<AddingActor>;
   getAgent(agentId: string): Promise<CustomAgentConfig | undefined>;
   identity: OfferIdentity;
@@ -120,20 +122,20 @@ export interface AgentChannelAddDependencies {
   client: EphemeralClient;
 }
 
-/** A click on the offer's button: Admin's authority check, then Admin's publish. */
+/** A request to add an Agent to a Channel: Admin's authority check, then Admin's publish. */
 export async function addAgentToChannel(
-  click: AgentChannelAddClick,
+  request: AgentChannelAddRequest,
   deps: AgentChannelAddDependencies,
 ): Promise<void> {
-  const key = ['agent-channel-add', click.workspaceId, click.channelId, click.agentId, click.userId, click.actionTs];
+  const key = ['agent-channel-add', request.workspaceId, request.channelId, request.agentId, request.userId, request.requestId];
   if (!await deps.claim(key.join(':'))) return;
-  const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(click.agentId)]);
+  const [actor, agent] = await Promise.all([deps.resolveActor(), deps.getAgent(request.agentId)]);
   const handle = agent?.kind === 'user' ? agentSlackHandle(agent)?.handle : undefined;
   let text: string;
   if (!agent || !handle || !actor.routing.fullMember || !actor.routing.channelMember) {
     text = 'That Agent is not available here.';
   } else if (!actor.principal || !canEditAgent(actor.principal, agent)) {
-    text = `${askOwnersToAdd(await namedOwners(deps.identity, click.workspaceId))} to add @${handle} to this channel.`;
+    text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add @${handle} to this channel.`;
   } else {
     try {
       await deps.publish(agent, actor.principal);
@@ -145,10 +147,10 @@ export async function addAgentToChannel(
     }
   }
   await deps.client.chat.postEphemeral({
-    channel: click.channelId,
-    user: click.userId,
+    channel: request.channelId,
+    user: request.userId,
     text,
-    ...(click.threadTs ? { thread_ts: click.threadTs } : {}),
+    ...(request.threadTs ? { thread_ts: request.threadTs } : {}),
   });
 }
 

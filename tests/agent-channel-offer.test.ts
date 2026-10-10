@@ -290,7 +290,7 @@ test('a clicker who is not in the Channel is refused before anything is publishe
   const notices: string[] = [];
   let published = 0;
   await addAgentToChannel({
-    workspaceId: 'T1', userId: 'U1', channelId: 'C1', threadTs: null, agentId: LEGAL.id, actionTs: '5001.000100',
+    workspaceId: 'T1', userId: 'U1', channelId: 'C1', threadTs: null, agentId: LEGAL.id, requestId: '5001.000100',
   }, {
     claim: async () => true,
     resolveActor: async () => ({

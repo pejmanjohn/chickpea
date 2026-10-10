@@ -8,6 +8,7 @@ import {
   type SlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
 } from '../installation-execution.ts';
+import type { PrivateAgentPlacementFacts } from '../agent-access.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
@@ -105,6 +106,33 @@ export function withAgentAppExecution(
       context.catch(() => contexts.delete(key));
     }
     return context;
+  };
+}
+
+/**
+ * Where an app Agent's private-use placements are read on its own app's
+ * delivery. The Agent works in a Channel through its own bot (mentions) or
+ * Chickpea's (replies in its threads), and a grant made before it had an app
+ * was checked against Chickpea's bot: a Channel counts as joined when either
+ * bot is in it, and a person's Channels are those either bot can see.
+ */
+export function agentAppPlacementFacts(
+  own: PrivateAgentPlacementFacts,
+  chickpea: PrivateAgentPlacementFacts,
+): PrivateAgentPlacementFacts {
+  return {
+    async lookupChannel(channelId) {
+      const mine = await own.lookupChannel(channelId).catch(() => undefined);
+      if (mine?.member) return mine;
+      return chickpea.lookupChannel(channelId).catch((error: unknown) => {
+        if (mine) return mine;
+        throw error;
+      });
+    },
+    async listMemberChannels(userId) {
+      const [mine, theirs] = await Promise.all([own.listMemberChannels(userId), chickpea.listMemberChannels(userId)]);
+      return new Set([...mine, ...theirs]);
+    },
   };
 }
 

@@ -78,8 +78,15 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
   };
 }
 
-/** `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read. */
-async function withHarness(t: TestContext, run: (harness: Harness) => Promise<void>, options: { lostHostedBot?: boolean } = {}): Promise<void> {
+/**
+ * `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read.
+ * `notMemberOf` names, per bot token, the Channels that bot is not in; every bot is in every other Channel.
+ */
+async function withHarness(
+  t: TestContext,
+  run: (harness: Harness) => Promise<void>,
+  options: { lostHostedBot?: boolean; notMemberOf?: Partial<Record<string, readonly string[]>> } = {},
+): Promise<void> {
   await stopNodeTurnRelay();
   const keys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH', 'CHICKPEA_CREDENTIAL_KEYRING_PATH'] as const;
   const previous = keys.map((key) => process.env[key]);
@@ -147,18 +154,23 @@ async function withHarness(t: TestContext, run: (harness: Harness) => Promise<vo
     const method = url.pathname.split('/').at(-1)!;
     const body = new URLSearchParams(await request.clone().text().catch(() => ''));
     const authorization = request.headers.get('authorization') ?? undefined;
-    calls.push({ method, token: authorization?.replace(/^Bearer /, '') ?? body.get('token') ?? undefined, body });
+    const token = authorization?.replace(/^Bearer /, '') ?? body.get('token') ?? undefined;
+    calls.push({ method, token, body });
     const user = body.get('user') ?? 'U1';
+    const channel = body.get('channel') ?? '';
     const answer = method === 'auth.test'
       ? { ok: true, team_id: TEAM, user_id: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, team: 'Tenant' }
       : method === 'users.info'
         ? { ok: true, user: { id: user, team_id: TEAM, name: user, deleted: false, is_bot: false, is_app_user: false, is_restricted: false, is_ultra_restricted: false, is_stranger: false } }
         : method === 'conversations.info'
-          ? { ok: true, channel: body.get('channel')?.startsWith('C')
-            ? { id: body.get('channel'), name: 'team', is_channel: true, is_private: false, is_member: true, is_archived: false }
-            : { id: body.get('channel'), is_im: true, user: 'U1' } }
+          ? { ok: true, channel: channel.startsWith('C')
+            ? {
+              id: channel, name: 'team', is_channel: true, is_private: false,
+              is_member: !options.notMemberOf?.[token ?? '']?.includes(channel), is_archived: false,
+            }
+            : { id: channel, is_im: true, user: 'U1' } }
           : method === 'conversations.members'
-            ? { ok: true, members: ['U1', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
+            ? { ok: true, members: ['U1', 'U2', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
             : method === 'conversations.open'
               ? { ok: true, channel: { id: 'DOWNER' } }
               : method.startsWith('chat.')
@@ -196,6 +208,16 @@ function dmEvent(patch: Record<string, unknown> = {}, event: Record<string, unkn
     authorizations: [{ team_id: TEAM, user_id: AGENT_BOT_USER, is_bot: true, is_enterprise_install: false }],
     event: { type: 'message', channel: 'D1', channel_type: 'im', user: 'U1', text: 'hello', ts: `${now}.000100`, event_ts: `${now}.000100`, ...event },
     ...patch,
+  };
+}
+
+/** Slack's event for a member joining a Channel: by default the Agent app's own bot, added to #C2 by the Owner. */
+function joinEvent(event: Record<string, unknown> = {}) {
+  const now = Math.floor(Date.now() / 1_000);
+  return {
+    type: 'event_callback', event_id: `EvJoin${now}`, event_time: now, team_id: TEAM, api_app_id: AGENT_APP,
+    authorizations: [{ team_id: TEAM, user_id: AGENT_BOT_USER, is_bot: true, is_enterprise_install: false }],
+    event: { type: 'member_joined_channel', user: AGENT_BOT_USER, channel: 'C2', channel_type: 'C', team: TEAM, inviter: 'U1', ...event },
   };
 }
 
@@ -415,3 +437,96 @@ test("a tenant's end that cannot tell the Owner about a left app still uninstall
   assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [['apps.uninstall', AGENT_BOT]],
     'the app is uninstalled with its own bot; without a configuration token its definition stays, and the Owner cannot be messaged');
 }, { lostHostedBot: true }));
+
+const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
+
+function slackPosts(h: Harness, method: 'chat.postMessage' | 'chat.postEphemeral'): URLSearchParams[] {
+  return h.calls.filter((call) => call.method === method).map((call) => call.body);
+}
+
+test("an Owner's Slack Add of the Agent's bot adds the Agent to that Channel, and it greets the Channel as its own bot", async (t) => withHarness(t, async (h) => {
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.equal((await h.deliver('events', joinEvent())).status, 200);
+
+  const grants = await h.stores.config.listAgentChannelGrants(TEAM, 'C2');
+  assert.deepEqual(grants.map(({ agentId, status }) => [agentId, status]), [['agent_support', 'active']],
+    "the app's Agent, and only it, is added");
+  assert.equal(grants[0]?.createdByMembershipId, owner?.membership.id, 'added on behalf of the person who added the bot');
+  const [welcome] = slackPosts(h, 'chat.postMessage');
+  assert.equal(welcome?.get('channel'), 'C2');
+  assert.match(welcome?.get('text') ?? '', /^Hi, I’m \*Support\*\./);
+  assert.match(welcome?.get('text') ?? '', /Mention <@UAGENTBOT> to start a thread with me/, 'the welcome mentions its bot');
+  assert.equal(welcome?.get('username'), null, 'no persona: the app posts as itself');
+  assert.equal(welcome?.get('icon_url'), null);
+  assert.deepEqual(slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('user'), body.get('text')]), [['U1', SUPPORT_READY]],
+    'the Owner is told as after the Add button');
+  assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "Slack's Add is answered as the Agent's own bot");
+}));
+
+test("a Member's Slack Add adds nothing and tells them who can", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', joinEvent({ inviter: 'U2' }))).status, 200);
+
+  assert.deepEqual(await h.stores.config.listAgentChannelGrants(TEAM, 'C2'), []);
+  assert.deepEqual(slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('channel'), body.get('user'), body.get('text')]), [
+    ['C2', 'U2', 'Ask a workspace Owner or Admin, such as <@U1>, to add @support to this channel.'],
+  ]);
+  assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'nothing is posted in the Channel');
+}));
+
+test("a redelivered or repeated Slack Add changes nothing and says nothing again", async (t) => withHarness(t, async (h) => {
+  const event = joinEvent();
+  assert.equal((await h.deliver('events', event)).status, 200);
+  const [granted] = await h.stores.config.listAgentChannelGrants(TEAM, 'C2');
+  assert.equal(granted?.status, 'active');
+  const answered = h.calls.length;
+
+  assert.equal((await h.deliver('events', event)).status, 200);
+  assert.equal(h.calls.length, answered, 'a redelivery makes no Slack call');
+  assert.deepEqual(await h.stores.config.listAgentChannelGrants(TEAM, 'C2'), [granted], 'and writes nothing');
+
+  assert.equal((await h.deliver('events', { ...event, event_id: 'EvJoinAgain' })).status, 200);
+  assert.equal(slackPosts(h, 'chat.postMessage').length, 1, 'the bot added again to a Channel its Agent has does not greet it again');
+  assert.equal((await h.stores.config.listAgentChannelGrants(TEAM, 'C2'))[0]?.status, 'active');
+}));
+
+test("only the app's own bot joining, added by a person, adds its Agent; user-group Agents are untouched", async (t) => withHarness(t, async (h) => {
+  const before = await h.stores.config.listAgentChannelGrants(TEAM);
+  for (const event of [
+    joinEvent({ user: 'U3' }),
+    joinEvent({ user: 'UBOT' }),
+    joinEvent({ inviter: undefined }),
+    joinEvent({ inviter: '' }),
+  ]) {
+    assert.equal((await h.deliver('events', { ...event, event_id: `Ev${JSON.stringify(event.event)}` })).status, 200);
+  }
+  assert.deepEqual(await h.stores.config.listAgentChannelGrants(TEAM), before,
+    "a person or Chickpea joining a Channel the app's bot is in, or the bot joining without an inviter, adds nobody");
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), []);
+
+  assert.equal((await h.deliver('events', joinEvent())).status, 200);
+  assert.deepEqual((await h.stores.config.listAgentChannelGrants(TEAM, 'C2')).map(({ agentId }) => agentId), ['agent_support']);
+  assert.deepEqual((await h.stores.config.listAgentChannelGrants(TEAM, 'C1')).map(({ agentId }) => agentId).sort(),
+    ['agent_finance', 'agent_support'], "Finance's grants are as they were");
+}));
+
+test("a DM reaches an app Agent whose earlier grant is in a Channel only Chickpea's bot is in", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  const turn = await pendingTurn(h.stores, () => true);
+  assert.deepEqual(slackPosts(h, 'chat.postMessage').map((body) => body.get('text')), [], 'nobody is told the Agent is not available');
+  assert.equal(turn?.assignment.agentId, 'agent_support', "the DM is the Agent's turn");
+  assert.deepEqual(
+    [...new Set(h.calls.filter((call) => call.token === MAIN_BOT).map((call) => `${call.method} ${call.body.get('channel')}`))],
+    ['conversations.info C1'],
+    "Chickpea's bot only reads the Channel the Agent was placed in",
+  );
+}, { notMemberOf: { [AGENT_BOT]: ['C1'] } }));
+
+test('a DM to an app Agent whose only placement neither bot is in is still refused', async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  for (let attempt = 0; attempt < 100 && !slackPosts(h, 'chat.postMessage').length; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const refusals = h.calls.filter((call) => call.method === 'chat.postMessage');
+  assert.deepEqual(refusals.map((call) => [call.token, call.body.get('text')]), [[AGENT_BOT, 'That Agent is not available here.']]);
+  assert.equal(await pendingTurn(h.stores, () => true), undefined);
+}, { notMemberOf: { [AGENT_BOT]: ['C1'], [MAIN_BOT]: ['C1'] } }));

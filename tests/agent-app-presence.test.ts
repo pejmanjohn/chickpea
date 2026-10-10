@@ -181,7 +181,7 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
     }));
     assert.deepEqual((await reconciler.reconcile('agent_billing')).slackPresence, settingUp, 'an app still being set up has not gone live');
     assert.deepEqual(transport.calls, []);
-    assert.deepEqual(announce.announced, []);
+    assert.deepEqual(announce.announced, ['joinedChannel'], 'only the new grant is announced; the announcements decide who greets');
   } finally {
     config.close();
   }

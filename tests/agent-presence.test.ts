@@ -923,9 +923,10 @@ function crc32(value: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function announcing(transport: FakeSlackTransport, options: { welcomeOnJoin?: boolean } = {}) {
+function announcing(transport: FakeSlackTransport, options: { welcomeOnJoin?: boolean; botUserId?: string } = {}) {
   return agentPresenceAnnouncements({
     transport,
+    ...(options.botUserId ? { botUserId: options.botUserId } : {}),
     welcomeOnJoin: async () => options.welcomeOnJoin ?? true,
     avatarUrl: (candidate) => `https://avatars.example/${candidate.id}.png`,
     management: { queueOwedAgentWelcome: async () => ({ outcome: 'none' }) },
@@ -1014,6 +1015,46 @@ test('republishing an active grant, a private Channel, and welcome-off post no w
     }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_QUIET' });
     assert.equal(quietResult.grant.status, 'active');
     assert.deepEqual(quiet.posts, [], 'the welcome setting is honored');
+  } finally {
+    config.close();
+  }
+});
+
+test('an Agent with its own Slack app greets a public Channel only as its own bot, without a persona', async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const chickpea = new FakeSlackTransport();
+  chickpea.channel.member = true;
+  const ownBot = new FakeSlackTransport();
+  ownBot.channel = { id: 'C_OWN', name: 'own', private: false, member: true, archived: false };
+  try {
+    const created = await config.createAgent({ ...agent('agent_support', 'Support', 'help'), description: 'Answers support questions.' });
+    await config.updateAgent(created.id, {
+      slackPresence: {
+        kind: 'agent_app', requestedHandle: 'help', normalizedHandle: 'help', desiredState: 'active', health: 'healthy',
+        avatar: created.slackPresence!.avatar, released: { userGroupId: 'S1' },
+        app: {
+          state: 'active', at: 1, app: { appId: 'A0HELP', clientId: '1.client' }, icon: 'agent_avatar',
+          botUserId: 'UHELPBOT', installedAt: 1, installedBy: 'UADA',
+        },
+      },
+    }, created.revision);
+
+    const viaChickpea = await new AgentPresenceReconciler({
+      config, transport: chickpea, announce: announcing(chickpea),
+    }).publish(PUBLISH_SUPPORT);
+    assert.equal(viaChickpea.grant.status, 'active');
+    assert.deepEqual(chickpea.posts, [], "Admin's publish, through Chickpea's bot, never greets for an Agent with its own app");
+
+    const result = await new AgentPresenceReconciler({
+      config, transport: ownBot, announce: announcing(ownBot, { botUserId: 'UHELPBOT' }),
+    }).publish({ ...PUBLISH_SUPPORT, channelId: 'C_OWN' });
+    assert.equal(ownBot.posts.length, 1);
+    const [post] = ownBot.posts;
+    assert.equal(post!.channelId, 'C_OWN');
+    assert.equal(post!.persona, undefined, 'the app posts under its own name and icon');
+    assert.match(post!.text, /^Hi, I’m \*Support\*\. Answers support questions\.\n\n/);
+    assert.match(post!.text, /Mention <@UHELPBOT> to start a thread with me/);
+    assert.equal(post!.idempotencyKey, `agent-channel-welcome:TACME:C_OWN:agent_support:${result.grant.revision}`);
   } finally {
     config.close();
   }

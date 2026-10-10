@@ -5,6 +5,7 @@ export {
   type AgentAppBotCredentials,
   agentAppBotCredentials,
   agentAppHomeRows,
+  agentAppPlacementFacts,
   agentAppRetirement,
   handleAgentAppHomeAction,
   withAgentAppExecution,

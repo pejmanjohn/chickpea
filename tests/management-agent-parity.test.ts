@@ -3551,7 +3551,6 @@ test('all-workspace editing does not bypass private Channel use', async () => {
         async lookupChannel(channelId) {
           return { id: channelId, name: 'private-edit', private: true, member: true, archived: false };
         },
-        async listChannels() { return { channels: [], truncated: false }; },
         async listMemberChannels() { return new Set<string>(); },
       },
     }), { status: 'denied', audience: 'private_channel_members' });
@@ -3620,7 +3619,6 @@ test('public placement permits use without exposing Agent management', async () 
         async lookupChannel(channelId) {
           return { id: channelId, name: 'public-use', private: false, member: true, archived: false };
         },
-        async listChannels() { return { channels: [], truncated: false }; },
         async listMemberChannels() { return new Set<string>(); },
       },
     }), { status: 'allowed', audience: 'workspace_members' });
@@ -3687,7 +3685,6 @@ test('an admin manages a private-only Agent without gaining private use', async 
         async lookupChannel(channelId) {
           return { id: channelId, name: 'admin-private', private: true, member: true, archived: false };
         },
-        async listChannels() { return { channels: [], truncated: false }; },
         async listMemberChannels() { return new Set<string>(); },
       },
     }), { status: 'denied', audience: 'private_channel_members' });
