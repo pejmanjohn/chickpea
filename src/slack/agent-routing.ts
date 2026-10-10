@@ -274,8 +274,8 @@ export async function resolveAgentRoute(
   )) {
     return denied('not_available', []);
   }
-  // Directory repair binds only an Agent granted in this Channel, and offers
-  // to add one that is not.
+  // Directory repair binds a group only on proof Chickpea created it; the
+  // stored-id path then routes it, or offers to add an Agent not granted here.
   if (
     surface === 'channel' &&
     mentionedGroupIds.length === 1 &&
@@ -299,17 +299,6 @@ export async function resolveAgentRoute(
       return resolveAgentRoute(input);
     }
     if (repair.kind === 'temporarily_unavailable') return denied('temporarily_unavailable', []);
-    if (repair.kind === 'not_in_channel') {
-      const access = await agentAccess({
-        agent: repair.agent,
-        surface,
-        actor,
-        activeGrants,
-        workspaceManagementRoute: false,
-        ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
-      });
-      return refusal(repair.agent, access, available, true);
-    }
     if (repair.kind === 'lookup_failed') {
       // Only a mention labelled with an Agent's handle hears that the address
       // could not be checked; a group of people stays ordinary text.
