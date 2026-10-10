@@ -8,7 +8,8 @@ import {
 } from '../config/platform-funding.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { RoutineFailureClass } from '../routines/types.ts';
-import type { FlueSettlementCheckpointV1 } from '../slack/turn-job-types.ts';
+import type { FlueDispatchReceiptV1, FlueSettlementCheckpointV1 } from '../slack/turn-job-types.ts';
+import { DURABLE_RECOVERY_FAILURE_TEXT } from '../slack/web-client-presenter.ts';
 import type { ModelRequestFundingSource } from './model-requests.ts';
 
 export const CREDITED_BACK_TEXT = 'Usage for this reply was credited back to your plan.';
@@ -84,8 +85,28 @@ export function creditBackReason(kind: FailureKind, run: FailedRun): CreditBackR
 }
 
 /** A given-up run that settled failed keeps its own failure's owner; any other give-up is ours. */
-export function givenUpReason(settlement: FlueSettlementCheckpointV1 | undefined, run: FailedRun): CreditBackReason | null {
-  return creditBackReason(settlement && settlement.outcome !== 'completed' ? settlement.failureKind : 'recovery-failure', run);
+function givenUpReason(
+  settlement: FlueSettlementCheckpointV1 | undefined,
+  funding: ModelRequestFundingSource,
+): CreditBackReason | null {
+  return settlement && settlement.outcome !== 'completed'
+    ? creditBackReason(settlement.failureKind, { funding, toolCallCount: settlement.toolCallCount })
+    : creditBackReason('recovery-failure', { funding });
+}
+
+/**
+ * The notice a turn ends with when its driver gives up on it, decided from
+ * the run's receipt and settlement and the plan the turn froze.
+ */
+export async function givenUpRecoveryText(
+  env: PlatformEnv | undefined,
+  dispatch: { readonly dispatchReceipt?: FlueDispatchReceiptV1; readonly flueSettlement?: FlueSettlementCheckpointV1 },
+  plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined,
+): Promise<string> {
+  return withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
+    hostedRun(env, dispatch.dispatchReceipt?.submissionId),
+    givenUpReason(dispatch.flueSettlement, planFunding(plan)),
+  ));
 }
 
 export function planFunding(plan: Pick<RuntimePlanV2, 'modelCredential'> | undefined): ModelRequestFundingSource {

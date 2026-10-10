@@ -680,8 +680,12 @@ test('a failed reply carries the tools its own submission called, apart from its
         }
         return { text: '?'.repeat(1_500), data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
       } });
-      await assert.rejects(() => promptSlackThreadAgent(promptInput(state(), agent)), (error: unknown) =>
+      const dispatchState = state();
+      await assert.rejects(() => promptSlackThreadAgent(promptInput(dispatchState, agent)), (error: unknown) =>
         error instanceof AgentPromptFailure && error.toolCallCount === 2, `${name} ${ending}`);
+      // A later attempt replays the settlement and decides with the same facts.
+      await assert.rejects(() => promptSlackThreadAgent(promptInput(dispatchState, agent)), (error: unknown) =>
+        error instanceof AgentPromptFailure && error.toolCallCount === 2, `${name} ${ending} replayed`);
     }
   }
   const declaredOnly = handle({ async read(_receipt, options) {
@@ -690,8 +694,12 @@ test('a failed reply carries the tools its own submission called, apart from its
     options?.onEvent?.({ ...toolInput('response', 'call_b', SLACK_STREAM_ANSWER_TOOL_NAME), position: { batch: 1, index: 1 } } as never);
     return { text: '?'.repeat(1_500), data: {}, metadata: {}, submissionId: RECEIPT.submissionId };
   } });
-  await assert.rejects(() => promptSlackThreadAgent(promptInput(state(), declaredOnly)), (error: unknown) =>
+  const declaredState = state();
+  await assert.rejects(() => promptSlackThreadAgent(promptInput(declaredState, declaredOnly)), (error: unknown) =>
     error instanceof AgentPromptFailure && error.kind === 'invalid-output' && error.toolCallCount === 0);
+  assert.deepEqual(declaredState.flueSettlement, {
+    outcome: 'failed', settledAt: 1_800_000_000_000, failureKind: 'invalid-output',
+  }, 'a run that called no tool settles as it always has');
 });
 
 test('short punctuation, structured results and ordinary long answers remain valid', async () => {

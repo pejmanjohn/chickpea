@@ -201,7 +201,7 @@ function assistantAssignment(): ResolvedAssignment {
   };
 }
 
-function compiledPlan(env?: PlatformEnv, repositories: ResolvedAssignment['agent']['repositories'] = []): RuntimePlanV2 {
+function compiledPlan(env?: PlatformEnv): RuntimePlanV2 {
   const installation = installationOwnershipOf(env);
   const assignment = assistantAssignment();
   return compileRuntimePlanV2({
@@ -210,7 +210,7 @@ function compiledPlan(env?: PlatformEnv, repositories: ResolvedAssignment['agent
       workspaceId: 'T1', channelId: 'C1', eventId: 'E1', text: 'Hello', userId: 'U1', actorMembershipId: 'membership_1',
       messageTs: '1788000000.000200', threadTs: '1788000000.000100', source: 'app_mention', contextMode: 'thread',
     },
-    assignment: { ...assignment, agent: { ...assignment.agent, repositories } },
+    assignment,
     instructions: 'Answer.',
     memoryEpoch: 1,
   });
@@ -546,7 +546,7 @@ test('an installation\'s coding worker binds the credential its coordinator froz
     const worker = (id: string) => ({ instanceId: id, submissionId: `sub_${id}`, agentName: 'chickpea-coding-worker-v1' });
 
     const access = await lookup(worker(instanceId), envA);
-    assert.equal(access.feeRun, undefined, 'its coordinator posts the run\'s fees; a worker posts none');
+    assert.equal(access.runKind, undefined, 'its coordinator posts the run\'s fees; a worker posts none');
     assert.deepEqual('grant' in access && access.grant, {
       installationId: 'inst_a', providerId: 'anthropic', credentialRefId: frozen.credentialRefId,
       credentialVersion: frozen.credentialVersion, runId: 'sub_coordinator', fundingSource: 'customer',
@@ -735,14 +735,7 @@ test('the Slack lookup binds the plan staged for the attempt\'s TurnJob, and nev
       credentialVersion: 1, runId: 'sub_lookup', fundingSource: 'customer',
     });
     assert.equal(JSON.stringify(plan).includes('sk-ant-worker-secret'), false, 'the plan freezes a reference, never the key');
-    assert.deepEqual(attempt.feeRun, { kind: 'interactive', repositoryShell: false }, 'a Slack turn is a reply run a person asked for');
-    const repositoryPlan = compiledPlan(undefined, [
-      { id: 'repo_app', installationId: 1, accountLogin: 'acme', fullName: 'acme/app', enabled: true },
-    ]);
-    assert.equal(deriveRuntimePlanInstanceId(repositoryPlan), instanceId);
-    rememberInProcessTurnInput(createSlackTurnInput({ turnJobId: 'turn_lookup_repo', instanceId, runtimePlan: repositoryPlan }));
-    assert.deepEqual((await lookupWithin('turn_lookup_repo', 'sub_lookup_repo')).feeRun,
-      { kind: 'interactive', repositoryShell: true }, 'a plan granting repositories gives its shell repository access');
+    assert.equal(attempt.runKind, 'interactive', 'a Slack turn is a reply run a person asked for');
 
     // A thread instance's TurnJob with no staged plan: the lookup broke, so the attempt fails closed.
     await assert.rejects(lookupWithin('turn_never_staged', 'sub_other'),
@@ -807,7 +800,7 @@ test('the routine lookup binds the running occurrence\'s frozen plan, owned by t
     await dispatch('hosted', hostedInstance, compiledPlan(envA));
     const hosted = await lookupAttemptModelAccess(routineContext(hostedInstance), async () => envA);
     assert.equal('grant' in hosted && hosted.grant.installationId, 'inst_a');
-    assert.deepEqual(hosted.feeRun, { kind: 'scheduled' });
+    assert.equal(hosted.runKind, 'scheduled');
     await assert.rejects(lookupAttemptModelAccess(routineContext(hostedInstance), async () => envB),
       /belongs to another installation/);
     await dispatch('unowned', scopedObjectName({ installationId: 'inst_a' }, 'routineagent_unowned'), compiledPlan());

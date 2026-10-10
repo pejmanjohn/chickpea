@@ -2877,6 +2877,7 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
     'settledAt',
     'result',
     'failureKind',
+    'toolCallCount',
     // Read compatibility for the bounded diagnostic briefly written by the
     // disposable authoring investigation. New checkpoints never write it.
     'debugDiagnostic',
@@ -2891,14 +2892,19 @@ function parseFlueSettlement(value: unknown): FlueSettlementCheckpointV1 {
     if (record.debugDiagnostic !== undefined) {
       validateBoundedString(record.debugDiagnostic, 'legacy failure diagnostic', 2_000);
     }
+    const { toolCallCount } = record;
+    if (toolCallCount !== undefined && (!Number.isSafeInteger(toolCallCount) || (toolCallCount as number) < 1)) {
+      throw new Error('Flue settlement tool call count is invalid.');
+    }
     return {
       outcome: record.outcome,
       settledAt,
       failureKind,
+      ...(toolCallCount === undefined ? {} : { toolCallCount: toolCallCount as number }),
     };
   }
   if (record.outcome !== 'completed' || record.failureKind !== undefined ||
-      record.debugDiagnostic !== undefined) {
+      record.toolCallCount !== undefined || record.debugDiagnostic !== undefined) {
     throw new Error('Flue settlement outcome is invalid.');
   }
   return {
