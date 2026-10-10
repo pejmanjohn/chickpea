@@ -646,6 +646,7 @@ import {
   AuthorizationError,
   canEditAgent,
   canManageOwnedResource,
+  isOwnerSession,
   permissionForRole,
   requireAgentEdit,
   requirePermission,
@@ -4682,7 +4683,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const installationOwner = async (c: Context, next: Next) => {
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
-    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
     return next();
   };
   app.use('/admin/api/installation', installationOwner);
@@ -6220,7 +6221,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
-      installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
+      installationOwner: isOwnerSession(principal),
       browserOffered: standalone,
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
@@ -6265,7 +6266,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const hostedOnboardingUnfinished = async (c: Context): Promise<boolean> => {
     const principal = principalByContext.get(c);
     if (deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation' ||
-        principal?.role !== 'owner' || principal.machine || new URL(c.req.url).search) return false;
+        !isOwnerSession(principal) || new URL(c.req.url).search) return false;
     const snapshot = await readOnboardingJourney(settings(c));
     if (snapshot?.journey.state !== 'active' || await installationSetUp(c)) return false;
     return hostedSlackConnected(c);
@@ -7223,7 +7224,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (deploymentLaneRefused(c)) return unknownProvider(c);
       if (!isCloudflareTarget()) return c.notFound();
       const principal = principalByContext.get(c);
-      if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+      if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
       const d = planDependencies(c.env as PlatformEnv | undefined, settings(c));
       try {
         if (action === 'prepare') await preparePlanConnection(d, await readJson(c.req));
@@ -10416,7 +10417,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
-    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
     try {
       const port = platformBilling();
       const installationId = port && requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;

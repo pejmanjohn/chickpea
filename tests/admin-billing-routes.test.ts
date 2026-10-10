@@ -340,6 +340,28 @@ for (const role of ['member', 'admin'] as const) {
   });
 }
 
+test('every Owner-only route reads an Owner\'s own session alike: an Owner, never an Admin, a Member, an Owner\'s personal token, or no one', async (t) => {
+  const answers = async (request: ReturnType<typeof admin>) => ({
+    plan: (await (await request('/admin/api/billing')).json() as { manage?: boolean }).manage === true,
+    page: /"installationOwner":true/.test(await (await request('/admin')).text()),
+    onboardingPlatform: (await request('/admin/api/onboarding/platform', post({}))).status === 404,
+    installation: (await request('/admin/api/installation')).status === 200,
+  });
+  const all = (owner: boolean) => ({ plan: owner, page: owner, onboardingPlatform: owner, installation: owner });
+  for (const [label, role, machine, owner] of [
+    ['an Owner', 'owner', false, true],
+    ['an Admin', 'admin', false, false],
+    ['a Member', 'member', false, false],
+    ['an Owner\'s personal token', 'owner', true, false],
+  ] as const) {
+    assert.deepEqual(await answers(admin(t, { role, machine, port: fakePort(TEAM_PLAN).port })), all(owner), label);
+  }
+  const owners = admin(t, { port: fakePort(TEAM_PLAN).port });
+  const signedOut = (path: string, init: RequestInit = {}) =>
+    owners(path, { ...init, headers: { authorization: 'Bearer signed-out' } });
+  assert.deepEqual(await answers(signedOut), all(false), 'no one');
+});
+
 test('an Owner\'s personal token is not an Owner\'s own session: no use, no purchases', async (t) => {
   const { port, calls } = fakePort(TEAM_PLAN);
   const request = admin(t, { port, machine: true });
