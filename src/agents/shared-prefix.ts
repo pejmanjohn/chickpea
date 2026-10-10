@@ -133,14 +133,17 @@ export function sharedSystemBlock(kind: AgentKind): string {
   return block;
 }
 
-let unsharedBlocks: readonly string[] | undefined;
+/** Why a Slack turn mounts fewer tools than a shared shape, so its system block is not shared. */
+type ReducedTurn = 'requester_not_member' | 'management_unmounted';
 
-function unsharedSystemBlocks(): readonly string[] {
-  unsharedBlocks ??= AGENT_KINDS.flatMap((kind) => [
-    slackSystemBase({ kind, managementMounted: true, memberToolsMounted: false }),
-    slackSystemBase({ kind, managementMounted: false, memberToolsMounted: false }),
+let reducedBlocks: ReadonlyArray<readonly [string, ReducedTurn]> | undefined;
+
+function reducedSystemBlocks(): ReadonlyArray<readonly [string, ReducedTurn]> {
+  reducedBlocks ??= AGENT_KINDS.flatMap((kind) => [
+    [slackSystemBase({ kind, managementMounted: true, memberToolsMounted: false }), 'requester_not_member'] as const,
+    [slackSystemBase({ kind, managementMounted: false, memberToolsMounted: false }), 'management_unmounted'] as const,
   ]);
-  return unsharedBlocks;
+  return reducedBlocks;
 }
 
 /**
@@ -202,9 +205,10 @@ export interface SharedPrefixDecision {
  * a tenant tool there keys B to one workspace, where an hour's write premium
  * buys nothing. A Slack turn that carries the anchor tool or a shared
  * block but not both, or other universal tools, goes out as built and counts
- * a miss.
+ * a miss. A turn with fewer tools goes out as built and is logged by
+ * `requestId`, the key its charge carries, so its cold write is attributable.
  */
-export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
+export function sharePromptPrefix(payload: Payload, requestId: string): SharedPrefixDecision {
   const unshared = { payload, sharedPrefix: null };
   const tools = Array.isArray(payload.tools) ? payload.tools : [];
   const anchor = tools.findIndex((tool) => isRecord(tool) && tool.name === SHARED_PREFIX_LAST_TOOL);
@@ -212,7 +216,14 @@ export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
   const opensWith = (block: string) => text !== undefined && text.startsWith(block + PART_SEPARATOR);
   const kind = AGENT_KINDS.find((candidate) => opensWith(sharedSystemBlock(candidate)));
   const constant = kind === undefined ? undefined : sharedSystemBlock(kind);
-  if (constant === undefined && (anchor < 0 || unsharedSystemBlocks().some(opensWith))) return unshared;
+  const reduced = constant === undefined ? reducedSystemBlocks().find(([block]) => opensWith(block))?.[1] : undefined;
+  if (reduced) {
+    console.info('[chickpea] platform-funded Slack turn sent a reduced tool list without the shared prompt prefix', {
+      model: payload.model, reason: reduced, requestId,
+    });
+    return unshared;
+  }
+  if (constant === undefined && anchor < 0) return unshared;
   const tail = constant === undefined ? '' : text!.slice(constant.length + PART_SEPARATOR.length);
   const universal = tools.slice(0, anchor + 1).map(withoutCacheControl);
   const miss = anchor < 0
@@ -226,6 +237,7 @@ export function sharePromptPrefix(payload: Payload): SharedPrefixDecision {
       model: payload.model,
       reason: miss,
       ...(miss === 'universal_tools_differ' ? { tool: firstDifferingTool(universal) } : {}),
+      requestId,
     });
     return unshared;
   }

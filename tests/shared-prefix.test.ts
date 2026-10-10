@@ -1,6 +1,7 @@
 import {
   USER_AGENT_ID,
   blockedNetworkCalls,
+  chargedRequestId,
   chargedSharedPrefix,
   renderSlackRequest,
   renderToolPayloads,
@@ -38,6 +39,7 @@ import { EMPTY_WORKSPACE_ROSTER, createWorkspaceRoster } from '../src/sandbox/wo
 import { WORKSPACE_TOOL_NAMES } from '../src/sandbox/workspace-tools.ts';
 
 const SNAPSHOT = new URL('../src/agents/shared-prefix-tools.json', import.meta.url);
+const REQUEST_ID = 'req_shared_prefix_test';
 const SNAPSHOT_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5'] as const;
 const ONE_HOUR = { type: 'ephemeral', ttl: '1h' };
 const FIVE_MINUTES = { type: 'ephemeral', ttl: '5m' };
@@ -190,7 +192,7 @@ test('a tool between A and B that no shared shape sends keeps A and caches B for
     input_schema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
   });
   const before = sharedPrefixMisses();
-  const decision = sharePromptPrefix(withConnector);
+  const decision = sharePromptPrefix(withConnector, REQUEST_ID);
   const shared = decision.payload as RenderedRequest;
   assert.equal(decision.sharedPrefix, null, 'the request carries no shared prefix');
   assert.equal(sharedPrefixMisses(), before, 'a tenant tool is not a miss');
@@ -373,7 +375,7 @@ test('a request whose system block does not match goes out unchanged and counts 
   const mismatched = structuredClone(customer);
   mismatched.system[0].text = `Changed. ${mismatched.system[0].text}`;
   const before = sharedPrefixMisses();
-  assert.deepEqual(sharePromptPrefix(mismatched), { payload: mismatched, sharedPrefix: null });
+  assert.deepEqual(sharePromptPrefix(mismatched, REQUEST_ID), { payload: mismatched, sharedPrefix: null });
   assert.equal(sharedPrefixMisses(), before + 1);
 
   const changedTool = structuredClone(customer);
@@ -382,26 +384,28 @@ test('a request whose system block does not match goes out unchanged and counts 
   const warn = console.warn;
   console.warn = (...args: unknown[]) => { warnings.push(args); };
   try {
-    assert.deepEqual(sharePromptPrefix(changedTool), { payload: changedTool, sharedPrefix: null },
+    assert.deepEqual(sharePromptPrefix(changedTool, REQUEST_ID), { payload: changedTool, sharedPrefix: null },
       'universal tools other than the rendered ones');
   } finally {
     console.warn = warn;
   }
   assert.equal(sharedPrefixMisses(), before + 2);
   assert.deepEqual(warnings.map(([, fields]) => fields), [
-    { model: 'claude-opus-5-5', reason: 'universal_tools_differ', tool: changedTool.tools[12].name },
-  ], 'the warning names the first universal tool that differs, and nothing from its text');
-  assert.equal(sharePromptPrefix(structuredClone(customer)).sharedPrefix, 'system/interactive_streaming', 'the unchanged request shares');
+    { model: 'claude-opus-5-5', reason: 'universal_tools_differ', tool: changedTool.tools[12].name, requestId: REQUEST_ID },
+  ], 'the warning names the first universal tool that differs and the request, and nothing from its text');
+  assert.equal(sharePromptPrefix(structuredClone(customer), REQUEST_ID).sharedPrefix, 'system/interactive_streaming', 'the unchanged request shares');
 
   const intentCheck = { model: 'claude-opus-5-5', system: [{ type: 'text', text: 'Classify.' }], messages: [] };
-  assert.deepEqual(sharePromptPrefix(intentCheck), { payload: intentCheck, sharedPrefix: null });
+  const { result: decision, logged } = await reducedTurnLogs(async () => sharePromptPrefix(intentCheck, REQUEST_ID));
+  assert.deepEqual(decision, { payload: intentCheck, sharedPrefix: null });
   assert.equal(sharedPrefixMisses(), before + 2, 'a request that is not a Slack turn is not a miss');
+  assert.deepEqual(logged, [], 'nor a reduced Slack turn');
 });
 
 test('the last user block keeps a 5-minute marker after the 1-hour ones', async () => {
   const longRetention = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
   longRetention.messages.at(-1).content.at(-1).cache_control = ONE_HOUR;
-  const shared = sharePromptPrefix(longRetention).payload as RenderedRequest;
+  const shared = sharePromptPrefix(longRetention, REQUEST_ID).payload as RenderedRequest;
   assert.deepEqual(markers(shared).at(-1), 'user 5m');
   assert.deepEqual(shared.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
 });
@@ -412,14 +416,30 @@ const MOUNTED_GUIDANCE = [
   { text: SLACK_MANAGEMENT_GUIDANCE, tool: 'inspect_workspace' },
 ];
 
-for (const [name, variant, unmounted] of [
-  ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread']],
-  ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'inspect_workspace']],
+/** The reduced-turn lines `sharePromptPrefix` logs while `run` runs. */
+async function reducedTurnLogs<T>(run: () => Promise<T>): Promise<{ result: T; logged: unknown[] }> {
+  const logged: unknown[] = [];
+  const info = console.info;
+  console.info = (message: unknown, fields: unknown) => {
+    if (String(message).includes('reduced tool list')) logged.push(fields);
+  };
+  try {
+    return { result: await run(), logged };
+  } finally {
+    console.info = info;
+  }
+}
+
+for (const [name, variant, unmounted, reason] of [
+  ['a requester with no membership', { ...ALPHA, member: false }, ['read_slack_list', 'read_slack_thread'], 'requester_not_member'],
+  ['a file-delivery check', { ...ALPHA, delivery: 'file_delivery_check' }, ['read_slack_list', 'read_slack_thread', 'inspect_workspace'], 'management_unmounted'],
 ] as const) {
   test(`${name} gets guidance only for the tools it mounts, and goes out unchanged without counting a miss`, async () => {
     const before = sharedPrefixMisses();
-    const request = await renderSlackRequest(variant);
+    const { result: request, logged } = await reducedTurnLogs(() => renderSlackRequest(variant));
     assert.equal(sharedPrefixMisses(), before, 'an expected non-shared turn is not a miss');
+    assert.deepEqual(logged, [{ model: 'claude-opus-5-5', reason, requestId: chargedRequestId(request) }],
+      'its cold write is attributable: the log names the request its charge carries');
     const toolNames = new Set(request.tools.map((tool: any) => tool.name));
     for (const tool of unmounted) assert.ok(!toolNames.has(tool), `${tool} is not mounted`);
     assert.equal(request.system.length, 1, 'the system block does not match a shared block, so it goes out as built');
