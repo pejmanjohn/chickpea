@@ -17,6 +17,7 @@ import type {
   RoutineState,
 } from '../routines/types.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
+import type { SlackCommandAddress } from '../slack/command-address.ts';
 
 export type ManagementOrigin =
   | {
@@ -56,6 +57,8 @@ export interface ManagementActorContext {
 
 export interface LiveManagementActor extends ManagementActorContext {
   role: OrganizationRole;
+  /** The mentions that address the routed Agent, for a Slack origin. */
+  commandAddress?: SlackCommandAddress;
 }
 
 interface ManagementOperationBase {
@@ -300,6 +303,8 @@ export interface ManagementItemOutcome {
   undoAvailable?: boolean;
   code?: string;
   warning?: string;
+  /** Why the item failed and what to ask for next; for the model, never shown to people. */
+  instruction?: string;
   handleChange?: { requested: string; used: string };
 }
 

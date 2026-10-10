@@ -20,7 +20,11 @@ import {
   validateManagementOperations,
 } from './contracts.ts';
 import { reconcileScheduleActionReceipts } from './receipts.ts';
-import type { WorkspaceManagementService } from './service.ts';
+import {
+  slackManagementOrigin,
+  startedByAgentAsk,
+  type WorkspaceManagementService,
+} from './service.ts';
 import type { ManagementStore } from './store.ts';
 import {
   ManagementError,
@@ -76,7 +80,7 @@ export async function invokeSlackScheduleAction(input: {
   const digest = managementOperationDigest([validated]);
   const actionId = scheduleActionId(input.signal.turnJobId, digest);
   const publicIdempotencyKey = `schedule-action:${actionId}`;
-  if (input.signal.requesterText === undefined) {
+  if (startedByAgentAsk({ origin: slackManagementOrigin(input.signal) })) {
     return proposeScheduleAction(input, validated, publicIdempotencyKey);
   }
   const storageIdempotencyKey = managementStorageIdempotencyKey(

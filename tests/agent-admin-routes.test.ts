@@ -5742,3 +5742,47 @@ test('a custom API connection may not name any GitHub host the GitHub App integr
     assert.equal(accepted.status, 200, await accepted.clone().text());
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
+
+test('an Admin rename onto a taken handle still saves it with suggestions while Slack keeps the old one', async () => {
+  const transport = new FakeTransport();
+  transport.groups.push({ id: 'S_OTHER_APP', name: 'QA Fixtures', handle: 'qa-checks', disabled: false });
+  const update = transport.updateUserGroup.bind(transport);
+  transport.updateUserGroup = async (id, patch) => {
+    if (transport.groups.some((group) => group.id !== id && group.handle === patch.handle)) {
+      throw new SlackTransportError('usergroups.update', 'handle_already_exists');
+    }
+    return update(id, patch);
+  };
+  const fixture = harness(transport);
+  try {
+    await createAgent(fixture.app);
+    const added = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
+    });
+    assert.equal(added.body.agent.slackPresence.normalizedHandle, 'support');
+    const { revision } = await fixture.store.getAgent('agent_support');
+
+    const renamed = await supportAgentRequest(fixture.app, 'PATCH', '', { expectedRevision: revision, handle: 'qa-checks' });
+    assert.equal(renamed.status, 200);
+    assert.equal(renamed.body.presenceRecovery.title, '@qa-checks is already in use');
+    const stored = await fixture.store.getAgent('agent_support');
+    assert.deepEqual(
+      {
+        lifecycle: stored.lifecycle,
+        handle: stored.slackPresence?.normalizedHandle,
+        health: stored.slackPresence?.health,
+        suggestions: stored.slackPresence?.handleSuggestions,
+      },
+      {
+        lifecycle: 'needs_attention',
+        handle: 'qa-checks',
+        health: 'needs_attention',
+        suggestions: ['qa-checks-team', 'qa-checks-2', 'qa-checks-3'],
+      },
+    );
+    assert.equal(transport.groups.find(({ id }) => id === stored.slackPresence?.userGroupId)?.handle, 'support');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
