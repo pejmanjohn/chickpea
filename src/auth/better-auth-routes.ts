@@ -122,8 +122,25 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
         reason: `http_${response.status}`,
       });
     }
-    return response;
+    return url.pathname.endsWith('/oauth2/revoke') ? await revocationResponse(response) : response;
   };
+}
+
+/**
+ * What Better Auth's OAuth provider answers, as a 400, when the token to revoke
+ * is unknown or already revoked. RFC 7009 2.2 answers 200, as the provider
+ * means to: it checks `error.name === 'BAD_REQUEST'`, but its errors are named
+ * `APIError`. Any other 400, such as a missing token, stays.
+ */
+const UNUSABLE_TOKEN_DESCRIPTIONS = new Set(['token not found', 'Invalid access token', 'refresh token revoked']);
+
+async function revocationResponse(response: Response): Promise<Response> {
+  if (response.status !== 400) return response;
+  const body: unknown = await response.clone().json().catch(() => null);
+  const description = body && typeof body === 'object' && 'error_description' in body ? body.error_description : null;
+  return typeof description === 'string' && UNUSABLE_TOKEN_DESCRIPTIONS.has(description)
+    ? new Response(null, { status: 200, headers: { 'content-type': 'application/json' } })
+    : response;
 }
 
 class McpRegistrationGate {

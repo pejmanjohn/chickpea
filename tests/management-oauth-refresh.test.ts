@@ -6,12 +6,15 @@ import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
+import type { StoredOAuthTokens } from '@modelcontextprotocol/client';
 import { build, resolveConfig } from 'vite';
 
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
 import { createBetterAuthPublicHandler } from '../src/auth/better-auth-routes.ts';
 import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import { lookupMcpClientName, renderMcpConsentPage } from '../src/auth/mcp-oauth-routes.ts';
+import { logout, type AuthDeps } from '../packages/cli/src/oauth.ts';
+import { CredentialStore, withExpiry, type StoredDeployment } from '../packages/cli/src/store.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -103,7 +106,7 @@ async function fixture(modules: AuthModules = { createBetterAuth, createBetterAu
       redirect_uri: REDIRECT, resource: RESOURCE,
     });
   }
-  return { backend, options, cookie, handler, register, beginAuthorize, authorize, token, revoke };
+  return { backend, options, cookie, handler, form, register, beginAuthorize, authorize, token, revoke };
 }
 
 async function workerBuildAuthModules(t: TestContext): Promise<AuthModules> {
@@ -132,20 +135,70 @@ async function workerBuildAuthModules(t: TestContext): Promise<AuthModules> {
 }
 
 for (const variant of ['source', 'Worker build'] as const) {
-  test(`revoking an expired access token answers 200, not 500 (${variant})`, async (t) => {
+  test(`revoking an expired, unknown or already revoked token answers 200; a request with no token answers 400 (${variant})`, async (t) => {
     const modules = variant === 'source' ? undefined : await workerBuildAuthModules(t);
     t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
     const f = await fixture(modules);
     t.after(() => f.backend.close());
     const client = await (await f.register(RENEWABLE_SCOPE)).json() as { client_id: string };
     const tokens = await (await f.authorize(client.client_id, RENEWABLE_SCOPE)).json() as Record<string, string>;
+    const revoke = (body: Record<string, string>) => f.form('/api/auth/oauth2/revoke', { client_id: client.client_id, ...body });
+
+    for (const hint of ['refresh_token', 'access_token', undefined]) {
+      const unknown = await revoke({ token: 'never-issued', ...(hint ? { token_type_hint: hint } : {}) });
+      assert.equal(unknown.status, 200, `RFC 7009 2.2: an unknown token is invalid, so revoking it succeeds (hint ${hint})`);
+    }
+    for (const missing of [{}, { token: '' }]) {
+      const malformed = await revoke(missing);
+      assert.equal(malformed.status, 400, JSON.stringify(missing));
+      assert.equal((await malformed.json() as { error: string }).error, 'invalid_request');
+    }
 
     t.mock.timers.tick(16 * 60_000);
     assert.equal((await f.revoke(client.client_id, tokens.refresh_token!, 'refresh_token')).status, 200);
+    const again = await f.revoke(client.client_id, tokens.refresh_token!, 'refresh_token');
+    assert.equal(again.status, 200, 'RFC 7009 2.2: an already revoked token is invalid, so revoking it succeeds');
     const expired = await f.revoke(client.client_id, tokens.access_token!, 'access_token');
     assert.equal(expired.status, 200, 'RFC 7009 2.2: an expired token is invalid, so revoking it succeeds');
   });
 }
+
+test('the CLI signs out against the revoke route, and again from a copy whose tokens are already revoked', async (t) => {
+  const f = await fixture();
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'chickpea-cli-logout-'));
+  t.after(() => {
+    f.backend.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const client = await (await f.register(RENEWABLE_SCOPE)).json() as { client_id: string };
+  const tokens = await (await f.authorize(client.client_id, RENEWABLE_SCOPE)).json() as StoredOAuthTokens;
+  const store = new CredentialStore(directory);
+  const entry: StoredDeployment = {
+    origin: ORIGIN,
+    client: { client_id: client.client_id },
+    tokens: withExpiry(tokens, Date.now()),
+    updatedAt: new Date().toISOString(),
+  };
+  const deps: AuthDeps = {
+    fetch: ((input: RequestInfo | URL, init?: RequestInit) => f.handler(new Request(input, init))) as typeof fetch,
+    store,
+    now: Date.now,
+    openBrowser: async () => undefined,
+    note: () => undefined,
+  };
+
+  store.write(entry);
+  assert.deepEqual(await logout(ORIGIN, deps), { origin: ORIGIN, revoked: true });
+  assert.equal(store.read(ORIGIN), undefined);
+  const renewal = await f.token({
+    grant_type: 'refresh_token', client_id: client.client_id, refresh_token: tokens.refresh_token!, resource: RESOURCE,
+  });
+  assert.equal(renewal.status, 400, 'the refresh token is dead server-side');
+
+  store.write(entry);
+  await logout(ORIGIN, deps);
+  assert.equal(store.read(ORIGIN), undefined, 'a stale copy signs out cleanly');
+});
 
 for (const explicitRegistrationScope of [true, false]) {
   test(`real public OAuth renews expired access and rotates refresh tokens (${explicitRegistrationScope ? 'explicit' : 'default'} registration scopes)`, async (t) => {

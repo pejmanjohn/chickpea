@@ -3,6 +3,7 @@ import { test, type TestContext } from 'node:test';
 
 import { withStatelessModelAccess } from '../src/config/installation-model-access.ts';
 import { configureModelAccessResolver } from '../src/config/model-access.ts';
+import { invalidateProviderModelCache, primeProviderModelCache } from '../src/config/provider-models.ts';
 import { resolveRuntimeModel } from '../src/config/runtime-model.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { runStatelessVisionCall } from '../src/images/inspect-output.ts';
@@ -12,6 +13,7 @@ import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
 
 process.env.ANTHROPIC_API_KEY = 'test-not-a-key';
 process.env.OPENAI_API_KEY = 'test-not-a-key';
+process.env.OPENROUTER_API_KEY = 'test-not-a-key';
 configureModelAccessResolver({ resolve: async () => ({ apiKey: 'test-not-a-key' }) } as never);
 bootstrapRuntimeProviders();
 
@@ -99,6 +101,29 @@ function strictProvider(t: TestContext, model: string, text: string): Array<Reco
   return bodies;
 }
 
+test('the intent check on an OpenRouter Anthropic route caches only its instructions', async (t) => {
+  primeProviderModelCache('openrouter', [{ id: 'anthropic/claude-opus-5.5' }], undefined);
+  t.after(() => invalidateProviderModelCache('openrouter'));
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    bodies.push(await new Request(input, init).json());
+    return new Response('{}', { status: 500 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  await classifySlackInteraction({
+    workspaceId: 'T_SHAPE', channelId: 'C_SHAPE', eventId: 'Ev_shape', text: 'Is this result significant?',
+    source: 'app_mention', guaranteed: true, profileInstructions: 'Answer as a teammate.',
+    requestedModel: 'openrouter/anthropic/claude-opus-5.5',
+  }, undefined, undefined, undefined, { settings });
+  assert.equal(bodies.length, 1);
+  const markers = bodies[0]!.messages.map(({ role, content }) =>
+    [role, (content as Array<{ cache_control?: unknown }>).map((block) => block.cache_control ?? null)]);
+  assert.deepEqual(markers, [['system', [{ type: 'ephemeral' }]], ['user', [null]]]);
+});
+
 test('every Anthropic catalog model has its refusals recorded here', () => {
   assert.deepEqual([...ANTHROPIC_MODELS].sort(), Object.keys(ANTHROPIC_REFUSES).sort());
 });
@@ -119,6 +144,12 @@ for (const model of [...ANTHROPIC_MODELS, ...OPENAI_MODELS]) {
     assert.equal(temperature, undefined, 'no side call sends a temperature');
     if (thinking?.type === 'adaptive') assert.deepEqual(outputConfig, { effort: 'low' });
     if (reasoning && reasoning.effort !== 'none') assert.equal(reasoning.effort, 'low');
+    if (model.startsWith('anthropic/')) {
+      const { system, messages } = bodies[0]!;
+      assert.deepEqual(system.map((block: { cache_control?: unknown }) => block.cache_control), [{ type: 'ephemeral' }],
+        'the classifier instructions, the same on every call, are cached');
+      assert.equal(JSON.stringify(messages).includes('cache_control'), false, 'the message classified on this call is not');
+    }
   });
 
   test(`a visual check answers on ${model}, after a thought when the model cannot skip one`, async (t) => {

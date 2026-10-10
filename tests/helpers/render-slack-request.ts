@@ -68,8 +68,8 @@ export interface SlackRequestVariant {
 export const USER_AGENT_ID = 'agent_brief_writer';
 
 let captured: unknown;
-let charged: SharedPrefixId | null | undefined;
-const chargedPrefixes = new WeakMap<RenderedRequest, SharedPrefixId | null>();
+let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
+const chargedRecords = new WeakMap<RenderedRequest, { sharedPrefix: SharedPrefixId | null; requestId: string }>();
 const blockedUrls: string[] = [];
 Anthropic.Messages.prototype.create = function (params: unknown) {
   captured = structuredClone(params);
@@ -110,8 +110,8 @@ configurePlatformFunding({
   ...NO_RUN_FEES,
   funding: async () => current!.funding ?? 'platform',
   admit: async () => 'admitted',
-  charge: async (_record: unknown, sharedPrefix: SharedPrefixId | null) => {
-    charged = sharedPrefix;
+  charge: async (record: { requestId: string }, sharedPrefix: SharedPrefixId | null) => {
+    charged = { sharedPrefix, requestId: record.requestId };
   },
 } as any);
 
@@ -145,9 +145,18 @@ export function blockedNetworkCalls(): readonly string[] {
 }
 
 export function chargedSharedPrefix(request: RenderedRequest): SharedPrefixId | null {
-  const charged = chargedPrefixes.get(request);
-  if (charged === undefined) throw new Error('The render was not charged to the platform.');
-  return charged;
+  return chargedRecord(request).sharedPrefix;
+}
+
+/** The request ID the render's charge carried: the key its ledger row is written under. */
+export function chargedRequestId(request: RenderedRequest): string {
+  return chargedRecord(request).requestId;
+}
+
+function chargedRecord(request: RenderedRequest) {
+  const record = chargedRecords.get(request);
+  if (record === undefined) throw new Error('The render was not charged to the platform.');
+  return record;
 }
 
 export async function renderSlackRequest(variant: SlackRequestVariant): Promise<RenderedRequest> {
@@ -211,7 +220,7 @@ export async function renderSlackRequest(variant: SlackRequestVariant): Promise<
     if (!captured) throw error;
   }
   if (!captured) throw new Error('No Anthropic request was captured.');
-  if (charged !== undefined) chargedPrefixes.set(captured as RenderedRequest, charged);
+  if (charged !== undefined) chargedRecords.set(captured as RenderedRequest, charged);
   return captured as RenderedRequest;
 }
 

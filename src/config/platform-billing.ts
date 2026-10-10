@@ -52,8 +52,8 @@ export interface BillingSummary {
   readonly plan: { readonly key: string; readonly name: string; readonly priceCents: number } | null;
   /** The billing period `use` covers; its end is when the plan renews. */
   readonly period: { readonly start: Date; readonly end: Date } | null;
-  /** Null or absent when the plan renews unchanged, or there is no plan. */
-  readonly pendingChange?: PendingPlanChange | null;
+  /** Null when the plan renews unchanged, or there is no plan. */
+  readonly pendingChange: PendingPlanChange | null;
   /** The plan's meter; null without a plan period. */
   readonly planUsage: {
     readonly usedMicros: UsageMicros;
