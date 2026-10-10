@@ -299,16 +299,19 @@ test('the onboarding page arrives with the journey and its steps, painted as onb
     const page = await adminPageEntry(admin('/admin/onboarding'));
     assert.deepEqual(page.onboarding?.initial, await json(admin('/admin/api/onboarding')), `${principal.role} gets the journey the API returns`);
     assert.equal(page.onboarding?.githubConnectPath, null);
-    assert.match(page.html, /<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand"><span class="avatar">/);
+    assert.match(page.html, /<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell"><aside class="onboarding-scene [^"]+" data-scene="(setting-up|own-model)">[\s\S]*?<\/aside><div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand"><span class="avatar">/);
     assert.doesNotMatch(page.html, /Loading|cloudflare · workers|local · node|aria-label="Admin navigation"|class="topbar"/);
   }
   const owner = await adminPageEntry(signup.admin(await signup.ownerPrincipal())('/admin/onboarding'));
-  assert.deepEqual(owner.onboarding?.steps, [{ id: 'slack', label: 'Add to Slack' }, { id: 'try', label: 'Try Chickpea' }],
+  assert.deepEqual(owner.onboarding?.steps, [{ id: 'slack', label: 'Add to Slack', note: 'Your workspace' }, { id: 'try', label: 'Try Chickpea', note: 'Say hi' }],
     'an Owner where the host sells Chickpea\'s models');
-  assert.ok(owner.html.slice(0, owner.html.indexOf('<script')).includes('</div><ol class="onboarding-orientation onboarding-orientation-short" role="list" aria-label="Onboarding progress">' +
-    '<li class="active" aria-current="step"><span class="onboarding-step-dot">1</span><span class="onboarding-step-label">Add to Slack</span></li>' +
-    '<li class=""><span class="onboarding-step-dot">2</span><span class="onboarding-step-label">Try Chickpea</span></li></ol></div></main>'),
+  const firstPaint = owner.html.slice(0, owner.html.indexOf('<script'));
+  assert.ok(firstPaint.includes('</div><ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+    '<li class="active" aria-current="step"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Your workspace</span></li>' +
+    '<li class=""><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol></div></main>'),
     'the step bar is in the server\'s first paint, before the script runs');
+  assert.match(firstPaint, /<main class="onboarding-shell"><aside class="onboarding-scene onboarding-tone-apricot" data-scene="setting-up">[\s\S]*<p class="onboarding-caption">Moving in…<\/p><\/aside>/,
+    'so is Chickpea moving in');
   const admin = await adminPageEntry(signup.admin(principalFor('admin'))('/admin/onboarding'));
   assert.deepEqual(admin.onboarding?.steps.map(({ id }) => id), ['slack', 'provider', 'model', 'try'], 'an Admin chooses no funding');
   assert.deepEqual(host.chosen, [], 'opening the page sets nothing up');

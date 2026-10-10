@@ -2781,7 +2781,11 @@
         (state.onboardingPlatformErrorCode ? '<p class="hint">Code: ' + esc(state.onboardingPlatformErrorCode) + '</p>' : '') +
         '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-platform-retry">Try again</button></div></section>';
     }
-    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">Setup</p><h1 class="onboarding-title">Setting up Chickpea&hellip;</h1>' + onboardingIllustrationHtml("setup") + '</section>';
+    var workspaceName = state.onboarding && state.onboarding.workspace && state.onboarding.workspace.name;
+    return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p>' +
+      '<h1 class="onboarding-title">' + (workspaceName ? 'Setting up Chickpea in ' + esc(workspaceName) : 'Setting up Chickpea&hellip;') + '</h1>' +
+      '<p class="onboarding-lede">Chickpea is unpacking in your workspace. This takes a few seconds.</p>' +
+      '<div class="onboarding-progress" aria-hidden="true"><i></i></div></section>';
   }
 
   function onboardingProviderHtml() {
@@ -2874,25 +2878,23 @@
     var deepLink = 'https://slack.com/app_redirect?app=' + encodeURIComponent(slackAppId) + '&team=' + encodeURIComponent(workspace.id);
     var slackLogo = '<span class="onboarding-slack-logo slack-logo-image" aria-hidden="true"></span>';
     if (complete) {
-      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Reply confirmed in Slack</span>' +
-        '<h1 class="onboarding-title">Chickpea is ready</h1>' +
-        '<p class="onboarding-lede">Your setup is working. Keep chatting in Slack to finish your first teammate, or open the dashboard to manage Chickpea.</p>' +
+      return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Chickpea replied in Slack</span>' +
+        '<p class="onboarding-eyebrow">All set</p><h1 class="onboarding-title">Chickpea is ready!</h1>' +
+        '<p class="onboarding-lede">Your setup works. Next, give your team its first Agent, in Slack or in the dashboard.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
-        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Keep chatting in Slack</a></div>' +
-        onboardingIllustrationHtml("ready") + '</section>';
+        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
-      '<div class="onboarding-actions"><a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Open Slack to start talking to Chickpea</a></div>' +
+      '<div class="onboarding-paths">' +
+      '<div class="onboarding-path onboarding-path-primary"><h2>Going to Slack now</h2><p>Opens your DM with Chickpea. Its hello is already there.</p>' +
+      '<a class="btn btn-primary" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Open Slack</a></div>' +
+      '<div class="onboarding-path"><h2>Already chatting?</h2><p>Chickpea is working. Pick up in the dashboard whenever you like.</p>' +
+      '<button type="button" class="btn btn-soft" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Go to dashboard <span aria-hidden="true">&rarr;</span>') + '</button></div>' +
+      '</div>' +
       '<p class="onboarding-status" role="status">This page moves on when Chickpea replies</p>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
-      '<div class="onboarding-try-dashboard"><p><strong>Already chatting in Slack?</strong> Head to your dashboard anytime.</p>' +
-      '<button type="button" class="btn btn-soft" data-action="onboarding-proceed-dashboard"' + (state.onboardingBusy ? ' disabled' : '') + '>' + (state.onboardingBusy ? 'Opening dashboard&hellip;' : 'Go to dashboard') + '</button></div>' +
-      onboardingIllustrationHtml("try") + '</section>';
-  }
-
-  function onboardingIllustrationHtml(name) {
-    return '<div class="onboarding-illustration" data-illustration="' + name + '" aria-hidden="true"></div>';
+      '</section>';
   }
 
   // Hosted onboarding offers Connect GitHub (optional) between the model and
@@ -2931,15 +2933,13 @@
       return '<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">' + esc(onboardingGithubAccountsText()) + '</span>' +
         '<p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">GitHub is connected</h1>' +
         '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' + error +
-        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div>' +
-        onboardingIllustrationHtml("github-connected") + '</section>';
+        '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next"' + (busy ? ' disabled' : '') + '>Next: try Chickpea</button></div></section>';
     }
     return '<section class="onboarding-panel onboarding-panel-wide"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + ' &middot; Optional</p>' +
       '<h1 class="onboarding-title">Let Agents work on your code</h1>' +
       '<p class="onboarding-lede">' + esc(GITHUB_INSTALL_COPY + " You can skip this and connect GitHub later in Settings.") + '</p>' + error +
-      '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-primary", busy, githubMarkHtml()) +
-      '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div>' +
-      onboardingIllustrationHtml("github") + '</section>';
+      '<div class="onboarding-actions">' + githubConnectFormHtml(onboardingGithubConnectPath(), "/admin/onboarding", "Connect GitHub", "btn-github", busy, githubMarkHtml()) +
+      '<button type="button" class="btn btn-ghost" data-action="onboarding-github-skip"' + (busy ? ' disabled' : '') + '>Skip for now</button></div></section>';
   }
 
   function githubMarkHtml() {
@@ -2983,15 +2983,28 @@
     var current = onboardingStepIndex();
     var steps = ONBOARDING_PAGE.steps;
     var githubConnected = onboardingGithubConnected();
-    return '<ol class="onboarding-orientation' + (steps.length < 4 ? ' onboarding-orientation-short' : '') + '" role="list" aria-label="Onboarding progress">' + steps.map(function (step, index) {
+    return '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' + steps.map(function (step, index) {
       var done = index < current || (githubConnected && step.id === "github");
       var active = !done && index === current;
-      return '<li class="' + (done ? "complete" : active ? "active" : "") + '"' + (active ? ' aria-current="step"' : '') + '><span class="onboarding-step-dot">' + (done ? '&#10003;' : index + 1) + '</span><span class="onboarding-step-label">' + esc(step.label) + '</span></li>';
+      var note = done ? "Done" : step.note;
+      return '<li class="' + (done ? "complete" : active ? "active" : "") + '"' + (active ? ' aria-current="step"' : '') + '><span class="onboarding-step-label">' + esc(step.label) + '</span>' +
+        (note ? '<span class="onboarding-step-note">' + esc(note) + '</span>' : '') + '</li>';
     }).join("") + '</ol>';
   }
 
+  // The same choice as the server's onboardingSceneId, which paints the first frame.
+  function onboardingSceneId() {
+    var stage = state.onboarding && state.onboarding.stage;
+    if (stage === "choose_provider" || stage === "choose_model") return onboardingOnChickpeaModels() ? "setting-up" : "own-model";
+    if (stage === "connect_github") return onboardingGithubConnected() ? "github-connected" : "github";
+    if (stage === "try") return "try";
+    if (stage === "complete") return "ready";
+    return "add-to-slack";
+  }
+
   function onboardingShellHtml() {
-    return '<main class="onboarding-shell"><div class="onboarding-shell-inner"><div class="onboarding-brand-row">' +
+    var scenes = ONBOARDING_PAGE.scenes || {};
+    return '<main class="onboarding-shell">' + (scenes[onboardingSceneId()] || '') + '<div class="onboarding-shell-inner"><div class="onboarding-brand-row">' +
       '<div class="onboarding-brand">' + peaMarkHtml() + wordmarkHtml() + '</div>' +
       (CONFIG.targetChip ? '<span class="onboarding-environment">' + esc(CONFIG.targetChip) + '</span>' : '') + '</div>' +
       onboardingOrientationHtml() + '<div class="onboarding-stage" aria-live="polite">' + onboardingMainHtml() + '</div></div></main>';

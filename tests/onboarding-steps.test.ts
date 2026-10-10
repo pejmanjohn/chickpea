@@ -7,6 +7,7 @@ import { configurePlatformBilling, type PlatformBillingPort } from '../src/confi
 
 const labels = (steps: ReadonlyArray<{ label: string }>) => steps.map((step) => step.label);
 const ids = (steps: ReadonlyArray<{ id: string }>) => steps.map((step) => step.id);
+const notes = (steps: ReadonlyArray<{ note?: string }>) => steps.map((step) => step.note ?? null);
 
 test('standalone keeps its four steps and never offers GitHub', () => {
   for (const githubOffered of [false, true]) {
@@ -23,6 +24,15 @@ test('hosted starts at Add to Slack, drops the provider and model on Chickpea\'s
     ['Add to Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
   assert.deepEqual(ids(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true })), ['slack', 'github', 'try']);
   assert.deepEqual(labels(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: false })), ['Add to Slack', 'Try Chickpea']);
+});
+
+test('each step\'s bar says what it is for until it is done; the provider and model say nothing more than their labels', () => {
+  assert.deepEqual(notes(onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true })),
+    ['Your workspace', 'Optional', 'Say hi']);
+  assert.deepEqual(notes(onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true })),
+    ['Your workspace', null, null, 'Optional', 'Say hi']);
+  assert.deepEqual(notes(onboardingSteps({ selfHosted: true, onChickpeaModels: false, githubOffered: false })),
+    ['Your workspace', null, null, 'Say hi']);
 });
 
 const BILLING: PlatformBillingPort = {

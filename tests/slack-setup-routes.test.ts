@@ -849,8 +849,13 @@ test('wrong-account login clears callback authority and returns a non-disclosing
     assert.equal(signIn.headers.get('cache-control'), 'no-store');
     assert.equal(signIn.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(signIn.headers.get('x-frame-options'), 'DENY');
-    assert.match(signIn.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
-    assert.doesNotMatch(await signIn.text(), /fonts\.googleapis|password|sign up/i);
+    const policy = signIn.headers.get('content-security-policy') ?? '';
+    assert.match(policy, /frame-ancestors 'none'/);
+    assert.match(policy, /style-src 'unsafe-inline' https:\/\/fonts\.googleapis\.com; font-src https:\/\/fonts\.gstatic\.com;/);
+    const signInHtml = await signIn.text();
+    assert.doesNotMatch(signInHtml, /password|sign up/i);
+    const elsewhere = [...signInHtml.matchAll(/(?:href|src)="(https?:[^"]+)"/g)].map((match) => new URL(match[1]!.replaceAll('&amp;', '&')).origin);
+    assert.deepEqual([...new Set(elsewhere)], ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'], 'only onboarding\'s fonts load from another origin');
 
     const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({
