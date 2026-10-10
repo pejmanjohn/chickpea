@@ -34,7 +34,9 @@ import {
   writeHostedSlackBotCredentials,
 } from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
+import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
+import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
@@ -365,6 +367,26 @@ test("a click on the app Agent's approval card reaches that Agent, as the thread
     'agent_finance',
     'the click never takes the thread over',
   );
+}));
+
+test("the Agent's own reply, echoed back by Slack, stays its Agent's row in the thread record", async (t) => withHarness(t, async (h) => {
+  const root = '1900000000.000100';
+  const reply = '1900000000.000200';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'D1', threadTs: root, agentId: 'agent_support', agentGeneration: 1 });
+  await recordDeliveredSlackAgentMessage(
+    h.stores.config,
+    { workspaceId: TEAM, channelId: 'D1', threadTs: root } as NormalizedSlackTurn,
+    { runtimeContract: 'chickpea-v1', agentId: 'agent_support' },
+    { messageTs: reply, text: 'Refunds go to account 99.' },
+  );
+  const echo = dmEvent({}, {
+    user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, bot_profile: { app_id: AGENT_APP, name: 'support' },
+    text: 'Refunds go to account 99.', ts: reply, event_ts: reply, thread_ts: root,
+  });
+  assert.equal((await h.deliver('events', echo)).status, 200);
+  const rows = await h.stores.config.listSlackPublicContext(TEAM, 'D1', root);
+  assert.deepEqual(rows.map((row) => [row.messageTs, row.role, row.agentId ?? null]), [[reply, 'agent', 'agent_support']],
+    "the Agent's own post is not recorded again as another app's");
 }));
 
 async function hostedBotIsLost(h: Harness): Promise<void> {

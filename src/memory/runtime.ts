@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { getConfigStore, getIdentityStore, getMemoryStateStore } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { ResolvedAssignment } from '../config/types.ts';
+import { agentAppIsLive, type CustomAgentConfig, type ResolvedAssignment, type WorkspaceInstallation } from '../config/types.ts';
 import { currentHumanIdentityDirectory } from '../identity/current-directory.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
@@ -457,6 +457,20 @@ async function deferredLeaseMetric(check: () => Promise<boolean>): Promise<boole
   }
 }
 
+/**
+ * The bot delivering the memory is one this installation answers as: its own,
+ * or, for an Agent with its own Slack app, that Agent's live app's bot. Both
+ * records are read at delivery, so a reinstall or a removed app ends the lease.
+ */
+function installationAnswersAs(
+  installation: Pick<WorkspaceInstallation, 'botUserId'>,
+  agent: CustomAgentConfig,
+  botUserId: string,
+): boolean {
+  if (installation.botUserId === undefined || installation.botUserId === botUserId) return true;
+  return agentAppIsLive(agent.slackPresence) && agent.slackPresence.app.botUserId === botUserId;
+}
+
 async function validateAgentMemoryLease(
   turn: NormalizedSlackTurn,
   runtime: AgentMemoryRuntime,
@@ -472,8 +486,7 @@ async function validateAgentMemoryLease(
     ]);
     if (!agent.enabled || agent.lifecycle === 'archived' ||
         !installation || installation.health === 'revoked' ||
-        (runtime.botUserId !== null && installation.botUserId !== undefined &&
-          installation.botUserId !== runtime.botUserId) ||
+        (runtime.botUserId !== null && !installationAnswersAs(installation, agent, runtime.botUserId)) ||
         (receiptRevision === undefined
           ? current.revision !== selected.revision || current.body !== selected.body
           : current.revision !== receiptRevision)) return false;
