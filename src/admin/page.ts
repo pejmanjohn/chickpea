@@ -13,6 +13,7 @@ import {
   SUGGESTED_SKILL_CATEGORIES,
   SUGGESTED_SKILLS,
 } from '../config/suggested-skills.ts';
+import { STARTER_AGENTS } from '../config/starter-agents.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
 import {
   CHICKPEA_FAVICON_HTML,
@@ -61,6 +62,7 @@ export function adminUiConfig(input: {
   billingOffered?: boolean;
   targetChip?: string | undefined;
   onboarding?: (AdminOnboardingPage & { steps: OnboardingStep[]; scenes: Record<OnboardingSceneId, string> }) | undefined;
+  firstRun?: AdminFirstRun | undefined;
 }): Record<string, unknown> {
   return {
     isCloudflare: input.isCloudflare,
@@ -72,6 +74,8 @@ export function adminUiConfig(input: {
     billingOffered: input.billingOffered === true,
     ...(input.targetChip ? { targetChip: input.targetChip } : {}),
     ...(input.onboarding ? { onboarding: input.onboarding } : {}),
+    ...(input.firstRun ? { firstRun: input.firstRun } : {}),
+    starterAgents: STARTER_AGENTS,
     connectorPresets: CONNECTOR_PRESETS,
     googleWorkspaceServicePresets: GOOGLE_WORKSPACE_SERVICE_PRESETS,
     managedConnectorPresets: MANAGED_CONNECTOR_PRESETS,
@@ -106,6 +110,13 @@ function adminUiConfigJson(input: Parameters<typeof adminUiConfig>[0]): string {
   return JSON.stringify(adminUiConfig(input)).replace(/</g, '\\u003c');
 }
 
+/** What the Agents page's welcome needs from the server, for Owners and Admins. */
+export interface AdminFirstRun {
+  firstName: string | null;
+  /** Null when the deployment has no public address a coding agent could reach. */
+  prompt: string | null;
+}
+
 export interface AdminOnboardingPage {
   initial: Readonly<Record<string, unknown>> | null;
   githubConnectPath: string | null;
@@ -122,6 +133,7 @@ export function renderAdminPage(
     billingOffered?: boolean;
     assetVersion?: string;
     onboarding?: AdminOnboardingPage | undefined;
+    firstRun?: AdminFirstRun | undefined;
   } = {},
 ): string {
   // Target-aware setup and provider copy differs between the Node and
@@ -192,7 +204,7 @@ ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><m
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
     browserOffered: options.browserOffered !== false, selfHosted,
-    billingOffered: options.billingOffered === true, targetChip, onboarding,
+    billingOffered: options.billingOffered === true, targetChip, onboarding, firstRun: options.firstRun,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>

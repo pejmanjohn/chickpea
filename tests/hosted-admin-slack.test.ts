@@ -158,6 +158,7 @@ test('a hosted installation\'s Slack card reports its bot and record, without th
     connected: true,
     teamId: 'T_TEST',
     teamName: 'Tenant Workspace',
+    appId: 'AHOSTED1',
     transportMode: 'direct',
     health: 'needs_attention',
     healthDetail: 'events_verification_pending',

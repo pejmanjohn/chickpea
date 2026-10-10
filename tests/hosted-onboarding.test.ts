@@ -820,3 +820,22 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   assert.deepEqual(page.onboarding?.steps.map(({ label }) => label), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
   assert.match(page.html, /<span class="onboarding-environment">local · node<\/span>/, 'standalone keeps its label');
 });
+
+test('Admin\'s shell gives Owners and Admins the welcome\'s first name and prompt, and Slack status names the app to open', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  const firstRun = async (principal: AuthPrincipal) => {
+    const html = await (await signup.admin(principal)('/admin/agents')).text();
+    const config = html.match(/<script id="chickpea-admin-config" type="application\/json">([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(config);
+    return (JSON.parse(config) as { firstRun?: unknown }).firstRun;
+  };
+  const owner = await signup.ownerPrincipal();
+  assert.deepEqual(await firstRun(owner), {
+    firstName: 'Installer',
+    prompt: `Connect my coding agent to my Chickpea using ${ORIGIN}/connect.md, then help me create my first Chickpea Agent.`,
+  });
+  assert.equal(await firstRun(principalFor('member')), undefined, 'Members have no welcome');
+  const slack = await json(signup.admin(owner)('/admin/api/slack-connection'));
+  assert.equal(slack.appId, APP);
+});

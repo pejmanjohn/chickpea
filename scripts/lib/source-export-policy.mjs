@@ -243,6 +243,7 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'onboarding', 'pose-coding-done.webp'), 'c0ef3ec1a6fa4cd5c49ff75fe43cfb16da65e7bde3bbf79691c13582c645b6ba'],
   [exportPath('assets', 'onboarding', 'pose-chat.webp'), 'b46f5490680416fb0dd7a69227618d7c77092ad16e55330e7391b764aa9487d7'],
   [exportPath('assets', 'onboarding', 'pose-celebrate.webp'), '54ded9a6cf84380fb51de436d3fe8a0bbd3c3d773156df04ee62120c756ac99a'],
+  [exportPath('assets', 'onboarding', 'team.webp'), '8edb31dee5d5f5b61bce8d4e88dbd5b7a02ad8d661e66751138c587c40cfcac6'],
   [exportPath('assets', 'fonts', 'baloo-2', 'devanagari.woff2'), '553cb078f5c5ea1c80a013ca273ba33ff4fd089c91fe99d3c0e84cd4e15914ee'],
   [exportPath('assets', 'fonts', 'baloo-2', 'vietnamese.woff2'), 'c802450781f0420d12d7655dcd3d4ee30130f444e4dd6ba6d039686b69d0798e'],
   [exportPath('assets', 'fonts', 'baloo-2', 'latin-ext.woff2'), '77f82a2cdec619cea53db60cf87ff74a195304e589617fbb3bbdf5c566669ee1'],
