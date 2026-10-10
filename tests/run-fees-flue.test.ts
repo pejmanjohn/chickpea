@@ -77,7 +77,7 @@ function hostedPort(
     refuse?: FeePost['tier'];
     fail?: FeePost['tier'];
     stall?: FeePost['tier'];
-    admission?: 'refused' | 'stall' | 'fail';
+    admission?: 'refused' | 'stall' | 'fail' | 'stop';
     port?: boolean;
   } = {},
 ) {
@@ -99,6 +99,11 @@ function hostedPort(
         admissions.push(run);
         if (options.admission === 'stall') return new Promise<never>(() => {});
         if (options.admission === 'fail') throw new Error('ledger unavailable');
+        if (options.admission === 'stop') {
+          await stopTurn();
+          timeline.push('admit:admitted');
+          return 'admitted';
+        }
         await new Promise((resolve) => setTimeout(resolve, ADMISSION_DELAY_MS));
         const answer = options.admission ?? 'admitted';
         timeline.push(`admit:${answer}`);
@@ -162,6 +167,17 @@ function FeeProbe() {
     });
   }
   useTool({
+    name: 'create_slack_list_item',
+    description: 'The synthetic create_slack_list_item, still working when the turn is stopped.',
+    input: v.object({}),
+    output: v.string(),
+    run: () => {
+      ran.push('create_slack_list_item');
+      void stopTurn();
+      return new Promise<never>(() => {});
+    },
+  });
+  useTool({
     name: 'read_slack_list',
     description: 'The synthetic read_slack_list, which fails after it does its work.',
     input: v.object({}),
@@ -212,6 +228,11 @@ const readsChannel = (channel: string) => (model: Parameters<typeof answers>[0])
   { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel } },
 ], 'toolUse');
 
+/** Stops the turn `slackTurn` is running as a requester's stop does: Flue aborts the instance's work. */
+let stopTurn: () => Promise<void> = async () => {
+  throw new Error('No turn is running.');
+};
+
 async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise<{ text: string } | unknown> {
   const runtime = await start({
     agents: [{ agent: probe, name: 'fee-probe' }],
@@ -219,6 +240,7 @@ async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise
   });
   try {
     const agent = init(probe, { id });
+    stopTurn = () => agent.abort();
     const receipt = await agent.dispatch('Hello');
     return await promptSlackThreadAgent({
       handle: agent, message: 'unused saved dispatch', turnId: id,
@@ -350,6 +372,31 @@ test('a qualifying tool that throws after doing its work posts one task row', { 
 
   assert.deepEqual(await slackTurn('fees-thrown-after-work'), { text: 'done' });
   assert.deepEqual(ran, ['read_slack_list']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
+test('a stop that lands while a qualifying call waits to start posts no task row, and the call never runs', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t, { admission: 'stop' });
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  await slackTurn('fees-stopped-before-start');
+
+  assert.deepEqual(admissionAnswers(), ['admit:admitted'], 'the stop landed while the call waited on its admission');
+  assert.deepEqual(ran, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a stop that lands while a qualifying call is working still posts one task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('create_slack_list_item'), answers]);
+  ran.length = 0;
+
+  await slackTurn('fees-stopped-while-working');
+
+  assert.deepEqual(ran, ['create_slack_list_item']);
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
