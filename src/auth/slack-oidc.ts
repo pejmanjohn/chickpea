@@ -27,6 +27,7 @@ export const SLACK_OIDC_SCOPES = ['openid', 'profile', 'email'] as const;
 const MAX_SLACK_OIDC_RESPONSE_BYTES = 64 * 1_024;
 
 const TEAM_CLAIM = 'https://slack.com/team_id';
+const TEAM_NAME_CLAIM = 'https://slack.com/team_name';
 const USER_CLAIM = 'https://slack.com/user_id';
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
 
@@ -58,6 +59,8 @@ export interface SlackOidcProof {
   slackTeamId: string;
   slackUserId: string;
   displayName: string;
+  /** The workspace's name as Slack shows it, when Slack sends one. */
+  teamName?: string;
   contactEmail?: string;
   /**
    * No bot of the app could check membership. Only an install grant naming
@@ -272,10 +275,12 @@ export class SlackOidcGateway implements SlackOidcProvider {
       throw new SlackOidcError('invalid_token');
     }
     const email = contactEmail(userInfo);
+    const teamName = shownName(userInfo[TEAM_NAME_CLAIM]);
     const proof: SlackOidcProof = {
       slackTeamId: teamId,
       slackUserId: userId,
       displayName: displayName(userInfo),
+      ...(teamName ? { teamName } : {}),
       ...(email ? { contactEmail: email } : {}),
     };
     const botCredentials = expectedBot ?? (expectedTeamId ? undefined : await this.dependencies.credentials
@@ -406,9 +411,14 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
 
 function displayName(userInfo: Record<string, unknown>): string {
   for (const candidate of [userInfo.name, userInfo.given_name, userInfo.sub]) {
-    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim().slice(0, 120);
+    const name = shownName(candidate);
+    if (name) return name;
   }
   return 'Slack member';
+}
+
+function shownName(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 120) : undefined;
 }
 
 function contactEmail(userInfo: Record<string, unknown>): string | undefined {

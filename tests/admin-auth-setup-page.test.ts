@@ -11,6 +11,7 @@ import {
   renderSlackSignInPage,
 } from '../src/admin/page.ts';
 import { onboardingSteps } from '../src/admin/onboarding-steps.ts';
+import { fontFaceCss, JOURNEY_FONTS } from '../src/assets/fonts.ts';
 import type { SlackSetupTransaction } from '../src/identity/types.ts';
 import { buildSlackAppManifest, slackManifestPrefillUrl } from '../src/slack/app-manifest.ts';
 
@@ -288,13 +289,13 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   const html = renderSlackJourneyPage({
     ...base,
     progress: { steps: onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true }), current: 'github' },
-    badge: 'Signed in with Slack as <Ana & "Bo">',
+    badge: 'Acme <Ops> & "Co"',
   });
   const progress = '<ol class="auth-progress" role="list" aria-label="Onboarding progress">' +
     '<li class="auth-progress-done"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Done</span></li>' +
     '<li class="auth-progress-current" aria-current="step"><span class="onboarding-step-label">Connect GitHub</span><span class="onboarding-step-note">Optional</span></li>' +
     '<li><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
-  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Signed in with Slack as &lt;Ana &amp; &quot;Bo&quot;&gt;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
+  const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Acme &lt;Ops&gt; &amp; &quot;Co&quot;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
   assert.ok(html.includes(`</div>${progress}${badge}<p class="auth-eyebrow">Step 2 of 3</p>`), 'brand row, steps, badge, then the eyebrow');
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   const classes = new Set([...`${progress}${badge}`.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
@@ -317,14 +318,15 @@ test('the shell step bar marks every step done before the current one, and none 
   assert.deepEqual(states('github'), ['auth-progress-done:Add to Slack:Done', 'auth-progress-done:Choose provider:Done', 'auth-progress-done:Choose model:Done', 'auth-progress-current:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
 });
 
-test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, which the auth pages\' policy allows', async () => {
+test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, served by Chickpea itself', async () => {
   const pages = [
     renderSlackJourneyPage({ surface: 's', eyebrow: 'E', title: 'T', body: '' }),
     renderSlackSignInPage('/admin'),
     renderSlackOwnerCompletePage('/admin'),
   ];
   for (const html of pages) {
-    assert.match(html, /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/css2\?family=Baloo\+2:wght@600;700;800&amp;family=Quicksand:wght@500;600;700&amp;display=swap">/);
+    assert.ok(html.includes(`<style>\n${fontFaceCss(JOURNEY_FONTS)}\n`), 'the shell declares its own font faces first');
+    assert.doesNotMatch(html, /<link rel="(?:stylesheet|preconnect)"|fonts\.googleapis|fonts\.gstatic/);
     assert.match(html, /body\{[^}]*font-family:Quicksand,/);
     assert.match(html, /\.auth-title\{[^}]*font-family:"Baloo 2",/);
   }
@@ -334,7 +336,7 @@ test('a host\'s onboarding page can be a split screen: the scene on the left, br
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true });
   const html = renderSlackJourneyPage({
     surface: 'add-to-slack', eyebrow: 'Step 1 of 3', title: 'Now add Chickpea to Slack', body: '<p>Body</p>',
-    progress: { steps, current: 'slack' }, badge: 'Signed in with Slack as Ana', scene: 'add-to-slack',
+    progress: { steps, current: 'slack' }, badge: 'Violet', scene: 'add-to-slack',
   });
   const body = html.slice(html.indexOf('<body'));
   assert.match(body, /^<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand"><div class="auth-brand">[\s\S]*?<\/div><\/div><aside class="onboarding-scene onboarding-tone-apricot" data-scene="add-to-slack">[\s\S]*?<p class="onboarding-caption">Bags packed\. Where to\?<\/p><\/aside><main class="auth-card" aria-labelledby="auth-title"><ol class="auth-progress"[\s\S]*?<\/ol><div class="auth-body"><div class="auth-badge">[\s\S]*?<p class="auth-eyebrow">Step 1 of 3<\/p>/);

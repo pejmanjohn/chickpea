@@ -851,11 +851,9 @@ test('wrong-account login clears callback authority and returns a non-disclosing
     assert.equal(signIn.headers.get('x-frame-options'), 'DENY');
     const policy = signIn.headers.get('content-security-policy') ?? '';
     assert.match(policy, /frame-ancestors 'none'/);
-    assert.match(policy, /style-src 'unsafe-inline' https:\/\/fonts\.googleapis\.com; font-src https:\/\/fonts\.gstatic\.com;/);
-    const signInHtml = await signIn.text();
-    assert.doesNotMatch(signInHtml, /password|sign up/i);
-    const elsewhere = [...signInHtml.matchAll(/(?:href|src)="(https?:[^"]+)"/g)].map((match) => new URL(match[1]!.replaceAll('&amp;', '&')).origin);
-    assert.deepEqual([...new Set(elsewhere)], ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'], 'only onboarding\'s fonts load from another origin');
+    assert.match(policy, /style-src 'unsafe-inline'; font-src 'self';/, 'the sign-in page\'s fonts come only from Chickpea');
+    assert.doesNotMatch(policy, /fonts\.googleapis|fonts\.gstatic/);
+    assert.doesNotMatch(await signIn.text(), /fonts\.googleapis|fonts\.gstatic|password|sign up/i);
 
     const start = await app.request(`${ORIGIN}/auth/slack/oidc/start`, {
       method: 'POST', headers: formHeaders(), body: new URLSearchParams({

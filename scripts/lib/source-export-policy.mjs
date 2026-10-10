@@ -223,6 +223,7 @@ export const forbiddenBinaryExtensions = new Set([
   '.pdf',
   '.png',
   '.webp',
+  '.woff2',
 ]);
 
 export const allowedBinaryFiles = new Map([
@@ -243,6 +244,17 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'onboarding', 'pose-chat.webp'), 'b46f5490680416fb0dd7a69227618d7c77092ad16e55330e7391b764aa9487d7'],
   [exportPath('assets', 'onboarding', 'pose-celebrate.webp'), '54ded9a6cf84380fb51de436d3fe8a0bbd3c3d773156df04ee62120c756ac99a'],
   [exportPath('assets', 'onboarding', 'team.webp'), '8edb31dee5d5f5b61bce8d4e88dbd5b7a02ad8d661e66751138c587c40cfcac6'],
+  [exportPath('assets', 'fonts', 'baloo-2', 'devanagari.woff2'), '553cb078f5c5ea1c80a013ca273ba33ff4fd089c91fe99d3c0e84cd4e15914ee'],
+  [exportPath('assets', 'fonts', 'baloo-2', 'vietnamese.woff2'), 'c802450781f0420d12d7655dcd3d4ee30130f444e4dd6ba6d039686b69d0798e'],
+  [exportPath('assets', 'fonts', 'baloo-2', 'latin-ext.woff2'), '77f82a2cdec619cea53db60cf87ff74a195304e589617fbb3bbdf5c566669ee1'],
+  [exportPath('assets', 'fonts', 'baloo-2', 'latin.woff2'), '2e9420db49d01d76a7b8a38ef22ec9c45305d9f15fafa370389b7bf467658fc3'],
+  [exportPath('assets', 'fonts', 'quicksand', 'quicksand.woff2'), 'ea843f5402c11a24ea4c07cf03d55d76cedd8c6bac1184795a4cfe80bc4f8ed3'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'cyrillic-ext.woff2'), '9343de2ca5d9549f792e7962375af8efb0f320c7643bfd36c884b5a30e5c396f'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'cyrillic.woff2'), '4995a9a43ac659ec32fcd8b463755cd6a07b31a6e6b3894a6a153b661cf490e2'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'greek.woff2'), '49c3da6c9a2b279b0f1f860f5cfb1f5dc38d88a5c7be9c9b1837bbc4e3db6111'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'vietnamese.woff2'), 'd44eb1936043a56038eb02dd70b243f379bef65783f94ec12f277550720411f1'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'latin-ext.woff2'), '9c38cb2d0d2d93c1ee6e21fa78db76f13ea7e15e15cc64214c7ca89b6aaa35c4'],
+  [exportPath('assets', 'fonts', 'jetbrains-mono', 'latin.woff2'), '2c32b9b3ee358c119e210f6f5195f9bd34894d78a785ff2e95d60e718e400af4'],
   [exportPath('assets', 'connectors', 'bugsnag.png'), '3ae8846f2b32c318a4d88e47d862d961d7e33e44c1d9611118de4e4c868c722f'],
   [exportPath('assets', 'connectors', 'exa.png'), '277c9f6801afffd060b6891522b7a75062e7da677e439ea1bb7c2e697b35d770'],
   [exportPath('assets', 'connectors', 'fireflies.png'), 'de55a51173478c6412190b6af4867a7e2134a961aa423b569421f33674b714ac'],

@@ -637,9 +637,7 @@ test('Slack auth visual states render the production Slack-only journey without 
         /xox(?:b|p|e)-[A-Za-z0-9-]{8,}|route-client-secret|route-signing-secret|visual-setup-capability/,
         name,
       );
-      assert.doesNotMatch(html, /Forgot Password|Sign up|Cloudflare Access/i, name);
-      const loaded = new Set([...html.matchAll(/<(?:link|img|script)\b[^>]*\b(?:href|src)="(https?:[^"]+)"/g)].map((match) => new URL(match[1]!.replaceAll('&amp;', '&')).origin));
-      assert.deepEqual([...loaded].sort(), ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'], `${name}: only onboarding's fonts load from another origin`);
+      assert.doesNotMatch(html, /fonts\.googleapis|fonts\.gstatic|Forgot Password|Sign up|Cloudflare Access/i, name);
     }
   } finally {
     await fixture.close();
