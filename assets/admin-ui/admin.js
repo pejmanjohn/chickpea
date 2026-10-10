@@ -31,6 +31,8 @@
   var GITHUB_SETTINGS_PATH = "/admin/settings/github";
   var GITHUB_INSTALL_COPY = "Install the Chickpea app on your GitHub account or organization, then choose which repositories it can use.";
   var NOT_OFFERED_HINT_HTML = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
+  // The models list's source for a provider served by Chickpea's models (PLATFORM_MODELS_SOURCE in routes.ts).
+  var PLATFORM_MODELS_SOURCE = "Chickpea’s models";
   var PLATFORM_PROVIDER_COPY_HTML = '<div class="provider-card-copy"><p>Chickpea&rsquo;s models are in use. No API key needed.</p><p class="provider-card-muted">Your own API key is optional.</p></div>';
   var CONNECTOR_PRESETS = CONFIG.connectorPresets;
   var GOOGLE_WORKSPACE_SERVICE_PRESETS = CONFIG.googleWorkspaceServicePresets;
@@ -12961,7 +12963,7 @@
     api("/admin/api/models/readiness?modelId=" + encodeURIComponent(model)).then(function (body) {
       return body && body.unavailable ? body : null;
     }).catch(function () {
-      return null;
+      return knownModelReadiness(model);
     }).then(function (answer) {
       if (state.modelReadiness !== slot) return;
       slot.answer = answer;
@@ -12970,11 +12972,25 @@
     return null;
   }
 
-  function modelWarning(model, answer) {
+  // Without the server's answer, the models list still says which provider has
+  // no key on the workspace's own key. On Chickpea's models, `configured`
+  // means served, not keyed, so the list knows nothing to warn about.
+  function knownModelReadiness(model) {
+    var entry = modelProviderEntry(model);
+    return entry && !entry.configured && entry.source !== PLATFORM_MODELS_SOURCE
+      ? { unavailable: "credential_missing" }
+      : null;
+  }
+
+  function modelProviderEntry(model) {
     var provider = model.slice(0, model.indexOf("/"));
-    var entry = state.models.providers.find(function (item) { return item.id === provider; });
+    return state.models.providers.find(function (item) { return item.id === provider; });
+  }
+
+  function modelWarning(model, answer) {
+    var entry = modelProviderEntry(model);
     if (!entry) return "Free text accepted; provider not detected in this install.";
-    var subscription = provider === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription";
+    var subscription = entry.id === "openai" && entry.authMethods && entry.authMethods.activeMethod === "subscription";
     if (subscription && (entry.suggestions || []).indexOf(model) < 0) {
       return "This OpenAI model is not available through the selected ChatGPT subscription.";
     }

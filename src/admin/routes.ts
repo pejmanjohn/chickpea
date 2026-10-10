@@ -646,6 +646,7 @@ import {
   AuthorizationError,
   canEditAgent,
   canManageOwnedResource,
+  isOwnerSession,
   permissionForRole,
   requireAgentEdit,
   requirePermission,
@@ -907,6 +908,7 @@ interface AdminRoutesOptions {
   }) => Promise<'match' | 'missing' | 'mismatch' | 'transient'>) | undefined;
   composioReconciliationTimeoutMs?: number | undefined;
   composioPreparationTimeoutMs?: number | undefined;
+  slackWorkspaceNameTimeoutMs?: number | undefined;
   /**
    * Explicit encrypted Slack credential realm for tests and embedded hosts.
    * Production resolves persistent TAG_STATE and its target keyring from the
@@ -996,6 +998,8 @@ interface AdminRoutesOptions {
 
 const MAX_SLACK_INSTALLATION_ADMIN_BODY_BYTES = 64 * 1_024;
 const MAX_AUTH_SETUP_BODY_BYTES = 8_192;
+const SLACK_WORKSPACE_NAME_TIMEOUT_MS = 3_000;
+const SLACK_WORKSPACE_NAME_RETRY_MS = 60_000;
 const SLACK_INSTALL_BROWSER_COOKIE = '__Secure-chickpea_slack_install';
 const SLACK_OIDC_BROWSER_COOKIE = '__Secure-chickpea_slack_oidc';
 const SLACK_RECOVERY_BROWSER_COOKIE = '__Secure-chickpea_slack_recovery_browser';
@@ -1733,6 +1737,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     options.identity ?? getIdentityStore(c.env as PlatformEnv | undefined);
   const settings = (c: Context) =>
     options.settings ?? getSettingsStore(c.env as PlatformEnv | undefined);
+  const PLATFORM_DEFAULT_IMAGE_MODEL_ID: ImageModelId = OPENAI_API_IMAGE_DEFAULT_MODEL_ID;
   const initializeAuthenticatedWorkspaceImageDefault = async (
     c: Context,
     modelId: ImageModelId,
@@ -1749,6 +1754,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         workspaceId: organization.slackTeamId,
         modelId,
         membershipId: principal.membershipId,
+      };
+    });
+  };
+  // Chickpea's models come with their default image model, when the workspace
+  // has chosen none and Chickpea's models serve it.
+  const initializeChickpeaImageDefault = async (
+    c: Context,
+    workspaceId: string,
+    membershipId: string | undefined,
+  ): Promise<void> => {
+    await initializeWorkspaceImageDefaultBestEffort(async () => {
+      const profile = findImageModel(PLATFORM_DEFAULT_IMAGE_MODEL_ID);
+      if (!profile || !await imageModelProfileReady(profile, c.env as PlatformEnv | undefined, settings(c))) {
+        return undefined;
+      }
+      return {
+        config: store(c),
+        workspaceId,
+        modelId: PLATFORM_DEFAULT_IMAGE_MODEL_ID,
+        ...(membershipId ? { membershipId } : {}),
       };
     });
   };
@@ -2386,18 +2411,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     return updated;
   };
   // Installs store no workspace name until something asks Slack for it here.
+  // Onboarding reads poll, so asking Slack holds off the next ask for a
+  // minute, unless the answer names the workspace.
+  const slackWorkspaceNameAskedAt = new Map<string, number>();
   const slackWorkspaceName = async (c: Context, teamId: string): Promise<string | undefined> => {
     if (options.slackAdmissionService && !options.slackCredentials && !options.slackTransport) {
       return undefined;
     }
-    const settingsStore = settings(c);
-    const storedTeamName = (await settingsStore.getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
+    const storedTeamName = (await settings(c).getSetting(SLACK_SETTING_KEYS.teamName))?.trim();
     if (storedTeamName) return storedTeamName;
-
+    const askedAt = slackWorkspaceNameAskedAt.get(teamId);
+    if (askedAt !== undefined && Date.now() - askedAt < SLACK_WORKSPACE_NAME_RETRY_MS) return undefined;
+    const teamName = await askSlackWorkspaceName(c, teamId);
+    if (teamName) slackWorkspaceNameAskedAt.delete(teamId);
+    return teamName;
+  };
+  const askSlackWorkspaceName = async (c: Context, teamId: string): Promise<string | undefined> => {
+    const settingsStore = settings(c);
     const installation = await store(c).getWorkspaceInstallation(teamId);
     if (installation || options.slackTransport) {
       try {
         const transport = await agentSlackTransport(c, teamId);
+        slackWorkspaceNameAskedAt.set(teamId, Date.now());
         const live = await transport.getWorkspaceInfo?.();
         if (live?.teamId === teamId && live.teamName?.trim()) {
           const teamName = live.teamName.trim().slice(0, 120);
@@ -2419,7 +2454,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         credentials,
       );
       if (!resolved.botToken) return undefined;
-      const live = await slackAuthTest(resolved.botToken);
+      slackWorkspaceNameAskedAt.set(teamId, Date.now());
+      const live = await slackAuthTest(
+        resolved.botToken,
+        AbortSignal.timeout(options.slackWorkspaceNameTimeoutMs ?? SLACK_WORKSPACE_NAME_TIMEOUT_MS),
+      );
       if (live.ok && live.teamId === teamId && live.teamName?.trim()) {
         const teamName = live.teamName.trim().slice(0, 120);
         await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
@@ -4682,7 +4721,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const installationOwner = async (c: Context, next: Next) => {
     c.header('Cache-Control', 'no-store');
     const principal = principalByContext.get(c);
-    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
     return next();
   };
   app.use('/admin/api/installation', installationOwner);
@@ -6220,7 +6259,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     );
     return c.html(renderAdminPage({
       usageAdminUi: usageAdminUi(c),
-      installationOwner: Boolean(principal && principal.role === 'owner' && !principal.machine),
+      installationOwner: isOwnerSession(principal),
       browserOffered: standalone,
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
@@ -6265,7 +6304,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const hostedOnboardingUnfinished = async (c: Context): Promise<boolean> => {
     const principal = principalByContext.get(c);
     if (deploymentTenancy(c.env as PlatformEnv | undefined) !== 'installation' ||
-        principal?.role !== 'owner' || principal.machine || new URL(c.req.url).search) return false;
+        !isOwnerSession(principal) || new URL(c.req.url).search) return false;
     const snapshot = await readOnboardingJourney(settings(c));
     if (snapshot?.journey.state !== 'active' || await installationSetUp(c)) return false;
     return hostedSlackConnected(c);
@@ -6385,6 +6424,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         defaultModel: installation && (await configStore.getWorkspaceModelDefault(installation.workspaceId))?.modelId,
         agents: agents.filter((agent) => agent.lifecycle === 'active' && agent.enabled),
       };
+    },
+    choseChickpeaModels: async (c) => {
+      const installation = await modelDefaultInstallation(store(c));
+      if (installation) {
+        await initializeChickpeaImageDefault(c, installation.workspaceId, principalByContext.get(c)?.membershipId);
+      }
     },
   }));
   app.route('/admin/api', createWorkAdminApi({
@@ -7223,7 +7268,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (deploymentLaneRefused(c)) return unknownProvider(c);
       if (!isCloudflareTarget()) return c.notFound();
       const principal = principalByContext.get(c);
-      if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+      if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
       const d = planDependencies(c.env as PlatformEnv | undefined, settings(c));
       try {
         if (action === 'prepare') await preparePlanConnection(d, await readJson(c.req));
@@ -10412,11 +10457,10 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   const PLATFORM_DEFAULT_MODEL = { providerId: 'anthropic', modelId: 'anthropic/claude-opus-5-5' } as const;
-  const PLATFORM_DEFAULT_IMAGE_MODEL_ID: ImageModelId = OPENAI_API_IMAGE_DEFAULT_MODEL_ID;
 
   app.post('/admin/api/onboarding/platform', async (c) => {
     const principal = principalByContext.get(c);
-    if (!principal || principal.machine || principal.role !== 'owner') return c.json({ error: 'forbidden' }, 403);
+    if (!isOwnerSession(principal)) return c.json({ error: 'forbidden' }, 403);
     try {
       const port = platformBilling();
       const installationId = port && requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
@@ -10439,21 +10483,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           modelId: PLATFORM_DEFAULT_MODEL.modelId,
           expectedDefaultRevision: (await store(c).getWorkspaceModelDefault(slack.teamId))?.revision ?? 0,
         });
-        if (started.ok) {
-          const workspaceId = slack.teamId;
-          await initializeWorkspaceImageDefaultBestEffort(async () => {
-            const profile = findImageModel(PLATFORM_DEFAULT_IMAGE_MODEL_ID);
-            if (!profile || !await imageModelProfileReady(profile, c.env as PlatformEnv | undefined, settings(c))) {
-              return undefined;
-            }
-            return {
-              config: store(c),
-              workspaceId,
-              modelId: PLATFORM_DEFAULT_IMAGE_MODEL_ID,
-              membershipId: principal.membershipId,
-            };
-          });
-        }
+        if (started.ok) await initializeChickpeaImageDefault(c, slack.teamId, principal.membershipId);
         return started;
       } catch (error) {
         const raced = await readOnboardingJourney(settings(c));

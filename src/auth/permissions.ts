@@ -52,6 +52,13 @@ export function permissionForRole(role: OrganizationRole): ReadonlySet<Permissio
   return MEMBER;
 }
 
+/** An Owner signed in as themselves. A personal token acting for an Owner is not one. */
+export function isOwnerSession(
+  principal: AuthPrincipal | undefined,
+): principal is AuthPrincipal & { role: 'owner'; machine: false } {
+  return principal !== undefined && !principal.machine && principal.role === 'owner';
+}
+
 export function requirePermission(principal: AuthPrincipal | undefined, permission: Permission): void {
   if (!principal) throw new AuthorizationError('principal_required');
   if (!permissionForRole(principal.role).has(permission)) throw new AuthorizationError();

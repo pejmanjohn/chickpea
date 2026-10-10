@@ -99,12 +99,25 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
   });
   await syncHostedWorkspaceInstallation(tenant.env, { teamId: TEAM, appId: APP, botUserId: BOT }, config);
   // Slack answers auth.test for the bot with its workspace's name, or refuses when `teamName` is unset.
-  const slack: { teamId: string; teamName: string | undefined; calls: string[] } = { teamId: TEAM, teamName: WORKSPACE_NAME, calls: [] };
+  // While `hangs`, Slack never answers; only the caller's bound ends the call, and `cutOff` counts those.
+  const slack: { teamId: string; teamName: string | undefined; calls: string[]; hangs: boolean; cutOff: number } =
+    { teamId: TEAM, teamName: WORKSPACE_NAME, calls: [], hangs: false, cutOff: 0 };
   const previousFetch = globalThis.fetch;
   const slackFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     if (new URL(request.url).pathname !== '/api/auth.test') return previousFetch(input, init);
     slack.calls.push(request.headers.get('authorization') ?? '');
+    if (slack.hangs) {
+      return await new Promise<Response>((resolve, reject) => {
+        // Without a bound the call ends here, late, so the test fails instead of hanging.
+        const unbounded = setTimeout(() => resolve(Response.json({ ok: false, error: 'invalid_auth' })), 5_000);
+        request.signal.addEventListener('abort', () => {
+          clearTimeout(unbounded);
+          slack.cutOff += 1;
+          reject(request.signal.reason);
+        });
+      });
+    }
     return Response.json(slack.teamName === undefined
       ? { ok: false, error: 'invalid_auth' }
       : { ok: true, team_id: slack.teamId, team: slack.teamName, user_id: BOT, app_id: APP });
@@ -142,11 +155,13 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
   const admin = (
     principal: AuthPrincipal,
     stores: { config?: ConfigStore; settings?: SettingsStore; work?: WorkStore; slackState?: SlackStateStore } = {},
+    routeOptions: Parameters<typeof createAdminRoutes>[0] = {},
   ) => {
     const app = createAdminRoutes({
       store: stores.config ?? config, settings: stores.settings ?? settings, usage, slackCredentials: credentials,
       work: stores.work, slackState: stores.slackState,
       ...testAdminAuthority(TOKEN, ORIGIN, identity, principal),
+      ...routeOptions,
     });
     return (path: string, init: RequestInit = {}) => app.request(`${ORIGIN}${path}`, {
       ...init,
@@ -265,7 +280,8 @@ test('a fresh install names its workspace on the first onboarding read, asking S
   assert.equal(await signup.settings.getSetting(SLACK_SETTING_KEYS.teamName), WORKSPACE_NAME);
 });
 
-test('when Slack cannot name the workspace, onboarding still reads, unnamed, and asks again next time', async (t) => {
+test('when Slack cannot name the workspace, onboarding still reads, unnamed, and asks again a minute later, not on every read', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const signup = await signUp(t);
   await signup.claim();
   signup.slack.teamName = undefined;
@@ -273,14 +289,34 @@ test('when Slack cannot name the workspace, onboarding still reads, unnamed, and
   const unnamed = await json(admin('/admin/api/onboarding'));
   assert.equal(unnamed.stage, 'choose_provider');
   assert.deepEqual(unnamed.workspace, { id: TEAM, name: null });
+  signup.slack.teamName = WORKSPACE_NAME;
+  for (let poll = 0; poll < 3; poll += 1) {
+    assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: null }, 'Try\'s polls do not ask again');
+  }
+  assert.equal(signup.slack.calls.length, 1);
+
   signup.slack.teamName = 'Another workspace';
   signup.slack.teamId = 'TANOTHER';
+  t.mock.timers.tick(60_000);
   assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: null }, 'only its own workspace names it');
+  assert.equal(signup.slack.calls.length, 2);
 
   signup.slack.teamName = WORKSPACE_NAME;
   signup.slack.teamId = TEAM;
+  t.mock.timers.tick(60_000);
   assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: WORKSPACE_NAME });
   assert.equal(signup.slack.calls.length, 3);
+});
+
+test('a Slack ask that hangs ends at its bound: onboarding reads unnamed, and the next read does not ask again', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  signup.slack.hangs = true;
+  const admin = signup.admin(await signup.ownerPrincipal(), {}, { slackWorkspaceNameTimeoutMs: 20 });
+  assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: null });
+  assert.equal(signup.slack.cutOff, 1, 'the bound ended the call');
+  assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: null });
+  assert.equal(signup.slack.calls.length, 1);
 });
 
 test('a hosted Owner whose Slack connection ended before finishing opens Admin, never onboarding\'s Connect Slack step', async (t) => {
@@ -694,15 +730,18 @@ test('a Member, an Admin, a finished journey, or a host with no billing port cha
   assert.equal((await json(startOnPlatform(admin))).stage, 'complete');
   assert.equal((await signup.journey())!.revision, complete.revision);
   assert.deepEqual(host.chosen, [], 'nothing is asked of the host');
+  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'nor is an image model chosen');
   const switched = await admin('/admin/api/billing/funding', { method: 'POST', body: JSON.stringify({ funding: 'platform' }) });
   assert.equal(switched.status, 200, 'the Plan page still switches after onboarding');
   assert.deepEqual(host.chosen, ['platform']);
+  const image = await signup.config.getWorkspaceModelRole(TEAM, 'image');
+  assert.equal(image?.modelId, 'openai/gpt-image-2.5-flare', 'the switch chooses the image model onboarding would have');
 
   configurePlatformBilling(undefined);
   await signup.settings.applySettingsPatch({ delete: [ONBOARDING_JOURNEY_KEY] });
   await beginOnboardingJourney(signup.settings);
   assert.equal((await startOnPlatform(admin)).status, 404, 'no port, nothing to choose');
-  assert.equal(await signup.config.getWorkspaceModelRole(TEAM, 'image'), undefined, 'no port, no image model');
+  assert.deepEqual(await signup.config.getWorkspaceModelRole(TEAM, 'image'), image, 'no port, no change to the image model');
 });
 
 test('an installation on Chickpea\'s models switches back to its own key only with a key for its default model\'s provider, and hears which Agents would stop', async (t) => {

@@ -180,6 +180,7 @@ async function harness(options: {
     agentNames: async () => new Map([['agent_chickpea', 'Chickpea'], ['agent_research', 'Research']]),
     personNames: async () => new Map([['membership_maya', 'Maya Chen']]),
     ownKeyFacts: async () => ({ ...ownKey, savedKeys }),
+    choseChickpeaModels: async () => undefined,
   }));
   const fetch = async (path: string, init?: { method?: string; body?: string }): Promise<FakeResponse> => {
     const method = init?.method ?? 'GET';
