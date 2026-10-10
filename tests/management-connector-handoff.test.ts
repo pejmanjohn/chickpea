@@ -669,6 +669,7 @@ test('a stale Slack confirmation blocks same-turn writes until the requester rev
     eventId: 'Ev_STALE_GUARD',
     messageTs: '400.1',
     turnJobId: 'turn_STALE_GUARD',
+    requesterText: 'Yes, go ahead.',
   };
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -681,6 +682,7 @@ test('a stale Slack confirmation blocks same-turn writes until the requester rev
       channelId: signal.channelId,
       threadTs: signal.threadTs,
       agentId: signal.agentId,
+      requestText: 'Yes, go ahead.',
     },
   };
   let persistedGuard: SlackManagementTurnGuardState = { turnJobId: signal.turnJobId };
@@ -791,6 +793,7 @@ test('the Flue render lifecycle preserves the stale-confirmation barrier across 
       eventId: 'Ev_STALE_FLUE',
       messageTs: '410.1',
       turnJobId: 'turn_STALE_FLUE',
+      requesterText: 'Yes, go ahead.',
     };
     const context: ManagementActorContext = {
       userId: f.admin.user.id,
@@ -803,6 +806,7 @@ test('the Flue render lifecycle preserves the stale-confirmation barrier across 
         channelId: signal.channelId,
         threadTs: signal.threadTs,
         agentId: signal.agentId,
+        requestText: 'Yes, go ahead.',
       },
     };
     const proposed = await f.service.proposeWorkspaceChanges({
@@ -950,6 +954,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     eventId: `Ev_AUTHORITY_${++sequence}`,
     messageTs: `400.${sequence + 1}`,
     turnJobId: `turn_AUTHORITY_${sequence}`,
+    requesterText: 'Yes, go ahead.',
   });
   try {
     const scoped = await invokeSlackWorkspaceManagementTool({
@@ -1503,6 +1508,7 @@ test('self-archive is confirmed, seals the next Agent turn, and restores from an
     eventId: 'Ev_ARCHIVE',
     messageTs: '500.2',
     turnJobId: 'turn_ARCHIVE',
+    requesterText: 'Yes, go ahead.',
   };
   try {
     const proposed = await invokeSlackWorkspaceManagementTool({

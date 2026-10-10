@@ -83,6 +83,10 @@ exchange, in that thread:
   accounts. The asking Agent's words cannot grant anything.
 - Only people approve, stop, check in, or run memory and schedule commands.
   An Agent's message never counts as one of those, whatever it says.
+- On a turn an ask started, scheduled work and memory change only through
+  one proposal covering everything the turn would write. The person approves
+  it with the card's Approve button or by replying "approve", whichever Agent
+  proposed it. A click on a guest's card goes to that guest.
 - Asks happen only on the current runtime.
 
 An ask that cannot be admitted, for example to an Agent without a grant in
@@ -109,9 +113,10 @@ thread, so no Agent's name reaches a person who cannot see it there.
 Every answer is posted in the conversation, so only the people in it read
 it. Each Agent has one memory across Channels and direct messages, so an
 Agent that reads another Agent's answer is told not to save it to memory
-unless the person asks. An ask carries no request text from the person: a
-check that needs the person's own words, such as a schedule change or a
-skill import, does not take the asking Agent's words as theirs.
+unless the person asks, and a write it makes anyway waits for the person's
+approval. An ask carries no request text from the person: a check that needs
+the person's own words, such as a schedule change or a skill import, does not
+take the asking Agent's words as theirs.
 
 ## Limits
 

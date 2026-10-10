@@ -91,9 +91,10 @@ interface ResolveAgentRouteInput {
   /** The Agent whose own Slack app received this delivery; never Slack message text. */
   agentApp?: { agentId: string };
   /**
-   * Trusted host admission of an Agent-to-Agent ask: the Agent another Agent
-   * mentioned in a reply it delivered. It answers in the thread without
-   * taking the thread over; never Slack message text.
+   * Trusted host admission for one Agent already in this thread: the Agent
+   * another Agent mentioned in a reply it delivered, or the Agent whose
+   * approval card a person clicked. It answers in the thread without taking
+   * the thread over; never Slack message text.
    */
   askAgentId?: string;
   /** Authenticated Slack directory seam used only when a mentioned immutable

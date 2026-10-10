@@ -2734,6 +2734,15 @@ async function processSlackEvent(
         transport: runtimeTransport,
         stores,
       });
+      // An Approve or Cancel click answers the Agent that posted the card. A
+      // guest's card is answered by that guest, as an ask is.
+      const cardAgentId = ui?.surface.namespace === 'host' && ui.surface.spec.kind === 'approval'
+        ? ui.surface.agentId
+        : undefined;
+      const threadAgentId = cardAgentId
+        ? (await store.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))?.agentId
+        : undefined;
+      const guestCardAgentId = threadAgentId && threadAgentId !== cardAgentId ? cardAgentId : undefined;
       const routed = await resolveAgentRoute({
         turn,
         surface,
@@ -2741,7 +2750,7 @@ async function processSlackEvent(
         ...(execution?.agentApp ? { agentApp: execution.agentApp } : {}),
         config: store,
         transport: runtimeTransport,
-        ...(ask ? { askAgentId: ask.targetAgentId } : {}),
+        ...(ask ? { askAgentId: ask.targetAgentId } : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),
         authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
           agent,
           workspaceId: turn.workspaceId,

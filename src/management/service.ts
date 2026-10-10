@@ -1679,6 +1679,13 @@ export class WorkspaceManagementService {
   ): Promise<ApplyWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
+    if (!input.approvalBasis && startedByAgentAsk(actor) &&
+        requestedOperations.some(({ kind }) => PERSON_APPROVED_ON_ASK.has(kind))) {
+      throw new ManagementError(
+        'forbidden',
+        'Another Agent\'s ask started this turn, so scheduled work and memory change only through a proposal the person approves. Send every operation to propose_workspace_changes.',
+      );
+    }
     assertBaseAgentCreationContract(requestedOperations);
     assertStandaloneBaseAgentCreation(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
@@ -2043,6 +2050,12 @@ export class WorkspaceManagementService {
     input: ConfirmWorkspaceChangeInput,
   ): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
+    if (startedByAgentAsk(actor)) {
+      throw new ManagementError(
+        'forbidden',
+        'Only the person\'s own message can approve this change. Ask them to approve it in a reply.',
+      );
+    }
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
     if (changeSet) {
       try {
@@ -6000,6 +6013,24 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
     ...(inverse ? { inverse } : {}),
     resultingRevisions: { [`memory:${memory.agentId}`]: memory.revision },
   };
+}
+
+/**
+ * Writes a Slack turn another Agent's ask started applies only through a
+ * proposal the person approves. Schedule actions admitted on the person's
+ * message pass an approval basis, including on retries that no longer carry it.
+ */
+export const PERSON_APPROVED_ON_ASK: ReadonlySet<ManagementOperation['kind']> = new Set([
+  'save_routine', 'control_routine', 'run_routine', 'update_agent_memory',
+]);
+
+/**
+ * A Slack turn another Agent's ask started: it carries no requester text,
+ * while every person's turn carries their message (a file alone is read as
+ * the host's request to inspect it).
+ */
+export function startedByAgentAsk(actor: Pick<ManagementActorContext, 'origin'>): boolean {
+  return actor.origin.kind === 'slack' && actor.origin.requestText === undefined;
 }
 
 function routineMutation(routine: RoutineDefinition): ImmediateMutation {
