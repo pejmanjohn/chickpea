@@ -473,20 +473,20 @@ test("a Member's Slack Add adds nothing and tells them who can", async (t) => wi
   assert.deepEqual(slackPosts(h, 'chat.postMessage'), [], 'nothing is posted in the Channel');
 }));
 
-test("a redelivered or repeated Slack Add changes nothing and says nothing again", async (t) => withHarness(t, async (h) => {
+test('a redelivered Slack Add changes nothing and says nothing again', async (t) => withHarness(t, async (h) => {
+  const refused = joinEvent({ channel: 'C3', inviter: 'U2' });
+  assert.equal((await h.deliver('events', refused)).status, 200);
+  assert.equal((await h.deliver('events', refused)).status, 200);
+  assert.equal(slackPosts(h, 'chat.postEphemeral').length, 1, 'a Member is told who can add it once');
+
   const event = joinEvent();
   assert.equal((await h.deliver('events', event)).status, 200);
   const [granted] = await h.stores.config.listAgentChannelGrants(TEAM, 'C2');
   assert.equal(granted?.status, 'active');
   const answered = h.calls.length;
-
   assert.equal((await h.deliver('events', event)).status, 200);
   assert.equal(h.calls.length, answered, 'a redelivery makes no Slack call');
   assert.deepEqual(await h.stores.config.listAgentChannelGrants(TEAM, 'C2'), [granted], 'and writes nothing');
-
-  assert.equal((await h.deliver('events', { ...event, event_id: 'EvJoinAgain' })).status, 200);
-  assert.equal(slackPosts(h, 'chat.postMessage').length, 1, 'the bot added again to a Channel its Agent has does not greet it again');
-  assert.equal((await h.stores.config.listAgentChannelGrants(TEAM, 'C2'))[0]?.status, 'active');
 }));
 
 test('a Slack Add into a Channel its Agent already has changes nothing and tells nobody to ask', async (t) => withHarness(t, async (h) => {
