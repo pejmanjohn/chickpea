@@ -480,3 +480,31 @@ test('Slack fact failures emit sanitized unavailable diagnostics', async (t) => 
   );
   assert.doesNotMatch(warnings.join('\n'), /C_PRIVATE|U1|member_1/);
 });
+
+for (const failure of ['placement', 'membership'] as const) {
+  test(`unexpected ${failure} errors do not expose private text in diagnostics`, async (t) => {
+    const warnings: string[] = [];
+    t.mock.method(console, 'warn', (...values: unknown[]) => {
+      warnings.push(values.map(String).join(' '));
+    });
+    const selected = agent('private');
+    const privateError = new Error('C_PRIVATE U1 member_1 private conversation content');
+    const result = await resolvePrivateAgentAccess({
+      agent: selected,
+      workspaceId: 'T1',
+      grants: [grant(selected.id, 'C_PRIVATE')],
+      actor: fullMember,
+      transport: transport({
+        channels: {
+          C_PRIVATE: failure === 'placement'
+            ? privateError
+            : channel('C_PRIVATE', { private: true }),
+        },
+        memberChannels: privateError,
+      }),
+    });
+
+    assert.deepEqual(result, { status: 'unavailable', audience: 'unavailable' });
+    assert.doesNotMatch(warnings.join('\n'), /C_PRIVATE|U1|member_1|private conversation content/);
+  });
+}
