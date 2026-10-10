@@ -2,13 +2,7 @@ import type { WebClient } from '@slack/web-api';
 
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
-import {
-  creditBackFailedRun,
-  givenUpReason,
-  hostedRun,
-  planFunding,
-  withCreditedBack,
-} from '../usage/run-settlement.ts';
+import { givenUpRecoveryText } from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import { opaqueId } from '../work/admission.ts';
 import type { RunDriverHandlerResult } from '../work/driver.ts';
@@ -20,7 +14,6 @@ import type {
 import type { SlackPublicDelivery } from './public-context.ts';
 import { runTurn, type RunTurnOptions } from './run-turn.ts';
 import {
-  DURABLE_RECOVERY_FAILURE_TEXT,
   deliverPersistedSlackPayload,
   rejectedFileFallbackPayload,
   parseSlackDeliveryRef,
@@ -219,8 +212,10 @@ export function createLedgerSlackRunHandler(
           instanceId: job.agentInstanceId,
         }
       : undefined;
-    // Dispatch writes the receipt it records onto this object, so the give-up
-    // below reads it here rather than from the job this attempt loaded.
+    // Dispatch writes the receipt it records onto this object, and the plan
+    // is frozen during the attempt, so the give-up below reads both here
+    // rather than from the job this attempt loaded.
+    let frozenPlan = job.runtimePlan;
     const flueDispatch: SlackFlueDispatchState = {
       ...(job.dispatchEnvelope ? { dispatchEnvelope: job.dispatchEnvelope } : {}),
       ...(job.dispatchReceipt ? { dispatchReceipt: job.dispatchReceipt } : {}),
@@ -251,7 +246,11 @@ export function createLedgerSlackRunHandler(
         runFencingToken: claim.fencingToken,
         executionAuthority: 'ledger',
         ...(runtimePlanDecision ? { runtimePlanDecision } : {}),
-        onRuntimePlan: (candidate) => options.turns.freezeRuntimePlan(job.id, candidate),
+        onRuntimePlan: async (candidate) => {
+          const decision = await options.turns.freezeRuntimePlan(job.id, candidate);
+          frozenPlan = decision.runtimePlan;
+          return decision;
+        },
         ...(options.turns.getBoundRuntimePlan ? { getBoundRuntimePlan: options.turns.getBoundRuntimePlan.bind(options.turns) } : {}),
         ...(options.turns.getThreadContinuation
           ? { getThreadContinuation: options.turns.getThreadContinuation.bind(options.turns) }
@@ -312,14 +311,14 @@ export function createLedgerSlackRunHandler(
       if (error instanceof AgentPromptFailure && error.recoveryRequired) {
         return deliverDurableRecoveryFailure(
           options, claim, job, client, installationContext,
-          'flue_dispatch_reconciliation_required', flueDispatch,
+          'flue_dispatch_reconciliation_required', flueDispatch, frozenPlan,
         );
       }
       if (error instanceof AgentPromptFailure && error.retryable) {
         if (attempt >= MAX_POST_DISPATCH_ATTEMPTS) {
           return deliverDurableRecoveryFailure(
             options, claim, job, client, installationContext,
-            'post_dispatch_attempts_exhausted', flueDispatch,
+            'post_dispatch_attempts_exhausted', flueDispatch, frozenPlan,
           );
         }
         return { kind: 'requeue', reasonCode: 'flue_reattachment_interrupted' };
@@ -350,11 +349,9 @@ async function deliverDurableRecoveryFailure(
   installationContext: SlackInstallationExecutionContext | undefined,
   reasonCode: string,
   dispatch: Pick<SlackFlueDispatchState, 'dispatchReceipt' | 'flueSettlement'>,
+  plan: RuntimePlanV2 | undefined,
 ): Promise<RunDriverHandlerResult> {
-  const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
-    hostedRun(options.platformEnv, dispatch.dispatchReceipt?.submissionId),
-    givenUpReason(dispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
-  ));
+  const recoveryText = await givenUpRecoveryText(options.platformEnv, dispatch, plan);
   try {
     await (options.executeTurn ?? runTurn)(job.turn, job.assignment, options.platformEnv, {
       client,

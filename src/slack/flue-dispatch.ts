@@ -578,6 +578,7 @@ export async function promptSlackThreadAgent(
         outcome: error.outcome,
         settledAt: now(),
         failureKind: kind,
+        ...toolCalls.settled(),
       });
     } catch (settlementError) {
       await settlementNotSaved(settlementError);
@@ -609,6 +610,7 @@ export async function promptSlackThreadAgent(
         outcome: 'failed',
         settledAt: now(),
         failureKind,
+        ...toolCalls.settled(),
       });
     } catch (settlementError) {
       await settlementNotSaved(settlementError);
@@ -680,6 +682,11 @@ class SubmissionToolCalls {
 
   get count(): number {
     return this.#ids.size;
+  }
+
+  /** The count a failed settlement records, so a replay decides with it; omitted when no tool ran. */
+  settled(): { toolCallCount?: number } {
+    return this.count > 0 ? { toolCallCount: this.count } : {};
   }
 
   onEvent(chunk: ConversationStreamChunk): void {
@@ -1069,7 +1076,9 @@ function resultFromSettlement(
     ? 'agent'
     : settlement.failureKind;
   // A replayed abort ends the same way as the live one.
-  throw settlement.outcome === 'aborted' ? new AgentRunAborted(kind) : new AgentPromptFailure(kind);
+  if (settlement.outcome === 'aborted') throw new AgentRunAborted(kind);
+  throw Object.assign(new AgentPromptFailure(kind),
+    settlement.toolCallCount === undefined ? {} : { toolCallCount: settlement.toolCallCount });
 }
 
 function boundedReceipt(receipt: DispatchReceipt): FlueDispatchReceiptV1 {
