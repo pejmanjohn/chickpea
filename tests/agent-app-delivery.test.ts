@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 
 import { Hono } from 'hono';
 
+import { createAdminRoutes } from '../src/admin/routes.ts';
 import { markSlackInstallationEnded, serveAgentAppSlackDelivery } from '../src/channels/slack.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import type { EncryptedCredentialStore } from '../src/config/settings-store.ts';
@@ -35,9 +36,11 @@ import {
 } from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
+import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
+import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation', SLACK_TAG_PUBLIC_URL: 'https://hosted.example' };
@@ -439,6 +442,7 @@ test("a tenant's end that cannot tell the Owner about a left app still uninstall
 }, { lostHostedBot: true }));
 
 const SUPPORT_READY = '@support is ready in this channel. Mention @support to start a conversation.';
+const SUPPORT_WELCOME = 'Hi, I’m *Support*.\n\nMention <@UAGENTBOT> to start a thread with me. I only join conversations that mention me';
 
 function slackPosts(h: Harness, method: 'chat.postMessage' | 'chat.postEphemeral'): URLSearchParams[] {
   return h.calls.filter((call) => call.method === method).map((call) => call.body);
@@ -454,14 +458,24 @@ test("an Owner's Slack Add of the Agent's bot adds the Agent to that Channel, an
   assert.equal(grants[0]?.createdByMembershipId, owner?.membership.id, 'added on behalf of the person who added the bot');
   const [welcome] = slackPosts(h, 'chat.postMessage');
   assert.equal(welcome?.get('channel'), 'C2');
-  assert.match(welcome?.get('text') ?? '', /^Hi, I’m \*Support\*\./);
-  assert.match(welcome?.get('text') ?? '', /Mention <@UAGENTBOT> to start a thread with me/, 'the welcome mentions its bot');
+  assert.equal(welcome?.get('text'), `${SUPPORT_WELCOME}, and once I’m in a thread you can keep going there without the mention.`,
+    "Chickpea's bot is in the Channel, so a thread's unmentioned replies reach the Agent");
   assert.equal(welcome?.get('username'), null, 'no persona: the app posts as itself');
   assert.equal(welcome?.get('icon_url'), null);
   assert.deepEqual(slackPosts(h, 'chat.postEphemeral').map((body) => [body.get('user'), body.get('text')]), [['U1', SUPPORT_READY]],
     'the Owner is told as after the Add button');
-  assert.ok(h.calls.every((call) => call.token === AGENT_BOT), "Slack's Add is answered as the Agent's own bot");
+  assert.ok(h.calls.filter((call) => call.method.startsWith('chat.')).every((call) => call.token === AGENT_BOT),
+    "Slack's Add is answered as the Agent's own bot");
+  assert.deepEqual(h.calls.filter((call) => call.token !== AGENT_BOT).map((call) => `${call.method} ${call.body.get('channel')}`),
+    ['conversations.info C2'], "Chickpea's bot only says whether it is in the Channel");
 }));
+
+test("an app Agent's welcome promises replies without a mention only where Chickpea's bot is in the Channel", async (t) => withHarness(t, async (h) => {
+  assert.equal((await h.deliver('events', joinEvent())).status, 200);
+
+  assert.deepEqual(slackPosts(h, 'chat.postMessage').map((body) => [body.get('channel'), body.get('text')]), [['C2', `${SUPPORT_WELCOME}.`]],
+    'the app has no Channel message events, so without Chickpea there a thread follow-up needs the mention');
+}, { notMemberOf: { [MAIN_BOT]: ['C2'] } }));
 
 test("a Member's Slack Add adds nothing and tells them who can", async (t) => withHarness(t, async (h) => {
   assert.equal((await h.deliver('events', joinEvent({ inviter: 'U2' }))).status, 200);
@@ -539,3 +553,34 @@ test('a DM to an app Agent whose only placement neither bot is in is still refus
   assert.deepEqual(refusals.map((call) => [call.token, call.body.get('text')]), [[AGENT_BOT, 'That Agent is not available here.']]);
   assert.equal(await pendingTurn(h.stores, () => true), undefined);
 }, { notMemberOf: { [AGENT_BOT]: ['C1'], [MAIN_BOT]: ['C1'] } }));
+
+test("Admin's DM audience for an app Agent counts a Channel either bot is in, as its DMs do", async (t) => withHarness(t, async (h) => {
+  const owner = (await h.stores.identity.resolveSlackIdentity(TEAM, 'U1'))!;
+  const admin = createAdminRoutes({
+    store: h.stores.config, settings: h.stores.settings, slackTransport: createDirectSlackTransport(MAIN_BOT, undefined),
+    ...testAdminAuthority('admin-token', undefined, h.stores.identity, {
+      userId: owner.user.id, membershipId: owner.membership.id, organizationId: owner.membership.organizationId, role: 'owner',
+      authenticatorKind: 'test_slack_session', credentialId: 'session_owner', correlationId: 'request_owner', machine: false,
+    }),
+  });
+  const audience = async (agentId: string) => {
+    const response = await admin.request(`/admin/api/agents/${agentId}`, { headers: testAdminHeaders('admin-token') }, h.base);
+    assert.equal(response.status, 200, await response.clone().text());
+    return ((await response.json()) as { agent: { whereItWorks: { privateUseAudience?: string } } }).agent.whereItWorks.privateUseAudience;
+  };
+  await h.stores.config.deleteAgentChannelGrant(TEAM, 'C1', 'agent_finance');
+  assert.equal(await audience('agent_support'), 'workspace_members', "a grant from before the app, where only Chickpea's bot is");
+
+  await h.stores.config.deleteAgentChannelGrant(TEAM, 'C1', 'agent_support');
+  assert.equal((await h.deliver('events', joinEvent())).status, 200);
+  await h.stores.config.putAgentChannelGrant({
+    workspaceId: TEAM, channelId: 'C2', agentId: 'agent_finance', status: 'active',
+    createdByMembershipId: owner.membership.id, channelLabel: 'team', channelIsPrivate: false,
+  }, 0);
+  assert.equal(await audience('agent_support'), 'workspace_members', "after Slack's Add alone, where only the app's bot is");
+  assert.equal((await h.deliver('events', dmEvent())).status, 200);
+  assert.equal((await pendingTurn(h.stores, () => true))?.assignment.agentId, 'agent_support', 'and a DM to the app gets through');
+  assert.equal(await audience('agent_finance'), 'unavailable', "a user-group Agent's Channels are read through Chickpea's bot alone");
+  configureAgentSlackApps(undefined);
+  assert.equal(await audience('agent_support'), 'unavailable', 'with the switch off, Admin reads as before');
+}, { notMemberOf: { [MAIN_BOT]: ['C2'], [AGENT_BOT]: ['C1'] } }));

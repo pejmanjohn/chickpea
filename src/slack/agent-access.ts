@@ -42,7 +42,7 @@ interface PrivateAgentAudienceInput {
   agent: CustomAgentConfig;
   workspaceId: string;
   grants: readonly AgentChannelGrant[];
-  transport?: AgentAccessTransport;
+  transport?: PrivateAgentPlacementFacts;
 }
 
 interface PrivateAgentDirectoryInput {

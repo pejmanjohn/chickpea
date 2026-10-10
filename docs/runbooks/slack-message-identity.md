@@ -64,13 +64,18 @@ that Channel.
   to ask a workspace Owner or Admin; the bot stays in the Channel, without the
   Agent. A redelivered event, or the bot added to a Channel where the Agent
   already is, changes nothing.
+- Apps created before this change don't receive `member_joined_channel`,
+  because Chickpea never updates an existing app's manifest.
 - Removing the bot from a Channel leaves the Agent's grant there.
-- Neither path brings Chickpea's bot into the Channel.
+- Neither path brings Chickpea's bot into the Channel. The welcome says thread
+  replies need no mention only when Chickpea's bot is in that Channel, as read
+  through Chickpea's bot; when Slack cannot say, it leaves that out.
 - On the app's own deliveries, who may message the Agent is decided from its
   Channels as read by its own bot, and then by Chickpea's: a Channel counts
   when either bot is in it. A grant made before the Agent had its own app,
   when only Chickpea's bot was there, keeps its audience. A Channel neither
-  bot is in still fails closed.
+  bot is in still fails closed. Admin's DM audience line for an Agent whose
+  app is live is read the same way.
 
 ### How it is turned on
 

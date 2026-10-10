@@ -137,6 +137,22 @@ export function agentAppPlacementFacts(
 }
 
 /**
+ * Where Admin reads an Agent's DM audience: the placement facts its own app's
+ * deliveries decide from while that app is live, so Admin and Slack agree;
+ * Chickpea's bot alone for any other Agent, or without the port.
+ */
+export async function agentDmPlacementFacts(
+  env: PlatformEnv | undefined,
+  agent: CustomAgentConfig,
+  chickpea: PrivateAgentPlacementFacts,
+): Promise<PrivateAgentPlacementFacts> {
+  if (!agentSlackAppsHost() || agent.slackPresence?.kind !== 'agent_app') return chickpea;
+  const lookup = await agentAppExecutionBot(env, agent.id);
+  if (lookup.kind !== 'live') return chickpea;
+  return agentAppPlacementFacts(createDirectSlackTransport(lookup.bot.botToken, undefined), chickpea);
+}
+
+/**
  * What a host needs before it trusts a delivery for this app; undefined for an
  * unknown or deleted app, or one whose secrets cannot be opened, so the host
  * acknowledges rather than asking Slack to retry a delivery nothing can verify.

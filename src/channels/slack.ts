@@ -734,15 +734,14 @@ function agentAppExecution(
   installationBotToken: string | undefined,
 ): SlackEventExecution {
   const transport = createDirectSlackTransport(bot.botToken, undefined);
+  const installationBot = installationBotToken ? createDirectSlackTransport(installationBotToken, undefined) : undefined;
   return {
     transport,
     client: createSlackWebClient(bot.botToken),
     botUserId: bot.botUserId,
     stores: resolveStores(platformEnv),
     agentApp: { agentId: bot.agentId },
-    ...(installationBotToken
-      ? { placementFacts: agentAppPlacementFacts(transport, createDirectSlackTransport(installationBotToken, undefined)) }
-      : {}),
+    ...(installationBot ? { installationBot, placementFacts: agentAppPlacementFacts(transport, installationBot) } : {}),
   };
 }
 
@@ -1458,6 +1457,8 @@ interface SlackEventExecution {
   stores?: AppStores;
   /** The Agent whose own Slack app received this delivery: it runs as that bot on a direct installation. */
   agentApp?: { agentId: string };
+  /** Chickpea's own bot, beside an Agent app's `transport`. */
+  installationBot?: SlackTransport;
   /** Where Agents' private-use placements are read when not through `transport` (agentAppPlacementFacts). */
   placementFacts?: PrivateAgentPlacementFacts;
   enqueueTurn?: (job: TurnJob) => Promise<StateRpcResult<null>>;
@@ -2212,7 +2213,7 @@ function surfaceMessenger(
 
 /** The offer's Add button, or Slack's own Add of an Agent's app bot: Admin's Add to channels, from Slack. */
 async function addRequestedAgentToChannel(
-  input: Pick<SlackUiContext, 'platformEnv' | 'stores' | 'client' | 'transport' | 'gateway' | 'botUserId'> & {
+  input: Pick<SlackUiContext, 'platformEnv' | 'stores' | 'client' | 'transport' | 'gateway' | 'botUserId' | 'execution'> & {
     request: AgentChannelAddRequest;
   },
 ): Promise<void> {
@@ -2248,6 +2249,7 @@ async function addRequestedAgentToChannel(
         announce: await livePresenceAnnouncements({
           env: platformEnv, settings: stores.settings, identity: stores.identity,
           management: stores.management, transport, botUserId,
+          ...(input.execution?.installationBot ? { installationBot: input.execution.installationBot } : {}),
         }),
       }).publish({
         workspaceId: request.workspaceId,
@@ -4376,7 +4378,8 @@ async function handleMemberJoinedChannel(
       const grants = await stores.config.listAgentChannelGrants(workspaceId, event.channel);
       if (grants.some((grant) => grant.agentId === agentId && grant.status === 'active')) return;
       await addRequestedAgentToChannel({
-        platformEnv, stores, client: execution.client, transport: execution.transport, botUserId: execution.botUserId,
+        platformEnv, stores, execution,
+        client: execution.client, transport: execution.transport, botUserId: execution.botUserId,
         request: {
           workspaceId, userId: event.inviter, channelId: event.channel, threadTs: null,
           agentId, requestId: payload.event_id,
