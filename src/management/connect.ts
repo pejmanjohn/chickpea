@@ -13,6 +13,7 @@
  * Settings page (C1) and the CLI render from the same facts.
  */
 
+import { CONNECT_FONTS, fontFaceCss } from '../assets/fonts.ts';
 import { escapeHtml } from '../security/html-escape.ts';
 import { adminSettingsSectionShown } from './admin-links.ts';
 
@@ -252,7 +253,7 @@ export function connectMarkdown(origin: string, env?: Record<string, unknown>): 
   ].join('\n');
 }
 
-const BRAND_STYLE = `
+const BRAND_STYLE = `${fontFaceCss(CONNECT_FONTS)}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--line:rgba(59,50,32,.12);--text:#3b3220;--text-2:#6b5c42;--gold:#dda033;--gold-deep:#8a6410;--gold-press:#b27e1f;--ok:#4e7a3e}
 *{box-sizing:border-box}
 body{margin:0;background:var(--canvas);color:var(--text);font:16px/1.55 Quicksand,system-ui,-apple-system,"Segoe UI",sans-serif}

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { keepEventLoopAlive } from './helpers/keep-event-loop-alive.ts';
 
 import { Hono } from 'hono';
+import { readFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import * as v from 'valibot';
 
@@ -2113,6 +2114,47 @@ test('Agent create owns its handle, generated avatar, edit policy, and creator',
     assert.deepEqual([...avatarBytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     assert.deepEqual(avatarBytes, await defaultAgentAvatarPng(agent.slackPresence.avatar.seed));
     assert.match(avatar.headers.get('cache-control') ?? '', /immutable/);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Agent create keeps a ready-made Agent\'s default avatar, refuses any other, and still picks one when none is asked for', async () => {
+  const fixture = harness();
+  try {
+    const post = (id: string, avatar?: unknown) => fixture.app.request('http://localhost/admin/api/agents', {
+      method: 'POST',
+      headers: auth(),
+      body: JSON.stringify({
+        id, name: id, handle: id.slice('agent_'.length), instructions: 'Answer support questions.',
+        enabled: true, model: 'local-stub/admin-agent', ...(avatar === undefined ? {} : { avatar }),
+      }),
+    });
+    for (const refused of [
+      '../01-sage.png', 'agent-defaults/01-sage.png', '/chickpea-avatars/agent-defaults/01-sage.png',
+      'https://example.com/01-sage.png', '13-unknown.png', null, 1,
+    ]) {
+      assert.equal((await post('agent_refused', refused)).status, 400, `refuses ${String(refused)}`);
+    }
+    assert.equal((await fixture.store.listUserAgents()).length, 0, 'nothing refused is created');
+
+    // Asked for twice: a least-used pick would never repeat sage while eleven defaults are unused.
+    for (const id of ['agent_support', 'agent_helpdesk']) {
+      const chosen = await post(id, '01-sage.png');
+      assert.equal(chosen.status, 201);
+      const { agent } = await chosen.json() as { agent: Record<string, any> };
+      assert.match(agent.slackPresence.avatar.seed, /^chickpea-avatar-v1:01:/);
+      const avatar = await fixture.app.request(agent.slackPresence.avatar.url);
+      assert.deepEqual(
+        new Uint8Array(await avatar.arrayBuffer()),
+        new Uint8Array(readFileSync(new URL('../assets/chickpea-avatars/agent-defaults/01-sage.png', import.meta.url))),
+      );
+    }
+
+    // Without one, the least-used defaults are drawn from, and the ones chosen count as used.
+    const unchosen = await (await post('agent_other')).json() as { agent: Record<string, any> };
+    assert.match(unchosen.agent.slackPresence.avatar.seed, /^chickpea-avatar-v1:(0[2-9]|1[0-2]):/);
   } finally {
     fixture.store.close();
     fixture.settings.close();

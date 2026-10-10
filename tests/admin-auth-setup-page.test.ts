@@ -76,7 +76,7 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
     creation,
     /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-install"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Add to Slack<\/button>/,
   );
-  assert.doesNotMatch(creation, /auth-progress|Create app<\/li>|Verify Owner<\/li>/);
+  assert.doesNotMatch(creation, /onboarding-orientation|Create app<\/li>|Verify Owner<\/li>/);
   assert.doesNotMatch(creation, /No app configuration token or Slack credentials to copy/);
   assert.doesNotMatch(creation, /Slack app creation is the only required action now/);
   assert.match(creation, /<details[^>]*data-secondary-action="customer-owned-app"/);
@@ -106,7 +106,7 @@ test('setup leads with Add to Slack and keeps the customer-owned app as a fallba
   assert.match(connected, /Slack is connected/);
   assert.match(connected, /<p class="auth-eyebrow">Slack setup<\/p>/);
   assert.match(connected, /class="auth-title-success"[^>]*aria-hidden="true"/);
-  assert.doesNotMatch(connected, /Slack app creation is the only required action now|auth-progress/);
+  assert.doesNotMatch(connected, /Slack app creation is the only required action now|onboarding-orientation/);
   assert.match(
     connected,
     /<button class="auth-button slack-provider-button"[^>]*data-primary-action="gateway-owner"[^>]*><span class="slack-provider-logo slack-logo-image" aria-hidden="true"><\/span>Continue with Slack<\/button>/,
@@ -149,7 +149,7 @@ test('the manual Slack app guide shows standalone onboarding\'s step bar, at Con
     '<li class=""><span class="onboarding-step-label">Choose model</span></li>' +
     '<li class=""><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>'));
   assert.doesNotMatch(html, /onboarding-step-dot|Add to Slack|Connect GitHub/, 'no hosted step reaches standalone');
-  assert.match(html, /\.onboarding-orientation li::before\{[^}]*height:6px/);
+  assert.match(html, /\.onboarding-orientation li::before \{[^}]*height: 6px;/);
 });
 
 test('manual setup adopts credentials before the shared signed Events verification stage', () => {
@@ -176,7 +176,7 @@ test('manual setup adopts credentials before the shared signed Events verificati
   assert.match(html, /name="observedManifest"/);
   assert.match(html, /aria-label="Agent handle permissions"/);
   assert.match(html, /class="onboarding-prerequisite-title"/);
-  assert.match(html, /\.onboarding-orientation\{[^}]*grid-auto-columns:minmax\(0,1fr\);grid-auto-flow:column/, 'the four steps share the width equally');
+  assert.match(html, /\.onboarding-orientation \{[^}]*grid-auto-columns: minmax\(0, 1fr\); grid-auto-flow: column;/, 'the four steps share the width equally');
   assert.match(html, /manifest already requests <code>usergroups:read<\/code> and <code>usergroups:write<\/code>/);
   assert.match(html, /separate workspace permission that a manifest cannot change/);
   assert.match(html, /Create and edit user groups/);
@@ -291,10 +291,10 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
     progress: { steps: onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true }), current: 'github' },
     badge: 'Acme <Ops> & "Co"',
   });
-  const progress = '<ol class="auth-progress" role="list" aria-label="Onboarding progress">' +
-    '<li class="auth-progress-done"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Done</span></li>' +
-    '<li class="auth-progress-current" aria-current="step"><span class="onboarding-step-label">Connect GitHub</span><span class="onboarding-step-note">Optional</span></li>' +
-    '<li><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
+  const progress = '<ol class="onboarding-orientation" role="list" aria-label="Onboarding progress">' +
+    '<li class="complete"><span class="onboarding-step-label">Add to Slack</span><span class="onboarding-step-note">Done</span></li>' +
+    '<li class="active" aria-current="step"><span class="onboarding-step-label">Connect GitHub</span><span class="onboarding-step-note">Optional</span></li>' +
+    '<li class=""><span class="onboarding-step-label">Try Chickpea</span><span class="onboarding-step-note">Say hi</span></li></ol>';
   const badge = '<div class="auth-badge"><span class="auth-badge-logo slack-logo-image" aria-hidden="true"></span><p>Acme &lt;Ops&gt; &amp; &quot;Co&quot;</p><span class="auth-badge-check" aria-hidden="true">&#10003;</span></div>';
   assert.ok(html.includes(`</div>${progress}${badge}<p class="auth-eyebrow">Step 2 of 3</p>`), 'brand row, steps, badge, then the eyebrow');
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
@@ -302,7 +302,7 @@ test('a Slack journey page can carry the onboarding step bar and a success badge
   for (const name of classes) assert.ok(style.includes(`.${name}`), `.${name} has a rule in the shell`);
 
   const plain = renderSlackJourneyPage(base);
-  assert.doesNotMatch(plain, /auth-progress|auth-badge|onboarding-scene|auth-split/, 'a page with neither carries no new markup or styles');
+  assert.doesNotMatch(plain, /onboarding-orientation|auth-badge|onboarding-scene|auth-split/, 'a page with neither carries no new markup or styles');
   assert.equal(renderSlackJourneyPage({ ...base, progress: undefined, badge: undefined }), plain);
   assert.equal(renderSlackJourneyPage({ ...base, badge: '   ' }), plain, 'an empty badge shows nothing');
 });
@@ -311,11 +311,11 @@ test('the shell step bar marks every step done before the current one, and none 
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: false, githubOffered: true });
   const states = (current: 'slack' | 'github') => {
     const html = renderSlackJourneyPage({ surface: 'add-to-slack', eyebrow: 'Step 1 of 5', title: 'Add', body: '', progress: { steps, current } });
-    return [...html.matchAll(/<li( class="([^"]+)")?( aria-current="step")?><span class="onboarding-step-label">([^<]+)<\/span>(?:<span class="onboarding-step-note">([^<]+)<\/span>)?<\/li>/g)]
-      .map((match) => `${match[2] ?? 'pending'}:${match[4]}:${match[5] ?? ''}`);
+    return [...html.matchAll(/<li class="([^"]*)"( aria-current="step")?><span class="onboarding-step-label">([^<]+)<\/span>(?:<span class="onboarding-step-note">([^<]+)<\/span>)?<\/li>/g)]
+      .map((match) => `${match[1] || 'pending'}:${match[3]}:${match[4] ?? ''}`);
   };
-  assert.deepEqual(states('slack'), ['auth-progress-current:Add to Slack:Your workspace', 'pending:Choose provider:', 'pending:Choose model:', 'pending:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
-  assert.deepEqual(states('github'), ['auth-progress-done:Add to Slack:Done', 'auth-progress-done:Choose provider:Done', 'auth-progress-done:Choose model:Done', 'auth-progress-current:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
+  assert.deepEqual(states('slack'), ['active:Add to Slack:Your workspace', 'pending:Choose provider:', 'pending:Choose model:', 'pending:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
+  assert.deepEqual(states('github'), ['complete:Add to Slack:Done', 'complete:Choose provider:Done', 'complete:Choose model:Done', 'active:Connect GitHub:Optional', 'pending:Try Chickpea:Say hi']);
 });
 
 test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicksand, served by Chickpea itself', async () => {
@@ -339,7 +339,7 @@ test('a host\'s onboarding page can be a split screen: the scene on the left, br
     progress: { steps, current: 'slack' }, badge: 'Violet', scene: 'add-to-slack',
   });
   const body = html.slice(html.indexOf('<body'));
-  assert.match(body, /^<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand"><div class="auth-brand">[\s\S]*?<\/div><\/div><aside class="onboarding-scene onboarding-tone-apricot" data-scene="add-to-slack">[\s\S]*?<p class="onboarding-caption">Bags packed\. Where to\?<\/p><\/aside><main class="auth-card" aria-labelledby="auth-title"><ol class="auth-progress"[\s\S]*?<\/ol><div class="auth-body"><div class="auth-badge">[\s\S]*?<p class="auth-eyebrow">Step 1 of 3<\/p>/);
+  assert.match(body, /^<body class="auth-scened"><div class="auth-split"><div class="auth-split-brand"><div class="auth-brand">[\s\S]*?<\/div><\/div><aside class="onboarding-scene onboarding-tone-apricot" data-scene="add-to-slack">[\s\S]*?<p class="onboarding-caption">Bags packed\. Where to\?<\/p><\/aside><main class="auth-card" aria-labelledby="auth-title"><ol class="onboarding-orientation"[\s\S]*?<\/ol><div class="auth-body"><div class="auth-badge">[\s\S]*?<p class="auth-eyebrow">Step 1 of 3<\/p>/);
   assert.match(body, /<img class="onboarding-pose" src="\/onboarding\/pose-moving-in\.webp" alt=""/);
   const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
   const classes = new Set([...body.matchAll(/class="([^"]+)"/g)].flatMap((match) => match[1]!.split(' ')));
@@ -347,5 +347,5 @@ test('a host\'s onboarding page can be a split screen: the scene on the left, br
   assert.match(style, /@media\(max-width:720px\)\{\.auth-split\{grid-template-columns:minmax\(0,1fr\)/, 'a phone stacks the scene above the page');
   const signIn = renderSlackJourneyPage({ surface: 'sign-in', eyebrow: 'Welcome', title: 'Sign in', body: '', scene: 'sign-in' });
   assert.match(signIn, /data-scene="sign-in"[\s\S]*<p class="onboarding-caption">Hi! I’m Chickpea\.<\/p>/);
-  assert.doesNotMatch(signIn.slice(signIn.indexOf('<body')), /auth-progress|auth-badge/, 'sign-in has no steps and no signed-in card');
+  assert.doesNotMatch(signIn.slice(signIn.indexOf('<body')), /onboarding-orientation|auth-badge/, 'sign-in has no steps and no signed-in card');
 });

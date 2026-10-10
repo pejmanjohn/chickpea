@@ -31,6 +31,7 @@ import { IdentityStoreLogic } from '../src/identity/store.ts';
 import type { IdentityStore } from '../src/identity/types.ts';
 import { currentImagePrice } from '../src/images/request-record.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { SLACK_SETTING_KEYS } from '../src/slack/credentials.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import {
   invalidateSlackInstallationCredentialCache,
@@ -46,6 +47,7 @@ import { opaqueId } from '../src/work/admission.ts';
 import type { WorkStore } from '../src/work/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { NO_PLAN, TEAM_PLAN } from './helpers/billing-summaries.ts';
+import { withDirectSlackInstall } from './helpers/direct-slack-install.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS, FakeProvidersBackend } from './helpers/fake-providers.ts';
 import { FakeObjectStorage, hostedInstallation } from './helpers/installation-objects.ts';
@@ -67,6 +69,7 @@ const TEAM = 'TSIGNUP';
 const APP = 'AHOSTED1';
 const BOT = 'UHOSTEDBOT';
 const INSTALLER = 'UINSTALLER';
+const WORKSPACE_NAME = 'Violet';
 
 const facade = <L extends object>(logic: L) => promisify(logic, { close() {} });
 
@@ -95,6 +98,18 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
     grantedScopes: [...REQUESTED_SLACK_BOT_SCOPES], validatedAt: Date.now(),
   });
   await syncHostedWorkspaceInstallation(tenant.env, { teamId: TEAM, appId: APP, botUserId: BOT }, config);
+  // Slack answers auth.test for the bot with its workspace's name, or refuses when `teamName` is unset.
+  const slack: { teamId: string; teamName: string | undefined; calls: string[] } = { teamId: TEAM, teamName: WORKSPACE_NAME, calls: [] };
+  const previousFetch = globalThis.fetch;
+  const slackFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    if (new URL(request.url).pathname !== '/api/auth.test') return previousFetch(input, init);
+    slack.calls.push(request.headers.get('authorization') ?? '');
+    return Response.json(slack.teamName === undefined
+      ? { ok: false, error: 'invalid_auth' }
+      : { ok: true, team_id: slack.teamId, team: slack.teamName, user_id: BOT, app_id: APP });
+  }) as typeof fetch;
+  globalThis.fetch = slackFetch;
   const backend = new NodeBetterAuthBackend(':memory:');
   // Every landing decision here is read, never the fallback for a store that fails.
   const warn = console.warn;
@@ -104,6 +119,8 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
   };
   t.after(() => {
     console.warn = warn;
+    // A test that wraps this in withProviders has already put its own fetch back.
+    if (globalThis.fetch === slackFetch) globalThis.fetch = previousFetch;
     backend.close();
     invalidateSlackInstallationCredentialCache();
     invalidateProviderKeyCache();
@@ -137,7 +154,7 @@ async function signUp(t: TestContext, bindings: Record<string, unknown> = {}) {
     }, tenant.env);
   };
   return {
-    tenant, identity, config, settings, owner, ownerPrincipal, admin,
+    tenant, identity, config, settings, owner, ownerPrincipal, admin, slack,
     claim: () => claimInstallerOwner(owner),
     journey: () => readOnboardingJourney(settings),
   };
@@ -223,7 +240,7 @@ test('a new hosted sign-up starts guided onboarding as the person signing up bec
   const admin = signup.admin(await signup.ownerPrincipal());
   const onboarding = await json(admin('/admin/api/onboarding'));
   assert.equal(onboarding.stage, 'choose_provider', 'Slack is connected: the host owns the app and its signing secret');
-  assert.deepEqual(onboarding.workspace, { id: TEAM, name: null });
+  assert.deepEqual(onboarding.workspace, { id: TEAM, name: WORKSPACE_NAME });
   assert.equal(onboarding.slackAppId, APP);
   // Opening Admin lands the Owner in it.
   const landing = await admin('/admin');
@@ -232,6 +249,38 @@ test('a new hosted sign-up starts guided onboarding as the person signing up bec
   assert.equal((await admin('/admin/onboarding')).status, 200);
   // A link with a purpose opens what it asks for.
   assert.equal((await admin('/admin?slack=updated')).status, 200);
+});
+
+test('a fresh install names its workspace on the first onboarding read, asking Slack once with its own bot', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  assert.equal(await signup.settings.getSetting(SLACK_SETTING_KEYS.teamName), undefined, 'a fresh install has stored no name');
+  const admin = signup.admin(await signup.ownerPrincipal());
+
+  const page = await adminPageEntry(admin('/admin/onboarding'));
+  assert.deepEqual(page.onboarding?.initial?.workspace, { id: TEAM, name: WORKSPACE_NAME }, 'the first paint names it');
+  const onboarding = await json(admin('/admin/api/onboarding'));
+  assert.deepEqual(onboarding.workspace, { id: TEAM, name: WORKSPACE_NAME });
+  assert.deepEqual(signup.slack.calls, ['Bearer xoxb-hosted-signup'], 'later reads use the stored name');
+  assert.equal(await signup.settings.getSetting(SLACK_SETTING_KEYS.teamName), WORKSPACE_NAME);
+});
+
+test('when Slack cannot name the workspace, onboarding still reads, unnamed, and asks again next time', async (t) => {
+  const signup = await signUp(t);
+  await signup.claim();
+  signup.slack.teamName = undefined;
+  const admin = signup.admin(await signup.ownerPrincipal());
+  const unnamed = await json(admin('/admin/api/onboarding'));
+  assert.equal(unnamed.stage, 'choose_provider');
+  assert.deepEqual(unnamed.workspace, { id: TEAM, name: null });
+  signup.slack.teamName = 'Another workspace';
+  signup.slack.teamId = 'TANOTHER';
+  assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: null }, 'only its own workspace names it');
+
+  signup.slack.teamName = WORKSPACE_NAME;
+  signup.slack.teamId = TEAM;
+  assert.deepEqual((await json(admin('/admin/api/onboarding'))).workspace, { id: TEAM, name: WORKSPACE_NAME });
+  assert.equal(signup.slack.calls.length, 3);
 });
 
 test('a hosted Owner whose Slack connection ended before finishing opens Admin, never onboarding\'s Connect Slack step', async (t) => {
@@ -819,6 +868,24 @@ test('standalone is unchanged: its state object starts nothing at an Owner claim
   assert.equal(page.onboarding?.githubConnectPath, null);
   assert.deepEqual(page.onboarding?.steps.map(({ label }) => label), ['Connect Slack', 'Choose provider', 'Choose model', 'Try Chickpea']);
   assert.match(page.html, /<span class="onboarding-environment">local · node<\/span>/, 'standalone keeps its label');
+});
+
+test('a fresh standalone install names its workspace on the first onboarding read', async () => {
+  await withDirectSlackInstall({
+    answer: (method) => method === 'auth.test'
+      ? { ok: true, team_id: 'T1', team: WORKSPACE_NAME, user_id: 'UBOT', app_id: 'A1' }
+      : undefined,
+  }, async ({ stores, calls }) => {
+    assert.equal(await stores.settings.getSetting(SLACK_SETTING_KEYS.teamName), undefined);
+    await beginOnboardingJourney(stores.settings);
+    const app = createAdminRoutes({ ...testAdminAuthority(TOKEN, ORIGIN) });
+    const read = () => json(app.request(`${ORIGIN}/admin/api/onboarding`, { headers: testAdminHeaders(TOKEN) }));
+    const onboarding = await read();
+    assert.equal(onboarding.stage, 'choose_provider');
+    assert.deepEqual(onboarding.workspace, { id: 'T1', name: WORKSPACE_NAME });
+    assert.deepEqual((await read()).workspace, { id: 'T1', name: WORKSPACE_NAME });
+    assert.deepEqual(calls.map(({ method }) => method), ['auth.test'], 'asked once, then stored');
+  });
 });
 
 test('Admin\'s shell gives Owners and Admins the welcome\'s first name and prompt, and Slack status names the app to open', async (t) => {

@@ -35,6 +35,15 @@ export function nextDefaultAgentAvatarSeed(
   return `${SEED_PREFIX}:${String(selected + 1).padStart(2, '0')}:${nonce}`;
 }
 
+/** The seed for one named default, as a ready-made Agent keeps its own. */
+export function defaultAgentAvatarSeedFor(
+  file: (typeof DEFAULT_AGENT_AVATAR_FILES)[number],
+  nonce: string,
+): string {
+  const index = DEFAULT_AGENT_AVATAR_FILES.indexOf(file);
+  return `${SEED_PREFIX}:${String(index + 1).padStart(2, '0')}:${nonce}`;
+}
+
 export function defaultAgentAvatarPng(seed: string): Promise<Uint8Array<ArrayBuffer>> {
   const file = DEFAULT_AGENT_AVATAR_FILES[defaultAgentAvatarIndex(seed)]!;
   return readPublicAsset(`chickpea-avatars/agent-defaults/${file}`);
