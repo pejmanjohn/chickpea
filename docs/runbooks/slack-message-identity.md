@@ -62,7 +62,8 @@ that Channel.
   Add button), Chickpea adds the Agent there as that button does, and the
   Agent greets a public Channel as its own bot. Anyone else is told privately
   to ask a workspace Owner or Admin; the bot stays in the Channel, without the
-  Agent. A redelivered event changes nothing.
+  Agent. A redelivered event, or the bot added to a Channel where the Agent
+  already is, changes nothing.
 - Removing the bot from a Channel leaves the Agent's grant there.
 - Neither path brings Chickpea's bot into the Channel.
 - On the app's own deliveries, who may message the Agent is decided from its

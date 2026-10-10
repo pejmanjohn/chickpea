@@ -489,6 +489,15 @@ test("a redelivered or repeated Slack Add changes nothing and says nothing again
   assert.equal((await h.stores.config.listAgentChannelGrants(TEAM, 'C2'))[0]?.status, 'active');
 }));
 
+test('a Slack Add into a Channel its Agent already has changes nothing and tells nobody to ask', async (t) => withHarness(t, async (h) => {
+  const before = await h.stores.config.listAgentChannelGrants(TEAM, 'C1');
+  for (const inviter of ['U2', 'U1']) {
+    assert.equal((await h.deliver('events', { ...joinEvent({ channel: 'C1', inviter }), event_id: `EvJoinGranted${inviter}` })).status, 200);
+  }
+  assert.deepEqual(await h.stores.config.listAgentChannelGrants(TEAM, 'C1'), before, 'the grant made before the Agent had its app stands as it was');
+  assert.deepEqual(h.calls.filter((call) => call.method.startsWith('chat.')), [], 'nobody is told to ask an Owner, and nothing is posted');
+}));
+
 test("only the app's own bot joining, added by a person, adds its Agent; user-group Agents are untouched", async (t) => withHarness(t, async (h) => {
   const before = await h.stores.config.listAgentChannelGrants(TEAM);
   for (const event of [

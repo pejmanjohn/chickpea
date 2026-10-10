@@ -4370,12 +4370,16 @@ async function handleMemberJoinedChannel(
   if (execution?.agentApp) {
     // A person adding the Agent's own bot with Slack's Add asks for the Agent here, as the offer's button does.
     if (event.user !== execution.botUserId || !event.inviter) return;
+    const { agentId } = execution.agentApp;
     try {
+      // A grant from before the app, or an earlier Add, already has the Agent here: the bot only completes it.
+      const grants = await stores.config.listAgentChannelGrants(workspaceId, event.channel);
+      if (grants.some((grant) => grant.agentId === agentId && grant.status === 'active')) return;
       await addRequestedAgentToChannel({
         platformEnv, stores, client: execution.client, transport: execution.transport, botUserId: execution.botUserId,
         request: {
           workspaceId, userId: event.inviter, channelId: event.channel, threadTs: null,
-          agentId: execution.agentApp.agentId, requestId: payload.event_id,
+          agentId, requestId: payload.event_id,
         },
       });
     } catch (error) {
