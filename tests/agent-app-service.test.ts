@@ -15,6 +15,7 @@ import {
   SlackRefused,
   type CreatedAgentApp,
   type SlackManifestProblem,
+  createAgentAppSlackApi,
 } from '../src/slack/agent-apps/slack-api.ts';
 import { AGENT_APP_BOT_EVENTS, type SlackAppCreateManifest, type SlackAppManifest } from '../src/slack/app-manifest.ts';
 import { uploadAgentAvatar } from '../src/slack/agent-presence/avatar-assets.ts';
@@ -119,12 +120,13 @@ interface Posted { channelId: string; text: string; blocks: unknown[]; idempoten
 
 class FakeTransport implements AgentAppTransport {
   disabled: string[] = [];
-  refuseDisable = false;
+  /** Refuse the disable: `true` as Slack does without the Owner's permission, or with the code given. */
+  refuseDisable: boolean | string = false;
   posted: Posted[] = [];
   constructor(private readonly calls: ExternalCalls) {}
   disableUserGroup(id: string) {
     return this.calls.through('disableUserGroup', async (): Promise<SlackUserGroup> => {
-      if (this.refuseDisable) throw new SlackTransportError('usergroups.disable', 'permission_denied');
+      if (this.refuseDisable) throw new SlackTransportError('usergroups.disable', this.refuseDisable === true ? 'permission_denied' : this.refuseDisable);
       if (this.disabled.includes(id)) throw new SlackTransportError('usergroups.disable', 'already_disabled');
       this.disabled.push(id);
       return { id, name: 'Support', handle: 'support', disabled: true };
@@ -318,7 +320,8 @@ test('a start frees the handle, creates without URLs, stores the secrets, adds t
   const presence = (await f.config.getAgent('agent_support')).slackPresence;
   assert.equal(presence?.desiredState, 'active');
   assert.equal(presence?.health, 'pending');
-  assert.deepEqual(presence?.kind === 'agent_app' ? presence.released : undefined, { userGroupId: 'S1' });
+  assert.deepEqual(presence?.kind === 'agent_app' ? presence.released : undefined, { userGroupId: 'S1', desiredState: 'active', health: 'healthy' },
+    "the group and how it stood before the start");
   assert.equal(JSON.stringify(presence).includes('secret'), false, 'no secret in presence');
 });
 
@@ -443,6 +446,16 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   assert.equal((await appOf(handle))?.state, 'awaiting_consent');
 });
 
+test("a refused URL update tells the Owner the app isn't connected yet, with no advice about the workspace's app policy", async (t) => {
+  const f = await fixture(t);
+  f.slack.refuseUpdate = new SlackRefused('apps.manifest.update', 'invalid_manifest');
+  await f.service.start('agent_support', OWNER);
+  const app = await appOf(f);
+  assert.equal(app?.state === 'needs_attention' && app.reason, 'urls_refused');
+  assert.equal(f.transport.posted[0]?.text, "Slack didn't finish connecting Support's app to Chickpea. Wait a minute, then choose Try again.");
+  assert.deepEqual(buttons(f.transport.posted[0]!), [['Try again', 'agent_app_try_again']]);
+});
+
 test("without the Owner's user-group permission nothing starts, and the Owner is sent to Admin's update with no Try again", async (t) => {
   const f = await fixture(t, { permissionMissing: true });
   assert.deepEqual(await f.service.start('agent_support', OWNER), { kind: 'permission_needed' });
@@ -496,6 +509,50 @@ test("a release Slack refuses for want of the Owner's permission undoes the star
   assert.equal(app?.state, 'awaiting_consent');
 });
 
+test("a release Slack refuses as missing_scope or not_allowed, for want of the Owner's permission, undoes the start too", async (t) => {
+  for (const code of ['missing_scope', 'not_allowed']) {
+    const f = await fixture(t);
+    f.transport.refuseDisable = code;
+    await f.service.start('agent_support', OWNER);
+    f.permission.missing = true;
+    const retried = await f.service.retry('agent_support', OWNER);
+    assert.equal(retried.slackPresence?.kind, undefined, `${code}: the start is undone`);
+    assert.equal(f.transport.posted[1]?.text, PERMISSION_NEEDED, `${code}: the Owner is sent to Admin's update`);
+  }
+});
+
+test("an undone start gives back the user group's state from before the start, and a start recorded without it comes back pending", async (t) => {
+  const presenceOf = async (f: Fixture) => {
+    const presence = (await f.config.getAgent('agent_support')).slackPresence;
+    return presence && { kind: presence.kind, desiredState: presence.desiredState, health: presence.health, userGroupId: presence.userGroupId };
+  };
+  const switchedOff = await fixture(t);
+  const before = await switchedOff.config.getAgent('agent_support');
+  await switchedOff.config.updateAgent(before.id, {
+    slackPresence: { ...before.slackPresence!, desiredState: 'disabled', health: 'needs_attention' },
+  }, before.revision);
+  switchedOff.transport.refuseDisable = true;
+  await switchedOff.service.start('agent_support', OWNER);
+  switchedOff.permission.missing = true;
+  await switchedOff.service.retry('agent_support', OWNER);
+  assert.deepEqual(await presenceOf(switchedOff), { kind: undefined, desiredState: 'disabled', health: 'needs_attention', userGroupId: 'S1' },
+    'an Agent switched off before the start stays off');
+
+  const older = await fixture(t, { permissionMissing: true });
+  const agent = await older.config.getAgent('agent_support');
+  await older.config.updateAgent(agent.id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'needs_attention',
+      avatar: agent.slackPresence!.avatar, released: { userGroupId: 'S1' },
+      app: { state: 'needs_attention', at: NOW, startedBy: OWNER, reason: 'handle_release_failed', resume: 'releasing_handle' },
+    },
+  }, agent.revision);
+  older.transport.refuseDisable = true;
+  await older.service.retry('agent_support', OWNER);
+  assert.deepEqual(await presenceOf(older), { kind: undefined, desiredState: 'active', health: 'pending', userGroupId: 'S1' },
+    'how the group stood before is unknown, so it is not shown as healthy');
+});
+
 test('a spent configuration token stops the sequence and sends the Owner to the token page', async (t) => {
   const f = await fixture(t);
   f.clock.now = NOW + 13 * 3_600_000;
@@ -522,6 +579,37 @@ test('a refused create logs its step, Agent, code and pointers for the operator;
   ]);
   assert.doesNotMatch(JSON.stringify(f.transport.posted), /invalid_manifest|display_name/, 'the Owner never sees the refusal');
   assert.doesNotMatch(JSON.stringify(refusals), /xox|secret/i, 'no token or secret in the log');
+});
+
+test("a refusal whose message quotes the Agent's own name, description or handle logs the pointer without the message", async (t) => {
+  const refusals = captureSlackRefusals(t);
+  const answering = (errors: unknown[]) => createAgentAppSlackApi({
+    fetch: async () => Response.json({ ok: false, error: 'invalid_manifest', errors }),
+  });
+  const create = await fixture(t);
+  const createApi = answering([
+    { message: 'An app named "Support" already exists', pointer: '/display_information/name' },
+    { message: 'SUPPORT HELPS CUSTOMERS. is not allowed', pointer: '/display_information/description' },
+    { message: 'Must be a valid bot display name', pointer: '/features/bot_user/display_name' },
+    // Cut to 200 characters, this would keep only "Supp".
+    { message: `${'x'.repeat(195)} Support helps customers.`, pointer: '/features/agent_view/agent_description' },
+  ]);
+  create.slack.create = (token, manifest) => createApi.create(token, manifest);
+  await create.service.start('agent_support', OWNER);
+  const update = await fixture(t);
+  const updateApi = answering([{ message: 'Bot user @support needs interactivity', pointer: '/settings/interactivity' }]);
+  update.slack.update = (token, appId, manifest) => updateApi.update(token, appId, manifest);
+  await update.service.start('agent_support', OWNER);
+
+  assert.deepEqual(refusals.map(({ step, errors }) => ({ step, errors })), [
+    { step: 'create', errors: [
+      { pointer: '/display_information/name' },
+      { pointer: '/display_information/description' },
+      { message: 'Must be a valid bot display name', pointer: '/features/bot_user/display_name' },
+      { pointer: '/features/agent_view/agent_description' },
+    ] },
+    { step: 'update', errors: [{ pointer: '/settings/interactivity' }] },
+  ]);
 });
 
 test('refusals at the other steps log too, each with the app it concerns', async (t) => {

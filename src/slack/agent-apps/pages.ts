@@ -57,11 +57,6 @@ export function permissionNeededCopy({ handle }: Pick<AgentAppNames, 'handle'>):
   return `Chickpea needs one more Slack permission to give @${handle} its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @${handle} its own Slack app in Chickpea's Home tab.`;
 }
 
-const refused: Copy = {
-  text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,
-  buttons: (links) => [tryAgain(links)],
-};
-
 const DM_COPY = {
   allow: {
     text: ({ name, handle }) =>
@@ -82,8 +77,15 @@ const DM_COPY = {
       `Slack may have created an app for ${name}, but Chickpea didn't hear back. Open Your Apps in Slack and delete any ${name} app you don't recognize, then choose Try again.`,
     buttons: (links) => [yourApps, tryAgain(links)],
   },
-  create_refused: refused,
-  urls_refused: refused,
+  create_refused: {
+    text: ({ name }) => `Slack didn't finish ${name}'s app. Choose Try again. If it keeps happening, check that your workspace allows new apps.`,
+    buttons: (links) => [tryAgain(links)],
+  },
+  /** The app exists; Slack refused the update that points its events and clicks at Chickpea. */
+  urls_refused: {
+    text: ({ name }) => `Slack didn't finish connecting ${name}'s app to Chickpea. Wait a minute, then choose Try again.`,
+    buttons: (links) => [tryAgain(links)],
+  },
   slack_busy: {
     text: () => 'Slack is limiting how fast apps are set up. Wait a minute, then choose Try again.',
     buttons: (links) => [tryAgain(links)],

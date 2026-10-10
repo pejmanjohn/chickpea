@@ -177,6 +177,28 @@ test('removing the token deletes the stored pair and asks for a paste next time,
   assert.deepEqual(d.rotations, [PASTED], 'removal and the next start make no Slack call');
 });
 
+test('removing the token while a rotation lands deletes the rotated pair, and never says deleted while a pair stays', async (t) => {
+  const d = fixture(t);
+  assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
+  const rotator: SecretDeps = { ...d, now: () => NOW + TWELVE_HOURS };
+  let rotations = 1;
+  d.credentials = Object.assign(Object.create(d.settings) as SqliteSettingsStore, {
+    async deleteEncryptedCredentialRevision(key: string, expected: string) {
+      // A rotation commits a new pair between the removal's read and its delete.
+      if (rotations-- > 0) await withConfigurationToken(rotator, TEAM, async () => 'rotated');
+      return d.settings.deleteEncryptedCredentialRevision(key, expected);
+    },
+  });
+  assert.equal(await deleteConfigurationToken(d, TEAM), 'deleted');
+  assert.equal(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), undefined, 'the rotated pair is gone too');
+  assert.equal(d.rotations.length, 2, 'the rotation did run');
+
+  assert.equal(await saveConfigurationToken(d, TEAM, PASTED), 'saved');
+  rotations = Infinity;
+  await assert.rejects(() => deleteConfigurationToken(d, TEAM), LostRevision);
+  assert.ok(await d.settings.getEncryptedCredentialRevision(configurationTokenKey(TEAM)), 'a pair that keeps changing is reported, not called deleted');
+});
+
 test('app secrets are written by compare-and-set, extended with the bot token, and deleted once', async (t) => {
   const d = fixture(t);
   const first = await writeAppSecrets(d, 'A0C8APP', 'agent_support', { clientSecret: 'cs', signingSecret: 'ss' }, null);

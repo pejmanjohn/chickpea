@@ -209,6 +209,24 @@ test('a grant for the wrong workspace, app or person, or with missing permission
   }
 });
 
+test('a grant missing only channels:join, as from an app made before Chickpea asked for it, is kept; missing anything more is undone', async (t) => {
+  const withoutJoin = AGENT_APP_BOT_SCOPES.filter((scope) => scope !== 'channels:join');
+  const older = await fixture(t);
+  older.slack.grant = { scopes: withoutJoin };
+  const response = await older.service.completeConsent(new URLSearchParams({ code: 'c', state: await open(older) }), OWNER);
+  assert.equal(response.status, 303);
+  assert.equal(older.slack.uninstalls, 0, 'the grant stands');
+  assert.equal((await appOf(older.config))?.state, 'active');
+  assert.equal((await readAppSecrets(older.secrets, APP.appId))?.secrets.botToken, 'xoxb-agent');
+
+  const less = await fixture(t);
+  less.slack.grant = { scopes: withoutJoin.slice(1) };
+  const refused = await less.service.completeConsent(new URLSearchParams({ code: 'c', state: await open(less) }), OWNER);
+  assert.equal(refused.status, 409);
+  assert.match(pageText(await refused.text()), /needs every permission it asked for/);
+  assert.equal(less.slack.uninstalls, 1);
+});
+
 test('an undo Slack refuses is logged, and the Owner still gets the page', async (t) => {
   const refusals = captureSlackRefusals(t);
   const f = await fixture(t);
@@ -238,6 +256,22 @@ test("Slack refusing the code expires the link, and Slack not answering says so"
   assert.equal(response.status, 503);
   assert.match(pageText(await response.text()), /Slack didn't answer/);
   assert.equal((await appOf(down.config))?.state, 'awaiting_consent');
+});
+
+test("app secrets that can't be opened answer the callback with the expired page, logged for the operator, and exchange nothing", async (t) => {
+  const f = await fixture(t);
+  const state = await open(f);
+  const rekeyed = new AgentSlackApps({
+    env: ENV, stores: { config: f.config, settings: f.settings }, host: HOST, transport: transport(f.posted), slack: f.slack,
+    keyring: generateCredentialKeyring('k2'), now: () => f.clock.now,
+  });
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  const response = await rekeyed.completeConsent(new URLSearchParams({ code: 'c', state }), OWNER);
+  assert.equal(response.status, 410);
+  assert.match(pageText(await response.text()), /That link has expired\. Choose Allow Support in Slack again/);
+  assert.deepEqual(f.slack.exchanges, []);
+  assert.equal((await appOf(f.config))?.state, 'awaiting_consent');
+  assert.deepEqual(warn.mock.calls.map((call) => call.arguments[0]), [`[chickpea] agent_app_secrets_unreadable {"appId":"${APP.appId}"}`]);
 });
 
 test('Allow from a removed app resumes the sequence first, and an active app says so', async (t) => {

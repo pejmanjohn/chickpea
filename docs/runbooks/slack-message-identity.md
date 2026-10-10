@@ -135,8 +135,10 @@ the port on its staging deployment only, behind its own staging-only switch.
 4. Allow opens Slack's consent screen; the link it starts is good for 15
    minutes. Chickpea exchanges the code with the app's own credentials. It
    undoes a grant from another person, workspace or app, or one missing a
-   permission. A good grant makes the app live and sends the Owner to the
-   Agent's messages.
+   permission. An app created before `channels:join` was requested may be
+   granted without it; that grant stands, and its bot is left out of Channels
+   as described above. A good grant makes the app live and sends the Owner to
+   the Agent's messages.
 5. A refused step messages the Owner with **Try again**. A sequence that
    stopped for two minutes shows **Finish setting up** in App Home. An unknown
    answer to the create call never retries by itself: the Owner deletes any
@@ -148,9 +150,12 @@ Until the installation holds it, an Agent with a user group cannot start, and
 Try again could not succeed, so none is offered. App Home shows a line linking
 to Admin in place of the button. A start is refused before anything changes,
 and the Owner is messaged the same link. A release Slack
-refuses with `permission_denied` while the permission is missing is handled the
-same way: the start is undone and the Agent keeps its user group, which Slack
-never changed. After **Update in Slack**, the Owner starts again from App Home.
+refuses with `permission_denied`, `missing_scope` or `not_allowed` while the
+permission is missing is handled the same way: the start is undone and the
+Agent keeps its user group, which Slack never changed, in the state it had
+before the start. A start recorded before Chickpea kept that state comes back
+active and pending. After **Update in Slack**, the Owner starts again from App
+Home.
 
 ### Archive, uninstall, and tenant end
 
