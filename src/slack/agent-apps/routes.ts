@@ -15,9 +15,9 @@ import {
 import { liveAgentSlackApps } from './live.ts';
 import type { AgentSlackApps } from './service.ts';
 
-export const AGENT_APPS_PATH = '/channels/slack/agent-apps';
+const AGENT_APPS_PATH = '/channels/slack/agent-apps';
 
-export type AgentSlackAppDelivery = Extract<AgentSlackAppHandoff, { kind: 'delivery' }>;
+type AgentSlackAppDelivery = Extract<AgentSlackAppHandoff, { kind: 'delivery' }>;
 
 export interface AgentSlackAppRoutesDeps {
   /** Serves one verified delivery as the Agent's bot; injected, so this module never imports the channel. */

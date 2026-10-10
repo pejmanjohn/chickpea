@@ -9,15 +9,6 @@ import type {
   AgentPresenceHealth,
 } from '../../config/types.ts';
 
-export type {
-  ActiveAgentApp,
-  AgentAppAttention,
-  AgentAppIcon,
-  AgentAppLifecycle,
-  AgentAppPresence,
-  AgentAppRecord,
-  AgentAppResume,
-} from '../../config/types.ts';
 export { agentAppIsLive } from '../../config/types.ts';
 
 /** How long a `creating` record may wait for Slack's answer before the create is ambiguous. */

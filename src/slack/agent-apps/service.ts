@@ -5,7 +5,7 @@
  * another run. A lost compare-and-set re-reads and re-applies the transition
  * when the state still allows it; it never repeats the effect.
  */
-import { AgentRevisionConflictError } from '../../config/errors.ts';
+import { AgentRevisionConflictError, UnknownAgentError } from '../../config/errors.ts';
 import { AgentPresenceError } from '../agent-presence/errors.ts';
 import { installationScopeOf } from '../../config/installation-scope.ts';
 import type { EncryptedCredentialStore, SettingsStore } from '../../config/settings-store.ts';
@@ -60,8 +60,10 @@ import {
   agentAppMessage,
   archiveRefusedCopy,
   consentPage,
+  tokenPagePath,
 } from './pages.ts';
 import {
+  AgentAppSecretsUnreadable,
   ConfigTokenNeeded,
   LostRevision,
   type SecretDeps,
@@ -134,6 +136,8 @@ export class AgentSlackApps {
   private readonly slack: AgentAppSlackApi;
   private readonly secrets: SecretDeps;
   private facts: Promise<{ teamId: string; installationId: string }> | undefined;
+  /** Agents whose app Slack would not delete (refused, or no configuration token): the definition stays for the Owner. */
+  private readonly leftDefinition = new Set<string>();
 
   constructor(private readonly deps: AgentSlackAppsDeps) {
     this.now = deps.now ?? Date.now;
@@ -175,7 +179,7 @@ export class AgentSlackApps {
       if (latest.slackPresence?.kind === 'agent_app') return { kind: 'already_started', agent: latest };
       return this.start(agentId, ownerSlackUserId);
     }
-    return { kind: 'started', agent: await this.advance(agentId, { wroteCreating: false }) };
+    return { kind: 'started', agent: await this.advance(agentId) };
   }
 
   /** Perform the next step, commit by compare-and-set, repeat until the record waits. */
@@ -257,11 +261,13 @@ export class AgentSlackApps {
     const { config } = this.deps.stores;
     const state = STATE_SHAPE.exec(query.get('state') ?? '');
     if (!state) return consentPage('expired', { name: 'The Agent', handle: 'agent' });
-    const [, agentId, nonce] = state as unknown as [string, string, string];
+    const agentId = state[1]!;
+    const nonce = state[2]!;
     let agent;
     try {
       agent = await config.getAgent(agentId);
-    } catch {
+    } catch (error) {
+      if (!(error instanceof UnknownAgentError)) throw error;
       return consentPage('expired', { name: 'The Agent', handle: 'agent' });
     }
     const names = this.names(agent);
@@ -322,7 +328,7 @@ export class AgentSlackApps {
       botUserId: presence.app.botUserId,
     });
     if (outcome !== 'end') return 'ignored';
-    const stored = await readAppSecrets(this.secrets, appId).catch(() => undefined);
+    const stored = await readAppSecrets(this.secrets, appId).catch(unreadableAsNone);
     if (stored?.secrets.botToken) {
       const { clientSecret, signingSecret } = stored.secrets;
       await writeAppSecrets(this.secrets, appId, agent.id, { clientSecret, signingSecret }, stored.revision);
@@ -342,7 +348,7 @@ export class AgentSlackApps {
     const presence = agent.slackPresence;
     if (presence?.kind !== 'agent_app') return { agent, outcome: 'removed' };
     const record = agentAppRecord(presence.app);
-    const stored = record ? await readAppSecrets(this.secrets, record.appId).catch(() => undefined) : undefined;
+    const stored = record ? await readAppSecrets(this.secrets, record.appId).catch(unreadableAsNone) : undefined;
     const archived = await this.commit(agent, { type: 'archive', at: this.now(), hasBotToken: Boolean(stored?.secrets.botToken) });
     if (archived.outcome === 'refused') throw new AgentPresenceError('slack_operation_failed', archiveRefusedCopy({ name: agent.name }));
     if (archived.outcome === 'deleted') {
@@ -366,19 +372,13 @@ export class AgentSlackApps {
   ): Promise<ReadonlyMap<string, readonly object[]>> {
     const rows = new Map<string, readonly object[]>();
     if (viewer.role !== 'owner') return rows;
-    const tokenStored = await this.hasConfigurationToken();
-    const origin = tokenStored ? undefined : await this.deps.publicOrigin?.();
+    const origin = await this.hasConfigurationToken() ? undefined : await this.deps.publicOrigin?.();
     const now = this.now();
     for (const agent of agents) {
-      if (agent.kind !== 'user') continue;
-      const row = homeRowFor(agent, now, tokenStored, origin);
-      if (row) rows.set(agent.id, agentAppHomeBlocks(row, this.names(agent), agent.id));
+      if (agent.kind === 'user') rows.set(agent.id, agentAppHomeBlocks(homeRowFor(agent, now, origin), this.names(agent), agent.id));
     }
     return rows;
   }
-
-  /** Agents whose delete had no configuration token: the definition stays for the Owner. */
-  private readonly leftDefinition = new Set<string>();
 
   /** The token page: paste once per workspace. */
   async pasteConfigurationToken(refreshToken: string): Promise<'saved' | 'not_refresh_token' | 'rejected' | 'other_workspace'> {
@@ -486,9 +486,8 @@ export class AgentSlackApps {
     },
 
     post_allow_dm: async (run) => {
-      const startedBy = 'startedBy' in run.app ? run.app.startedBy : undefined;
-      if (!startedBy) return 'wait';
-      const posted = await this.message('allow', run.agent, startedBy, `agent-app-allow:${run.agent.id}:${run.app.at}`);
+      if (run.app.state !== 'icon_set') return 'wait';
+      const posted = await this.message('allow', run.agent, run.app.startedBy, `agent-app-allow:${run.agent.id}:${run.app.at}`);
       if (!posted) return 'wait';
       return { event: { type: 'allow_dm_posted', at: run.now, channelId: posted.channelId, ts: posted.ts } };
     },
@@ -513,23 +512,24 @@ export class AgentSlackApps {
     },
 
     delete: async (run) => {
-      const app = agentAppRecord(run.app)!;
+      if (run.app.state !== 'uninstalling') return 'wait';
+      const { app, startedBy } = run.app;
       const { teamId } = await this.installation();
       let left = false;
       try {
         await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
       } catch (error) {
         if (error instanceof SlackUnavailable) return 'wait';
+        if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
         if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
         left = true;
       }
-      const stored = await readAppSecrets(this.secrets, app.appId).catch(() => undefined);
+      const stored = await readAppSecrets(this.secrets, app.appId).catch(unreadableAsNone);
       if (stored) await deleteAppSecrets(this.secrets, app.appId, stored.revision);
-      const startedBy = 'startedBy' in run.app ? run.app.startedBy : undefined;
       if (left) this.leftDefinition.add(run.agent.id);
       return {
         event: { type: 'deleted', at: run.now },
-        ...(left && startedBy
+        ...(left
           ? { after: async () => { await this.message('archived_left', run.agent, startedBy, `agent-app-left:${run.agent.id}:${app.appId}`); } }
           : {}),
       };
@@ -604,7 +604,7 @@ export class AgentSlackApps {
     const links: AgentAppLinks = {
       agentId: agent.id,
       allowUrl: this.deps.host.allowUrl(agent.id),
-      ...(origin ? { tokenPageUrl: `${origin.replace(/\/+$/, '')}/admin/agents/${encodeURIComponent(agent.id)}/slack-app` } : {}),
+      ...(origin ? { tokenPageUrl: tokenPageUrl(origin, agent.id) } : {}),
     };
     const message = agentAppMessage(kind, names, links);
     if (!message) return undefined;
@@ -626,16 +626,15 @@ export class AgentSlackApps {
   }
 }
 
-/** What the Owner's App Home says about an Agent's app, or nothing for a user-group Agent of another viewer. */
-function homeRowFor(
-  agent: CustomAgentConfig,
-  now: number,
-  tokenStored: boolean,
-  tokenPageUrl: string | undefined,
-): AgentAppHomeRow | undefined {
+function tokenPageUrl(origin: string, agentId: string): string {
+  return `${origin.replace(/\/+$/, '')}${tokenPagePath(agentId)}`;
+}
+
+/** What the Owner's App Home says about an Agent's app; the offer links to the token page when `origin` is given. */
+function homeRowFor(agent: CustomAgentConfig, now: number, origin: string | undefined): AgentAppHomeRow {
   const presence = agent.slackPresence;
   if (presence?.kind !== 'agent_app') {
-    return { kind: 'offer', tokenPageUrl: tokenStored ? undefined : tokenPageUrl ? `${tokenPageUrl.replace(/\/+$/, '')}/admin/agents/${encodeURIComponent(agent.id)}/slack-app` : undefined };
+    return { kind: 'offer', tokenPageUrl: origin ? tokenPageUrl(origin, agent.id) : undefined };
   }
   switch (presence.app.state) {
     case 'active':
@@ -647,6 +646,12 @@ function homeRowFor(
     default:
       return now - presence.app.at >= STALLED_AFTER_MS ? { kind: 'stalled' } : { kind: 'setting_up' };
   }
+}
+
+/** An envelope that cannot be opened reads as no secrets; a store that cannot be reached still throws. */
+function unreadableAsNone(error: unknown): undefined {
+  if (error instanceof AgentAppSecretsUnreadable) return undefined;
+  throw error;
 }
 
 /** After the app is gone the handle returns to its user group, disabled; an Agent that never had one is unpublished. */

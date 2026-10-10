@@ -5,7 +5,6 @@
 import { readBoundedText } from '../../http/bounded-body.ts';
 import { createdSlackApp, safeSlackError } from '../app-creation.ts';
 import type { SlackAppManifest } from '../app-manifest.ts';
-import { SLACK_BOT_TOKEN_URL } from '../install-oauth.ts';
 
 const SLACK_API = 'https://slack.com/api';
 const MAX_RESPONSE_BYTES = 64 * 1_024;
@@ -179,14 +178,12 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     },
 
     async exchange(input) {
-      const answer = await call('oauth.v2.access', {
-        ...form({
-          client_id: input.clientId,
-          client_secret: input.clientSecret,
-          code: input.code,
-          redirect_uri: input.redirectUri,
-        }),
-      });
+      const answer = await call('oauth.v2.access', form({
+        client_id: input.clientId,
+        client_secret: input.clientSecret,
+        code: input.code,
+        redirect_uri: input.redirectUri,
+      }));
       const payload = settled('oauth.v2.access', answer);
       const team = asRecord(payload.team);
       const teamId = team.id;
@@ -223,8 +220,6 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   };
 }
 
-/** oauth.v2.access lives outside the method base, so the token URL stays the install flow's constant. */
-export const AGENT_APP_TOKEN_URL = SLACK_BOT_TOKEN_URL;
 
 function requiredString(value: unknown, method: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 4_096) {

@@ -146,6 +146,16 @@ test('a broken app never answers as Chickpea: the turn is unavailable', async (t
   assert.deepEqual(h.baseCalls, [], 'a live record without a token still never falls back to the installation bot');
 }));
 
+test('a store that cannot be read fails the turn rather than answering as the installation bot', async (t) => withHarness(t, async (h) => {
+  await h.storeApp(LIVE);
+  const getAgent = h.stores.config.getAgent.bind(h.stores.config);
+  h.stores.config.getAgent = async () => { throw new Error('store unreachable'); };
+  await assert.rejects(() => h.resolve(TEAM, 'agent_support'), /store unreachable/);
+  assert.deepEqual(h.baseCalls, []);
+  h.stores.config.getAgent = getAgent;
+  assert.equal((await h.resolve(TEAM, 'agent_support')).botToken, AGENT_BOT, 'a failed lookup is not cached');
+}));
+
 test("the installation's own refusal wins over a live app: a revoked or gated installation runs no Agent bot", async (t) => withHarness(t, async (h) => {
   await h.storeApp(LIVE);
   const refused = withAgentAppExecution(async (workspaceId) => {

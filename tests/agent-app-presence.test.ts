@@ -175,6 +175,11 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
     });
     assert.equal(published.grant.status, 'active');
     assert.deepEqual(published.agent.slackPresence, presence);
+
+    const settingUp = await storeAgent(config, 'agent_billing', 'Billing', agentApp('billing', {
+      state: 'awaiting_consent', at: NOW, startedBy: 'UOWNER', app: APP, icon: 'agent_avatar', allowDm: { channelId: 'D1', ts: '1.0' },
+    }));
+    assert.deepEqual((await reconciler.reconcile('agent_billing')).slackPresence, settingUp, 'an app still being set up has not gone live');
     assert.deepEqual(transport.calls, []);
     assert.deepEqual(announce.announced, []);
   } finally {

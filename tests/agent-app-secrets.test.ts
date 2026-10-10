@@ -156,6 +156,16 @@ test('a spent pair with no newer one asks the Owner again and is forgotten', asy
   assert.deepEqual(d.rotations, [PASTED, 'xoxe-1-refresh-1']);
 });
 
+test('a pair that cannot be opened asks the Owner again, and a paste replaces it', async (t) => {
+  const settings = new SqliteSettingsStore(':memory:');
+  t.after(() => settings.close());
+  assert.equal(await saveConfigurationToken(fixture(t, { settings, keyring: generateCredentialKeyring('k1') }), TEAM, PASTED), 'saved');
+  const rekeyed = fixture(t, { settings, keyring: generateCredentialKeyring('k2') });
+  await assert.rejects(() => withConfigurationToken(rekeyed, TEAM, async () => 'unused'), ConfigTokenNeeded);
+  assert.equal(await saveConfigurationToken(rekeyed, TEAM, PASTED), 'saved');
+  assert.equal(await withConfigurationToken(rekeyed, TEAM, async (token) => token), 'xoxe.xoxp-1-access-1');
+});
+
 test('removing the token deletes the stored pair and asks for a paste next time, with no Slack call', async (t) => {
   const d = fixture(t);
   assert.equal(await deleteConfigurationToken(d, TEAM), 'none');

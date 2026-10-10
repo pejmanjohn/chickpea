@@ -30,6 +30,7 @@ class FakeSlack implements AgentAppSlackApi {
   uninstalls: Array<{ clientId: string; clientSecret: string; botToken: string }> = [];
   deletes: Array<{ token: string; appId: string }> = [];
   refuseUninstall = false;
+  refuseDelete: string | undefined;
   async rotate() {
     this.rotations += 1;
     return { accessToken: `xoxe.xoxp-1-access-${this.rotations}`, refreshToken: `xoxe-1-refresh-${this.rotations}`, teamId: TEAM, expiresAt: NOW + 12 * 3_600_000 };
@@ -43,7 +44,11 @@ class FakeSlack implements AgentAppSlackApi {
     this.uninstalls.push(input);
     return 'removed' as const;
   }
-  async delete(token: string, appId: string) { this.deletes.push({ token, appId }); return 'deleted' as const; }
+  async delete(token: string, appId: string) {
+    if (this.refuseDelete) throw new SlackRefused('apps.manifest.delete', this.refuseDelete);
+    this.deletes.push({ token, appId });
+    return 'deleted' as const;
+  }
 }
 
 class FakeTransport implements AgentAppTransport {
@@ -134,6 +139,20 @@ test('a refused uninstall refuses the archive and leaves the Agent unarchived wi
   const archived = await f.reconciler.archive('agent_support');
   assert.equal(archived.lifecycle, 'archived', 'Try again through archive finishes it');
   assert.equal(f.slack.uninstalls.length, 1);
+});
+
+test('Slack limiting the delete refuses the archive for now instead of leaving the app behind', async (t) => {
+  const f = await fixture(t);
+  f.slack.refuseDelete = 'ratelimited';
+  await assert.rejects(() => f.reconciler.archive('agent_support'), AgentPresenceError);
+  const presence = (await f.config.getAgent('agent_support')).slackPresence;
+  assert.equal(presence?.kind === 'agent_app' && presence.app.state === 'uninstalling' && presence.app.next, 'delete');
+  assert.deepEqual(f.transport.posted, [], 'nobody is told to delete it by hand');
+  assert.ok(await readAppSecrets(f.secrets, APP.appId), 'the secrets wait for the delete');
+
+  f.slack.refuseDelete = undefined;
+  assert.equal((await f.reconciler.archive('agent_support')).lifecycle, 'archived');
+  assert.deepEqual(f.slack.deletes.map(({ appId }) => appId), [APP.appId]);
 });
 
 test('without a configuration token the definition is left for the Owner, who is told, and the Agent is still archived', async (t) => {

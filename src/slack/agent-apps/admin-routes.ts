@@ -12,12 +12,12 @@ import type { CustomAgentConfig } from '../../config/types.ts';
 import { escapeHtml } from '../../security/html-escape.ts';
 import { agentSlackAppsHost, type AgentSlackAppsHost } from './host.ts';
 import { liveAgentSlackApps } from './live.ts';
-import { YOUR_APPS_URL } from './pages.ts';
+import { tokenApiPath, YOUR_APPS_URL } from './pages.ts';
 import type { AgentSlackApps } from './service.ts';
 import { SlackUnavailable } from './slack-api.ts';
 
-export const TOKEN_PAGE_PATH = '/admin/agents/:agentId/slack-app';
-export const TOKEN_API_PATH = '/admin/api/agents/:agentId/slack-app/token';
+const TOKEN_PAGE_PATH = '/admin/agents/:agentId/slack-app';
+const TOKEN_API_PATH = '/admin/api/agents/:agentId/slack-app/token';
 
 export function isAgentSlackAppTokenApiPath(path: string): boolean {
   return /^\/admin\/api\/agents\/[^/]+\/slack-app\/token$/.test(path);
@@ -37,13 +37,12 @@ type TokenPageError =
   | 'slack_down'
   | 'already_started';
 
-const ERRORS: Record<TokenPageError, string> = {
+const ERRORS: Record<Exclude<TokenPageError, 'already_started'>, string> = {
   not_refresh_token: "That isn't a refresh token. Copy the Refresh Token, which starts with xoxe-.",
   rejected: "Slack didn't accept that token. Generate a new one and paste its Refresh Token.",
   other_workspace: 'That token is for a different Slack workspace. Generate one for this workspace.',
   slack_down: "Slack didn't answer. Try again in a minute.",
-  already_started: (name: string) => `${name} already has its own Slack app.`,
-} as unknown as Record<TokenPageError, string>;
+};
 
 function errorText(error: TokenPageError, name: string): string {
   return error === 'already_started' ? `${name} already has its own Slack app.` : ERRORS[error];
@@ -84,7 +83,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const { agent } = gated;
     if (action === 'remove') {
       await apps.removeConfigurationToken();
-      return c.html(removedPage(agent));
+      return c.html(removedPage());
     }
     if (action === 'paste') {
       const token = typeof body.refreshToken === 'string' ? body.refreshToken : '';
@@ -111,7 +110,7 @@ const yourApps = `<p><a href="${YOUR_APPS_URL}" target="_blank" rel="noopener">O
 
 function tokenPage(agent: CustomAgentConfig, tokenStored: boolean, error?: TokenPageError): string {
   const name = escapeHtml(agent.name);
-  const action = `/admin/api/agents/${encodeURIComponent(agent.id)}/slack-app/token`;
+  const action = tokenApiPath(agent.id);
   const body = tokenStored
     ? `<form method="post" action="${action}">
         <input type="hidden" name="action" value="create">
@@ -152,7 +151,7 @@ function creatingPage(agent: CustomAgentConfig): string {
   });
 }
 
-function removedPage(_agent: CustomAgentConfig): string {
+function removedPage(): string {
   return renderSlackJourneyPage({
     surface: 'agent-slack-app',
     eyebrow: 'Chickpea',

@@ -1,7 +1,5 @@
-/** The service over an installation's live stores, main bot and public URL. */
-import type { EncryptedCredentialStore } from '../../config/settings-store.ts';
-import type { PlatformEnv } from '../../config/state-backend.ts';
-import { resolveStores } from '../../config/state-backend.ts';
+import { UnknownAgentError } from '../../config/errors.ts';
+import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
 import { slackInstallationCredentialId } from '../hosted-slack-app.ts';
 import { resolveSlackInstallationCredentials } from '../installation-credentials.ts';
@@ -21,16 +19,8 @@ import { AgentSlackApps } from './service.ts';
 import { createAgentAppSlackApi } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
 
-function realm(env: PlatformEnv | undefined): SettingsRealm {
-  const settings = resolveStores(env).settings;
-  if (!('getEncryptedCredentialRevision' in settings)) throw new Error('The settings store has no encrypted realm.');
-  return settings as SettingsRealm;
-}
-
-type SettingsRealm = ReturnType<typeof resolveStores>['settings'] & EncryptedCredentialStore;
-
 function secretDeps(env: PlatformEnv | undefined): SecretDeps {
-  return { credentials: realm(env), keyring: loadCredentialKeyring(env), slack: createAgentAppSlackApi() };
+  return { credentials: getSettingsStore(env), keyring: loadCredentialKeyring(env), slack: createAgentAppSlackApi() };
 }
 
 export interface AgentAppBotCredentials {
@@ -41,15 +31,18 @@ export interface AgentAppBotCredentials {
   displayName: string;
 }
 
-export type AgentAppExecutionLookup =
+type AgentAppExecutionLookup =
   | { kind: 'live'; bot: AgentAppBotCredentials }
   /** A user-group Agent, or no Agent: the installation's own bot answers. */
   | { kind: 'not_app' }
   /** An Agent with an app that is not live or whose token cannot be read: nothing answers as Chickpea for it. */
   | { kind: 'unavailable' };
 
-export async function agentAppExecutionBot(env: PlatformEnv | undefined, agentId: string): Promise<AgentAppExecutionLookup> {
-  const agent = await resolveStores(env).config.getAgent(agentId).catch(() => undefined);
+async function agentAppExecutionBot(env: PlatformEnv | undefined, agentId: string): Promise<AgentAppExecutionLookup> {
+  const agent = await resolveStores(env).config.getAgent(agentId).catch((error: unknown) => {
+    if (error instanceof UnknownAgentError) return undefined;
+    throw error;
+  });
   const presence = agent?.slackPresence;
   if (!agent || presence?.kind !== 'agent_app') return { kind: 'not_app' };
   if (!agentAppIsLive(presence)) return { kind: 'unavailable' };
@@ -199,8 +192,9 @@ export async function handleAgentAppHomeAction(input: {
   );
   if (!action) return false;
   const slackUserId = input.payload.user?.id;
-  const viewer = typeof slackUserId === 'string' ? await input.viewer() : undefined;
-  if (!viewer || viewer.role !== 'owner' || typeof slackUserId !== 'string') return true;
+  if (typeof slackUserId !== 'string') return true;
+  const viewer = await input.viewer();
+  if (viewer?.role !== 'owner') return true;
   const service = await liveAgentSlackApps(input.env, host);
   if (action.action_id === START_APP_ACTION) await service.start(action.value, slackUserId);
   else await service.retry(action.value, slackUserId);
@@ -210,9 +204,10 @@ export async function handleAgentAppHomeAction(input: {
 
 const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAIN_ACTION]);
 
+/** The service over an installation's live stores, main bot and public URL. */
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);
-  const settings = realm(env);
+  const settings = getSettingsStore(env);
   const credentials = await resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
   return new AgentSlackApps({
     env,

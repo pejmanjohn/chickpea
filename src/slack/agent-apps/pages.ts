@@ -1,11 +1,19 @@
-/**
- * Every word the Owner reads about an Agent's own Slack app: the DMs from
- * Chickpea, one table keyed by what happened.
- */
+/** The Owner-facing copy for an Agent's own Slack app: DMs, consent pages and App Home lines, each table keyed by outcome. */
 import type { AgentAppAttention } from '../../config/types.ts';
-import { escapeMrkdwn } from '../ui/text.ts';
+import { escapeHtml } from '../../security/html-escape.ts';
+import { clampDisplay, escapeMrkdwn } from '../ui/text.ts';
 
 export const YOUR_APPS_URL = 'https://api.slack.com/apps';
+/** Slack refuses a button whose text is longer, and with it the whole message or view. */
+const BUTTON_TEXT_MAX = 75;
+
+export function tokenPagePath(agentId: string): string {
+  return `/admin/agents/${encodeURIComponent(agentId)}/slack-app`;
+}
+
+export function tokenApiPath(agentId: string): string {
+  return `/admin/api/agents/${encodeURIComponent(agentId)}/slack-app/token`;
+}
 export const TRY_AGAIN_ACTION = 'agent_app_try_again';
 
 export interface AgentAppNames {
@@ -27,12 +35,12 @@ type Button =
 
 interface Copy {
   text(names: AgentAppNames): string;
-  buttons(links: AgentAppLinks): Button[];
+  buttons(links: AgentAppLinks, names: AgentAppNames): Button[];
 }
 
 const tryAgain = (links: AgentAppLinks): Button => ({ label: 'Try again', action: TRY_AGAIN_ACTION, value: links.agentId });
 const yourApps: Button = { label: 'Open Your Apps in Slack', url: YOUR_APPS_URL };
-const allow = (names: AgentAppNames, links: AgentAppLinks): Button[] =>
+const allow = (links: AgentAppLinks, names: AgentAppNames): Button[] =>
   links.allowUrl ? [{ label: `Allow ${names.name} in Slack`, url: links.allowUrl }] : [];
 
 const refused: Copy = {
@@ -44,7 +52,7 @@ const DM_COPY = {
   allow: {
     text: ({ name, handle }) =>
       `${name}'s Slack app is ready. Choose Allow to add it to this workspace. After that, people can message @${handle} directly and mention it in channels it's in.`,
-    buttons: () => [],
+    buttons: allow,
   },
   ready: {
     text: ({ handle }) => `@${handle} is in Slack now. Message it directly, or add it to a channel from the channel's Add people or agents.`,
@@ -73,7 +81,7 @@ const DM_COPY = {
   app_removed: {
     text: ({ name, handle }) =>
       `${name}'s Slack app was removed from this workspace, so @${handle} can't answer there. Choose Allow to add it back.`,
-    buttons: () => [],
+    buttons: allow,
   },
   /** Shown in Admin as the archive refusal; no message. */
   uninstall_failed: undefined,
@@ -118,15 +126,11 @@ export function consentPage(outcome: ConsentOutcome, names: AgentAppNames): Resp
 }
 
 /** A plain page with one sentence; nothing on it is a diagnostic. */
-export function noticePage(text: string, status: number): Response {
+function noticePage(text: string, status: number): Response {
   const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
     `<title>Chickpea</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:48px 24px;max-width:36rem}</style></head>` +
     `<body><p>${escapeHtml(text)}</p></body></html>`;
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
-}
-
-export function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 }
 
 export const START_APP_ACTION = 'agent_app_start';
@@ -154,7 +158,7 @@ const HOME_COPY = {
 export function agentAppHomeBlocks(row: AgentAppHomeRow, names: AgentAppNames, agentId: string): object[] {
   const button = (text: string, extra: Record<string, unknown>) => ({
     type: 'actions',
-    elements: [{ type: 'button', text: { type: 'plain_text', text }, ...extra }],
+    elements: [{ type: 'button', text: { type: 'plain_text', text: clampDisplay(text, BUTTON_TEXT_MAX) }, ...extra }],
   });
   if (row.kind === 'offer') {
     const label = escapeMrkdwn(`Give @${names.handle} its own Slack app`);
@@ -186,14 +190,14 @@ export function agentAppMessage(
   const copy = DM_COPY[kind];
   if (!copy) return undefined;
   const text = escapeMrkdwn(copy.text(names));
-  const buttons = kind === 'allow' || kind === 'app_removed' ? allow(names, links) : copy.buttons(links);
+  const buttons = copy.buttons(links, names);
   const blocks: unknown[] = [{ type: 'section', text: { type: 'mrkdwn', text } }];
   if (buttons.length > 0) {
     blocks.push({
       type: 'actions',
       elements: buttons.map((button) => ({
         type: 'button',
-        text: { type: 'plain_text', text: button.label },
+        text: { type: 'plain_text', text: clampDisplay(button.label, BUTTON_TEXT_MAX) },
         ...('url' in button
           ? { url: button.url, action_id: `agent_app_link_${button.label.toLowerCase().replace(/[^a-z]+/g, '_')}` }
           : { action_id: button.action, value: button.value }),

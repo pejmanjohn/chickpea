@@ -2868,17 +2868,17 @@ function resolveMemoryDeliveryText(
   return recoveredText || MEMORY_CHANGED_RETRY_TEXT;
 }
 
+/** The bot users of the teammates with their own Slack apps: their replies in this thread are Agents' replies. */
+function teammateBotUserIds(assignment: Pick<ResolvedAssignment, 'teammates'>): string[] {
+  return (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
+}
+
 /**
  * Who a turn's replies come from (docs/runbooks/slack-message-identity.md):
  * the owner its run froze at admission, or the Agent itself for a turn with
  * no frozen presentation. A `chickpea` owner posts as the installation's
  * bot: no custom name or avatar reaches Slack, and its footer names Chickpea.
  */
-/** The bot users of the teammates with their own Slack apps: their replies in this thread are Agents' replies. */
-function teammateBotUserIds(assignment: Pick<ResolvedAssignment, 'teammates'>): string[] {
-  return (assignment.teammates ?? []).flatMap((teammate) => 'botUserId' in teammate ? [teammate.botUserId] : []);
-}
-
 export function turnReplySender(
   assignment: ResolvedAssignment,
   visibleOwner: SlackPresentationOwner | undefined,

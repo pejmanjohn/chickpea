@@ -74,9 +74,9 @@ function contextIdFor(owner: string): Promise<string> {
   return sha256Hex(owner);
 }
 
-async function appContext(appId: string, agentId: string, revision: string) {
+function appContext(appId: string, contextId: string, revision: string) {
   return workspaceCredentialContext({
-    contextId: await contextIdFor(`agent:${agentId}`),
+    contextId,
     identityId: agentAppSecretKey(appId),
     appId,
     purpose: 'agent_slack_app',
@@ -104,7 +104,7 @@ export async function readAppSecrets(
   try {
     opened = await decryptSlackSecretEnvelope<Record<string, string>>(
       d.keyring,
-      { ...await appContext(appId, '', record.revision), deploymentId: record.contextId },
+      appContext(appId, record.contextId, record.revision),
       record.envelope,
     );
   } catch {
@@ -129,7 +129,7 @@ export async function writeAppSecrets(
 ): Promise<string> {
   const key = agentAppSecretKey(appId);
   const revision = crypto.randomUUID();
-  const context = await appContext(appId, agentId, revision);
+  const context = appContext(appId, await contextIdFor(`agent:${agentId}`), revision);
   const envelope = await encryptSlackSecretEnvelope(d.keyring, context, {
     agentId,
     clientSecret: secrets.clientSecret,
@@ -161,22 +161,26 @@ interface ConfigurationTokenPair {
   rotatingSince?: number;
 }
 
+/** A pair that cannot be opened is as good as none: the Owner pastes a new token, which replaces it. */
 async function readPair(
   d: SecretDeps,
   teamId: string,
 ): Promise<{ revision: string; pair: ConfigurationTokenPair } | undefined> {
   const record = await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId));
   if (!record) return undefined;
-  const opened = await decryptSlackSecretEnvelope<Record<string, string>>(
-    d.keyring,
-    await tokenContext(teamId, record.revision),
-    record.envelope,
-  );
+  let opened: Record<string, string>;
+  try {
+    opened = await decryptSlackSecretEnvelope<Record<string, string>>(
+      d.keyring,
+      await tokenContext(teamId, record.revision),
+      record.envelope,
+    );
+  } catch {
+    throw new ConfigTokenNeeded(teamId);
+  }
   const expiresAt = Number(opened.expiresAt);
   const rotatingSince = opened.rotatingSince === undefined ? undefined : Number(opened.rotatingSince);
-  if (!opened.accessToken || !opened.refreshToken || !Number.isFinite(expiresAt)) {
-    throw new Error('The stored configuration token is damaged.');
-  }
+  if (!opened.accessToken || !opened.refreshToken || !Number.isFinite(expiresAt)) throw new ConfigTokenNeeded(teamId);
   return {
     revision: record.revision,
     pair: {
@@ -231,9 +235,7 @@ export async function saveConfigurationToken(
   if (rotated.teamId !== teamId) return 'other_workspace';
   const pair = { accessToken: rotated.accessToken, refreshToken: rotated.refreshToken, expiresAt: rotated.expiresAt };
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const current = await readPair(d, teamId).catch(() => undefined);
-    const currentRevision = current?.revision ??
-      (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId)))?.revision ?? null;
+    const currentRevision = (await d.credentials.getEncryptedCredentialRevision(configurationTokenKey(teamId)))?.revision ?? null;
     if (await writePair(d, teamId, pair, currentRevision)) return 'saved';
   }
   throw new LostRevision(configurationTokenKey(teamId));

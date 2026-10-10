@@ -1,6 +1,8 @@
-import { agentAppIsLive } from '../config/types.ts';
-import type { CustomAgentConfig, ResolvedAssignment,
-  SlackAgentAddress,
+import {
+  agentAppIsLive,
+  type CustomAgentConfig,
+  type ResolvedAssignment,
+  type SlackAgentAddress,
 } from '../config/types.ts';
 import { SLACK_CODE_SEGMENT } from './message-format.ts';
 import type { NormalizedSlackTurn } from './types.ts';

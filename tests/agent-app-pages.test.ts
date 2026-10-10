@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { type AgentAppMessageKind, agentAppMessage } from '../src/slack/agent-apps/pages.ts';
+import { type AgentAppMessageKind, agentAppHomeBlocks, agentAppMessage } from '../src/slack/agent-apps/pages.ts';
 
 const HOSTILE = { name: '<!channel> & <@U123> <https://evil.test|click>', handle: 'support' };
 const LINKS = { agentId: 'agent_support', allowUrl: 'https://cloud.test/allow', tokenPageUrl: 'https://core.test/token' };
@@ -37,4 +37,12 @@ test('button labels stay plain text and the Allow button carries the Agent name 
   assert.equal(actions.elements[0]?.text.type, 'plain_text');
   assert.equal(actions.elements[0]?.text.text, `Allow ${HOSTILE.name} in Slack`);
   assert.equal(actions.elements[0]?.url, LINKS.allowUrl);
+});
+
+test('a button never carries more text than Slack takes, however long the name or handle', () => {
+  const long = { name: 'S'.repeat(80), handle: 'h'.repeat(80) };
+  const allowButton = (agentAppMessage('allow', long, LINKS)!.blocks[1] as { elements: Array<{ text: { text: string } }> }).elements[0]!;
+  assert.ok(allowButton.text.text.length <= 75, `Allow label is ${allowButton.text.text.length} characters`);
+  const offer = agentAppHomeBlocks({ kind: 'offer', tokenPageUrl: undefined }, long, 'agent_support')[0] as { elements: Array<{ text: { text: string } }> };
+  assert.ok(offer.elements[0]!.text.text.length <= 75, `offer label is ${offer.elements[0]!.text.text.length} characters`);
 });
