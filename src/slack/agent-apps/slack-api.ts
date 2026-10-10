@@ -4,21 +4,47 @@
  */
 import { readBoundedText } from '../../http/bounded-body.ts';
 import { createdSlackApp, safeSlackError } from '../app-creation.ts';
-import type { SlackAppManifest } from '../app-manifest.ts';
+import type { SlackAppCreateManifest, SlackAppManifest } from '../app-manifest.ts';
 
 const SLACK_API = 'https://slack.com/api';
 const MAX_RESPONSE_BYTES = 64 * 1_024;
 const ICON_TIMEOUT_MS = 5_000;
 const SLACK_ID = /^[A-Z][A-Z0-9]{1,63}$/;
+const MAX_PROBLEMS = 5;
+const MAX_PROBLEM_TEXT = 200;
 /** Slack answers these for a bot whose app is gone or whose token is dead. */
 const BOT_GONE = new Set(['account_inactive', 'invalid_auth', 'token_revoked', 'not_authed', 'app_not_installed']);
+
+/** One entry of the list Slack sends with `invalid_manifest`: what is wrong, and where in the manifest. */
+export interface SlackManifestProblem {
+  readonly message: string;
+  readonly pointer: string;
+}
 
 /** Slack answered the request and said no. */
 export class SlackRefused extends Error {
   readonly name = 'SlackRefused';
-  constructor(readonly method: string, readonly code: string) {
+  constructor(readonly method: string, readonly code: string, readonly errors: readonly SlackManifestProblem[] = []) {
     super(`Slack refused ${method}: ${code}`);
   }
+}
+
+export type AgentAppSlackStep = 'rotate' | 'release_handle' | 'create' | 'update' | 'icon' | 'exchange' | 'uninstall' | 'delete';
+
+/** One structured line per Slack refusal in an Agent app's lifecycle; for the operator, never the customer. */
+export function logSlackRefusal(
+  step: AgentAppSlackStep,
+  ids: { agentId?: string; appId?: string },
+  refusal: { code: string; errors?: readonly SlackManifestProblem[] },
+): void {
+  console.warn({
+    event: 'chickpea.agent_app.slack_refused',
+    step,
+    agentId: ids.agentId ?? null,
+    appId: ids.appId ?? null,
+    code: refusal.code,
+    errors: refusal.errors ?? [],
+  });
 }
 
 /** Slack may or may not have done it; nothing repeats this call by itself. */
@@ -64,9 +90,9 @@ export interface AgentAppGrant {
 export interface AgentAppSlackApi {
   rotate(refreshToken: string): Promise<RotatedConfigurationToken>;
   /** Throws AmbiguousEffect when Slack's answer is unknown and SlackRefused when it said no. */
-  create(token: string, manifest: SlackAppManifest): Promise<CreatedAgentApp>;
+  create(token: string, manifest: SlackAppCreateManifest): Promise<CreatedAgentApp>;
   update(token: string, appId: string, manifest: SlackAppManifest): Promise<void>;
-  setIcon(token: string, appId: string, png: Uint8Array<ArrayBuffer>): Promise<'set' | 'refused' | 'failed'>;
+  setIcon(token: string, appId: string, png: Uint8Array<ArrayBuffer>): Promise<void>;
   exchange(input: { clientId: string; clientSecret: string; code: string; redirectUri: string }): Promise<AgentAppGrant>;
   uninstall(input: { clientId: string; clientSecret: string; botToken: string }): Promise<'removed' | 'absent'>;
   delete(token: string, appId: string): Promise<'deleted' | 'absent'>;
@@ -77,7 +103,10 @@ export interface AgentAppSlackApiOptions {
   apiBaseUrl?: string;
 }
 
-type Answer = { kind: 'ok'; payload: Record<string, unknown> } | { kind: 'refused'; code: string } | { kind: 'unavailable'; reason: string };
+type Answer =
+  | { kind: 'ok'; payload: Record<string, unknown> }
+  | { kind: 'refused'; code: string; errors: SlackManifestProblem[] }
+  | { kind: 'unavailable'; reason: string };
 
 export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): AgentAppSlackApi {
   const fetchImpl = options.fetch ?? fetch;
@@ -109,7 +138,11 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     if (response.status >= 500 || code === 'fatal_error' || code === 'internal_error' || code === 'service_unavailable') {
       return { kind: 'unavailable', reason: code || `http_${response.status}` };
     }
-    return { kind: 'refused', code: code || (response.status === 429 ? 'ratelimited' : `http_${response.status}`) };
+    return {
+      kind: 'refused',
+      code: code || (response.status === 429 ? 'ratelimited' : `http_${response.status}`),
+      errors: manifestProblems(payload.errors),
+    };
   }
 
   const json = (token: string, body: unknown): RequestInit => ({
@@ -128,7 +161,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
 
   function settled(method: string, answer: Answer): Record<string, unknown> {
     if (answer.kind === 'ok') return answer.payload;
-    if (answer.kind === 'refused') throw new SlackRefused(method, answer.code);
+    if (answer.kind === 'refused') throw new SlackRefused(method, answer.code, answer.errors);
     throw new SlackUnavailable(method, answer.reason);
   }
 
@@ -151,7 +184,7 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
     async create(token, manifest) {
       const answer = await call('apps.manifest.create', json(token, { manifest }));
       if (answer.kind === 'unavailable') throw new AmbiguousEffect('apps.manifest.create', answer.reason);
-      if (answer.kind === 'refused') throw new SlackRefused('apps.manifest.create', answer.code);
+      if (answer.kind === 'refused') throw new SlackRefused('apps.manifest.create', answer.code, answer.errors);
       try {
         return createdSlackApp(answer.payload);
       } catch {
@@ -167,14 +200,12 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
       const body = new FormData();
       body.set('app_id', appId);
       body.set('file', new Blob([png], { type: 'image/png' }), 'icon.png');
-      const answer = await call('apps.icon.set', {
+      settled('apps.icon.set', await call('apps.icon.set', {
         method: 'POST',
         headers: { authorization: `Bearer ${token}` },
         body,
         signal: AbortSignal.timeout(ICON_TIMEOUT_MS),
-      });
-      if (answer.kind === 'ok') return 'set';
-      return answer.kind === 'refused' ? 'refused' : 'failed';
+      }));
     },
 
     async exchange(input) {
@@ -220,6 +251,20 @@ export function createAgentAppSlackApi(options: AgentAppSlackApiOptions = {}): A
   };
 }
 
+
+/** Slack's `errors` list, bounded. A URL in it becomes `<url>`: a Request URL carries its app's path token. */
+function manifestProblems(value: unknown): SlackManifestProblem[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_PROBLEMS).map((entry) => {
+    const problem = asRecord(entry);
+    return { message: problemText(problem.message), pointer: problemText(problem.pointer) };
+  });
+}
+
+function problemText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/https?:\/\/\S+/g, '<url>').replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, MAX_PROBLEM_TEXT);
+}
 
 function requiredString(value: unknown, method: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 4_096) {

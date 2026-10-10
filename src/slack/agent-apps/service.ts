@@ -22,12 +22,15 @@ import type {
 import { generatedAgentAvatarPng, readAgentAvatarAsset } from '../agent-presence/avatar-assets.ts';
 import {
   AGENT_APP_BOT_EVENTS,
+  type AgentAppManifestIntent,
   SLACK_APP_DESCRIPTION_MAX_LENGTH,
   SLACK_APP_NAME_MAX_LENGTH,
-  SLACK_BOT_DISPLAY_NAME_MAX_LENGTH,
+  agentAppCreateManifest,
   buildSlackAppManifest,
   slackManifestFingerprint,
+  type SlackAppCreateManifest,
   type SlackAppManifest,
+  type SlackAppRequestUrls,
 } from '../app-manifest.ts';
 import { sha256Hex } from '../../security/digest.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
@@ -82,6 +85,7 @@ import {
   SlackRefused,
   SlackUnavailable,
   createAgentAppSlackApi,
+  logSlackRefusal,
 } from './slack-api.ts';
 
 export type AgentAppTransport = Pick<
@@ -222,7 +226,7 @@ export class AgentSlackApps {
     const presence = agent.slackPresence;
     if (presence?.kind !== 'agent_app') return agent;
     if (presence.app.state !== 'needs_attention') return this.advance(agentId);
-    const manifestFingerprint = slackManifestFingerprint(this.manifest(agent, undefined));
+    const manifestFingerprint = slackManifestFingerprint(this.createManifest(agent));
     const resumed = await this.commit(agent, {
       type: 'try_again', at: this.now(), startedBy: ownerSlackUserId, manifestFingerprint,
     });
@@ -295,13 +299,18 @@ export class AgentSlackApps {
         redirectUri: this.deps.host.redirectUri,
       });
     } catch (error) {
-      if (error instanceof SlackRefused) return consentPage('expired', names);
+      if (error instanceof SlackRefused) {
+        logSlackRefusal('exchange', { agentId: agent.id, appId: app.appId }, error);
+        return consentPage('expired', names);
+      }
       if (error instanceof SlackUnavailable) return consentPage('slack_down', names);
       throw error;
     }
     const { teamId } = await this.installation();
     const undo = async () => {
-      await this.slack.uninstall({ clientId: app.clientId, clientSecret: stored.secrets.clientSecret, botToken: grant.botToken }).catch(() => undefined);
+      await this.slack.uninstall({ clientId: app.clientId, clientSecret: stored.secrets.clientSecret, botToken: grant.botToken }).catch((error: unknown) => {
+        if (error instanceof SlackRefused) logSlackRefusal('uninstall', { agentId: agent.id, appId: app.appId }, error);
+      });
       await this.commit(agent, { type: 'consent_undone', at: now });
     };
     if (grant.teamId !== teamId) { await undo(); return consentPage('other_workspace', names); }
@@ -406,14 +415,17 @@ export class AgentSlackApps {
 
   private readonly performers: Record<AgentAppStep, Performer> = {
     release_handle: async (run) => {
-      const manifestFingerprint = slackManifestFingerprint(this.manifest(run.agent, undefined));
+      const manifestFingerprint = slackManifestFingerprint(this.createManifest(run.agent));
       const userGroupId = run.presence.released?.userGroupId;
       if (userGroupId) {
         try {
           await this.deps.transport.disableUserGroup(userGroupId);
         } catch (error) {
           if (!(error instanceof SlackTransportError)) throw error;
-          if (!GROUP_ALREADY_RELEASED.has(error.code)) return { event: { type: 'handle_release_refused', at: run.now } };
+          if (!GROUP_ALREADY_RELEASED.has(error.code)) {
+            logSlackRefusal('release_handle', { agentId: run.agent.id }, error);
+            return { event: { type: 'handle_release_refused', at: run.now } };
+          }
         }
       }
       return { event: { type: 'handle_released', at: run.now, manifestFingerprint } };
@@ -422,7 +434,7 @@ export class AgentSlackApps {
     create: async (run) => {
       if (!run.wroteCreating) return 'wait';
       const { teamId } = await this.installation();
-      const manifest = this.manifest(run.agent, undefined);
+      const manifest = this.createManifest(run.agent);
       let created;
       try {
         created = await withConfigurationToken(this.secrets, teamId, (token) => this.slack.create(token, manifest));
@@ -430,6 +442,7 @@ export class AgentSlackApps {
         if (error instanceof ConfigTokenNeeded) return { event: { type: 'config_token_needed', at: run.now } };
         if (error instanceof AmbiguousEffect) return { event: { type: 'create_ambiguous', at: run.now } };
         if (error instanceof SlackRefused) {
+          logSlackRefusal('create', { agentId: run.agent.id }, error);
           return { event: { type: 'create_refused', at: run.now, reason: error.code === 'ratelimited' ? 'slack_busy' : 'create_refused' } };
         }
         if (error instanceof SlackUnavailable) return 'wait';
@@ -459,10 +472,11 @@ export class AgentSlackApps {
           await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
         } catch (error) {
           if (error instanceof ConfigTokenNeeded) return { event: { type: 'config_token_needed', at: run.now } };
+          if (error instanceof SlackRefused) logSlackRefusal('delete', { agentId: run.agent.id, appId: app.appId }, error);
           if (error instanceof SlackRefused || error instanceof SlackUnavailable) return 'wait';
           throw error;
         }
-        const manifestFingerprint = slackManifestFingerprint(this.manifest(run.agent, undefined));
+        const manifestFingerprint = slackManifestFingerprint(this.createManifest(run.agent));
         return { event: { type: 'recreate', at: run.now, manifestFingerprint } };
       }
       const manifest = this.manifest(run.agent, this.deps.host.requestUrls(installationId, app.appId));
@@ -470,7 +484,10 @@ export class AgentSlackApps {
         await withConfigurationToken(this.secrets, teamId, (token) => this.slack.update(token, app.appId, manifest));
       } catch (error) {
         if (error instanceof ConfigTokenNeeded) return { event: { type: 'config_token_needed', at: run.now } };
-        if (error instanceof SlackRefused) return { event: { type: 'urls_refused', at: run.now } };
+        if (error instanceof SlackRefused) {
+          logSlackRefusal('update', { agentId: run.agent.id, appId: app.appId }, error);
+          return { event: { type: 'urls_refused', at: run.now } };
+        }
         if (error instanceof SlackUnavailable) return 'wait';
         throw error;
       }
@@ -481,14 +498,14 @@ export class AgentSlackApps {
       const app = agentAppRecord(run.app)!;
       const { teamId } = await this.installation();
       const { png, icon } = await this.icon(run.agent, run.presence);
-      let outcome: 'set' | 'refused' | 'failed';
       try {
-        outcome = await withConfigurationToken(this.secrets, teamId, (token) => this.slack.setIcon(token, app.appId, png));
+        await withConfigurationToken(this.secrets, teamId, (token) => this.slack.setIcon(token, app.appId, png));
       } catch (error) {
-        if (!(error instanceof ConfigTokenNeeded || error instanceof SlackUnavailable)) throw error;
-        outcome = 'failed';
+        if (error instanceof SlackRefused) logSlackRefusal('icon', { agentId: run.agent.id, appId: app.appId }, error);
+        else if (!(error instanceof ConfigTokenNeeded || error instanceof SlackUnavailable)) throw error;
+        return { event: { type: 'icon_set', at: run.now, icon: 'not_set' } };
       }
-      return { event: { type: 'icon_set', at: run.now, icon: outcome === 'set' ? icon : 'not_set' } };
+      return { event: { type: 'icon_set', at: run.now, icon } };
     },
 
     post_allow_dm: async (run) => {
@@ -509,9 +526,10 @@ export class AgentSlackApps {
         });
       } catch (error) {
         if (error instanceof SlackUnavailable) return 'wait';
-        if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
-        if (error instanceof SlackRefused) return { event: { type: 'uninstall_refused', at: run.now } };
-        throw error;
+        if (!(error instanceof SlackRefused)) throw error;
+        logSlackRefusal('uninstall', { agentId: run.agent.id, appId: app.appId }, error);
+        if (error.code === 'ratelimited') return 'wait';
+        return { event: { type: 'uninstall_refused', at: run.now } };
       }
       return { event: { type: 'uninstalled', at: run.now } };
     },
@@ -525,6 +543,7 @@ export class AgentSlackApps {
         await withConfigurationToken(this.secrets, teamId, (token) => this.slack.delete(token, app.appId));
       } catch (error) {
         if (error instanceof SlackUnavailable) return 'wait';
+        if (error instanceof SlackRefused) logSlackRefusal('delete', { agentId: run.agent.id, appId: app.appId }, error);
         if (error instanceof SlackRefused && error.code === 'ratelimited') return 'wait';
         if (!(error instanceof ConfigTokenNeeded || error instanceof SlackRefused)) throw error;
         left = true;
@@ -563,17 +582,23 @@ export class AgentSlackApps {
     }
   }
 
-  private manifest(agent: CustomAgentConfig, urls: { events: string; interactions: string } | undefined): SlackAppManifest {
-    return buildSlackAppManifest({
-      kind: 'agent_app',
+  private createManifest(agent: CustomAgentConfig): SlackAppCreateManifest {
+    return agentAppCreateManifest(this.manifestIntent(agent));
+  }
+
+  private manifest(agent: CustomAgentConfig, urls: SlackAppRequestUrls): SlackAppManifest {
+    return buildSlackAppManifest({ kind: 'agent_app', urls, ...this.manifestIntent(agent) });
+  }
+
+  private manifestIntent(agent: CustomAgentConfig): AgentAppManifestIntent {
+    return {
       appName: agent.name.slice(0, SLACK_APP_NAME_MAX_LENGTH),
-      botDisplayName: agent.name.slice(0, SLACK_BOT_DISPLAY_NAME_MAX_LENGTH),
+      botDisplayName: this.names(agent).handle,
       description: (agent.description?.trim() || `${agent.name} Agent`).slice(0, SLACK_APP_DESCRIPTION_MAX_LENGTH),
       redirectUri: this.deps.host.redirectUri,
-      ...(urls ? { urls } : {}),
       scopes: AGENT_APP_BOT_SCOPES,
       events: AGENT_APP_BOT_EVENTS,
-    });
+    };
   }
 
   /** The Agent's avatar when it is a square PNG Slack accepts; its 512 px default otherwise. */

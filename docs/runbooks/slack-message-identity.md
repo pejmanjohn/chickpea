@@ -70,9 +70,14 @@ the port on its staging deployment only, behind its own staging-only switch.
    workspace, and pastes the Refresh Token. Chickpea rotates it once, refuses an
    access token or another workspace's token, and stores the new pair
    encrypted. Later Agents need only the click.
-3. Chickpea disables the Agent's user group so the handle is free, creates the
-   app without request URLs, records it, stores its secrets, adds the request
-   URLs, sets the icon, and messages the Owner with **Allow** in Slack.
+3. Chickpea disables the Agent's user group so the handle is free and creates
+   the app, with the Agent's handle as its bot's name. The create carries no
+   event subscriptions or interactivity: Slack refuses either without a
+   Request URL, and the URLs name the app's ID. Chickpea records the app,
+   stores its secrets, then adds both with an update. Slack checks the Events
+   URL with `url_verification`, which the host answers only after verifying it
+   with the stored signing secret. Chickpea then sets the icon and messages the
+   Owner with **Allow** in Slack.
 4. Allow opens Slack's consent screen; the link it starts is good for 15
    minutes. Chickpea exchanges the code with the app's own credentials. It
    undoes a grant from another person, workspace or app, or one missing a
