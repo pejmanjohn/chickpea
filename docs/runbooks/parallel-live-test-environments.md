@@ -595,6 +595,5 @@ Approve one sandbox for Phase 1 only when all of these are observed:
   separately.
 
 If any required Slack capability fails, mark the one-sandbox topology failed and
-return to `docs/plans/2026-08-27-parallel-lanes.md` for an explicit paid fallback
-decision. Do not provision `amber`, `cobalt`, or `fern` while the verdict is
-provisional.
+obtain an explicit paid fallback decision before provisioning more resources.
+Do not provision `amber`, `cobalt`, or `fern` while the verdict is provisional.

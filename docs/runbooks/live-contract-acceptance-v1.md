@@ -76,7 +76,7 @@ The September 2 scope amendment starts with Amber and Cobalt only. The historica
 
 ## Historical V0 blockers
 
-The candidate environment does not yet provide `env target <alias>` and `env attest <alias>` outputs in the verifier schemas. The verifier-owned attended coordinator is not implemented to acquire the target lock and UI mutex, issue one-use challenges, persist receipts, drive real Slack/Admin journeys through Computer Use, execute exact product-state cleanup, and provide postflight proof.
+The historical V0 candidate did not yet provide `env target <alias>` and `env attest <alias>` outputs in the verifier schemas. Its verifier-owned attended coordinator was not implemented to acquire the target lock, issue one-use challenges, persist receipts, drive real Slack/Admin journeys through Computer Use, execute exact product-state cleanup, and provide postflight proof.
 
 The read-only readiness audit also found that the candidate target is not a clean dedicated fixture estate. It has one usable browser actor instead of the roles required by the selected suite, unresolved in-flight or recovery work, and missing exact Slack-app, provider-project, read-only auth-config, and transport attestations. The verifier source under test is not deployed to that candidate.
 
