@@ -25,6 +25,7 @@ import { hostedLoginFence, type HostedLoginFence } from './hosted-login.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
 import { createWorkspaceManagementMcpHandler } from '../management/mcp.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
+import { CONNECT_FONTS, fontFaceCss } from '../assets/fonts.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import {
   actualBodyLimit,
@@ -472,7 +473,7 @@ function compareQueryEntries(
   return 0;
 }
 
-const CONSENT_STYLE = `
+const CONSENT_STYLE = `${fontFaceCss(CONNECT_FONTS)}
 :root{--canvas:#f4ebd8;--card:#fffdf6;--well:#f8f1df;--line:rgba(59,50,32,.12);--text:#3b3220;--text-2:#6b5c42;--gold:#dda033;--gold-press:#b27e1f}
 *{box-sizing:border-box}
 body{margin:0;background:var(--canvas);color:var(--text);font:16px/1.55 Quicksand,system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -580,7 +581,7 @@ function browserHeaders(contentType: string): Headers {
   return new Headers({
     'Cache-Control': 'no-store',
     // Scriptless pages: inline styles only, brand images from this origin.
-    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     'Content-Type': contentType,
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',

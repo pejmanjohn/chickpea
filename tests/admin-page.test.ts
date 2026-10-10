@@ -747,6 +747,9 @@ function runAdminPageHarness(
   }>;
   sandboxInstallCalls: Array<'POST' | 'DELETE'>;
   sandboxBuildVariableSelectedAttached(): boolean;
+  firstAgentPromptSelected(): boolean;
+  /** What the shell's status line said, in order, blanks included. */
+  announcements: string[];
   modelCatalogRefreshCalls(): number;
   resolveModelCatalogStatus(result: ModelCatalogStatusFixture): void;
   agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }>;
@@ -849,6 +852,13 @@ function runAdminPageHarness(
   const renderHistory: string[] = [];
   let renderGeneration = 0;
   let sandboxBuildVariableSelectedAttached = false;
+  let firstAgentPromptSelected = false;
+  // The shell's status line outside #app, which renders never replace.
+  const announcements: string[] = [];
+  const adminStatus = {
+    get textContent() { return announcements.at(-1) ?? ''; },
+    set textContent(text: string) { announcements.push(text); },
+  };
   let focusedAction: string | null = null;
   let activeElement: {
     id?: string;
@@ -1427,6 +1437,16 @@ function runAdminPageHarness(
             skillBrowseFocusCalls += 1;
           },
           setSelectionRange() {},
+        };
+      }
+      if (id === 'admin-status') return adminStatus;
+      if (id === 'first-agent-prompt' && appHtml.includes('id="first-agent-prompt"')) {
+        const shownGeneration = renderGeneration;
+        return {
+          focus() {},
+          select() {
+            firstAgentPromptSelected = shownGeneration === renderGeneration;
+          },
         };
       }
       if (id.startsWith('sandbox-copy-') && appHtml.includes(`id="${id}"`)) {
@@ -3223,6 +3243,8 @@ function runAdminPageHarness(
     sandboxAdvancedPatches,
     sandboxInstallCalls,
     sandboxBuildVariableSelectedAttached: () => sandboxBuildVariableSelectedAttached,
+    firstAgentPromptSelected: () => firstAgentPromptSelected,
+    announcements,
     modelCatalogRefreshCalls: () => modelCatalogRefreshCalls,
     resolveModelCatalogStatus(result) {
       const resolve = modelCatalogStatusResolver;
@@ -13570,7 +13592,7 @@ test('Try Chickpea offers both ways forward side by side: going to Slack now, or
   const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/onboarding', onboarding: onboardingAt('try', '/github/connect') });
   await flushAsync();
   const deepLink = 'https://slack.com/app_redirect?app=A_CHICKPEA&amp;team=T_DESIGN';
-  assert.ok(harness.app.innerHTML.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel onboarding-panel-wide">' +
+  assert.ok(harness.app.innerHTML.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel">' +
     '<p class="onboarding-eyebrow">Step 5 of 5</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
     '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
     '<div class="onboarding-paths">' +
@@ -19690,7 +19712,7 @@ test('the onboarding page paints its real step first, and a provider step waits 
     onboarding: { ...onboardingAt('choose_model'), stage: 'choose_provider', providerId: null, modelId: null },
   });
   const first = choosing.renderHistory[0]!;
-  assert.ok(first.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel onboarding-panel-wide" aria-busy="true"></section></div>'), 'an empty panel until the providers load');
+  assert.ok(first.includes('<div class="onboarding-stage" aria-live="polite"><section class="onboarding-panel" aria-busy="true"></section></div>'), 'an empty panel until the providers load');
   assert.doesNotMatch(first, /Loading setup|onboarding-provider-tab/);
   await flushAsync();
   assert.match(choosing.app.innerHTML, /<p class="onboarding-eyebrow">Step 2 of 4<\/p><h1 class="onboarding-title">Choose your model provider<\/h1>/);
@@ -19765,7 +19787,7 @@ test('a connect started in hosted onboarding returns to the GitHub step, connect
   await flushAsync();
   assert.equal(harness.onboardingGithubPosts.length, 0, 'nothing moves on until Next');
   const step = harness.app.innerHTML;
-  assert.ok(step.includes('<section class="onboarding-panel onboarding-panel-wide"><span class="onboarding-success-badge">Connected to acme · 3 repositories</span>' +
+  assert.ok(step.includes('<section class="onboarding-panel"><span class="onboarding-success-badge">Connected to acme · 3 repositories</span>' +
     '<p class="onboarding-eyebrow">Step 4 of 5</p><h1 class="onboarding-title">GitHub is connected</h1>' +
     '<p class="onboarding-lede">Agents can now work in the repositories you chose. You can change them anytime in Settings.</p>' +
     '<div class="onboarding-actions"><button type="button" class="btn btn-primary" data-action="onboarding-github-next">Next: try Chickpea</button></div>'));
@@ -20005,7 +20027,6 @@ test('an Owner or Admin with no Agents yet gets the welcome, its three ways and 
   assert.match(tiles[1]!, /<span class="slack-logo-image" aria-hidden="true"><\/span>/);
   assert.match(tiles[2]!, /^<button type="button" class="first-agent-way" id="first-agent-copy" data-action="first-agent-copy-prompt">/);
   assert.deepEqual([...tiles[2]!.matchAll(/<span class="first-agent-mark first-agent-mark-([a-z]+)">/g)].map((match) => match[1]), ['claude', 'codex', 'cursor']);
-  assert.match(welcome, /<span class="sr-only" role="status" aria-live="polite"><\/span>/, 'a quiet live region for the copy');
 
   const ready = readyMadeSection(html);
   assert.ok(ready, 'the ready-made Agents render');
@@ -20065,6 +20086,7 @@ test('Copy the prompt copies the first-Agent prompt, shows a check for a moment 
   const writesBefore = writes().length;
   assert.match(before, /<svg class="first-agent-copy-icon" [^>]*>/);
   assert.doesNotMatch(before, /first-agent-check-icon/);
+  assert.doesNotMatch(before, /aria-live/, 'renders replace the welcome, so it holds no live region of its own');
 
   harness.listeners.click?.({ target: actionTarget({ 'data-action': 'first-agent-copy-prompt' }) });
   await flushAsync();
@@ -20072,27 +20094,42 @@ test('Copy the prompt copies the first-Agent prompt, shows a check for a moment 
   const copied = firstAgentWelcome(harness.app.innerHTML)!;
   assert.match(copied, /<svg class="first-agent-check-icon" [^>]*>/);
   assert.doesNotMatch(copied, /first-agent-copy-icon/);
-  assert.match(copied, /<span class="sr-only" role="status" aria-live="polite">Prompt copied<\/span>/);
+  assert.deepEqual(harness.announcements, ['Prompt copied'], 'said on the shell\'s status line');
   const checkIcon = copied.match(/<svg class="first-agent-check-icon"[\s\S]*?<\/svg>/)![0];
   const copyIcon = before.match(/<svg class="first-agent-copy-icon"[\s\S]*?<\/svg>/)![0];
-  assert.equal(copied.replace(checkIcon, copyIcon).replace('>Prompt copied</span>', '></span>'), before, 'only the icon and the screen-reader line change: no toast, popover or note');
+  assert.equal(copied.replace(checkIcon, copyIcon), before, 'only the icon changes: no toast, popover or note');
   assert.equal(harness.locationPath(), '/admin/agents');
   assert.equal(writes().length, writesBefore, 'nothing is posted or saved');
 
   for (let index = 0; index < 10 && /first-agent-check-icon/.test(harness.app.innerHTML); index += 1) harness.runNextTimer();
   assert.equal(firstAgentWelcome(harness.app.innerHTML), before, 'the copy icon comes back');
+  assert.deepEqual(harness.announcements, ['Prompt copied', '']);
   assert.equal(writes().length, writesBefore);
 });
 
-test('a copy the browser refuses shows no check', async () => {
-  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN, clipboard: 'reject' });
-  await flushAsync();
-  const before = firstAgentWelcome(harness.app.innerHTML);
-  assert.ok(before);
-  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'first-agent-copy-prompt' }) });
-  await flushAsync();
-  assert.deepEqual(harness.clipboardWrites, [FIRST_AGENT_PROMPT]);
-  assert.equal(firstAgentWelcome(harness.app.innerHTML), before);
+for (const clipboard of ['missing', 'reject', 'throw'] as const) {
+  test(`without a clipboard (${clipboard}), Copy the prompt shows the prompt selected with a note, and no check`, async () => {
+    const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN, clipboard });
+    await flushAsync();
+    assert.doesNotMatch(harness.app.innerHTML, /first-agent-prompt/);
+    harness.listeners.click?.({ target: actionTarget({ 'data-action': 'first-agent-copy-prompt' }) });
+    await flushAsync();
+    assert.deepEqual(harness.clipboardWrites, clipboard === 'missing' ? [] : [FIRST_AGENT_PROMPT]);
+    const welcome = firstAgentWelcome(harness.app.innerHTML)!;
+    const manual = '<div class="first-agent-manual"><textarea class="input first-agent-prompt" id="first-agent-prompt" readonly rows="3" aria-label="The prompt" aria-describedby="first-agent-prompt-note">' +
+      FIRST_AGENT_PROMPT + '</textarea><p class="first-agent-prompt-note" id="first-agent-prompt-note">Couldn’t reach the clipboard. The prompt is selected, so press ⌘C or Ctrl+C to copy it.</p></div>';
+    assert.ok(welcome.indexOf(manual) > welcome.indexOf('<div class="first-agent-ways">'), 'the prompt and its note, below the ways');
+    assert.equal(harness.firstAgentPromptSelected(), true, 'selected once it is on the page');
+    assert.doesNotMatch(welcome, /first-agent-check-icon/);
+    assert.deepEqual(harness.announcements, []);
+  });
+}
+
+test('the Admin shell keeps one status line outside #app, and one .sr-only rule hides it and every other screen-reader line', () => {
+  for (const page of [renderAdminPage(), renderAdminPage({ onboarding: { initial: null, githubConnectPath: null } })]) {
+    assert.match(page, /<\/div>\s*<p id="admin-status" class="sr-only" role="status" aria-live="polite"><\/p>\s*<script id="chickpea-admin-config"/);
+  }
+  assert.deepEqual([...adminUiStylesheet().matchAll(/^([^{}\n]*\.sr-only[^{}\n]*)\{/gm)].map(([, selector]) => selector!.trim()), ['.sr-only']);
 });
 
 test('a ready-made Agent opens the New Agent form filled in and creates nothing', async () => {
@@ -20116,6 +20153,26 @@ test('a ready-made Agent opens the New Agent form filled in and creates nothing'
   await flushAsync();
   assert.equal(blank.locationPath(), '/admin/agents/new');
   assert.doesNotMatch(blank.app.innerHTML, /value="Support"/, 'Here in the dashboard opens a blank form');
+});
+
+test('a ready-made Agent\'s form shows its avatar, and creating it keeps that avatar', async () => {
+  const harness = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'ready-made-open', 'data-starter': 'support' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML,
+    /<span class="agent-profile-avatar agent-profile-avatar-static"><img class="agent-profile-avatar-image" src="\/chickpea-avatars\/agent-defaults\/01-sage\.png" alt=""><\/span>/);
+  harness.listeners.click?.({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPostBodies.length, 1);
+  assert.equal(harness.agentPostBodies[0]?.name, 'Support');
+  assert.equal(harness.agentPostBodies[0]?.avatar, '01-sage.png');
+
+  const blank = runAdminPageHarness({ ...HOSTED_ADMIN, initialPath: '/admin/agents', agents: [], slackConnection: SLACK_WITH_APP, firstRun: FIRST_RUN });
+  await flushAsync();
+  blank.listeners.click?.({ target: actionTarget({ 'data-action': 'new-profile' }) });
+  await flushAsync();
+  assert.doesNotMatch(blank.app.innerHTML, /agent-profile-avatar/, 'a blank form gets its avatar when it is created');
 });
 
 test('standalone gets the welcome with each way that works there, and no hosted copy', async () => {
@@ -20150,10 +20207,27 @@ test('the welcome keeps its three ways in one row on laptops, tightening rather 
     }
     return value;
   };
-  // With the full sidebar the card is the window less 434 px: a 292 px sidebar,
-  // the shell's 24 px gap and right padding, and the main panel's 46 px sides.
+  // The card is the window less the shell around it, as admin.css declares it:
+  // with the full sidebar, the sidebar, the shell's gap and right padding, and
+  // the main panel's padding and border; on a phone, the panel's margin,
+  // padding and border.
+  const css = adminUiStylesheet();
+  const phoneCss = css.slice(css.indexOf('@media (max-width: 740px) {'));
+  const lengths = (block: string, selector: string, property: string) => {
+    const body = block.match(new RegExp(`^\\s*${selector.replace(/[.]/g, '\\.')} \\{([^}]*)\\}`, 'm'))?.[1];
+    const value = body?.match(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+);`))?.[1];
+    assert.ok(value, `${selector} declares ${property}`);
+    return value.trim().split(/\s+/).map((part) => Number.parseFloat(part));
+  };
+  const sides = (values: number[]) => 2 * (values[1] ?? values[0]!);
+  const panelBorder = sides(lengths(css, '.primary-admin-shell .main', 'border').slice(0, 1));
+  const laptopShell = lengths(css, '.primary-admin-shell .primary-shell-sidebar', 'width')[0]! +
+    lengths(css, '.primary-admin-shell .body', 'gap')[0]! + lengths(css, '.primary-admin-shell .body', 'padding')[1]! +
+    sides(lengths(css, '.admin-surface .main', 'padding')) + panelBorder;
+  const phoneShell = sides(lengths(phoneCss, '.primary-admin-shell .main', 'margin')) +
+    sides(lengths(phoneCss, '.primary-admin-shell .main', 'padding')) + panelBorder;
   for (const window of [1440, 1366, 1280, 1100]) {
-    const card = Math.min(980, window - 434);
+    const card = Math.min(980, window - laptopShell);
     assert.notEqual(declared(card, '.first-agent-ways', 'grid-auto-flow'), 'row', `${window} px: three across`);
     assert.notEqual(declared(card, '.first-agent-way', 'flex-direction'), 'column', `${window} px: the chip stays beside the title`);
   }
@@ -20162,8 +20236,8 @@ test('the welcome keeps its three ways in one row on laptops, tightening rather 
   assert.match(declared(666, '.first-agent-way-title', 'font-size') ?? '', /^clamp\(12px, /, 'narrower, the title shrinks to a floor');
   assert.equal(declared(560, '.first-agent-ways', 'grid-auto-flow'), undefined, 'below the floor the chip goes above, still three across');
   assert.equal(declared(560, '.first-agent-way', 'flex-direction'), 'column');
-  assert.equal(declared(390 - 62, '.first-agent-ways', 'grid-auto-flow'), 'row', 'a phone stacks them');
-  assert.equal(declared(390 - 62, '.first-agent-way', 'flex-direction'), 'row');
+  assert.equal(declared(390 - phoneShell, '.first-agent-ways', 'grid-auto-flow'), 'row', 'a phone stacks them');
+  assert.equal(declared(390 - phoneShell, '.first-agent-way', 'flex-direction'), 'row');
 });
 
 test('Members see the normal Agents page: no welcome and no ready-made Agents', async () => {

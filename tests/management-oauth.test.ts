@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { makeSignature } from 'better-auth/crypto';
 
+import { CONNECT_FONTS, fontFaceCss } from '../src/assets/fonts.ts';
+
 import {
   MCP_WORKSPACE_SCOPE,
   MCP_OAUTH_SCOPES,
@@ -276,13 +278,19 @@ test('MCP consent finishes its form POST before returning to a client callback',
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
     assert.equal(response.headers.get('content-security-policy'),
-      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+      "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
     const html = await response.text();
     const escapedCallback = callback.replaceAll('&', '&amp;');
     assert.ok(html.includes(`http-equiv="refresh" content="0;url=${escapedCallback}"`));
     assert.ok(html.includes(`<a href="${escapedCallback}">Continue</a>`));
     assert.ok(!html.includes('<script'), 'callback navigation does not require JavaScript');
   }
+});
+
+test('the MCP sign-in pages load the fonts their style names, from this origin', async () => {
+  const response = createMcpConsentRedirectResponse('https://client.example/callback?code=code_123&state=state_123');
+  assert.match(response.headers.get('content-security-policy') ?? '', /(?:^|; )font-src 'self'(?:;|$)/);
+  assert.ok((await response.text()).includes(`<style>${fontFaceCss(CONNECT_FONTS)}\n`), 'the faces open the page style');
 });
 
 test('MCP consent callback document rejects unsafe destinations and escapes attributes', async () => {
