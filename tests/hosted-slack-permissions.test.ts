@@ -196,7 +196,7 @@ test('when Slack cannot answer, the stored gap stands and is asked again next ti
 });
 
 const withUserGroupToken = (dependencies: SlackPermissionsCheckDependencies, held: boolean) =>
-  ({ ...dependencies, requiredUserGroupTokenHeld: async () => held });
+  ({ ...dependencies, requiredUserGroupTokenWorks: async () => held });
 
 test('a host that grants a user-group token needs an update until the active bundle holds one', async (t) => {
   resetSlackPermissionsMemo();

@@ -46,6 +46,7 @@ import {
   type SlackCredentialDependencies,
 } from '../slack/installation-credentials.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
 import {
@@ -98,7 +99,7 @@ export function createLiveWorkspaceManagementService(
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
+    return createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, settings));
   };
   const actorSlackUser = async (actor: { userId: string }, workspaceId: string) => {
     const user = await identity.getUser(actor.userId);

@@ -1,4 +1,5 @@
 import { UnknownAgentError } from '../../config/errors.ts';
+import type { SettingsStore } from '../../config/settings-store.ts';
 import { getSettingsStore, type PlatformEnv, resolveStores } from '../../config/state-backend.ts';
 import type { AgentAppPresenceHooks } from '../agent-presence/reconciler.ts';
 import { resolveSlackPublicUrl } from '../credentials.ts';
@@ -13,6 +14,7 @@ import {
 import type { PrivateAgentPlacementFacts } from '../agent-access.ts';
 import { createDirectSlackTransport } from '../transport/direct.ts';
 import { SlackTransportError, type SlackTransport } from '../transport/types.ts';
+import { ownerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
 import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress, type AgentSlackAppsHost } from './host.ts';
@@ -295,12 +297,13 @@ const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAI
 /** The service over an installation's live stores, main bot and public URL. */
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);
+  const settings = getSettingsStore(env);
   const credentials = installationCredentials(env);
   return new AgentSlackApps({
     env,
-    stores: { config: stores.config, settings: getSettingsStore(env) },
+    stores: { config: stores.config, settings },
     host,
-    transport: mainBotTransport(credentials),
+    transport: mainBotTransport(credentials, settings),
     publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
     userGroupPermissionMissing: async () => hostedSlackUpdateGrantsUserGroupToken() && !(await credentials()).userGroupToken,
   });
@@ -323,10 +326,13 @@ function installationCredentials(env: PlatformEnv | undefined): () => Promise<Re
   };
 }
 
-function mainBotTransport(credentials: () => Promise<ResolvedSlackInstallationCredentials>): AgentAppTransport {
+function mainBotTransport(
+  credentials: () => Promise<ResolvedSlackInstallationCredentials>,
+  settings: SettingsStore,
+): AgentAppTransport {
   const bot = async (): Promise<AgentAppTransport> => {
-    const { botToken, userGroupToken } = await credentials();
-    return createDirectSlackTransport(botToken ?? '', userGroupToken);
+    const resolved = await credentials();
+    return createDirectSlackTransport(resolved.botToken ?? '', ownerUserGroupToken(resolved, settings));
   };
   return {
     disableUserGroup: async (id) => (await bot()).disableUserGroup(id),

@@ -15,15 +15,17 @@ import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts
 import type { ManagementActorContext } from '../src/management/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
+import { slackInstallationCredentialId } from '../src/slack/hosted-slack-app.ts';
 import {
   invalidateSlackInstallationCredentialCache,
+  resolveSlackInstallationCredentials,
   writeHostedSlackBotCredentials,
   type SlackCredentialDependencies,
 } from '../src/slack/installation-credentials.ts';
 import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
 import { SlackTransportError } from '../src/slack/transport/types.ts';
-import { withUserGroupAuthority } from '../src/slack/user-group-authority.ts';
+import { ownerUserGroupTokenWorks, withUserGroupAuthority } from '../src/slack/user-group-authority.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
@@ -164,7 +166,7 @@ test('refusals through the authority and the direct transport leave the user-gro
 
   const slack = fakeSlackApi(t, (credential, method) =>
     method === 'usergroups.enable' && credential === 'owner' ? 'ratelimited' : ownerRevoked(credential, method));
-  const transport = createDirectSlackTransport(BOT_TOKEN, OWNER_TOKEN);
+  const transport = createDirectSlackTransport(BOT_TOKEN, { token: OWNER_TOKEN, dead: async () => undefined });
   const denied = await settled(transport.disableUserGroup('S_SUPPORT'));
   const limited = await settled(transport.enableUserGroup('S_SUPPORT'));
   assert.ok(denied instanceof SlackTransportError && denied.code === 'permission_denied');
@@ -210,7 +212,10 @@ test('a revoked Owner token reaches Admin as today\'s archive recovery, with no 
   assertNoUserGroupToken({ 'the Admin response': denied.body, 'the console': output });
 });
 
-async function hostedManagement(t: TestContext, run: (archive: () => Promise<unknown[]>) => Promise<void>) {
+async function hostedManagement(
+  t: TestContext,
+  run: (archive: () => Promise<unknown[]>, ownerTokenWorks: () => Promise<boolean>) => Promise<void>,
+) {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
     const env = scopeInstallationEnv(HOSTED, { installationId: 'inst_w16_management' });
     const keyring = useDeploymentKeyring(t);
@@ -235,6 +240,9 @@ async function hostedManagement(t: TestContext, run: (archive: () => Promise<unk
       organizationId: f.owner.membership.organizationId, origin: { kind: 'mcp', clientId: 'w16-client' },
     };
     const adapter = { service, resolveContext: async () => context };
+    const ownerTokenWorks = async () => ownerUserGroupTokenWorks(
+      await resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env, credentials), settings,
+    );
     await run(async () => {
       const applied = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
         idempotencyKey: 'w16-archive',
@@ -244,16 +252,17 @@ async function hostedManagement(t: TestContext, run: (archive: () => Promise<unk
         .result?.outcomes?.[0]?.proposalId;
       if (!proposalId) return [applied];
       return [applied, await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', { proposalId })];
-    });
+    }, ownerTokenWorks);
   });
 }
 
 test('a management tool\'s archive finishes through the installing Owner\'s token when Slack refuses the bot', async (t) => {
   const output = captureConsole(t);
   const slack = fakeSlackApi(t, botDenied);
-  await hostedManagement(t, async (archive) => {
+  await hostedManagement(t, async (archive, ownerTokenWorks) => {
     const results = await archive();
     assert.equal(results.length, 2, 'the archive asks for confirmation first');
+    assert.equal(await ownerTokenWorks(), true);
     const confirmed = results[1] as { ok: boolean; result?: { status?: string } };
     assert.equal(confirmed.ok, true, inspect(confirmed, { depth: 8 }));
     assert.equal(confirmed.result?.status, 'completed');
@@ -267,9 +276,10 @@ test('a management tool\'s archive finishes through the installing Owner\'s toke
 test('a revoked Owner token reaches a management tool as a refusal with no token in its result or logs', async (t) => {
   const output = captureConsole(t);
   const slack = fakeSlackApi(t, ownerRevoked);
-  await hostedManagement(t, async (archive) => {
+  await hostedManagement(t, async (archive, ownerTokenWorks) => {
     const results = await archive();
     assert.equal(slack.group.date_delete, 0, 'the user group is still active');
+    assert.equal(await ownerTokenWorks(), false, 'Admin\'s bar asks for an update again');
     assert.deepEqual(slack.calls.filter((call) => call.includes(':usergroups.')), [
       'owner:usergroups.list', 'bot:usergroups.list', 'owner:usergroups.disable', 'bot:usergroups.disable',
     ]);

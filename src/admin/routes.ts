@@ -598,6 +598,7 @@ import {
   type PrivateAgentAudience,
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { ownerUserGroupToken, ownerUserGroupTokenWorks } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../slack/gateway/http-delivery.ts';
 import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
@@ -2355,7 +2356,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
+    return createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, settings(c)));
   };
   const ensureGeneratedGatewayAvatar = async (
     c: Context,
@@ -10866,9 +10867,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           env, settings(c), slackCredentialResolutionDependencies(c),
         )).botToken,
         ...(hostedSlackUpdateGrantsUserGroupToken() ? {
-          requiredUserGroupTokenHeld: async () => Boolean((await resolveSlackInstallationCredentials(
+          requiredUserGroupTokenWorks: async () => ownerUserGroupTokenWorks(await resolveSlackInstallationCredentials(
             slackInstallationCredentialId(env), env, dependencies,
-          )).userGroupToken),
+          ), settings(c)),
         } : {}),
       },
     );

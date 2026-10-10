@@ -1,6 +1,6 @@
 import type { View } from '@slack/types';
 
-import { withUserGroupAuthority } from '../user-group-authority.ts';
+import { withUserGroupAuthority, type OwnerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
 import { slackClientMessageId } from './message-id.ts';
 import {
@@ -56,12 +56,12 @@ export interface DirectSlackApiClient {
 type UserGroupMethod = keyof DirectSlackApiClient['usergroups'];
 
 /** Construct a direct customer-owned adapter while keeping the tokens captured. */
-export function createDirectSlackTransport(botToken: string, userGroupToken: string | undefined): SlackTransport {
+export function createDirectSlackTransport(botToken: string, owner: OwnerUserGroupToken | undefined): SlackTransport {
   const client = createSlackWebClient(botToken) as unknown as DirectSlackApiClient;
-  const ownerClient = userGroupToken
-    ? createSlackWebClient(userGroupToken) as unknown as DirectSlackApiClient
+  const ownerClient = owner
+    ? createSlackWebClient(owner.token) as unknown as DirectSlackApiClient
     : undefined;
-  return createDirectSlackTransportFromClient(client, ownerClient);
+  return createDirectSlackTransportFromClient(client, ownerClient, owner?.dead);
 }
 
 /**
@@ -71,6 +71,7 @@ export function createDirectSlackTransport(botToken: string, userGroupToken: str
 export function createDirectSlackTransportFromClient(
   client: DirectSlackApiClient,
   ownerClient?: Pick<DirectSlackApiClient, 'usergroups'>,
+  ownerTokenDead?: () => Promise<void>,
 ): SlackTransport {
   const userGroups = async (method: UserGroupMethod, input: SlackApiInput): Promise<SlackApiResult> => {
     const operation = `usergroups.${method}`;
@@ -83,6 +84,7 @@ export function createDirectSlackTransportFromClient(
         (error: unknown) => ({ error: normalizeError(error, operation) }),
       ),
       errorCode: (settled) => 'error' in settled ? settled.error.code : undefined,
+      ...(ownerTokenDead ? { ownerTokenDead } : {}),
     });
     if ('error' in outcome) throw outcome.error;
     return outcome.result;

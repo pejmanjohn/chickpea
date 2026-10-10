@@ -80,7 +80,8 @@ export interface SlackPermissionsEvidence {
 export interface SlackPermissionsCheckDependencies {
   /** The installation's bot token, read only when a gap needs confirming. */
   botToken: () => Promise<string | undefined>;
-  requiredUserGroupTokenHeld?: () => Promise<boolean>;
+  /** Whether the bundle holds an Owner user-group token Slack has not refused as dead. */
+  requiredUserGroupTokenWorks?: () => Promise<boolean>;
   authTest?: typeof slackAuthTest;
   warn?: (entry: Record<string, unknown>) => void;
   now?: () => number;
@@ -127,8 +128,8 @@ export async function evaluateSlackPermissions(
   requested: readonly string[] = REQUESTED_SLACK_BOT_SCOPES,
 ): Promise<SettledDecision | 'unknown'> {
   const decision = await evaluateBotScopes(evidence, dependencies, requested);
-  if (decision !== 'current' || !dependencies.requiredUserGroupTokenHeld) return decision;
-  return await dependencies.requiredUserGroupTokenHeld() ? 'current' : 'update_needed';
+  if (decision !== 'current' || !dependencies.requiredUserGroupTokenWorks) return decision;
+  return await dependencies.requiredUserGroupTokenWorks() ? 'current' : 'update_needed';
 }
 
 async function evaluateBotScopes(
