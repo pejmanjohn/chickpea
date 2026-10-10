@@ -55,19 +55,18 @@ interface AgentPublicationResult {
   appBot?: AgentAppBot['placement'];
 }
 
-type MentionRepairConfig = Pick<
-  ConfigStore,
-  'listAgents' | 'listAgentChannelGrants' | 'updateAgent'
->;
+type MentionRepairConfig = Pick<ConfigStore, 'listAgents' | 'updateAgent'>;
 
 /**
  * `unknown`: the directory did not prove the group is this installation's
- * Agent here, so the mention is ordinary text (a group of people, another
- * app's Agent, or a lookup that failed). `temporarily_unavailable`: it is,
- * but binding it raced another change.
+ * Agent, so the mention is ordinary text (a group of people, another app's
+ * Agent, or a group someone else made with an Agent's handle).
+ * `lookup_failed`: Slack was not asked or did not answer.
+ * `temporarily_unavailable`: it is, but binding it raced another change.
  */
 type MentionedAgentUserGroupRepairResult =
   | { kind: 'repaired'; agent: CustomAgentConfig }
+  | { kind: 'lookup_failed'; reason: 'rate_limited' | 'failed' }
   | { kind: 'unknown' | 'temporarily_unavailable' };
 
 type UserGroupLookupResult =
@@ -218,16 +217,14 @@ async function repairMentionedAgentUserGroupOnce(
   limiter: AgentUserGroupLookupLimiter,
 ): Promise<MentionedAgentUserGroupRepairResult> {
   const lookup = await limiter.lookup(input.workspaceId, input.userGroupId, input.transport);
+  if (lookup.kind === 'rate_limited' || lookup.kind === 'failed') return { kind: 'lookup_failed', reason: lookup.kind };
   if (lookup.kind !== 'found') return { kind: 'unknown' };
   if (lookup.group.disabled) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
     return { kind: 'unknown' };
   }
 
-  const [agents, grants] = await Promise.all([
-    input.config.listAgents(),
-    input.config.listAgentChannelGrants(input.workspaceId, input.channelId),
-  ]);
+  const agents = await input.config.listAgents();
   const groupHandle = normalizeAgentHandle(lookup.group.handle);
   const candidates = agents.filter((agent) =>
     agent.kind === 'user' &&
@@ -247,13 +244,12 @@ async function repairMentionedAgentUserGroupOnce(
     return { kind: 'unknown' };
   }
   const agent = candidates[0]!;
-  const activeGrants = grants.filter((grant) =>
-    grant.agentId === agent.id && grant.status === 'active'
-  );
+  // Anyone can make a group with an Agent's handle; only the one Chickpea's
+  // interrupted create made is this Agent's, wherever it is mentioned.
   const competingClaim = agents.some((candidate) =>
     candidate.id !== agent.id && candidate.slackPresence?.userGroupId === lookup.group.id
   );
-  if (activeGrants.length !== 1 || competingClaim) {
+  if (!hasAmbiguousCreateOwnershipProof(agent, lookup.group) || competingClaim) {
     limiter.rememberDenied(input.workspaceId, input.userGroupId);
     return { kind: 'unknown' };
   }

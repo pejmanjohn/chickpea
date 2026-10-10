@@ -71,7 +71,9 @@ function fakeService(config: SqliteConfigStore, settings: SqliteSettingsStore, s
 
 async function adminApp(
   t: TestContext,
-  options: { role?: AuthPrincipal['role']; port?: boolean; slack?: Partial<AgentAppSlackApi>; permissionMissing?: boolean } = {},
+  options: {
+    role?: AuthPrincipal['role']; machine?: boolean; port?: boolean; slack?: Partial<AgentAppSlackApi>; permissionMissing?: boolean;
+  } = {},
 ) {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
@@ -83,7 +85,7 @@ async function adminApp(
   const app = createAdminRoutes({
     store: config, settings,
     agentSlackApps: async () => service,
-    ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner')),
+    ...testAdminAuthority(TOKEN, undefined, people, principal(options.role ?? 'owner', options.machine)),
   });
   const request = (path: string, init: RequestInit = {}, headers: Record<string, string> = {}) =>
     app.request(path, { ...init, headers: { ...testAdminHeaders(TOKEN), ...(init.headers as Record<string, string> | undefined), ...headers } }, HOSTED);
@@ -115,6 +117,9 @@ test('the token page and its form are for Owners with the port, and 404 without 
   assert.equal((await member.request('/admin/api/agents/agent_support/slack-app/token', member.form({ action: 'paste', refreshToken: 'xoxe-1-x' }))).status, 403);
   const admin = await adminApp(t, { role: 'admin' });
   assert.equal((await admin.request('/admin/agents/agent_support/slack-app')).status, 403);
+  const ownerToken = await adminApp(t, { machine: true });
+  assert.equal((await ownerToken.request('/admin/agents/agent_support/slack-app')).status, 403, 'an Owner\'s personal token is not their session');
+  assert.equal((await ownerToken.request('/admin/api/agents/agent_support/slack-app/token', ownerToken.form({ action: 'paste', refreshToken: 'xoxe-1-x' }))).status, 403);
 
   const unported = await adminApp(t, { port: false });
   assert.equal((await unported.request('/admin/agents/agent_support/slack-app')).status, 404);

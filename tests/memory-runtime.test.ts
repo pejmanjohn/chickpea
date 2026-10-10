@@ -249,7 +249,7 @@ test('an activated Chickpea management mention stays memoryless with a valid del
   }
 });
 
-test('an ordinary stale Slack group mapping repairs into the Agent memory path', async () => {
+test('a stale Slack group mapping from an interrupted create repairs into the Agent memory path', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-agent-memory-repair-'));
   const statePath = join(directory, 'state.sqlite');
   const previousStatePath = process.env.SLACK_STATE_DB_PATH;
@@ -259,12 +259,15 @@ test('an ordinary stale Slack group mapping repairs into the Agent memory path',
     const config = getConfigStore();
     const agent = await config.createAgent({
       id: 'agent_support', name: 'Support', description: 'Answers support questions',
-      instructions: 'Help customers.', enabled: true, lifecycle: 'active',
+      instructions: 'Help customers.', enabled: true, lifecycle: 'needs_attention',
       creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
       model: 'local-stub/support', skills: [], mcpServers: [], apiConnections: [], repositories: [],
       slackPresence: {
         requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active',
-        health: 'healthy', userGroupId: 'SOLD',
+        health: 'needs_attention', userGroupId: 'SOLD', errorCode: 'user_group_create_ambiguous',
+        pendingCreate: {
+          name: 'Support', handle: 'support', description: 'Answers support questions', startedAt: 1_800_000_000_000,
+        },
         avatar: { kind: 'generated', revision: 1, seed: 'support' },
       },
     });

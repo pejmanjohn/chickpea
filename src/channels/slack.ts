@@ -200,6 +200,7 @@ import {
 } from '../slack/web-client-presenter.ts';
 import { slackPlatformErrorCode } from '../slack/errors.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import {
   isRetryableDependencyFailure,
   type SlackInboundEnvelope,
@@ -701,7 +702,7 @@ async function serveAgentAppHomeAction(
       if (credentials instanceof Response) return undefined;
       const botUserId = await resolveInstallationBotUserId(installation.botUserId, credentials, platformEnv);
       if (!botUserId) return undefined;
-      const transport = createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken);
+      const transport = createDirectSlackTransport(credentials.botToken ?? '', ownerUserGroupToken(credentials, stores.settings));
       const actor = await resolveAgentRoutingActor({ workspaceId, userId, botUserId, transport, stores });
       return {
         role: actor.principal?.role,
@@ -875,7 +876,7 @@ function handleDirectSlackEvents(
             workspaceId: payload.team_id,
             event: { user: event.user, channel: event.channel, tab: event.tab },
             stores,
-            transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
+            transport: createDirectSlackTransport(credentials.botToken ?? '', ownerUserGroupToken(credentials, stores.settings)),
             client: createSlackWebClient(credentials.botToken ?? ''),
             ...(botUserId ? { botUserId } : {}),
             platformEnv,
@@ -972,7 +973,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       seedAgentAppHomeThread({
         ...selection,
         stores,
-        transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
+        transport: createDirectSlackTransport(credentials.botToken ?? '', ownerUserGroupToken(credentials, stores.settings)),
         ...(platformEnv ? { platformEnv } : {}),
         ...(botUserId ? { botUserId } : {}),
       }).catch((error) => {
@@ -2349,7 +2350,7 @@ async function directSlackUiContext(
     platformEnv,
     stores,
     client: createSlackWebClient(credentials.botToken),
-    transport: createDirectSlackTransport(credentials.botToken, credentials.userGroupToken),
+    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)),
     ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
   };
 }
@@ -2514,7 +2515,7 @@ async function processDirectPrivateChannelSetup(
   if (!credentials.botToken || !botUserId) return;
   await completePrivateChannelSetupAction(action, {
     stores,
-    transport: createDirectSlackTransport(credentials.botToken, credentials.userGroupToken),
+    transport: createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)),
     client: createSlackWebClient(credentials.botToken),
     botUserId,
     ...(platformEnv ? { platformEnv } : {}),
@@ -2757,7 +2758,7 @@ async function processSlackEvent(
   let agentSourceVisibility: 'public' | 'private' | undefined;
   let liveChannelName: string | undefined;
   const runtimeTransport = execution?.transport ?? (
-    credentials.botToken ? createDirectSlackTransport(credentials.botToken, credentials.userGroupToken) : undefined
+    credentials.botToken ? createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)) : undefined
   );
   const runtimeClient = execution?.client ?? (
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
@@ -3894,7 +3895,7 @@ async function processSlackStopButton(
     ? undefined
     : await resolveSlackInstallationCredentials(slackInstallationCredentialId(platformEnv), platformEnv);
   const transport = execution?.transport ?? (
-    credentials?.botToken ? createDirectSlackTransport(credentials.botToken, credentials.userGroupToken) : undefined
+    credentials?.botToken ? createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, stores.settings)) : undefined
   );
   const client = execution?.client ?? (
     credentials?.botToken ? createSlackWebClient(credentials.botToken) : undefined
@@ -4461,7 +4462,7 @@ async function handleMemberJoinedChannel(
     credentials.botToken ? createSlackWebClient(credentials.botToken) : undefined
   );
   if (!resolvedBotUserId || event.user !== resolvedBotUserId || !client) return;
-  const transport = execution?.transport ?? createDirectSlackTransport(credentials.botToken!, credentials.userGroupToken);
+  const transport = execution?.transport ?? createDirectSlackTransport(credentials.botToken!, ownerUserGroupToken(credentials, stores.settings));
   let channel;
   try {
     channel = await transport.lookupChannel(event.channel);

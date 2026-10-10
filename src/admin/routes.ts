@@ -598,6 +598,7 @@ import {
   type PrivateAgentAudience,
 } from '../slack/agent-access.ts';
 import { createDirectSlackTransport } from '../slack/transport/direct.ts';
+import { ownerUserGroupToken, ownerUserGroupTokenWorks } from '../slack/user-group-authority.ts';
 import { createGatewaySlackTransport } from '../slack/transport/gateway.ts';
 import { GATEWAY_HTTP_SETTING, parseHttpDeliveryState } from '../slack/gateway/http-delivery.ts';
 import { createGatewayDeploymentClient, resolveChickpeaGatewayUrl } from '../slack/gateway/runtime.ts';
@@ -2355,7 +2356,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         'Connect Chickpea to Slack before publishing an Agent.',
       );
     }
-    return createDirectSlackTransport(credentials.botToken, credentials.userGroupToken);
+    return createDirectSlackTransport(credentials.botToken, ownerUserGroupToken(credentials, settings(c)));
   };
   const ensureGeneratedGatewayAvatar = async (
     c: Context,
@@ -2388,6 +2389,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     c: Context,
     agent: CustomAgentConfig,
     actor: { principal: AuthPrincipal; slackUserId: string; slackTeamId: string },
+    options: { edited?: boolean } = {},
   ): Promise<CustomAgentConfig> => {
     const workspaceId = actor.slackTeamId;
     const transport = await agentSlackTransport(c, workspaceId);
@@ -2398,7 +2400,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         grant.status !== 'active',
     );
     if (pendingGrants.length === 0) return reconciler.retry(agent.id);
-    let updated = agent;
+    // An edit reaches Slack's user group first: a pending Channel add's own
+    // publish needs the editor in that Channel, and must not hold the edit back.
+    let updated = options.edited ? await reconciler.retry(agent.id) : agent;
     for (const pendingGrant of pendingGrants) {
       updated = (await reconciler.publish({
         workspaceId,
@@ -2433,7 +2437,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       try {
         const transport = await agentSlackTransport(c, teamId);
         slackWorkspaceNameAskedAt.set(teamId, Date.now());
-        const live = await transport.getWorkspaceInfo?.();
+        // The transport takes no signal, so stop waiting rather than cancel.
+        const bound = AbortSignal.timeout(options.slackWorkspaceNameTimeoutMs ?? SLACK_WORKSPACE_NAME_TIMEOUT_MS);
+        const live = await Promise.race([
+          transport.getWorkspaceInfo?.(),
+          new Promise<undefined>((resolve) => bound.addEventListener('abort', () => resolve(undefined), { once: true })),
+        ]);
         if (live?.teamId === teamId && live.teamName?.trim()) {
           const teamName = live.teamName.trim().slice(0, 120);
           await settingsStore.setSetting(SLACK_SETTING_KEYS.teamName, teamName);
@@ -9661,7 +9670,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       );
       if (reconcilePresence) {
         try {
-          updated = await reconcileAgentSlackPresence(c, updated, await agentActor(c));
+          updated = await reconcileAgentSlackPresence(c, updated, await agentActor(c), { edited: true });
         } catch (error) {
           const classified = classifyAgentPresenceError(error);
           updated = await configStore.getAgent(agentId);
@@ -10866,9 +10875,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           env, settings(c), slackCredentialResolutionDependencies(c),
         )).botToken,
         ...(hostedSlackUpdateGrantsUserGroupToken() ? {
-          requiredUserGroupTokenHeld: async () => Boolean((await resolveSlackInstallationCredentials(
+          requiredUserGroupTokenWorks: async () => ownerUserGroupTokenWorks(await resolveSlackInstallationCredentials(
             slackInstallationCredentialId(env), env, dependencies,
-          )).userGroupToken),
+          ), settings(c)),
         } : {}),
       },
     );

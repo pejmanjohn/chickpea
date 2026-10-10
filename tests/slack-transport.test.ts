@@ -547,7 +547,9 @@ test('a direct transport sends user-group calls with the user-group token and al
       : { ok: true, channel: 'C123', ts: '1700.2' });
   });
 
-  const hosted = createDirectSlackTransport('xoxb-w16-bot-secret', 'xoxp-w16-owner-secret');
+  const hosted = createDirectSlackTransport('xoxb-w16-bot-secret', {
+    token: 'xoxp-w16-owner-secret', dead: async () => undefined,
+  });
   await hosted.disableUserGroup('S123');
   await hosted.postMessage({ channelId: 'C123', text: 'Handled' });
   const standalone = createDirectSlackTransport('xoxb-w16-bot-secret', undefined);

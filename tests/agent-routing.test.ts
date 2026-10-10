@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { CustomAgentConfig, UserGroupPresence } from '../src/config/types.ts';
 import {
   handoffCreatedAgentThread,
   resolveAgentRoute,
@@ -306,30 +306,139 @@ test('an authenticated unknown group repairs a proven interrupted-create mapping
   }
 });
 
-test('an authenticated directory handle overrides a forged message label for one unique claim', async () => {
+test('a workspace group that shares an Agent\'s handle is not adopted without proof Chickpea created it', async () => {
   const { store, support } = await fixture();
   try {
-    const resolved = await resolveAgentRoute({
-      turn: turn({ text: '<!subteam^SAUTHENTICATED|@forged-label> help' }),
-      surface: 'channel',
-      actor: { channelMember: true, fullMember: true },
-      config: store,
-      transport: {
-        lookupUserGroup: async () => ({
-          id: 'SAUTHENTICATED',
-          name: support.name,
-          handle: 'support',
-          description: support.description!,
-          disabled: false,
-          updatedAt: 1_800_000_000,
-        }),
-      },
-    });
+    const { userGroupId: _stored, ...withoutId } = support.slackPresence as UserGroupPresence;
+    const presences: UserGroupPresence[] = [
+      { ...withoutId, kind: 'user_group', userGroupId: 'SOLD' },
+      { ...withoutId, kind: 'user_group' },
+    ];
+    for (const presence of presences) {
+      const current = await store.getAgent(support.id);
+      await store.updateAgent(support.id, { slackPresence: presence }, current.revision);
+      let lookups = 0;
+      const resolved = await resolveAgentRoute({
+        turn: turn({ text: '<!subteam^SFOREIGN|@support> help' }),
+        surface: 'channel',
+        actor: { channelMember: true, fullMember: true },
+        config: store,
+        transport: {
+          lookupUserGroup: async () => {
+            lookups += 1;
+            return {
+              id: 'SFOREIGN',
+              name: support.name,
+              handle: 'support',
+              description: support.description!,
+              disabled: false,
+              updatedAt: 1_800_000_000,
+            };
+          },
+        },
+        userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),
+      });
 
-    assert.equal(resolved.kind, 'routed');
-    if (resolved.kind !== 'routed') return;
-    assert.equal(resolved.assignment.agentId, support.id);
-    assert.equal((await store.getAgent(support.id)).slackPresence?.userGroupId, 'SAUTHENTICATED');
+      assert.deepEqual(resolved, { kind: 'ignore' }, 'the handle is taken by a group Chickpea did not create');
+      assert.equal(lookups, 1);
+      assert.equal((await store.getAgent(support.id)).slackPresence?.userGroupId, presence.userGroupId);
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('a proven Agent with a stale group id, mentioned in a Channel it has not been added to, is bound and offered for adding', async () => {
+  const { store, support } = await fixture();
+  try {
+    const startedAt = 1_800_000_000_000;
+    await store.updateAgent(support.id, {
+      lifecycle: 'needs_attention',
+      slackPresence: {
+        ...support.slackPresence!,
+        kind: 'user_group',
+        userGroupId: 'SOLD',
+        health: 'needs_attention',
+        errorCode: 'user_group_create_ambiguous',
+        pendingCreate: { name: support.name, handle: 'support', description: support.description!, startedAt },
+      },
+    }, support.revision);
+    await store.putAgentChannelGrant({
+      workspaceId: 'T1', channelId: 'C3', agentId: 'agent_finance', status: 'active',
+      createdByMembershipId: 'membership_owner', channelLabel: 'finance', channelIsPrivate: false,
+    });
+    let lookups = 0;
+    const transport = {
+      lookupUserGroup: async (groupId: string) => {
+        lookups += 1;
+        return {
+          id: groupId, name: support.name, handle: 'support', description: support.description!,
+          disabled: false, updatedAt: Math.floor(startedAt / 1_000),
+        };
+      },
+    };
+    // #C2 has no Agent at all; #C3 has another Agent but not Support.
+    for (const channelId of ['C2', 'C3']) {
+      const resolved = await resolveAgentRoute({
+        turn: turn({ channelId, text: '<!subteam^SREPAIRED|@support> help' }),
+        surface: 'channel',
+        actor: { channelMember: true, fullMember: true },
+        config: store,
+        transport,
+        userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),
+      });
+      assert.equal(resolved.kind, 'not_in_channel', channelId);
+      if (resolved.kind === 'not_in_channel') assert.equal(resolved.agent.id, support.id);
+    }
+    assert.equal(lookups, 1, 'once bound, the group routes by its stored id');
+    const saved = await store.getAgent(support.id);
+    assert.equal(saved.slackPresence?.userGroupId, 'SREPAIRED');
+    assert.equal(saved.slackPresence?.kind === 'user_group' ? saved.slackPresence.pendingCreate : undefined, undefined);
+    assert.equal((await store.listAgentChannelGrants('T1', 'C2')).length, 0, 'a mention adds the Agent nowhere');
+  } finally {
+    store.close();
+  }
+});
+
+test('a failed lookup of a group labelled with an Agent\'s handle asks the person to try again', async () => {
+  const { store } = await fixture();
+  try {
+    for (const limiter of [
+      new AgentUserGroupLookupLimiter(),
+      new AgentUserGroupLookupLimiter({ maxLookupsPerWindow: 0 }),
+    ]) {
+      const resolved = await resolveAgentRoute({
+        turn: turn({ text: '<!subteam^SNEW|@Support> help' }),
+        surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+        transport: { lookupUserGroup: async () => { throw new Error('Slack unavailable'); } },
+        userGroupLookupLimiter: limiter,
+      });
+      assert.deepEqual(resolved, { kind: 'denied', reason: 'temporarily_unavailable', alternatives: [] });
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('a failed lookup of any other group stays silent and logs only the reason and ids', async (t) => {
+  const { store } = await fixture();
+  const warnings: string[] = [];
+  t.mock.method(console, 'warn', (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); });
+  try {
+    for (const text of ['<!subteam^SHELP|@help> is checkout down?', '<!subteam^SHELP> is checkout down?']) {
+      warnings.length = 0;
+      const resolved = await resolveAgentRoute({
+        turn: turn({ text }),
+        surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+        transport: { lookupUserGroup: async () => { throw new Error('Slack unavailable'); } },
+        userGroupLookupLimiter: new AgentUserGroupLookupLimiter(),
+      });
+      assert.deepEqual(resolved, { kind: 'ignore' }, text);
+      assert.deepEqual(warnings.map((line) => JSON.parse(line)), [{
+        event: 'chickpea.agent_routing.group_lookup_failed',
+        reason: 'failed', workspaceId: 'T1', channelId: 'C1', userGroupId: 'SHELP',
+      }], text);
+    }
   } finally {
     store.close();
   }
@@ -383,7 +492,7 @@ test('a stored group id with competing Agent claims fails closed without a direc
   }
 });
 
-test('directory repair rejects disabled, ambiguous, inactive, ungranted, and competing claims', async () => {
+test('directory repair rejects disabled, ambiguous, inactive, unproven, and competing claims', async () => {
   const { store, support, finance } = await fixture();
   try {
     const startedAt = 1_800_000_000_000;
@@ -413,16 +522,12 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
       disabled: false,
       updatedAt: Math.floor(startedAt / 1_000),
     };
-    const grant = (await store.listAgentChannelGrants('T1', 'C1')).find(
-      (candidate) => candidate.agentId === support.id,
-    )!;
     const cases: Array<{
       name: string;
       agents: CustomAgentConfig[];
-      grants: typeof grant[];
       disabled?: boolean;
     }> = [
-      { name: 'disabled group', agents: [proven], grants: [grant], disabled: true },
+      { name: 'disabled group', agents: [proven], disabled: true },
       {
         name: 'ambiguous normalized handle',
         agents: [
@@ -437,17 +542,36 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
             },
           },
         ],
-        grants: [grant],
       },
-      { name: 'inactive Agent', agents: [{ ...proven, enabled: false }], grants: [grant] },
-      { name: 'missing Channel grant', agents: [proven], grants: [] },
+      { name: 'inactive Agent', agents: [{ ...proven, enabled: false }] },
+      {
+        name: 'no proof Chickpea created the group',
+        agents: [{ ...proven, slackPresence: { ...support.slackPresence!, kind: 'user_group', userGroupId: 'SOLD' } }],
+      },
+      {
+        name: 'a lease left by a create Slack refused',
+        agents: [{
+          ...proven,
+          slackPresence: { ...proven.slackPresence!, kind: 'user_group', errorCode: 'handle_collision' },
+        }],
+      },
+      {
+        name: 'a create lease the group does not match',
+        agents: [{
+          ...proven,
+          slackPresence: {
+            ...proven.slackPresence!,
+            kind: 'user_group',
+            pendingCreate: { name: support.name, handle: 'support', description: 'Another description', startedAt },
+          },
+        }],
+      },
       {
         name: 'competing group claim',
         agents: [
           proven,
           { ...finance, slackPresence: { ...finance.slackPresence!, kind: 'user_group', userGroupId: group.id } },
         ],
-        grants: [grant],
       },
     ];
 
@@ -459,7 +583,6 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
         userGroupId: group.id,
         config: {
           listAgents: async () => scenario.agents,
-          listAgentChannelGrants: async () => scenario.grants,
           updateAgent: async () => {
             updates += 1;
             return proven;
@@ -473,6 +596,7 @@ test('directory repair rejects disabled, ambiguous, inactive, ungranted, and com
       assert.equal(result.kind, 'unknown', scenario.name);
       assert.equal(updates, 0, scenario.name);
     }
+
   } finally {
     store.close();
   }
@@ -500,14 +624,10 @@ test('directory repair turns a concurrent Agent edit into a retryable safe denia
         },
       },
     };
-    const grant = (await store.listAgentChannelGrants('T1', 'C1')).find(
-      (candidate) => candidate.agentId === support.id,
-    )!;
     const result = await repairMentionedAgentUserGroup({
       workspaceId: 'T1', channelId: 'C1', userGroupId: 'SREPAIRED',
       config: {
         listAgents: async () => [proven],
-        listAgentChannelGrants: async () => [grant],
         updateAgent: async () => {
           throw new AgentRevisionConflictError(proven.id, proven.revision, proven.revision + 1);
         },
@@ -572,7 +692,6 @@ test('concurrent unknown-group repairs share one directory lookup', async () => 
     userGroupId: 'SUNKNOWN',
     config: {
       listAgents: async () => [],
-      listAgentChannelGrants: async () => [],
       updateAgent: async () => {
         throw new Error('a missing group never reaches persistence');
       },

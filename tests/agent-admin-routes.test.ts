@@ -219,6 +219,42 @@ test('shared Slack connection backfills and persists the workspace display name'
   }
 });
 
+test('a workspace-name lookup the shared app never answers is cut off, and not asked again for a minute', async () => {
+  const transport = new FakeTransport();
+  let asks = 0;
+  transport.getWorkspaceInfo = () => {
+    asks += 1;
+    return new Promise(() => undefined);
+  };
+  const fixture = harness(transport, { slackWorkspaceNameTimeoutMs: 20 });
+  const read = async () => {
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const response = await Promise.race([
+      fixture.app.request('http://localhost/admin/api/slack-connection', { headers: auth() }),
+      new Promise<never>((_, reject) => {
+        guard = setTimeout(() => reject(new Error('the read waited on Slack')), 5_000);
+      }),
+    ]).finally(() => clearTimeout(guard));
+    assert.equal(response.status, 200);
+    return await response.json() as { connected: boolean; teamName: string | null };
+  };
+  try {
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'gateway', appId: 'A_TEST',
+      botUserId: 'U_BOT', gatewayBindingId: 'binding_test',
+    });
+    const first = await read();
+    assert.equal(first.connected, true);
+    assert.equal(first.teamName ?? null, null);
+    await read();
+    assert.equal(asks, 1, 'the next read within a minute does not ask again');
+    assert.equal(await fixture.settings.getSetting('slack.teamName'), undefined);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('shared Slack connection read overlays live inbound health without persisting the probe', async () => {
   const fixture = harness();
   const env = {
@@ -5041,6 +5077,55 @@ test('choosing a suggested handle publishes it and finishes the Channel add it b
     assert.equal(Object.hasOwn(rehandled.body.agent.slackPresence, 'handleSuggestions'), false);
     assert.deepEqual(await grantStatuses(), ['active'],
       'saving the handle finishes the Channel add without another Retry');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an editor outside a pending Channel renames the Agent\'s group, and that Channel add still needs them in it', async () => {
+  const transport = new FakeTransport();
+  const fixture = harness(transport);
+  const grantStatuses = async () => Object.fromEntries(
+    (await fixture.store.listAgentChannelGrants('T_TEST')).map(({ channelId, status }) => [channelId, status]),
+  );
+  try {
+    await createAgent(fixture.app);
+    const added = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
+    });
+    assert.equal(added.status, 201);
+    // Chickpea could not join #sales, so that add waits as a pending grant.
+    transport.channel = { id: 'C_SALES', name: 'sales', private: false, member: false, archived: false };
+    const join = transport.joinPublicChannel.bind(transport);
+    transport.joinPublicChannel = async () => { throw new SlackTransportError('conversations.join', 'ratelimited'); };
+    const blocked = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SALES',
+    });
+    assert.notEqual(blocked.status, 201);
+    assert.deepEqual(await grantStatuses(), { C_SALES: 'pending', C_SUPPORT: 'active' });
+    transport.joinPublicChannel = join;
+    // The next editor is not in #sales.
+    transport.memberAllowed = false;
+
+    const before = (await fixture.store.getAgent('agent_support')).revision;
+    const renamed = await supportAgentRequest(fixture.app, 'PATCH', '', {
+      expectedRevision: before, name: 'Support Desk', description: 'Answers desk questions',
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal(renamed.body.agent.name, 'Support Desk');
+    assert.deepEqual(
+      transport.groups.map(({ name, handle, description }) => ({ name, handle, description })),
+      [{ name: 'Support Desk', handle: 'support', description: 'Answers desk questions' }],
+      'Slack holds the new name and description',
+    );
+    assert.equal(renamed.body.presenceRecovery?.title, 'Join the Channel first', 'the #sales add still needs them in it');
+    assert.deepEqual(await grantStatuses(), { C_SALES: 'pending', C_SUPPORT: 'active' });
+
+    transport.memberAllowed = true;
+    const retried = await supportAgentRequest(fixture.app, 'POST', '/slack/retry', { workspaceId: 'T_TEST' });
+    assert.equal(retried.status, 200);
+    assert.deepEqual(await grantStatuses(), { C_SALES: 'active', C_SUPPORT: 'active' });
   } finally {
     fixture.store.close();
     fixture.settings.close();

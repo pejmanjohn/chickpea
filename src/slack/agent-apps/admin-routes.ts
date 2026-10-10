@@ -6,6 +6,7 @@
 import { type Context, Hono } from 'hono';
 
 import { renderSlackJourneyPage } from '../../admin/page.ts';
+import { isOwnerSession } from '../../auth/permissions.ts';
 import type { AuthPrincipal } from '../../auth/types.ts';
 import type { PlatformEnv } from '../../config/state-backend.ts';
 import type { CustomAgentConfig } from '../../config/types.ts';
@@ -59,7 +60,7 @@ export function createAgentSlackAppAdminRoutes(deps: AgentSlackAppAdminDeps): Ho
     const host = agentSlackAppsHost();
     if (!host) return { ok: false, response: await c.notFound() };
     const actor = await deps.actor(c);
-    if (actor.principal.machine || actor.principal.role !== 'owner') {
+    if (!isOwnerSession(actor.principal)) {
       return { ok: false, response: c.json({ error: 'forbidden' }, 403) };
     }
     const agent = await deps.getAgent(c, c.req.param('agentId') ?? '');
