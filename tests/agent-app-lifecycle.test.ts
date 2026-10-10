@@ -48,6 +48,7 @@ const states = {
 const events = {
   handle_released: { type: 'handle_released', at: AT, manifestFingerprint: 'f2' },
   handle_release_refused: { type: 'handle_release_refused', at: AT },
+  handle_permission_missing: { type: 'handle_permission_missing', at: AT },
   created: { type: 'created', at: AT, app: APP },
   create_refused: { type: 'create_refused', at: AT, reason: 'create_refused' },
   create_busy: { type: 'create_refused', at: AT, reason: 'slack_busy' },
@@ -76,6 +77,7 @@ const events = {
 const allowed: Record<string, AgentAppTransition> = {
   'releasing_handle -> handle_released': { state: 'creating', at: AT, startedBy: 'UOWNER', manifestFingerprint: 'f2' },
   'releasing_handle -> handle_release_refused': { ...states.attention_handle, at: AT },
+  'releasing_handle -> handle_permission_missing': { state: 'withdrawn' },
   'releasing_handle -> archive_with_token': { state: 'deleted' },
   'releasing_handle -> archive_without_token': { state: 'deleted' },
   'creating -> created': { state: 'created', at: AT, startedBy: 'UOWNER', app: APP },

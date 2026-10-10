@@ -11,7 +11,7 @@ import {
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { agentAppRetirement } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks } from '../slack/agent-apps/index.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   deleteProviderApiKey,
@@ -113,7 +113,7 @@ export function createLiveWorkspaceManagementService(
   const management = getManagementStore(env);
   const presenceReconciler = async (workspaceId: string) => {
     const transport = await slackTransport(workspaceId);
-    const agentApps = agentAppRetirement(env);
+    const agentApps = agentAppPresenceHooks(env);
     return new AgentPresenceReconciler({
       config: config as ConfigStore,
       transport,

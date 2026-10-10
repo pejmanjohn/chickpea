@@ -30,11 +30,13 @@ export const RETIRED_SLACK_BOT_SCOPES: readonly string[] = Object.freeze([]);
 export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergroups:write']);
 /**
  * What an Agent's own Slack app asks for: the workspace app's bot scopes
- * without user groups, sender customization, email reads, or joining
- * Channels, none of which an Agent that is its own bot needs.
+ * without user groups, sender customization or email reads, none of which an
+ * Agent that is its own bot needs. It keeps `channels:join` so that adding
+ * the Agent to a public Channel brings its bot in: Chickpea's bot cannot
+ * invite it without a scope every installation would have to approve.
  */
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
-  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email' && scope !== 'channels:join'
+  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email'
 ));
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */

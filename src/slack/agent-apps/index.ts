@@ -6,7 +6,7 @@ export {
   agentAppBotCredentials,
   agentAppHomeRows,
   agentAppPlacementFacts,
-  agentAppRetirement,
+  agentAppPresenceHooks,
   agentDmPlacementFacts,
   handleAgentAppHomeAction,
   withAgentAppExecution,

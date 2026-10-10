@@ -121,8 +121,8 @@ export interface AgentChannelAddDependencies {
   resolveActor(): Promise<AddingActor>;
   getAgent(agentId: string): Promise<CustomAgentConfig | undefined>;
   identity: OfferIdentity;
-  /** Adds the Agent to the Channel exactly as Admin's Add to channels does. */
-  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<void>;
+  /** Adds the Agent to the Channel exactly as Admin's Add to channels does; `bot_left_out` when its own app's bot is not there. */
+  publish(agent: CustomAgentConfig, principal: AuthPrincipal): Promise<'added' | 'bot_left_out'>;
   adminUrl(): Promise<string | undefined>;
   client: EphemeralClient;
 }
@@ -143,8 +143,9 @@ export async function addAgentToChannel(
     text = `${askOwnersToAdd(await namedOwners(deps.identity, request.workspaceId))} to add @${handle} to this channel.`;
   } else {
     try {
-      await deps.publish(agent, actor.principal);
-      text = `@${handle} is ready in this channel. Mention @${handle} to start a conversation.`;
+      text = await deps.publish(agent, actor.principal) === 'bot_left_out'
+        ? `To let @${handle} answer here, add it from the channel's Add people or agents.`
+        : `@${handle} is ready in this channel. Mention @${handle} to start a conversation.`;
     } catch {
       const url = await deps.adminUrl().catch(() => undefined);
       text = `I couldn’t add @${handle} to this channel. Open Chickpea to add it there.` +

@@ -19,12 +19,21 @@ import {
 } from './errors.ts';
 import { agentUserGroupName, alternativeAgentHandles, normalizeAgentHandle } from './handles.ts';
 
+/** What the reconciler asks of an Agent's own Slack app; absent on a host without Agent apps. */
+export interface AgentAppPresenceHooks {
+  /** Retires the app before the Agent is archived. */
+  retire(agent: CustomAgentConfig): Promise<CustomAgentConfig>;
+  /** Brings a live app's bot into a Channel the Agent was added to; undefined for an Agent without one. */
+  bringBotIn(agent: CustomAgentConfig, channel: { id: string; private: boolean }): Promise<AgentAppBotPlacement | undefined>;
+}
+
+export type AgentAppBotPlacement = 'in_channel' | 'left_out';
+
 interface AgentPresenceReconcilerDependencies {
   config: ConfigStore;
   transport: SlackTransport;
   announce: AgentPresenceAnnouncements | null;
-  /** Retires an Agent's own Slack app before the Agent is archived; absent on a host without Agent apps. */
-  agentApps?: { retire(agent: CustomAgentConfig): Promise<CustomAgentConfig> };
+  agentApps?: AgentAppPresenceHooks;
   now?: () => number;
 }
 
@@ -39,6 +48,8 @@ interface PublishAgentInput {
 interface AgentPublicationResult {
   agent: CustomAgentConfig;
   grant: AgentChannelGrant;
+  /** For an Agent with its own live Slack app: whether that app's bot is in the Channel. */
+  appBot?: AgentAppBotPlacement;
 }
 
 type MentionRepairConfig = Pick<
@@ -379,6 +390,7 @@ export class AgentPresenceReconciler {
       { ...pendingGrant, status: 'active' },
       pendingGrant.revision,
     );
+    const appBot = await this.dependencies.agentApps?.bringBotIn(published, { id: input.channelId, private: channel.private });
     if (pendingGrant.status !== 'active') {
       await this.announceBestEffort('joinedChannel', published.id, (announce) => announce.joinedChannel({
         workspaceId: input.workspaceId,
@@ -388,7 +400,7 @@ export class AgentPresenceReconciler {
         grantRevision: grant.revision,
       }));
     }
-    return { agent: published, grant };
+    return { agent: published, grant, ...(appBot ? { appBot } : {}) };
   }
 
   /** Reconcile one Agent's desired Slack alias; safe to invoke after ambiguity. */

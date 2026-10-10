@@ -200,9 +200,14 @@ interface Fixture {
   crashRealmWriteOnce: boolean;
   /** The signing secret the host could read for each app when Slack verified its Events URL. */
   signingSecretsAtUpdate: Array<string | undefined>;
+  /** Whether the installation lacks the Owner's user-group permission, read when the service asks. */
+  permission: { missing: boolean };
 }
 
-async function fixture(t: TestContext, options: { token?: boolean; avatarPx?: number; userGroupId?: string | undefined } = {}): Promise<Fixture> {
+async function fixture(
+  t: TestContext,
+  options: { token?: boolean; avatarPx?: number; userGroupId?: string | undefined; permissionMissing?: boolean } = {},
+): Promise<Fixture> {
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => { config.close(); settings.close(); });
@@ -218,6 +223,7 @@ async function fixture(t: TestContext, options: { token?: boolean; avatarPx?: nu
   const clock = { now: NOW };
   const f: Fixture = {
     config, settings, slack, transport, calls, clock, realmWrites: [], crashRealmWriteOnce: false, signingSecretsAtUpdate: [],
+    permission: { missing: options.permissionMissing ?? false },
     service: undefined as unknown as AgentSlackApps,
   };
   slack.verifyEventsUrl = async (appId) => {
@@ -239,6 +245,7 @@ async function fixture(t: TestContext, options: { token?: boolean; avatarPx?: nu
   f.service = new AgentSlackApps({
     env: ENV, stores: { config, settings: realm }, host: HOST, transport, slack, keyring,
     now: () => clock.now, publicOrigin: async () => 'https://core.test',
+    userGroupPermissionMissing: async () => f.permission.missing,
   });
   return f;
 }
@@ -252,6 +259,17 @@ function buttonUrls(message: Posted): string[] {
   const actions = message.blocks.find((block) => (block as { type: string }).type === 'actions') as { elements: Array<{ url?: string }> } | undefined;
   return actions?.elements.map((element) => element.url ?? '').filter(Boolean) ?? [];
 }
+
+/** Every button on a message, as its label and where it goes or what it does. */
+function buttons(message: Posted): Array<[string, string]> {
+  const actions = message.blocks.find((block) => (block as { type: string }).type === 'actions') as
+    { elements: Array<{ text: { text: string }; url?: string; action_id: string }> } | undefined;
+  return actions?.elements.map((element) => [element.text.text, element.url ?? element.action_id]) ?? [];
+}
+
+const PERMISSION_NEEDED = escapeMrkdwn(
+  "Chickpea needs one more Slack permission to give @support its own Slack app. In Chickpea Admin, choose Update in Slack, then choose Give @support its own Slack app in Chickpea's Home tab.",
+);
 
 test('a start frees the handle, creates without URLs, stores the secrets, adds the URLs, sets the icon and asks the Owner', async (t) => {
   const f = await fixture(t);
@@ -284,6 +302,7 @@ test('a start frees the handle, creates without URLs, stores the secrets, adds t
   assert.ok(subscriptions?.bot_events.includes('member_joined_channel'), "Slack's own Add of the bot reaches the Agent");
   assert.ok(['channels:read', 'groups:read', 'mpim:read'].every((scope) => createManifest.oauth_config.scopes.bot.includes(scope)),
     'with the scopes that event needs');
+  assert.ok(createManifest.oauth_config.scopes.bot.includes('channels:join'), "Admin's Add brings the bot into a public Channel");
   assert.deepEqual(interactivity, { is_enabled: true, request_url: HOST.requestUrls('inst_a', 'A0APP1').interactions });
   assert.deepEqual({ ...update.manifest, settings: unchanged }, createManifest, 'the update repeats everything the create set');
 
@@ -422,6 +441,59 @@ test('each refusal lands in attention with its message, and Try again resumes fr
   handle.transport.refuseDisable = false;
   await handle.service.retry('agent_support', OWNER);
   assert.equal((await appOf(handle))?.state, 'awaiting_consent');
+});
+
+test("without the Owner's user-group permission nothing starts, and the Owner is sent to Admin's update with no Try again", async (t) => {
+  const f = await fixture(t, { permissionMissing: true });
+  assert.deepEqual(await f.service.start('agent_support', OWNER), { kind: 'permission_needed' });
+  assert.deepEqual(f.calls.log, ['openDirectConversation', 'postMessage'], 'no handle release and no create');
+  const presence = (await f.config.getAgent('agent_support')).slackPresence;
+  assert.equal(presence?.kind, undefined, 'the Agent keeps its user group');
+  assert.equal(presence?.userGroupId, 'S1');
+  const [dm] = f.transport.posted;
+  assert.equal(dm?.channelId, `D_${OWNER}`);
+  assert.equal(dm?.text, PERMISSION_NEEDED);
+  assert.deepEqual(buttons(dm!), [['Open Chickpea', 'https://core.test/admin']], 'a link to Admin, and no Try again');
+
+  f.permission.missing = false;
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started', 'after the update the Owner starts again');
+  assert.equal((await appOf(f))?.state, 'awaiting_consent');
+
+  const bare = await fixture(t, { userGroupId: undefined, permissionMissing: true });
+  assert.equal((await bare.service.start('agent_support', OWNER)).kind, 'started', 'an Agent with no user group to free needs no permission');
+});
+
+test("a release Slack refuses for want of the Owner's permission undoes the start and says so, rather than asking to free the name", async (t) => {
+  const refusals = captureSlackRefusals(t);
+  const f = await fixture(t);
+  f.transport.refuseDisable = true;
+  await f.service.start('agent_support', OWNER);
+  let app = await appOf(f);
+  assert.equal(app?.state === 'needs_attention' && app.reason, 'handle_release_failed', 'with the permission held, a refusal is still the name');
+  assert.match(f.transport.posted[0]?.text ?? '', /couldn(&#39;|')t free the name/);
+
+  f.permission.missing = true;
+  const retried = await f.service.retry('agent_support', 'UOWNER2');
+  assert.equal(retried.slackPresence?.kind, undefined, 'the start is undone');
+  const presence = (await f.config.getAgent('agent_support')).slackPresence;
+  assert.deepEqual(
+    presence && { desiredState: presence.desiredState, health: presence.health, userGroupId: presence.userGroupId, handle: presence.normalizedHandle },
+    { desiredState: 'active', health: 'healthy', userGroupId: 'S1', handle: 'support' },
+    'back on its user group, which Slack never changed',
+  );
+  const permission = f.transport.posted[1];
+  assert.equal(permission?.channelId, 'D_UOWNER2', 'the Owner who tried again is told');
+  assert.equal(permission?.text, PERMISSION_NEEDED);
+  assert.deepEqual(buttons(permission!), [['Open Chickpea', 'https://core.test/admin']]);
+  assert.equal(f.transport.posted.length, 2, 'no message about the name');
+  assert.deepEqual(f.slack.manifests, []);
+  assert.deepEqual(refusals.map(({ step, code }) => [step, code]), [['release_handle', 'permission_denied'], ['release_handle', 'permission_denied']]);
+
+  f.permission.missing = false;
+  f.transport.refuseDisable = false;
+  assert.equal((await f.service.start('agent_support', OWNER)).kind, 'started');
+  app = await appOf(f);
+  assert.equal(app?.state, 'awaiting_consent');
 });
 
 test('a spent configuration token stops the sequence and sends the Owner to the token page', async (t) => {

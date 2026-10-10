@@ -306,7 +306,7 @@ test('a clicker who is not in the Channel is refused before anything is publishe
       slackPresence: { normalizedHandle: 'legal', userGroupId: 'SLEGAL' },
     }) as unknown as CustomAgentConfig,
     identity: { listMemberships: async () => [], listExternalIdentities: async () => [] },
-    publish: async () => { published += 1; },
+    publish: async () => { published += 1; return 'added'; },
     adminUrl: async () => undefined,
     client: { chat: { postEphemeral: async (input: { text?: string }) => { notices.push(String(input.text)); return { ok: true }; } } } as never,
   });

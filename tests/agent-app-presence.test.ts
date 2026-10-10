@@ -187,6 +187,54 @@ test('reconciling, retrying or publishing an Agent app never touches Slack user 
   }
 });
 
+test("publishing an Agent brings its own app's bot into the Channel through the host, before the welcome, and reports where it is", async () => {
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const channels = {
+    C_PUBLIC: { id: 'C_PUBLIC', name: 'support', private: false, member: true, archived: false },
+    C_PRIVATE: { id: 'C_PRIVATE', name: 'secret', private: true, member: true, archived: false },
+  };
+  const transport = slackThatRefuses({
+    async lookupChannel(id: string) { return channels[id as keyof typeof channels]; },
+    async channelHasMember() { return true; },
+  });
+  const order: string[] = [];
+  const announce = new Proxy({} as AgentPresenceAnnouncements, { get: () => async () => { order.push('welcome'); } });
+  try {
+    await storeAgent(config, 'agent_support', 'Support', agentApp('support', ACTIVE));
+    const asked: Array<[string, string, boolean]> = [];
+    let placement: 'in_channel' | 'left_out' | undefined = 'in_channel';
+    const reconciler = new AgentPresenceReconciler({
+      config, transport, announce, now: () => NOW,
+      agentApps: {
+        async retire() { throw new Error('publish retires nothing'); },
+        async bringBotIn(agent, channel) {
+          order.push('bring in');
+          asked.push([agent.id, channel.id, channel.private]);
+          return placement;
+        },
+      },
+    });
+    const publish = (channelId: string) => reconciler.publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId, actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    });
+    assert.equal((await publish('C_PUBLIC')).appBot, 'in_channel');
+    assert.deepEqual(order, ['bring in', 'welcome']);
+    placement = 'left_out';
+    const left = await publish('C_PRIVATE');
+    assert.equal(left.appBot, 'left_out');
+    assert.equal(left.grant.status, 'active', 'the Agent is added either way');
+    assert.deepEqual(asked, [['agent_support', 'C_PUBLIC', false], ['agent_support', 'C_PRIVATE', true]]);
+    placement = undefined;
+    assert.equal('appBot' in await publish('C_PUBLIC'), false, 'an Agent without a live app has nothing to report');
+    assert.equal('appBot' in await new AgentPresenceReconciler({ config, transport, announce: null, now: () => NOW }).publish({
+      workspaceId: 'TACME', agentId: 'agent_support', channelId: 'C_PUBLIC', actorMembershipId: 'membership_ada', actorSlackUserId: 'UADA',
+    }), false, 'without a host for Agent apps nothing is brought in');
+    assert.deepEqual(transport.calls, []);
+  } finally {
+    config.close();
+  }
+});
+
 test('a live Agent app is addressed by its bot user, a waiting one not at all, and both may ask', () => {
   const app = agent('agent_support', 'Support', agentApp('support', ACTIVE));
   const waiting = agent('agent_billing', 'Billing', agentApp('billing', {
@@ -257,6 +305,7 @@ test('archiving an Agent app retires the app first, and refuses without a host f
           retired.push(current.id);
           return config.updateAgent(current.id, { slackPresence: { ...userGroup('support', 'S1'), desiredState: 'disabled' } }, current.revision);
         },
+        async bringBotIn() { throw new Error('archive brings no bot in'); },
       },
     }).archive('agent_support');
     assert.deepEqual(retired, ['agent_support']);
