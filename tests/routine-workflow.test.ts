@@ -603,7 +603,7 @@ test('a scheduled run\'s chat row and task row carry the one run ID its requests
         credentialRefId: 'cred_anthropic', credentialVersion: 1,
       },
       agentId: config.agentId,
-      feeRun: { kind: 'scheduled' },
+      runKind: 'scheduled',
     }),
     installationGrants: async () => [],
   });

@@ -63,7 +63,7 @@ import {
   type ProviderReportReader,
 } from '../usage/model-requests.ts';
 import { canonicalPriceProviderId, priceCatalogFor } from '../usage/pricing/catalog.ts';
-import type { FeeRun } from '../usage/run-fees.ts';
+import type { FeeRun, RunKind } from '../usage/run-fees.ts';
 import type { ImageCallResult } from '../images/openai-images-client.ts';
 import { currentImagePrice, sentImageRequestRecord } from '../images/request-record.ts';
 
@@ -144,14 +144,22 @@ interface ModelAccessCell {
 }
 
 class RunFees {
-  readonly feeRun: FeeRun;
+  readonly #kind: RunKind;
   readonly #run: Omit<FeePost, 'tier'>;
   #taskFee: 'unposted' | Promise<void> | 'posted' | 'refused' = 'unposted';
   #admission: Promise<void> | undefined;
+  /** Set by the attempt's sandbox, the one place that knows which repository credentials minted. */
+  repositoryShell = false;
 
-  constructor(feeRun: FeeRun, run: Omit<FeePost, 'tier'>) {
-    this.feeRun = feeRun;
+  constructor(kind: RunKind, run: Omit<FeePost, 'tier'>) {
+    this.#kind = kind;
     this.#run = run;
+  }
+
+  get feeRun(): FeeRun {
+    return this.#kind === 'scheduled'
+      ? { kind: 'scheduled' }
+      : { kind: 'interactive', repositoryShell: this.repositoryShell };
   }
 
   get refused(): boolean {
@@ -248,7 +256,7 @@ export function providerPrefix(model: string): string {
 }
 
 /** What the trusted host knows about one attempt before its first model call. */
-export type AttemptModelAccess = { readonly runId?: string; readonly feeRun?: FeeRun } & (
+export type AttemptModelAccess = { readonly runId?: string; readonly runKind?: RunKind } & (
   /** The grant persisted with the attempt's run. */
   | { readonly env: PlatformEnv | undefined; readonly grant: ModelAccessGrant; readonly agentId?: string }
   /** The run's model brings its own deployment credential (standalone lanes only). */
@@ -301,7 +309,7 @@ export function createModelAccessInterceptor(
       grants = await options.installationGrants(attempt.env, runId);
     }
     const cell = await resolveCell(
-      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply', attempt.feeRun,
+      grants, attempt.env, hosted, context.instanceId, runId, attempt.agentId ?? null, 'reply', attempt.runKind,
     );
     const chatFee = cell.fees?.postChatFee();
     try {
@@ -315,6 +323,12 @@ export function createModelAccessInterceptor(
 export function currentRunFees(): RunFees | undefined {
   const cell = cells.getStore();
   return cell?.purpose === 'reply' ? cell.fees : undefined;
+}
+
+/** Whether the attempt's shell reaches a granted repository, which makes running it a task. */
+export function setRunRepositoryShell(reaches: boolean): void {
+  const fees = currentRunFees();
+  if (fees) fees.repositoryShell = reaches;
 }
 
 /**
@@ -446,7 +460,7 @@ async function resolveCell(
   runId: string,
   agentId: string | null,
   purpose: ModelRequestPurpose,
-  feeRun?: FeeRun,
+  runKind?: RunKind,
 ): Promise<ModelAccessCell> {
   const bound = new Map<ModelAccessProviderId, BoundAccess>();
   for (const grant of grants) {
@@ -460,8 +474,8 @@ async function resolveCell(
     attemptId: crypto.randomUUID(),
     agentId,
   });
-  const fees = installationId && feeRun && purpose === 'reply' && platformFundingConfigured()
-    ? new RunFees(feeRun, { installationId, runId, agentId })
+  const fees = installationId && runKind && purpose === 'reply' && platformFundingConfigured()
+    ? new RunFees(runKind, { installationId, runId, agentId })
     : undefined;
   return Object.freeze({
     instanceId, hosted, installationId, bound, env, attribution, purpose, compactionTurns: new Set<string>(), fees,
