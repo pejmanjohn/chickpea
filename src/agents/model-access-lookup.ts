@@ -142,9 +142,7 @@ export async function lookupAttemptModelAccess(
   }
   return {
     ...await planModelAccess(plan, instanceId, submissionId ?? instanceId, env),
-    feeRun: context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME
-      ? { kind: 'scheduled' }
-      : { kind: 'interactive', repositoryShell: plan.repositories.length > 0 },
+    runKind: context.agentName === CHICKPEA_ROUTINE_EXECUTION_AGENT_NAME ? 'scheduled' : 'interactive',
   };
 }
 

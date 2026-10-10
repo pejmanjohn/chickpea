@@ -10,13 +10,7 @@ import { isStateStoreDisconnect } from '../config/cf-state-proxies.ts';
 import { readSandboxTurnProgress, type CodingTaskStopReport } from '../sandbox/coding-task-stop.ts';
 import { slackTurnSandboxKey } from '../sandbox/thread-key.ts';
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
-import {
-  creditBackFailedRun,
-  givenUpReason,
-  hostedRun,
-  planFunding,
-  withCreditedBack,
-} from '../usage/run-settlement.ts';
+import { givenUpRecoveryText } from '../usage/run-settlement.ts';
 import type { UsageStore } from '../usage/types.ts';
 import type { WorkStore } from '../work/types.ts';
 import { isPlatformReset, settlementFailureFacts } from './agent-failure-diagnostics.ts';
@@ -74,7 +68,6 @@ import {
   type TurnJobStoreLogic,
 } from './turn-jobs.ts';
 import {
-  DURABLE_RECOVERY_FAILURE_TEXT,
   removeSlackReaction,
   STOP_ALREADY_FINISHED_TEXT,
   type SlackStopNoteFacts,
@@ -318,11 +311,10 @@ export async function executeTurnJob(
     ...(job.receivedAt === undefined ? {} : { receivedAt: job.receivedAt }),
     ...options.latency,
   };
+  // The plan this job froze, kept current as runTurn freezes it.
+  let frozenPlan = job.runtimePlan;
   const deliverRecoveryFailure = async (reasonCode: string): Promise<boolean> => {
-    const recoveryText = withCreditedBack(DURABLE_RECOVERY_FAILURE_TEXT, await creditBackFailedRun(
-      hostedRun(ports.env, flueDispatch.dispatchReceipt?.submissionId),
-      givenUpReason(flueDispatch.flueSettlement, { funding: planFunding(job.runtimePlan) }),
-    ));
+    const recoveryText = await givenUpRecoveryText(ports.env, flueDispatch, frozenPlan);
     try {
       await ports.runTurn(job.turn, job.assignment, ports.env, {
         client,
@@ -378,8 +370,6 @@ export async function executeTurnJob(
     }
   };
   try {
-    // The plan this job froze, kept current as runTurn freezes it.
-    let frozenPlan = job.runtimePlan;
     const persistSandboxProgress = async (
       use?: { codingWorkspaceOpened?: boolean },
     ): Promise<string | undefined> => {

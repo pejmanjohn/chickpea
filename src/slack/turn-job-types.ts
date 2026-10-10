@@ -129,6 +129,8 @@ export type FlueSettlementCheckpointV1 =
         | 'credits-exhausted'
         | 'sandbox'
         | 'sandbox-session-cap';
+      /** The tools the run called, when it called any: an invalid result after one is not the provider's failure. */
+      toolCallCount?: number;
     };
 
 /** Model-invisible facts observers recover from app-owned state. */

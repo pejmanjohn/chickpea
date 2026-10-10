@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
 import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
 
+import { resolveRepositoryAccess, runtimePlanRepositoryShell } from '../src/agents/slack-thread.ts';
+import { GITHUB_SETTING_KEYS } from '../src/config/github-app.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { RepositoryGrant } from '../src/config/types.ts';
 import {
   configureInstallationAdmission,
   resetInstallationAdmissionForTests,
@@ -38,7 +46,8 @@ import { SlackReadingService } from '../src/slack/reading/service.ts';
 import { createSlackReadingTools } from '../src/slack/reading/tools.ts';
 import type { FlueDispatchEnvelopeV1 } from '../src/slack/turn-job-types.ts';
 import { CREDITS_EXHAUSTED_TEXT } from '../src/slack/web-client-presenter.ts';
-import type { FeeRun } from '../src/usage/run-fees.ts';
+import type { RunKind } from '../src/usage/run-fees.ts';
+import { withEnv } from './helpers/env.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { answers, callsTools, SCRIPTED_MODEL, scriptedMessage, scriptedProvider } from './helpers/scripted-provider.ts';
 
@@ -68,7 +77,7 @@ function hostedPort(
     refuse?: FeePost['tier'];
     fail?: FeePost['tier'];
     stall?: FeePost['tier'];
-    admission?: 'refused' | 'stall' | 'fail';
+    admission?: 'refused' | 'stall' | 'fail' | 'stop';
     port?: boolean;
   } = {},
 ) {
@@ -90,6 +99,11 @@ function hostedPort(
         admissions.push(run);
         if (options.admission === 'stall') return new Promise<never>(() => {});
         if (options.admission === 'fail') throw new Error('ledger unavailable');
+        if (options.admission === 'stop') {
+          await stopTurn();
+          timeline.push('admit:admitted');
+          return 'admitted';
+        }
         await new Promise((resolve) => setTimeout(resolve, ADMISSION_DELAY_MS));
         const answer = options.admission ?? 'admitted';
         timeline.push(`admit:${answer}`);
@@ -153,6 +167,17 @@ function FeeProbe() {
     });
   }
   useTool({
+    name: 'create_slack_list_item',
+    description: 'The synthetic create_slack_list_item, still working when the turn is stopped.',
+    input: v.object({}),
+    output: v.string(),
+    run: () => {
+      ran.push('create_slack_list_item');
+      void stopTurn();
+      return new Promise<never>(() => {});
+    },
+  });
+  useTool({
     name: 'read_slack_list',
     description: 'The synthetic read_slack_list, which fails after it does its work.',
     input: v.object({}),
@@ -203,6 +228,11 @@ const readsChannel = (channel: string) => (model: Parameters<typeof answers>[0])
   { type: 'toolCall', id: 'call_read_channel', name: 'read_slack_channel', arguments: { channel } },
 ], 'toolUse');
 
+/** Stops the turn `slackTurn` is running as a requester's stop does: Flue aborts the instance's work. */
+let stopTurn: () => Promise<void> = async () => {
+  throw new Error('No turn is running.');
+};
+
 async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise<{ text: string } | unknown> {
   const runtime = await start({
     agents: [{ agent: probe, name: 'fee-probe' }],
@@ -210,6 +240,7 @@ async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise
   });
   try {
     const agent = init(probe, { id });
+    stopTurn = () => agent.abort();
     const receipt = await agent.dispatch('Hello');
     return await promptSlackThreadAgent({
       handle: agent, message: 'unused saved dispatch', turnId: id,
@@ -230,10 +261,37 @@ async function slackTurn(id: string, probe: typeof FeeProbe = FeeProbe): Promise
   }
 }
 
+/** A GitHub App this process can sign installation-token requests for. */
+async function withGithubApp<T>(run: () => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-run-fees-github-'));
+  const dbPath = join(dir, 'state.db');
+  const settings = new SqliteSettingsStore(dbPath);
+  try {
+    await settings.setSetting(GITHUB_SETTING_KEYS.appId, 'run-fees-app');
+    await settings.setSetting(GITHUB_SETTING_KEYS.privateKey, String(
+      generateKeyPairSync('rsa', { modulusLength: 2_048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    ));
+    return await withEnv({ SLACK_STATE_DB_PATH: dbPath, GITHUB_APP_ID: undefined, GITHUB_APP_PRIVATE_KEY: undefined }, run);
+  } finally {
+    settings.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function withFetch<T>(answer: typeof fetch, run: () => Promise<T>): Promise<T> {
+  const previous = globalThis.fetch;
+  globalThis.fetch = answer;
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = previous;
+  }
+}
+
 const tiers = (posts: ReadonlyArray<{ tier: string; outcome: string }>) => posts.map(({ tier, outcome }) => `${tier}:${outcome}`);
 const admissionAnswers = () => timeline.filter((entry) => entry.startsWith('admit:'));
-const replyRun = (env: PlatformEnv | undefined, feeRun: FeeRun = { kind: 'interactive', repositoryShell: false }) =>
-  (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', feeRun });
+const replyRun = (env: PlatformEnv | undefined, runKind: RunKind = 'interactive') =>
+  (runId: string | undefined): AttemptModelAccess => ({ env, grant: ownKeyGrant(runId!), agentId: 'agent_fees', runKind });
 
 test('an own-key turn with nothing spendable runs no tool, not even a parallel one, and ends out of usage before another request is sent', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t, { admission: 'refused', refuse: 'task' });
@@ -317,6 +375,31 @@ test('a qualifying tool that throws after doing its work posts one task row', { 
   assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
 });
 
+test('a stop that lands while a qualifying call waits to start posts no task row, and the call never runs', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t, { admission: 'stop' });
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('read_slack_channel'), answers]);
+  ran.length = 0;
+
+  await slackTurn('fees-stopped-before-start');
+
+  assert.deepEqual(admissionAnswers(), ['admit:admitted'], 'the stop landed while the call waited on its admission');
+  assert.deepEqual(ran, []);
+  assert.deepEqual(tiers(posts), ['chat:posted']);
+});
+
+test('a stop that lands while a qualifying call is working still posts one task row', { timeout: 20_000 }, async (t) => {
+  const posts = hostedPort(t);
+  interceptors(t, replyRun(hostedEnv()));
+  scriptedProvider([callsTools('create_slack_list_item'), answers]);
+  ran.length = 0;
+
+  await slackTurn('fees-stopped-while-working');
+
+  assert.deepEqual(ran, ['create_slack_list_item']);
+  assert.deepEqual(tiers(posts), ['chat:posted', 'task:posted']);
+});
+
 test('a channel read the Slack read budget refuses posts no task row, and Slack is never called', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
   interceptors(t, replyRun(hostedEnv()));
@@ -384,7 +467,7 @@ test('parallel qualifying tools in one attempt post one task row once they compl
 
 test('a scheduled run posts its chat row and never a task row for a tool, even a qualifying one', { timeout: 20_000 }, async (t) => {
   const posts = hostedPort(t);
-  interceptors(t, replyRun(hostedEnv(), { kind: 'scheduled' }));
+  interceptors(t, replyRun(hostedEnv(), 'scheduled'));
   scriptedProvider([callsTools('read_slack_channel'), answers]);
   ran.length = 0;
 
@@ -500,19 +583,34 @@ test('a channel read whose result has an unexpected shape posts the task row and
     malformed.map((_, index) => `sub_malformed_${index}`));
 });
 
-test('the shell posts the task row only when the run\'s shell reaches a granted repository', async (t) => {
+test('the shell posts the task row only when its plan\'s repository grant minted a credential this turn', async (t) => {
   const posts = hostedPort(t);
-  for (const repositoryShell of [false, true]) {
-    const modelAccess = createModelAccessInterceptor({
-      lookup: async (context) => replyRun(hostedEnv(), { kind: 'interactive', repositoryShell })(context.submissionId),
-      installationGrants: async () => [],
-    });
-    const context = { instanceId: `fees-shell-${repositoryShell}`, submissionId: `sub_shell_${repositoryShell}` };
-    await modelAccess({ type: 'agent', operationId: 'op_shell', operationKind: 'prompt' }, context, () =>
-      runFeeInterceptor({ type: 'tool', toolCallId: 'call_bash', toolName: 'bash' }, context, async () => 'ran'));
-  }
+  t.mock.method(console, 'warn', () => undefined);
+  await withGithubApp(async () => {
+    for (const [mint, installationId] of [['failed', 70_001], ['minted', 70_002]] as const) {
+      const grant: RepositoryGrant = {
+        id: `repo_${mint}`, installationId, accountLogin: 'acme', fullName: 'acme/app', enabled: true,
+      };
+      const access = await withFetch(
+        mint === 'failed'
+          ? async () => new Response('failed', { status: 500 })
+          : async () => Response.json({ token: 'installation-token', expires_at: new Date(Date.now() + 3_600_000).toISOString() }),
+        () => resolveRepositoryAccess([grant]),
+      );
+      assert.equal(access.grants.length, mint === 'failed' ? 0 : 1);
+      const modelAccess = createModelAccessInterceptor({
+        lookup: async (context) => replyRun(hostedEnv())(context.submissionId),
+        installationGrants: async () => [],
+      });
+      const context = { instanceId: `fees-shell-${mint}`, submissionId: `sub_shell_${mint}` };
+      await modelAccess({ type: 'agent', operationId: 'op_shell', operationKind: 'prompt' }, context, () => {
+        runtimePlanRepositoryShell(access);
+        return runFeeInterceptor({ type: 'tool', toolCallId: 'call_bash', toolName: 'bash' }, context, async () => 'ran');
+      });
+    }
+  });
   assert.deepEqual(posts.map(({ runId, tier }) => `${runId}:${tier}`),
-    ['sub_shell_false:chat', 'sub_shell_true:chat', 'sub_shell_true:task']);
+    ['sub_shell_failed:chat', 'sub_shell_minted:chat', 'sub_shell_minted:task']);
 });
 
 test('an unlisted tool qualifies by the family its render registered for it', async (t) => {

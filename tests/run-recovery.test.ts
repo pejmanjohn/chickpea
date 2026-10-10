@@ -128,6 +128,38 @@ test('one-hour cache writes survive durable settlement storage', () => {
   } finally { db.close(); }
 });
 
+test('a failed settlement keeps the tools its run called through durable storage', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const turns = new TurnJobStoreLogic(db, () => NOW);
+    for (const toolCallCount of [undefined, 3]) {
+      const id = `tool-count-replay-${toolCallCount ?? 0}`;
+      turns.enqueue({ id, evtKey: id, msgKey: id, turn: turn(), assignment: assignment() });
+      turns.freezeRuntimePlan(id, compileRuntimePlanV2({
+        turn: turn(), assignment: assignment(), instructions: 'Test tools.', memoryEpoch: 1,
+      }));
+      turns.prepareFlueDispatch(id, 'Test tools.', { generation: id });
+      turns.recordFlueReceipt(id, { submissionId: id, acceptedAt: '2026-08-01T12:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+      const settlement = {
+        outcome: 'failed' as const, settledAt: NOW, failureKind: 'invalid-output' as const,
+        ...(toolCallCount ? { toolCallCount } : {}),
+      };
+      turns.recordFlueSettlement(id, settlement);
+      assert.deepEqual(turns.getFlueSettlement(id), settlement);
+    }
+    for (const toolCallCount of [0, -1, 1.5, '2']) {
+      assert.throws(() => turns.recordFlueSettlement('tool-count-replay-0', {
+        outcome: 'failed', settledAt: NOW, failureKind: 'invalid-output', toolCallCount,
+      } as never), /tool call count/, String(toolCallCount));
+    }
+    assert.throws(() => turns.recordFlueSettlement('tool-count-replay-0', {
+      outcome: 'completed', settledAt: NOW, toolCallCount: 1, result: {
+        text: 'Answered.', requestedModel: null, returnedModel: null, reportedUsage: null, usageCompleteness: 'not_reported',
+      },
+    } as never), /outcome is invalid/);
+  } finally { db.close(); }
+});
+
 test('pull request recovery uses descriptive link text', () => {
   assert.equal(replayTextForTurnProgress({
     pullRequest: {
@@ -1335,6 +1367,120 @@ test('exhausted hosted ledger reattachment whose replayed ending is out of usage
     });
     assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
     assert.deepEqual(creditBacks, []);
+  } finally {
+    db.close();
+  }
+});
+
+/** A plan this installation's platform funds; only its funding decides a give-up. */
+function platformPlan() {
+  return compileRuntimePlanV2({
+    turn: turn(),
+    assignment: {
+      ...assignment(),
+      modelCredential: {
+        credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', sourceKind: 'platform',
+        label: "Chickpea's models", scopeLabel: null, unknownRotation: false,
+      },
+    },
+    instructions: 'Do the work.',
+    memoryEpoch: 1,
+  });
+}
+
+test('exhausted hosted ledger reattachment whose replayed ending is invalid output after a tool call is not credited back', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('invalid-after-tool')));
+    const id = 'turn_invalid-after-tool';
+    turns.enqueue(turnJob(admission.run.id, 'invalid-after-tool'));
+    turns.freezeRuntimePlan(id, platformPlan());
+    turns.prepareFlueDispatch(id, 'Do the work', { generation: id });
+    turns.recordFlueReceipt(id, {
+      submissionId: 'sub_invalid_after_tool', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'inst_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    });
+    turns.recordFlueSettlement(id, { outcome: 'failed', settledAt: clock, failureKind: 'invalid-output', toolCallCount: 1 });
+    turns.recordAttempt(id, MAX_POST_DISPATCH_ATTEMPTS - 1);
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const replayed: Array<string | undefined> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      platformEnv,
+      // The failure reply the run settled with keeps failing to post.
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) throw new AgentPromptFailure('agent', 503, false, true);
+        replayed.push(options?.replayText);
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'post_dispatch_attempts_exhausted',
+    });
+    assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+    assert.deepEqual(creditBacks, []);
+  } finally {
+    db.close();
+  }
+});
+
+test('a hosted ledger Run given up on in the attempt that froze its plan is credited back by that plan\'s funding', async (t) => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  try {
+    const work = new WorkStoreLogic(db, { now: () => clock });
+    const turns = new TurnJobStoreLogic(db, () => clock);
+    const admission = work.admitShadowRun(prepareSubmitRun(submission('frozen-funding')));
+    turns.enqueue(turnJob(admission.run.id, 'frozen-funding'));
+    const claim = work.claimNextInteractiveRun({
+      ownerId: 'worker', authorityEpoch: 1, leaseDurationMs: 30_000, claimedAt: clock,
+    })!;
+    const { platformEnv, creditBacks } = hostedCanary(t);
+    const replayed: Array<string | undefined> = [];
+    let executions = 0;
+    const handler = createLedgerSlackRunHandler({
+      work: work as unknown as WorkStore,
+      turns,
+      client: {} as WebClient,
+      platformEnv,
+      // This attempt freezes the plan and reads the run's provider failure,
+      // then its reconciliation cannot be settled.
+      executeTurn: (async (_turn, _assignment, _env, options) => {
+        executions += 1;
+        if (executions === 1) {
+          await options?.onRuntimePlan?.(platformPlan());
+          const dispatch = options?.flueDispatch;
+          assert.ok(dispatch, 'the attempt carries its dispatch state');
+          dispatch.dispatchReceipt = {
+            submissionId: 'sub_frozen_funding', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_frozen_funding',
+          };
+          dispatch.flueSettlement = { outcome: 'failed', settledAt: clock, failureKind: 'provider' };
+          throw new AgentPromptFailure('agent', 409, true);
+        }
+        replayed.push(options?.replayText);
+        await options?.onDelivered?.();
+      }) as LedgerSlackTurnExecutor,
+      now: () => ++clock,
+    });
+
+    assert.deepEqual(await handler(claim), {
+      kind: 'recovery_required',
+      reasonCode: 'flue_dispatch_reconciliation_required',
+    });
+    assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+    assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_canary', runId: 'sub_frozen_funding' }, reason: 'provider' }]);
   } finally {
     db.close();
   }

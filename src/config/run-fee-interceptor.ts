@@ -9,7 +9,8 @@ import { currentRunFees } from './model-access.ts';
  * may become a task, and no qualifying call runs once that answer or the post
  * refuses it. A call makes the reply a task once it returns or throws, since a
  * throw can follow work already done; Flue reports a tool's error to an
- * interceptor only by rejecting `next()`.
+ * interceptor only by rejecting `next()`. A call the run's stop refused before
+ * the tool started did no work.
  */
 export const runFeeInterceptor: FlueExecutionInterceptor = async (operation, context, next) => {
   if (operation.type !== 'tool') return next();
@@ -21,12 +22,24 @@ export const runFeeInterceptor: FlueExecutionInterceptor = async (operation, con
   })) return next();
   await fees.requireTaskAdmitted();
   const result = await next().catch(async (error: unknown) => {
-    await fees.postTaskFee();
+    if (!refusedBeforeStart(error)) await fees.postTaskFee();
     throw error;
   });
   if (!refusedBeforeWork(operation.toolName, result)) await fees.postTaskFee();
   return result;
 };
+
+/**
+ * Flue refuses a call on a run that has already ended (stopped, timed out)
+ * without invoking the tool, by rejecting with an abort whose message and
+ * cause are the run's end. A call stopped once the tool started is rejected
+ * with a note that it may still be running, or with the tool's own error.
+ */
+function refusedBeforeStart(error: unknown): boolean {
+  if (!(error instanceof DOMException) || error.name !== 'AbortError') return false;
+  const { cause } = error as { cause?: unknown };
+  return cause instanceof Error && error.message === cause.message;
+}
 
 /**
  * read_slack_channel returns a refusal, and only a refusal, as a not_read

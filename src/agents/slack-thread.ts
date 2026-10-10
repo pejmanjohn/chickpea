@@ -53,6 +53,7 @@ import {
   isValidApiOAuthConnectionPolicy,
 } from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import { setRunRepositoryShell } from '../config/model-access.ts';
 import { revalidateModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { ConfigStore } from '../config/store.ts';
@@ -1703,16 +1704,21 @@ function createRuntimePlanSandbox(
       if (!plan.repositories.length) {
         return bash(() => new Bash({ fs: new InMemoryFs() })).createSandbox(options);
       }
-      // API connections are called through connection_request, never the
-      // shell; the sandbox mounts only repository scopes.
       const repositoryAccess = await resolveRuntimePlanBashRepositoryAccess(plan, env, turn);
-      const sandbox = createConnectorScopedBash(
-        DEFAULT_EGRESS_POLICY, isCloudflareTarget(),
-        repositoryAccess.connectors,
-      );
-      return sandbox.createSandbox(options);
+      return runtimePlanRepositoryShell(repositoryAccess).createSandbox(options);
     },
   };
+}
+
+/**
+ * The shell for a plan's repository grants this turn. It reaches only the
+ * grants whose credential minted, and the attempt's task fee follows that
+ * reach. API connections are called through connection_request, never the
+ * shell, so it mounts only repository scopes.
+ */
+export function runtimePlanRepositoryShell(access: ResolvedRepositoryAccess): SandboxFactory {
+  setRunRepositoryShell(access.grants.length > 0);
+  return createConnectorScopedBash(DEFAULT_EGRESS_POLICY, isCloudflareTarget(), access.connectors);
 }
 
 /**

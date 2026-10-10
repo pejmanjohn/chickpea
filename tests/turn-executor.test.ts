@@ -13,6 +13,7 @@ import {
 } from '../src/config/platform-funding.ts';
 import { AgentObservationYield, AgentPromptFailure } from '../src/slack/flue-dispatch.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
+import type { RuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { RunTurnOptions } from '../src/slack/run-turn.ts';
 import {
   executeTurnJob,
@@ -603,16 +604,9 @@ async function givenUpHostedTurn(
   receipt: boolean,
   presentation: 'replays' | 'stuck' = 'replays',
   settlement?: FlueSettlementCheckpointV1,
+  runtimePlan?: RuntimePlanV2,
 ) {
-  const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
-  configurePlatformFunding({
-    funding: async () => 'customer',
-    admit: async () => 'admitted',
-    charge: async () => undefined,
-    ...NO_RUN_FEES,
-    creditBack: async (run, reason) => { creditBacks.push({ run, reason }); return answer; },
-  });
-  t.after(() => resetPlatformFundingForTests());
+  const creditBacks = hostedCreditBacks(t, answer);
   const replayed: Array<string | undefined> = [];
   const posted: Array<Record<string, unknown>> = [];
   const client = {
@@ -637,10 +631,30 @@ async function givenUpHostedTurn(
       ? { dispatchReceipt: { submissionId: 'sub_given_up', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_given_up' } }
       : {}),
     ...(settlement ? { flueSettlement: settlement } : {}),
+    ...(runtimePlan ? { runtimePlan } : {}),
   });
   assert.equal(await executeTurnJob(job, h.ports, h.options), presentation === 'replays');
   return { replayed, posted, creditBacks };
 }
+
+/** A hosted installation whose host gives `answer` to every credit-back, recorded in order. */
+function hostedCreditBacks(t: TestContext, answer: CreditBackOutcome) {
+  const creditBacks: Array<{ run: RunRef; reason: CreditBackReason }> = [];
+  configurePlatformFunding({
+    funding: async () => 'customer',
+    admit: async () => 'admitted',
+    charge: async () => undefined,
+    ...NO_RUN_FEES,
+    creditBack: async (run, reason) => { creditBacks.push({ run, reason }); return answer; },
+  });
+  t.after(() => resetPlatformFundingForTests());
+  return creditBacks;
+}
+
+/** Only the funding of the plan a turn froze decides a give-up. */
+const PLATFORM_PLAN = {
+  modelCredential: { credentialRefId: 'platform:anthropic', version: 1, providerId: 'anthropic', fundingSource: 'platform' },
+} as RuntimePlanV2;
 
 test('a hosted turn the executor gives up on is credited back as evicted, and its recovery text says so', async (t) => {
   const { replayed, creditBacks } = await givenUpHostedTurn(
@@ -676,6 +690,49 @@ test('a given-up turn whose replayed ending is a sandbox crash is credited back 
   );
   assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
   assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'sandbox' }]);
+});
+
+test('a given-up turn whose replayed ending is invalid output after a tool call is not credited back', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true, 'replays',
+    { outcome: 'failed', settledAt: 1_785_900_000_000, failureKind: 'invalid-output', toolCallCount: 1 }, PLATFORM_PLAN,
+  );
+  assert.deepEqual(replayed, [DURABLE_RECOVERY_FAILURE_TEXT]);
+  assert.deepEqual(creditBacks, []);
+});
+
+test('a given-up platform-funded turn whose replayed ending is invalid output before any tool call is credited back as the provider\'s', async (t) => {
+  const { replayed, creditBacks } = await givenUpHostedTurn(
+    t, { kind: 'credited', usageMicros: 80_000 as UsageMicros }, true, 'replays',
+    { outcome: 'failed', settledAt: 1_785_900_000_000, failureKind: 'invalid-output' }, PLATFORM_PLAN,
+  );
+  assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_given_up' }, reason: 'provider' }]);
+});
+
+test('a turn given up in the attempt that froze its plan is credited back by that plan\'s funding', async (t) => {
+  const creditBacks = hostedCreditBacks(t, { kind: 'credited', usageMicros: 80_000 as UsageMicros });
+  const replayed: Array<string | undefined> = [];
+  const h = fakePorts(async (options) => {
+    if (options.replayTerminalResult === 'failure') {
+      replayed.push(options.replayText);
+      await options.onDelivered?.();
+      return;
+    }
+    await options.onRuntimePlan?.(PLATFORM_PLAN);
+    const dispatch = options.flueDispatch!;
+    dispatch.dispatchReceipt = { submissionId: 'sub_frozen', acceptedAt: '2026-10-08T00:00:00.000Z', uid: 'uid_frozen' };
+    dispatch.flueSettlement = { outcome: 'failed', settledAt: 1_785_900_000_000, failureKind: 'provider' };
+    throw new AgentPromptFailure('agent', 409, true);
+  });
+  h.ports.env = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_executor' });
+  Object.assign(h.ports.turnJobs, {
+    freezeRuntimePlan: async (_id: string, runtimePlan: RuntimePlanV2) => ({ runtimePlan, instanceId: 'agent' }),
+  });
+
+  assert.equal(await executeTurnJob(pendingJob({ dispatchEnvelope: { instanceId: 'agent' } as never }), h.ports, h.options), true);
+  assert.deepEqual(replayed, [`${DURABLE_RECOVERY_FAILURE_TEXT} ${CREDITED_BACK}`]);
+  assert.deepEqual(creditBacks, [{ run: { installationId: 'inst_executor', runId: 'sub_frozen' }, reason: 'provider' }]);
 });
 
 test('a given-up run with nothing to credit back posts the plain recovery text', async (t) => {
