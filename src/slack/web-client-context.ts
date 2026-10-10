@@ -41,6 +41,7 @@ import {
   type ThreadImageRecord,
 } from './thread-images.ts';
 import type { SlackPublicContextEntry } from '../config/types.ts';
+import type { AgentAppBot } from './agent-app-bots.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
@@ -210,9 +211,19 @@ export async function hydrateSlackPublicHandoffFallback(
   client: WebClient,
   turn: NormalizedSlackTurn,
   previousAgentId: string,
-  options: { readGate?: SlackReadGate; self?: SlackContextSelf } = {},
+  options: {
+    readGate?: SlackReadGate;
+    /** The installation's bot. */
+    botUserId?: string;
+    agentAppBots?: readonly AgentAppBot[];
+  } = {},
 ): Promise<SlackPublicHandoffMessage[]> {
   const gate = options.readGate ?? UNGATED_SLACK_READS;
+  const appBots = options.agentAppBots ?? [];
+  const self: SlackContextSelf = {
+    ...(options.botUserId ? { botUserId: options.botUserId } : {}),
+    ...(appBots.length ? { siblingBotUserIds: appBots.map((bot) => bot.botUserId) } : {}),
+  };
   const decision = await reserveRead(gate, 'conversations.replies', [], 'handoff');
   if (!decision.ok) return [];
   try {
@@ -226,10 +237,13 @@ export async function hydrateSlackPublicHandoffFallback(
         if (!raw.ts || !atOrBeforeSlackWatermark(raw.ts, turn.messageTs) || raw.ts === turn.messageTs) {
           return [];
         }
-        const message = toContextMessage(raw, options.self);
+        const message = toContextMessage(raw, self);
         if (!message?.text.trim() || !isSlackContentMessageSubtype(raw.subtype)) return [];
         // Without the bot's id, every bot row is taken to be the previous owner, as before.
-        const role = message.role === 'app' && !options.self?.botUserId ? 'agent' : message.role ?? 'human';
+        const role = message.role === 'app' && !options.botUserId ? 'agent' : message.role ?? 'human';
+        // An Agent app's bot posts only as its Agent; the installation's bot
+        // posts for every other Agent, so its rows stay the previous owner's.
+        const agentId = appBots.find((bot) => bot.botUserId === message.userId)?.agentId ?? previousAgentId;
         return [{
           workspaceId: turn.workspaceId,
           channelId: turn.channelId,
@@ -237,7 +251,7 @@ export async function hydrateSlackPublicHandoffFallback(
           messageTs: raw.ts,
           role,
           text: message.text,
-          ...(role === 'agent' ? { agentId: previousAgentId } : {}),
+          ...(role === 'agent' ? { agentId } : {}),
           updatedAt: 0,
         }];
       });

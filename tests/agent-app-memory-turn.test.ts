@@ -47,6 +47,8 @@ interface Harness {
   stores: AppStores;
   agent: CustomAgentConfig;
   calls: SlackCall[];
+  /** What `conversations.history` returns. */
+  history: Record<string, unknown>[];
   context(): Promise<SlackInstallationExecutionContext>;
 }
 
@@ -113,6 +115,7 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
   );
 
   const calls: SlackCall[] = [];
+  const history: Record<string, unknown>[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(String(input), init);
     const url = new URL(request.url);
@@ -135,7 +138,7 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
           : method === 'conversations.members'
             ? { ok: true, members: ['U1', AGENT_BOT_USER], response_metadata: { next_cursor: '' } }
             : method === 'conversations.replies' || method === 'conversations.history'
-              ? { ok: true, messages: [] }
+              ? { ok: true, messages: method === 'conversations.history' ? history : [] }
               : method.startsWith('chat.')
                 ? { ok: true, ts: '1900000000.000200', channel }
                 : { ok: true };
@@ -148,7 +151,7 @@ async function withHarness(t: TestContext, run: (h: Harness) => Promise<void>): 
     botUserId: WORKSPACE_BOT_USER, client: {} as SlackInstallationExecutionContext['client'],
   };
   const resolve = withAgentAppExecution(async () => base, env);
-  await run({ env, stores, agent, calls, context: () => resolve(TEAM, agent.id) });
+  await run({ env, stores, agent, calls, history, context: () => resolve(TEAM, agent.id) });
 }
 
 function assignmentFor(agent: CustomAgentConfig, channelId: string): ResolvedAssignment {
@@ -168,16 +171,18 @@ async function runAsTheAppBot(
   h: Harness,
   turn: NormalizedSlackTurn,
   duringRun: () => Promise<void> = async () => undefined,
-): Promise<{ memoryBlocks: Array<string | undefined>; posted: string }> {
+): Promise<{ memoryBlocks: Array<string | undefined>; prompts: string[]; posted: string }> {
   const context = await h.context();
   assert.equal(context.botUserId, AGENT_BOT_USER, "the turn runs as the Agent's own bot");
   const memoryBlocks: Array<string | undefined> = [];
+  const prompts: string[] = [];
   const before = h.calls.length;
   await runTurn(turn, assignmentFor(h.agent, turn.channelId), h.env, {
     installationContext: context,
     usageRecordingEnabled: false,
     agentPrompt: async (input) => {
       memoryBlocks.push(input.memoryBlock);
+      prompts.push(input.message);
       await duringRun();
       return {
         text: ANSWER, requestedModel: 'local-stub/agent-app', returnedModel: null,
@@ -189,7 +194,7 @@ async function runAsTheAppBot(
   const chat = calls.filter((call) => call.method.startsWith('chat.'));
   assert.ok(chat.every((call) => call.token === AGENT_BOT), "every post is the Agent's bot's");
   assert.equal(calls.some((call) => call.token === 'xoxb-workspace-bot'), false, "the workspace's bot is never used");
-  return { memoryBlocks, posted: chat.map((call) => readable(call.body)).join('\n') };
+  return { memoryBlocks, prompts, posted: chat.map((call) => readable(call.body)).join('\n') };
 }
 
 async function expectAnsweredFromMemory(h: Harness, turn: NormalizedSlackTurn): Promise<void> {
@@ -224,12 +229,16 @@ test("an Agent's own app answers a DM from its memory, not with the generic fail
   await expectAnsweredFromMemory(h, dmTurn(1));
 }));
 
-test("an Agent's own app answers a Channel mention from its memory, its own bot being the Channel member", async (t) => withHarness(t, async (h) => {
-  await expectAnsweredFromMemory(h, {
-    workspaceId: TEAM, channelId: 'C1', channelType: 'channel', eventId: 'EvCH', text: `<@${AGENT_BOT_USER}> where do refunds go?`,
-    userId: 'U1', messageTs: at(2), threadTs: at(2), source: 'app_mention', contextMode: 'channel_history',
+function channelMention(seconds: number): NormalizedSlackTurn {
+  return {
+    workspaceId: TEAM, channelId: 'C1', channelType: 'channel', eventId: `EvCH${seconds}`, text: `<@${AGENT_BOT_USER}> where do refunds go?`,
+    userId: 'U1', messageTs: at(seconds), threadTs: at(seconds), source: 'app_mention', contextMode: 'channel_history',
     interactionIntent: { disposition: 'reply', reason: 'substantive_request' },
-  });
+  };
+}
+
+test("an Agent's own app answers a Channel mention from its memory, its own bot being the Channel member", async (t) => withHarness(t, async (h) => {
+  await expectAnsweredFromMemory(h, channelMention(2));
   const membership = h.calls.filter((call) => call.method === 'conversations.members');
   assert.ok(membership.length > 0, 'the lease checked the Channel');
   assert.ok(membership.every((call) => call.token === AGENT_BOT), "with the Agent's own bot");
@@ -291,4 +300,33 @@ test('a memory lease that ends a turn in the generic failure logs one operator l
   for (const posted of [changed.posted, ended.posted]) {
     assert.equal(/memory_delivery_lease_rejected|before_run|after_run|agent_failure/.test(posted), false, 'nothing diagnostic reaches Slack');
   }
+}));
+
+test("an app Agent's Channel history reads Chickpea's bot and other Agent apps as Agents, and its own posts too", async (t) => withHarness(t, async (h) => {
+  await h.stores.config.createAgent(appAgent('agent_finance', 'Finance', liveApp('A0FINANCE', FINANCE_BOT_USER)));
+  h.history.push(
+    { user: FINANCE_BOT_USER, bot_id: 'BFINANCE', app_id: 'A0FINANCE', bot_profile: { app_id: 'A0FINANCE', name: 'finance' }, text: 'The books are closed.', ts: at(13) },
+    { user: WORKSPACE_BOT_USER, bot_id: 'BCHICKPEA', username: 'Billing', text: 'Invoices went out.', ts: at(12) },
+    { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: APP_ID, bot_profile: { app_id: APP_ID, name: 'support' }, text: 'Refunds are queued.', ts: at(11) },
+    { bot_id: 'B_PD', username: 'PagerDuty', text: 'checkout is down', ts: at(10) },
+  );
+  const { prompts } = await runAsTheAppBot(h, channelMention(20));
+  assert.equal(prompts.length, 1);
+  const labels = [...prompts[0]!.matchAll(/role=(\w+)[^\]]*\] "([^"]+)":/g)].map(([, role, name]) => [name, role]);
+  assert.deepEqual(labels, [['PagerDuty', 'app'], ['support', 'agent'], ['Billing', 'agent'], ['finance', 'agent']],
+    "Finance's app and Chickpea's bot (another Agent) are Agents, not apps; an outside app stays an app");
+}));
+
+test('a turn whose memory could not be prepared logs that it was quarantined, not that its lease was refused', async (t) => withHarness(t, async (h) => {
+  const warn = t.mock.method(console, 'warn', () => undefined);
+  t.mock.method(getMemoryStateStore(h.env), 'getAgentMemory', async () => {
+    throw new Error('memory row unreadable');
+  });
+  const { memoryBlocks, posted } = await runAsTheAppBot(h, dmTurn(30));
+  assert.equal(memoryBlocks.length, 0, 'the model never ran');
+  assert.ok(posted.includes(AGENT_FAILURE_TEXT));
+  assert.deepEqual(
+    warn.mock.calls.map((call) => call.arguments[0] as { event?: string }).filter((line) => line?.event === 'chickpea.turn.agent_failure'),
+    [{ event: 'chickpea.turn.agent_failure', reason: 'memory_quarantined', stage: 'before_run', agentId: h.agent.id }],
+  );
 }));

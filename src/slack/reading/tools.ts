@@ -10,8 +10,14 @@ import {
   getSlackStateStore,
   type PlatformEnv,
 } from '../../config/state-backend.ts';
-import { parseSlackManagementSignal } from '../../management/slack-tools.ts';
-import { resolveSlackInstallationExecutionContext } from '../installation-execution.ts';
+import { parseSlackManagementSignal, type SlackManagementSignal } from '../../management/slack-tools.ts';
+import { type AgentAppBot, listAgentAppBots } from '../agent-app-bots.ts';
+import { withAgentAppExecution } from '../agent-apps/index.ts';
+import {
+  resolveSlackInstallationExecutionContext,
+  type SlackInstallationExecutionContext,
+  SlackInstallationUnavailableError,
+} from '../installation-execution.ts';
 import { assertSlackListsAccess } from '../lists/tools.ts';
 import { SlackListError } from '../lists/types.ts';
 import { createSlackReadGate } from '../read-budget.ts';
@@ -101,7 +107,7 @@ export function useSlackReadingTools(plan: RuntimePlanV2, resolveEnv: () => Prom
   // calls; authority is still checked again on every call.
   let service: Promise<SlackReadingService> | undefined;
   for (const tool of createSlackReadingTools(async () => {
-    service ??= buildService(plan, signal, resolveEnv);
+    service ??= resolveEnv().then((env) => slackReadingService(plan, signal, env));
     try {
       return await service;
     } catch (error) {
@@ -111,33 +117,38 @@ export function useSlackReadingTools(plan: RuntimePlanV2, resolveEnv: () => Prom
   })) useTool(tool);
 }
 
-async function buildService(
-  plan: RuntimePlanV2,
-  signal: NonNullable<ReturnType<typeof parseSlackManagementSignal>>,
-  resolveEnv: () => Promise<PlatformEnv | undefined>,
+export async function slackReadingService(
+  plan: Pick<RuntimePlanV2, 'agentId' | 'actorMembershipId'>,
+  signal: SlackManagementSignal,
+  env: PlatformEnv | undefined,
 ): Promise<SlackReadingService> {
-  const env = await resolveEnv();
   const config = getConfigStore(env);
   const identity = getIdentityStore(env);
   const settings = getSettingsStore(env);
-  let installation;
+  let workspace: SlackInstallationExecutionContext;
+  let reader: SlackInstallationExecutionContext;
+  let appBots: AgentAppBot[];
   try {
-    installation = await resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
+    workspace = await resolveSlackInstallationExecutionContext(signal.workspaceId, env, {
       config,
       settings,
       credentialDependencies: getSlackCredentialResolutionDependencies(env),
       rejectRateLimitedCalls: true,
     });
+    [reader, appBots] = await Promise.all([readingBot(workspace, env, plan.agentId), listAgentAppBots(config)]);
   } catch {
     throw new SlackReadError('unavailable', SLACK_READ_MESSAGES.unavailable);
   }
-  const client = installation.client;
+  const client = reader.client;
+  const siblingBotUserIds = [workspace.botUserId, ...appBots.map((bot) => bot.botUserId)]
+    .filter((id): id is string => id !== undefined && id !== reader.botUserId);
   const authority = slackReadAuthorityPorts({
     workspaceId: signal.workspaceId,
     agentId: plan.agentId,
     requesterSlackUserId: signal.slackUserId,
     current: { channelId: signal.channelId, threadTs: signal.threadTs, messageTs: signal.messageTs },
     client,
+    ...(reader !== workspace ? { agentAppBot: true } : {}),
     // The same standing the Lists tools require: an active requester, an
     // enabled Agent, and the Agent's grant for the channel it is answering in.
     assertActive: async () => {
@@ -157,10 +168,27 @@ async function buildService(
     gate: createSlackReadGate({
       state: getSlackStateStore(env),
       workspaceId: signal.workspaceId,
-      gated: installation.sharedAppReads,
+      gated: reader.sharedAppReads,
     }),
     authority,
-    self: { botUserId: installation.botUserId },
+    self: { botUserId: reader.botUserId, ...(siblingBotUserIds.length ? { siblingBotUserIds } : {}) },
     record: config,
   });
+}
+
+/**
+ * The bot an Agent reads as: its own app's while that app is live, so it
+ * reads the Channels its bot is in, and Chickpea's otherwise.
+ */
+async function readingBot(
+  workspace: SlackInstallationExecutionContext,
+  env: PlatformEnv | undefined,
+  agentId: string,
+): Promise<SlackInstallationExecutionContext> {
+  try {
+    return await withAgentAppExecution(async () => workspace, env)(workspace.workspaceId, agentId);
+  } catch (error) {
+    if (error instanceof SlackInstallationUnavailableError && error.reasonCode === 'agent_app_unavailable') return workspace;
+    throw error;
+  }
 }

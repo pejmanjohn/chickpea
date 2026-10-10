@@ -56,7 +56,10 @@ In a Channel, an Agent with its own Slack app is mentioned by its bot, and
 that mention counts here like a handle. Chickpea's bot and the app's bot both
 receive such a message, and either delivery routes it the same way: the
 first to arrive admits every Agent it names, in order, and the other adds
-nothing. A message that mentions only Agent-app bots is answered on those
+nothing. If the first stops after admitting its first Agent, a later
+delivery, or Slack's retry, admits the Agents it had not reached yet, each
+once. A message whose first Agent's turn was never queued, such as a stop,
+admits nobody later. A message that mentions only Agent-app bots is answered on those
 apps' own deliveries. Without the host's Agent-app port (see
 [How it is turned on](slack-message-identity.md#how-it-is-turned-on)) no app
 is served, so its bot's mention addresses nobody, as before Agents had apps.

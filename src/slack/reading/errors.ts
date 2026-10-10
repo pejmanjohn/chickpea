@@ -55,6 +55,10 @@ export const SLACK_READ_MESSAGES: Record<SlackReadErrorCode, string> = {
   unavailable: 'Slack could not be read right now. Try again later or answer from what you have.',
 };
 
+/** `needs_bot_invite` for an Agent that reads as its own Slack app's bot. */
+export const SLACK_READ_AGENT_APP_INVITE =
+  'This Agent\'s own Slack app is not in that channel yet. Someone in the channel can add it from the channel\'s Add people or agents.';
+
 /**
  * Slack's answers for a conversation the app cannot see: missing, private
  * without the bot, or withheld. All three read as "not available" so a

@@ -492,6 +492,9 @@ routed `agentId`, and `delivery`: `installation` (Chickpea's own app) or
 line per Channel mention of Chickpea is expected, since Slack sends that
 mention as two events. A line naming an Agent that never answered the message
 points at routing: both deliveries of a message should admit the same turns.
+Such a delivery of a message naming several Agents also admits any of the
+others whose turn is not queued yet, so a delivery that stopped partway is
+finished by the next one.
 Filter a bounded capture with `wrangler tail --search turn.not_admitted`.
 
 ## Memory lease failures
@@ -505,8 +508,11 @@ answer was delivered). The lease holds while the Agent is enabled, the
 installation is not revoked, the bot delivering the reply is the
 installation's or the Agent's own live app's, the Agent's memory is unchanged
 since the turn read it, and, in a Channel, the Agent's grant stands and both
-the person and that bot are members. The turn's preceding `memory_metric`
-lines show `delivery_lease` and any `quarantine` reason. Filter with
+the person and that bot are members. A turn whose memory could not be
+prepared is quarantined: its lease always fails, so its line says
+`reason: "memory_quarantined"` instead, and the preceding `memory_metric`
+line with event `quarantine` gives the cause. The turn's preceding
+`memory_metric` lines show `delivery_lease` otherwise. Filter with
 `wrangler tail --search agent_failure`.
 
 ## Connection logs

@@ -41,6 +41,8 @@ import {
 } from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import { recordDeliveredSlackAgentMessage } from '../src/slack/public-context.ts';
+import { SLACK_READ_MESSAGES, SlackReadError } from '../src/slack/reading/errors.ts';
+import { slackReadingService } from '../src/slack/reading/tools.ts';
 import { createDirectSlackTransport } from '../src/slack/transport/direct.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
@@ -73,6 +75,7 @@ interface Harness {
   installedAt: number;
   /** The hosted bot's active credential revision. */
   hostedRevision: string;
+  ownerMembershipId: string;
   deliver(kind: 'events' | 'interactions', body: unknown, options?: { env?: PlatformEnv; secret?: string }): Promise<Response>;
   /** The same Slack event or click as Chickpea's own app receives it; settles once the work it detaches is done. */
   deliverToChickpea(body: unknown, kind?: 'events' | 'interactions'): Promise<Response>;
@@ -96,6 +99,7 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
  * `notMemberOf` names, per bot token, the Channels that bot is not in until it joins one; every bot is in every other Channel.
  * `privateChannels` are private; every other Channel is public.
  * `refuse` answers a call, keyed `<method> <token>`, with that Slack error.
+ * `history` and `replies` are the messages `conversations.history` and `conversations.replies` return.
  */
 async function withHarness(
   t: TestContext,
@@ -105,6 +109,8 @@ async function withHarness(
     notMemberOf?: Partial<Record<string, readonly string[]>>;
     privateChannels?: readonly string[];
     refuse?: Partial<Record<string, string>>;
+    history?: readonly Record<string, unknown>[];
+    replies?: readonly Record<string, unknown>[];
   } = {},
 ): Promise<void> {
   await stopNodeTurnRelay();
@@ -183,7 +189,9 @@ async function withHarness(
     if (refusal) return Response.json({ ok: false, error: refusal });
     if (method === 'conversations.join') outside.get(token ?? '')?.delete(channel);
     const answer = method === 'auth.test'
-      ? { ok: true, team_id: TEAM, user_id: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, team: 'Tenant' }
+      ? token === MAIN_BOT
+        ? { ok: true, team_id: TEAM, user_id: 'UBOT', bot_id: 'BCHICKPEA', app_id: MAIN_APP.appId, team: 'Tenant' }
+        : { ok: true, team_id: TEAM, user_id: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, team: 'Tenant' }
       : method === 'users.info'
         ? { ok: true, user: { id: user, team_id: TEAM, name: user, deleted: false, is_bot: false, is_app_user: false, is_restricted: false, is_ultra_restricted: false, is_stranger: false } }
         : method === 'conversations.info'
@@ -204,6 +212,8 @@ async function withHarness(
             }
             : method === 'conversations.open'
               ? { ok: true, channel: { id: 'DOWNER' } }
+              : method === 'conversations.history' || method === 'conversations.replies'
+                ? { ok: true, messages: (method === 'conversations.history' ? options.history : options.replies) ?? [] }
               : method.startsWith('chat.')
                 ? { ok: true, ts: '1900000000.000100', channel: body.get('channel') ?? 'D1' }
                 : { ok: true };
@@ -225,7 +235,7 @@ async function withHarness(
   };
   const delivery = withAgentSlackAppHandoff(base, { kind: 'delivery', agentId: support.id, appId: AGENT_APP, signingSecret: AGENT_SECRET });
   await run({
-    stores, calls, base, delivery, installedAt, hostedRevision, secrets,
+    stores, calls, base, delivery, installedAt, hostedRevision, secrets, ownerMembershipId: owner.membership.id,
     async deliver(kind, body, options = {}) {
       const raw = kind === 'events' ? JSON.stringify(body) : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
       return signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery);
@@ -561,6 +571,86 @@ test('a later delivery of a message the fallback lane admitted adds no turn and 
   ]);
 }));
 
+/** Each queued turn on one message, as [its Agent, its place among the Agents the message named]. */
+async function queuedFor(h: Harness, ts: string): Promise<Array<[string, number | undefined]>> {
+  return (await h.stores.slackState.listPendingTurns!())
+    .filter((job) => job.turn.messageTs === ts)
+    .map((job) => [job.assignment.agentId, job.turn.coAddressed?.position]);
+}
+
+/**
+ * The first delivery stops once the first Agent's turn is queued, before any
+ * other Agent's is admitted, as when its isolate ends. On the fallback lane
+ * the first turn is claimed and queued outside canonical admission.
+ */
+async function stopAfterFirstTurn(t: TestContext, h: Harness, lane: 'canonical' | 'fallback'): Promise<void> {
+  const state = h.stores.slackState;
+  const admitCanonical = state.admitCanonical.bind(state);
+  if (lane === 'fallback') t.mock.method(console, 'error', () => undefined);
+  let resume: (() => void) | undefined;
+  const stopped = new Promise<void>((reached) => {
+    state.admitCanonical = async (input) => {
+      if (lane === 'fallback' && !input.msgKey.includes(':ask-')) throw new Error('canonical admission unavailable');
+      if (!resume && input.msgKey.includes(':ask-')) {
+        reached();
+        await new Promise<void>((resolve) => { resume = resolve; });
+      }
+      return await admitCanonical(input);
+    };
+  });
+  t.mock.method(console, 'info', () => undefined);
+  const ts = lane === 'canonical' ? '1900001100.000100' : '1900001100.000200';
+  const message = channelMessage(ts, `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`);
+  const first = h.deliver('events', message.app);
+  await stopped;
+  assert.deepEqual(await queuedFor(h, ts), [['agent_support', 0]], "Support's turn is queued, and Finance's never was");
+
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+  assert.deepEqual(await queuedFor(h, ts), [['agent_support', 0], ['agent_finance', 1]], "Slack's retry admits Finance's turn, after Support's");
+
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  resume!();
+  assert.equal((await first).status, 200);
+  assert.deepEqual(await queuedFor(h, ts), [['agent_support', 0], ['agent_finance', 1]],
+    "another retry, Chickpea's delivery, and the stopped delivery finishing late add nothing");
+}
+
+test("a delivery that stopped after admitting the first Agent's turn has the other Agent's turn admitted by a later delivery, once", async (t) => withHarness(t, async (h) => {
+  await stopAfterFirstTurn(t, h, 'canonical');
+}));
+
+test("on the fallback lane too, a later delivery admits the other Agent's turn the stopped delivery never reached, once", async (t) => withHarness(t, async (h) => {
+  await stopAfterFirstTurn(t, h, 'fallback');
+}));
+
+test("Slack's retries of a message every Agent it named answered admit nothing again; a message whose claims were taken with nothing queued admits nobody", async (t) => withHarness(t, async (h) => {
+  const state = h.stores.slackState;
+  const admitCanonical = state.admitCanonical.bind(state);
+  const asks: string[] = [];
+  state.admitCanonical = async (input) => {
+    if (input.msgKey.includes(':ask-')) asks.push(input.msgKey);
+    return await admitCanonical(input);
+  };
+  const text = `<@${AGENT_BOT_USER}> and <!subteam^SFINANCE|@finance> compare our refund numbers`;
+  const ts = '1900001200.000100';
+  const message = channelMessage(ts, text);
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+  assert.deepEqual(asks, [`msg:C1:${ts}:ask-agent_finance`], "Finance's turn is admitted by the first delivery only");
+  assert.equal((await h.deliverToChickpea(message.chickpea)).status, 200);
+  assert.equal((await h.deliver('events', message.app)).status, 200);
+  assert.deepEqual(await queuedFor(h, ts), [['agent_support', 0], ['agent_finance', 1]]);
+  assert.equal(asks.length, 1, "a retry does not admit a queued guest's turn again");
+
+  // A stop, or a message refused before it was queued, holds its claims with no turn.
+  const refused = '1900001300.000100';
+  await state.claim(`evt:Evmessage${refused}`);
+  await state.claim(`msg:C1:${refused}`);
+  assert.equal((await h.deliverToChickpea(channelMessage(refused, text).chickpea)).status, 200);
+  assert.deepEqual(await queuedFor(h, refused), [], 'no guest answers a message its first Agent never took');
+}));
+
 test("the Agent's own reply, echoed back by Slack, stays its Agent's row in the thread record", async (t) => withHarness(t, async (h) => {
   const root = '1900000000.000100';
   const reply = '1900000000.000200';
@@ -580,6 +670,175 @@ test("the Agent's own reply, echoed back by Slack, stays its Agent's row in the 
   assert.deepEqual(rows.map((row) => [row.messageTs, row.role, row.agentId ?? null]), [[reply, 'agent', 'agent_support']],
     "the Agent's own post is not recorded again as another app's");
 }));
+
+/** One event as Chickpea's own app receives it. */
+function chickpeaEvent(eventId: string, event: Record<string, unknown>) {
+  return {
+    type: 'event_callback', event_id: eventId, event_time: Math.floor(Date.now() / 1_000), team_id: TEAM, api_app_id: MAIN_APP.appId,
+    authorizations: [{ team_id: TEAM, user_id: 'UBOT', is_bot: true, is_enterprise_install: false }],
+    event: { channel: 'C1', channel_type: 'channel', ...event },
+  };
+}
+
+async function setSupportApp(h: Harness, app: AgentAppLifecycle): Promise<void> {
+  const support = await h.stores.config.getAgent('agent_support');
+  assert.equal(support.slackPresence?.kind, 'agent_app');
+  if (support.slackPresence?.kind !== 'agent_app') return;
+  await h.stores.config.updateAgent(support.id, { slackPresence: { ...support.slackPresence, app } }, support.revision);
+}
+
+const UNINSTALLING: AgentAppLifecycle = {
+  state: 'uninstalling', at: Date.now(), startedBy: 'U1', app: { appId: AGENT_APP, clientId: '1.client' }, botUserId: AGENT_BOT_USER, next: 'uninstall',
+};
+
+/** A second Agent with its own live app; only its record matters here. */
+async function addBilling(h: Harness): Promise<void> {
+  const billing = await h.stores.config.createAgent(userAgent('agent_billing', 'Billing', 'billing'));
+  await h.stores.config.updateAgent(billing.id, {
+    slackPresence: {
+      kind: 'agent_app', requestedHandle: 'billing', normalizedHandle: 'billing', desiredState: 'active', health: 'healthy',
+      avatar: billing.slackPresence!.avatar, released: { userGroupId: 'SBILLING' },
+      app: {
+        state: 'active', at: h.installedAt, app: { appId: 'A0BILLING', clientId: '2.client' }, icon: 'agent_avatar',
+        botUserId: 'UBILLBOT', installedAt: h.installedAt, installedBy: 'U1',
+      },
+    },
+  }, billing.revision);
+}
+
+test("an Agent's reply Slack echoes after its app began uninstalling stays its Agent's row in the thread record", async (t) => withHarness(t, async (h) => {
+  const root = '1900001400.000100';
+  const reply = '1900001400.000200';
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs: root, agentId: 'agent_support', agentGeneration: 1 });
+  await recordDeliveredSlackAgentMessage(
+    h.stores.config,
+    { workspaceId: TEAM, channelId: 'C1', threadTs: root } as NormalizedSlackTurn,
+    { runtimeContract: 'chickpea-v1', agentId: 'agent_support' },
+    { messageTs: reply, text: 'Refunds go to account 99.' },
+  );
+  await setSupportApp(h, UNINSTALLING);
+  assert.equal((await h.deliverToChickpea(chickpeaEvent('EvLateEcho', {
+    type: 'message', user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, bot_profile: { app_id: AGENT_APP, name: 'support' },
+    text: 'Refunds go to account 99.', ts: reply, event_ts: reply, thread_ts: root,
+  }))).status, 200);
+  const rows = await h.stores.config.listSlackPublicContext(TEAM, 'C1', root);
+  assert.deepEqual(rows.map((row) => [row.messageTs, row.role, row.agentId ?? null]), [[reply, 'agent', 'agent_support']],
+    "the app's bot is still Support's while the app is being removed");
+}));
+
+const HANDOFF_ROOT = '1900001500.000100';
+const HANDOFF_TS = '1900001500.000600';
+
+test("a thread an app Agent owns with no record is handed over with its replies as that Agent's", async (t) => withHarness(t, async (h) => {
+  await addBilling(h);
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs: HANDOFF_ROOT, agentId: 'agent_billing', agentGeneration: 1 });
+  // A mention of Support's bot reaches its app as app_mention, which nothing records before routing reads the thread record.
+  assert.equal((await h.deliver('events', {
+    type: 'event_callback', event_id: 'EvTakeOver', event_time: Math.floor(Date.now() / 1_000), team_id: TEAM, api_app_id: AGENT_APP,
+    authorizations: [{ team_id: TEAM, user_id: AGENT_BOT_USER, is_bot: true, is_enterprise_install: false }],
+    event: {
+      type: 'app_mention', channel: 'C1', channel_type: 'channel', user: 'U1', text: `<@${AGENT_BOT_USER}> take over`,
+      ts: HANDOFF_TS, event_ts: HANDOFF_TS, thread_ts: HANDOFF_ROOT,
+    },
+  })).status, 200);
+  const route = await h.stores.config.getAgentThreadRoute(TEAM, 'C1', HANDOFF_ROOT);
+  assert.equal(route?.agentId, 'agent_support');
+  assert.deepEqual(route?.handoff?.context?.map((row) => [row.messageTs, row.role, row.agentId ?? null]), [
+    [HANDOFF_ROOT, 'human', null],
+    ['1900001500.000200', 'agent', 'agent_billing'],
+    ['1900001500.000300', 'agent', 'agent_support'],
+    ['1900001500.000400', 'agent', 'agent_billing'],
+    ['1900001500.000500', 'app', null],
+  ], "each app's replies are its Agent's; Chickpea's bot's are the previous owner's, as before; another app stays an app");
+}, {
+  replies: [
+    { user: 'U1', text: 'Can someone check the refund numbers?', ts: HANDOFF_ROOT },
+    { user: 'UBILLBOT', bot_id: 'BBILL', app_id: 'A0BILLING', bot_profile: { app_id: 'A0BILLING', name: 'billing' }, text: 'Refunds go to account 99.', ts: '1900001500.000200', thread_ts: HANDOFF_ROOT },
+    { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, bot_profile: { app_id: AGENT_APP, name: 'support' }, text: 'Support agrees.', ts: '1900001500.000300', thread_ts: HANDOFF_ROOT },
+    { user: 'UBOT', bot_id: 'BCHICKPEA', username: 'Billing', text: 'Earlier, before Billing had its app.', ts: '1900001500.000400', thread_ts: HANDOFF_ROOT },
+    { bot_id: 'B_PD', username: 'PagerDuty', text: 'checkout is down', ts: '1900001500.000500', thread_ts: HANDOFF_ROOT },
+    { user: 'U1', text: `<@${AGENT_BOT_USER}> take over`, ts: HANDOFF_TS, thread_ts: HANDOFF_ROOT },
+  ],
+}));
+
+/** Posts in #C2: Support's own app, Chickpea's bot as Finance, another app, and a person. */
+const C2_POSTS = [
+  { user: AGENT_BOT_USER, bot_id: 'BAGENT', app_id: AGENT_APP, bot_profile: { app_id: AGENT_APP, name: 'support' }, text: 'Refunds go to account 99.', ts: '1900001600.000100' },
+  { user: 'UBOT', bot_id: 'BCHICKPEA', username: 'Finance', text: 'The books are closed.', ts: '1900001600.000200' },
+  { bot_id: 'B_PD', username: 'PagerDuty', text: 'checkout is down', ts: '1900001600.000300' },
+  { user: 'U2', text: 'Thanks, all.', ts: '1900001600.000400' },
+];
+
+/** One read of #C2 by an Agent answering the Owner in #C1: its result, or its refusal, and the bot tokens its Slack reads used. */
+async function readC2(h: Harness, agentId: string): Promise<{
+  authors?: Array<[string, string | null]>; refused?: SlackReadError; tokens: Array<string | undefined>;
+}> {
+  await h.stores.config.putChannel({ workspaceId: TEAM, channelId: 'C2', label: 'refunds', lifecycle: 'active' }, 0).catch(() => undefined);
+  if (!(await h.stores.config.listAgentChannelGrants(TEAM, 'C2')).some((grant) => grant.agentId === agentId)) {
+    await h.stores.config.putAgentChannelGrant({
+      workspaceId: TEAM, channelId: 'C2', agentId, status: 'active',
+      createdByMembershipId: h.ownerMembershipId, channelLabel: 'refunds', channelIsPrivate: false,
+    }, 0);
+  }
+  const before = h.calls.length;
+  const service = await slackReadingService({ agentId, actorMembershipId: h.ownerMembershipId }, {
+    agentId, workspaceId: TEAM, channelId: 'C1', threadTs: '1900001700.000100', conversationKind: 'channel',
+    slackUserId: 'U1', eventId: 'EvRead', messageTs: '1900001700.000100', turnJobId: 'job_read',
+  }, withHostedSlackApp(h.base, MAIN_APP));
+  // Resolving the installation checks Chickpea's bot with auth.test first, whichever bot then reads.
+  const tokens = () => [...new Set(h.calls.slice(before).filter((call) => call.method !== 'auth.test').map((call) => call.token))];
+  try {
+    const result = await service.readChannel({ target: { channelId: 'C2' } }) as { messages: Array<{ author: { kind: string; name?: string } }> };
+    return {
+      authors: result.messages.map(({ author }) => [author.kind, author.kind === 'person' ? null : author.name ?? null]),
+      tokens: tokens(),
+    };
+  } catch (error) {
+    assert.ok(error instanceof SlackReadError);
+    return { refused: error, tokens: tokens() };
+  }
+}
+
+test("an Agent with a live app reads Slack as its own bot, so a Channel Chickpea's bot isn't in is readable, and its own posts read as an Agent's", async (t) => withHarness(t, async (h) => {
+  const support = await readC2(h, 'agent_support');
+  assert.deepEqual(support.tokens, [AGENT_BOT], "every read is the Agent's own bot's");
+  assert.deepEqual(support.authors, [['agent', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]],
+    "its own post and Chickpea's bot's are Agents'; another app is an app");
+  assert.equal((await readC2(h, 'agent_support')).authors?.length, 4, "its app's own reads are not held to the shared app's pace");
+
+  const finance = await readC2(h, 'agent_finance');
+  assert.deepEqual(finance.tokens, [MAIN_BOT], "a user-group Agent reads as Chickpea's bot, as before");
+  assert.equal(finance.refused?.code, 'needs_bot_invite');
+  assert.equal(finance.refused?.message, SLACK_READ_MESSAGES.needs_bot_invite, "Chickpea's bot is missing there, and says so as before");
+}, { notMemberOf: { [MAIN_BOT]: ['C2'] }, history: C2_POSTS }));
+
+test("an app Agent whose own bot isn't in a Channel is told its own app is missing there, not Chickpea's", async (t) => withHarness(t, async (h) => {
+  const { refused, tokens } = await readC2(h, 'agent_support');
+  assert.deepEqual(tokens, [AGENT_BOT]);
+  assert.equal(refused?.code, 'needs_bot_invite');
+  assert.equal(refused?.message, "This Agent's own Slack app is not in that channel yet. Someone in the channel can add it from the channel's Add people or agents.");
+}, { notMemberOf: { [AGENT_BOT]: ['C2'] }, history: C2_POSTS }));
+
+// Chickpea's shared app reads once a minute per workspace, so each case below reads in a workspace of its own.
+test("a user-group Agent reads as Chickpea's bot, as before, and reads an app Agent's posts as an Agent's", async (t) => withHarness(t, async (h) => {
+  const finance = await readC2(h, 'agent_finance');
+  assert.deepEqual(finance.tokens, [MAIN_BOT]);
+  assert.deepEqual(finance.authors, [['agent', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]]);
+}, { history: C2_POSTS }));
+
+test("an Agent whose app is being removed reads as Chickpea's bot", async (t) => withHarness(t, async (h) => {
+  await setSupportApp(h, UNINSTALLING);
+  const removing = await readC2(h, 'agent_support');
+  assert.deepEqual(removing.tokens, [MAIN_BOT]);
+  assert.deepEqual(removing.authors, [['agent', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]]);
+}, { history: C2_POSTS }));
+
+test("without the port an app Agent reads as Chickpea's bot, and its app's posts are an app's, as before", async (t) => withHarness(t, async (h) => {
+  configureAgentSlackApps(undefined);
+  const unserved = await readC2(h, 'agent_support');
+  assert.deepEqual(unserved.tokens, [MAIN_BOT], 'no app is served');
+  assert.deepEqual(unserved.authors, [['app', 'support'], ['agent', 'Finance'], ['app', 'PagerDuty'], ['person', null]]);
+}, { history: C2_POSTS }));
 
 async function hostedBotIsLost(h: Harness): Promise<void> {
   await assert.rejects(resolveSlackInstallationCredentials(slackInstallationCredentialId(h.base), h.base), SlackCredentialRecoveryOnlyError);

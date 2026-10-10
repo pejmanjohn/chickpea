@@ -49,6 +49,8 @@ interface PreparedMemoryTurn {
   footerItems: string[];
   visibilityBarrierAt: null;
   ownerBound: true;
+  /** The memory could not be prepared: the turn has none, and its lease always fails. */
+  quarantined?: true;
   validateLease(): Promise<boolean>;
   /** Only for a host acknowledgement after independently verifying an applied receipt. */
   validateReceiptLease?(revision: number): Promise<boolean>;
@@ -212,6 +214,7 @@ export async function prepareMemoryTurn(input: {
       footerItems: [],
       visibilityBarrierAt: null,
       ownerBound: true,
+      quarantined: true,
       validateLease: async () => false,
       confirmInjection: async () => true,
     };
