@@ -1113,6 +1113,16 @@ async function waitForFinalCount(backend, minFinals, timeoutMs) {
   return backend.finals();
 }
 
+/** Onboarding completes once its reply is recorded as shown, which can trail the reply's post; the last read on timeout. */
+async function waitForOnboardingComplete(baseUrl, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const onboarding = await adminFetch(baseUrl, '/admin/api/onboarding');
+    if ((onboarding.status === 200 && onboarding.body?.stage === 'complete') || Date.now() >= deadline) return onboarding;
+    await delay(250);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length > 0) {
@@ -1707,7 +1717,7 @@ async function main() {
       onboardingFinals.some((final) => final.channel === ONBOARDING_DM_CHANNEL),
       'Chickpea delivered the onboarding reply in the installer DM',
     );
-    const completedOnboarding = await adminFetch(baseUrl, '/admin/api/onboarding');
+    const completedOnboarding = await waitForOnboardingComplete(baseUrl);
     check(
       completedOnboarding.status === 200 && completedOnboarding.body?.stage === 'complete',
       'a delivered installer DM completes onboarding',
