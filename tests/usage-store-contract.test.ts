@@ -406,21 +406,44 @@ test('usage schema initialization is additive beside existing application data',
   }
 });
 
-test('a credential epoch takes a new label in place but refuses any other change', async () => {
-  const store = new SqliteUsageStore(':memory:');
+test('a credential epoch takes a new label in place, audited, but refuses any other change', async () => {
+  let now = START;
+  const store = new SqliteUsageStore(':memory:', () => now);
   try {
     const epoch = {
       credentialRefId: 'platform:openai', version: 1, providerId: 'openai', sourceKind: 'platform' as const,
-      label: 'Old label', scopeLabel: null, unknownRotation: false, activeFrom: 0,
+      label: 'Old label', scopeLabel: 'Project', unknownRotation: false, activeFrom: 0,
     };
     await store.putCredential(epoch);
-    const relabelled = await store.putCredential({ ...epoch, label: 'New label', scopeLabel: 'Project' });
+    now = START + 1;
+    const relabelled = await store.putCredential({ ...epoch, label: 'New label' });
     assert.deepEqual([relabelled.version, relabelled.label, relabelled.scopeLabel], [1, 'New label', 'Project']);
     assert.deepEqual(
       (await store.listCredentials('openai')).map(({ version, label, scopeLabel }) => ({ version, label, scopeLabel })),
       [{ version: 1, label: 'New label', scopeLabel: 'Project' }],
     );
-    for (const changed of [{ sourceKind: 'stored' as const }, { unknownRotation: true }, { activeFrom: 1 }]) {
+    now = START + 2;
+    await store.putCredential({ ...epoch, label: 'New label' });
+    now = START + 3;
+    await store.putCredential(epoch);
+    assert.deepEqual(
+      (await store.listUsageAuditEvents())
+        .filter(({ eventType }) => eventType === 'usage.credential_relabeled')
+        .map(({ subjectId, subjectVersion, createdAt }) => ({ subjectId, subjectVersion, createdAt }))
+        .sort((left, right) => left.createdAt - right.createdAt),
+      [
+        { subjectId: 'platform:openai', subjectVersion: 1, createdAt: START + 1 },
+        { subjectId: 'platform:openai', subjectVersion: 1, createdAt: START + 3 },
+      ],
+      'one event per relabel, none for the same label again',
+    );
+    for (const changed of [
+      { scopeLabel: 'Another project' },
+      { scopeLabel: null },
+      { sourceKind: 'stored' as const },
+      { unknownRotation: true },
+      { activeFrom: 1 },
+    ]) {
       await assert.rejects(
         store.putCredential({ ...epoch, ...changed }),
         (error: unknown) => error instanceof UsageStateError && error.code === 'usage_credential_conflict',

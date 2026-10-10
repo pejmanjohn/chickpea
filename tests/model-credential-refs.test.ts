@@ -201,6 +201,40 @@ test('environment, Workers binding, and custom refs are deterministic with hones
   }
 });
 
+test('an environment project that changes without a new epoch keeps its recorded scope and warns', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const usage = new SqliteUsageStore(':memory:');
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  const resolve = (processEnv: NodeJS.ProcessEnv) => resolveModelCredentialAttribution(
+    'openai/gpt-4.1-mini', undefined, settings, usage, { processEnv },
+  );
+  const recorded = async () => (await usage.listCredentials('openai'))
+    .map(({ version, scopeLabel }) => ({ version, scopeLabel }));
+  try {
+    await resolve({ OPENAI_API_KEY: 'environment-secret', OPENAI_PROJECT_ID: 'proj_first' });
+    await resolve({ OPENAI_API_KEY: 'environment-secret', OPENAI_PROJECT_ID: 'proj_second' });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /credential registry/);
+    assert.doesNotMatch(warnings[0]!, /environment-secret|proj_/);
+    assert.deepEqual(await recorded(), [{ version: 1, scopeLabel: 'proj_first' }]);
+
+    await resolve({
+      OPENAI_API_KEY: 'environment-secret', OPENAI_PROJECT_ID: 'proj_second', OPENAI_CREDENTIAL_EPOCH: '2',
+    });
+    assert.equal(warnings.length, 1, 'a new epoch records the new project without a warning');
+    assert.deepEqual(
+      (await recorded()).sort((left, right) => left.version - right.version),
+      [{ version: 1, scopeLabel: 'proj_first' }, { version: 2, scopeLabel: 'proj_second' }],
+    );
+  } finally {
+    console.warn = originalWarn;
+    settings.close();
+    usage.close();
+  }
+});
+
 test('credential attribution remains available when the reporting store is unavailable', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const usage = {
