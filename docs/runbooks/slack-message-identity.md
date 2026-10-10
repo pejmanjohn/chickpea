@@ -90,7 +90,10 @@ the port on its staging deployment only, behind its own staging-only switch.
   is dropped and the Owner is told, and Allow adds it back. The workspace's
   installation and other Agents are unchanged.
 - When a tenant ends, the host retires every Agent app before the workspace's
-  own uninstall and records each outcome.
+  own uninstall and records each outcome. Retiring an app needs only that
+  app's own credentials and the configuration token, so it goes on when the
+  workspace bot's credentials cannot be read; an Owner message it then cannot
+  send makes that app's outcome `left_for_owner`.
 
 ### The configuration token's limits
 

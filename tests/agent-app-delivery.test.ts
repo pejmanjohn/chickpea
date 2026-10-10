@@ -17,16 +17,22 @@ import {
   agentSlackAppIngress,
   configureAgentSlackApps,
   endAgentSlackApp,
+  retireAgentSlackApps,
   withAgentSlackAppHandoff,
 } from '../src/slack/agent-apps/host.ts';
 import { createAgentSlackAppRoutes } from '../src/slack/agent-apps/index.ts';
-import { readAppSecrets, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
+import { readAppSecrets, saveConfigurationToken, writeAppSecrets } from '../src/slack/agent-apps/secrets.ts';
 import { createAgentAppSlackApi } from '../src/slack/agent-apps/slack-api.ts';
-import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
+import { generateCredentialKeyring, loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { invalidateStoredSlackPublicUrl } from '../src/slack/credentials.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
-import { withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
-import { invalidateSlackInstallationCredentialCache, writeHostedSlackBotCredentials } from '../src/slack/installation-credentials.ts';
+import { slackInstallationCredentialId, withHostedSlackApp } from '../src/slack/hosted-slack-app.ts';
+import {
+  invalidateSlackInstallationCredentialCache,
+  resolveSlackInstallationCredentials,
+  SlackCredentialRecoveryOnlyError,
+  writeHostedSlackBotCredentials,
+} from '../src/slack/installation-credentials.ts';
 import { stopNodeTurnRelay } from '../src/slack/node-turn-relay.ts';
 import type { PendingTurnJob } from '../src/slack/turn-jobs.ts';
 import { uiActionId, uiBlockId, uiSurfaceId, uiValue } from '../src/slack/ui/surface.ts';
@@ -70,7 +76,8 @@ function userAgent(id: string, name: string, handle: string): CustomAgentConfig 
   };
 }
 
-async function withHarness(t: TestContext, run: (harness: Harness) => Promise<void>): Promise<void> {
+/** `lostHostedBot` writes the hosted bot's bundle under a key this deployment never holds, so it cannot be read. */
+async function withHarness(t: TestContext, run: (harness: Harness) => Promise<void>, options: { lostHostedBot?: boolean } = {}): Promise<void> {
   await stopNodeTurnRelay();
   const keys = ['TAG_DB_PATH', 'SLACK_STATE_DB_PATH', 'CHICKPEA_AUTH_DB_PATH', 'CHICKPEA_CREDENTIAL_KEYRING_PATH'] as const;
   const previous = keys.map((key) => process.env[key]);
@@ -99,7 +106,8 @@ async function withHarness(t: TestContext, run: (harness: Harness) => Promise<vo
   const base = scopeInstallationEnv(HOSTED, { installationId: 'inst_tenant_a' });
   const stores = resolveStores(base);
   const owner = await createSlackOwner(stores.identity, { teamId: TEAM, userId: 'U1' });
-  await writeHostedSlackBotCredentials({ state: stores.identity, keyring: loadCredentialKeyring() }, null, {
+  const hostedKeyring = options.lostHostedBot ? generateCredentialKeyring('key_lost') : loadCredentialKeyring();
+  await writeHostedSlackBotCredentials({ state: stores.identity, keyring: hostedKeyring }, null, {
     botToken: MAIN_BOT, botUserId: 'UBOT', appId: MAIN_APP.appId, teamId: TEAM,
     grantedScopes: ['chat:write', 'users:read'], validatedAt: Date.now(),
   });
@@ -342,3 +350,30 @@ test("a click on the app Agent's approval card reaches that Agent, as the thread
     'the click never takes the thread over',
   );
 }));
+
+async function hostedBotIsLost(h: Harness): Promise<void> {
+  await assert.rejects(resolveSlackInstallationCredentials(slackInstallationCredentialId(h.base), h.base), SlackCredentialRecoveryOnlyError);
+  h.calls.length = 0;
+}
+
+test("a tenant's end retires an Agent app with its own credentials when the hosted bot's cannot be read", async (t) => withHarness(t, async (h) => {
+  const rotated = { accessToken: 'xoxe.xoxp-1-config-access', refreshToken: 'xoxe-1-config-refresh', teamId: TEAM, expiresAt: Date.now() + 12 * 3_600_000 };
+  assert.equal(await saveConfigurationToken({ ...h.secrets(), slack: { rotate: async () => rotated } }, TEAM, 'xoxe-1-pasted-token-0000'), 'saved');
+  await hostedBotIsLost(h);
+
+  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'removed' }]);
+  assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [
+    ['apps.uninstall', AGENT_BOT],
+    ['apps.manifest.delete', rotated.accessToken],
+  ], "the app's own bot and the configuration token are all it takes");
+  assert.equal((await h.stores.config.getAgent('agent_support')).slackPresence?.kind, undefined, 'the handle is back with its user group');
+  assert.equal(await readAppSecrets(h.secrets(), AGENT_APP), undefined);
+}, { lostHostedBot: true }));
+
+test("a tenant's end that cannot tell the Owner about a left app still uninstalls it and names it for the Owner", async (t) => withHarness(t, async (h) => {
+  await hostedBotIsLost(h);
+
+  assert.deepEqual(await retireAgentSlackApps(h.base), [{ agentId: 'agent_support', outcome: 'left_for_owner' }]);
+  assert.deepEqual(h.calls.map(({ method, token }) => [method, token]), [['apps.uninstall', AGENT_BOT]],
+    'the app is uninstalled with its own bot; without a configuration token its definition stays, and the Owner cannot be messaged');
+}, { lostHostedBot: true }));

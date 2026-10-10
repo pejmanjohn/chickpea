@@ -15,7 +15,7 @@ import { agentSlackAppsHost, type AgentAppRetirement, type AgentSlackAppIngress,
 import { FINISH_APP_ACTION, START_APP_ACTION, TRY_AGAIN_ACTION } from './pages.ts';
 import { agentAppIsLive, agentAppRecord } from './lifecycle.ts';
 import { readAppSecrets, type SecretDeps } from './secrets.ts';
-import { AgentSlackApps } from './service.ts';
+import { AgentSlackApps, type AgentAppTransport } from './service.ts';
 import { createAgentAppSlackApi } from './slack-api.ts';
 import { loadCredentialKeyring } from '../credential-keyring.ts';
 
@@ -207,13 +207,35 @@ const AGENT_APP_ACTIONS = new Set([START_APP_ACTION, FINISH_APP_ACTION, TRY_AGAI
 /** The service over an installation's live stores, main bot and public URL. */
 export async function liveAgentSlackApps(env: PlatformEnv | undefined, host: AgentSlackAppsHost): Promise<AgentSlackApps> {
   const stores = resolveStores(env);
-  const settings = getSettingsStore(env);
-  const credentials = await resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env);
   return new AgentSlackApps({
     env,
-    stores: { config: stores.config, settings },
+    stores: { config: stores.config, settings: getSettingsStore(env) },
     host,
-    transport: createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken),
+    transport: mainBotTransport(env),
     publicOrigin: () => resolveSlackPublicUrl(env, stores.settings, stores.identity),
   });
+}
+
+/**
+ * The installation's own bot, read only when a step needs it (an Owner's DM,
+ * the handle's user group). Uninstalling and deleting an app use that app's
+ * credentials and the configuration token, so they go on when this bot's
+ * credentials cannot be read.
+ */
+function mainBotTransport(env: PlatformEnv | undefined): AgentAppTransport {
+  let resolved: Promise<AgentAppTransport> | undefined;
+  const bot = (): Promise<AgentAppTransport> => {
+    if (!resolved) {
+      resolved = resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env)
+        .then((credentials) => createDirectSlackTransport(credentials.botToken ?? '', credentials.userGroupToken));
+      resolved.catch(() => { resolved = undefined; });
+    }
+    return resolved;
+  };
+  return {
+    disableUserGroup: async (id) => (await bot()).disableUserGroup(id),
+    enableUserGroup: async (id) => (await bot()).enableUserGroup(id),
+    openDirectConversation: async (userId) => (await bot()).openDirectConversation(userId),
+    postMessage: async (input) => (await bot()).postMessage(input),
+  };
 }
