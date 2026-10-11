@@ -9,6 +9,7 @@ import {
   type OAuthClientMetadata,
   type OAuthClientProvider,
   type OAuthDiscoveryState,
+  type OAuthProtectedResourceMetadata,
   type StoredOAuthClientInformation,
   type StoredOAuthTokens,
 } from '@modelcontextprotocol/client';
@@ -27,6 +28,40 @@ import { CLI_VERSION } from './version.ts';
 export const CLI_CLIENT_NAME = 'Chickpea CLI';
 const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60_000;
 const LOOPBACK_HOST = '127.0.0.1';
+
+function oauthIssuer(origin: string): string {
+  return `${origin}/api/auth`;
+}
+
+function assertDeploymentDiscovery(
+  origin: string,
+  state: OAuthDiscoveryState,
+  options: { requireServerMetadata?: boolean } = {},
+): void {
+  const expectedIssuer = oauthIssuer(origin);
+  const resource = state.resourceMetadata;
+  const authorizationServers = resource?.authorization_servers;
+  const metadata = state.authorizationServerMetadata;
+  const metadataMatches = metadata !== undefined &&
+    metadata.issuer === expectedIssuer &&
+    metadata.authorization_endpoint === `${expectedIssuer}/oauth2/authorize` &&
+    metadata.token_endpoint === `${expectedIssuer}/oauth2/token` &&
+    metadata.registration_endpoint === `${expectedIssuer}/oauth2/register`;
+
+  if (state.authorizationServerUrl !== expectedIssuer ||
+      resource?.resource !== mcpUrl(origin) ||
+      !Array.isArray(authorizationServers) ||
+      authorizationServers.length !== 1 ||
+      authorizationServers[0] !== expectedIssuer ||
+      (metadata !== undefined && !metadataMatches) ||
+      (options.requireServerMetadata === true && !metadataMatches)) {
+    throw new CliError(
+      'DISCOVERY_FAILED',
+      `${origin} names an unexpected OAuth issuer or endpoint`,
+      'Refuse this deployment URL and ask its operator to repair OAuth discovery',
+    );
+  }
+}
 
 export interface AuthDeps {
   fetch: typeof fetch;
@@ -69,6 +104,7 @@ class CliOAuthProvider implements OAuthClientProvider {
     store: CredentialStore;
     mode: ProviderMode;
     now: () => number;
+    initialDiscovery?: OAuthDiscoveryState;
     loginRedirectUrl?: string;
     onRedirect?: (url: URL) => Promise<void>;
   }) {
@@ -77,6 +113,8 @@ class CliOAuthProvider implements OAuthClientProvider {
       this.client = entry?.client;
       this.storedTokens = entry?.tokens;
       this.discovery = entry?.discovery;
+    } else {
+      this.discovery = options.initialDiscovery;
     }
   }
 
@@ -146,10 +184,12 @@ class CliOAuthProvider implements OAuthClientProvider {
   }
 
   discoveryState(): OAuthDiscoveryState | undefined {
+    if (this.discovery) assertDeploymentDiscovery(this.options.origin, this.discovery);
     return this.discovery;
   }
 
   saveDiscoveryState(state: OAuthDiscoveryState): void {
+    assertDeploymentDiscovery(this.options.origin, state, { requireServerMetadata: true });
     this.discovery = state;
     this.persistIfSession();
   }
@@ -221,7 +261,7 @@ async function startLoopbackListener(): Promise<LoopbackListener> {
  * three common failures get their own code: unfinished setup (404), a URL
  * that is not the deployment's canonical origin, and a non-Chickpea host.
  */
-async function preflightDiscovery(origin: string, deps: AuthDeps): Promise<void> {
+async function preflightDiscovery(origin: string, deps: AuthDeps): Promise<OAuthDiscoveryState> {
   let response: Response;
   try {
     response = await deps.fetch(`${origin}/.well-known/oauth-protected-resource/mcp`, {
@@ -242,19 +282,34 @@ async function preflightDiscovery(origin: string, deps: AuthDeps): Promise<void>
   if (response.status !== 200) {
     throw new CliError('DISCOVERY_FAILED', `${origin} answered HTTP ${response.status} for its OAuth metadata`, 'Run: chickpea doctor <deployment-url>');
   }
-  let resource: unknown;
+  let document: OAuthProtectedResourceMetadata;
   try {
-    resource = (JSON.parse(text) as { resource?: unknown }).resource;
+    document = JSON.parse(text) as OAuthProtectedResourceMetadata;
   } catch {
     throw new CliError('DISCOVERY_FAILED', `${origin} did not return OAuth metadata`, 'Check that the URL points at a Chickpea deployment');
   }
+  const resource = document.resource;
   if (resource !== mcpUrl(origin)) {
     throw new CliError('WRONG_ORIGIN', `${origin} is not the deployment's canonical origin (its MCP resource is ${String(resource)})`, 'Sign in with the canonical origin instead');
   }
+  const expectedIssuer = oauthIssuer(origin);
+  if (!Array.isArray(document.authorization_servers) ||
+      document.authorization_servers.length !== 1 ||
+      document.authorization_servers[0] !== expectedIssuer) {
+    throw new CliError(
+      'DISCOVERY_FAILED',
+      `${origin} names an unexpected OAuth issuer`,
+      'Refuse this deployment URL and ask its operator to repair OAuth discovery',
+    );
+  }
+  return {
+    authorizationServerUrl: expectedIssuer,
+    resourceMetadata: document,
+  };
 }
 
 export async function login(origin: string, deps: AuthDeps, options: LoginOptions = {}): Promise<LoginResult> {
-  await preflightDiscovery(origin, deps);
+  const initialDiscovery = await preflightDiscovery(origin, deps);
   const listener = await startLoopbackListener();
   const serverUrl = mcpUrl(origin);
   const provider = new CliOAuthProvider({
@@ -262,6 +317,7 @@ export async function login(origin: string, deps: AuthDeps, options: LoginOption
     store: deps.store,
     mode: 'login',
     now: deps.now,
+    initialDiscovery,
     loginRedirectUrl: listener.redirectUrl,
     onRedirect: async (url) => {
       deps.note(`Opening your browser to sign in to ${origin}.`);
@@ -324,13 +380,12 @@ export interface LogoutResult {
 export async function logout(origin: string, deps: AuthDeps): Promise<LogoutResult> {
   const entry = deps.store.read(origin);
   if (!entry) throw new CliError('NOT_LOGGED_IN', `No saved session for ${origin}`, `Nothing to revoke. Sign in with: chickpea login ${origin}`);
-  const metadata = entry.discovery?.authorizationServerMetadata as Record<string, unknown> | undefined;
-  const endpoint = typeof metadata?.revocation_endpoint === 'string'
-    ? metadata.revocation_endpoint
-    : `${origin}/api/auth/oauth2/revoke`;
-  const clientId = entry.client?.client_id;
+  const expectedIssuer = oauthIssuer(origin);
+  const credentialsAreBound = entry.client?.issuer === expectedIssuer && entry.tokens?.issuer === expectedIssuer;
+  const endpoint = `${expectedIssuer}/oauth2/revoke`;
+  const clientId = credentialsAreBound ? entry.client?.client_id : undefined;
   let revoked = false;
-  if (clientId && entry.tokens) {
+  if (clientId && credentialsAreBound && entry.tokens) {
     const attempts: Array<[string | undefined, 'refresh_token' | 'access_token']> = [
       [entry.tokens.refresh_token, 'refresh_token'],
       [tokensExpired(entry.tokens, deps.now(), 0) ? undefined : entry.tokens.access_token, 'access_token'],
@@ -369,6 +424,14 @@ export async function connectManagementClient(origin: string, deps: AuthDeps): P
   const entry = deps.store.read(origin);
   if (!entry?.tokens || !entry.client) {
     throw new CliError('NOT_LOGGED_IN', `No saved session for ${origin}`, `Sign in with: chickpea login ${origin}`);
+  }
+  const expectedIssuer = oauthIssuer(origin);
+  if (entry.tokens.issuer !== expectedIssuer || entry.client.issuer !== expectedIssuer) {
+    throw new CliError(
+      'SESSION_EXPIRED',
+      `The saved session for ${origin} is not bound to this deployment's OAuth issuer`,
+      `Sign in again with: chickpea login ${origin}`,
+    );
   }
   const provider = new CliOAuthProvider({ origin, store: deps.store, mode: 'session', now: deps.now });
   const serverUrl = mcpUrl(origin);

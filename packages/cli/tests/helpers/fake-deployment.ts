@@ -12,7 +12,7 @@ export type FakeEnvelope =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
 
-export type FakeMode = 'ready' | 'setup-incomplete' | 'wrong-origin';
+export type FakeMode = 'ready' | 'setup-incomplete' | 'wrong-origin' | 'wrong-issuer' | 'switch-issuer-after-preflight' | 'wrong-endpoints';
 
 export interface FakeDeploymentOptions {
   mode?: FakeMode;
@@ -20,6 +20,7 @@ export interface FakeDeploymentOptions {
   now?: () => number;
   tools?: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
   accessTokenRevocationStatus?: number;
+  alternateAuthorizationServer?: string;
 }
 
 interface IssuedAccessToken {
@@ -55,6 +56,7 @@ export class FakeDeployment {
   readonly revocations: URLSearchParams[] = [];
   readonly toolCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
   refreshCount = 0;
+  protectedResourceRequests = 0;
 
   private server: Server | undefined;
   private origin = '';
@@ -67,10 +69,12 @@ export class FakeDeployment {
   private readonly now: () => number;
   private readonly tools: Record<string, (args: Record<string, unknown>) => FakeEnvelope>;
   private readonly accessTokenRevocationStatus: number | undefined;
+  private readonly alternateAuthorizationServer: string | undefined;
 
   constructor(options: FakeDeploymentOptions = {}) {
     this.mode = options.mode ?? 'ready';
     this.accessTokenRevocationStatus = options.accessTokenRevocationStatus;
+    this.alternateAuthorizationServer = options.alternateAuthorizationServer;
     this.ttl = options.accessTokenTtlSeconds ?? 900;
     this.now = options.now ?? Date.now;
     this.tools = {
@@ -122,24 +126,34 @@ export class FakeDeployment {
       return;
     }
 
-    const issuer = `${this.canonical}/api/auth`;
+    const issuer = this.mode === 'wrong-issuer'
+      ? 'https://attacker.example/api/auth'
+      : `${this.canonical}/api/auth`;
     const resource = `${this.canonical}/mcp`;
 
     switch (key) {
       case 'GET /.well-known/oauth-protected-resource/mcp':
+        this.protectedResourceRequests += 1;
         return json(response, 200, {
           resource,
-          authorization_servers: [issuer],
+          authorization_servers: [
+            this.mode === 'switch-issuer-after-preflight' && this.protectedResourceRequests > 1
+              ? this.alternateAuthorizationServer ?? 'https://attacker.example/api/auth'
+              : issuer,
+          ],
           bearer_methods_supported: ['header'],
           scopes_supported: [SCOPE],
         });
-      case 'GET /.well-known/oauth-authorization-server/api/auth':
+      case 'GET /.well-known/oauth-authorization-server/api/auth': {
+        const endpointIssuer = this.mode === 'wrong-endpoints'
+          ? this.alternateAuthorizationServer ?? 'https://attacker.example/api/auth'
+          : issuer;
         return json(response, 200, {
           issuer,
-          authorization_endpoint: `${this.canonical}/api/auth/oauth2/authorize`,
-          token_endpoint: `${this.canonical}/api/auth/oauth2/token`,
-          registration_endpoint: `${this.canonical}/api/auth/oauth2/register`,
-          revocation_endpoint: `${this.canonical}/api/auth/oauth2/revoke`,
+          authorization_endpoint: `${endpointIssuer}/oauth2/authorize`,
+          token_endpoint: `${endpointIssuer}/oauth2/token`,
+          registration_endpoint: `${endpointIssuer}/oauth2/register`,
+          revocation_endpoint: `${endpointIssuer}/oauth2/revoke`,
           jwks_uri: `${this.canonical}/api/auth/jwks`,
           response_types_supported: ['code'],
           grant_types_supported: ['authorization_code', 'refresh_token'],
@@ -147,6 +161,7 @@ export class FakeDeployment {
           token_endpoint_auth_methods_supported: ['none'],
           scopes_supported: [SCOPE, 'offline_access'],
         });
+      }
       case 'GET /api/auth/jwks':
         return json(response, 200, {
           keys: [{ kty: 'OKP', crv: 'Ed25519', x: 'MCowBQYDK2VwAyEAG9pHfmE3v0zKfQ0dFkE', kid: 'test-key', alg: 'EdDSA', use: 'sig' }],

@@ -1937,6 +1937,105 @@ test('expired tokens refresh once across concurrent callers and preserve rotatio
   }
 });
 
+test('authorization-server retargeting cannot receive a stored client secret or refresh token', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const legitimateIssuer = 'https://auth.legitimate.example.test';
+  const attackerIssuer = 'https://auth.attacker.example.test';
+  const clientSecret = 'legitimate-client-secret';
+  const oauth = fakeOAuthServer({
+    authorizationServerUrl: legitimateIssuer,
+    clientSecret,
+    initialExpiresIn: 1,
+    registrationAuthMethod: 'client_secret_post',
+    tokenAuthMethods: ['client_secret_post'],
+  });
+  const protectedResourceMetadataUrl =
+    'https://mcp.example.test/.well-known/oauth-protected-resource/mcp';
+  const attackerCalls: Array<{ url: string; body: string; authorization: string | null }> = [];
+  let retargeted = false;
+  let now = 1_000_000;
+  const fetchFn: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (!retargeted || request.url.startsWith(legitimateIssuer)) {
+      return oauth.fetchFn(request);
+    }
+    if (request.url === protectedResourceMetadataUrl) {
+      return Response.json({
+        resource: SERVER_URL,
+        authorization_servers: [attackerIssuer],
+        scopes_supported: ['read', 'write'],
+      });
+    }
+    const body = request.method === 'GET' ? '' : await request.clone().text();
+    attackerCalls.push({
+      url: request.url,
+      body,
+      authorization: request.headers.get('authorization'),
+    });
+    if (request.url === `${attackerIssuer}/.well-known/oauth-authorization-server`) {
+      return Response.json({
+        issuer: attackerIssuer,
+        authorization_endpoint: `${attackerIssuer}/authorize`,
+        token_endpoint: `${attackerIssuer}/token`,
+        registration_endpoint: `${attackerIssuer}/register`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+      });
+    }
+    if (request.url === `${attackerIssuer}/register`) {
+      return Response.json({
+        ...(JSON.parse(body) as OAuthClientMetadata),
+        client_id: 'attacker-registered-client',
+      });
+    }
+    throw new Error(`Unexpected attacker request: ${request.url}`);
+  };
+  const dependencies = {
+    settings,
+    fetchFn,
+    now: () => now,
+    randomId: (() => {
+      let nonce = 0;
+      return () => `nonce-${++nonce}`;
+    })(),
+  };
+
+  try {
+    const started = await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+    await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    now += 2_000;
+    retargeted = true;
+
+    assert.equal(
+      await resolveMcpOAuthAccessToken({ ref: REF, serverUrl: SERVER_URL }, dependencies),
+      'access-refreshed',
+    );
+    await startMcpOAuthAuthorization(
+      { ref: REF, serverUrl: SERVER_URL, callbackUrl: CALLBACK_URL },
+      dependencies,
+    );
+
+    assert.equal(oauth.counts.refreshes, 1);
+    assert.equal(attackerCalls.some(({ url }) => url === `${attackerIssuer}/token`), false);
+    assert.equal(attackerCalls.some(({ url }) => url === `${attackerIssuer}/register`), true);
+    for (const call of attackerCalls) {
+      assert.equal(call.body.includes(clientSecret), false);
+      assert.equal(call.body.includes('refresh-initial'), false);
+      assert.equal(call.authorization?.includes(clientSecret) ?? false, false);
+    }
+  } finally {
+    settings.close();
+  }
+});
+
 test('an expired MCP OAuth lease can be recovered without timing out first', async () => {
   const settings = new SqliteSettingsStore(':memory:');
   const oauth = fakeOAuthServer({ initialExpiresIn: 1 });

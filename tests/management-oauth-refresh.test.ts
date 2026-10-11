@@ -173,10 +173,11 @@ test('the CLI signs out against the revoke route, and again from a copy whose to
   const client = await (await f.register(RENEWABLE_SCOPE)).json() as { client_id: string };
   const tokens = await (await f.authorize(client.client_id, RENEWABLE_SCOPE)).json() as StoredOAuthTokens;
   const store = new CredentialStore(directory);
+  const issuer = `${ORIGIN}/api/auth`;
   const entry: StoredDeployment = {
     origin: ORIGIN,
-    client: { client_id: client.client_id },
-    tokens: withExpiry(tokens, Date.now()),
+    client: { client_id: client.client_id, issuer },
+    tokens: { ...withExpiry(tokens, Date.now()), issuer },
     updatedAt: new Date().toISOString(),
   };
   const deps: AuthDeps = {
