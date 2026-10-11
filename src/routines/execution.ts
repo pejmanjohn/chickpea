@@ -654,6 +654,9 @@ async function prepareExecution(
         store: usageStore,
         platformEnv: input.env,
         persistenceMode: 'durable',
+        ...(run.flueAgentSettlement
+          ? { replaySettlementAt: run.flueAgentSettlement.settledAt }
+          : {}),
         deadlineAt: run.deadlineAt,
         now,
         onPersistence: (event) => persistence.recordUsage(event),
