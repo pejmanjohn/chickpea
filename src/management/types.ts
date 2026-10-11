@@ -673,6 +673,8 @@ export interface ManagementApplyResult {
   outcomes: ManagementItemOutcome[];
   /** Links of the first outcome that changed an Agent; response-only. */
   links?: ManagementResultLinks;
+  /** The preview of the change set a confirmation is waiting on; response-only. */
+  presentation?: ManagementPresentation;
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';

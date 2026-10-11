@@ -275,6 +275,33 @@ test('an applied create records one bounded terminal intent while other outcomes
   assert.deepEqual(duplicateWrites, []);
 });
 
+test('a follow-on change waiting on its Approve card keeps the fixed notice, not its preview', () => {
+  const coordinator = createSlackAgentCreationTurnCoordinator('turn_create_card', { turnJobId: 'turn_create_card' });
+  coordinator.prepare({ idempotencyKey: 'model-key', operations: [createOperation] });
+  coordinator.record(appliedResult);
+  const pending = coordinator.recordFollowOn({
+    ok: true,
+    result: {
+      operationId: 'management_follow_on',
+      idempotencyKey: 'follow-on',
+      status: 'confirmation_required',
+      outcomes: [{
+        itemId: 'grant',
+        operationKind: 'grant_agent_channel',
+        disposition: 'confirmation_required',
+        proposalId: 'changeset_reach',
+      }],
+      presentation: { slack: 'Add Deck to <#C_SECOND>?', markdown: 'Add Deck to C_SECOND?' },
+      effectiveRevision: 'follow_on_revision',
+      activation: 'next_turn',
+    },
+  });
+  assert.deepEqual(pending?.followOnNotices, [{
+    kind: 'pending',
+    text: 'A separate requested change still needs approval.',
+  }]);
+});
+
 test('creation reply data survives reduction and malformed metadata cannot claim the final', () => {
   const terminal = {
     schemaVersion: 1 as const,
