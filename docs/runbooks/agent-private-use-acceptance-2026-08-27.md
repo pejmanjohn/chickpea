@@ -2,9 +2,9 @@
 
 ## Scope
 
-This record covers the placement-derived private-use contract reviewed for the
-2026-08-27 permissions plan. The private planning document was not part of the
-public repository and is not available as a tracked reference here.
+This record covers the placement-derived private-use contract from the
+2026-08-27 Agent private-use permissions plan, a private planning document
+that is not tracked in this repository.
 It distinguishes automated authorization proof, browser-visible Admin proof,
 and the narrower facts established by the shared Acme Slack canaries.
 
