@@ -2065,8 +2065,12 @@ for (const replayReadOutage of [false, true]) {
     try {
       const fixture = await admittedFixture(routines, `usage_replay_${replayReadOutage}`);
       const input = { env: {}, store: routines, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt };
-      const deps = { ...offlineDependencies(), usageRecordingEnabled: true, usageStore: usage,
-        persistenceTelemetrySink: telemetry.sink };
+      const deps = {
+        ...offlineDependencies(),
+        usageRecordingEnabled: true,
+        usageStore: usage,
+        persistenceTelemetrySink: telemetry.sink,
+      };
       const claim = routines.claimDelivery.bind(routines);
       routines.claimDelivery = async () => { throw new Error('process interrupted'); };
       await assert.rejects(executeRoutineOccurrence(input, {

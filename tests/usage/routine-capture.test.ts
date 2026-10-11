@@ -242,7 +242,9 @@ test('routine replay records missing usage at the saved settlement time', async 
       ['admission', 'recorded'],
       ['terminal', 'recorded'],
     ]);
-  } finally { usage.close(); }
+  } finally {
+    usage.close();
+  }
 });
 
 test('routine reply metadata yields one bounded aggregate with returned-model evidence', () => {

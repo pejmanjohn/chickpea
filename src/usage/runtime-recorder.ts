@@ -672,24 +672,26 @@ export class RoutineUsageRecorder {
     this.needsRepair ||= outcome !== 'recorded';
   }
 
-  private async writeTerminal(): Promise<unknown> {
+  private async writeTerminal(): Promise<void> {
+    let terminal = this.terminalInput!;
     if (this.options.replaySettlementAt !== undefined) {
       const detail = await this.options.store.getOperation(this.admission.operationId);
       const original = detail?.measurements.find(
-        (measurement) => measurement.executionId === this.terminalInput!.executionId,
+        (measurement) => measurement.executionId === terminal.executionId,
       );
       if (original) {
-        this.terminalInput = {
-          ...this.terminalInput!,
+        terminal = {
+          ...terminal,
           observedAt: original.observedAt,
           finishedAt: original.observedAt,
           ...(this.runExecutionId || original.runExecutionId
             ? { runExecutionId: this.runExecutionId ?? original.runExecutionId }
             : {}),
         };
+        this.terminalInput = terminal;
       }
     }
-    return this.options.store.recordTerminal(this.terminalInput!);
+    await this.options.store.recordTerminal(terminal);
   }
 
   async repairAfterTerminal(): Promise<void> {
