@@ -96,6 +96,7 @@ interface ManagementProposalRow {
   actor_membership_id: string;
   origin_key: string;
   operation_json: string;
+  agent_credential_incarnation: string | null;
   summary: string;
   target_revisions_json: string;
   request_operation_id: string | null;
@@ -695,15 +696,16 @@ export class ManagementStoreLogic {
     this.db.run(
       `INSERT INTO management_proposals (
         proposal_id, organization_id, actor_user_id, actor_membership_id,
-        origin_key, operation_json, summary, target_revisions_json,
+        origin_key, operation_json, agent_credential_incarnation, summary, target_revisions_json,
         request_operation_id, status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
       input.actorMembershipId,
       input.originKey,
       JSON.stringify(input.operation),
+      input.agentCredentialIncarnation ?? null,
       input.summary,
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
@@ -1829,6 +1831,7 @@ export class ManagementStoreLogic {
         actor_membership_id TEXT NOT NULL,
         origin_key TEXT NOT NULL,
         operation_json TEXT NOT NULL,
+        agent_credential_incarnation TEXT,
         summary TEXT NOT NULL,
         target_revisions_json TEXT NOT NULL,
         request_operation_id TEXT,
@@ -2026,6 +2029,7 @@ export class ManagementStoreLogic {
 
   private ensureProposalColumns(): void {
     addColumnIfMissing(this.db, 'management_proposals', 'request_operation_id', 'TEXT');
+    addColumnIfMissing(this.db, 'management_proposals', 'agent_credential_incarnation', 'TEXT');
   }
 
   private ensureChangeSetProposalColumns(): void {
@@ -2181,6 +2185,9 @@ function proposalFromRow(row: ManagementProposalRow): ManagementProposalRecord {
     actorMembershipId: row.actor_membership_id,
     originKey: row.origin_key,
     operation: JSON.parse(row.operation_json) as ManagementProposalRecord['operation'],
+    ...(row.agent_credential_incarnation
+      ? { agentCredentialIncarnation: row.agent_credential_incarnation }
+      : {}),
     summary: row.summary,
     targetRevisions: JSON.parse(row.target_revisions_json) as Record<string, number>,
     ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),

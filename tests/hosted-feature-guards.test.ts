@@ -6,6 +6,7 @@ import { browserCapabilityForTurn } from '../src/browser/capability.ts';
 import { BROWSER_ENV_VARS } from '../src/browser/settings.ts';
 import {
   connectionAccountSecretEnvVar,
+  connectorCredentialBindingEnvVar,
   connectorCredentialEnvVar,
   describeConnectorCredentialSource,
   resolveConnectionAccountSecret,
@@ -17,6 +18,7 @@ import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import {
   describeMcpSecretSources,
   mcpBearerEnvVar,
+  mcpCredentialBindingEnvVar,
   mcpHeaderEnvVar,
   resolveMcpSecrets,
   saveMcpSecrets,
@@ -37,13 +39,21 @@ const ENV_A = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installa
 const ENV_B = scopeInstallationEnv(HOSTED as Record<string, unknown>, { installationId: 'inst_guard_b' });
 // Agent and connection IDs are local to an installation, so both have the same ones.
 const ACCOUNT = { secretRefId: 'secret_shared' };
-const CONNECTOR = { agentId: 'agent_shared', connectionId: 'crm' };
-const MCP = { agentId: 'agent_shared', connectionId: 'docs' };
+const CONNECTOR = {
+  agentId: 'agent_shared', connectionId: 'crm',
+  credentialRef: 'connection_11111111111111111111111111111111', credentialBinding: 'test:crm',
+};
+const MCP = {
+  agentId: 'agent_shared', connectionId: 'docs',
+  credentialRef: 'connection_22222222222222222222222222222222', credentialBinding: 'test:docs',
+};
 const DEPLOYMENT_VARIABLES = {
   CHICKPEA_TENANCY: undefined,
   [connectionAccountSecretEnvVar(ACCOUNT.secretRefId)]: 'deployment-account-secret',
-  [connectorCredentialEnvVar(CONNECTOR.agentId, CONNECTOR.connectionId)]: 'deployment-connector-secret',
+  [connectorCredentialEnvVar(CONNECTOR)]: 'deployment-connector-secret',
+  [connectorCredentialBindingEnvVar(CONNECTOR)]: CONNECTOR.credentialBinding,
   [mcpBearerEnvVar(MCP)]: 'deployment-mcp-bearer',
+  [mcpCredentialBindingEnvVar(MCP)]: MCP.credentialBinding,
   [mcpHeaderEnvVar(MCP, 'X-Team')]: 'deployment-mcp-header',
 };
 
@@ -52,7 +62,7 @@ test('under tenancy a deployment variable never answers for an installation\'s c
   const settingsB = new SqliteSettingsStore(':memory:');
   t.after(() => { settingsA.close(); settingsB.close(); });
   await saveConnectionAccountSecret(ACCOUNT.secretRefId, 'a-account-secret', ENV_A, settingsA);
-  await saveConnectorCredential(CONNECTOR.agentId, CONNECTOR.connectionId, 'a-connector-secret', ENV_A, settingsA);
+  await saveConnectorCredential(CONNECTOR, 'a-connector-secret', ENV_A, settingsA);
   await saveMcpSecrets(MCP, { bearerToken: 'a-mcp-bearer', headers: { 'X-Team': 'a-mcp-header' } }, ENV_A, settingsA);
 
   await withEnv(DEPLOYMENT_VARIABLES, async () => {
@@ -61,8 +71,8 @@ test('under tenancy a deployment variable never answers for an installation\'s c
     assert.equal(await resolveConnectionAccountSecret(ACCOUNT, ENV_B, settingsB), undefined);
     assert.equal(await resolveConnectorCredential(CONNECTOR, ENV_A, settingsA), 'a-connector-secret');
     assert.equal(await resolveConnectorCredential(CONNECTOR, ENV_B, settingsB), undefined);
-    assert.equal(await describeConnectorCredentialSource(CONNECTOR.agentId, CONNECTOR.connectionId, ENV_A, settingsA), 'stored');
-    assert.equal(await describeConnectorCredentialSource(CONNECTOR.agentId, CONNECTOR.connectionId, ENV_B, settingsB), 'missing');
+    assert.equal(await describeConnectorCredentialSource(CONNECTOR, ENV_A, settingsA), 'stored');
+    assert.equal(await describeConnectorCredentialSource(CONNECTOR, ENV_B, settingsB), 'missing');
     assert.deepEqual(await resolveMcpSecrets(MCP, ['X-Team'], ENV_A, settingsA),
       { bearer: 'a-mcp-bearer', headers: { 'X-Team': 'a-mcp-header' } });
     assert.deepEqual(await resolveMcpSecrets(MCP, ['X-Team'], ENV_B, settingsB), { headers: {} });
@@ -81,12 +91,12 @@ test('standalone still reads the deployment variable first, as before', async (t
   const settings = new SqliteSettingsStore(':memory:');
   t.after(() => settings.close());
   await saveConnectionAccountSecret(ACCOUNT.secretRefId, 'stored-account-secret', undefined, settings);
-  await saveConnectorCredential(CONNECTOR.agentId, CONNECTOR.connectionId, 'stored-connector-secret', undefined, settings);
+  await saveConnectorCredential(CONNECTOR, 'stored-connector-secret', undefined, settings);
   await saveMcpSecrets(MCP, { bearerToken: 'stored-mcp-bearer' }, undefined, settings);
   await withEnv(DEPLOYMENT_VARIABLES, async () => {
     assert.equal(await resolveConnectionAccountSecret(ACCOUNT, undefined, settings), 'deployment-account-secret');
     assert.equal(await resolveConnectorCredential(CONNECTOR, undefined, settings), 'deployment-connector-secret');
-    assert.equal(await describeConnectorCredentialSource(CONNECTOR.agentId, CONNECTOR.connectionId, undefined, settings), 'env');
+    assert.equal(await describeConnectorCredentialSource(CONNECTOR, undefined, settings), 'env');
     assert.deepEqual(await resolveMcpSecrets(MCP, ['X-Team'], undefined, settings),
       { bearer: 'deployment-mcp-bearer', headers: { 'X-Team': 'deployment-mcp-header' } });
     assert.deepEqual(await describeMcpSecretSources(MCP, ['X-Team'], undefined, settings),

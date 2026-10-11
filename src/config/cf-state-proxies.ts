@@ -1,4 +1,5 @@
 import {
+  AgentConnectionCredentialConflictError,
   AgentRevisionConflictError,
   AgentExistsError,
   AgentStillAssignedError,
@@ -46,6 +47,7 @@ import type { TurnExecutionPorts } from '../slack/turn-executor.ts';
 type RunnerTurnJobsPort = TurnExecutionPorts['turnJobs'];
 import type {
   AdoptionInventorySummary,
+  AgentCreationFence,
   AgentModelRolePatch,
   ConfigAgentPatch,
   ConfigStore,
@@ -417,6 +419,12 @@ function unwrap<T>(result: StateRpcResult<T>): T {
         details?.agentId ?? 'unknown',
         Number(details?.expectedRevision ?? 0),
         Number(details?.actualRevision ?? 0),
+      );
+    case 'agent_connection_credential_conflict':
+      throw new AgentConnectionCredentialConflictError(
+        details?.agentId ?? 'unknown',
+        details?.lane === 'api' ? 'api' : 'mcp',
+        details?.connectionId ?? 'unknown',
       );
     case 'reserved_agent_identity':
       throw new ReservedAgentIdentityError(
@@ -1445,8 +1453,15 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,'configMaterializeChickpeaAgent', (stub) => stub.configMaterializeChickpeaAgent());
   }
 
-  async createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig> {
-    return rpcVia(this.stub,'configCreateAgent', (stub) => stub.configCreateAgent(agent));
+  async createAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+  ): Promise<CustomAgentConfig> {
+    return rpcVia(
+      this.stub,
+      'configCreateAgent',
+      (stub) => stub.configCreateAgent(agent, creationFence),
+    );
   }
 
   async updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig> {
@@ -1463,29 +1478,50 @@ export class CfConfigStore implements ConfigStore {
     );
   }
 
-  async deleteAgent(agentId: string, expectedRevision?: number): Promise<boolean> {
-    return rpcVia(this.stub,'configDeleteAgent', (stub) => stub.configDeleteAgent(agentId, expectedRevision));
+  async deleteAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): Promise<boolean> {
+    return rpcVia(this.stub,'configDeleteAgent', (stub) =>
+      stub.configDeleteAgent(agentId, expectedRevision, expectedCredentialIncarnation));
   }
 
   async deleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
+    expectedRevision: number,
+    expectedCredentialIncarnation: string,
   ): Promise<boolean> {
     return rpcVia(this.stub,
       'configDeleteAgentWithMemory',
-      (stub) => stub.configDeleteAgentWithMemory(agentId, idempotencyKey),
+      (stub) => stub.configDeleteAgentWithMemory(
+        agentId,
+        idempotencyKey,
+        expectedRevision,
+        expectedCredentialIncarnation,
+      ),
     );
   }
 
   async archiveAgent(
     agentId: string,
-    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+    options?: {
+      replacementDefaultAgentId?: string;
+      expectedRevision?: number;
+      expectedCredentialIncarnation?: string;
+    },
   ): Promise<CustomAgentConfig> {
     return rpcVia(this.stub,'configArchiveAgent', (stub) => stub.configArchiveAgent(agentId, options));
   }
 
-  async restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig> {
-    return rpcVia(this.stub,'configRestoreAgent', (stub) => stub.configRestoreAgent(agentId, expectedRevision));
+  async restoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): Promise<CustomAgentConfig> {
+    return rpcVia(this.stub,'configRestoreAgent', (stub) =>
+      stub.configRestoreAgent(agentId, expectedRevision, expectedCredentialIncarnation));
   }
 
   async ensureWorkspaceInstallation(

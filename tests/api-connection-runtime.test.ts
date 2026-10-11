@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { resolveApiConnectionsForTurn } from '../src/agents/slack-thread.ts';
 import { googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
+import { boundApiCredentialRef } from '../src/config/connection-credential-binding.ts';
+import { closeNodeStateStores, getConfigStore } from '../src/config/state-backend.ts';
 import type { ApiConnectionConfig } from '../src/config/types.ts';
+import { withEnv } from './helpers/env.ts';
 
 const scopes = ['https://www.googleapis.com/auth/gmail.readonly'];
 
@@ -20,6 +26,7 @@ function googleConnection(overrides: Partial<ApiConnectionConfig> = {}): ApiConn
     lifecycleStatus: 'ready',
     statusText: 'Connected',
     presetId: 'google-workspace',
+    credentialRef: 'connection_11111111111111111111111111111111',
     ...overrides,
   };
 }
@@ -42,10 +49,14 @@ test('turn-time API resolution injects Google OAuth only at the guarded connecto
   );
 
   assert.deepEqual(calls, [{
-    ref: { agentId: 'agent_google', connectionId: 'google-workspace' },
+    ref: boundApiCredentialRef('agent_google', googleConnection()),
     provider: 'google',
   }]);
-  assert.deepEqual(resolved, [{
+  assert.equal(typeof resolved[0]?.connectors[0]?.authorize, 'function');
+  assert.deepEqual(resolved.map(({ connectors, ...entry }) => ({
+    ...entry,
+    connectors: connectors.map(({ authorize: _authorize, ...connector }) => connector),
+  })), [{
     displayName: 'Google Workspace',
     policy: googleConnection(),
     connectors: [{
@@ -97,7 +108,8 @@ test('mixed Google access keeps write methods scoped to the selected service', a
     },
   );
 
-  assert.deepEqual(resolved[0]?.connectors, [
+  assert.ok(resolved[0]?.connectors.every(({ authorize }) => typeof authorize === 'function'));
+  assert.deepEqual(resolved[0]?.connectors.map(({ authorize: _authorize, ...connector }) => connector), [
     {
       allowedHosts: ['gmail.googleapis.com'],
       pathPrefixes: ['/gmail/v1/users/me'],
@@ -113,4 +125,65 @@ test('mixed Google access keeps write methods scoped to the selected service', a
       allowedMethods: ['GET', 'HEAD'],
     },
   ]);
+});
+
+test('a resolved static connector refuses egress after disable or policy retarget', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-api-binding-'));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      const config = getConfigStore();
+      const created = await config.createAgent({
+        id: 'agent_api_binding',
+        name: 'API binding',
+        instructions: 'Use the reviewed API only.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [{
+          id: 'tasks-api',
+          displayName: 'Tasks API',
+          allowedHosts: ['api.example.com'],
+          pathPrefixes: ['/v1/tasks'],
+          headerName: 'Authorization',
+          headerValuePrefix: 'Bearer ',
+          allowedMethods: ['GET'],
+          enabled: true,
+          authMode: 'credential',
+        }],
+        repositories: [],
+      });
+      const frozen = created.apiConnections[0]!;
+      const resolved = await resolveApiConnectionsForTurn(
+        created.id,
+        [frozen],
+        undefined,
+        { resolveCredential: async () => 'static-secret' },
+      );
+      const authorize = resolved[0]?.connectors[0]?.authorize;
+      assert.ok(authorize);
+      assert.equal(await authorize(), true);
+
+      const disabled = await config.updateAgent(created.id, {
+        apiConnections: [{ ...frozen, enabled: false }],
+      }, created.revision);
+      assert.equal(await authorize(), false, 'disabling a connection revokes an in-flight connector');
+
+      const retargeted = await config.updateAgent(created.id, {
+        apiConnections: [{
+          ...disabled.apiConnections[0]!,
+          enabled: true,
+          allowedHosts: ['other.example.com'],
+        }],
+      }, disabled.revision);
+      assert.notEqual(
+        retargeted.apiConnections[0]?.credentialRef,
+        frozen.credentialRef,
+        'retargeting rotates the secret identity',
+      );
+      assert.equal(await authorize(), false, 'a frozen connector cannot use the old secret after retargeting');
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

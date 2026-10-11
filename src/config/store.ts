@@ -4,6 +4,7 @@ import type { GatewayWorkspaceBinding } from '../slack/gateway/protocol.ts';
 import { GATEWAY_CLAIM_SETTING, GATEWAY_BINDING_SETTING } from '../slack/gateway/settings.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from '../slack/gateway/identity.ts';
 import {
+  AgentConnectionCredentialConflictError,
   AgentRevisionConflictError,
   AgentExistsError,
   AgentStillReferencedError,
@@ -44,11 +45,13 @@ import {
   type AgentThreadRoute,
   type AgentThreadRouteInput,
   type AgentCreateInput,
+  type ApiConnectionConfig,
   type ChannelConfig,
   type ChickpeaCutoverActivation,
   type ChickpeaCutoverModelClassification,
   type ChickpeaCutoverPreflight,
   type CustomAgentConfig,
+  type McpConnectionConfig,
   type WebsiteLoginGrant,
   type ConnectionAccount,
   type ConnectionAccountInput,
@@ -86,6 +89,14 @@ import {
   CHICKPEA_AGENT_ID,
   reservedAgentIdentityField,
 } from './agent-id.ts';
+import {
+  type AgentConnectionCredentialRequirements,
+  type AgentConnectionCredentialResets,
+  newAgentCredentialIncarnation,
+  reconcileApiCredentialRefs,
+  reconcileMcpCredentialRefs,
+  validAgentCredentialIncarnation,
+} from './connection-credential-binding.ts';
 
 export interface ConfigSeed {
   agents: readonly AgentCreateInput[];
@@ -113,6 +124,8 @@ export const CONFIG_CHICKPEA_EXTENSION_MIGRATION = '2026-08-23-chickpea-system-a
 export const CONFIG_CHICKPEA_ROUTING_MIGRATION = '2026-08-24-chickpea-routing-retry-v1';
 export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1';
 export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
+export const CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION =
+  '2026-10-11-agent-connection-credential-binding-v1';
 /**
  * A stored JSON array column; a missing, malformed, or non-array value reads
  * as empty. `isItem`, when given, drops entries that do not fit.
@@ -127,6 +140,14 @@ function parseJsonArray<T>(raw: string | null | undefined, isItem?: (value: unkn
   }
 }
 
+function requiredConnectionArray<T>(raw: unknown, agentId: string, lane: string): T[] {
+  try {
+    const parsed: unknown = JSON.parse(String(raw ?? ''));
+    if (Array.isArray(parsed)) return parsed as T[];
+  } catch {}
+  throw new Error(`Agent ${agentId} has invalid ${lane} connection configuration`);
+}
+
 const MAX_STORED_SLACK_PUBLIC_CONTEXT_ROWS = 200;
 const SLACK_PUBLIC_CONTEXT_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const SLACK_PUBLIC_CONTEXT_PRUNE_INTERVAL_MS = 60_000;
@@ -134,6 +155,7 @@ const SLACK_PUBLIC_CONTEXT_PRUNE_INTERVAL_MS = 60_000;
 interface AgentRow {
   id: string;
   revision: number;
+  credential_incarnation?: string | null;
   name: string;
   instructions: string;
   enabled: number;
@@ -323,10 +345,19 @@ interface ChannelRow {
 
 /** PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin. */
 export type ConfigAgentPatch = Partial<
-  Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>
+  Omit<CustomAgentConfig, 'id' | 'revision' | 'model' | 'credentialIncarnation'>
 > & {
   model?: string | null;
+  /** Safe caller hint: force a new namespace after remove-and-readd in one PATCH. */
+  credentialResets?: AgentConnectionCredentialResets;
+  /** Internal CAS fence for a setup that was issued against one connection incarnation. */
+  credentialRequirements?: AgentConnectionCredentialRequirements;
 };
+
+/** Server-generated identity persisted before a recoverable Agent creation begins. */
+export interface AgentCreationFence {
+  credentialIncarnation: string;
+}
 
 /** One role override in an Agent PATCH. `modelId: null` clears the override. */
 export interface AgentModelRolePatch {
@@ -339,13 +370,17 @@ export type OAuthReauthorizationTarget =
       lane: 'mcp';
       agentId: string;
       connectionId: string;
+      credentialRef?: string;
       serverUrl: string;
+      expectedRevision?: number;
     }
   | {
       lane: 'api';
       agentId: string;
       connectionId: string;
+      credentialRef?: string;
       provider: 'google';
+      expectedRevision?: number;
     };
 
 /**
@@ -361,19 +396,36 @@ export interface ConfigStore {
   listUserAgents(): Promise<CustomAgentConfig[]>;
   getAgent(agentId: string): Promise<CustomAgentConfig>;
   materializeChickpeaAgent(): Promise<CustomAgentConfig>;
-  createAgent(agent: AgentCreateInput): Promise<CustomAgentConfig>;
+  createAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+  ): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
-  deleteAgent(agentId: string, expectedRevision?: number): Promise<boolean>;
+  deleteAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): Promise<boolean>;
   deleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
+    expectedRevision: number,
+    expectedCredentialIncarnation: string,
   ): Promise<boolean>;
   archiveAgent(
     agentId: string,
-    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+    options?: {
+      replacementDefaultAgentId?: string;
+      expectedRevision?: number;
+      expectedCredentialIncarnation?: string;
+    },
   ): Promise<CustomAgentConfig>;
-  restoreAgent(agentId: string, expectedRevision?: number): Promise<CustomAgentConfig>;
+  restoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): Promise<CustomAgentConfig>;
   ensureWorkspaceInstallation(input: EnsureWorkspaceInstallationInput): Promise<WorkspaceInstallation>;
   retainGatewayInstallation(input: RetainGatewayInstallationInput): Promise<boolean>;
   refreshGatewayClaimSetup(input: RefreshGatewayClaimSetupInput): Promise<boolean>;
@@ -1246,10 +1298,24 @@ export class ConfigStoreLogic {
 
   archiveAgent(
     agentId: string,
-    options: { replacementDefaultAgentId?: string; expectedRevision?: number } = {},
+    options: {
+      replacementDefaultAgentId?: string;
+      expectedRevision?: number;
+      expectedCredentialIncarnation?: string;
+    } = {},
   ): CustomAgentConfig {
     const current = this.getAgent(agentId);
     this.requireMutableUserAgent(current);
+    if (!current.credentialIncarnation) throw new Error(`Agent ${agentId} has no credential incarnation`);
+    const currentCredentialIncarnation = current.credentialIncarnation;
+    if (options.expectedCredentialIncarnation !== undefined &&
+        currentCredentialIncarnation !== options.expectedCredentialIncarnation) {
+      throw new AgentRevisionConflictError(
+        agentId,
+        options.expectedRevision ?? current.revision,
+        current.revision,
+      );
+    }
     // Archive is an idempotent desired-state operation. In particular, never
     // replace the original snapshot with an empty one on a delivery retry.
     if (current.lifecycle === 'archived') return current;
@@ -1308,10 +1374,11 @@ export class ConfigStoreLogic {
          SET lifecycle = 'archived', enabled = 0, archived_at = ?,
              configuration_generation = configuration_generation + 1,
              revision = revision + 1
-         WHERE id = ? AND revision = ?`,
+         WHERE id = ? AND revision = ? AND credential_incarnation = ?`,
         now,
         agentId,
         current.revision,
+        currentCredentialIncarnation,
       );
       if (updated.changes !== 1) {
         throw new AgentRevisionConflictError(agentId, current.revision, this.getAgent(agentId).revision);
@@ -1333,9 +1400,23 @@ export class ConfigStoreLogic {
     });
   }
 
-  restoreAgent(agentId: string, expectedRevision?: number): CustomAgentConfig {
+  restoreAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): CustomAgentConfig {
     const current = this.getAgent(agentId);
     this.requireMutableUserAgent(current);
+    if (!current.credentialIncarnation) throw new Error(`Agent ${agentId} has no credential incarnation`);
+    const currentCredentialIncarnation = current.credentialIncarnation;
+    if (expectedCredentialIncarnation !== undefined &&
+        currentCredentialIncarnation !== expectedCredentialIncarnation) {
+      throw new AgentRevisionConflictError(
+        agentId,
+        expectedRevision ?? current.revision,
+        current.revision,
+      );
+    }
     // Restoring an already-active Agent is also idempotent and must not bump
     // its configuration generation on a retry.
     if (current.lifecycle !== 'archived') return current;
@@ -1360,9 +1441,10 @@ export class ConfigStoreLogic {
          SET lifecycle = 'active', enabled = 1, archived_at = NULL,
              configuration_generation = configuration_generation + 1,
              revision = revision + 1
-         WHERE id = ? AND revision = ?`,
+         WHERE id = ? AND revision = ? AND credential_incarnation = ?`,
         agentId,
         current.revision,
+        currentCredentialIncarnation,
       );
       if (updated.changes !== 1) throw new Error(`Agent ${agentId} changed`);
       for (const grant of channelGrants) {
@@ -2174,11 +2256,19 @@ export class ConfigStoreLogic {
     return this.getAgent(CHICKPEA_AGENT_ID);
   }
 
-  createAgent(agent: AgentCreateInput): CustomAgentConfig {
+  createAgent(agent: AgentCreateInput, creationFence?: AgentCreationFence): CustomAgentConfig {
     validateUserAgent(agent);
+    if (creationFence &&
+        !validAgentCredentialIncarnation(creationFence.credentialIncarnation)) {
+      throw new Error('Agent creation credential incarnation is invalid');
+    }
     let inserted;
     try {
-      inserted = this.db.transaction(() => this.insertAgent(agent));
+      inserted = this.db.transaction(() => this.insertAgent(agent, {
+        ...(creationFence
+          ? { credentialIncarnation: creationFence.credentialIncarnation }
+          : {}),
+      }));
     } catch (err) {
       if (isConstraintViolation(err)) {
         throw new AgentExistsError(agent.id);
@@ -2194,13 +2284,40 @@ export class ConfigStoreLogic {
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): CustomAgentConfig {
     const current = this.getAgent(agentId);
     this.requireMutableUserAgent(current);
+    if (!current.credentialIncarnation) throw new Error(`Agent ${agentId} has no credential incarnation`);
+    const currentCredentialIncarnation = current.credentialIncarnation;
     const actualRevision = current.revision;
     const requiredRevision = expectedRevision ?? actualRevision;
     if (requiredRevision !== actualRevision) {
       throw new AgentRevisionConflictError(agentId, requiredRevision, actualRevision);
     }
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
-    const next = { ...current, ...patch, id: agentId };
+    const { credentialRequirements, credentialResets, ...persistedPatch } = patch;
+    if (credentialRequirements?.agent !== undefined &&
+        currentCredentialIncarnation !== credentialRequirements.agent) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, actualRevision);
+    }
+    for (const [connectionId, credentialRef] of Object.entries(credentialRequirements?.mcp ?? {})) {
+      if (current.mcpServers.find(({ id }) => id === connectionId)?.credentialRef !== credentialRef) {
+        throw new AgentConnectionCredentialConflictError(agentId, 'mcp', connectionId);
+      }
+    }
+    for (const [connectionId, credentialRef] of Object.entries(credentialRequirements?.api ?? {})) {
+      if (current.apiConnections.find(({ id }) => id === connectionId)?.credentialRef !== credentialRef) {
+        throw new AgentConnectionCredentialConflictError(agentId, 'api', connectionId);
+      }
+    }
+    const next = { ...current, ...persistedPatch, id: agentId };
+    next.mcpServers = reconcileMcpCredentialRefs(
+      current.mcpServers,
+      next.mcpServers,
+      new Set(credentialResets?.mcp ?? []),
+    );
+    next.apiConnections = reconcileApiCredentialRefs(
+      current.apiConnections,
+      next.apiConnections,
+      new Set(credentialResets?.api ?? []),
+    );
     const previousAvatar = current.slackPresence?.avatar;
     const presence = next.slackPresence;
     if (presence) {
@@ -2232,14 +2349,14 @@ export class ConfigStoreLogic {
     if (current.enabled && !next.enabled) {
       this.requireAgentHasNoBlockingReferences(agentId);
     }
-    this.db.run(
+    const write = this.db.run(
       `UPDATE config_agents
        SET name = ?, description = ?, instructions = ?, enabled = ?, lifecycle = ?,
            creator_membership_id = ?, edit_policy = ?,
            configuration_generation = ?, slack_presence_json = ?, archived_at = ?, model = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?,
            website_logins_json = ?, revision = revision + 1
-       WHERE id = ? AND revision = ?`,
+       WHERE id = ? AND revision = ? AND credential_incarnation = ?`,
       next.name,
       next.description ?? null,
       next.instructions,
@@ -2258,23 +2375,31 @@ export class ConfigStoreLogic {
       JSON.stringify(next.websiteLogins ?? []),
       agentId,
       requiredRevision,
+      currentCredentialIncarnation,
     );
-    const updated = this.db.get('SELECT revision FROM config_agents WHERE id = ?', agentId) as
-      | { revision: number }
-      | undefined;
-    if (!updated || Number(updated.revision) !== requiredRevision + 1) {
+    if (write.changes !== 1) {
       const latest = this.getAgent(agentId);
       throw new AgentRevisionConflictError(agentId, requiredRevision, latest.revision);
     }
-    return this.getAgent(agentId);
+    const updated = this.getAgent(agentId);
+    if (updated.revision !== requiredRevision + 1 ||
+        updated.credentialIncarnation !== currentCredentialIncarnation) {
+      throw new AgentRevisionConflictError(agentId, requiredRevision, updated.revision);
+    }
+    return updated;
   }
 
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): boolean {
     const agent = this.getAgent(target.agentId);
+    if (target.expectedRevision !== undefined && agent.revision !== target.expectedRevision) {
+      return false;
+    }
     if (target.lane === 'mcp') {
       const index = agent.mcpServers.findIndex(
         (connection) =>
           connection.id === target.connectionId &&
+          target.credentialRef !== undefined &&
+          connection.credentialRef === target.credentialRef &&
           connection.authMode === 'oauth' &&
           connection.url === target.serverUrl,
       );
@@ -2287,15 +2412,18 @@ export class ConfigStoreLogic {
         statusText: 'Reconnect required',
       };
       return this.db.run(
-        'UPDATE config_agents SET mcp_servers_json = ?, revision = revision + 1 WHERE id = ?',
+        'UPDATE config_agents SET mcp_servers_json = ?, revision = revision + 1 WHERE id = ? AND revision = ?',
         JSON.stringify(mcpServers),
         target.agentId,
+        agent.revision,
       ).changes === 1;
     }
 
     const index = agent.apiConnections.findIndex(
       (connection) =>
         connection.id === target.connectionId &&
+        target.credentialRef !== undefined &&
+        connection.credentialRef === target.credentialRef &&
         connection.authMode === 'oauth' &&
         connection.oauthProvider === target.provider,
     );
@@ -2308,26 +2436,36 @@ export class ConfigStoreLogic {
       statusText: 'Reconnect required',
     };
     return this.db.run(
-      'UPDATE config_agents SET api_connections_json = ?, revision = revision + 1 WHERE id = ?',
+      'UPDATE config_agents SET api_connections_json = ?, revision = revision + 1 WHERE id = ? AND revision = ?',
       JSON.stringify(apiConnections),
       target.agentId,
+      agent.revision,
     ).changes === 1;
   }
 
-  deleteAgent(agentId: string, expectedRevision?: number): boolean {
+  deleteAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): boolean {
     return this.db.transaction(() => {
       const current = this.getAgent(agentId);
       this.requireMutableUserAgent(current);
+      if (!current.credentialIncarnation) throw new Error(`Agent ${agentId} has no credential incarnation`);
+      const currentCredentialIncarnation = current.credentialIncarnation;
       const requiredRevision = expectedRevision ?? current.revision;
-      if (requiredRevision !== current.revision) {
+      if (requiredRevision !== current.revision ||
+          (expectedCredentialIncarnation !== undefined &&
+            currentCredentialIncarnation !== expectedCredentialIncarnation)) {
         throw new AgentRevisionConflictError(agentId, requiredRevision, current.revision);
       }
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
       const deleted = this.db.run(
-        'DELETE FROM config_agents WHERE id = ? AND revision = ?',
+        'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
         agentId,
         requiredRevision,
+        currentCredentialIncarnation,
       );
       if (deleted.changes === 1) return true;
       const actual = this.getAgent(agentId).revision;
@@ -2338,30 +2476,50 @@ export class ConfigStoreLogic {
   deleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
+    expectedRevision: number,
+    expectedCredentialIncarnation: string,
     memory: MemoryStoreLogic = new MemoryStoreLogic(this.db),
   ): boolean {
     return this.db.transaction(() => {
       const replay = this.db.get(
-        'SELECT agent_id FROM config_agent_deletion_receipts WHERE idempotency_key = ?',
+        `SELECT agent_id, credential_incarnation
+         FROM config_agent_deletion_receipts WHERE idempotency_key = ?`,
         idempotencyKey,
       );
       if (replay) {
         if (replay.agent_id !== agentId) {
           throw new Error('Agent deletion idempotency key belongs to another Agent.');
         }
+        if (replay.credential_incarnation !== expectedCredentialIncarnation) {
+          const replacement = this.getAgent(agentId);
+          throw new AgentRevisionConflictError(agentId, expectedRevision, replacement.revision);
+        }
         return true;
       }
-      this.requireMutableUserAgent(this.getAgent(agentId));
+      const current = this.getAgent(agentId);
+      this.requireMutableUserAgent(current);
+      if (current.revision !== expectedRevision ||
+          current.credentialIncarnation !== expectedCredentialIncarnation) {
+        throw new AgentRevisionConflictError(agentId, expectedRevision, current.revision);
+      }
       this.requireAgentHasNoBlockingReferences(agentId);
       this.deleteRevokedAgentConnectionBindings(agentId);
-      const deleted = this.db.run('DELETE FROM config_agents WHERE id = ?', agentId);
-      if (deleted.changes !== 1) return false;
-      memory.deleteAgentMemory(agentId);
+      const deleted = this.db.run(
+        'DELETE FROM config_agents WHERE id = ? AND revision = ? AND credential_incarnation = ?',
+        agentId,
+        expectedRevision,
+        expectedCredentialIncarnation,
+      );
+      if (deleted.changes !== 1) {
+        const actual = this.getAgent(agentId).revision;
+        throw new AgentRevisionConflictError(agentId, expectedRevision, actual);
+      }
+      memory.deleteAgentMemoryRows(agentId);
       this.db.run(
         `INSERT INTO config_agent_deletion_receipts (
-          idempotency_key, workspace_id, agent_id, deleted_at
-         ) VALUES (?, ?, ?, ?)`,
-        idempotencyKey, '*', agentId, Date.now(),
+          idempotency_key, workspace_id, agent_id, credential_incarnation, deleted_at
+         ) VALUES (?, ?, ?, ?, ?)`,
+        idempotencyKey, '*', agentId, expectedCredentialIncarnation, Date.now(),
       );
       return true;
     });
@@ -2881,7 +3039,7 @@ export class ConfigStoreLogic {
 
   private insertAgent(
     agent: AgentCreateInput,
-    options: { allowSystem?: boolean } = {},
+    options: { allowSystem?: boolean; credentialIncarnation?: string } = {},
   ): { changes: number } {
     const kind = agent.kind ?? 'user';
     if (kind === 'system' && !options.allowSystem) {
@@ -2899,17 +3057,21 @@ export class ConfigStoreLogic {
         },
       };
     }
+    const mcpServers = reconcileMcpCredentialRefs([], agent.mcpServers ?? []);
+    const apiConnections = reconcileApiCredentialRefs([], agent.apiConnections ?? []);
     return this.db.run(
       `INSERT INTO config_agents (
-        id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
+        id, agent_kind, revision, credential_incarnation,
+        name, description, instructions, enabled, lifecycle,
         creator_membership_id, edit_policy, configuration_generation,
         slack_presence_json, archived_at, model,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
         website_logins_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       kind,
       1,
+      options.credentialIncarnation ?? newAgentCredentialIncarnation(),
       agent.name,
       agent.description ?? null,
       agent.instructions,
@@ -2924,8 +3086,8 @@ export class ConfigStoreLogic {
       agent.archivedAt ?? null,
       agent.model ?? null,
       JSON.stringify(agent.skills ?? []),
-      JSON.stringify(agent.mcpServers ?? []),
-      JSON.stringify(agent.apiConnections ?? []),
+      JSON.stringify(mcpServers),
+      JSON.stringify(apiConnections),
       JSON.stringify(agent.repositories ?? []),
       JSON.stringify(agent.websiteLogins ?? []),
     );
@@ -3018,6 +3180,7 @@ export class ConfigStoreLogic {
         id TEXT PRIMARY KEY,
         agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')),
         revision INTEGER NOT NULL,
+        credential_incarnation TEXT NOT NULL,
         name TEXT NOT NULL,
         description TEXT,
         instructions TEXT NOT NULL,
@@ -3050,6 +3213,7 @@ export class ConfigStoreLogic {
         idempotency_key TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
+        credential_incarnation TEXT NOT NULL,
         deleted_at INTEGER NOT NULL
         )`,
       );
@@ -3149,6 +3313,7 @@ export class ConfigStoreLogic {
     );
     this.installChickpeaRoutingExtensions();
     this.installModelRoleExtensions();
+    this.installConnectionCredentialBindingMigration();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
@@ -3253,6 +3418,117 @@ export class ConfigStoreLogic {
       Date.now(),
     );
     this.installChickpeaCutoverExtensions();
+  }
+
+  private installConnectionCredentialBindingMigration(): void {
+    if (tableExists(this.db, 'config_agents')) {
+      addColumnIfMissing(
+        this.db,
+        'config_agents',
+        'credential_incarnation',
+        "TEXT NOT NULL DEFAULT ''",
+      );
+      for (const row of this.db.all(
+        'SELECT id, credential_incarnation FROM config_agents ORDER BY id',
+      )) {
+        if (!validAgentCredentialIncarnation(String(row.credential_incarnation ?? ''))) {
+          this.db.run(
+            'UPDATE config_agents SET credential_incarnation = ? WHERE id = ?',
+            newAgentCredentialIncarnation(),
+            String(row.id),
+          );
+        }
+      }
+    }
+    if (tableExists(this.db, 'config_agent_deletion_receipts')) {
+      addColumnIfMissing(
+        this.db,
+        'config_agent_deletion_receipts',
+        'credential_incarnation',
+        "TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (this.db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+    )) return;
+    if (tableExists(this.db, 'config_agents')) {
+      const rows = this.db.all(
+        'SELECT id, mcp_servers_json, api_connections_json FROM config_agents ORDER BY id',
+      );
+      for (const row of rows) {
+        const mcpServers = requiredConnectionArray<McpConnectionConfig>(
+          row.mcp_servers_json,
+          String(row.id),
+          'MCP',
+        );
+        const apiConnections = requiredConnectionArray<ApiConnectionConfig>(
+          row.api_connections_json,
+          String(row.id),
+          'API',
+        );
+        if (tableExists(this.db, 'app_settings')) {
+          const escapedAgentId = String(row.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const legacySecretKey = new RegExp(
+            `^(?:mcp\\.${escapedAgentId}\\.[^.]+\\.(?:bearer|header\\.[^.]+|oauth\\.` +
+            `(?:client|pending|tokens|registration-lease|refresh-lease))|` +
+            `connector\\.${escapedAgentId}\\.[^.]+\\.(?:credential|oauth\\.` +
+            `(?:client|pending|tokens|refresh-lease)))$`,
+          );
+          for (const setting of this.db.all('SELECT key FROM app_settings ORDER BY key')) {
+            const key = String(setting.key);
+            if (key.startsWith(`mcp.${String(row.id)}.account.oauth.`) ||
+                key.startsWith(`connector.${String(row.id)}.account.oauth.`)) {
+              continue;
+            }
+            if (legacySecretKey.test(key)) {
+              this.db.run('DELETE FROM app_settings WHERE key = ?', key);
+            }
+          }
+          for (const connection of mcpServers) {
+            this.db.run(
+              'DELETE FROM app_settings WHERE key = ?',
+              `mcp.${String(row.id)}.${connection.id}.bearer`,
+            );
+            for (const name of connection.headerNames) {
+              this.db.run(
+                'DELETE FROM app_settings WHERE key = ?',
+                `mcp.${String(row.id)}.${connection.id}.header.${name}`,
+              );
+            }
+          }
+          for (const connection of apiConnections) {
+            this.db.run(
+              'DELETE FROM app_settings WHERE key = ?',
+              `connector.${String(row.id)}.${connection.id}.credential`,
+            );
+            const connectionAccountSentinel = String(row.id).startsWith('connection_') &&
+              connection.id === 'account';
+            if (!connectionAccountSentinel) {
+              for (const suffix of ['client', 'pending', 'tokens', 'refresh-lease']) {
+                this.db.run(
+                  'DELETE FROM app_settings WHERE key = ?',
+                  `connector.${String(row.id)}.${connection.id}.oauth.${suffix}`,
+                );
+              }
+            }
+          }
+        }
+        const boundMcp = reconcileMcpCredentialRefs([], mcpServers);
+        const boundApi = reconcileApiCredentialRefs([], apiConnections);
+        this.db.run(
+          'UPDATE config_agents SET mcp_servers_json = ?, api_connections_json = ? WHERE id = ?',
+          JSON.stringify(boundMcp),
+          JSON.stringify(boundApi),
+          String(row.id),
+        );
+      }
+    }
+    this.db.run(
+      'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
+      CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+      Date.now(),
+    );
   }
 
   private installChickpeaRoutingExtensions(): void {
@@ -3483,6 +3759,7 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
     id: row.id,
     kind,
     revision: Number(row.revision ?? 1),
+    credentialIncarnation: String(row.credential_incarnation ?? ''),
     name: row.name,
     ...(row.description ? { description: row.description } : {}),
     instructions: row.instructions,

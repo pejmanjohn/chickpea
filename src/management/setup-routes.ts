@@ -18,14 +18,21 @@ import { validateBrowserMutationProvenance } from '../auth/request-provenance.ts
 import { AuthService } from '../auth/service.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { actualBodyLimit } from '../security/request-body-limit.ts';
+import {
+  AgentConnectionCredentialConflictError,
+  UnknownAgentError,
+} from '../config/errors.ts';
 
 import {
+  ApiOAuthError,
   completeApiOAuthAuthorization,
+  apiOAuthClientBindingMatches,
   connectionAccountIdFromOAuthRef,
   connectionAccountOAuthRef,
-  saveApiOAuthClient,
+  replaceApiOAuthClient,
   startApiOAuthAuthorization,
   type ApiOAuthDependencies,
+  type ApiOAuthRef,
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import {
@@ -34,6 +41,10 @@ import {
   saveConnectionAccountSecret,
   saveConnectorCredential,
 } from '../config/connector-secrets.ts';
+import {
+  boundApiCredentialRef,
+  boundMcpCredentialRef,
+} from '../config/connection-credential-binding.ts';
 import {
   exchangeGithubAppManifest,
   getGithubConnection,
@@ -616,13 +627,22 @@ export function createManagementSetupRoutes(
       if (activeSetup.action === 'api_oauth') {
         const clientId = requiredField(fields, 'clientId', 512);
         const clientSecret = requiredField(fields, 'clientSecret', 2_048);
-        const ref = setupConnectionRef(activeSetup);
-        await saveApiOAuthClient(ref, { provider: 'google', clientId, clientSecret }, dependencies.settings);
+        const { agent, connection } = await currentApiConnection(
+          activeSetup, dependencies.config,
+        );
+        const ref = boundApiCredentialRef(agent.id, connection);
+        if (connection.lifecycleStatus === 'ready') throw new Error('target_changed');
+        await replaceApiOAuthClient(
+          ref,
+          { provider: 'google', clientId, clientSecret },
+          dependencies.settings,
+        );
         const started = await startApiOAuthAuthorization({
           ref,
           provider: 'google',
           callbackUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}/oauth/api/callback`,
           scopes: activeSetup.scopes,
+          accountRevision: agent.revision,
         }, apiOAuthDependencies(dependencies));
         return c.redirect(started.authorizationUrl.href, 303);
       }
@@ -645,7 +665,7 @@ export function createManagementSetupRoutes(
           }), 422);
         }
         const started = await startMcpOAuthAuthorization({
-          ref: { agentId: agent.id, connectionId: connection.id },
+          ref: boundMcpCredentialRef(agent.id, connection),
           serverUrl: connection.url,
           callbackUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}/oauth/mcp/callback`,
           ...(connection.oauthScope ? { scope: connection.oauthScope } : {}),
@@ -869,15 +889,35 @@ export function createManagementSetupRoutes(
         { code, state },
         apiOAuthDependencies(dependencies),
       );
+      if (!await apiOAuthClientBindingMatches(
+        completed.ref,
+        completed.clientBinding,
+        dependencies.settings,
+      )) throw new Error('target_changed');
+      if (completed.accountRevision === undefined) throw new Error('target_changed');
       const agent = await dependencies.config.getAgent(completed.ref.agentId);
-      await setApiConnectionReady(
+      if (agent.revision !== completed.accountRevision) throw new Error('target_changed');
+      const readyAgent = await setApiConnectionReady(
         dependencies.config,
         agent,
-        completed.ref.connectionId,
+        completed.ref,
         completed.identity?.accountName,
         dependencies.productTelemetry,
         setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
       );
+      if (!await apiOAuthClientBindingMatches(
+        completed.ref,
+        completed.clientBinding,
+        dependencies.settings,
+      )) {
+        await dependencies.config.markOAuthReauthorizationRequired({
+          lane: 'api',
+          ...completed.ref,
+          provider: completed.provider,
+          expectedRevision: readyAgent.revision,
+        });
+        throw new Error('target_changed');
+      }
       await finishSetup(
         c,
         setup,
@@ -2140,6 +2180,24 @@ function principalMatchesSetup(
     principal.organizationId === setup.organizationId);
 }
 
+async function setupCredentialWasRetired(
+  config: ConfigStore,
+  lane: 'mcp' | 'api',
+  agentId: string,
+  connectionId: string,
+  credentialRef: string,
+): Promise<boolean | undefined> {
+  try {
+    const agent = await config.getAgent(agentId);
+    const connection = (lane === 'mcp' ? agent.mcpServers : agent.apiConnections)
+      .find(({ id }) => id === connectionId);
+    return !connection || connection.credentialRef !== credentialRef;
+  } catch (error) {
+    if (error instanceof UnknownAgentError) return true;
+    return undefined;
+  }
+}
+
 async function completeFormAction(
   setup: ManagementSetupRecord,
   fields: Record<string, string>,
@@ -2185,38 +2243,63 @@ async function completeFormAction(
     return { connector: providerDisplayName(providerId) };
   }
   if (setup.action === 'api_credential') {
-    const ref = setupConnectionRef(setup);
+    const target = setupConnectionRef(setup);
+    const before = await dependencies.config.getAgent(target.agentId);
+    const connection = before.apiConnections.find(({ id }) => id === target.connectionId);
+    if (!connection || connection.authMode === 'oauth') throw new Error('target_changed');
+    const ref = boundApiCredentialRef(before.id, connection);
+    if (before.revision !== setup.target.expectedRevision ||
+        ref.credentialBinding !== setup.target.credentialBinding) {
+      throw new Error('target_changed');
+    }
     const credential = requiredField(fields, 'credential', 16_384);
     await saveConnectorCredential(
-      ref.agentId,
-      ref.connectionId,
+      ref,
       credential,
       dependencies.platformEnv,
       dependencies.settings,
     );
     try {
       const agent = await dependencies.config.getAgent(ref.agentId);
+      const live = agent.apiConnections.find(({ id }) => id === ref.connectionId);
+      if (!live || live.credentialRef !== ref.credentialRef) throw new Error('target_changed');
       await setApiConnectionReady(
         dependencies.config,
         agent,
-        ref.connectionId,
+        ref,
         undefined,
         dependencies.productTelemetry,
         setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
       );
     } catch (error) {
-      await clearConnectorCredential(
+      if (await setupCredentialWasRetired(
+        dependencies.config,
+        'api',
         ref.agentId,
         ref.connectionId,
-        dependencies.platformEnv,
-        dependencies.settings,
-      );
+        ref.credentialRef,
+      ) === true) {
+        await clearConnectorCredential(
+          ref,
+          dependencies.platformEnv,
+          dependencies.settings,
+        );
+      }
       throw error;
     }
     return { connector: setup.target.targetLabel };
   }
   if (setup.action === 'mcp_credentials') {
     const { agent, connection } = await currentMcpConnection(setup, dependencies.config);
+    const ref = boundMcpCredentialRef(agent.id, connection);
+    const authorizeRequest = async () => {
+      const current = await dependencies.config.getAgent(agent.id);
+      const live = current.mcpServers.find(({ id }) => id === connection.id);
+      if (!live || boundMcpCredentialRef(current.id, live).credentialBinding !==
+          ref.credentialBinding) {
+        throw new Error('target_changed');
+      }
+    };
     const bearerToken = fields.bearerToken?.trim();
     const headers = Object.fromEntries(connection.headerNames.map((name) => [
       name,
@@ -2233,16 +2316,19 @@ async function completeFormAction(
       url: validated.url,
       transport: connection.transport,
       headers: requestHeaders,
+      authorizeRequest,
     });
+    await authorizeRequest();
     const identity = await discoverMcpConnectionIdentity({
       id: connection.id,
       url: validated.url,
       transport: connection.transport,
       headers: requestHeaders,
       ...(connection.presetId ? { presetId: connection.presetId } : {}),
+      authorizeRequest,
     }).catch(() => undefined);
     await saveMcpSecrets(
-      { agentId: agent.id, connectionId: connection.id },
+      ref,
       { ...(bearerToken ? { bearerToken } : {}), headers },
       dependencies.platformEnv,
       dependencies.settings,
@@ -2258,12 +2344,20 @@ async function completeFormAction(
         setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
       );
     } catch (error) {
-      await deleteMcpSecrets(
-        { agentId: agent.id, connectionId: connection.id },
-        connection.headerNames,
-        dependencies.platformEnv,
-        dependencies.settings,
-      );
+      if (await setupCredentialWasRetired(
+        dependencies.config,
+        'mcp',
+        ref.agentId,
+        ref.connectionId,
+        ref.credentialRef,
+      ) === true) {
+        await deleteMcpSecrets(
+          ref,
+          connection.headerNames,
+          dependencies.platformEnv,
+          dependencies.settings,
+        );
+      }
       throw error;
     }
     const accountLabel = identity?.accountName ?? identity?.workspaceName;
@@ -2375,7 +2469,7 @@ async function finishSetup(
 async function verifyMcpConnection(
   setup: ManagementSetupRecord,
   dependencies: SetupDependencies,
-  ref: { agentId: string; connectionId: string },
+  ref: { agentId: string; connectionId: string; credentialRef?: string },
   oauth: boolean,
   options: ManagementSetupRoutesOptions = {},
   accountRevision?: number,
@@ -2418,6 +2512,33 @@ async function verifyMcpConnection(
     );
     const validated = validateMcpUrl(account.policy.url);
     if (!validated.ok) throw new Error('blocked_url');
+    const authorizeRequest = async () => {
+      const current = await findConnectionAccount(
+        dependencies.config,
+        connectionAccountId,
+        setup.origin.kind === 'slack' ? setup.origin.workspaceId : undefined,
+      );
+      const currentBinding = current
+        ? await dependencies.config.getAgentConnectionBindingForAccount(current.id)
+        : undefined;
+      const currentUrl = current?.policy.kind === 'mcp'
+        ? validateMcpUrl(current.policy.url)
+        : undefined;
+      if (!current || current.lifecycle !== 'pending' || current.policy.kind !== 'mcp' ||
+          current.policy.authMode !== 'oauth' || !currentUrl?.ok ||
+          currentUrl.url !== validated.url ||
+          (accountRevision !== undefined && current.revision !== accountRevision) ||
+          (oauthAttemptId !== undefined && current.policy.oauthAttemptId !== oauthAttemptId) ||
+          currentBinding?.agentId !== setup.target.agentId) {
+        throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+      }
+      requireCatalogOAuthAccountPermission(setup, principal, current, currentBinding);
+      await requireCurrentCatalogOAuthAuthorization(
+        dependencies,
+        authorizationAuthority,
+        ref,
+      );
+    };
     const bearer = await (options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken)(
       { ref, serverUrl: validated.url },
       mcpOAuthDependencies(dependencies),
@@ -2428,8 +2549,11 @@ async function verifyMcpConnection(
       url: validated.url,
       transport: account.policy.transport,
       headers,
+      authorizeRequest,
     };
+    await authorizeRequest();
     const discovery = await (options.discoverMcp ?? discoverMcpTools)(discoveryInput);
+    await authorizeRequest();
     const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
       ...discoveryInput,
       ...(account.policy.presetId ? { presetId: account.policy.presetId } : {}),
@@ -2470,11 +2594,15 @@ async function verifyMcpConnection(
     };
   }
   const { agent, connection } = await currentMcpConnection(setup, dependencies.config);
+  const liveRef = boundMcpCredentialRef(agent.id, connection);
+  if (ref.credentialRef !== undefined && ref.credentialRef !== liveRef.credentialRef) {
+    throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+  }
   const validated = validateMcpUrl(connection.url);
   if (!validated.ok) throw new Error('blocked_url');
   const bearer = oauth
     ? await (options.resolveMcpOAuthToken ?? resolveMcpOAuthAccessToken)(
-        { ref, serverUrl: validated.url },
+        { ref: liveRef, serverUrl: validated.url },
         mcpOAuthDependencies(dependencies),
       )
     : undefined;
@@ -2482,18 +2610,30 @@ async function verifyMcpConnection(
     ...(bearer ? { bearer } : {}),
     headers: {},
   });
+  const authorizeRequest = async () => {
+    const current = await dependencies.config.getAgent(agent.id);
+    const live = current.mcpServers.find(({ id }) => id === connection.id);
+    if (!live || boundMcpCredentialRef(current.id, live).credentialBinding !==
+        liveRef.credentialBinding) {
+      throw new Error('target_changed');
+    }
+  };
+  await authorizeRequest();
   const discovery = await (options.discoverMcp ?? discoverMcpTools)({
     id: connection.id,
     url: validated.url,
     transport: connection.transport,
     headers,
+    authorizeRequest,
   });
+  await authorizeRequest();
   const identity = await (options.identifyMcp ?? discoverMcpConnectionIdentity)({
     id: connection.id,
     url: validated.url,
     transport: connection.transport,
     headers,
     ...(connection.presetId ? { presetId: connection.presetId } : {}),
+    authorizeRequest,
   }).catch(() => undefined);
   await setMcpConnectionReady(
     dependencies.config,
@@ -2536,10 +2676,16 @@ async function assertExactTarget(
       agent.revision !== setup.target.expectedRevision) throw new Error('target_changed');
   if (setup.target.kind === 'api_connection') {
     const connection = agent.apiConnections.find(({ id }) => id === setup.target.connectionId);
-    if (!connection || connection.displayName !== setup.target.targetLabel) throw new Error('target_changed');
+    if (!connection || connection.displayName !== setup.target.targetLabel ||
+        boundApiCredentialRef(agent.id, connection).credentialBinding !== setup.target.credentialBinding) {
+      throw new Error('target_changed');
+    }
   } else if (setup.target.kind === 'mcp_connection') {
     const connection = agent.mcpServers.find(({ id }) => id === setup.target.connectionId);
-    if (!connection || connection.displayName !== setup.target.targetLabel) throw new Error('target_changed');
+    if (!connection || connection.displayName !== setup.target.targetLabel ||
+        boundMcpCredentialRef(agent.id, connection).credentialBinding !== setup.target.credentialBinding) {
+      throw new Error('target_changed');
+    }
   } else if (setup.target.kind === 'catalog_connection') {
     const preset = setup.target.presetId
       ? resolveConnectorCatalogPreset(setup.target.presetId)
@@ -2573,21 +2719,46 @@ async function currentMcpConnection(
 ): Promise<{ agent: CustomAgentConfig; connection: McpConnectionConfig }> {
   const agent = await config.getAgent(setup.target.agentId!);
   const connection = agent.mcpServers.find(({ id }) => id === setup.target.connectionId);
-  if (!connection) throw new Error('target_changed');
+  if (!connection || agent.revision !== setup.target.expectedRevision ||
+      connection.displayName !== setup.target.targetLabel ||
+      boundMcpCredentialRef(agent.id, connection).credentialBinding !== setup.target.credentialBinding) {
+    throw new Error('target_changed');
+  }
+  return { agent, connection };
+}
+
+async function currentApiConnection(
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<{
+  agent: CustomAgentConfig;
+  connection: CustomAgentConfig['apiConnections'][number];
+}> {
+  const agent = await config.getAgent(setup.target.agentId!);
+  const connection = agent.apiConnections.find(({ id }) => id === setup.target.connectionId);
+  if (!connection || agent.revision !== setup.target.expectedRevision ||
+      connection.displayName !== setup.target.targetLabel ||
+      boundApiCredentialRef(agent.id, connection).credentialBinding !== setup.target.credentialBinding) {
+    throw new Error('target_changed');
+  }
   return { agent, connection };
 }
 
 async function setApiConnectionReady(
   config: ConfigStore,
   agent: CustomAgentConfig,
-  connectionId: string,
+  ref: ApiOAuthRef,
   accountName?: string,
   productTelemetry?: ProductTelemetryCapture,
   workspaceId?: string,
-): Promise<void> {
-  const index = agent.apiConnections.findIndex(({ id }) => id === connectionId);
+): Promise<CustomAgentConfig> {
+  const index = agent.apiConnections.findIndex(
+    ({ id, credentialRef }) => id === ref.connectionId &&
+      ref.credentialRef !== undefined && credentialRef === ref.credentialRef,
+  );
   if (index < 0) throw new Error('target_changed');
   const connection = agent.apiConnections[index]!;
+  if (!connection.credentialRef) throw new Error('target_changed');
   if (connection.authMode === 'oauth' && !isValidApiOAuthConnectionPolicy(connection)) {
     throw new Error('target_changed');
   }
@@ -2598,7 +2769,10 @@ async function setApiConnectionReady(
     statusText: 'Connected',
     ...(accountName ? { identity: { accountName } } : {}),
   };
-  await config.updateAgent(agent.id, { apiConnections }, agent.revision);
+  const updated = await config.updateAgent(agent.id, {
+    apiConnections,
+    credentialRequirements: { api: { [connection.id]: connection.credentialRef } },
+  }, agent.revision);
   if (connection.lifecycleStatus !== 'ready' && workspaceId) {
     productTelemetry?.capture({
       event: 'connection_ready',
@@ -2609,6 +2783,7 @@ async function setApiConnectionReady(
       surface: 'slack',
     });
   }
+  return updated;
 }
 
 async function setMcpConnectionReady(
@@ -2623,6 +2798,7 @@ async function setMcpConnectionReady(
   const index = agent.mcpServers.findIndex(({ id, url }) => id === original.id && url === original.url);
   if (index < 0) throw new Error('target_changed');
   const current = agent.mcpServers[index]!;
+  if (!current.credentialRef) throw new Error('target_changed');
   const allowedTools = allowedToolsAfterMcpDiscovery(current, discoveredTools);
   const mcpServers = agent.mcpServers.slice();
   mcpServers[index] = {
@@ -2634,7 +2810,10 @@ async function setMcpConnectionReady(
     lastCheckedAt: Date.now(),
     ...(identity ? { identity } : {}),
   };
-  await config.updateAgent(agent.id, { mcpServers }, agent.revision);
+  await config.updateAgent(agent.id, {
+    mcpServers,
+    credentialRequirements: { mcp: { [current.id]: current.credentialRef } },
+  }, agent.revision);
   if (!isMcpToolReviewRequired(current) && current.lifecycleStatus !== 'ready' && workspaceId) {
     productTelemetry?.capture({
       event: 'connection_ready',
@@ -2693,13 +2872,19 @@ async function beginRepositorySetup(
 function apiOAuthDependencies(dependencies: SetupDependencies): ApiOAuthDependencies {
   return {
     settings: dependencies.settings,
-    validateConnection: async (ref, provider) => {
+    validateConnection: async (ref, provider, accountRevision) => {
       try {
         const agent = await dependencies.config.getAgent(ref.agentId);
+        if (accountRevision !== undefined && agent.revision !== accountRevision) {
+          throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
         const connection = agent.apiConnections.find(({ id }) => id === ref.connectionId);
-        return !!connection && connection.authMode === 'oauth' &&
+        return ref.credentialRef !== undefined && !!connection &&
+          connection.credentialRef === ref.credentialRef &&
+          connection.authMode === 'oauth' &&
           connection.oauthProvider === provider && isValidApiOAuthConnectionPolicy(connection);
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiOAuthError) throw error;
         return false;
       }
     },
@@ -2741,7 +2926,9 @@ function mcpOAuthDependencies(
       try {
         const agent = await dependencies.config.getAgent(ref.agentId);
         const connection = agent.mcpServers.find(({ id }) => id === ref.connectionId);
-        return !!connection && connection.authMode === 'oauth' && connection.url === serverUrl;
+        return !!connection && connection.authMode === 'oauth' &&
+          (ref.credentialRef === undefined || connection.credentialRef === ref.credentialRef) &&
+          connection.url === serverUrl;
       } catch {
         return false;
       }
@@ -3059,6 +3246,7 @@ function digest(value: string): string {
 function safeFailureCode(error: unknown): string {
   if (error instanceof ManagementError) return error.code;
   if (error instanceof McpOAuthError) return error.code;
+  if (error instanceof AgentConnectionCredentialConflictError) return 'target_changed';
   if (error instanceof ManagedConnectionProviderUnavailableError) {
     return 'managed_provider_unavailable';
   }

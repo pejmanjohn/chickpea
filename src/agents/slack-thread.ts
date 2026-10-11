@@ -53,6 +53,7 @@ import {
   isValidApiOAuthConnectionPolicy,
 } from '../config/api-oauth-policy.ts';
 import { resolveConnectorCredential } from '../config/connector-secrets.ts';
+import { boundApiCredentialRef } from '../config/connection-credential-binding.ts';
 import { setRunRepositoryShell } from '../config/model-access.ts';
 import { revalidateModelCredentialAttribution } from '../config/model-credential-refs.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -637,6 +638,8 @@ export async function resolveApiConnectionsForTurn(
             (connection) => connection.id === ref.connectionId,
           );
           return !!current &&
+            ref.credentialRef !== undefined &&
+            current.credentialRef === ref.credentialRef &&
             current.authMode === 'oauth' &&
             current.oauthProvider === provider &&
             isValidApiOAuthConnectionPolicy(current);
@@ -665,6 +668,7 @@ export async function resolveApiConnectionsForTurn(
       .filter((connection) => connection.enabled)
       .map(async (connection): Promise<ResolvedApiConnectionForTurn | undefined> => {
         let credential: string | undefined;
+        let authorize: (() => Promise<boolean>) | undefined;
         if (connection.authMode === 'oauth') {
           if (
             connection.lifecycleStatus !== 'ready' ||
@@ -677,7 +681,7 @@ export async function resolveApiConnectionsForTurn(
             const oauthInput = {
               ref: accountContext
                 ? connectionAccountOAuthRef(connection.id)
-                : { agentId, connectionId: connection.id },
+                : boundApiCredentialRef(agentId, connection),
               provider: connection.oauthProvider,
             };
             credential = accountContext && !dependencies.resolveOAuthToken
@@ -723,9 +727,37 @@ export async function resolveApiConnectionsForTurn(
                 actorMembershipId: accountContext.actorMembershipId,
                 connectionAccountId: connection.id,
               })
-            : await resolveCredential({ agentId, connectionId: connection.id }, env);
+            : connection.credentialRef
+              ? await resolveCredential(boundApiCredentialRef(agentId, connection), env)
+              : undefined;
         }
         if (!credential) return undefined;
+
+        if (accountContext) {
+          authorize = async () => {
+            if (!(await isActiveConnectionActor({ identity: identity!, workspaceId: accountContext.workspaceId, actorMembershipId: accountContext.actorMembershipId }))) return false;
+            const current = projectEffectiveApiConnections(await resolveEffectiveConnectionAccounts({ ...accountContext, agentId }));
+            const live = current.find(({ id }) => id === connection.id);
+            return !!live && live.enabled &&
+              (live.authMode !== 'oauth' || live.lifecycleStatus === 'ready') &&
+              runtimeApiDeclarationStillAllowed(live, connection) &&
+              runtimeApiDeclarationStillAllowed(connection, live);
+          };
+        } else {
+          authorize = async () => {
+            try {
+              const live = (await getConfigStore(env).getAgent(agentId)).apiConnections.find(
+                ({ id }) => id === connection.id,
+              );
+              return !!live && live.enabled &&
+                (live.authMode !== 'oauth' || live.lifecycleStatus === 'ready') &&
+                runtimeApiDeclarationStillAllowed(live, connection) &&
+                runtimeApiDeclarationStillAllowed(connection, live);
+            } catch {
+              return false;
+            }
+          };
+        }
 
         const policies = connection.authMode === 'oauth'
           ? googleWorkspaceServicePolicies(connection.oauthScopes ?? [])
@@ -737,16 +769,7 @@ export async function resolveApiConnectionsForTurn(
             headerName: policy.headerName,
             headerValue: (policy.headerValuePrefix ?? '') + credential,
             allowedMethods: policy.allowedMethods,
-            ...(accountContext ? { authorize: async () => {
-              if (!(await isActiveConnectionActor({ identity: identity!, workspaceId: accountContext.workspaceId, actorMembershipId: accountContext.actorMembershipId }))) return false;
-              const current = projectEffectiveApiConnections(await resolveEffectiveConnectionAccounts({ ...accountContext, agentId }));
-              const live = current.find(({ id }) => id === connection.id);
-              // Credentials are resolved per session. Any policy change invalidates
-              // its frozen delegate, including narrowing; rotation takes effect in
-              // the next session. A revoked account disappears from this projection.
-              return !!live && runtimeApiDeclarationStillAllowed(live, connection) &&
-                runtimeApiDeclarationStillAllowed(connection, live);
-            } } : {}),
+            authorize,
           })),
           displayName: connection.displayName,
           policy: connection,
@@ -765,6 +788,7 @@ export function runtimeApiDeclarationStillAllowed(
 ): boolean {
   const subset = (a: string[] = [], b: string[] = []) => a.every((value) => b.includes(value));
   return live.id === frozen.id &&
+    live.credentialRef === frozen.credentialRef &&
     (live.authMode ?? 'credential') === (frozen.authMode ?? 'credential') &&
     live.headerName.toLowerCase() === frozen.headerName.toLowerCase() &&
     (live.headerValuePrefix ?? '') === (frozen.headerValuePrefix ?? '') &&

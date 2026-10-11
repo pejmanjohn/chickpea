@@ -21,7 +21,6 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
 import { getProviderFavorites } from '../config/provider-models.ts';
-import { clearRepointedMcpCredentials } from '../config/mcp-connection-lifecycle.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
@@ -150,13 +149,6 @@ export function createLiveWorkspaceManagementService(
         settings,
         options.usage ?? getUsageStore(env),
       )).source,
-    prepareAgentUpdate: (agent, patch) => clearRepointedMcpCredentials({
-      agentId: agent.id,
-      current: agent.mcpServers,
-      next: patch.mcpServers,
-      settings,
-      ...(env ? { env } : {}),
-    }),
     reconcileAgentUpdate: async ({ actor, agent, patch }) => {
       const presentationChanged = patch.name !== undefined ||
         patch.description !== undefined || patch.slackPresence !== undefined;
@@ -303,6 +295,7 @@ export function createLiveWorkspaceManagementService(
       actor,
       agentId,
       expectedRevision,
+      expectedCredentialIncarnation,
       replacementDefaultAgentId,
     }) => {
       const user = await identity.getUser(actor.userId);
@@ -310,21 +303,35 @@ export function createLiveWorkspaceManagementService(
         throw new ManagementError('forbidden', 'The workspace management actor is unavailable.');
       }
       const current = await config.getAgent(agentId);
+      if (expectedCredentialIncarnation &&
+          current.credentialIncarnation !== expectedCredentialIncarnation) {
+        throw new ManagementError('revision_conflict', 'The Agent identity changed before archive.');
+      }
       const archiveRetry = current.lifecycle === 'archived' ||
         current.slackPresence?.desiredState === 'disabled';
       if (current.revision !== expectedRevision && !archiveRetry) {
         throw new ManagementError('revision_conflict', 'The Agent changed before archive.');
       }
       return (await presenceReconciler(user.slackTeamId)).archive(agentId, {
+        ...(expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {}),
         ...(replacementDefaultAgentId ? { replacementDefaultAgentId } : {}),
       });
     },
-    restoreAgent: async ({ actor, agentId, expectedRevision }) => {
+    restoreAgent: async ({
+      actor,
+      agentId,
+      expectedRevision,
+      expectedCredentialIncarnation,
+    }) => {
       const user = await identity.getUser(actor.userId);
       if (!user) {
         throw new ManagementError('forbidden', 'The workspace management actor is unavailable.');
       }
       const current = await config.getAgent(agentId);
+      if (expectedCredentialIncarnation &&
+          current.credentialIncarnation !== expectedCredentialIncarnation) {
+        throw new ManagementError('revision_conflict', 'The Agent identity changed before restore.');
+      }
       const restoreRetry = current.lifecycle !== 'archived' &&
         current.slackPresence?.desiredState === 'active' &&
         current.slackPresence.health !== 'healthy' &&
@@ -332,9 +339,18 @@ export function createLiveWorkspaceManagementService(
       if (current.revision !== expectedRevision && !restoreRetry) {
         throw new ManagementError('revision_conflict', 'The Agent changed before restore.');
       }
-      return (await presenceReconciler(user.slackTeamId)).restore(agentId);
+      return (await presenceReconciler(user.slackTeamId)).restore(
+        agentId,
+        expectedCredentialIncarnation,
+      );
     },
-    deleteAgent: async ({ actor, agentId, expectedRevision }) => {
+    deleteAgent: async ({
+      actor,
+      agentId,
+      expectedRevision,
+      expectedCredentialIncarnation,
+      idempotencyKey,
+    }) => {
       const providerContext = await resolveManagedAuthorizationProviderContext({
         settings,
         ...(env ? { platformEnv: env } : {}),
@@ -347,8 +363,16 @@ export function createLiveWorkspaceManagementService(
         principal: managementActorPrincipal(actor),
         agentId,
         expectedRevision,
+        expectedCredentialIncarnation,
       });
-      return config.deleteAgent(agentId, expectedRevision);
+      return config.deleteAgentWithMemory
+        ? config.deleteAgentWithMemory(
+            agentId,
+            idempotencyKey,
+            expectedRevision,
+            expectedCredentialIncarnation,
+          )
+        : config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
     },
     ...agentAvatarInstallationField(env),
     ...overrides,

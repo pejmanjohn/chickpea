@@ -334,6 +334,8 @@ export interface ManagementSetupTarget {
   targetId: string;
   targetLabel: string;
   expectedRevision: number;
+  /** Opaque static/OAuth connection incarnation captured when this setup was issued. */
+  credentialBinding?: string;
   agentId?: string;
   agentName?: string;
   connectionId?: string;
@@ -1080,6 +1082,8 @@ export interface ManagementRequestRecord {
 export interface ManagementPreparedItem {
   itemId: string;
   operation: ManagementOperation;
+  /** Internal immutable Agent identity fence; never include it in public previews. */
+  agentCredentialIncarnation?: string;
   before?: unknown;
   intendedAfter?: unknown;
   inverse?: ManagementOperation;
@@ -1098,6 +1102,8 @@ export interface ManagementProposalRecord {
   actorMembershipId: string;
   originKey: string;
   operation: ManagementOperation;
+  /** Immutable identity of the existing Agent this legacy proposal reviewed. */
+  agentCredentialIncarnation?: string;
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
@@ -1123,6 +1129,13 @@ export interface ManagementChangeSetPreview {
   }>;
 }
 
+/** Durable preview with private recovery fences. Public responses must scrub these fields. */
+export interface ManagementChangeSetRecordPreview extends ManagementChangeSetPreview {
+  changes: Array<ManagementChangeSetPreview['changes'][number] & {
+    agentCredentialIncarnation?: string;
+  }>;
+}
+
 /** Durable exact multi-operation proposal. Kept separate from the legacy single-op row. */
 export interface ManagementChangeSetProposalRecord {
   proposalId: string;
@@ -1136,7 +1149,7 @@ export interface ManagementChangeSetProposalRecord {
   authoringReason: AgentAuthoringReason;
   operations: ManagementOperation[];
   digest: string;
-  preview: ManagementChangeSetPreview;
+  preview: ManagementChangeSetRecordPreview;
   targetRevisions: Record<string, number>;
   status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
@@ -1219,6 +1232,7 @@ export interface PutManagementProposalInput {
   actorMembershipId: string;
   originKey: string;
   operation: ManagementOperation;
+  agentCredentialIncarnation?: string;
   summary: string;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;

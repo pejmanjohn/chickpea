@@ -9,6 +9,7 @@ import type {
 } from './settings-store.ts';
 import type {
   AdoptionInventorySummary,
+  AgentCreationFence,
   RetainGatewayInstallationInput,
   RefreshGatewayClaimSetupInput,
   AgentModelRolePatch,
@@ -145,6 +146,7 @@ export type StateRpcErrorCode =
   | 'unknown_agent'
   | 'agent_exists'
   | 'agent_revision_conflict'
+  | 'agent_connection_credential_conflict'
   | 'reserved_agent_identity'
   | 'workspace_model_default_revision_conflict'
   | 'model_role_revision_conflict'
@@ -307,7 +309,10 @@ export interface TagStateRpc {
   configListUserAgents(): Promise<StateRpcResult<CustomAgentConfig[]>>;
   configGetAgent(agentId: string): Promise<StateRpcResult<CustomAgentConfig>>;
   configMaterializeChickpeaAgent(): Promise<StateRpcResult<CustomAgentConfig>>;
-  configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>>;
+  configCreateAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+  ): Promise<StateRpcResult<CustomAgentConfig>>;
   configUpdateAgent(
     agentId: string,
     patch: ConfigAgentPatch,
@@ -316,14 +321,23 @@ export interface TagStateRpc {
   configMarkOAuthReauthorizationRequired(
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>>;
-  configDeleteAgent(agentId: string, expectedRevision?: number): Promise<StateRpcResult<boolean>>;
+  configDeleteAgent(
+    agentId: string,
+    expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
+  ): Promise<StateRpcResult<boolean>>;
   configArchiveAgent(
     agentId: string,
-    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+    options?: {
+      replacementDefaultAgentId?: string;
+      expectedRevision?: number;
+      expectedCredentialIncarnation?: string;
+    },
   ): Promise<StateRpcResult<CustomAgentConfig>>;
   configRestoreAgent(
     agentId: string,
     expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
   ): Promise<StateRpcResult<CustomAgentConfig>>;
   configEnsureWorkspaceInstallation(
     input: EnsureWorkspaceInstallationInput,
@@ -642,6 +656,8 @@ export interface TagStateRpc {
   configDeleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
+    expectedRevision: number,
+    expectedCredentialIncarnation: string,
   ): Promise<StateRpcResult<boolean>>;
   // -- routines + scheduled-work audit ------------------------------------
   routinesExecute(request: RoutineRpcRequest): Promise<StateRpcResult<RoutineRpcResponse>>;

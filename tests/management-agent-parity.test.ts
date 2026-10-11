@@ -1699,6 +1699,72 @@ test('direct create recovery does not adopt a concurrently edited Agent with the
   }
 });
 
+test('direct create recovery does not adopt a deleted and recreated Agent with the same visible config', async () => {
+  const f = await createManagementAdapterFixture('create-recovery-incarnation-conflict');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'create-recovery-incarnation-conflict-client' },
+  };
+  let firstIncarnation: string | undefined;
+  let replacementIncarnation: string | undefined;
+  const conflictingConfig = new Proxy(f.config, {
+    get(target, property) {
+      if (property === 'createAgent') {
+        return async (...args: Parameters<typeof target.createAgent>) => {
+          const created = await target.createAgent(...args);
+          firstIncarnation = created.credentialIncarnation;
+          await target.deleteAgent(created.id, created.revision);
+          const replacement = await target.createAgent(args[0]);
+          replacementIncarnation = replacement.credentialIncarnation;
+          throw new Error('Synthetic crash after Agent replacement.');
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const crashingService = new WorkspaceManagementService({
+    identity: f.identity,
+    config: conflictingConfig,
+    management: f.management,
+    randomId: () => 'create_recovery_incarnation_conflict',
+  });
+  try {
+    await assert.rejects(
+      () => crashingService.applyWorkspaceChanges({
+        context,
+        idempotencyKey: 'create-recovery-incarnation-conflict',
+        operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+      }),
+      /Synthetic crash after Agent replacement/,
+    );
+    assert.ok(firstIncarnation);
+    assert.ok(replacementIncarnation);
+    assert.notEqual(replacementIncarnation, firstIncarnation);
+
+    const recovered = await new WorkspaceManagementService({
+      identity: f.identity,
+      config: f.config,
+      management: f.management,
+      randomId: () => 'create_recovery_incarnation_conflict_retry',
+    }).applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'create-recovery-incarnation-conflict',
+      operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
+    });
+    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.outcomes[0]?.disposition, 'failed');
+    assert.equal(
+      (await f.config.getAgent(agentInput.id)).credentialIncarnation,
+      replacementIncarnation,
+    );
+  } finally {
+    f.close();
+  }
+});
+
 test('change-set proposal preflights the whole set and stales before the first write', async () => {
   const f = await createManagementAdapterFixture('whole-set-stale');
   const context: ManagementActorContext = {
@@ -2626,6 +2692,361 @@ test('an abandoned applying change set resumes by reconciling the frozen mutatio
       (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
       'completed',
     );
+  } finally {
+    f.close();
+  }
+});
+
+test('an abandoned connection update reconciles the store-owned credential reference', async () => {
+  const f = await createManagementAdapterFixture('proposal-connection-crash-recovery');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'connection-crash-recovery-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_connection_recovery', name: 'Connection recovery',
+      instructions: 'Recover connection changes safely.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const mcpServers = [{
+      id: 'knowledge',
+      displayName: 'Knowledge',
+      url: 'https://mcp.example.test/mcp',
+      transport: 'streamable-http' as const,
+      authMode: 'none' as const,
+      headerNames: [],
+      enabled: true,
+      lifecycleStatus: 'ready' as const,
+      statusText: 'Ready',
+      discoveredTools: [],
+      allowedTools: [],
+    }];
+    const operation: ManagementOperation = {
+      itemId: 'connection', kind: 'update_agent', agentId: agent.id,
+      expectedRevision: agent.revision, patch: { mcpServers },
+    };
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('connection-crash-recovery'),
+      operations: [operation],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:connection-crash-recovery-client',
+      at: now,
+    });
+    const committed = await f.config.updateAgent(
+      agent.id,
+      { mcpServers },
+      agent.revision,
+    );
+    const credentialRef = committed.mcpServers[0]?.credentialRef;
+    assert.ok(credentialRef);
+
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'completed');
+    assert.equal(recovered.outcomes[0]?.disposition, 'applied');
+    const current = await f.config.getAgent(agent.id);
+    assert.equal(current.revision, committed.revision);
+    assert.equal(current.mcpServers[0]?.credentialRef, credentialRef);
+    assert.equal(
+      (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+      'completed',
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test('an abandoned connection update does not adopt a replacement Agent incarnation', async () => {
+  const f = await createManagementAdapterFixture('proposal-connection-replacement');
+  let now = 1_800_000_000_000;
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'connection-replacement-client' },
+  };
+  const service = new WorkspaceManagementService({
+    identity: f.identity,
+    config: f.config,
+    management: f.management,
+    now: () => now,
+  });
+  const createInput = {
+    id: 'agent_connection_replacement',
+    name: 'Connection replacement',
+    instructions: 'Keep replacement identities separate.',
+    enabled: true,
+    lifecycle: 'active' as const,
+    creatorMembershipId: f.admin.membership.id,
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  };
+  const mcpServers = [{
+    id: 'knowledge',
+    displayName: 'Knowledge',
+    url: 'https://mcp.example.test/mcp',
+    transport: 'streamable-http' as const,
+    authMode: 'none' as const,
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Ready',
+    discoveredTools: [],
+    allowedTools: [],
+  }];
+  try {
+    const original = await f.config.createAgent(createInput);
+    const operation: ManagementOperation = {
+      itemId: 'connection', kind: 'update_agent', agentId: original.id,
+      expectedRevision: original.revision, patch: { mcpServers },
+    };
+    const proposed = await service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('connection-replacement'),
+      operations: [operation],
+    });
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: 'mcp:connection-replacement-client',
+      at: now,
+    });
+    await f.config.deleteAgent(original.id, original.revision);
+    const replacement = await f.config.createAgent(createInput);
+    assert.notEqual(replacement.credentialIncarnation, original.credentialIncarnation);
+    const changedReplacement = await f.config.updateAgent(
+      replacement.id,
+      { mcpServers },
+      replacement.revision,
+    );
+
+    now += 30_001;
+    const recovered = await service.confirmWorkspaceChange({
+      context,
+      proposalId: proposed.proposalId,
+    });
+    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.outcomes[0]?.disposition, 'failed');
+    assert.equal(recovered.outcomes[0]?.code, 'revision_conflict');
+    const current = await f.config.getAgent(original.id);
+    assert.equal(current.credentialIncarnation, replacement.credentialIncarnation);
+    assert.equal(current.revision, changedReplacement.revision);
+  } finally {
+    f.close();
+  }
+});
+
+test('pending change sets do not follow an Agent id across delete and recreate', async () => {
+  const f = await createManagementAdapterFixture('proposal-pending-agent-replacement');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'pending-agent-replacement-client' },
+  };
+  const createInput = (id: string) => ({
+    id,
+    name: 'Identity fence',
+    instructions: 'Keep proposal authority attached to one Agent identity.',
+    enabled: true,
+    lifecycle: 'active' as const,
+    creatorMembershipId: f.admin.membership.id,
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  try {
+    for (const kind of ['update_agent', 'delete_agent'] as const) {
+      const id = `agent_pending_replacement_${kind}`;
+      const original = await f.config.createAgent(createInput(id));
+      const operation: ManagementOperation = kind === 'update_agent'
+        ? {
+            itemId: kind,
+            kind,
+            agentId: id,
+            expectedRevision: original.revision,
+            patch: { description: 'Must stay on the original identity.' },
+          }
+        : {
+            itemId: kind,
+            kind,
+            agentId: id,
+            expectedRevision: original.revision,
+          };
+      const proposed = await f.service.proposeWorkspaceChanges({
+        context,
+        ...authoringProposalMetadata(`pending-replacement-${kind}`),
+        operations: [operation],
+      });
+
+      await f.config.deleteAgent(
+        original.id,
+        original.revision,
+        original.credentialIncarnation,
+      );
+      const replacement = await f.config.createAgent(createInput(id));
+      assert.equal(replacement.revision, original.revision);
+      assert.notEqual(replacement.credentialIncarnation, original.credentialIncarnation);
+
+      await assert.rejects(
+        () => f.service.confirmWorkspaceChange({ context, proposalId: proposed.proposalId }),
+        (error: unknown) => error instanceof ManagementError && error.code === 'revision_conflict',
+      );
+      const preserved = await f.config.getAgent(id);
+      assert.equal(preserved.credentialIncarnation, replacement.credentialIncarnation);
+      assert.equal(preserved.description, undefined);
+      assert.equal(
+        (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
+        'stale',
+      );
+    }
+  } finally {
+    f.close();
+  }
+});
+
+test('a legacy pending lifecycle proposal does not follow an Agent id across delete and recreate', async () => {
+  const f = await createManagementAdapterFixture('legacy-pending-agent-replacement');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'legacy-pending-agent-replacement-client' },
+  };
+  const input = {
+    id: 'agent_legacy_pending_replacement',
+    name: 'Legacy identity fence',
+    instructions: 'Keep legacy proposal authority attached to one Agent identity.',
+    enabled: true,
+    lifecycle: 'active' as const,
+    creatorMembershipId: f.admin.membership.id,
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  };
+  try {
+    const original = await f.config.createAgent(input);
+    const proposed = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'legacy-pending-agent-replacement',
+      operations: [{
+        itemId: 'archive',
+        kind: 'archive_agent',
+        agentId: original.id,
+        expectedRevision: original.revision,
+      }],
+    });
+    assert.equal(proposed.status, 'confirmation_required');
+    const proposalId = proposed.outcomes[0]?.proposalId;
+    assert.ok(proposalId);
+
+    await f.config.deleteAgent(
+      original.id,
+      original.revision,
+      original.credentialIncarnation,
+    );
+    const replacement = await f.config.createAgent(input);
+    assert.equal(replacement.revision, original.revision);
+    assert.notEqual(replacement.credentialIncarnation, original.credentialIncarnation);
+
+    await assert.rejects(
+      () => f.service.confirmWorkspaceChange({ context, proposalId }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'revision_conflict',
+    );
+    const preserved = await f.config.getAgent(original.id);
+    assert.equal(preserved.credentialIncarnation, replacement.credentialIncarnation);
+    assert.equal(preserved.lifecycle, 'active');
+    assert.equal((await f.management.getProposal(proposalId))?.status, 'stale');
+  } finally {
+    f.close();
+  }
+});
+
+test('public change-set previews scrub private credential identity fences', async () => {
+  const f = await createManagementAdapterFixture('proposal-private-credential-preview');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'private-credential-preview-client' },
+  };
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_private_preview',
+      name: 'Private preview',
+      instructions: 'Keep internal credential identities private.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1,
+      skills: [],
+      mcpServers: [{
+        id: 'knowledge',
+        displayName: 'Knowledge',
+        url: 'https://mcp.example.test/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+        headerNames: [],
+        enabled: true,
+        lifecycleStatus: 'ready',
+        statusText: 'Ready',
+        discoveredTools: [],
+        allowedTools: [],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    assert.ok(agent.credentialIncarnation);
+    assert.ok(agent.mcpServers[0]?.credentialRef);
+
+    const proposed = await f.service.proposeWorkspaceChanges({
+      context,
+      ...authoringProposalMetadata('private-credential-preview'),
+      operations: [{
+        itemId: 'description',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { description: 'A public description.' },
+      }],
+    });
+    assert.doesNotMatch(JSON.stringify(proposed), /credentialIncarnation|credentialRef/);
+
+    const durable = await f.management.getChangeSetProposal(proposed.proposalId);
+    assert.equal(
+      durable?.preview.changes[0]?.agentCredentialIncarnation,
+      agent.credentialIncarnation,
+    );
+    assert.match(JSON.stringify(durable?.preview), /credentialIncarnation|credentialRef/);
   } finally {
     f.close();
   }

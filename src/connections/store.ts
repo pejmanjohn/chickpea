@@ -575,10 +575,12 @@ export class ConnectionAccountService {
     principal: AuthPrincipal;
     agentId: string;
     expectedRevision: number;
+    expectedCredentialIncarnation: string;
   }): Promise<ConnectionAccount[]> {
     const agent = await this.dependencies.config.getAgent(input.agentId);
     if (!canEditAgent(input.principal, agent)) throw new AuthorizationError();
-    if (agent.revision !== input.expectedRevision) {
+    if (agent.revision !== input.expectedRevision ||
+        agent.credentialIncarnation !== input.expectedCredentialIncarnation) {
       throw new AgentRevisionConflictError(input.agentId, input.expectedRevision, agent.revision);
     }
     const references = await this.dependencies.config.getAgentReferences(input.agentId);

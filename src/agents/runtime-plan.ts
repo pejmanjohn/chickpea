@@ -104,6 +104,7 @@ export interface RuntimePlanSkillV2 {
 
 export interface RuntimePlanMcpConnectionV2 {
   id: string;
+  credentialRef?: string;
   presetId?: string;
   displayName?: string;
   readOnlyTools?: string[];
@@ -123,6 +124,7 @@ export interface RuntimePlanApiConnectionV2 {
   displayName?: string;
   presetId?: string;
   id: string;
+  credentialRef?: string;
   allowedHosts: string[];
   pathPrefixes: string[];
   allowedMethods: string[];
@@ -1245,6 +1247,7 @@ function compileMcpConnections(
     )
     .map((connection) => ({
       id: connection.id,
+      ...(connection.credentialRef ? { credentialRef: connection.credentialRef } : {}),
       displayName: connection.displayName,
       ...(connection.presetId ? { presetId: connection.presetId } : {}),
       readOnlyTools: sortedUnique(connection.allowedTools.filter((tool) => mcpToolEffect(connection, tool) === true)),
@@ -1276,6 +1279,7 @@ function compileApiConnections(
     )
     .map((connection) => ({
       id: connection.id,
+      ...(connection.credentialRef ? { credentialRef: connection.credentialRef } : {}),
       ...(connection.displayName ? { displayName: connection.displayName } : {}),
       allowedHosts: sortedUnique(connection.allowedHosts.map((host) => host.toLowerCase())),
       pathPrefixes: sortedUnique(connection.pathPrefixes),
@@ -1891,6 +1895,7 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
   const label = `mcpConnections[${index}]`;
   const record = exactRecord(value, label, [
     'id',
+    'credentialRef',
     'presetId',
     'displayName',
     'readOnlyTools',
@@ -1904,7 +1909,7 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
     'headerNames',
     'allowedTools',
     'optional',
-  ], ['presetId', 'displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints', 'oauthScope', 'oauthAttemptId']);
+  ], ['credentialRef', 'presetId', 'displayName', 'readOnlyTools', 'writeTools', 'toolArgumentConstraints', 'oauthScope', 'oauthAttemptId']);
   if (record.optional !== true && record.optional !== false) {
     throw new Error(`Runtime plan ${label}.optional must be boolean.`);
   }
@@ -1919,6 +1924,8 @@ function parseMcpConnection(value: unknown, index: number): RuntimePlanMcpConnec
   }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
+    ...(record.credentialRef !== undefined
+      ? { credentialRef: boundedString(record.credentialRef, `${label}.credentialRef`, 1, 96) } : {}),
     ...(record.presetId !== undefined
       ? { presetId: boundedString(record.presetId, `${label}.presetId`, 1, 128) } : {}),
     ...(record.displayName !== undefined
@@ -1952,6 +1959,7 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
   const label = `apiConnections[${index}]`;
   const record = exactRecord(value, label, [
     'id',
+    'credentialRef',
     'allowedHosts',
     'pathPrefixes',
     'allowedMethods',
@@ -1962,7 +1970,7 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
     'oauthScopes',
     'presetId',
     'displayName',
-  ], ['headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId', 'displayName']);
+  ], ['credentialRef', 'headerValuePrefix', 'oauthProvider', 'oauthScopes', 'presetId', 'displayName']);
   const authMode = oneOf(
     record.authMode,
     `${label}.authMode`,
@@ -1982,6 +1990,8 @@ function parseApiConnection(value: unknown, index: number): RuntimePlanApiConnec
   }
   return {
     id: boundedString(record.id, `${label}.id`, 1, 120),
+    ...(record.credentialRef === undefined
+      ? {} : { credentialRef: boundedString(record.credentialRef, `${label}.credentialRef`, 1, 96) }),
     ...(record.displayName === undefined ? {} : { displayName: boundedString(record.displayName, `${label}.displayName`, 1, 240) }),
     allowedHosts: sortedUniqueStringArray(record.allowedHosts, `${label}.allowedHosts`, 128),
     pathPrefixes: sortedUniqueStringArray(record.pathPrefixes, `${label}.pathPrefixes`, 128),

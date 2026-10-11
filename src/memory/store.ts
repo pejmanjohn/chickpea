@@ -126,10 +126,13 @@ export class MemoryStoreLogic {
   }
 
   deleteAgentMemory(agentId: string): number {
-    return this.db.transaction(() => {
-      this.db.run('DELETE FROM agent_memory_mutation_receipts WHERE agent_id = ?', agentId);
-      return this.db.run('DELETE FROM agent_memories WHERE agent_id = ?', agentId).changes;
-    });
+    return this.db.transaction(() => this.deleteAgentMemoryRows(agentId));
+  }
+
+  /** Internal helper for a caller that already owns the shared state transaction. */
+  deleteAgentMemoryRows(agentId: string): number {
+    this.db.run('DELETE FROM agent_memory_mutation_receipts WHERE agent_id = ?', agentId);
+    return this.db.run('DELETE FROM agent_memories WHERE agent_id = ?', agentId).changes;
   }
 }
 

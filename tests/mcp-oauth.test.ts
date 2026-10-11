@@ -34,6 +34,10 @@ import {
 import type { OAuthRefreshTelemetryEvent } from '../src/config/oauth-refresh-telemetry.ts';
 
 const REF = { agentId: 'agent_test', connectionId: 'notion-mcp' };
+const BOUND_REF = {
+  ...REF,
+  credentialRef: 'connection_11111111111111111111111111111111',
+};
 const SERVER_URL = 'https://mcp.example.test/mcp';
 const CALLBACK_URL = 'https://chickpea.example.test/oauth/callback';
 const METADATA_URL =
@@ -261,6 +265,44 @@ test('client metadata is a public-client CIMD document without secrets', () => {
     client_name: 'Chickpea',
   });
   assert.equal(JSON.stringify(metadata).includes('secret'), false);
+});
+
+test('credential-bound OAuth state round-trips through continuation and callback completion', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const oauth = fakeOAuthServer();
+  const dependencies = {
+    settings,
+    fetchFn: oauth.fetchFn,
+    randomId: () => 'bound-state',
+    validateConnection: () => true,
+  };
+  try {
+    const started = await startMcpOAuthAuthorization({
+      ref: BOUND_REF,
+      serverUrl: SERVER_URL,
+      callbackUrl: CALLBACK_URL,
+      setupOperationId: 'setup_bound',
+    }, dependencies);
+    assert.equal(
+      await readMcpOAuthSetupContinuation(started.state, dependencies),
+      'setup_bound',
+    );
+    const completed = await completeMcpOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      dependencies,
+    );
+    assert.deepEqual(completed.ref, BOUND_REF);
+    assert.equal(
+      await resolveMcpOAuthAccessToken(
+        { ref: BOUND_REF, serverUrl: SERVER_URL },
+        dependencies,
+      ),
+      'access-initial',
+    );
+    assert.equal(await settings.getSetting(mcpOAuthSettingKeys(REF)[2]), undefined);
+  } finally {
+    settings.close();
+  }
 });
 
 test('CIMD document binds client_id to its exact HTTPS document URL', () => {

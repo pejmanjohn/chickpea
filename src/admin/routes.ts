@@ -194,6 +194,7 @@ import slackAppManifest from '../../slack-app-manifest.json' with { type: 'json'
 import { AGENT_ID_PATTERN, CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import {
   apiOAuthSettingKeys,
+  apiOAuthClientBindingMatches,
   connectionAccountIdFromOAuthRef,
   connectionAccountOAuthRef,
   apiOAuthReturnRefFromState,
@@ -203,7 +204,7 @@ import {
   deleteApiOAuthSettings,
   describeApiOAuthSources,
   invalidateApiOAuthAuthorization,
-  saveApiOAuthClient,
+  replaceApiOAuthClient,
   startApiOAuthAuthorization,
   type ApiOAuthDependencies,
   type ApiOAuthProvider,
@@ -227,13 +228,22 @@ import {
 } from '../config/onboarding-state.ts';
 import {
   clearConnectorCredential,
+  connectorCredentialBindingEnvVar,
+  connectorCredentialEnvVar,
   deleteConnectorSecrets,
   describeConnectorCredentialSource,
   finishConnectorSecretCleanup,
   saveConnectorCredential,
   stageConnectorSecretCleanup,
   stageConnectorSettingCleanup,
+  unstageConnectorSecretCleanup,
+  unstageConnectorSettingCleanup,
 } from '../config/connector-secrets.ts';
+import {
+  agentCredentialConfigurationBinding,
+  boundApiCredentialRef,
+  boundMcpCredentialRef,
+} from '../config/connection-credential-binding.ts';
 import {
   computeSnapshotHash,
   resolveEffectiveSlackConfig,
@@ -310,17 +320,17 @@ import {
   deleteMcpSecrets,
   describeMcpSecretSources,
   finishMcpSecretCleanup,
+  mcpBearerEnvVar,
   mcpBearerSettingKey,
+  mcpCredentialBindingEnvVar,
+  mcpHeaderEnvVar,
   mcpHeaderSettingKey,
   resolveMcpSecrets,
   saveMcpSecrets,
   stageMcpSecretCleanup,
+  unstageMcpSecretCleanup,
   type ResolvedMcpSecrets,
 } from '../config/mcp-secrets.ts';
-import {
-  clearRepointedMcpCredentials,
-  safeUrlOrigin,
-} from '../config/mcp-connection-lifecycle.ts';
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
@@ -415,7 +425,7 @@ import {
 import { cloudflareBuildSource } from '../config/runtime-target.ts';
 import type { AgentSnapshotStore } from '../config/snapshot-store.ts';
 import type { RuntimeDrainStatus } from '../config/state-rpc.ts';
-import type { AgentModelRolePatch, ConfigStore } from '../config/store.ts';
+import type { AgentModelRolePatch, ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import {
   isNonChatModelRole,
   type AgentCreateInput,
@@ -1403,6 +1413,11 @@ const websiteLoginLevelSchema = v.strictObject({
   level: v.picklist(['check', 'act']),
 });
 
+const agentCredentialConfigurationBindingSchema = v.pipe(
+  v.string(),
+  v.regex(/^v1:[A-Za-z0-9_-]{43}$/),
+);
+
 const agentSchema = v.object({
   id: agentIdSchema,
   name: nonEmptyString,
@@ -1424,6 +1439,7 @@ const agentSchema = v.object({
 
 const agentPatchSchema = v.object({
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  credentialConfigurationBinding: v.optional(agentCredentialConfigurationBindingSchema),
   name: v.optional(nonEmptyString),
   description: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(500))),
   handle: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
@@ -1436,6 +1452,10 @@ const agentPatchSchema = v.object({
   mcpServers: v.optional(mcpServersSchema),
   apiConnections: v.optional(apiConnectionsSchema),
   repositories: v.optional(repositoriesSchema),
+  credentialResets: v.optional(v.strictObject({
+    mcp: v.optional(v.array(v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)))),
+    api: v.optional(v.array(v.pipe(v.string(), v.regex(MCP_CONNECTION_ID_PATTERN)))),
+  })),
   // Website-login grants change only through /agents/:id/website-logins.
 });
 
@@ -1458,6 +1478,10 @@ const archiveAgentSchema = v.strictObject({
 const restoreAgentSchema = v.strictObject({
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
   workspaceId: v.optional(nonEmptyString),
+});
+const deleteAgentSchema = v.strictObject({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  credentialConfigurationBinding: agentCredentialConfigurationBindingSchema,
 });
 const agentAvatarUploadSchema = v.strictObject({
   contentType: v.picklist(['image/png', 'image/jpeg', 'image/webp']),
@@ -1502,6 +1526,9 @@ const mcpTestSchema = v.object({
   url: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2048)),
   transport: v.picklist(['streamable-http', 'sse']),
   authMode: v.picklist(['none', 'bearer', 'oauth']),
+  credentialBinding: v.optional(
+    v.pipe(v.string(), v.regex(/^v2:[A-Za-z0-9_-]{43}$/)),
+  ),
   bearerToken: v.optional(v.string()),
   // KEYS validated like headerNames — a raw key with ':' or CR/LF would throw
   // deep inside new Headers() and read as a misleading connect failure.
@@ -1515,8 +1542,14 @@ const mcpTestSchema = v.object({
 // Secrets PUT payload — values plus the header NAMES they map to (the settings
 // store has no prefix scan, so delete/describe need the name list).
 const headerNameSchema = v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/));
+const credentialBindingSchema = v.pipe(
+  v.string(),
+  v.regex(/^v2:[A-Za-z0-9_-]{43}$/),
+);
 
 const mcpSecretsPutSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedCredentialBinding: credentialBindingSchema,
   bearerToken: v.optional(v.string()),
   // Record KEYS are header names and get the same validation as headerNames —
   // an unvalidated key with ':' or CR/LF would explode later in new Headers().
@@ -1535,15 +1568,32 @@ const mcpOAuthStartSchema = v.object({
 });
 
 const mcpSecretsDeleteSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedCredentialBinding: credentialBindingSchema,
   headerNames: v.array(v.pipe(v.string(), v.trim(), v.regex(/^[A-Za-z0-9-]{1,128}$/))),
 });
 
 const connectorSecretsPutSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedCredentialBinding: credentialBindingSchema,
   credential: v.optional(v.string()),
   clearCredential: v.optional(v.boolean()),
 });
 
+const connectorSecretsDeleteSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedCredentialBinding: credentialBindingSchema,
+});
+
 const apiOAuthClientSchema = v.object({
+  provider: v.literal('google'),
+  clientId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(512)),
+  clientSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_048)),
+});
+
+const agentApiOAuthClientSchema = v.object({
+  expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  expectedCredentialBinding: credentialBindingSchema,
   provider: v.literal('google'),
   clientId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(512)),
   clientSecret: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2_048)),
@@ -2835,6 +2885,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const requireCurrentOAuthAuthorization = async (
     c: Context,
     authority: OAuthAuthorizationAuthority,
+    lane: 'mcp' | 'api',
     ref: ApiOAuthRef,
   ): Promise<void> => {
     const [organization, membership, accessOverlay] = await Promise.all([
@@ -2870,7 +2921,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
     if (!connectionAccountId) {
-      if (authority.ownerKind !== 'legacy_agent' || ref.agentId !== authority.agentId) {
+      const connection = (lane === 'mcp' ? agent.mcpServers : agent.apiConnections).find(
+        ({ id }) => id === ref.connectionId,
+      );
+      if (authority.ownerKind !== 'legacy_agent' || ref.agentId !== authority.agentId ||
+          !connection || connection.authMode !== 'oauth' ||
+          connection.credentialRef !== ref.credentialRef) {
         throw new AuthorizationError();
       }
       return;
@@ -2902,11 +2958,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   const currentOAuthAuthorization = async (
     c: Context,
     authority: OAuthAuthorizationAuthority | undefined,
+    lane: 'mcp' | 'api',
     ref: ApiOAuthRef,
   ): Promise<boolean> => {
     if (!authority) return false;
     try {
-      await requireCurrentOAuthAuthorization(c, authority, ref);
+      await requireCurrentOAuthAuthorization(c, authority, lane, ref);
       return true;
     } catch {
       return false;
@@ -3059,7 +3116,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     settings: settings(c),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateAuthorization: (authority, ref) =>
-      currentOAuthAuthorization(c, authority, ref),
+      currentOAuthAuthorization(c, authority, 'mcp', ref),
     validateConnection: async (ref, serverUrl, accountRevision, oauthAttemptId) => {
       const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
       if (connectionAccountId) {
@@ -3100,7 +3157,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ...apiOAuthLifecycleDependencies(store(c), settings(c)),
     ...(options.oauthFetch ? { fetchFn: options.oauthFetch } : {}),
     validateAuthorization: (authority, ref) =>
-      currentOAuthAuthorization(c, authority, ref),
+      currentOAuthAuthorization(c, authority, 'api', ref),
     validateConnection: async (ref, provider, accountRevision, oauthAttemptId) => {
       const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
       if (connectionAccountId) {
@@ -3116,7 +3173,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         return true;
       }
-      return isCurrentApiOAuthConnection(store(c), ref, provider);
+      return isCurrentApiOAuthConnection(store(c), ref, provider, accountRevision);
     },
   });
   const openAiSubscriptionDependencies = (
@@ -4341,7 +4398,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ) {
       return invalidRequest(c);
     }
-    let ref: { agentId: string; connectionId: string };
+    let ref: { agentId: string; connectionId: string; credentialRef?: string };
     let returnAgentId: string | undefined;
     let accountRevision: number | undefined;
     let oauthAttemptId: string | undefined;
@@ -4393,7 +4450,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           'authorization_expired', 'OAuth initiating authority is missing',
         );
       }
-      await requireCurrentOAuthAuthorization(c, authorizationAuthority, ref);
+      await requireCurrentOAuthAuthorization(c, authorizationAuthority, 'mcp', ref);
       await verifyAndStoreMcpOAuthConnection({
         ref,
         configStore: store(c),
@@ -4407,7 +4464,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ...(accountRevision !== undefined ? { accountRevision } : {}),
         ...(oauthAttemptId ? { oauthAttemptId } : {}),
         validateAuthorization: () =>
-          requireCurrentOAuthAuthorization(c, authorizationAuthority, ref),
+          requireCurrentOAuthAuthorization(c, authorizationAuthority, 'mcp', ref),
       });
       return c.redirect(mcpOAuthAdminRedirect('connected', ref, returnAgentId), 303);
     } catch (error) {
@@ -4491,8 +4548,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           );
         }
         await requireCurrentOAuthAuthorization(
-          c, completed.authorizationAuthority, completed.ref,
+          c, completed.authorizationAuthority, 'api', completed.ref,
         );
+        if (!await apiOAuthClientBindingMatches(
+          completed.ref,
+          completed.clientBinding,
+          settings(c),
+        )) {
+          throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+        }
         await replaceReadyApiOAuthConnection(
           store(c),
           completed.ref,
@@ -5949,7 +6013,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         : connection.oauthScope ?? parsed.output.scope;
       const result = await startMcpOAuth(
         {
-          ref: { agentId, connectionId },
+          ref: boundMcpCredentialRef(agentId, connection),
           serverUrl: connection.url,
           callbackUrl: await mcpCallbackUrl(c, connection.url),
           ...(oauthScope ? { scope: oauthScope } : {}),
@@ -6041,12 +6105,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
       return invalidRequest(c);
     }
-    const parsed = v.safeParse(apiOAuthClientSchema, await readJson(c.req));
+    const parsed = v.safeParse(agentApiOAuthClientSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
-    const ref = { agentId, connectionId };
+    let agent: CustomAgentConfig;
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
+      agent = await requireCurrentAgentEdit(c, agentId);
+      if (agent.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      connection = agent.apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (error) {
@@ -6060,22 +6128,36 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ) {
       return c.json({ error: 'not_found' }, 404);
     }
+    const ref = boundApiCredentialRef(agentId, connection);
+    if (ref.credentialBinding !== parsed.output.expectedCredentialBinding) {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    const oauthKeys = apiOAuthSettingKeys(ref);
     try {
-      await stageConnectorSecretCleanup(agentId, [connectionId], c.env as PlatformEnv | undefined, settings(c));
-      await stageConnectorSettingCleanup(agentId, apiOAuthSettingKeys(ref), c.env as PlatformEnv | undefined, settings(c));
-      await clearConnectorCredential(agentId, connectionId, c.env as PlatformEnv | undefined, settings(c));
-      // A token bundle belongs to the client that minted it. Replacing the
-      // BYO app must not leave old access/refresh tokens usable under a new
-      // client id, or defer the mismatch until the next refresh.
-      await deleteApiOAuthSettings(ref, settings(c));
-      await saveApiOAuthClient(ref, parsed.output, settings(c));
+      await stageConnectorSettingCleanup(
+        agentId, oauthKeys, c.env as PlatformEnv | undefined, settings(c),
+      );
+      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      await replaceApiOAuthClient(ref, parsed.output, settings(c));
       if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
         await deleteApiOAuthSettings(ref, settings(c));
+        await unstageConnectorSettingCleanup(
+          agentId, oauthKeys, c.env as PlatformEnv | undefined, settings(c),
+        );
         return c.json({ error: 'connection_changed' }, 409);
       }
-      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      await unstageConnectorSettingCleanup(
+        agentId, oauthKeys, c.env as PlatformEnv | undefined, settings(c),
+      );
       return c.json({ source: 'stored' });
     } catch (error) {
+      const retired = await connectionCredentialWasRetired(
+        store(c), 'api', agentId, connectionId, ref.credentialRef,
+      );
+      if (retired === true) await deleteApiOAuthSettings(ref, settings(c)).catch(() => undefined);
+      await unstageConnectorSettingCleanup(
+        agentId, oauthKeys, c.env as PlatformEnv | undefined, settings(c),
+      ).catch(() => undefined);
       return internalError(c, error);
     }
   });
@@ -6089,10 +6171,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const body = await readJson(c.req);
     if (!isRecord(body) || Object.keys(body).length > 0) return invalidRequest(c);
-    const ref = { agentId, connectionId };
+    let agent: CustomAgentConfig;
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
+      agent = await requireCurrentAgentEdit(c, agentId);
+      connection = agent.apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (error) {
@@ -6107,15 +6190,33 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     ) {
       return c.json({ error: 'oauth_not_enabled' }, 409);
     }
+    const ref = boundApiCredentialRef(agentId, connection);
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
+      const pending = await replacePendingApiOAuthConnection(
+        store(c), ref, connection.oauthProvider,
+      );
+      if (pending.kind !== 'agent') {
+        throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+      }
+      const pendingAgent = pending.agent;
+      const pendingConnection = pendingAgent.apiConnections.find(
+        (candidate) => candidate.id === connectionId &&
+          candidate.credentialRef === ref.credentialRef &&
+          candidate.authMode === 'oauth' &&
+          candidate.oauthProvider === connection.oauthProvider,
+      );
+      if (!pendingConnection) {
+        throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
+      }
       const result = await startApiOAuth(
         {
           ref,
           provider: connection.oauthProvider,
           callbackUrl: `${requestOrigin(c)}/oauth/api/callback`,
-          scopes: connection.oauthScopes,
+          scopes: pendingConnection.oauthScopes!,
+          accountRevision: pendingAgent.revision,
           authorizationAuthority: await oauthAuthorizationAuthority(
             c, principal, agentId, 'legacy_agent',
           ),
@@ -6154,13 +6255,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return c.json({ error: 'oauth_not_enabled' }, 409);
       }
       const ref = connectionAccountOAuthRef(account.id);
-      await deleteApiOAuthSettings(ref, settings(c));
-      await saveApiOAuthClient(ref, parsed.output, settings(c));
+      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
+      await replaceApiOAuthClient(ref, parsed.output, settings(c));
       if (!(await isCurrentApiOAuthConnection(store(c), ref, parsed.output.provider))) {
         await deleteApiOAuthSettings(ref, settings(c));
         return c.json({ error: 'connection_changed' }, 409);
       }
-      await replacePendingApiOAuthConnection(store(c), ref, parsed.output.provider);
       return c.json({ source: 'stored' });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -6188,10 +6288,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         throw new AuthorizationError();
       }
       const ref = connectionAccountOAuthRef(account.id);
-      const pendingAccount = await replacePendingApiOAuthConnection(store(c), ref, 'google');
-      if (!pendingAccount) throw new ApiOAuthError(
+      const pending = await replacePendingApiOAuthConnection(store(c), ref, 'google');
+      if (pending.kind !== 'account') throw new ApiOAuthError(
         'connection_missing', 'Agent-owned OAuth connection is missing',
       );
+      const pendingAccount = pending.account;
       const result = await startApiOAuth(
         {
           ref,
@@ -8124,6 +8225,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           [],
           agent.apiConnections,
           settings(c),
+          new Set(),
         ),
       };
       const created = await configStore.createAgent(agent);
@@ -8301,20 +8403,28 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    // Stored and env-supplied secrets belong to the connection's SAVED origin.
-    // Backfilling them for an arbitrary tested URL turns this route into a
-    // credential read-back: the values are write-only everywhere else, and
-    // MCP_AGENT_*_BEARER cannot be written through the API at all, so an
-    // operator could otherwise post their own host here and read them off the
-    // wire. Resolve stored secrets only when the tested origin is the one they
-    // were saved against; a new or redirected target must be typed in full.
     const savedConnection = agent.mcpServers.find(({ id }) => id === input.id);
-    const storedOrigin = savedConnection ? safeUrlOrigin(savedConnection.url) : undefined;
-    const testsSavedOrigin =
-      storedOrigin !== undefined && storedOrigin === safeUrlOrigin(validated.url);
-    const resolved = testsSavedOrigin
+    let savedRef: ReturnType<typeof boundMcpCredentialRef> | undefined;
+    try {
+      savedRef = savedConnection ? boundMcpCredentialRef(agentId, savedConnection) : undefined;
+    } catch {
+      savedRef = undefined;
+    }
+    const savedUrl = savedConnection ? validateMcpUrl(savedConnection.url) : undefined;
+    const inputHeaderNames = (input.headerNames ?? []).map((name) => name.toLowerCase()).sort();
+    const savedHeaderNames = (savedConnection?.headerNames ?? []).map((name) => name.toLowerCase()).sort();
+    const testsExactSavedCredentialPolicy = (): boolean => Boolean(
+      savedConnection && savedRef && savedUrl?.ok &&
+      input.credentialBinding === savedRef.credentialBinding &&
+      savedUrl.url === validated.url &&
+      savedConnection.transport === input.transport &&
+      savedConnection.authMode === input.authMode &&
+      JSON.stringify(savedHeaderNames) === JSON.stringify(inputHeaderNames),
+    );
+    const testsSavedConnection = testsExactSavedCredentialPolicy();
+    const resolved = testsSavedConnection && savedRef
       ? await resolveMcpSecrets(
-          { agentId, connectionId: input.id },
+          savedRef,
           // Union of the connection's known header names and any typed this
           // session, so a stored value backs a header the operator didn't
           // re-enter.
@@ -8331,10 +8441,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       merged.bearer = resolved.bearer;
     }
     if (input.authMode === 'oauth') {
+      if (!testsSavedConnection || !savedRef) {
+        return c.json({
+          ok: false,
+          code: 'unauthorized',
+          message: 'This connection needs OAuth authorization.',
+        });
+      }
       try {
         merged.bearer = await resolveMcpOAuthToken(
           {
-            ref: { agentId, connectionId: input.id },
+            ref: savedRef,
             serverUrl: validated.url,
           },
           oauthDependencies(c),
@@ -8353,13 +8470,25 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
     }
     const headers = buildMcpRequestHeaders(input.authMode, merged);
+    const authorizeSavedCredential = testsSavedConnection && savedRef
+      ? async () => {
+          const currentAgent = await requireCurrentAgentEdit(c, agentId);
+          const current = currentAgent.mcpServers.find(({ id }) => id === input.id);
+          if (!current || boundMcpCredentialRef(agentId, current).credentialBinding !==
+              savedRef!.credentialBinding) {
+            throw new Error('connection_changed');
+          }
+        }
+      : undefined;
 
     try {
+      await authorizeSavedCredential?.();
       const result = await discoverMcp({
         id: input.id,
         url: validated.url,
         transport: input.transport,
         headers,
+        ...(authorizeSavedCredential ? { authorizeRequest: authorizeSavedCredential } : {}),
       });
       return c.json({ ok: true, tools: result.tools });
     } catch (err) {
@@ -8393,12 +8522,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
     const input = parsed.output;
     const platformEnv = c.env as PlatformEnv | undefined;
-    const configStore = store(c);
     const settingsStore = settings(c);
-    const ref = { agentId, connectionId };
+    let agent: CustomAgentConfig;
     let connection: CustomAgentConfig['mcpServers'][number] | undefined;
     try {
-      connection = (await requireCurrentAgentEdit(c, agentId)).mcpServers.find(
+      agent = await requireCurrentAgentEdit(c, agentId);
+      if (agent.revision !== input.expectedRevision) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      connection = agent.mcpServers.find(
         (server) => server.id === connectionId,
       );
     } catch (err) {
@@ -8407,14 +8539,26 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!connection) {
       return c.json({ error: 'not_found' }, 404);
     }
+    let ref;
+    try {
+      ref = boundMcpCredentialRef(agentId, connection);
+    } catch {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    if (ref.credentialBinding !== input.expectedCredentialBinding) {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
 
     const writtenHeaderNames = Object.keys(input.headers ?? {});
-    const allowedHeaderNames = new Set(connection.headerNames);
-    if (writtenHeaderNames.some((name) => !allowedHeaderNames.has(name))) {
+    const allowedHeaderNames = new Set(connection.headerNames.map((name) => name.toLowerCase()));
+    if (writtenHeaderNames.some((name) => !allowedHeaderNames.has(name.toLowerCase()))) {
       return invalidRequest(c);
     }
+    const removableHeaderNames = (input.removeHeaderNames ?? []).filter(
+      (name) => !allowedHeaderNames.has(name.toLowerCase()),
+    );
     const cleanupHeaderNames = [
-      ...new Set([...connection.headerNames, ...(input.removeHeaderNames ?? [])]),
+      ...new Set([...connection.headerNames, ...removableHeaderNames]),
     ];
     await stageMcpSecretCleanup(
       agentId,
@@ -8436,52 +8580,69 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (input.clearBearer) {
       await settingsStore.deleteSetting(mcpBearerSettingKey(ref));
     }
-    if (input.clearOAuth) {
-      await deleteMcpOAuthSettings(ref, settingsStore);
-    }
-    for (const name of input.removeHeaderNames ?? []) {
+    for (const name of removableHeaderNames) {
       await settingsStore.deleteSetting(mcpHeaderSettingKey(ref, name));
     }
 
     let currentConnection: CustomAgentConfig['mcpServers'][number] | undefined;
     try {
-      currentConnection = (await configStore.getAgent(agentId)).mcpServers.find(
+      const currentAgent = await requireCurrentAgentEdit(c, agentId);
+      currentConnection = currentAgent.mcpServers.find(
         (server) => server.id === connectionId,
       );
     } catch (err) {
-      if (!(err instanceof UnknownAgentError)) {
+      try {
+        const retired = await connectionCredentialWasRetired(
+          store(c), 'mcp', agentId, connectionId, ref.credentialRef,
+        );
+        if (retired === true) {
+          await deleteMcpSecrets(ref, cleanupHeaderNames, platformEnv, settingsStore);
+          await unstageMcpSecretCleanup(
+            agentId,
+            [
+              mcpBearerSettingKey(ref),
+              ...cleanupHeaderNames.map((name) => mcpHeaderSettingKey(ref, name)),
+            ],
+            settingsStore,
+          );
+        }
+        if (err instanceof UnknownAgentError) {
+          return c.json({ error: 'not_found' }, 404);
+        }
+        if (err instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
         return internalError(c, err);
-      }
-      try {
-        // The profile disappeared after the pre-write check. Remove this
-        // connection explicitly in case a concurrent profile cleanup consumed
-        // the marker just before these writes landed, then finish any marker
-        // that remains for the rest of the deleted profile.
-        await deleteMcpSecrets(ref, cleanupHeaderNames, platformEnv, settingsStore);
-        await finishMcpSecretCleanup(agentId, settingsStore);
-        return c.json({ error: 'not_found' }, 404);
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
     }
-    if (!currentConnection) {
+    if (!currentConnection || currentConnection.credentialRef !== ref.credentialRef) {
       try {
         await deleteMcpSecrets(ref, cleanupHeaderNames, platformEnv, settingsStore);
+        await unstageMcpSecretCleanup(
+          agentId,
+          [
+            mcpBearerSettingKey(ref),
+            ...cleanupHeaderNames.map((name) => mcpHeaderSettingKey(ref, name)),
+          ],
+          settingsStore,
+        );
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
-      return c.json({ error: 'not_found' }, 404);
+      return c.json({ error: currentConnection ? 'connection_changed' : 'not_found' }, currentConnection ? 409 : 404);
     }
-    const currentHeaderNames = new Set(currentConnection.headerNames);
-    const headersRemovedDuringWrite = writtenHeaderNames.filter(
-      (name) => !currentHeaderNames.has(name),
+    if (input.clearOAuth) {
+      await deleteMcpOAuthSettings(ref, settingsStore);
+    }
+
+    await unstageMcpSecretCleanup(
+      agentId,
+      [
+        mcpBearerSettingKey(ref),
+        ...cleanupHeaderNames.map((name) => mcpHeaderSettingKey(ref, name)),
+      ],
+      settingsStore,
     );
-    if (headersRemovedDuringWrite.length > 0) {
-      for (const name of headersRemovedDuringWrite) {
-        await settingsStore.deleteSetting(mcpHeaderSettingKey(ref, name));
-      }
-      return c.json({ error: 'connection_changed' }, 409);
-    }
 
     const sources = await describeMcpSecretSources(ref, input.headerNames, platformEnv, settingsStore);
     return c.json(sources);
@@ -8500,11 +8661,15 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
     const input = parsed.output;
     const platformEnv = c.env as PlatformEnv | undefined;
-    const configStore = store(c);
     const settingsStore = settings(c);
+    let agent: CustomAgentConfig;
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      connection = (await requireCurrentAgentEdit(c, agentId)).apiConnections.find(
+      agent = await requireCurrentAgentEdit(c, agentId);
+      if (agent.revision !== input.expectedRevision) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      connection = agent.apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (err) {
@@ -8513,82 +8678,96 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!connection || connection.authMode === 'oauth') {
       return c.json({ error: 'not_found' }, 404);
     }
+    let ref;
+    try {
+      ref = boundApiCredentialRef(agentId, connection);
+    } catch {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    if (ref.credentialBinding !== input.expectedCredentialBinding) {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
 
     await stageConnectorSecretCleanup(
       agentId,
-      [connectionId],
+      [ref],
       platformEnv,
       settingsStore,
     );
-    const oauthSources = await describeApiOAuthSources(
-      { agentId, connectionId },
-      settingsStore,
-    );
-    if (oauthSources.client === 'stored' || oauthSources.tokens === 'stored') {
-      await stageConnectorSettingCleanup(
-        agentId,
-        apiOAuthSettingKeys({ agentId, connectionId }),
-        platformEnv,
-        settingsStore,
-      );
-      await deleteApiOAuthSettings({ agentId, connectionId }, settingsStore);
-    }
     if (input.credential !== undefined && input.credential !== '') {
       await saveConnectorCredential(
-        agentId,
-        connectionId,
+        ref,
         input.credential,
         platformEnv,
         settingsStore,
       );
     }
     if (input.clearCredential) {
-      await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
+      await clearConnectorCredential(ref, platformEnv, settingsStore);
     }
 
     let currentConnection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      currentConnection = (await configStore.getAgent(agentId)).apiConnections.find(
+      const currentAgent = await requireCurrentAgentEdit(c, agentId);
+      currentConnection = currentAgent.apiConnections.find(
         (candidate) => candidate.id === connectionId,
       );
     } catch (err) {
-      if (!(err instanceof UnknownAgentError)) {
+      try {
+        const retired = await connectionCredentialWasRetired(
+          store(c), 'api', agentId, connectionId, ref.credentialRef,
+        );
+        if (retired === true) {
+          await deleteConnectorSecrets(agentId, [ref], platformEnv, settingsStore);
+          await unstageConnectorSecretCleanup(agentId, [ref], platformEnv, settingsStore);
+        }
+        if (err instanceof UnknownAgentError) {
+          return c.json({ error: 'not_found' }, 404);
+        }
+        if (err instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
         return internalError(c, err);
-      }
-      try {
-        // The profile disappeared after the pre-write check. Remove this
-        // credential explicitly in case profile cleanup consumed its marker
-        // just before the write landed, then finish any marker still present.
-        await deleteConnectorSecrets(
-          agentId,
-          [connectionId],
-          platformEnv,
-          settingsStore,
-        );
-        await finishConnectorSecretCleanup(agentId, platformEnv, settingsStore);
-        return c.json({ error: 'not_found' }, 404);
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
     }
-    if (!currentConnection) {
+    if (!currentConnection || currentConnection.credentialRef !== ref.credentialRef) {
       try {
         await deleteConnectorSecrets(
           agentId,
-          [connectionId],
+          [ref],
           platformEnv,
           settingsStore,
         );
+        await unstageConnectorSecretCleanup(agentId, [ref], platformEnv, settingsStore);
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
-      return c.json({ error: 'not_found' }, 404);
+      return c.json({ error: currentConnection ? 'connection_changed' : 'not_found' }, currentConnection ? 409 : 404);
     }
+
+    const oauthSources = await describeApiOAuthSources(ref, settingsStore);
+    if (oauthSources.client === 'stored' || oauthSources.tokens === 'stored') {
+      const oauthKeys = apiOAuthSettingKeys(ref);
+      await stageConnectorSettingCleanup(
+        agentId,
+        oauthKeys,
+        platformEnv,
+        settingsStore,
+      );
+      await deleteApiOAuthSettings(ref, settingsStore);
+      await unstageConnectorSettingCleanup(
+        agentId,
+        oauthKeys,
+        platformEnv,
+        settingsStore,
+      );
+    }
+
+    await unstageConnectorSecretCleanup(agentId, [ref], platformEnv, settingsStore);
 
     return c.json({
       source: await describeConnectorCredentialSource(
-        agentId,
-        connectionId,
+        ref,
         platformEnv,
         settingsStore,
       ),
@@ -8601,22 +8780,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!AGENT_ID_PATTERN.test(agentId) || !MCP_CONNECTION_ID_PATTERN.test(connectionId)) {
       return invalidRequest(c);
     }
+    const parsed = v.safeParse(connectorSecretsDeleteSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
-      await requireCurrentAgentEdit(c, agentId);
+      const agent = await requireCurrentAgentEdit(c, agentId);
+      if (agent.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      connection = agent.apiConnections.find((candidate) => candidate.id === connectionId);
     } catch (error) {
       return agentEditFailureResponse(c, error);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    await clearConnectorCredential(agentId, connectionId, platformEnv, settingsStore);
-    await deleteApiOAuthSettings({ agentId, connectionId }, settingsStore);
+    const ref = connection?.credentialRef ? boundApiCredentialRef(agentId, connection) : undefined;
+    if (!ref) return c.json({ error: 'not_found' }, 404);
+    if (ref.credentialBinding !== parsed.output.expectedCredentialBinding) {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    await clearConnectorCredential(ref, platformEnv, settingsStore);
+    await deleteApiOAuthSettings(ref, settingsStore);
+    await unstageConnectorSecretCleanup(agentId, [ref], platformEnv, settingsStore);
     return c.json({
-      source: await describeConnectorCredentialSource(
-        agentId,
-        connectionId,
-        platformEnv,
-        settingsStore,
-      ),
+      source: await describeConnectorCredentialSource(ref, platformEnv, settingsStore),
     });
   });
 
@@ -8631,21 +8818,34 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c);
     }
+    let connection: CustomAgentConfig['mcpServers'][number] | undefined;
     try {
-      await requireCurrentAgentEdit(c, agentId);
+      const agent = await requireCurrentAgentEdit(c, agentId);
+      if (agent.revision !== parsed.output.expectedRevision) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
+      connection = agent.mcpServers.find((candidate) => candidate.id === connectionId);
     } catch (error) {
       return agentEditFailureResponse(c, error);
     }
     const platformEnv = c.env as PlatformEnv | undefined;
     const settingsStore = settings(c);
-    const ref = { agentId, connectionId };
-    await deleteMcpSecrets(
-      ref,
-      parsed.output.headerNames,
-      platformEnv,
+    if (!connection?.credentialRef) return c.json({ error: 'not_found' }, 404);
+    const ref = boundMcpCredentialRef(agentId, connection);
+    if (ref.credentialBinding !== parsed.output.expectedCredentialBinding) {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    await deleteMcpSecrets(ref, parsed.output.headerNames, platformEnv, settingsStore);
+    await deleteMcpOAuthSettings(ref, settingsStore);
+    await unstageMcpSecretCleanup(
+      agentId,
+      [
+        mcpBearerSettingKey(ref),
+        ...parsed.output.headerNames.map((name) => mcpHeaderSettingKey(ref, name)),
+        ...mcpOAuthSettingKeys(ref),
+      ],
       settingsStore,
     );
-    await deleteMcpOAuthSettings(ref, settingsStore);
     return c.json({ ok: true });
   });
 
@@ -9571,7 +9771,24 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           current.revision,
         );
       }
+      const changesConnectionPolicy = parsed.output.mcpServers !== undefined ||
+        parsed.output.apiConnections !== undefined ||
+        parsed.output.credentialResets !== undefined;
+      const currentCredentialConfigurationBinding = agentCredentialConfigurationBinding(
+        current.credentialIncarnation,
+      );
+      if (changesConnectionPolicy &&
+          parsed.output.credentialConfigurationBinding !== currentCredentialConfigurationBinding) {
+        throw new AgentRevisionConflictError(
+          agentId,
+          parsed.output.expectedRevision,
+          current.revision,
+        );
+      }
       const patch = toAgentPatch(parsed.output);
+      if (changesConnectionPolicy) {
+        patch.credentialRequirements = { agent: current.credentialIncarnation! };
+      }
       if (patch.repositories) {
         const repositories = await platformRepositoryGrants(
           settings(c), c.env as PlatformEnv | undefined, patch.repositories, current.repositories,
@@ -9599,6 +9816,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           current.apiConnections,
           patch.apiConnections,
           settings(c),
+          new Set(parsed.output.credentialResets?.api ?? []),
         );
       }
       const next: ModelResolvableAgent = {
@@ -9637,23 +9855,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const roleUpdates: AgentModelRolePatch[] = parsed.output.imageModel === undefined
         ? []
         : [{ role: 'image', modelId: parsed.output.imageModel }];
-      // Repointing a connection at a new origin must not carry the previous
-      // origin's credential across. Secrets are keyed by connection id and this
-      // route deliberately never writes them, so drop the stale ones instead.
-      //
-      // Deliberately BEFORE the update: if the write then fails, the operator
-      // re-enters a secret, which is recoverable and visible. Deleting after
-      // the write would mean a failure there leaves the connection already
-      // pointing at the new origin with the old credential still attached —
-      // which is precisely the leak this closes, and no later PATCH would
-      // detect it, because by then the stored URL already matches.
-      await clearRepointedMcpCredentials({
-        agentId,
-        current: current.mcpServers,
-        next: patch.mcpServers,
-        ...(c.env ? { env: c.env as PlatformEnv } : {}),
-        settings: settings(c),
-      });
       // One PATCH commits the Agent row and its role rows together: a failing
       // role write must not leave a half-applied Agent behind.
       let updated = await configStore.updateAgentWithModelRoles(
@@ -9661,6 +9862,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         patch,
         roleUpdates,
         parsed.output.expectedRevision,
+      );
+      await retireReplacedAgentConnectionCredentials(
+        agentId,
+        current,
+        updated,
+        c.env as PlatformEnv | undefined,
+        settings(c),
       );
       let presenceRecovery = null;
       const reconcilePresence = updated.slackPresence?.desiredState === 'active' && (
@@ -9908,8 +10116,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   });
 
   app.delete('/admin/api/agents/:id', async (c) => {
+    const parsed = v.safeParse(deleteAgentSchema, await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
     const configStore = store(c);
     const agentId = c.req.param('id');
+    const cleanupScope = parsed.output.credentialConfigurationBinding;
     let agent: CustomAgentConfig;
     try {
       agent = await configStore.getAgent(agentId);
@@ -9919,11 +10130,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       }
       try {
         const settingsStore = settings(c);
-        const resumedMcp = await finishMcpSecretCleanup(agentId, settingsStore);
+        const resumedMcp = await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
         const resumedConnector = await finishConnectorSecretCleanup(
           agentId,
           c.env as PlatformEnv | undefined,
           settingsStore,
+          cleanupScope,
         );
         return resumedMcp || resumedConnector
           ? c.body(null, 204)
@@ -9931,6 +10143,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       } catch (cleanupError) {
         return internalError(c, cleanupError);
       }
+    }
+
+    if (agent.revision !== parsed.output.expectedRevision ||
+        agentCredentialConfigurationBinding(agent.credentialIncarnation) !== cleanupScope) {
+      return c.json({ error: 'agent_revision_conflict' }, 409);
     }
 
     const references = await configStore.getAgentReferences(agentId);
@@ -9954,6 +10171,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal,
         agentId,
         expectedRevision: agent.revision,
+        expectedCredentialIncarnation: agent.credentialIncarnation!,
       });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -9974,30 +10192,32 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     const settingsStore = settings(c);
     const secretKeys = new Set<string>();
     for (const server of agent.mcpServers) {
-      const ref = { agentId, connectionId: server.id };
-      secretKeys.add(mcpBearerSettingKey(ref));
+      const credentialRef = boundMcpCredentialRef(agentId, server);
+      secretKeys.add(mcpBearerSettingKey(credentialRef));
       for (const name of server.headerNames) {
-        secretKeys.add(mcpHeaderSettingKey(ref, name));
+        secretKeys.add(mcpHeaderSettingKey(credentialRef, name));
       }
-      for (const key of mcpOAuthSettingKeys(ref)) {
+      for (const key of mcpOAuthSettingKeys(credentialRef)) {
         secretKeys.add(key);
       }
     }
     try {
-      await stageMcpSecretCleanup(agentId, [...secretKeys], settingsStore);
+      await stageMcpSecretCleanup(agentId, [...secretKeys], settingsStore, cleanupScope);
       await stageConnectorSecretCleanup(
         agentId,
-        agent.apiConnections.map((connection) => connection.id),
+        agent.apiConnections.map((connection) => boundApiCredentialRef(agentId, connection)),
         c.env as PlatformEnv | undefined,
         settingsStore,
+        cleanupScope,
       );
       await stageConnectorSettingCleanup(
         agentId,
         agent.apiConnections.filter((connection) => connection.authMode === 'oauth').flatMap((connection) =>
-          apiOAuthSettingKeys({ agentId, connectionId: connection.id }),
+          apiOAuthSettingKeys(boundApiCredentialRef(agentId, connection)),
         ),
         c.env as PlatformEnv | undefined,
         settingsStore,
+        cleanupScope,
       );
     } catch (err) {
       return internalError(c, err);
@@ -10009,6 +10229,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       await configStore.deleteAgentWithMemory(
         agentId,
         agentDeleteIdempotencyKey(c, agentId),
+        parsed.output.expectedRevision,
+        agent.credentialIncarnation!,
       );
     } catch (err) {
       try {
@@ -10018,11 +10240,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           // The delete committed but its response was lost. Continue using the
           // durable marker rather than restoring secrets into an orphaned scope.
           try {
-            await finishMcpSecretCleanup(agentId, settingsStore);
+            await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
             await finishConnectorSecretCleanup(
               agentId,
               c.env as PlatformEnv | undefined,
               settingsStore,
+              cleanupScope,
             );
             return c.body(null, 204);
           } catch (cleanupError) {
@@ -10034,6 +10257,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (err instanceof AgentStillAssignedError) {
         return c.json({ error: 'agent_still_assigned' }, 409);
       }
+      if (err instanceof AgentRevisionConflictError) {
+        return c.json({ error: 'agent_revision_conflict' }, 409);
+      }
       if (err instanceof AgentStillReferencedError) {
         return agentStillReferenced(c, err);
       }
@@ -10041,11 +10267,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
-      await finishMcpSecretCleanup(agentId, settingsStore);
+      await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
       await finishConnectorSecretCleanup(
         agentId,
         c.env as PlatformEnv | undefined,
         settingsStore,
+        cleanupScope,
       );
       return c.body(null, 204);
     } catch (err) {
@@ -11282,6 +11509,7 @@ async function isCurrentApiOAuthConnection(
   configStore: ConfigStore,
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
+  expectedAgentRevision?: number,
 ): Promise<boolean> {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
@@ -11290,10 +11518,15 @@ async function isCurrentApiOAuthConnection(
     return isApiOAuthAccount(account, provider);
   }
   try {
-    const connection = (await configStore.getAgent(ref.agentId)).apiConnections.find(
+    const agent = await configStore.getAgent(ref.agentId);
+    if (expectedAgentRevision !== undefined && agent.revision !== expectedAgentRevision) {
+      throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+    }
+    const connection = agent.apiConnections.find(
       (candidate) => candidate.id === ref.connectionId,
     );
-    return !!connection &&
+    return ref.credentialRef !== undefined && !!connection &&
+      connection.credentialRef === ref.credentialRef &&
       connection.authMode === 'oauth' &&
       connection.oauthProvider === provider &&
       isValidApiOAuthConnectionPolicy(connection);
@@ -11334,8 +11567,12 @@ async function replaceReadyApiOAuthConnection(
     return;
   }
   const agent = await configStore.getAgent(ref.agentId);
+  if (accountRevision !== undefined && agent.revision !== accountRevision) {
+    throw new ApiOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
+  }
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
+      ref.credentialRef !== undefined && connection.credentialRef === ref.credentialRef &&
       connection.authMode === 'oauth' &&
       connection.oauthProvider === provider &&
       isValidApiOAuthConnectionPolicy(connection),
@@ -11351,14 +11588,20 @@ async function replaceReadyApiOAuthConnection(
     statusText: 'Connected',
     ...(identity ? { identity } : {}),
   };
-  await configStore.updateAgent(ref.agentId, { apiConnections });
+  await configStore.updateAgent(ref.agentId, {
+    apiConnections,
+    credentialRequirements: { api: { [current.id]: current.credentialRef! } },
+  }, agent.revision);
 }
 
 async function replacePendingApiOAuthConnection(
   configStore: ConfigStore,
   ref: ApiOAuthRef,
   provider: ApiOAuthProvider,
-): Promise<ConnectionAccount | undefined> {
+): Promise<
+  | { kind: 'account'; account: ConnectionAccount }
+  | { kind: 'agent'; agent: CustomAgentConfig }
+> {
   const connectionAccountId = connectionAccountIdFromOAuthRef(ref);
   if (connectionAccountId) {
     const account = await findConnectionAccount(configStore, connectionAccountId);
@@ -11366,15 +11609,19 @@ async function replacePendingApiOAuthConnection(
       throw new ApiOAuthError('connection_missing', 'OAuth connection no longer exists');
     }
     const { identity: _identity, ...withoutIdentity } = account;
-    return configStore.putConnectionAccount({
+    return {
+      kind: 'account',
+      account: await configStore.putConnectionAccount({
       ...withoutIdentity,
       lifecycle: 'pending',
       policy: { ...withoutIdentity.policy, oauthAttemptId: randomUUID() },
-    }, account.revision);
+      }, account.revision),
+    };
   }
   const agent = await configStore.getAgent(ref.agentId);
   const index = agent.apiConnections.findIndex(
     (connection) => connection.id === ref.connectionId &&
+      ref.credentialRef !== undefined && connection.credentialRef === ref.credentialRef &&
       connection.authMode === 'oauth' &&
       connection.oauthProvider === provider &&
       isValidApiOAuthConnectionPolicy(connection),
@@ -11390,8 +11637,13 @@ async function replacePendingApiOAuthConnection(
     lifecycleStatus: 'pending',
     statusText: 'Not connected',
   };
-  await configStore.updateAgent(ref.agentId, { apiConnections });
-  return undefined;
+  return {
+    kind: 'agent',
+    agent: await configStore.updateAgent(ref.agentId, {
+      apiConnections,
+      credentialRequirements: { api: { [current.id]: current.credentialRef! } },
+    }, agent.revision),
+  };
 }
 
 async function replacePendingMcpOAuthConnection(
@@ -11470,31 +11722,21 @@ async function normalizeApiOAuthPatch(
   currentConnections: readonly CustomAgentConfig['apiConnections'][number][],
   nextConnections: readonly CustomAgentConfig['apiConnections'][number][],
   settingsStore: SettingsStore,
+  resetConnectionIds: ReadonlySet<string>,
 ): Promise<CustomAgentConfig['apiConnections']> {
   const currentById = new Map(currentConnections.map((connection) => [connection.id, connection]));
-  const nextById = new Map(nextConnections.map((connection) => [connection.id, connection]));
-  await Promise.all(currentConnections.map(async (current) => {
-    if (current.authMode !== 'oauth' || current.oauthProvider !== 'google') return;
-    const next = nextById.get(current.id);
-    if (next?.authMode === 'oauth' && next.oauthProvider === current.oauthProvider) return;
-    await deleteApiOAuthSettings(
-      { agentId, connectionId: current.id },
-      settingsStore,
-    );
-  }));
   return Promise.all(nextConnections.map(async (connection) => {
     if (connection.authMode !== 'oauth' || connection.oauthProvider !== 'google') {
       return connection;
     }
     const current = currentById.get(connection.id);
-    const sameAuthorization = current?.authMode === 'oauth' &&
+    const sameAuthorization = !resetConnectionIds.has(connection.id) &&
+      current?.authMode === 'oauth' &&
       current.oauthProvider === connection.oauthProvider &&
       sameStringSet(current.oauthScopes ?? [], connection.oauthScopes ?? []);
-    const ref = { agentId, connectionId: connection.id };
-    if (!sameAuthorization) {
-      await invalidateApiOAuthAuthorization(ref, settingsStore);
-    }
-    const sources = await describeApiOAuthSources(ref, settingsStore);
+    const sources = sameAuthorization && current
+      ? await describeApiOAuthSources(boundApiCredentialRef(agentId, current), settingsStore)
+      : { client: 'missing' as const, tokens: 'missing' as const };
     if (sameAuthorization && sources.tokens === 'stored') {
       return {
         ...connection,
@@ -11517,7 +11759,7 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
 }
 
 interface VerifyMcpOAuthConnectionInput {
-  ref: { agentId: string; connectionId: string };
+  ref: { agentId: string; connectionId: string; credentialRef?: string };
   configStore: ConfigStore;
   platformEnv?: PlatformEnv;
   discoverMcp: (input: McpConnectInput) => Promise<McpDiscoveryResult>;
@@ -11538,6 +11780,7 @@ async function verifyAndStoreMcpOAuthConnection(
   await input.validateAuthorization?.();
   const connectionAccountId = connectionAccountIdFromOAuthRef(input.ref);
   let connection: McpConnectionConfig | undefined;
+  let oauthRef = input.ref;
   if (connectionAccountId) {
     const account = await findConnectionAccount(input.configStore, connectionAccountId);
     if (account?.policy.kind === 'mcp' && account.policy.authMode === 'oauth') {
@@ -11562,6 +11805,14 @@ async function verifyAndStoreMcpOAuthConnection(
     connection = agent.mcpServers.find(
       (entry) => entry.id === input.ref.connectionId,
     );
+    if (connection) {
+      const liveRef = boundMcpCredentialRef(agent.id, connection);
+      if (input.ref.credentialRef !== undefined &&
+          input.ref.credentialRef !== liveRef.credentialRef) {
+        throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+      }
+      oauthRef = liveRef;
+    }
   }
   if (!connection || connection.authMode !== 'oauth') {
     throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
@@ -11569,33 +11820,60 @@ async function verifyAndStoreMcpOAuthConnection(
   const validated = validateMcpUrl(connection.url);
   if (!validated.ok) throw new McpBlockedUrlError(validated.reason);
   const accessToken = await input.resolveMcpOAuthToken(
-    { ref: input.ref, serverUrl: validated.url },
+    { ref: oauthRef, serverUrl: validated.url },
     input.oauthDependencies,
   );
-  const secrets = await resolveMcpSecrets(
-    input.ref,
-    connection.headerNames,
-    input.platformEnv,
-    input.oauthDependencies.settings,
-  );
+  const secrets = connectionAccountId
+    ? { headers: {} }
+    : await resolveMcpSecrets(
+        boundMcpCredentialRef(input.ref.agentId, connection),
+        connection.headerNames,
+        input.platformEnv,
+        input.oauthDependencies.settings,
+      );
   secrets.bearer = accessToken;
   const headers = buildMcpRequestHeaders('oauth', secrets);
+  const authorizeRequest = async () => {
+    await input.validateAuthorization?.();
+    if (connectionAccountId) {
+      const current = await findConnectionAccount(input.configStore, connectionAccountId);
+      if (!current || current.lifecycle === 'revoked' || !isMcpOAuthAccount(current, validated.url) ||
+          (input.accountRevision !== undefined && current.revision !== input.accountRevision) ||
+          (input.oauthAttemptId !== undefined &&
+            (current.policy.kind !== 'mcp' || current.policy.oauthAttemptId !== input.oauthAttemptId))) {
+        throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+      }
+      return;
+    }
+    const currentAgent = await input.configStore.getAgent(oauthRef.agentId);
+    const current = currentAgent.mcpServers.find(({ id }) => id === oauthRef.connectionId);
+    const currentUrl = current ? validateMcpUrl(current.url) : undefined;
+    if (!current || current.authMode !== 'oauth' ||
+        boundMcpCredentialRef(currentAgent.id, current).credentialRef !== oauthRef.credentialRef ||
+        !currentUrl?.ok || currentUrl.url !== validated.url) {
+      throw new McpOAuthError('connection_missing', 'OAuth connection no longer exists');
+    }
+  };
 
   try {
+    await authorizeRequest();
     const discovery = await input.discoverMcp({
       id: connection.id,
       url: validated.url,
       transport: connection.transport,
       headers,
+      authorizeRequest,
     });
     let identity: McpConnectionIdentity | undefined;
     try {
+      await authorizeRequest();
       identity = await input.identifyMcp({
         id: connection.id,
         url: validated.url,
         transport: connection.transport,
         headers,
         ...(connection.presetId ? { presetId: connection.presetId } : {}),
+        authorizeRequest,
       });
     } catch (error) {
       console.warn(
@@ -11603,7 +11881,7 @@ async function verifyAndStoreMcpOAuthConnection(
           mcpDebugText(error),
       );
     }
-    await input.validateAuthorization?.();
+    await authorizeRequest();
     await replaceVerifiedMcpConnection(input.configStore, input.ref, connection, {
       lifecycleStatus: 'ready',
       statusText:
@@ -11642,7 +11920,7 @@ type VerifiedMcpConnectionResult = Pick<
 
 async function replaceVerifiedMcpConnection(
   configStore: ConfigStore,
-  ref: { agentId: string; connectionId: string },
+  ref: { agentId: string; connectionId: string; credentialRef?: string },
   original: McpConnectionConfig,
   result: VerifiedMcpConnectionResult,
   accountRevision?: number,
@@ -11692,6 +11970,8 @@ async function replaceVerifiedMcpConnection(
   const index = latest.mcpServers.findIndex(
     (entry) =>
       entry.id === ref.connectionId &&
+      ref.credentialRef !== undefined && entry.credentialRef === ref.credentialRef &&
+      entry.credentialRef === original.credentialRef &&
       entry.authMode === 'oauth' &&
       entry.url === original.url,
   );
@@ -11710,7 +11990,10 @@ async function replaceVerifiedMcpConnection(
       : current.allowedTools;
   const mcpServers = latest.mcpServers.slice();
   mcpServers[index] = { ...policy, ...result, discoveredTools, allowedTools };
-  await configStore.updateAgent(ref.agentId, { mcpServers });
+  await configStore.updateAgent(ref.agentId, {
+    mcpServers,
+    credentialRequirements: { mcp: { [current.id]: current.credentialRef! } },
+  }, latest.revision);
 }
 
 async function restartCloudflareGatewaySession(rawEnv: unknown): Promise<void> {
@@ -12427,6 +12710,15 @@ function toMcpServers(
     transport: server.transport,
     authMode: server.authMode,
     headerNames: server.headerNames,
+    ...(server.credentialHeaderName !== undefined
+      ? { credentialHeaderName: server.credentialHeaderName }
+      : {}),
+    ...(server.credentialValuePrefix !== undefined
+      ? { credentialValuePrefix: server.credentialValuePrefix }
+      : {}),
+    ...(server.credentialOptional !== undefined
+      ? { credentialOptional: server.credentialOptional }
+      : {}),
     enabled: server.enabled,
     lifecycleStatus: server.lifecycleStatus,
     statusText: server.statusText,
@@ -12471,7 +12763,7 @@ async function withApiConnectionSources(
     agent.apiConnections.map(async (connection) => {
       if (connection.authMode === 'oauth') {
         const sources = await describeApiOAuthSources(
-          { agentId: agent.id, connectionId: connection.id },
+          boundApiCredentialRef(agent.id, connection),
           settingsStore,
         );
         return {
@@ -12484,8 +12776,7 @@ async function withApiConnectionSources(
       return {
         ...connection,
         credentialSource: await describeConnectorCredentialSource(
-          agent.id,
-          connection.id,
+          boundApiCredentialRef(agent.id, connection),
           platformEnv,
           settingsStore,
         ),
@@ -12676,9 +12967,7 @@ function websiteLoginView(login: WebsiteLogin, grant: WebsiteLoginGrant) {
   };
 }
 
-type AgentPatch = Partial<Omit<CustomAgentConfig, 'id' | 'revision' | 'model'>> & {
-  model?: string | null;
-};
+type AgentPatch = ConfigAgentPatch;
 
 function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch {
   const patch: AgentPatch = {};
@@ -12695,6 +12984,12 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   }
   if (input.repositories !== undefined) {
     patch.repositories = toRepositories(input.repositories);
+  }
+  if (input.credentialResets !== undefined) {
+    patch.credentialResets = {
+      ...(input.credentialResets.mcp ? { mcp: input.credentialResets.mcp } : {}),
+      ...(input.credentialResets.api ? { api: input.credentialResets.api } : {}),
+    };
   }
   return patch;
 }
@@ -13286,12 +13581,80 @@ function agentStillReferenced(c: Context, error: AgentStillReferencedError): Res
   }, 409);
 }
 
-/**
- * Stored MCP secrets are keyed by connection id, not by URL, so repointing a
- * connection at a new origin would otherwise carry the old origin's credential
- * to the new one on the next turn. Drop the secrets whenever an existing
- * connection's origin changes; the operator re-enters them for the new target.
- */
+async function retireReplacedAgentConnectionCredentials(
+  agentId: string,
+  previous: CustomAgentConfig,
+  current: CustomAgentConfig,
+  env: PlatformEnv | undefined,
+  settingsStore: SettingsStore,
+): Promise<void> {
+  const currentMcpRefs = new Set(current.mcpServers.map(({ credentialRef }) => credentialRef));
+  const retiredMcp = previous.mcpServers.filter(
+    ({ credentialRef }) => credentialRef !== undefined && !currentMcpRefs.has(credentialRef),
+  );
+  const mcpKeys = retiredMcp.flatMap((connection) => {
+    const ref = boundMcpCredentialRef(agentId, connection);
+    return [
+      mcpBearerSettingKey(ref),
+      ...connection.headerNames.map((name) => mcpHeaderSettingKey(ref, name)),
+      ...mcpOAuthSettingKeys(ref),
+    ];
+  });
+  if (mcpKeys.length > 0) {
+    for (const connection of retiredMcp) {
+      const ref = boundMcpCredentialRef(agentId, connection);
+      await deleteMcpSecrets(
+        ref,
+        connection.headerNames,
+        env,
+        settingsStore,
+      );
+      await deleteMcpOAuthSettings(ref, settingsStore);
+    }
+    await unstageMcpSecretCleanup(agentId, mcpKeys, settingsStore);
+  }
+
+  const currentApiRefs = new Set(current.apiConnections.map(({ credentialRef }) => credentialRef));
+  const retiredApi = previous.apiConnections.filter(
+    ({ credentialRef }) => credentialRef !== undefined && !currentApiRefs.has(credentialRef),
+  );
+  if (retiredApi.length > 0) {
+    const refs = retiredApi.map((connection) => boundApiCredentialRef(agentId, connection));
+    await deleteConnectorSecrets(agentId, refs, env, settingsStore);
+    for (const connection of retiredApi) {
+      if (connection.authMode !== 'oauth') continue;
+      await deleteApiOAuthSettings(boundApiCredentialRef(agentId, connection), settingsStore);
+    }
+    await unstageConnectorSecretCleanup(agentId, refs, env, settingsStore);
+    await unstageConnectorSettingCleanup(
+      agentId,
+      retiredApi
+        .filter(({ authMode }) => authMode === 'oauth')
+        .flatMap((connection) => apiOAuthSettingKeys(boundApiCredentialRef(agentId, connection))),
+      env,
+      settingsStore,
+    );
+  }
+}
+
+async function connectionCredentialWasRetired(
+  configStore: ConfigStore,
+  lane: 'mcp' | 'api',
+  agentId: string,
+  connectionId: string,
+  credentialRef: string,
+): Promise<boolean | undefined> {
+  try {
+    const agent = await configStore.getAgent(agentId);
+    const connection = (lane === 'mcp' ? agent.mcpServers : agent.apiConnections)
+      .find(({ id }) => id === connectionId);
+    return !connection || connection.credentialRef !== credentialRef;
+  } catch (error) {
+    if (error instanceof UnknownAgentError) return true;
+    return undefined;
+  }
+}
+
 function agentDeleteIdempotencyKey(c: Context, agentId: string): string {
   const supplied = c.req.header('idempotency-key')?.trim();
   return supplied && /^[A-Za-z0-9_.:-]{1,512}$/.test(supplied)
@@ -13327,6 +13690,10 @@ async function agentAdminProjection(
    */
   workspaceImageRoles?: ReadonlyMap<string, WorkspaceModelRole | undefined>,
 ): Promise<object> {
+  const { credentialIncarnation, ...publicAgent } = agent;
+  const credentialConfigurationBinding = agentCredentialConfigurationBinding(
+    credentialIncarnation,
+  );
   const projectionData = preloaded ?? await (async () => {
     const [references, grants, installations, snapshotRoots] = await Promise.all([
       configStore.getAgentReferences(agent.id),
@@ -13384,8 +13751,53 @@ async function agentAdminProjection(
   const avatarUrl = agentAvatarUrlForPresentation(
     agent, avatarOrigin.publicOrigin, avatarOrigin.installationId,
   );
+  const mcpServers = agent.mcpServers.map((storedConnection) => {
+    const ref = boundMcpCredentialRef(agent.id, storedConnection);
+    const { credentialRef: _credentialRef, ...connection } = storedConnection;
+    return {
+      ...connection,
+      ...(access.canEdit
+        ? {
+            credentialBinding: ref.credentialBinding,
+            credentialEnvironment: {
+              bindingVariable: mcpCredentialBindingEnvVar(ref),
+              ...(connection.authMode === 'bearer'
+                ? { bearerVariable: mcpBearerEnvVar(ref) }
+                : {}),
+              headerVariables: connection.headerNames.map((name) => ({
+                name,
+                variable: mcpHeaderEnvVar(ref, name),
+              })),
+            },
+          }
+        : {}),
+    };
+  });
+  const apiConnections = agent.apiConnections.map((storedConnection) => {
+    const ref = boundApiCredentialRef(agent.id, storedConnection);
+    const { credentialRef: _credentialRef, ...connection } = storedConnection;
+    return {
+      ...connection,
+      ...(access.canEdit
+        ? {
+            credentialBinding: ref.credentialBinding,
+            ...(connection.authMode === 'oauth'
+              ? {}
+              : {
+                  credentialEnvironment: {
+                    bindingVariable: connectorCredentialBindingEnvVar(ref),
+                    credentialVariable: connectorCredentialEnvVar(ref),
+                  },
+                }),
+          }
+        : {}),
+    };
+  });
   return {
-    ...agent,
+    ...publicAgent,
+    ...(access.canEdit ? { credentialConfigurationBinding } : {}),
+    mcpServers,
+    apiConnections,
     ...(agent.slackPresence && avatarUrl
       ? {
           slackPresence: {

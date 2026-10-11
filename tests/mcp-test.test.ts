@@ -977,3 +977,40 @@ test('connectMcp aborts in-flight guarded fetch work at the connect deadline', a
   assert.equal(classifyMcpError(err), 'timeout');
   assert.equal(fetchAborted, true, 'deadline must abort the underlying fetch');
 });
+
+test('connectMcp forwards the live authorization fence before transport egress', async () => {
+  let authorizationChecks = 0;
+  let outboundRequests = 0;
+  const authorizeRequest = async (): Promise<void> => {
+    authorizationChecks += 1;
+    throw new Error('credential was replaced');
+  };
+  const createGuardedFetch = (
+    options: { authorizeRequest?: () => Promise<void> },
+  ): typeof fetch => (async () => {
+    await options.authorizeRequest?.();
+    outboundRequests += 1;
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+  const connect = async (
+    _name: string,
+    options: McpServerOptions,
+  ): Promise<McpServerConnection> => {
+    assert.ok(options.fetch, 'guarded fetch must be passed to Flue');
+    await options.fetch(options.url);
+    return fakeConnection([]);
+  };
+
+  const err = await connectMcp(
+    { ...baseInput, authorizeRequest },
+    connect,
+    createGuardedFetch,
+  ).then(
+    () => null,
+    (e: unknown) => e,
+  );
+
+  assert.match(String(err), /credential was replaced/);
+  assert.equal(authorizationChecks, 1);
+  assert.equal(outboundRequests, 0, 'revocation must stop the transport before egress');
+});

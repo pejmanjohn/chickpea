@@ -36,6 +36,17 @@ export class AgentRevisionConflictError extends Error {
   }
 }
 
+export class AgentConnectionCredentialConflictError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly lane: 'mcp' | 'api',
+    readonly connectionId: string,
+  ) {
+    super(`Agent ${agentId} ${lane} connection ${connectionId} changed`);
+    this.name = 'AgentConnectionCredentialConflictError';
+  }
+}
+
 export class ReservedAgentIdentityError extends Error {
   constructor(readonly field: AgentIdentityField) {
     super(`The Agent ${field} is reserved for Chickpea`);

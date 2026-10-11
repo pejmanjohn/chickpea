@@ -30,6 +30,7 @@ import {
 
 import { UnknownAgentError } from './errors.ts';
 import { AGENT_ID_PATTERN } from './agent-id.ts';
+import { validConnectionCredentialRef } from './connection-credential-binding.ts';
 import {
   stageMcpSecretCleanup,
   type McpSecretRef,
@@ -238,7 +239,9 @@ export function mcpOAuthSettingKeys(ref: McpSecretRef): [
   registrationLease: string,
   refreshLease: string,
 ] {
-  const prefix = `mcp.${ref.agentId}.${ref.connectionId}.oauth`;
+  const prefix = validConnectionCredentialRef(ref.credentialRef)
+    ? `mcp.${ref.agentId}.credential.${ref.credentialRef}.oauth`
+    : `mcp.${ref.agentId}.${ref.connectionId}.oauth`;
   return [
     `${prefix}.client`,
     `${prefix}.pending`,
@@ -295,6 +298,7 @@ export async function isCurrentMcpOAuthConnection(
     const validated = connection ? validateMcpUrl(connection.url) : undefined;
     return (
       connection?.authMode === 'oauth' &&
+      (ref.credentialRef === undefined || connection.credentialRef === ref.credentialRef) &&
       validated?.ok === true &&
       validated.url === serverUrl
     );
@@ -1488,7 +1492,12 @@ function validateAuthorizationServerMetadata(
 
 function encodeState(ref: McpSecretRef, nonce: string): string {
   return encodeBase64Url(new TextEncoder().encode(
-    JSON.stringify({ a: ref.agentId, c: ref.connectionId, n: nonce }),
+    JSON.stringify({
+      a: ref.agentId,
+      c: ref.connectionId,
+      ...(ref.credentialRef ? { r: ref.credentialRef } : {}),
+      n: nonce,
+    }),
   ));
 }
 
@@ -1533,11 +1542,16 @@ function decodeStateRef(state: string): McpSecretRef {
       !isRecord(decoded) ||
       typeof decoded.a !== 'string' ||
       typeof decoded.c !== 'string' ||
+      (decoded.r !== undefined && typeof decoded.r !== 'string') ||
       typeof decoded.n !== 'string'
     ) {
       throw new Error('invalid state payload');
     }
-    const ref = { agentId: decoded.a, connectionId: decoded.c };
+    const ref = {
+      agentId: decoded.a,
+      connectionId: decoded.c,
+      ...(decoded.r === undefined ? {} : { credentialRef: decoded.r }),
+    };
     validateRef(ref);
     return ref;
   } catch (error) {
@@ -1736,7 +1750,8 @@ function isConfiguredClientDrift(error: unknown): boolean {
 function validateRef(ref: McpSecretRef): void {
   if (
     !AGENT_ID_PATTERN.test(ref.agentId) ||
-    !CONNECTION_ID_PATTERN.test(ref.connectionId)
+    !CONNECTION_ID_PATTERN.test(ref.connectionId) ||
+    (ref.credentialRef !== undefined && !validConnectionCredentialRef(ref.credentialRef))
   ) {
     throw new McpOAuthError('invalid_state', 'OAuth connection reference is invalid');
   }

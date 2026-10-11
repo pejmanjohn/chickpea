@@ -4,7 +4,9 @@ import { test } from 'node:test';
 
 import {
   resolveConnectorCredential,
+  saveConnectorCredential,
 } from '../src/config/connector-secrets.ts';
+import { boundApiCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -248,12 +250,12 @@ test('the initiating member claims one authenticated browser and completes an ex
         outbox: await management.getOutboxForOperation(setupId),
       })}`,
     );
+    const agent = await config.getAgent('agent_research');
     assert.equal(await resolveConnectorCredential(
-      { agentId: 'agent_research', connectionId: 'gmail' },
+      boundApiCredentialRef('agent_research', agent.apiConnections[0]!),
       undefined,
       settings,
     ), credential);
-    const agent = await config.getAgent('agent_research');
     assert.equal(agent.revision, 2);
     assert.equal(agent.apiConnections[0]?.lifecycleStatus, 'ready');
     const setup = await management.getSetup(setupId);
@@ -1356,6 +1358,226 @@ test('repository setup reserves workspace-global GitHub App creation for current
     assert.equal(await settings.getSetting(stateKey), stateDigest);
     assert.equal(await settings.getSetting(GITHUB_SETTING_KEYS.appId), undefined);
     assert.equal(await settings.getSetting(GITHUB_SETTING_KEYS.privateKey), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an API setup cannot cross an Agent delete-recreate race before the ready transition', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'api-incarnation-race' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const agentInput = {
+    id: 'agent_api_setup_race',
+    name: 'API setup race',
+    creatorMembershipId: owner.membership.id,
+    editPolicy: 'creator_and_admins' as const,
+    instructions: 'Keep setup credentials on the requested incarnation.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [{
+      id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
+      pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+      allowedMethods: ['GET' as const], enabled: true, authMode: 'credential' as const,
+      lifecycleStatus: 'pending' as const, statusText: 'Not connected',
+    }],
+    repositories: [],
+  };
+  const originalUpdateAgent = config.updateAgent.bind(config);
+  try {
+    const issuedAgent = await config.createAgent(agentInput);
+    const issuedRef = boundApiCredentialRef(issuedAgent.id, issuedAgent.apiConnections[0]!);
+    const setupId = 'setup_api_incarnation_race';
+    await management.putSetup({
+      record: {
+        setupOperationId: setupId,
+        organizationId: owner.membership.organizationId,
+        actorUserId: owner.user.id,
+        actorMembershipId: owner.membership.id,
+        origin: { kind: 'mcp', clientId: 'codex' },
+        action: 'api_credential',
+        target: {
+          kind: 'api_connection', provider: 'tasks',
+          targetId: `agent:${issuedAgent.id}:api:tasks`, targetLabel: 'Tasks',
+          expectedRevision: issuedAgent.revision,
+          credentialBinding: issuedRef.credentialBinding,
+          agentId: issuedAgent.id, agentName: issuedAgent.name, connectionId: 'tasks',
+          replacement: false, formFields: ['credential'],
+        },
+        scopes: ['header:Authorization'],
+        tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'),
+        status: 'pending',
+        expiresAt: START + 60_000,
+        createdAt: START,
+        updatedAt: START,
+      },
+    });
+    let replacementRef: ReturnType<typeof boundApiCredentialRef> | undefined;
+    const racingConfig = new Proxy(config, {
+      get(target, property, receiver) {
+        if (property !== 'updateAgent') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof config.updateAgent>) => {
+          if (!replacementRef) {
+            assert.equal(await config.deleteAgent(issuedAgent.id, issuedAgent.revision), true);
+            const replacement = await config.createAgent(agentInput);
+            replacementRef = boundApiCredentialRef(replacement.id, replacement.apiConnections[0]!);
+            assert.equal(replacement.revision, issuedAgent.revision);
+            assert.notEqual(replacementRef.credentialRef, issuedRef.credentialRef);
+          }
+          return originalUpdateAgent(...args);
+        };
+      },
+    });
+    const app = createManagementSetupRoutes({
+      management,
+      config: racingConfig,
+      settings,
+      identity,
+      now: () => START,
+      randomCapability: () => 's'.repeat(43),
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => { throw new Error('must not deliver'); },
+    });
+    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: CAPABILITY }),
+    });
+    assert.equal(exchange.status, 200, await exchange.clone().text());
+
+    const response = await app.request(`http://localhost/setup/${setupId}/complete`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie: exchange.headers.get('set-cookie')!,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ credential: 'must-not-cross-incarnations' }).toString(),
+    });
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.ok(replacementRef);
+    assert.equal(await resolveConnectorCredential(issuedRef, undefined, settings), undefined);
+    assert.equal(await resolveConnectorCredential(replacementRef, undefined, settings), undefined);
+    assert.equal((await config.getAgent(issuedAgent.id)).apiConnections[0]?.lifecycleStatus, 'pending');
+    assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
+    assert.equal(await management.getOutboxForOperation(setupId), undefined);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('a failed older API setup cannot erase a newer same-incarnation credential', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'api-same-ref-race' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const originalUpdateAgent = config.updateAgent.bind(config);
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_api_same_ref_race',
+      name: 'API same-ref race',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Keep the newest credential when an older setup loses its revision.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [{
+        id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
+        pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'], enabled: true, authMode: 'credential',
+        lifecycleStatus: 'pending', statusText: 'Not connected',
+      }],
+      repositories: [],
+    });
+    const ref = boundApiCredentialRef(agent.id, agent.apiConnections[0]!);
+    const setupId = 'setup_api_same_ref_race';
+    await management.putSetup({
+      record: {
+        setupOperationId: setupId,
+        organizationId: owner.membership.organizationId,
+        actorUserId: owner.user.id,
+        actorMembershipId: owner.membership.id,
+        origin: { kind: 'mcp', clientId: 'codex' },
+        action: 'api_credential',
+        target: {
+          kind: 'api_connection', provider: 'tasks',
+          targetId: `agent:${agent.id}:api:tasks`, targetLabel: 'Tasks',
+          expectedRevision: agent.revision,
+          credentialBinding: ref.credentialBinding,
+          agentId: agent.id, agentName: agent.name, connectionId: 'tasks',
+          replacement: false, formFields: ['credential'],
+        },
+        scopes: ['header:Authorization'],
+        tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'),
+        status: 'pending',
+        expiresAt: START + 60_000,
+        createdAt: START,
+        updatedAt: START,
+      },
+    });
+    let raced = false;
+    const racingConfig = new Proxy(config, {
+      get(target, property, receiver) {
+        if (property !== 'updateAgent') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof config.updateAgent>) => {
+          if (!raced) {
+            raced = true;
+            const current = await config.getAgent(agent.id);
+            const renamed = await originalUpdateAgent(
+              current.id,
+              { name: 'API same-ref race renamed' },
+              current.revision,
+            );
+            assert.equal(renamed.apiConnections[0]?.credentialRef, ref.credentialRef);
+            await saveConnectorCredential(ref, 'newer-credential', undefined, settings);
+          }
+          return originalUpdateAgent(...args);
+        };
+      },
+    });
+    const app = createManagementSetupRoutes({
+      management,
+      config: racingConfig,
+      settings,
+      identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => { throw new Error('must not deliver'); },
+    });
+    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ capability: CAPABILITY }),
+    });
+    assert.equal(exchange.status, 200, await exchange.clone().text());
+
+    const response = await app.request(`http://localhost/setup/${setupId}/complete`, {
+      method: 'POST',
+      headers: {
+        origin: 'http://localhost',
+        cookie: exchange.headers.get('set-cookie')!,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({ credential: 'older-credential' }).toString(),
+    });
+    assert.equal(response.status, 422, await response.clone().text());
+    assert.equal(await resolveConnectorCredential(ref, undefined, settings), 'newer-credential');
+    const current = await config.getAgent(agent.id);
+    assert.equal(current.name, 'API same-ref race renamed');
+    assert.equal(current.apiConnections[0]?.credentialRef, ref.credentialRef);
+    assert.equal(current.apiConnections[0]?.lifecycleStatus, 'pending');
+    assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
   } finally {
     identity.close();
     config.close();

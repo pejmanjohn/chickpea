@@ -579,10 +579,22 @@ export class AgentPresenceReconciler {
 
   async archive(
     agentId: string,
-    options: { replacementDefaultAgentId?: string } = {},
+    options: {
+      replacementDefaultAgentId?: string;
+      expectedCredentialIncarnation?: string;
+    } = {},
   ): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
+    const expectedCredentialIncarnation = options.expectedCredentialIncarnation ??
+      agent.credentialIncarnation;
+    if (!expectedCredentialIncarnation ||
+        agent.credentialIncarnation !== expectedCredentialIncarnation) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'The Agent identity changed before archive. Review the change again.',
+      );
+    }
     const defaultInstallations = (await config.listWorkspaceInstallations()).filter(
       (installation) => installation.defaultAgentId === agentId,
     );
@@ -612,6 +624,7 @@ export class AgentPresenceReconciler {
           desiredState: 'disabled',
           health: presence.userGroupId ? 'pending' : 'unpublished',
         },
+        credentialRequirements: { agent: expectedCredentialIncarnation },
       },
       agent.revision,
     );
@@ -650,16 +663,30 @@ export class AgentPresenceReconciler {
           health: presence.userGroupId ? 'healthy' : 'unpublished',
           observedAt: this.now(),
         },
+        credentialRequirements: { agent: expectedCredentialIncarnation },
       },
       agent.revision,
     );
-    return config.archiveAgent(agent.id, { expectedRevision: agent.revision });
+    return config.archiveAgent(agent.id, {
+      expectedRevision: agent.revision,
+      expectedCredentialIncarnation,
+    });
   }
 
-  async restore(agentId: string): Promise<CustomAgentConfig> {
+  async restore(
+    agentId: string,
+    expectedCredentialIncarnation?: string,
+  ): Promise<CustomAgentConfig> {
     const { config, transport } = this.dependencies;
     let agent = await config.getAgent(agentId);
-    agent = await config.restoreAgent(agent.id, agent.revision);
+    const credentialIncarnation = expectedCredentialIncarnation ?? agent.credentialIncarnation;
+    if (!credentialIncarnation || agent.credentialIncarnation !== credentialIncarnation) {
+      throw new AgentPresenceError(
+        'slack_operation_failed',
+        'The Agent identity changed before restore. Review the change again.',
+      );
+    }
+    agent = await config.restoreAgent(agent.id, agent.revision, credentialIncarnation);
     let presence = requiredPresence(agent);
     agent = await config.updateAgent(
       agent.id,
@@ -670,6 +697,7 @@ export class AgentPresenceReconciler {
           health: presence.userGroupId ? 'pending' : 'unpublished',
           observedAt: this.now(),
         },
+        credentialRequirements: { agent: credentialIncarnation },
       },
       agent.revision,
     );
@@ -686,6 +714,7 @@ export class AgentPresenceReconciler {
             health: 'healthy',
             observedAt: this.now(),
           },
+          credentialRequirements: { agent: credentialIncarnation },
         },
         agent.revision,
       );

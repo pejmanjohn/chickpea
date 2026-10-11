@@ -408,6 +408,7 @@ test('a demoted Team connection creator cannot manage the account through any Ag
         principal: creatorMember,
         agentId: managedAgent.id,
         expectedRevision: managedAgent.revision,
+        expectedCredentialIncarnation: managedAgent.credentialIncarnation!,
       }),
       forbidden,
     );
@@ -2654,6 +2655,7 @@ test('Agent deletion keeps ownership records when provider cleanup fails', async
     await assert.rejects(
       service.prepareAgentDeletion({
         principal: principal(), agentId: agent.id, expectedRevision: agent.revision,
+        expectedCredentialIncarnation: agent.credentialIncarnation!,
       }),
       /provider cleanup failed/,
     );
@@ -2721,6 +2723,7 @@ test('Agent deletion validates its revision before revoking any owned connection
     await assert.rejects(
       service.prepareAgentDeletion({
         principal: principal(), agentId: inspected.id, expectedRevision: inspected.revision,
+        expectedCredentialIncarnation: inspected.credentialIncarnation!,
       }),
       AgentRevisionConflictError,
     );
@@ -2782,6 +2785,7 @@ test('an Agent editor can delete accounts authorized by another member of that A
       principal: aliceEditor,
       agentId: agent.id,
       expectedRevision: agent.revision,
+      expectedCredentialIncarnation: agent.credentialIncarnation!,
     });
     assert.deepEqual(revoked.map(({ id, lifecycle }) => ({ id, lifecycle })), [{
       id: account.id,
@@ -2835,6 +2839,7 @@ test('Agent deletion revokes its accounts before removing bindings and the Agent
       principal: principal(),
       agentId: agent.id,
       expectedRevision: agent.revision,
+      expectedCredentialIncarnation: agent.credentialIncarnation!,
     });
     assert.deepEqual(revoked.map(({ id, lifecycle }) => ({ id, lifecycle })), [{
       id: account.id,

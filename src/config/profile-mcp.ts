@@ -37,6 +37,7 @@ import {
   resolveMcpSecrets,
   type McpSecretRef,
 } from './mcp-secrets.ts';
+import { boundMcpCredentialRef } from './connection-credential-binding.ts';
 import { createMcpGuardedFetch, validateMcpUrl } from './mcp-url.ts';
 import { isCloudflareTarget } from './runtime-target.ts';
 import {
@@ -100,8 +101,12 @@ export function resolveProfileMcpConnections(
       } catch {
         // Status narration is cosmetic and must never block a connection.
       }
+      const authorizeRequest = async () => {
+        await requireCurrentProfileMcpServer(server, opts);
+      };
       const guardedFetch = (opts.createGuardedFetch ?? createMcpGuardedFetch)({
         allowedOrigin: new URL(validated.url).origin,
+        authorizeRequest,
       });
       const fetchWithLiveCustomHeaders = withMcpHttpTelemetry(async (input, init) => {
         const request = new Request(input, init);
@@ -115,11 +120,14 @@ export function resolveProfileMcpConnections(
         if (liveMetaServer && invocation) {
           assertServerMcpToolInvocation(liveMetaServer, allowedTools, invocation);
         }
-        const customHeaders = await resolveMcpHeaders(
-          { agentId: opts.agentId, connectionId: server.id },
-          server.headerNames,
-          opts.env,
-        );
+        const liveServer = await requireCurrentProfileMcpServer(server, opts);
+        const customHeaders = server.headerNames.length === 0
+          ? {}
+          : await resolveMcpHeaders(
+              boundMcpCredentialRef(opts.agentId, liveServer),
+              server.headerNames,
+              opts.env,
+            );
         const headers = new Headers(request.headers);
         for (const [name, value] of Object.entries(buildMcpRequestHeaders(
           server.authMode,
@@ -129,10 +137,18 @@ export function resolveProfileMcpConnections(
         }
         const outbound = new Request(request, { headers });
         if (liveMetaServer && invocation && isMetaAdsWriteTool(invocation.name)) {
-          await assertMetaWriteOwnership(liveMetaServer, invocation, headers, opts.createGuardedFetch, request.signal);
+          await assertMetaWriteOwnership(
+            liveMetaServer,
+            invocation,
+            headers,
+            opts.createGuardedFetch,
+            request.signal,
+            authorizeRequest,
+          );
           const current = await requireCurrentProfileMcpServer(server, opts);
           assertServerMcpToolInvocation(current, allowedTools, invocation);
         }
+        await requireCurrentProfileMcpServer(server, opts);
         const response = await guardedFetch(outbound);
         const advertised = advertisedRequest
           ? await advertiseMetaAdsAccountHelperOutput(advertisedRequest, response)
@@ -192,9 +208,6 @@ export function resolveRuntimePlanMcpConnections(
     if (!validated.ok) {
       throw new Error(`Runtime plan MCP connection ${declaration.id} has a blocked URL.`);
     }
-    const guardedFetch = (testOptions?.createGuardedFetch ?? createMcpGuardedFetch)({
-      allowedOrigin: new URL(validated.url).origin,
-    });
     // The OAuth access token this server last answered 401. The MCP transport
     // retries a 401 once and re-resolves auth first; that resolution renews
     // the credential so a grant revoked before expiry is classified now.
@@ -204,7 +217,7 @@ export function resolveRuntimePlanMcpConnections(
       rejectedAccessToken = undefined;
       return token !== undefined && claimUnauthorizedRefresh(ref) ? token : undefined;
     };
-    const liveServer = async (): Promise<{
+    const requireCurrentServer = async (): Promise<{
       server: McpConnectionConfig;
       env: PlatformEnv | undefined;
     }> => {
@@ -233,6 +246,10 @@ export function resolveRuntimePlanMcpConnections(
       }
       return { server, env };
     };
+    const guardedFetch = (testOptions?.createGuardedFetch ?? createMcpGuardedFetch)({
+      allowedOrigin: new URL(validated.url).origin,
+      authorizeRequest: async () => { await requireCurrentServer(); },
+    });
     const fetchWithLiveHeaders = withMcpHttpTelemetry(async (input, init) => {
       const request = new Request(input, init);
       const invocation = await mcpToolInvocation(request);
@@ -245,7 +262,7 @@ export function resolveRuntimePlanMcpConnections(
           assertMcpToolArguments(invocation.name, invocation.arguments, effectiveDeclaration.toolArgumentConstraints);
         }
       }
-      const { server, env } = await liveServer();
+      const { server, env } = await requireCurrentServer();
       const advertisedRequest = usesMetaAdsOutputAdapter(server) ? request.clone() : undefined;
       if (invocation && isMetaAdsMcpConnection(server)) {
         assertServerMcpToolInvocation(server, effectiveDeclaration.allowedTools, invocation);
@@ -254,9 +271,11 @@ export function resolveRuntimePlanMcpConnections(
         ? (await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
             resolveConnectionSecretForInvocation({ ...accountContext, config: getConfigStore(env),
               settings: getSettingsStore(env), ...(env ? { env } : {}), agentId: profileId, connectionAccountId }))).headers
-        : await resolveMcpHeaders(
-            { agentId: profileId, connectionId: server.id }, declaration.headerNames, env,
-          );
+        : declaration.headerNames.length === 0
+          ? {}
+          : await resolveMcpHeaders(
+              boundMcpCredentialRef(profileId, server), declaration.headerNames, env,
+            );
       const headers = new Headers(request.headers);
       for (const [name, value] of Object.entries(buildMcpRequestHeaders(
         declaration.authMode,
@@ -265,11 +284,19 @@ export function resolveRuntimePlanMcpConnections(
         headers.set(name, value);
       }
       if (invocation && isMetaAdsMcpConnection(server) && isMetaAdsWriteTool(invocation.name)) {
-        await assertMetaWriteOwnership(server, invocation, headers, testOptions?.createGuardedFetch, request.signal);
-        const current = (await liveServer()).server;
+        await assertMetaWriteOwnership(
+          server,
+          invocation,
+          headers,
+          testOptions?.createGuardedFetch,
+          request.signal,
+          async () => { await requireCurrentServer(); },
+        );
+        const current = (await requireCurrentServer()).server;
         assertUnchangedMetaInvocationSchema(server, current, invocation.name);
         assertServerMcpToolInvocation(current, effectiveDeclaration.allowedTools, invocation);
       }
+      await requireCurrentServer();
       const response = await guardedFetch(new Request(request, { headers }));
       if (response.status === 401 && declaration.authMode === 'oauth') {
         rejectedAccessToken = presentedBearerToken(headers);
@@ -283,7 +310,7 @@ export function resolveRuntimePlanMcpConnections(
       const sanitized = invocation.name === META_ADS_ACCOUNT_HELPER
         ? await sanitizeAccountHelperResponse(server, advertised)
         : advertised;
-      await liveServer();
+      await requireCurrentServer();
       return sanitized;
     }, { connectionId: declaration.id, authMode: declaration.authMode });
     return {
@@ -298,7 +325,7 @@ export function resolveRuntimePlanMcpConnections(
         ? {}
         : {
             auth: async () => {
-              const { server, env } = await liveServer();
+              const { server, env } = await requireCurrentServer();
               if (accountContext) {
                 if (server.authMode === 'oauth') {
                   const ref = connectionAccountOAuthRef(server.id);
@@ -313,7 +340,7 @@ export function resolveRuntimePlanMcpConnections(
                       getConfigStore(env), getSettingsStore(env), accountContext.workspaceId,
                     ),
                     validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
-                      await liveServer();
+                      await requireCurrentServer();
                       const accounts = await resolveEffectiveConnectionAccounts({
                         ...accountContext, config: getConfigStore(env), agentId: profileId,
                       });
@@ -356,6 +383,7 @@ function runtimeMcpDeclarationStillAllowed(
       return canonical(current) === canonical(frozen);
     }) &&
     server.url === declaration.url &&
+    server.credentialRef === declaration.credentialRef &&
     server.transport === declaration.transport &&
     server.authMode === declaration.authMode &&
     JSON.stringify([...server.headerNames].map((name) => name.toLowerCase()).sort()) ===
@@ -412,6 +440,7 @@ async function resolveLiveMcpBearer(
               const validated = validateMcpUrl(server.url);
               return ref.agentId === opts.agentId &&
                 ref.connectionId === server.id &&
+                ref.credentialRef === server.credentialRef &&
                 server.authMode === 'oauth' &&
                 validated.ok &&
                 validated.url === serverUrl;
@@ -428,14 +457,17 @@ async function resolveLiveMcpBearer(
         });
       })
     )({
-      ref: { agentId: opts.agentId, connectionId: server.id },
+      ref: boundMcpCredentialRef(opts.agentId, server),
       serverUrl: server.url,
       ...(rejectedAccessToken ? { rejectedAccessToken } : {}),
     });
   }
+  const liveServer = connectionAlreadyValidated
+    ? server
+    : await requireCurrentProfileMcpServer(server, opts);
   if (opts.resolveBearerCredential) return opts.resolveBearerCredential(server.id);
   const secrets = await resolveMcpSecrets(
-    { agentId: opts.agentId, connectionId: server.id },
+    boundMcpCredentialRef(opts.agentId, liveServer),
     [],
     opts.env,
   );
@@ -449,6 +481,7 @@ function legacyMcpServerStillAllowed(
 ): boolean {
   if (isMetaAdsMcpConnection(current) !== isMetaAdsMcpConnection(frozen)) return false;
   if (!isProfileMcpServerEligible(current) || current.id !== frozen.id || current.url !== frozen.url ||
+      current.credentialRef !== frozen.credentialRef ||
       current.transport !== frozen.transport || current.authMode !== frozen.authMode ||
       JSON.stringify([...current.headerNames].map((name) => name.toLowerCase()).sort()) !==
         JSON.stringify([...frozen.headerNames].map((name) => name.toLowerCase()).sort())) return false;
@@ -568,6 +601,7 @@ async function assertMetaWriteOwnership(
   headers: Headers,
   createGuardedFetchOverride?: typeof createMcpGuardedFetch,
   signal?: AbortSignal,
+  authorizeRequest?: () => Promise<void>,
 ): Promise<void> {
   // Never send a custom MCP server's credential to Graph based on a forged preset ID.
   if (!usesMetaAdsOutputAdapter(server)) throw new Error('Meta Ads writes require the official Meta Ads endpoint.');
@@ -581,6 +615,7 @@ async function assertMetaWriteOwnership(
     fetch: (createGuardedFetchOverride ?? createMcpGuardedFetch)({
       allowedOrigin: META_ADS_OWNERSHIP_ORIGIN,
       maxRedirects: 0,
+      ...(authorizeRequest ? { authorizeRequest } : {}),
     }),
     ...(signal ? { signal } : {}),
   });

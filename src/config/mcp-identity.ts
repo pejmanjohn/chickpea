@@ -16,6 +16,7 @@ export interface McpIdentityInput {
   transport: 'streamable-http' | 'sse';
   headers: Record<string, string>;
   presetId?: string;
+  authorizeRequest?: () => Promise<void>;
 }
 
 interface McpIdentityProbe {
@@ -66,7 +67,10 @@ async function loadIdentityPayload(
   });
   const transport = new StreamableHTTPClientTransport(new URL(input.url), {
     requestInit: { headers: input.headers },
-    fetch: createMcpGuardedFetch({ allowedOrigin: new URL(input.url).origin }),
+    fetch: createMcpGuardedFetch({
+      allowedOrigin: new URL(input.url).origin,
+      ...(input.authorizeRequest ? { authorizeRequest: input.authorizeRequest } : {}),
+    }),
   });
   try {
     // The SDK currently exposes structurally equivalent transport types from
