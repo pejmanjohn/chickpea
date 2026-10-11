@@ -122,6 +122,7 @@ interface ManagementChangeSetProposalRow {
   target_revisions_json: string;
   status: ManagementChangeSetProposalRecord['status'];
   result_json: string | null;
+  request_operation_id: string | null;
   expires_at: number;
   created_at: number;
   updated_at: number;
@@ -854,8 +855,8 @@ export class ManagementStoreLogic {
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
-        status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
+        status, result_json, request_operation_id, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -869,6 +870,7 @@ export class ManagementStoreLogic {
       input.digest,
       JSON.stringify(input.preview),
       JSON.stringify(input.targetRevisions),
+      input.requestOperationId ?? null,
       input.at,
       input.at,
     );
@@ -2032,6 +2034,7 @@ export class ManagementStoreLogic {
       ['guide_version', 'TEXT'],
       ['authoring_reason', 'TEXT'],
       ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
+      ['request_operation_id', 'TEXT'],
     ];
     for (const [name, definition] of additions) {
       addColumnIfMissing(this.db, 'management_change_set_proposals', name, definition);
@@ -2211,6 +2214,7 @@ function changeSetProposalFromRow(
     ...(row.result_json
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
       : {}),
+    ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };

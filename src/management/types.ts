@@ -1140,6 +1140,8 @@ export interface ManagementChangeSetProposalRecord {
   targetRevisions: Record<string, number>;
   status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
+  /** The Slack call this set holds the rest of; it completes when the set is settled. */
+  requestOperationId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1238,6 +1240,7 @@ export interface PutManagementChangeSetProposalInput {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
+  requestOperationId?: string;
   at: number;
 }
 
