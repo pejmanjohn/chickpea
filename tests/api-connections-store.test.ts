@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 
+import { validConnectionCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ApiConnectionConfig, CustomAgentConfig } from '../src/config/types.ts';
 
@@ -50,14 +51,22 @@ function agent(apiConnections: ApiConnectionConfig[]): CustomAgentConfig {
   };
 }
 
+function publicConnection(connection: ApiConnectionConfig): Omit<ApiConnectionConfig, 'credentialRef'> {
+  const { credentialRef: _credentialRef, ...fields } = connection;
+  return fields;
+}
+
 test('SqliteConfigStore round-trips every apiConnection field through create and update', async () => {
   const store = new SqliteConfigStore(':memory:', { agents: [] });
   try {
     const createdConnection = connection();
     const created = agent([createdConnection]);
 
-    assert.deepEqual(await store.createAgent(created), created);
-    assert.deepEqual((await store.getAgent(created.id)).apiConnections, [createdConnection]);
+    const createdStored = await store.createAgent(created);
+    const initialConnection = createdStored.apiConnections[0]!;
+    assert.equal(validConnectionCredentialRef(initialConnection.credentialRef), true);
+    assert.deepEqual(publicConnection(initialConnection), createdConnection);
+    assert.deepEqual((await store.getAgent(created.id)).apiConnections, [initialConnection]);
 
     const patchedConnections = [
       connection({
@@ -73,8 +82,11 @@ test('SqliteConfigStore round-trips every apiConnection field through create and
     ];
     const updated = await store.updateAgent(created.id, { apiConnections: patchedConnections });
 
-    assert.deepEqual(updated.apiConnections, patchedConnections);
-    assert.deepEqual((await store.getAgent(created.id)).apiConnections, patchedConnections);
+    const updatedConnection = updated.apiConnections[0]!;
+    assert.equal(validConnectionCredentialRef(updatedConnection.credentialRef), true);
+    assert.notEqual(updatedConnection.credentialRef, initialConnection.credentialRef);
+    assert.deepEqual(publicConnection(updatedConnection), patchedConnections[0]);
+    assert.deepEqual((await store.getAgent(created.id)).apiConnections, [updatedConnection]);
   } finally {
     store.close();
   }

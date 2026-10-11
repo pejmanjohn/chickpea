@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import {
@@ -8,6 +9,7 @@ import {
   finishMcpSecretCleanup,
   mcpBearerEnvVar,
   mcpBearerSettingKey,
+  mcpCredentialBindingEnvVar,
   mcpHeaderEnvVar,
   mcpHeaderSettingKey,
   mcpSecretCleanupMarkerKey,
@@ -23,29 +25,44 @@ function newStore(): SqliteSettingsStore {
   return new SqliteSettingsStore(':memory:');
 }
 
-const TEST_REF = { agentId: 'agent_test', connectionId: 'test-srv' };
+function testRef(agentId: string, connectionId: string) {
+  const digest = createHash('sha256').update(`${agentId}\0${connectionId}`).digest('hex');
+  return {
+    agentId,
+    connectionId,
+    credentialRef: `connection_${digest.slice(0, 32)}`,
+    credentialBinding: `test:${digest}`,
+  };
+}
+
+const TEST_REF = testRef('agent_test', 'test-srv');
 
 test('setting keys and collision-safe environment names include both scopes', () => {
   assert.equal(
-    mcpBearerSettingKey({ agentId: 'agent_support', connectionId: 'linear-mcp' }),
-    'mcp.agent_support.linear-mcp.bearer',
+    mcpBearerSettingKey(testRef('agent_support', 'linear-mcp')),
+    `mcp.agent_support.credential.${testRef('agent_support', 'linear-mcp').credentialRef}.bearer`,
   );
   assert.equal(
-    mcpHeaderSettingKey({ agentId: 'agent_support', connectionId: 'linear-mcp' }, 'X-Api-Key'),
-    'mcp.agent_support.linear-mcp.header.X-Api-Key',
+    mcpHeaderSettingKey(testRef('agent_support', 'linear-mcp'), 'X-Api-Key'),
+    `mcp.agent_support.credential.${testRef('agent_support', 'linear-mcp').credentialRef}.header.x-api-key`,
+  );
+  assert.equal(
+    mcpHeaderSettingKey(testRef('agent_support', 'linear-mcp'), 'x-api-key'),
+    mcpHeaderSettingKey(testRef('agent_support', 'linear-mcp'), 'X-Api-Key'),
+    'HTTP header casing must not fork credential storage',
   );
 
   assert.equal(
-    mcpBearerEnvVar({ agentId: 'agent_support', connectionId: 'linear-mcp' }),
+    mcpBearerEnvVar(testRef('agent_support', 'linear-mcp')),
     'MCP_AGENT_AGENT_5FSUPPORT_CONNECTION_LINEAR_2DMCP_BEARER',
   );
   assert.equal(
-    mcpHeaderEnvVar({ agentId: 'agent_support', connectionId: 'linear-mcp' }, 'X-Api-Key'),
+    mcpHeaderEnvVar(testRef('agent_support', 'linear-mcp'), 'X-Api-Key'),
     'MCP_AGENT_AGENT_5FSUPPORT_CONNECTION_LINEAR_2DMCP_HEADER_X_2DAPI_2DKEY',
   );
   assert.notEqual(
-    mcpBearerEnvVar({ agentId: 'agent-a', connectionId: 'linear' }),
-    mcpBearerEnvVar({ agentId: 'agent_a', connectionId: 'linear' }),
+    mcpBearerEnvVar(testRef('agent-a', 'linear')),
+    mcpBearerEnvVar(testRef('agent_a', 'linear')),
     'valid ids that differ by hyphen/underscore must not share an env override',
   );
 });
@@ -54,13 +71,13 @@ test('same connection id stays isolated across agents, including deletion', asyn
   const store = newStore();
   try {
     await saveMcpSecrets(
-      { agentId: 'agent_alpha', connectionId: 'linear' },
+      testRef('agent_alpha', 'linear'),
       { bearerToken: 'alpha-token', headers: { 'X-Api-Key': 'alpha-key' } },
       undefined,
       store,
     );
     await saveMcpSecrets(
-      { agentId: 'agent_beta', connectionId: 'linear' },
+      testRef('agent_beta', 'linear'),
       { bearerToken: 'beta-token', headers: { 'X-Api-Key': 'beta-key' } },
       undefined,
       store,
@@ -68,7 +85,7 @@ test('same connection id stays isolated across agents, including deletion', asyn
 
     assert.deepEqual(
       await resolveMcpSecrets(
-        { agentId: 'agent_alpha', connectionId: 'linear' },
+        testRef('agent_alpha', 'linear'),
         ['X-Api-Key'],
         undefined,
         store,
@@ -77,7 +94,7 @@ test('same connection id stays isolated across agents, including deletion', asyn
     );
     assert.deepEqual(
       await resolveMcpSecrets(
-        { agentId: 'agent_beta', connectionId: 'linear' },
+        testRef('agent_beta', 'linear'),
         ['X-Api-Key'],
         undefined,
         store,
@@ -86,7 +103,7 @@ test('same connection id stays isolated across agents, including deletion', asyn
     );
 
     await deleteMcpSecrets(
-      { agentId: 'agent_alpha', connectionId: 'linear' },
+      testRef('agent_alpha', 'linear'),
       ['X-Api-Key'],
       undefined,
       store,
@@ -94,7 +111,7 @@ test('same connection id stays isolated across agents, including deletion', asyn
 
     assert.deepEqual(
       await resolveMcpSecrets(
-        { agentId: 'agent_alpha', connectionId: 'linear' },
+      testRef('agent_alpha', 'linear'),
         ['X-Api-Key'],
         undefined,
         store,
@@ -103,7 +120,7 @@ test('same connection id stays isolated across agents, including deletion', asyn
     );
     assert.deepEqual(
       await resolveMcpSecrets(
-        { agentId: 'agent_beta', connectionId: 'linear' },
+      testRef('agent_beta', 'linear'),
         ['X-Api-Key'],
         undefined,
         store,
@@ -158,7 +175,10 @@ test('env bearer wins over stored bearer', async () => {
   try {
     await saveMcpSecrets(TEST_REF, { bearerToken: 'stored-bearer' }, undefined, store);
 
-    await withEnv({ MCP_AGENT_AGENT_5FTEST_CONNECTION_TEST_2DSRV_BEARER: 'env-bearer' }, async () => {
+    await withEnv({
+      MCP_AGENT_AGENT_5FTEST_CONNECTION_TEST_2DSRV_BEARER: 'env-bearer',
+      [mcpCredentialBindingEnvVar(TEST_REF)]: TEST_REF.credentialBinding,
+    }, async () => {
       const resolved = await resolveMcpSecrets(TEST_REF, [], undefined, store);
       assert.equal(resolved.bearer, 'env-bearer');
 
@@ -175,7 +195,10 @@ test('env header wins over stored header', async () => {
   try {
     await saveMcpSecrets(TEST_REF, { headers: { 'X-Api-Key': 'stored-header' } }, undefined, store);
 
-    await withEnv({ MCP_AGENT_AGENT_5FTEST_CONNECTION_TEST_2DSRV_HEADER_X_2DAPI_2DKEY: 'env-header' }, async () => {
+    await withEnv({
+      MCP_AGENT_AGENT_5FTEST_CONNECTION_TEST_2DSRV_HEADER_X_2DAPI_2DKEY: 'env-header',
+      [mcpCredentialBindingEnvVar(TEST_REF)]: TEST_REF.credentialBinding,
+    }, async () => {
       const resolved = await resolveMcpSecrets(TEST_REF, ['X-Api-Key'], undefined, store);
       assert.equal(resolved.headers['X-Api-Key'], 'env-header');
 
@@ -187,10 +210,31 @@ test('env header wins over stored header', async () => {
   }
 });
 
+test('an unbound or differently bound environment secret is ignored', async () => {
+  const store = newStore();
+  try {
+    await saveMcpSecrets(TEST_REF, { bearerToken: 'stored-bearer' }, undefined, store);
+    const envVar = mcpBearerEnvVar(TEST_REF);
+    const bindingVar = mcpCredentialBindingEnvVar(TEST_REF);
+
+    await withEnv({ [envVar]: 'unbound-environment-bearer' }, async () => {
+      assert.equal((await resolveMcpSecrets(TEST_REF, [], undefined, store)).bearer, 'stored-bearer');
+    });
+    await withEnv({
+      [envVar]: 'wrongly-bound-environment-bearer',
+      [bindingVar]: 'v1:another-policy',
+    }, async () => {
+      assert.equal((await resolveMcpSecrets(TEST_REF, [], undefined, store)).bearer, 'stored-bearer');
+    });
+  } finally {
+    store.close();
+  }
+});
+
 test('missing secrets resolve to undefined and report missing', async () => {
   const store = newStore();
   try {
-    const absentRef = { agentId: 'agent_test', connectionId: 'absent-srv' };
+    const absentRef = testRef('agent_test', 'absent-srv');
     const resolved = await resolveMcpSecrets(absentRef, ['X-Api-Key'], undefined, store);
     assert.equal(resolved.bearer, undefined);
     assert.deepEqual(resolved.headers, {});
@@ -352,6 +396,31 @@ test('cleanup markers cannot delete settings outside their agent scope', async (
     );
     assert.equal(await store.getSetting('slack.botToken'), 'keep-me');
     assert.equal(await store.getSetting(markerKey), JSON.stringify(['slack.botToken']));
+  } finally {
+    store.close();
+  }
+});
+
+test('an old Agent cleanup scope cannot absorb a replacement Agent secret', async () => {
+  const store = newStore();
+  const oldScope = `v1:${'a'.repeat(43)}`;
+  const oldRef = testRef(TEST_REF.agentId, 'old-server');
+  const replacementRef = testRef(TEST_REF.agentId, 'replacement-server');
+  const oldKey = mcpBearerSettingKey(oldRef);
+  const replacementKey = mcpBearerSettingKey(replacementRef);
+  try {
+    await store.setSetting(oldKey, 'old-secret');
+    await stageMcpSecretCleanup(TEST_REF.agentId, [oldKey], store, oldScope);
+    await store.setSetting(replacementKey, 'replacement-secret');
+    await stageMcpSecretCleanup(TEST_REF.agentId, [replacementKey], store);
+
+    assert.equal(await finishMcpSecretCleanup(TEST_REF.agentId, store, oldScope), true);
+    assert.equal(await store.getSetting(oldKey), undefined);
+    assert.equal(await store.getSetting(replacementKey), 'replacement-secret');
+    assert.equal(
+      await store.getSetting(mcpSecretCleanupMarkerKey(TEST_REF.agentId)),
+      JSON.stringify([replacementKey]),
+    );
   } finally {
     store.close();
   }

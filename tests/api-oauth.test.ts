@@ -5,7 +5,9 @@ import {
   ApiOAuthError,
   apiOAuthSettingKeys,
   completeApiOAuthAuthorization,
+  connectionAccountIdFromOAuthRef,
   describeApiOAuthSources,
+  replaceApiOAuthClient,
   resolveApiOAuthAccessToken,
   saveApiOAuthClient,
   startApiOAuthAuthorization,
@@ -17,6 +19,10 @@ import {
 } from '../src/config/settings-store.ts';
 
 const REF = { agentId: 'agent_google', connectionId: 'google-workspace' };
+const BOUND_REF = {
+  ...REF,
+  credentialRef: 'connection_11111111111111111111111111111111',
+};
 const CALLBACK_URL = 'https://chickpea.example.test/oauth/api/callback';
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
@@ -190,6 +196,9 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
       },
       { settings, randomId: () => 'nonce' },
     );
+    const pending = JSON.parse(
+      (await settings.getSetting(apiOAuthSettingKeys(REF)[1]))!,
+    ) as { clientBinding: string };
     const completed = await completeApiOAuthAuthorization(
       { code: 'provider-code', state: started.state },
       { settings, fetchFn: google.fetchFn },
@@ -197,6 +206,7 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
     assert.deepEqual(completed, {
       ref: REF,
       provider: 'google',
+      clientBinding: pending.clientBinding,
       identity: { accountName: 'operator@example.com' },
       returnAgentId: 'agent_return',
     });
@@ -217,6 +227,51 @@ test('Google callback consumes state, stores tokens, and returns only bounded ac
   } finally {
     settings.close();
   }
+});
+
+test('Agent API OAuth callback preserves the bound credential namespace', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const google = fakeGoogle();
+  try {
+    await saveApiOAuthClient(
+      BOUND_REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization(
+      { ref: BOUND_REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES },
+      { settings, randomId: () => 'bound-nonce' },
+    );
+    const completed = await completeApiOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      { settings, fetchFn: google.fetchFn },
+    );
+
+    assert.deepEqual(completed.ref, BOUND_REF);
+    assert.equal(
+      await resolveApiOAuthAccessToken(
+        { ref: BOUND_REF, provider: 'google' },
+        { settings, fetchFn: google.fetchFn },
+      ),
+      'access-initial',
+    );
+    assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
+    assert.equal(google.counts.exchanges, 1);
+  } finally {
+    settings.close();
+  }
+});
+
+test('a bound Agent ref cannot be mistaken for a colliding connection-account sentinel', () => {
+  assert.equal(connectionAccountIdFromOAuthRef({
+    agentId: 'connection_collision',
+    connectionId: 'account',
+    credentialRef: BOUND_REF.credentialRef,
+  }), undefined);
+  assert.equal(connectionAccountIdFromOAuthRef({
+    agentId: 'connection_collision',
+    connectionId: 'account',
+  }), 'connection_collision');
 });
 
 test('Google callback rejects stale initiating authority before provider exchange', async () => {
@@ -341,6 +396,138 @@ test('Google callback rechecks authority after exchange before storing minted to
     assert.equal(google.counts.exchanges, 1);
     assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
   } finally {
+    settings.close();
+  }
+});
+
+async function assertClientReplacementFencesInFlightExchange(
+  replacements: Array<{ clientId: string; clientSecret: string }>,
+): Promise<void> {
+  const settings = new SqliteSettingsStore(':memory:');
+  let releaseExchange!: () => void;
+  let markExchangeStarted!: () => void;
+  const exchangeStarted = new Promise<void>((resolve) => { markExchangeStarted = resolve; });
+  const exchangeReleased = new Promise<void>((resolve) => { releaseExchange = resolve; });
+  const fetchFn: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    assert.equal(request.url, 'https://oauth2.googleapis.com/token');
+    const body = new URLSearchParams(await request.text());
+    assert.equal(body.get('client_id'), 'google-client-id');
+    assert.equal(body.get('client_secret'), 'google-client-secret');
+    markExchangeStarted();
+    await exchangeReleased;
+    return Response.json({
+      access_token: 'access-from-old-client',
+      refresh_token: 'refresh-from-old-client',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    });
+  };
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization(
+      { ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES },
+      { settings, randomId: () => 'nonce' },
+    );
+    const originalClient = JSON.parse(
+      (await settings.getSetting(apiOAuthSettingKeys(REF)[0]))!,
+    ) as { generation: string };
+    const completion = completeApiOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      { settings, fetchFn },
+    );
+    await exchangeStarted;
+
+    for (const replacement of replacements) {
+      await saveApiOAuthClient(REF, { provider: 'google', ...replacement }, settings);
+    }
+    releaseExchange();
+
+    await assert.rejects(
+      completion,
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.equal(await settings.getSetting(apiOAuthSettingKeys(REF)[2]), undefined);
+    const currentClient = JSON.parse(
+      (await settings.getSetting(apiOAuthSettingKeys(REF)[0]))!,
+    ) as { clientId: string; generation: string };
+    assert.equal(currentClient.clientId, replacements.at(-1)?.clientId);
+    assert.notEqual(currentClient.generation, originalClient.generation);
+  } finally {
+    releaseExchange?.();
+    settings.close();
+  }
+}
+
+test('OAuth client replacement generations fence in-flight exchange ABA races', async () => {
+  const original = { clientId: 'google-client-id', clientSecret: 'google-client-secret' };
+  const replacement = { clientId: 'replacement-client', clientSecret: 'replacement-secret' };
+  await assertClientReplacementFencesInFlightExchange([replacement]);
+  await assertClientReplacementFencesInFlightExchange([original]);
+  await assertClientReplacementFencesInFlightExchange([replacement, original]);
+});
+
+test('OAuth client replacement during identity lookup revokes old tokens and supersedes completion', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  let releaseIdentity!: () => void;
+  let markIdentityStarted!: () => void;
+  const identityStarted = new Promise<void>((resolve) => { markIdentityStarted = resolve; });
+  const identityReleased = new Promise<void>((resolve) => { releaseIdentity = resolve; });
+  const fetchFn: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url === 'https://oauth2.googleapis.com/token') {
+      return Response.json({
+        access_token: 'access-from-old-client',
+        refresh_token: 'refresh-from-old-client',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      });
+    }
+    assert.equal(request.url, 'https://openidconnect.googleapis.com/v1/userinfo');
+    assert.equal(request.headers.get('authorization'), 'Bearer access-from-old-client');
+    markIdentityStarted();
+    await identityReleased;
+    return Response.json({ email: 'old-client@example.com' });
+  };
+  try {
+    await saveApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      settings,
+    );
+    const started = await startApiOAuthAuthorization(
+      { ref: REF, provider: 'google', callbackUrl: CALLBACK_URL, scopes: SCOPES },
+      { settings, randomId: () => 'nonce' },
+    );
+    const completion = completeApiOAuthAuthorization(
+      { code: 'provider-code', state: started.state },
+      { settings, fetchFn },
+    );
+    await identityStarted;
+
+    await replaceApiOAuthClient(
+      REF,
+      { provider: 'google', clientId: 'replacement-client', clientSecret: 'replacement-secret' },
+      settings,
+    );
+    releaseIdentity();
+
+    await assert.rejects(
+      completion,
+      (error: unknown) =>
+        error instanceof ApiOAuthError && error.code === 'oauth_attempt_superseded',
+    );
+    assert.deepEqual(await describeApiOAuthSources(REF, settings), {
+      client: 'stored',
+      tokens: 'missing',
+    });
+  } finally {
+    releaseIdentity?.();
     settings.close();
   }
 });
@@ -504,12 +691,16 @@ test('a slower Agent-owned Google OAuth callback cannot overwrite newer credenti
       randomId: () => 'older-nonce',
       validateConnection: () => true,
     });
+    const clientBinding = (JSON.parse(
+      (await settings.getSetting(apiOAuthSettingKeys(REF)[1]))!,
+    ) as { clientBinding: string }).clientBinding;
     const tokenKey = apiOAuthSettingKeys(REF)[2];
     const newerRaw = JSON.stringify({
       provider: 'google',
       accessToken: 'access-winner',
       tokenType: 'Bearer',
       obtainedAt: Date.now(),
+      clientBinding,
       accountRevision: 2,
       oauthAttemptId: newerAttemptId,
     });

@@ -21,6 +21,18 @@ export function deploymentSecretOverride(
   return deploymentServesManyInstallations(env) ? undefined : nonEmpty(process.env[name]);
 }
 
+/** Standalone environment credentials must opt into one exact credential incarnation. */
+export function deploymentBoundSecretOverride(
+  name: string,
+  bindingName: string,
+  expectedBinding: string,
+  env: Record<string, unknown> | undefined,
+): string | undefined {
+  if (deploymentServesManyInstallations(env)) return undefined;
+  if (nonEmpty(process.env[bindingName]) !== expectedBinding) return undefined;
+  return nonEmpty(process.env[name]);
+}
+
 /**
  * Encode a validated id/header segment into a shell-safe, reversible spelling.
  * Escaping every non-alphanumeric character by its ASCII code matters here:

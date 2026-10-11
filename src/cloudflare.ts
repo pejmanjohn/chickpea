@@ -23,6 +23,7 @@ import {
 } from './observability/runtime-latency.ts';
 
 import {
+  AgentConnectionCredentialConflictError,
   AgentRevisionConflictError,
   AgentExistsError,
   AgentStillAssignedError,
@@ -89,6 +90,7 @@ import {
   repairPendingOAuthContinuationResumes,
 } from './connections/oauth-continuation.ts';
 import {
+  type AgentCreationFence,
   type AgentModelRolePatch,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
@@ -1185,8 +1187,11 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.config.materializeChickpeaAgent());
   }
 
-  async configCreateAgent(agent: AgentCreateInput): Promise<StateRpcResult<CustomAgentConfig>> {
-    return this.call((stores) => stores.config.createAgent(agent));
+  async configCreateAgent(
+    agent: AgentCreateInput,
+    creationFence?: AgentCreationFence,
+  ): Promise<StateRpcResult<CustomAgentConfig>> {
+    return this.call((stores) => stores.config.createAgent(agent, creationFence));
   }
 
   async configUpdateAgent(
@@ -1206,24 +1211,37 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   async configDeleteAgent(
     agentId: string,
     expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
   ): Promise<StateRpcResult<boolean>> {
-    return this.call((stores) => stores.config.deleteAgent(agentId, expectedRevision));
+    return this.call((stores) => stores.config.deleteAgent(
+      agentId,
+      expectedRevision,
+      expectedCredentialIncarnation,
+    ));
   }
 
   async configDeleteAgentWithMemory(
     agentId: string,
     idempotencyKey: string,
+    expectedRevision: number,
+    expectedCredentialIncarnation: string,
   ): Promise<StateRpcResult<boolean>> {
     return this.call((stores) => stores.config.deleteAgentWithMemory(
       agentId,
       idempotencyKey,
+      expectedRevision,
+      expectedCredentialIncarnation,
       stores.memory,
     ));
   }
 
   async configArchiveAgent(
     agentId: string,
-    options?: { replacementDefaultAgentId?: string; expectedRevision?: number },
+    options?: {
+      replacementDefaultAgentId?: string;
+      expectedRevision?: number;
+      expectedCredentialIncarnation?: string;
+    },
   ): Promise<StateRpcResult<CustomAgentConfig>> {
     return this.call((stores) => stores.config.archiveAgent(agentId, options));
   }
@@ -1231,8 +1249,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
   async configRestoreAgent(
     agentId: string,
     expectedRevision?: number,
+    expectedCredentialIncarnation?: string,
   ): Promise<StateRpcResult<CustomAgentConfig>> {
-    return this.call((stores) => stores.config.restoreAgent(agentId, expectedRevision));
+    return this.call((stores) => stores.config.restoreAgent(
+      agentId,
+      expectedRevision,
+      expectedCredentialIncarnation,
+    ));
   }
 
   async configEnsureWorkspaceInstallation(
@@ -2764,6 +2787,13 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
           agentId: err.agentId,
           expectedRevision: String(err.expectedRevision),
           actualRevision: String(err.actualRevision),
+        });
+      }
+      if (err instanceof AgentConnectionCredentialConflictError) {
+        return rpcError('agent_connection_credential_conflict', err.message, {
+          agentId: err.agentId,
+          lane: err.lane,
+          connectionId: err.connectionId,
         });
       }
       if (err instanceof ReservedAgentIdentityError) {

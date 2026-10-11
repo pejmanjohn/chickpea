@@ -7,6 +7,10 @@ import {
   type ApiOAuthRef,
 } from '../config/api-oauth.ts';
 import { mcpOAuthSettingKeys, resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
+import {
+  boundApiCredentialRef,
+  boundMcpCredentialRef,
+} from '../config/connection-credential-binding.ts';
 import type { McpSecretRef } from '../config/mcp-secrets.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthRefreshTelemetryEvent } from '../config/oauth-refresh-telemetry.ts';
@@ -178,7 +182,11 @@ async function listOAuthCredentials(config: ConfigStore): Promise<KeepAliveCrede
       if (!server.enabled || server.authMode !== 'oauth' || server.lifecycleStatus !== 'ready') continue;
       const validated = validateMcpUrl(server.url);
       if (validated.ok) {
-        credentials.push({ lane: 'mcp', ref: { agentId: agent.id, connectionId: server.id }, serverUrl: validated.url });
+        credentials.push({
+          lane: 'mcp',
+          ref: boundMcpCredentialRef(agent.id, server),
+          serverUrl: validated.url,
+        });
       }
     }
     for (const connection of agent.apiConnections) {
@@ -186,7 +194,7 @@ async function listOAuthCredentials(config: ConfigStore): Promise<KeepAliveCrede
           (connection.lifecycleStatus !== undefined && connection.lifecycleStatus !== 'ready')) continue;
       credentials.push({
         lane: 'api',
-        ref: { agentId: agent.id, connectionId: connection.id },
+        ref: boundApiCredentialRef(agent.id, connection),
         provider: connection.oauthProvider,
       });
     }
@@ -221,10 +229,14 @@ async function isCurrentCredential(
       const server = agent.mcpServers.find(({ id }) => id === credential.ref.connectionId);
       const validated = server ? validateMcpUrl(server.url) : undefined;
       return !!server && server.enabled && server.authMode === 'oauth' &&
+        (credential.ref.credentialRef === undefined ||
+          server.credentialRef === credential.ref.credentialRef) &&
         server.lifecycleStatus === 'ready' && !!validated?.ok && validated.url === target;
     }
     const connection = agent.apiConnections.find(({ id }) => id === credential.ref.connectionId);
     return !!connection && connection.enabled && connection.authMode === 'oauth' &&
+      credential.ref.credentialRef !== undefined &&
+      connection.credentialRef === credential.ref.credentialRef &&
       connection.oauthProvider === target;
   } catch {
     return false;

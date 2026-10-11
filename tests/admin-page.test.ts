@@ -1571,7 +1571,7 @@ function runAdminPageHarness(
           ? 'workspace_members'
           : 'creator_only';
       }
-      return projected;
+      return projectFixtureCredentialBindings(projected);
     },
   );
   const harnessOptions = options;
@@ -2146,8 +2146,9 @@ function runAdminPageHarness(
       }
       const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
       agentPostBodies.push(body);
-      agentsList.push({ ...body });
-      return Promise.resolve(jsonResponse({ agent: body }, 201));
+      const agent = projectFixtureCredentialBindings({ ...body, revision: 1 });
+      agentsList.push(agent);
+      return Promise.resolve(jsonResponse({ agent }, 201));
     }
     const agentArchiveMatch = path.match(/^\/admin\/api\/agents\/([^/]+)\/archive$/);
     if (agentArchiveMatch && method === 'POST') {
@@ -2540,8 +2541,11 @@ function runAdminPageHarness(
       const completePatch = () => {
         const { expectedRevision: _expectedRevision, ...patch } = body;
         const revision = Number(existing?.revision ?? 1) + 1;
-        if (existing) Object.assign(existing, patch, { id, revision });
-        return jsonResponse({ agent: agentPatchResponse?.(body) ?? { id, ...patch, revision } });
+        const responseAgent = projectFixtureCredentialBindings(
+          agentPatchResponse?.(body) ?? { id, ...patch, revision },
+        );
+        if (existing) Object.assign(existing, responseAgent);
+        return jsonResponse({ agent: responseAgent });
       };
       if (deferAgentPatch) {
         return new Promise((resolve) => {
@@ -10059,6 +10063,39 @@ test('Agent-owned Supabase accounts scope OAuth to one project and default to re
   });
 });
 
+function fixtureCredentialBinding(lane: 'mcp' | 'api', id: unknown): string {
+  const material = `${lane}_${String(id)}`.replace(/[^A-Za-z0-9_-]/g, '_');
+  return `v2:${material.padEnd(43, 'x').slice(0, 43)}`;
+}
+
+function projectFixtureCredentialBindings(
+  agent: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...agent,
+    mcpServers: Array.isArray(agent.mcpServers)
+      ? agent.mcpServers.map((raw) => {
+          const connection = raw as Record<string, unknown>;
+          return {
+            ...connection,
+            credentialBinding: connection.credentialBinding ??
+              fixtureCredentialBinding('mcp', connection.id),
+          };
+        })
+      : [],
+    apiConnections: Array.isArray(agent.apiConnections)
+      ? agent.apiConnections.map((raw) => {
+          const connection = raw as Record<string, unknown>;
+          return {
+            ...connection,
+            credentialBinding: connection.credentialBinding ??
+              fixtureCredentialBinding('api', connection.id),
+          };
+        })
+      : [],
+  };
+}
+
 function connectionsAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'agent_conn',
@@ -10707,7 +10744,11 @@ test('the Connections tab adds an API connection policy and stores its credentia
     {
       agentId: 'agent_conn',
       id: 'issue-api',
-      body: { credential: 'rest-secret-token' },
+      body: {
+        expectedRevision: 2,
+        expectedCredentialBinding: fixtureCredentialBinding('api', 'issue-api'),
+        credential: 'rest-secret-token',
+      },
     },
   ]);
   assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
@@ -10717,6 +10758,33 @@ test('the Connections tab adds an API connection policy and stores its credentia
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.equal(harness.apiConnectionSecretPuts.length, 1);
+});
+
+test('a typed API credential is discarded if its policy changes before the first save', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'old.example.com') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'old-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'new.example.com') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.apiConnectionSecretPuts.length, 0);
+  assert.match(harness.app.innerHTML, /connector changed before its credential could be stored/);
 });
 
 test('a failed API credential PUT stays pending, surfaces an error, and retries on Save', async () => {
@@ -10761,6 +10829,60 @@ test('a failed API credential PUT stays pending, surfaces an error, and retries 
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.equal(harness.apiConnectionSecretPuts.length, 2);
+});
+
+test('a failed API credential PUT is never rebound to a replacement connection on retry', async () => {
+  let patchCount = 0;
+  const firstBinding = fixtureCredentialBinding('api', 'issue-api');
+  const replacementBinding = fixtureCredentialBinding('api', 'issue-api-replacement');
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    apiConnectionSecretPutFailures: 1,
+    agentPatchResponse: (body) => {
+      patchCount += 1;
+      const binding = patchCount === 1 ? firstBinding : replacementBinding;
+      return {
+        id: 'agent_conn',
+        ...body,
+        revision: patchCount + 1,
+        apiConnections: (body.apiConnections as Array<Record<string, unknown>>).map((connection) => ({
+          ...connection,
+          credentialBinding: binding,
+        })),
+      };
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  click({ target: actionTarget({ 'data-action': 'custom-lane', 'data-lane': 'api' }) });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-name' }, 'Issue API') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-host-input', 'data-index': '0' }, 'api.example.com') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-header-name' }, 'Authorization') });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'old-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 1);
+  assert.equal(harness.apiConnectionSecretPuts[0]?.body.expectedCredentialBinding, firstBinding);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 1);
+  assert.match(harness.app.innerHTML, /connector changed before its credential could be stored/);
+
+  click({ target: actionTarget({ 'data-action': 'apiconn-edit', 'data-index': '0' }) });
+  input({ target: inputTarget({ 'data-action': 'apiconn-field-credential' }, 'replacement-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'apiconn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.apiConnectionSecretPuts.length, 2);
+  assert.equal(harness.apiConnectionSecretPuts[1]?.body.expectedCredentialBinding, replacementBinding);
+  assert.equal(harness.apiConnectionSecretPuts[1]?.body.credential, 'replacement-target-secret');
 });
 
 test('editing a saved API connection shows a stored write-only credential placeholder', async () => {
@@ -10908,7 +11030,7 @@ test('the API connection editor enforces its required policy fields', async () =
   assert.match(harness.app.innerHTML, /Select at least one method\./);
 });
 
-test('removing an API connection confirms and deletes its credential after the policy save', async () => {
+test('removing an API connection relies on the policy save to retire its credential', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent({ apiConnections: [apiConnectionFixture()] })],
   });
@@ -10928,12 +11050,10 @@ test('removing an API connection confirms and deletes its credential after the p
   await flushAsync();
 
   assert.deepEqual(harness.agentPatchBodies[0]?.body.apiConnections, []);
-  assert.deepEqual(harness.apiConnectionSecretDeletes, [
-    { agentId: 'agent_conn', id: 'issue-api', body: {} },
-  ]);
+  assert.deepEqual(harness.apiConnectionSecretDeletes, []);
 });
 
-test('a failed API credential DELETE stays pending, surfaces an error, and retries on Save', async () => {
+test('API connection removal does not depend on a redundant credential DELETE', async () => {
   const harness = runAdminPageHarness({
     agents: [connectionsAgent({ apiConnections: [apiConnectionFixture()] })],
     apiConnectionSecretDeleteFailures: 1,
@@ -10948,16 +11068,16 @@ test('a failed API credential DELETE stays pending, surfaces an error, and retri
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
-  assert.equal(harness.apiConnectionSecretDeletes.length, 1);
-  assert.match(harness.app.innerHTML, /Agent saved, but a credential could not be removed — Save again to retry\./);
+  assert.equal(harness.apiConnectionSecretDeletes.length, 0);
+  assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
 
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
-  assert.equal(harness.apiConnectionSecretDeletes.length, 2);
+  assert.equal(harness.apiConnectionSecretDeletes.length, 0);
   assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
-  assert.equal(harness.apiConnectionSecretDeletes.length, 2);
+  assert.equal(harness.apiConnectionSecretDeletes.length, 0);
 });
 
 test('the inline script embeds the connector preset catalog and brand logos', () => {
@@ -11281,7 +11401,13 @@ test('the Gmail catalog entry saves one shared Google connection and its BYO OAu
     {
       agentId: 'agent_conn',
       connectionId: 'google-workspace',
-      body: { provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret' },
+      body: {
+        provider: 'google',
+        clientId: 'google-client-id',
+        clientSecret: 'google-client-secret',
+        expectedRevision: 2,
+        expectedCredentialBinding: fixtureCredentialBinding('api', 'google-workspace'),
+      },
     },
   ]);
   assert.deepEqual(harness.apiOAuthStartPosts, [
@@ -12322,9 +12448,7 @@ test('a connected OAuth account offers confirmed disconnect and clears its store
   await flushAsync();
 
   assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
-  assert.deepEqual(harness.mcpSecretDeletes, [
-    { agentId: 'agent_conn', id: 'notion', body: { headerNames: [] } },
-  ]);
+  assert.deepEqual(harness.mcpSecretDeletes, []);
   assert.doesNotMatch(JSON.stringify(harness.agentPatchBodies), /access_token|refresh_token|client_secret/);
 });
 
@@ -12656,6 +12780,10 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   assert.equal(harness.mcpSecretPuts.length, 1);
   assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_conn');
   assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
+  assert.equal(
+    (harness.mcpSecretPuts[0]?.body as Record<string, unknown>).expectedCredentialBinding,
+    fixtureCredentialBinding('mcp', 'linear'),
+  );
   assert.equal((harness.mcpSecretPuts[0]?.body as Record<string, unknown>).bearerToken, 'sk-secret-token');
   assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
 
@@ -12663,6 +12791,39 @@ test('testing a connection renders discovered-tool checkboxes all checked and ca
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.equal(harness.mcpSecretPuts.length, 1);
+});
+
+test('a typed MCP credential is discarded if its target changes before the first save', async () => {
+  const harness = runAdminPageHarness({ agents: [connectionsAgent()] });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://old.example.com/mcp') });
+  change({
+    target: {
+      value: 'bearer',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'old-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://new.example.com/mcp') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.mcpSecretPuts.length, 0);
+  assert.match(harness.app.innerHTML, /connector changed before its credential could be stored/);
 });
 
 test('a failed MCP credential PUT stays pending, surfaces an error, and retries on Save', async () => {
@@ -12712,6 +12873,66 @@ test('a failed MCP credential PUT stays pending, surfaces an error, and retries 
   assert.equal(harness.mcpSecretPuts.length, 2);
 });
 
+test('a failed MCP credential PUT is never rebound to a replacement connection on retry', async () => {
+  let patchCount = 0;
+  const firstBinding = fixtureCredentialBinding('mcp', 'linear');
+  const replacementBinding = fixtureCredentialBinding('mcp', 'linear-replacement');
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    mcpSecretPutFailures: 1,
+    agentPatchResponse: (body) => {
+      patchCount += 1;
+      const binding = patchCount === 1 ? firstBinding : replacementBinding;
+      return {
+        id: 'agent_conn',
+        ...body,
+        revision: patchCount + 1,
+        mcpServers: (body.mcpServers as Array<Record<string, unknown>>).map((connection) => ({
+          ...connection,
+          credentialBinding: binding,
+        })),
+      };
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  const change = harness.listeners.change;
+  assert.ok(click && input && change);
+
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+  click({ target: actionTarget({ 'data-action': 'conn-custom' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-name' }, 'Linear') });
+  input({ target: inputTarget({ 'data-action': 'conn-field-url' }, 'https://mcp.example.com/mcp') });
+  change({
+    target: {
+      value: 'bearer',
+      closest: () => null,
+      getAttribute: (name: string) => (name === 'data-action' ? 'conn-auth' : null),
+    } as unknown as FakeTarget,
+  });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'old-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 1);
+  assert.equal(harness.mcpSecretPuts[0]?.body.expectedCredentialBinding, firstBinding);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 1);
+  assert.match(harness.app.innerHTML, /connector changed before its credential could be stored/);
+
+  click({ target: actionTarget({ 'data-action': 'conn-edit', 'data-index': '0' }) });
+  input({ target: inputTarget({ 'data-action': 'conn-field-bearer' }, 'replacement-target-secret') });
+  click({ target: actionTarget({ 'data-action': 'conn-save-row' }) });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.mcpSecretPuts.length, 2);
+  assert.equal(harness.mcpSecretPuts[1]?.body.expectedCredentialBinding, replacementBinding);
+  assert.equal(harness.mcpSecretPuts[1]?.body.bearerToken, 'replacement-target-secret');
+});
+
 test('creating a profile writes connection secrets under the generated profile id', async () => {
   const harness = runAdminPageHarness();
   await flushAsync();
@@ -12750,6 +12971,11 @@ test('creating a profile writes connection secrets under the generated profile i
   assert.doesNotMatch(JSON.stringify(harness.agentPostBodies[0]), /new-profile-token/);
   assert.equal(harness.mcpSecretPuts[0]?.agentId, 'agent_support_profile');
   assert.equal(harness.mcpSecretPuts[0]?.id, 'linear');
+  assert.equal(harness.mcpSecretPuts[0]?.body.expectedRevision, 1);
+  assert.equal(
+    harness.mcpSecretPuts[0]?.body.expectedCredentialBinding,
+    fixtureCredentialBinding('mcp', 'linear'),
+  );
   assert.equal(harness.mcpSecretPuts[0]?.body.bearerToken, 'new-profile-token');
 });
 
@@ -12912,7 +13138,7 @@ test('a failed test marks the connection failed with the safe status text and no
   assert.deepEqual(servers[0]?.allowedTools, []);
 });
 
-test('removing a connection confirms in a modal and DELETEs its secrets on save', async () => {
+test('removing an MCP connection relies on the policy save to retire its credentials', async () => {
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
@@ -12957,18 +13183,13 @@ test('removing a connection confirms in a modal and DELETEs its secrets on save'
   assert.match(harness.app.innerHTML, /data-action="conn-gallery-search"/);
   assert.doesNotMatch(harness.app.innerHTML, /No connections yet/);
 
-  // Save — the PATCH body has an empty mcpServers AND the secrets DELETE fires
-  // with the connection's header names.
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
   assert.deepEqual(harness.agentPatchBodies[0]?.body.mcpServers, []);
-  assert.equal(harness.mcpSecretDeletes.length, 1);
-  assert.equal(harness.mcpSecretDeletes[0]?.agentId, 'agent_conn');
-  assert.equal(harness.mcpSecretDeletes[0]?.id, 'linear');
-  assert.deepEqual((harness.mcpSecretDeletes[0]?.body as Record<string, unknown>).headerNames, ['X-Api-Key']);
+  assert.deepEqual(harness.mcpSecretDeletes, []);
 });
 
-test('a failed MCP credential DELETE stays pending, surfaces an error, and retries on Save', async () => {
+test('MCP removal does not depend on a redundant credential DELETE', async () => {
   const harness = runAdminPageHarness({
     agents: [
       connectionsAgent({
@@ -13001,16 +13222,16 @@ test('a failed MCP credential DELETE stays pending, surfaces an error, and retri
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
 
-  assert.equal(harness.mcpSecretDeletes.length, 1);
-  assert.match(harness.app.innerHTML, /Agent saved, but a credential could not be removed — Save again to retry\./);
+  assert.equal(harness.mcpSecretDeletes.length, 0);
+  assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
 
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
-  assert.equal(harness.mcpSecretDeletes.length, 2);
+  assert.equal(harness.mcpSecretDeletes.length, 0);
   assert.doesNotMatch(harness.app.innerHTML, /Agent saved, but a credential could not be/);
   click({ target: actionTarget({ 'data-action': 'save-profile' }) });
   await flushAsync();
-  assert.equal(harness.mcpSecretDeletes.length, 2);
+  assert.equal(harness.mcpSecretDeletes.length, 0);
 });
 
 test('saving with a filled-but-not-added connection editor commits it, not drops it', async () => {

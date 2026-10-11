@@ -110,10 +110,15 @@ export async function publishFencedOAuthState<Stored extends OAuthAttemptFence>(
     parseCurrent: (raw: string) => OAuthAttemptFence;
     superseded: () => Error;
     unavailable: () => Error;
+    expectedAll?: readonly { key: string; value: string | null }[];
   },
 ): Promise<void> {
   const nextRaw = JSON.stringify(value);
   for (let attempt = 0; attempt < PUBLISH_ATTEMPTS; attempt += 1) {
+    if (handlers.expectedAll && await settingsExpectationsChanged(
+      settings,
+      handlers.expectedAll,
+    )) throw handlers.superseded();
     const currentRaw = await settings.getSetting(key);
     if (currentRaw) {
       const current = handlers.parseCurrent(currentRaw);
@@ -121,9 +126,18 @@ export async function publishFencedOAuthState<Stored extends OAuthAttemptFence>(
     }
     const stored = await settings.applySettingsPatch({
       expected: { key, value: currentRaw ?? null },
+      ...(handlers.expectedAll ? { expectedAll: handlers.expectedAll } : {}),
       set: [{ key, value: nextRaw }],
     });
     if (stored) return;
   }
   throw handlers.unavailable();
+}
+
+async function settingsExpectationsChanged(
+  settings: SettingsStore,
+  expected: readonly { key: string; value: string | null }[],
+): Promise<boolean> {
+  const current = await settings.getSettings(expected.map(({ key }) => key));
+  return expected.some(({ value }, index) => (current[index] ?? null) !== value);
 }

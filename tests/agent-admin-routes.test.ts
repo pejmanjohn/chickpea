@@ -21,6 +21,7 @@ import {
   ApiOAuthError,
   apiOAuthSettingKeys,
   connectionAccountOAuthRef,
+  resolveApiOAuthAccessToken,
   startApiOAuthAuthorization,
 } from '../src/config/api-oauth.ts';
 import {
@@ -35,8 +36,17 @@ import {
 import {
   mcpBearerSettingKey,
   mcpHeaderSettingKey,
+  resolveMcpSecrets,
 } from '../src/config/mcp-secrets.ts';
-import { connectorCredentialSettingKey } from '../src/config/connector-secrets.ts';
+import {
+  connectorCredentialSettingKey,
+  resolveConnectorCredential,
+} from '../src/config/connector-secrets.ts';
+import {
+  agentCredentialConfigurationBinding,
+  boundApiCredentialRef,
+  boundMcpCredentialRef,
+} from '../src/config/connection-credential-binding.ts';
 import type {
   SlackAppHomeReference,
   SlackChannel,
@@ -88,6 +98,16 @@ async function managedAuthorizationSettingKey(actorMembershipId: string): Promis
   ));
   const hex = [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return `connections.managed.authorization.${hex.slice(0, 32)}`;
+}
+
+async function storedApiOAuthClientBinding(
+  settings: SettingsStore,
+  ref: Parameters<typeof apiOAuthSettingKeys>[0],
+): Promise<string> {
+  const raw = await settings.getSetting(apiOAuthSettingKeys(ref)[0]);
+  assert.ok(raw);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+  return Buffer.from(digest).toString('base64url');
 }
 
 function identity(): IdentityStore {
@@ -2389,6 +2409,974 @@ test('Agent-owned MCP credentials cannot target an undeclared header', async () 
   }
 });
 
+test('Agent PATCH preserves MCP credential policy across header casing changes', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_mcp_credential_policy',
+      name: 'MCP credential policy',
+      instructions: 'Keep credential delivery policy intact.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [{
+        id: 'header-mcp', displayName: 'Header MCP', url: 'https://mcp.example.com/rpc',
+        transport: 'streamable-http', authMode: 'none', headerNames: ['X-Api-Key'],
+        credentialHeaderName: 'X-Api-Key', credentialValuePrefix: 'Token ',
+        credentialOptional: false, enabled: true, lifecycleStatus: 'ready', statusText: '',
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const originalRef = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    await fixture.settings.setSetting(
+      mcpHeaderSettingKey(originalRef, 'X-Api-Key'),
+      'still-bound-after-rename',
+    );
+    const { credentialRef: _credentialRef, ...connection } = created.mcpServers[0]!;
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          mcpServers: [{
+            ...connection,
+            displayName: 'Renamed Header MCP',
+            headerNames: ['x-api-key'],
+            credentialHeaderName: 'x-api-key',
+          }],
+        }),
+      },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const updated = await fixture.store.getAgent(created.id);
+    const stored = updated.mcpServers[0]!;
+    assert.equal(stored.credentialHeaderName, 'x-api-key');
+    assert.equal(stored.credentialValuePrefix, 'Token ');
+    assert.equal(stored.credentialOptional, false);
+    assert.equal(stored.credentialRef, created.mcpServers[0]?.credentialRef);
+    assert.equal(
+      (await resolveMcpSecrets(
+        boundMcpCredentialRef(created.id, stored),
+        ['x-api-key'],
+        undefined,
+        fixture.settings,
+      )).headers['x-api-key'],
+      'still-bound-after-rename',
+    );
+
+    const currentRef = boundMcpCredentialRef(created.id, stored);
+    const secretResponse = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/mcp/secrets/${stored.id}`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: updated.revision,
+          expectedCredentialBinding: currentRef.credentialBinding,
+          headerNames: ['x-api-key'],
+          headers: { 'x-api-key': 'newer-same-ref-value' },
+          removeHeaderNames: ['X-Api-Key'],
+        }),
+      },
+    );
+    assert.equal(secretResponse.status, 200, await secretResponse.clone().text());
+    assert.equal(
+      (await resolveMcpSecrets(currentRef, ['X-Api-Key'], undefined, fixture.settings))
+        .headers['X-Api-Key'],
+      'newer-same-ref-value',
+      'a stale case-only removal cannot delete the current same-ref write',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('retargeting and same-id reset retire only the affected static credentials', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_credential_binding',
+      name: 'Credential binding',
+      instructions: 'Keep each credential on its reviewed target.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [
+        {
+          id: 'primary-mcp', displayName: 'Primary MCP', url: 'https://mcp.example.com/rpc',
+          transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+          lifecycleStatus: 'ready', statusText: '', discoveredTools: [{ name: 'search' }],
+          allowedTools: ['search'],
+        },
+        {
+          id: 'sibling-mcp', displayName: 'Sibling MCP', url: 'https://sibling.example.com/rpc',
+          transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+          lifecycleStatus: 'ready', statusText: '', discoveredTools: [{ name: 'search' }],
+          allowedTools: ['search'],
+        },
+      ],
+      apiConnections: [
+        {
+          id: 'primary-api', displayName: 'Primary API', allowedHosts: ['api.example.com'],
+          pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+          allowedMethods: ['GET'], enabled: true, authMode: 'credential',
+        },
+        {
+          id: 'sibling-api', displayName: 'Sibling API', allowedHosts: ['sibling.example.com'],
+          pathPrefixes: ['/v1'], headerName: 'X-Api-Key', allowedMethods: ['GET'],
+          enabled: true, authMode: 'credential',
+        },
+      ],
+      repositories: [],
+    });
+    const originalMcp = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    const siblingMcp = boundMcpCredentialRef(created.id, created.mcpServers[1]!);
+    const originalApi = boundApiCredentialRef(created.id, created.apiConnections[0]!);
+    const siblingApi = boundApiCredentialRef(created.id, created.apiConnections[1]!);
+
+    for (const [connectionId, bearerToken, expectedCredentialBinding] of [
+      ['primary-mcp', 'primary-mcp-secret', originalMcp.credentialBinding],
+      ['sibling-mcp', 'sibling-mcp-secret', siblingMcp.credentialBinding],
+    ]) {
+      const response = await fixture.app.request(
+        `http://localhost/admin/api/agents/${created.id}/mcp/secrets/${connectionId}`,
+        {
+          method: 'PUT', headers: auth(),
+          body: JSON.stringify({ expectedRevision: created.revision, expectedCredentialBinding, bearerToken, headerNames: [] }),
+        },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+    }
+    for (const [connectionId, credential, expectedCredentialBinding] of [
+      ['primary-api', 'primary-api-secret', originalApi.credentialBinding],
+      ['sibling-api', 'sibling-api-secret', siblingApi.credentialBinding],
+    ]) {
+      const response = await fixture.app.request(
+        `http://localhost/admin/api/agents/${created.id}/api-connections/secrets/${connectionId}`,
+        {
+          method: 'PUT', headers: auth(),
+          body: JSON.stringify({ expectedRevision: created.revision, expectedCredentialBinding, credential }),
+        },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+    }
+
+    const mcpServers = created.mcpServers.map(({ credentialRef: _credentialRef, ...connection }) =>
+      connection.id === 'primary-mcp'
+        ? { ...connection, url: 'https://new-mcp.example.com/rpc' }
+        : connection);
+    const apiConnections = created.apiConnections.map(({ credentialRef: _credentialRef, ...connection }) =>
+      connection.id === 'primary-api'
+        ? { ...connection, allowedHosts: ['new-api.example.com'] }
+        : connection);
+    const patched = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          mcpServers,
+          apiConnections,
+        }),
+      },
+    );
+    assert.equal(patched.status, 200, await patched.clone().text());
+    assert.doesNotMatch(await patched.clone().text(), /credentialRef/);
+
+    const retargeted = await fixture.store.getAgent(created.id);
+    const currentMcp = boundMcpCredentialRef(created.id, retargeted.mcpServers[0]!);
+    const currentApi = boundApiCredentialRef(created.id, retargeted.apiConnections[0]!);
+    assert.notEqual(currentMcp.credentialRef, originalMcp.credentialRef);
+    assert.notEqual(currentApi.credentialRef, originalApi.credentialRef);
+    assert.equal(await fixture.settings.getSetting(mcpBearerSettingKey(originalMcp)), undefined);
+    assert.equal(await fixture.settings.getSetting(connectorCredentialSettingKey(originalApi)), undefined);
+    assert.equal((await resolveMcpSecrets(currentMcp, [], undefined, fixture.settings)).bearer, undefined);
+    assert.equal(await resolveConnectorCredential(currentApi, undefined, fixture.settings), undefined);
+    assert.equal(
+      await fixture.settings.getSetting(mcpBearerSettingKey(siblingMcp)),
+      'sibling-mcp-secret',
+    );
+    assert.equal(
+      await fixture.settings.getSetting(connectorCredentialSettingKey(siblingApi)),
+      'sibling-api-secret',
+    );
+
+    const staleApiWrite = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/api-connections/secrets/primary-api`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          expectedCredentialBinding: originalApi.credentialBinding,
+          credential: 'stale-api-secret',
+        }),
+      },
+    );
+    assert.equal(staleApiWrite.status, 409, await staleApiWrite.clone().text());
+    assert.equal(await resolveConnectorCredential(currentApi, undefined, fixture.settings), undefined);
+
+    const reset = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: retargeted.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(retargeted.credentialIncarnation),
+          mcpServers,
+          apiConnections,
+          credentialResets: { mcp: ['primary-mcp'], api: ['primary-api'] },
+        }),
+      },
+    );
+    assert.equal(reset.status, 200, await reset.clone().text());
+    const resetAgent = await fixture.store.getAgent(created.id);
+    assert.notEqual(resetAgent.mcpServers[0]?.credentialRef, currentMcp.credentialRef);
+    assert.notEqual(resetAgent.apiConnections[0]?.credentialRef, currentApi.credentialRef);
+    assert.equal(
+      await fixture.settings.getSetting(mcpBearerSettingKey(siblingMcp)),
+      'sibling-mcp-secret',
+    );
+    assert.equal(
+      await fixture.settings.getSetting(connectorCredentialSettingKey(siblingApi)),
+      'sibling-api-secret',
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an MCP secret write that loses a concurrent policy race is scrubbed', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  let releaseWrite: (() => void) | undefined;
+  let reachedWrite: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedWrite = resolve; });
+  let delayedKey = '';
+  let delayed = false;
+  const delayedSettings: SettingsStore = {
+    getSetting: (key) => settings.getSetting(key),
+    getSettings: (keys) => settings.getSettings(keys),
+    async setSetting(key, value) {
+      if (!delayed && key === delayedKey) {
+        delayed = true;
+        reachedWrite?.();
+        await released;
+      }
+      await settings.setSetting(key, value);
+    },
+    deleteSetting: (key) => settings.deleteSetting(key),
+    applySettingsPatch: (patch) => settings.applySettingsPatch(patch),
+    mergeSettingStringSet: (key, values) => settings.mergeSettingStringSet(key, values),
+  };
+  const fixture = harness(
+    new FakeTransport(),
+    { settings: delayedSettings },
+    { store, settings },
+  );
+  try {
+    const created = await store.createAgent({
+      id: 'agent_mcp_write_race',
+      name: 'MCP write race',
+      instructions: 'Use one reviewed target.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [{
+        id: 'race-mcp', displayName: 'Race MCP', url: 'https://old.example.com/rpc',
+        transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: '', discoveredTools: [{ name: 'search' }],
+        allowedTools: ['search'],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const oldRef = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    delayedKey = mcpBearerSettingKey(oldRef);
+    const staleWrite = fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/mcp/secrets/race-mcp`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          expectedCredentialBinding: oldRef.credentialBinding,
+          bearerToken: 'stale-target-secret',
+          headerNames: [],
+        }),
+      },
+    );
+    await Promise.race([
+      reached,
+      new Promise<never>((_resolve, reject) => setTimeout(
+        () => reject(new Error('secret write did not reach the race barrier')),
+        2_000,
+      )),
+    ]);
+
+    const { credentialRef: _credentialRef, ...connection } = created.mcpServers[0]!;
+    const patch = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          mcpServers: [{ ...connection, url: 'https://new.example.com/rpc' }],
+        }),
+      },
+    );
+    assert.equal(patch.status, 200, await patch.clone().text());
+    releaseWrite?.();
+
+    const staleResponse = await staleWrite;
+    assert.equal(staleResponse.status, 409, await staleResponse.clone().text());
+    assert.equal(
+      (await staleResponse.json() as { error: string }).error,
+      'connection_changed',
+    );
+    const current = await store.getAgent(created.id);
+    const newRef = boundMcpCredentialRef(created.id, current.mcpServers[0]!);
+    assert.notEqual(newRef.credentialRef, oldRef.credentialRef);
+    assert.equal(await settings.getSetting(mcpBearerSettingKey(oldRef)), undefined);
+    assert.equal(await settings.getSetting(mcpBearerSettingKey(newRef)), undefined);
+  } finally {
+    releaseWrite?.();
+    store.close();
+    settings.close();
+  }
+});
+
+test('an Agent credential reset retires the prior MCP OAuth namespace', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_mcp_oauth_reset',
+      name: 'MCP OAuth reset',
+      instructions: 'Never reuse an authorization from a removed connection.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [{
+        id: 'linear', displayName: 'Linear', url: 'https://mcp.example.com/rpc',
+        transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: 'Connected', discoveredTools: [], allowedTools: [],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const oldRef = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    const oldKeys = mcpOAuthSettingKeys(oldRef);
+    await fixture.settings.setSetting(oldKeys[2], JSON.stringify({
+      serverUrl: 'https://mcp.example.com/rpc',
+      tokens: { access_token: 'must-not-survive', token_type: 'Bearer' },
+      obtainedAt: 1,
+    }));
+
+    const { credentialRef: _credentialRef, ...policy } = created.mcpServers[0]!;
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          mcpServers: [policy],
+          credentialResets: { mcp: ['linear'] },
+        }),
+      },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const reset = await fixture.store.getAgent(created.id);
+    const newRef = boundMcpCredentialRef(reset.id, reset.mcpServers[0]!);
+    assert.notEqual(newRef.credentialRef, oldRef.credentialRef);
+    assert.deepEqual(await fixture.settings.getSettings(oldKeys), oldKeys.map(() => undefined));
+    assert.deepEqual(
+      await fixture.settings.getSettings(mcpOAuthSettingKeys(newRef)),
+      mcpOAuthSettingKeys(newRef).map(() => undefined),
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an Agent credential reset invalidates same-policy API OAuth authorization', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_api_oauth_reset',
+      name: 'API OAuth reset',
+      instructions: 'Require a new authorization after resetting the connection.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [{
+        id: 'google-workspace', displayName: 'Google Workspace',
+        allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'], enabled: true, authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external', lifecycleStatus: 'ready', statusText: 'Connected',
+      }],
+      repositories: [],
+    });
+    const oauthRef = boundApiCredentialRef(created.id, created.apiConnections[0]!);
+    const oauthKeys = apiOAuthSettingKeys(oauthRef);
+    await fixture.settings.setSetting(oauthKeys[2], JSON.stringify({
+      provider: 'google', accessToken: 'must-not-survive', refreshToken: 'refresh-old',
+      tokenType: 'Bearer', expiresIn: 3_600, obtainedAt: 1,
+    }));
+    const { credentialRef: _credentialRef, ...policy } = created.apiConnections[0]!;
+
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          apiConnections: [policy],
+          credentialResets: { api: ['google-workspace'] },
+        }),
+      },
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const reset = await fixture.store.getAgent(created.id);
+    assert.notEqual(
+      reset.apiConnections[0]?.credentialRef,
+      created.apiConnections[0]?.credentialRef,
+    );
+    assert.equal(reset.apiConnections[0]?.lifecycleStatus, 'pending');
+    assert.deepEqual(await fixture.settings.getSettings(oauthKeys), oauthKeys.map(() => undefined));
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an API OAuth callback in flight cannot republish into a reset credential generation', async () => {
+  let releaseExchange: (() => void) | undefined;
+  let reachedExchange: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseExchange = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedExchange = resolve; });
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url === 'https://oauth2.googleapis.com/token') {
+      reachedExchange?.();
+      await released;
+      return Response.json({
+        access_token: 'stale-access-token',
+        refresh_token: 'stale-refresh-token',
+        token_type: 'Bearer',
+        expires_in: 3_600,
+      });
+    }
+    if (request.url === 'https://openidconnect.googleapis.com/v1/userinfo') {
+      return Response.json({ email: 'operator@example.test' });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  const fixture = harness(new FakeTransport(), { oauthFetch });
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_api_oauth_callback_reset',
+      name: 'API OAuth callback reset',
+      instructions: 'Never revive a retired OAuth generation.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [{
+        id: 'google-workspace', displayName: 'Google Workspace',
+        allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'], enabled: true, authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external', lifecycleStatus: 'pending', statusText: 'Not connected',
+      }],
+      repositories: [],
+    });
+    const oldRef = boundApiCredentialRef(created.id, created.apiConnections[0]!);
+    const client = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/api-connections/oauth/google-workspace/client`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          expectedCredentialBinding: oldRef.credentialBinding,
+          provider: 'google',
+          clientId: 'google-client-id',
+          clientSecret: 'google-client-secret',
+        }),
+      },
+    );
+    assert.equal(client.status, 200, await client.clone().text());
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/api-connections/oauth/google-workspace/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const authorizationUrl = new URL((await started.json() as { authorizationUrl: string }).authorizationUrl);
+    const state = authorizationUrl.searchParams.get('state');
+    assert.ok(state);
+
+    const callbackPromise = fixture.app.request(
+      `http://localhost/oauth/api/callback?state=${encodeURIComponent(state)}&code=accepted`,
+    );
+    await reached;
+    const beforeReset = await fixture.store.getAgent(created.id);
+    const { credentialRef: _credentialRef, ...policy } = beforeReset.apiConnections[0]!;
+    const resetResponse = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: beforeReset.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(
+            beforeReset.credentialIncarnation,
+          ),
+          apiConnections: [policy],
+          credentialResets: { api: ['google-workspace'] },
+        }),
+      },
+    );
+    assert.equal(resetResponse.status, 200, await resetResponse.clone().text());
+    const reset = await fixture.store.getAgent(created.id);
+    const newRef = boundApiCredentialRef(reset.id, reset.apiConnections[0]!);
+    assert.notEqual(newRef.credentialRef, oldRef.credentialRef);
+
+    releaseExchange?.();
+    const callback = await callbackPromise;
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/${created.id}?oauth=failed&connection=google-workspace&lane=api`,
+    );
+    assert.deepEqual(
+      await fixture.settings.getSettings([
+        ...apiOAuthSettingKeys(oldRef),
+        ...apiOAuthSettingKeys(newRef),
+      ]),
+      Array(8).fill(undefined),
+    );
+  } finally {
+    releaseExchange?.();
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('overlapping legacy Agent API OAuth starts cannot let the older callback replace newer tokens', async () => {
+  let releaseOldExchange: (() => void) | undefined;
+  let reachedOldExchange: (() => void) | undefined;
+  const oldReleased = new Promise<void>((resolve) => { releaseOldExchange = resolve; });
+  const oldReached = new Promise<void>((resolve) => { reachedOldExchange = resolve; });
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url === 'https://oauth2.googleapis.com/token') {
+      const body = new URLSearchParams(await request.text());
+      const code = body.get('code');
+      if (code === 'older-code') {
+        reachedOldExchange?.();
+        await oldReleased;
+      }
+      return Response.json({
+        access_token: code === 'older-code' ? 'access-older' : 'access-newer',
+        refresh_token: code === 'older-code' ? 'refresh-older' : 'refresh-newer',
+        token_type: 'Bearer',
+        expires_in: 3_600,
+      });
+    }
+    if (request.url === 'https://openidconnect.googleapis.com/v1/userinfo') {
+      return Response.json({
+        email: request.headers.get('authorization') === 'Bearer access-older'
+          ? 'older@example.test'
+          : 'newer@example.test',
+      });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  const fixture = harness(new FakeTransport(), { oauthFetch });
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_api_oauth_overlap',
+      name: 'API OAuth overlap',
+      instructions: 'Keep the newest completed OAuth attempt.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [{
+        id: 'google-workspace', displayName: 'Google Workspace',
+        allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'], enabled: true, authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external', lifecycleStatus: 'pending', statusText: 'Not connected',
+      }],
+      repositories: [],
+    });
+    const ref = boundApiCredentialRef(created.id, created.apiConnections[0]!);
+    const client = await fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/api-connections/oauth/google-workspace/client`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          expectedCredentialBinding: ref.credentialBinding,
+          provider: 'google',
+          clientId: 'google-client-id',
+          clientSecret: 'google-client-secret',
+        }),
+      },
+    );
+    assert.equal(client.status, 200, await client.clone().text());
+
+    const start = async (): Promise<string> => {
+      const response = await fixture.app.request(
+        `http://localhost/admin/api/agents/${created.id}/api-connections/oauth/google-workspace/start`,
+        { method: 'POST', headers: auth(), body: '{}' },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+      const authorizationUrl = new URL(
+        (await response.json() as { authorizationUrl: string }).authorizationUrl,
+      );
+      const state = authorizationUrl.searchParams.get('state');
+      assert.ok(state);
+      return state;
+    };
+
+    const olderState = await start();
+    const olderCallbackPromise = fixture.app.request(
+      `http://localhost/oauth/api/callback?state=${encodeURIComponent(olderState)}&code=older-code`,
+    );
+    await oldReached;
+
+    const newerState = await start();
+    const newerCallback = await fixture.app.request(
+      `http://localhost/oauth/api/callback?state=${encodeURIComponent(newerState)}&code=newer-code`,
+    );
+    assert.equal(newerCallback.status, 303, await newerCallback.clone().text());
+    assert.equal(
+      newerCallback.headers.get('location'),
+      `/admin/agents/${created.id}?oauth=connected&connection=google-workspace&lane=api`,
+    );
+
+    releaseOldExchange?.();
+    const olderCallback = await olderCallbackPromise;
+    assert.equal(olderCallback.status, 303, await olderCallback.clone().text());
+    assert.equal(
+      olderCallback.headers.get('location'),
+      `/admin/agents/${created.id}?oauth=failed&connection=google-workspace&lane=api`,
+    );
+    const current = await fixture.store.getAgent(created.id);
+    assert.equal(current.apiConnections[0]?.lifecycleStatus, 'ready');
+    assert.deepEqual(current.apiConnections[0]?.identity, { accountName: 'newer@example.test' });
+    assert.equal(
+      await resolveApiOAuthAccessToken(
+        { ref, provider: 'google' },
+        { settings: fixture.settings, fetchFn: oauthFetch },
+      ),
+      'access-newer',
+    );
+  } finally {
+    releaseOldExchange?.();
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a stale API credential form cannot write into a recreated Agent incarnation', async () => {
+  const fixture = harness();
+  const agentInput = {
+    id: 'agent_recreated_credential',
+    name: 'Recreated credential',
+    instructions: 'Keep credentials on the current Agent incarnation.',
+    enabled: true,
+    model: 'local-stub/security',
+    skills: [],
+    mcpServers: [],
+    apiConnections: [{
+      id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
+      pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+      allowedMethods: ['GET' as const], enabled: true, authMode: 'credential' as const,
+      lifecycleStatus: 'pending' as const, statusText: 'Not connected',
+    }],
+    repositories: [],
+  };
+  try {
+    const first = await fixture.store.createAgent(agentInput);
+    const staleRef = boundApiCredentialRef(first.id, first.apiConnections[0]!);
+    assert.equal(await fixture.store.deleteAgent(first.id, first.revision), true);
+    const replacement = await fixture.store.createAgent(agentInput);
+    const replacementRef = boundApiCredentialRef(replacement.id, replacement.apiConnections[0]!);
+    assert.equal(replacement.revision, first.revision);
+    assert.notEqual(replacementRef.credentialRef, staleRef.credentialRef);
+
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${replacement.id}/api-connections/secrets/tasks`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: first.revision,
+          expectedCredentialBinding: staleRef.credentialBinding,
+          credential: 'must-not-attach-to-replacement',
+        }),
+      },
+    );
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal((await response.json() as { error: string }).error, 'connection_changed');
+    assert.equal(await resolveConnectorCredential(staleRef, undefined, fixture.settings), undefined);
+    assert.equal(await resolveConnectorCredential(replacementRef, undefined, fixture.settings), undefined);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a stale API OAuth client form cannot write into a recreated credential generation', async () => {
+  const fixture = harness();
+  const agentInput = {
+    id: 'agent_recreated_oauth_client',
+    name: 'Recreated OAuth client',
+    instructions: 'Keep OAuth clients on the current credential generation.',
+    enabled: true,
+    model: 'local-stub/security',
+    skills: [],
+    mcpServers: [],
+    apiConnections: [{
+      id: 'google-workspace', displayName: 'Google Workspace',
+      allowedHosts: ['gmail.googleapis.com'], pathPrefixes: ['/gmail/v1/users/me'],
+      headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+      allowedMethods: ['GET' as const, 'HEAD' as const], enabled: true, authMode: 'oauth' as const,
+      oauthProvider: 'google' as const,
+      oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      oauthAppType: 'external' as const,
+      lifecycleStatus: 'pending' as const, statusText: 'Not connected',
+    }],
+    repositories: [],
+  };
+  try {
+    const first = await fixture.store.createAgent(agentInput);
+    const staleRef = boundApiCredentialRef(first.id, first.apiConnections[0]!);
+    assert.equal(await fixture.store.deleteAgent(first.id, first.revision), true);
+    const replacement = await fixture.store.createAgent(agentInput);
+    const replacementRef = boundApiCredentialRef(replacement.id, replacement.apiConnections[0]!);
+
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${replacement.id}/api-connections/oauth/google-workspace/client`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: first.revision,
+          expectedCredentialBinding: staleRef.credentialBinding,
+          provider: 'google',
+          clientId: 'must-not-attach',
+          clientSecret: 'must-not-attach',
+        }),
+      },
+    );
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal((await response.json() as { error: string }).error, 'connection_changed');
+    assert.deepEqual(
+      await fixture.settings.getSettings([
+        ...apiOAuthSettingKeys(staleRef),
+        ...apiOAuthSettingKeys(replacementRef),
+      ]),
+      Array(8).fill(undefined),
+    );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a stale first-save policy cannot attach credentials to a recreated Agent incarnation', async () => {
+  const fixture = harness();
+  const agentInput = {
+    id: 'agent_recreated_first_save',
+    name: 'Recreated first save',
+    instructions: 'Fence the first connection save to this Agent incarnation.',
+    enabled: true,
+    model: 'local-stub/security',
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  };
+  try {
+    const first = await fixture.store.createAgent(agentInput);
+    const staleBinding = agentCredentialConfigurationBinding(first.credentialIncarnation);
+    assert.equal(await fixture.store.deleteAgent(first.id, first.revision), true);
+    const replacement = await fixture.store.createAgent(agentInput);
+    assert.equal(replacement.revision, first.revision);
+    assert.notEqual(
+      agentCredentialConfigurationBinding(replacement.credentialIncarnation),
+      staleBinding,
+    );
+
+    const response = await fixture.app.request(
+      `http://localhost/admin/api/agents/${replacement.id}`,
+      {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: first.revision,
+          credentialConfigurationBinding: staleBinding,
+          apiConnections: [{
+            id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
+            pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+            allowedMethods: ['GET'], enabled: true, authMode: 'credential',
+          }],
+        }),
+      },
+    );
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.deepEqual((await fixture.store.getAgent(replacement.id)).apiConnections, []);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('an unsaved same-origin MCP retarget cannot borrow the saved bearer credential', async () => {
+  const presented: Array<string | null> = [];
+  const fixture = harness(new FakeTransport(), {
+    discoverMcp: async (input) => {
+      presented.push(new Headers(input.headers).get('authorization'));
+      return { tools: [] };
+    },
+  });
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_mcp_unsaved_retarget',
+      name: 'MCP unsaved retarget',
+      instructions: 'Test only the reviewed MCP path.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [{
+        id: 'saved', displayName: 'Saved', url: 'https://mcp.example.com/reviewed',
+        transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: '', discoveredTools: [], allowedTools: [],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const ref = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    await fixture.settings.setSetting(mcpBearerSettingKey(ref), 'saved-bearer-secret');
+    const testConnection = (url: string) => fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/mcp/test`,
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          id: 'saved', url, transport: 'streamable-http', authMode: 'bearer',
+          credentialBinding: ref.credentialBinding, headerNames: [],
+        }),
+      },
+    );
+
+    assert.equal((await testConnection('https://mcp.example.com/reviewed')).status, 200);
+    assert.equal((await testConnection('https://mcp.example.com/attacker')).status, 200);
+    assert.deepEqual(presented, ['Bearer saved-bearer-secret', null]);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a completed older MCP write cannot delete a newer same-incarnation credential', async () => {
+  const store = new SqliteConfigStore(':memory:', { agents: [] });
+  const settings = new SqliteSettingsStore(':memory:');
+  const originalGetAgent = store.getAgent.bind(store);
+  let readCount = 0;
+  let blockOlderPostcheck = true;
+  let releasePostcheck: (() => void) | undefined;
+  let reachedPostcheck: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releasePostcheck = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedPostcheck = resolve; });
+  const delayedStore = new Proxy(store, {
+    get(target, property, receiver) {
+      if (property !== 'getAgent') return Reflect.get(target, property, receiver);
+      return async (agentId: string) => {
+        readCount += 1;
+        if (blockOlderPostcheck && readCount === 3) {
+          reachedPostcheck?.();
+          await released;
+        }
+        return originalGetAgent(agentId);
+      };
+    },
+  });
+  const fixture = harness(new FakeTransport(), { store: delayedStore }, { store, settings });
+  try {
+    const created = await store.createAgent({
+      id: 'agent_mcp_same_ref_race',
+      name: 'MCP same ref race',
+      instructions: 'Retain the newest credential across presentation edits.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [{
+        id: 'race', displayName: 'Race', url: 'https://mcp.example.com/rpc',
+        transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: '', discoveredTools: [], allowedTools: [],
+      }],
+      apiConnections: [],
+      repositories: [],
+    });
+    const ref = boundMcpCredentialRef(created.id, created.mcpServers[0]!);
+    const write = (expectedRevision: number, bearerToken: string) => fixture.app.request(
+      `http://localhost/admin/api/agents/${created.id}/mcp/secrets/race`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision,
+          expectedCredentialBinding: ref.credentialBinding,
+          bearerToken,
+          headerNames: [],
+        }),
+      },
+    );
+    const olderWrite = write(created.revision, 'older-secret');
+    await Promise.race([
+      reached,
+      new Promise<never>((_resolve, reject) => setTimeout(
+        () => reject(new Error('older credential write did not reach its postcheck')),
+        2_000,
+      )),
+    ]);
+
+    blockOlderPostcheck = false;
+    const renamed = await store.updateAgent(created.id, {
+      name: 'MCP same ref race renamed',
+    }, created.revision);
+    assert.equal(renamed.mcpServers[0]?.credentialRef, ref.credentialRef);
+    const newerResponse = await write(renamed.revision, 'newer-secret');
+    assert.equal(newerResponse.status, 200, await newerResponse.clone().text());
+    releasePostcheck?.();
+    const olderResponse = await olderWrite;
+    assert.equal(olderResponse.status, 200, await olderResponse.clone().text());
+    assert.equal(
+      (await resolveMcpSecrets(ref, [], undefined, settings)).bearer,
+      'newer-secret',
+    );
+  } finally {
+    releasePostcheck?.();
+    store.close();
+    settings.close();
+  }
+});
+
 test('the generic connection API never accepts caller-supplied managed account refs', async () => {
   const providerCalls: string[] = [];
   const provider: ManagedConnectionProvider = {
@@ -3587,9 +4575,13 @@ test('Agent-owned API OAuth accounts return to the initiating Agent and become r
         state: 'opaque',
       };
     },
-    completeApiOAuth: async () => ({
+    completeApiOAuth: async (_input, dependencies) => ({
       ref: { agentId: accountId, connectionId: 'account' },
       provider: 'google',
+      clientBinding: await storedApiOAuthClientBinding(
+        dependencies.settings,
+        { agentId: accountId, connectionId: 'account' },
+      ),
       identity: { accountName: 'operator@acme.test' },
       ...(startedInput?.accountRevision !== undefined
         ? { accountRevision: startedInput.accountRevision }
@@ -3719,6 +4711,7 @@ test('a system-suspended sole Owner cannot exchange an API account callback', as
       return {
         ref,
         provider: 'google' as const,
+        clientBinding: 'A'.repeat(43),
         identity: { accountName: 'owner@acme.test' },
         returnAgentId: 'agent_support',
         authorizationAuthority: startedAuthority,
@@ -3935,8 +4928,12 @@ test('a current Member can finish OAuth for their personal Agent account', async
         state: 'opaque',
       };
     },
-    completeApiOAuth: async () => ({
+    completeApiOAuth: async (_input, dependencies) => ({
       ref: { agentId: accountId, connectionId: 'account' }, provider: 'google',
+      clientBinding: await storedApiOAuthClientBinding(
+        dependencies.settings,
+        { agentId: accountId, connectionId: 'account' },
+      ),
       identity: { accountName: 'member@acme.test' }, returnAgentId: 'agent_support',
       ...(startedAuthority ? { authorizationAuthority: startedAuthority } : {}),
     }),
@@ -3968,6 +4965,16 @@ test('a current Member can finish OAuth for their personal Agent account', async
     );
     assert.equal(created.status, 201, await created.clone().text());
     accountId = ((await created.json()) as Record<string, any>).account.id as string;
+    const client = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/api/client`,
+      {
+        method: 'PUT', headers: auth(),
+        body: JSON.stringify({
+          provider: 'google', clientId: 'google-client-id', clientSecret: 'google-client-secret',
+        }),
+      },
+    );
+    assert.equal(client.status, 200, await client.clone().text());
     const started = await fixture.app.request(
       `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/api/start`,
       { method: 'POST', headers: auth(), body: '{}' },
@@ -3984,6 +4991,66 @@ test('a current Member can finish OAuth for their personal Agent account', async
         .find((candidate) => candidate.id === accountId)?.lifecycle,
       'ready',
     );
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a current Agent editor can finish a legacy MCP OAuth callback', async () => {
+  let startedInput: StartMcpOAuthInput | undefined;
+  const fixture = harness(new FakeTransport(), {
+    startMcpOAuth: async (input) => {
+      startedInput = input;
+      return {
+        authorizationUrl: new URL('https://mcp.example.test/oauth?state=opaque'),
+        state: 'opaque',
+      };
+    },
+    completeMcpOAuth: async () => ({
+      ref: startedInput!.ref,
+      ...(startedInput?.authorizationAuthority
+        ? { authorizationAuthority: startedInput.authorizationAuthority }
+        : {}),
+    }),
+    resolveMcpOAuthToken: async () => 'oauth-access-token',
+    discoverMcp: async () => ({ tools: [{ name: 'search' }] }),
+    identifyMcp: async () => ({ workspaceName: 'Current workspace' }),
+  });
+  try {
+    await createAgent(fixture.app);
+    const agent = await fixture.store.getAgent('agent_support');
+    const configured = await fixture.store.updateAgent('agent_support', {
+      mcpServers: [{
+        id: 'legacy-mcp', displayName: 'Legacy MCP', url: 'https://mcp.example.test/rpc',
+        transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+        lifecycleStatus: 'pending', statusText: 'Not connected', discoveredTools: [],
+        allowedTools: [],
+      }],
+    }, agent.revision);
+
+    const started = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/mcp/oauth/legacy-mcp/start',
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.equal(startedInput?.authorizationAuthority?.ownerKind, 'legacy_agent');
+    assert.equal(
+      startedInput?.ref.credentialRef,
+      configured.mcpServers[0]?.credentialRef,
+    );
+
+    const callback = await fixture.app.request(
+      'http://localhost/oauth/callback?state=opaque&code=accepted',
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(
+      callback.headers.get('location'),
+      '/admin/agents/agent_support?oauth=connected&connection=legacy-mcp',
+    );
+    const current = (await fixture.store.getAgent('agent_support')).mcpServers[0];
+    assert.equal(current?.lifecycleStatus, 'ready');
+    assert.deepEqual(current?.allowedTools, ['search']);
   } finally {
     fixture.store.close();
     fixture.settings.close();
@@ -4030,6 +5097,7 @@ test('a former Agent editor cannot finish a legacy API OAuth callback', async ()
     completeApiOAuth: async () => ({
       ref: { agentId: 'agent_support', connectionId: 'google-workspace' },
       provider: 'google',
+      clientBinding: 'A'.repeat(43),
       identity: { accountName: 'former-editor@acme.test' },
       ...(startedAuthority ? { authorizationAuthority: startedAuthority } : {}),
     }),
@@ -4598,16 +5666,9 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
   const mcpConnectionId = 'legacy-mcp';
   const apiOAuthConnectionId = 'legacy-google';
   const apiCredentialConnectionId = 'legacy-api-key';
-  const mcpRef = { agentId, connectionId: mcpConnectionId };
   const apiOAuthRef = { agentId, connectionId: apiOAuthConnectionId };
-  const watchedSettingKeys = [
-    mcpBearerSettingKey(mcpRef),
-    mcpHeaderSettingKey(mcpRef, 'X-Api-Key'),
-    connectorCredentialSettingKey(agentId, apiCredentialConnectionId),
-    ...apiOAuthSettingKeys(apiOAuthRef),
-  ];
   try {
-    await store.createAgent({
+    const created = await store.createAgent({
       id: agentId,
       name: 'Another Creator Agent',
       instructions: 'Help.',
@@ -4659,6 +5720,22 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
       }],
       repositories: [],
     });
+    const mcpConnection = created.mcpServers.find(({ id }) => id === mcpConnectionId)!;
+    const apiCredentialConnection = created.apiConnections.find(
+      ({ id }) => id === apiCredentialConnectionId,
+    )!;
+    const apiOAuthConnection = created.apiConnections.find(
+      ({ id }) => id === apiOAuthConnectionId,
+    )!;
+    const mcpRef = boundMcpCredentialRef(agentId, mcpConnection);
+    const apiCredentialRef = boundApiCredentialRef(agentId, apiCredentialConnection);
+    const apiOAuthCredentialRef = boundApiCredentialRef(agentId, apiOAuthConnection);
+    const watchedSettingKeys = [
+      mcpBearerSettingKey(mcpRef),
+      mcpHeaderSettingKey(mcpRef, 'X-Api-Key'),
+      connectorCredentialSettingKey(apiCredentialRef),
+      ...apiOAuthSettingKeys(apiOAuthRef),
+    ];
     await Promise.all(watchedSettingKeys.map((key, index) =>
       settings.setSetting(key, `preserved-secret-${index}`)));
     const settingsBefore = await settings.getSettings(watchedSettingKeys);
@@ -4724,6 +5801,8 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
         method: 'PUT',
         path: `/admin/api/agents/${agentId}/api-connections/oauth/${apiOAuthConnectionId}/client`,
         body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: apiOAuthCredentialRef.credentialBinding,
           provider: 'google',
           clientId: 'attacker-client',
           clientSecret: 'attacker-secret',
@@ -4742,6 +5821,7 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
           url: 'https://mcp.example.com/rpc',
           transport: 'streamable-http',
           authMode: 'bearer',
+          credentialBinding: mcpRef.credentialBinding,
           headerNames: ['X-Api-Key'],
         },
       },
@@ -4749,6 +5829,8 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
         method: 'PUT',
         path: `/admin/api/agents/${agentId}/mcp/secrets/${mcpConnectionId}`,
         body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: mcpRef.credentialBinding,
           bearerToken: 'attacker-bearer',
           headers: { 'X-Api-Key': 'attacker-header' },
           headerNames: ['X-Api-Key'],
@@ -4758,20 +5840,36 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
       {
         method: 'DELETE',
         path: `/admin/api/agents/${agentId}/mcp/secrets/${mcpConnectionId}`,
-        body: { headerNames: ['X-Api-Key'] },
+        body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: mcpRef.credentialBinding,
+          headerNames: ['X-Api-Key'],
+        },
       },
       {
         method: 'PUT',
         path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiCredentialConnectionId}`,
-        body: { credential: 'attacker-api-key' },
+        body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: apiCredentialRef.credentialBinding,
+          credential: 'attacker-api-key',
+        },
       },
       {
         method: 'DELETE',
         path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiCredentialConnectionId}`,
+        body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: apiCredentialRef.credentialBinding,
+        },
       },
       {
         method: 'DELETE',
         path: `/admin/api/agents/${agentId}/api-connections/secrets/${apiOAuthConnectionId}`,
+        body: {
+          expectedRevision: agentBefore.revision,
+          expectedCredentialBinding: apiOAuthCredentialRef.credentialBinding,
+        },
       },
     ];
 
@@ -4799,10 +5897,13 @@ test('workspace Members cannot use legacy connector authority from a creator-onl
       agentBefore.revision,
     );
     for (const request of requests) {
+      const body = request.body !== undefined && 'expectedRevision' in request.body
+        ? { ...request.body, expectedRevision: (await store.getAgent(agentId)).revision }
+        : request.body;
       const response = await fixture.app.request(`http://localhost${request.path}`, {
         method: request.method,
         headers: auth(),
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       assert.equal(response.status, 200, `${request.method} ${request.path}: ${await response.text()}`);
     }
@@ -5800,12 +6901,13 @@ test('a custom API connection may not name any GitHub host the GitHub App integr
   try {
     await createAgent(fixture.app);
     const patch = async (allowedHosts: string[]) => {
-      const { revision } = await fixture.store.getAgent('agent_support');
+      const agent = await fixture.store.getAgent('agent_support');
       return fixture.app.request('http://localhost/admin/api/agents/agent_support', {
         method: 'PATCH',
         headers: auth(),
         body: JSON.stringify({
-          expectedRevision: revision,
+          expectedRevision: agent.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
           apiConnections: [{
             id: 'pasted-token', displayName: 'Pasted token', allowedHosts, pathPrefixes: ['/repos'],
             headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET', 'POST'],

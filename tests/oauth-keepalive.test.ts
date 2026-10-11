@@ -6,6 +6,7 @@ import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { OAUTH_KEEPALIVE_AGE_MS } from '../src/config/oauth-shared.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import { boundMcpCredentialRef } from '../src/config/connection-credential-binding.ts';
 import type { ConnectionAccount } from '../src/config/types.ts';
 import {
   isOAuthKeepAliveDue,
@@ -97,7 +98,8 @@ async function fixture() {
   await settings.setSetting(mailKeys[0], JSON.stringify({ provider: 'google', clientId: 'client', clientSecret: 'secret' }));
   await settings.setSetting(mailKeys[2], googleBundle(stale));
   tokenKeys.connection_mail = mailKeys[2];
-  tokenKeys.legacy = mcpOAuthSettingKeys({ agentId: 'agent_keep', connectionId: 'legacy' })[2];
+  const legacy = (await config.getAgent('agent_keep')).mcpServers[0]!;
+  tokenKeys.legacy = mcpOAuthSettingKeys(boundMcpCredentialRef('agent_keep', legacy))[2];
   // The oldest credential, though enumerated last.
   await settings.setSetting(tokenKeys.legacy!, mcpBundle(stale - HOUR / 2));
 

@@ -12,6 +12,7 @@ import {
 } from '../src/config/profile-mcp.ts';
 import { ConnectionCredentialUnavailableError } from '../src/connections/errors.ts';
 import { saveConnectionAccountSecret } from '../src/config/connector-secrets.ts';
+import { boundMcpCredentialRef } from '../src/config/connection-credential-binding.ts';
 import {
   META_ADS_ACCOUNT_HELPER,
   META_ADS_APPROVED_ACCOUNT_SCOPE,
@@ -19,7 +20,13 @@ import {
 } from '../src/config/meta-ads-policy.ts';
 import { sanitizeMetaAdsAccountHelperResponse } from '../src/config/meta-ads-response.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
-import { mcpBearerEnvVar, mcpHeaderEnvVar } from '../src/config/mcp-secrets.ts';
+import { createMcpGuardedFetch } from '../src/config/mcp-url.ts';
+import {
+  mcpBearerEnvVar,
+  mcpCredentialBindingEnvVar,
+  mcpHeaderEnvVar,
+  mcpHeaderSettingKey,
+} from '../src/config/mcp-secrets.ts';
 import {
   closeNodeStateStores,
   getConfigStore,
@@ -33,6 +40,7 @@ import { withEnv } from './helpers/env.ts';
 function server(overrides: Partial<McpConnectionConfig> = {}): McpConnectionConfig {
   return {
     id: 'srv',
+    credentialRef: 'connection_33333333333333333333333333333333',
     displayName: 'Server',
     url: 'https://mcp.example.com/mcp',
     transport: 'streamable-http',
@@ -135,12 +143,20 @@ function preparedMcpExecutor(tool: ToolDefinition): (args: unknown) => Promise<s
 const noSecretsEnv = {} as Record<string, unknown>;
 
 test('Flue 2 MCP definitions retain only policy and resolve rotating bearer auth live', async () => {
-  const ref = { agentId: 'agent_v2', connectionId: 'srv' };
+  const connection = server({ authMode: 'bearer', allowedTools: ['search'] });
+  const ref = boundMcpCredentialRef('agent_v2', connection);
   const envVar = mcpBearerEnvVar(ref);
-  await withEnv({ [envVar]: 'first-token' }, async () => {
+  await withEnv({
+    [envVar]: 'first-token',
+    [mcpCredentialBindingEnvVar(ref)]: ref.credentialBinding,
+  }, async () => {
     const [definition] = resolveProfileMcpConnections(
-      [server({ authMode: 'bearer', allowedTools: ['search'] })],
-      { agentId: ref.agentId, env: noSecretsEnv },
+      [connection],
+      {
+        agentId: ref.agentId,
+        env: noSecretsEnv,
+        resolveCurrentConnection: async () => connection,
+      },
     );
     assert.ok(definition);
     assert.deepEqual(definition.tools, ['search']);
@@ -152,6 +168,241 @@ test('Flue 2 MCP definitions retain only policy and resolve rotating bearer auth
     process.env[envVar] = 'second-token';
     assert.equal(await (definition.auth as () => Promise<string>)(), 'second-token');
   });
+});
+
+test('a frozen MCP connection cannot resolve or send its credential after retargeting', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-binding-'));
+  const agentId = 'agent_mcp_binding';
+  let outbound = 0;
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      const config = getConfigStore();
+      const created = await config.createAgent({
+        id: agentId,
+        name: 'MCP binding',
+        instructions: 'Use the reviewed MCP server only.',
+        enabled: true,
+        skills: [],
+        mcpServers: [server({ authMode: 'bearer', allowedTools: ['search'] })],
+        apiConnections: [],
+        repositories: [],
+      });
+      const frozen = created.mcpServers[0]!;
+      const [definition] = resolveProfileMcpConnections([frozen], {
+        agentId,
+        resolveBearerCredential: async () => 'old-target-secret',
+        createGuardedFetch: () => async () => {
+          outbound += 1;
+          return Response.json({ ok: true });
+        },
+      });
+      const auth = definition?.auth as (() => Promise<string>) | undefined;
+      assert.equal(await auth?.(), 'old-target-secret');
+
+      const retargeted = await config.updateAgent(agentId, {
+        mcpServers: [{ ...frozen, url: 'https://other.example.com/rpc' }],
+      }, created.revision);
+      assert.notEqual(retargeted.mcpServers[0]?.credentialRef, frozen.credentialRef);
+      await assert.rejects(auth!(), /policy changed/);
+      await assert.rejects(definition!.fetch!('https://mcp.example.com/rpc', {
+        method: 'POST',
+      }), /policy changed/);
+      assert.equal(outbound, 0);
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('profile MCP rechecks policy after DNS resolution and before credentialed egress', async () => {
+  const frozen = server({ authMode: 'bearer', allowedTools: ['search'] });
+  let current = frozen;
+  let releaseDns: (() => void) | undefined;
+  let reachedDns: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseDns = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedDns = resolve; });
+  let outbound = 0;
+  const [definition] = resolveProfileMcpConnections([frozen], {
+    agentId: 'agent_dns_fence',
+    resolveCurrentConnection: async () => current,
+    createGuardedFetch: (options) => createMcpGuardedFetch({
+      ...options,
+      cloudflare: false,
+      resolveAddresses: async () => {
+        reachedDns?.();
+        await released;
+        return [{ address: '93.184.216.34', family: 4 }];
+      },
+      pinnedFetch: async () => {
+        outbound += 1;
+        return Response.json({ ok: true });
+      },
+    }),
+  });
+  const pending = definition!.fetch!('https://mcp.example.com/mcp', {
+    method: 'POST',
+    headers: { authorization: 'Bearer must-not-leave' },
+  });
+  const expectedFailure = assert.rejects(pending, /policy changed/);
+  await reached;
+  current = { ...current, enabled: false };
+  releaseDns?.();
+  await expectedFailure;
+  assert.equal(outbound, 0);
+});
+
+test('runtime-plan MCP rechecks policy after DNS resolution and before credentialed egress', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-dns-fence-'));
+  const agentId = 'agent_runtime_dns_fence';
+  let releaseDns: (() => void) | undefined;
+  let reachedDns: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseDns = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedDns = resolve; });
+  let outbound = 0;
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      const config = getConfigStore();
+      const created = await config.createAgent({
+        id: agentId,
+        name: 'Runtime DNS fence',
+        instructions: 'Authorize again at the outbound boundary.',
+        enabled: true,
+        skills: [],
+        mcpServers: [server({ authMode: 'bearer', allowedTools: ['search'] })],
+        apiConnections: [],
+        repositories: [],
+      });
+      const frozen = created.mcpServers[0]!;
+      const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
+        id: frozen.id,
+        url: frozen.url,
+        transport: frozen.transport,
+        credentialRef: frozen.credentialRef!,
+        authMode: frozen.authMode,
+        headerNames: [],
+        optional: true,
+        allowedTools: ['search'],
+      }], undefined, undefined, {
+        createGuardedFetch: (options) => createMcpGuardedFetch({
+          ...options,
+          cloudflare: false,
+          resolveAddresses: async () => {
+            reachedDns?.();
+            await released;
+            return [{ address: '93.184.216.34', family: 4 }];
+          },
+          pinnedFetch: async () => {
+            outbound += 1;
+            return Response.json({ ok: true });
+          },
+        }),
+      });
+      const pending = definition!.fetch!('https://mcp.example.com/mcp', {
+        method: 'POST',
+        headers: { authorization: 'Bearer must-not-leave' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+          name: 'search', arguments: {},
+        } }),
+      });
+      const expectedFailure = assert.rejects(pending, /policy changed/);
+      await reached;
+      await config.updateAgent(agentId, {
+        mcpServers: [{ ...frozen, enabled: false }],
+      }, created.revision);
+      releaseDns?.();
+      await expectedFailure;
+      assert.equal(outbound, 0);
+    });
+  } finally {
+    releaseDns?.();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime MCP rechecks its incarnation after an asynchronous header read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-mcp-header-race-'));
+  const agentId = 'agent_mcp_header_race';
+  let releaseHeaderRead: (() => void) | undefined;
+  let reachedHeaderRead: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseHeaderRead = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedHeaderRead = resolve; });
+  let outbound = 0;
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db') }, async () => {
+      const config = getConfigStore();
+      const created = await config.createAgent({
+        id: agentId,
+        name: 'MCP header race',
+        instructions: 'Send credentials only to the current target.',
+        enabled: true,
+        skills: [],
+        mcpServers: [server({ headerNames: ['x-api-key'], allowedTools: ['search'] })],
+        apiConnections: [],
+        repositories: [],
+      });
+      const frozen = created.mcpServers[0]!;
+      const ref = boundMcpCredentialRef(agentId, frozen);
+      const settings = getSettingsStore();
+      const headerKey = mcpHeaderSettingKey(ref, 'x-api-key');
+      await settings.setSetting(headerKey, 'old-target-secret');
+      const originalGetSetting = settings.getSetting.bind(settings);
+      let delayed = false;
+      settings.getSetting = async (key) => {
+        if (!delayed && key === headerKey) {
+          delayed = true;
+          reachedHeaderRead?.();
+          await released;
+        }
+        return originalGetSetting(key);
+      };
+      try {
+        const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
+          id: frozen.id,
+          url: frozen.url,
+          transport: frozen.transport,
+          credentialRef: ref.credentialRef,
+          authMode: frozen.authMode,
+          headerNames: ['x-api-key'],
+          optional: true,
+          allowedTools: ['search'],
+          readOnlyTools: ['search'],
+        }], undefined, undefined, {
+          createGuardedFetch: () => (async () => {
+            outbound += 1;
+            return Response.json({ ok: true });
+          }) as typeof fetch,
+        });
+        const pending = definition!.fetch!('https://mcp.example.com/mcp', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+        });
+        const expectedFailure = assert.rejects(pending, /policy changed/);
+        await Promise.race([
+          reached,
+          new Promise<never>((_resolve, reject) => setTimeout(
+            () => reject(new Error('runtime header read did not reach the race barrier')),
+            2_000,
+          )),
+        ]);
+        const retargeted = await config.updateAgent(agentId, {
+          mcpServers: [{ ...frozen, url: 'https://mcp.example.com/retargeted' }],
+        }, created.revision);
+        assert.notEqual(retargeted.mcpServers[0]?.credentialRef, ref.credentialRef);
+        releaseHeaderRead?.();
+        await expectedFailure;
+        assert.equal(outbound, 0);
+      } finally {
+        releaseHeaderRead?.();
+        settings.getSetting = originalGetSetting;
+      }
+    });
+  } finally {
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('direct Meta definitions expose only scoped tools and reject undeclared arguments', async () => {
@@ -371,7 +622,8 @@ test('direct Meta account helper sanitizes SSE under live profile policy', async
         enabled: true, model: 'local-stub/direct-meta', skills: [],
         mcpServers: [connection], apiConnections: [], repositories: [],
       });
-      const [definition] = resolveProfileMcpConnections([connection], {
+      const storedConnection = (await getConfigStore().getAgent(agentId)).mcpServers[0]!;
+      const [definition] = resolveProfileMcpConnections([storedConnection], {
         agentId,
         createGuardedFetch: () => async () => {
           const envelope = { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ accounts: [
@@ -416,8 +668,12 @@ test('runtime-plan Meta account helper accepts bounded metadata and sanitizes JS
         enabled: true, model: 'local-stub/runtime-meta-helper', skills: [],
         mcpServers: [connection], apiConnections: [], repositories: [],
       });
+      const storedConnection = (await getConfigStore().getAgent(agentId)).mcpServers[0]!;
+      const credentialRef = storedConnection.credentialRef;
+      assert.ok(credentialRef);
       const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
         id: connection.id, url: connection.url, transport: connection.transport,
+        credentialRef,
         authMode: 'none', headerNames: [], optional: true,
         allowedTools: [META_ADS_ACCOUNT_HELPER], readOnlyTools: [META_ADS_ACCOUNT_HELPER],
         toolArgumentConstraints: { [META_ADS_ACCOUNT_HELPER]: {
@@ -502,8 +758,12 @@ test('runtime-plan Meta invocation rejects optional entity targets from the curr
         enabled: true, model: 'local-stub/runtime-meta', skills: [],
         mcpServers: [connection], apiConnections: [], repositories: [],
       });
+      const storedConnection = (await getConfigStore().getAgent(agentId)).mcpServers[0]!;
+      const credentialRef = storedConnection.credentialRef;
+      assert.ok(credentialRef);
       const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
         id: connection.id, url: connection.url, transport: connection.transport,
+        credentialRef,
         authMode: 'none', headerNames: [], optional: true,
         allowedTools: [metaReportTool], readOnlyTools: [metaReportTool],
         toolArgumentConstraints: { [metaReportTool]: { ad_account_id: ['act_123'] } },
@@ -523,15 +783,20 @@ test('runtime-plan Meta invocation rejects optional entity targets from the curr
 });
 
 test('Flue 2 MCP guarded fetch resolves rotating custom headers per request', async () => {
-  const ref = { agentId: 'agent_v2_headers', connectionId: 'srv' };
+  const connection = server({ headerNames: ['X-Api-Key'], allowedTools: ['search'] });
+  const ref = boundMcpCredentialRef('agent_v2_headers', connection);
   const envVar = mcpHeaderEnvVar(ref, 'X-Api-Key');
   const captured: Request[] = [];
-  await withEnv({ [envVar]: 'header-one' }, async () => {
+  await withEnv({
+    [envVar]: 'header-one',
+    [mcpCredentialBindingEnvVar(ref)]: ref.credentialBinding,
+  }, async () => {
     const [definition] = resolveProfileMcpConnections(
-      [server({ headerNames: ['X-Api-Key'], allowedTools: ['search'] })],
+      [connection],
       {
         agentId: ref.agentId,
         env: noSecretsEnv,
+        resolveCurrentConnection: async () => connection,
         createGuardedFetch: () => (async (input, init) => {
           captured.push(new Request(input, init));
           return new Response('{}');
@@ -571,8 +836,9 @@ test('runtime-plan OAuth auth reuses its live policy read for a fresh token', as
         repositories: [],
       });
       const settings = getSettingsStore();
+      const storedConnection = (await config.getAgent(agentId)).mcpServers[0]!;
       await settings.setSetting(
-        mcpOAuthSettingKeys({ agentId, connectionId: connection.id })[2],
+        mcpOAuthSettingKeys(boundMcpCredentialRef(agentId, storedConnection))[2],
         JSON.stringify({
           serverUrl: connection.url,
           authorizationServerUrl: 'https://auth.example.com',
@@ -600,10 +866,14 @@ test('runtime-plan OAuth auth reuses its live policy read for a fresh token', as
         return originalGetAgent(id);
       };
       try {
+        const credentialRef = storedConnection.credentialRef;
+        assert.ok(credentialRef);
+        policyReads = 0;
         const [definition] = resolveRuntimePlanMcpConnections(agentId, [{
           id: connection.id,
           url: connection.url,
           transport: connection.transport,
+          credentialRef,
           authMode: connection.authMode,
           headerNames: [],
           allowedTools: ['search'],

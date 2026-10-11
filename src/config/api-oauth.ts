@@ -28,9 +28,11 @@ import {
   type OAuthRefreshOutcome,
   type OAuthRefreshTelemetry,
 } from './oauth-refresh-telemetry.ts';
+import { validConnectionCredentialRef } from './connection-credential-binding.ts';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const IDENTITY_TEXT_MAX = 160;
+const CLIENT_BINDING_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 // Agent-scoped connection-account ids include an underscore and carry a generated
 // suffix; legacy per-Agent ids remain a strict subset of this bounded shape.
 const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,191}$/;
@@ -54,6 +56,7 @@ export type ApiOAuthProvider = 'google';
 export interface ApiOAuthRef {
   agentId: string;
   connectionId: string;
+  credentialRef?: string;
 }
 
 /**
@@ -70,7 +73,8 @@ export function connectionAccountOAuthRef(connectionAccountId: string): ApiOAuth
 }
 
 export function connectionAccountIdFromOAuthRef(ref: ApiOAuthRef): string | undefined {
-  return ref.connectionId === 'account' && ref.agentId.startsWith('connection_')
+  return ref.credentialRef === undefined && ref.connectionId === 'account' &&
+      ref.agentId.startsWith('connection_')
     ? ref.agentId
     : undefined;
 }
@@ -140,6 +144,7 @@ interface StoredClient {
   provider: ApiOAuthProvider;
   clientId: string;
   clientSecret: string;
+  generation?: string;
 }
 
 interface PendingAuthorization {
@@ -149,6 +154,7 @@ interface PendingAuthorization {
   scopes: string[];
   codeVerifier: string;
   expiresAt: number;
+  clientBinding: string;
   returnAgentId?: string;
   accountRevision?: number;
   oauthAttemptId?: string;
@@ -163,6 +169,7 @@ interface StoredTokenBundle {
   expiresIn?: number;
   scope?: string;
   obtainedAt: number;
+  clientBinding?: string;
   accountRevision?: number;
   oauthAttemptId?: string;
 }
@@ -174,7 +181,9 @@ export function apiOAuthSettingKeys(ref: ApiOAuthRef): [
   refreshLease: string,
 ] {
   validateRef(ref);
-  const prefix = `connector.${ref.agentId}.${ref.connectionId}.oauth`;
+  const prefix = validConnectionCredentialRef(ref.credentialRef)
+    ? `connector.${ref.agentId}.credential.${ref.credentialRef}.oauth`
+    : `connector.${ref.agentId}.${ref.connectionId}.oauth`;
   return [
     `${prefix}.client`,
     `${prefix}.pending`,
@@ -189,12 +198,21 @@ export async function saveApiOAuthClient(
   settings: SettingsStore,
 ): Promise<void> {
   validateRef(ref);
-  const client: StoredClient = {
-    provider: provider(input.provider),
-    clientId: requiredBounded(input.clientId, 512),
-    clientSecret: requiredBounded(input.clientSecret, 2_048),
-  };
-  await settings.setSetting(apiOAuthSettingKeys(ref)[0], JSON.stringify(client));
+  await settings.setSetting(apiOAuthSettingKeys(ref)[0], newClientRaw(input));
+}
+
+/** Replace a BYO client and revoke every authorization minted by its predecessor atomically. */
+export async function replaceApiOAuthClient(
+  ref: ApiOAuthRef,
+  input: { provider: ApiOAuthProvider; clientId: string; clientSecret: string },
+  settings: SettingsStore,
+): Promise<void> {
+  validateRef(ref);
+  const [client, pending, tokens, refreshLease] = apiOAuthSettingKeys(ref);
+  await settings.applySettingsPatch({
+    set: [{ key: client, value: newClientRaw(input) }],
+    delete: [pending, tokens, refreshLease],
+  });
 }
 
 /** Copy only the deployment-owned OAuth client, never personal tokens. */
@@ -270,7 +288,8 @@ export async function startApiOAuthAuthorization(
     input.ref, selectedProvider, dependencies, input.accountRevision, input.oauthAttemptId,
   );
 
-  const client = await readClient(input.ref, dependencies.settings);
+  const clientRecord = await readClientRecord(input.ref, dependencies.settings);
+  const client = clientRecord.client;
   if (client.provider !== selectedProvider) throw invalidStorage();
   const state = encodeState(input.ref, selectedProvider, oauthRandomId(dependencies));
   const codeVerifier = [0, 1, 2, 3, 4, 5, 6, 7]
@@ -285,6 +304,7 @@ export async function startApiOAuthAuthorization(
     scopes,
     codeVerifier,
     expiresAt: oauthNow(dependencies) + PENDING_TTL_MS,
+    clientBinding: clientRecord.binding,
     ...(input.returnAgentId ? { returnAgentId: input.returnAgentId } : {}),
     ...(input.accountRevision !== undefined ? { accountRevision: input.accountRevision } : {}),
     ...(input.oauthAttemptId ? { oauthAttemptId: input.oauthAttemptId } : {}),
@@ -301,6 +321,7 @@ export async function startApiOAuthAuthorization(
       superseded: attemptSuperseded,
       unavailable: () =>
         new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth authorization state'),
+      expectedAll: [{ key: apiOAuthSettingKeys(input.ref)[0], value: clientRecord.raw }],
     },
   );
   try {
@@ -333,6 +354,7 @@ export async function completeApiOAuthAuthorization(
 ): Promise<{
   ref: ApiOAuthRef;
   provider: ApiOAuthProvider;
+  clientBinding: string;
   identity?: { accountName?: string };
   accountRevision?: number;
   oauthAttemptId?: string;
@@ -349,7 +371,9 @@ export async function completeApiOAuthAuthorization(
       pending.accountRevision,
       pending.oauthAttemptId,
     );
-    const client = await readClient(ref, dependencies.settings);
+    const clientRecord = await readClientRecord(ref, dependencies.settings);
+    if (clientRecord.binding !== pending.clientBinding) throw attemptSuperseded();
+    const client = clientRecord.client;
     if (client.provider !== pending.provider) throw invalidStorage();
 
     const body = new URLSearchParams({
@@ -376,6 +400,7 @@ export async function completeApiOAuthAuthorization(
       provider: pending.provider,
       ...tokens,
       obtainedAt: oauthNow(dependencies),
+      clientBinding: pending.clientBinding,
       ...(pending.accountRevision !== undefined
         ? { accountRevision: pending.accountRevision }
         : {}),
@@ -386,6 +411,7 @@ export async function completeApiOAuthAuthorization(
       superseded: attemptSuperseded,
       unavailable: () =>
         new ApiOAuthError('oauth_unavailable', 'Could not publish OAuth credentials'),
+      expectedAll: [{ key: apiOAuthSettingKeys(ref)[0], value: clientRecord.raw }],
     });
     try {
       await requireCurrentConnection(
@@ -403,9 +429,21 @@ export async function completeApiOAuthAuthorization(
     }
 
     const identity = await loadGoogleIdentity(tokens.accessToken, dependencies).catch(() => undefined);
+    await requireCurrentAuthorization(ref, pending.authorizationAuthority, dependencies);
+    await requireCurrentConnection(
+      ref,
+      pending.provider,
+      dependencies,
+      pending.accountRevision,
+      pending.oauthAttemptId,
+    );
+    if (!await apiOAuthClientBindingMatches(
+      ref, pending.clientBinding, dependencies.settings,
+    )) throw attemptSuperseded();
     return {
       ref,
       provider: pending.provider,
+      clientBinding: pending.clientBinding,
       ...(identity ? { identity } : {}),
       ...(pending.accountRevision !== undefined
         ? { accountRevision: pending.accountRevision }
@@ -450,6 +488,19 @@ export function apiOAuthReturnRefFromState(state: string): ApiOAuthRef {
   return decodeState(state).ref;
 }
 
+export async function apiOAuthClientBindingMatches(
+  ref: ApiOAuthRef,
+  expectedBinding: string,
+  settings: SettingsStore,
+): Promise<boolean> {
+  if (!CLIENT_BINDING_PATTERN.test(expectedBinding)) return false;
+  try {
+    return (await readClientRecord(ref, settings)).binding === expectedBinding;
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveApiOAuthAccessToken(
   input: {
     ref: ApiOAuthRef;
@@ -472,6 +523,7 @@ export async function resolveApiOAuthAccessToken(
   await requireCurrentConnection(
     input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
   );
+  await requireCurrentTokenClient(input.ref, bundle, dependencies.settings);
   if (!tokenNeedsRefresh(bundle, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
     return bundle.accessToken;
   }
@@ -486,6 +538,7 @@ export async function resolveApiOAuthAccessToken(
     await requireCurrentConnection(
       input.ref, selectedProvider, dependencies, undefined, bundle.oauthAttemptId,
     );
+    await requireCurrentTokenClient(input.ref, bundle, dependencies.settings);
     if (!tokenNeedsRefresh(bundle, oauthNow(dependencies), input.refreshIfObtainedBefore)) {
       return bundle.accessToken;
     }
@@ -543,7 +596,8 @@ async function refreshAccessToken(
   dependencies: ApiOAuthDependencies,
 ): Promise<string> {
   const connectionRevision = await dependencies.getConnectionRevision?.(ref);
-  const client = await readClient(ref, dependencies.settings);
+  const clientRecord = await requireCurrentTokenClient(ref, bundle, dependencies.settings);
+  const client = clientRecord.client;
   if (client.provider !== selectedProvider || !bundle.refreshToken) throw invalidStorage();
   const startedAt = oauthNow(dependencies);
   const report = (outcome: OAuthRefreshOutcome, reason: string | null, tokenDeleted = false) =>
@@ -580,6 +634,7 @@ async function refreshAccessToken(
         if (winnerRaw) {
           const winner = parseTokenBundle(winnerRaw);
           if (winner.provider !== selectedProvider) throw invalidStorage();
+          await requireCurrentTokenClient(ref, winner, dependencies.settings);
           await requireCurrentConnection(
             ref, selectedProvider, dependencies, undefined, winner.oauthAttemptId,
           );
@@ -607,12 +662,14 @@ async function refreshAccessToken(
     ...refreshed,
     ...(refreshed.scope === undefined && bundle.scope !== undefined ? { scope: bundle.scope } : {}),
     obtainedAt: oauthNow(dependencies),
+    clientBinding: clientRecord.binding,
     ...(bundle.accountRevision !== undefined ? { accountRevision: bundle.accountRevision } : {}),
     ...(bundle.oauthAttemptId ? { oauthAttemptId: bundle.oauthAttemptId } : {}),
   };
   const tokenKey = apiOAuthSettingKeys(ref)[2];
   const stored = await dependencies.settings.applySettingsPatch({
     expected: { key: tokenKey, value: expectedTokenRaw },
+    expectedAll: [{ key: apiOAuthSettingKeys(ref)[0], value: clientRecord.raw }],
     set: [{ key: tokenKey, value: JSON.stringify(next) }],
     delete: [leaseKey],
   });
@@ -622,8 +679,10 @@ async function refreshAccessToken(
   }
   const winnerRaw = await dependencies.settings.getSetting(tokenKey);
   if (!winnerRaw) throw reauthorizationRequired();
+  if (winnerRaw === expectedTokenRaw) throw reauthorizationRequired();
   const winner = parseTokenBundle(winnerRaw);
   if (winner.provider !== selectedProvider) throw invalidStorage();
+  await requireCurrentTokenClient(ref, winner, dependencies.settings);
   await requireCurrentConnection(
     ref, selectedProvider, dependencies, undefined, winner.oauthAttemptId,
   );
@@ -760,6 +819,25 @@ async function providerFetch(
 }
 
 async function readClient(ref: ApiOAuthRef, settings: SettingsStore): Promise<StoredClient> {
+  return (await readClientRecord(ref, settings)).client;
+}
+
+function newClientRaw(
+  input: { provider: ApiOAuthProvider; clientId: string; clientSecret: string },
+): string {
+  const client: StoredClient = {
+    provider: provider(input.provider),
+    clientId: requiredBounded(input.clientId, 512),
+    clientSecret: requiredBounded(input.clientSecret, 2_048),
+    generation: crypto.randomUUID(),
+  };
+  return JSON.stringify(client);
+}
+
+async function readClientRecord(
+  ref: ApiOAuthRef,
+  settings: SettingsStore,
+): Promise<{ client: StoredClient; raw: string; binding: string }> {
   const raw = await settings.getSetting(apiOAuthSettingKeys(ref)[0]);
   if (!raw) throw new ApiOAuthError('client_missing', 'OAuth client credentials are missing');
   const value = parseStoredRecord(raw);
@@ -768,11 +846,33 @@ async function readClient(ref: ApiOAuthRef, settings: SettingsStore): Promise<St
     typeof value.clientId !== 'string' ||
     !value.clientId ||
     typeof value.clientSecret !== 'string' ||
-    !value.clientSecret
+    !value.clientSecret ||
+    (value.generation !== undefined &&
+      (typeof value.generation !== 'string' || value.generation.length > 128 || !value.generation))
   ) {
     throw invalidStorage();
   }
-  return { provider: 'google', clientId: value.clientId, clientSecret: value.clientSecret };
+  return {
+    client: {
+      provider: 'google',
+      clientId: value.clientId,
+      clientSecret: value.clientSecret,
+      ...(typeof value.generation === 'string' ? { generation: value.generation } : {}),
+    },
+    raw,
+    binding: await sha256Base64Url(raw),
+  };
+}
+
+async function requireCurrentTokenClient(
+  ref: ApiOAuthRef,
+  bundle: StoredTokenBundle,
+  settings: SettingsStore,
+): Promise<{ client: StoredClient; raw: string; binding: string }> {
+  const current = await readClientRecord(ref, settings);
+  const legacyPair = bundle.clientBinding === undefined && current.client.generation === undefined;
+  if (!legacyPair && bundle.clientBinding !== current.binding) throw reauthorizationRequired();
+  return current;
 }
 
 function parsePending(raw: string): PendingAuthorization {
@@ -793,6 +893,8 @@ function parsePending(raw: string): PendingAuthorization {
     !value.scopes.every((scope) => typeof scope === 'string') ||
     typeof value.codeVerifier !== 'string' ||
     typeof value.expiresAt !== 'number' ||
+    typeof value.clientBinding !== 'string' ||
+    !CLIENT_BINDING_PATTERN.test(value.clientBinding) ||
     (value.returnAgentId !== undefined &&
       (typeof value.returnAgentId !== 'string' || !AGENT_ID_PATTERN.test(value.returnAgentId))) ||
     (value.accountRevision !== undefined &&
@@ -808,6 +910,7 @@ function parsePending(raw: string): PendingAuthorization {
     scopes: validatedGoogleScopes(value.scopes),
     codeVerifier: value.codeVerifier,
     expiresAt: value.expiresAt,
+    clientBinding: value.clientBinding,
     ...(typeof value.returnAgentId === 'string' ? { returnAgentId: value.returnAgentId } : {}),
     ...(typeof value.accountRevision === 'number'
       ? { accountRevision: value.accountRevision }
@@ -833,6 +936,8 @@ function parseTokenBundle(raw: string): StoredTokenBundle {
       (typeof value.expiresIn !== 'number' || !Number.isFinite(value.expiresIn) || value.expiresIn <= 0)) ||
     (value.scope !== undefined && typeof value.scope !== 'string') ||
     typeof value.obtainedAt !== 'number' ||
+    (value.clientBinding !== undefined &&
+      (typeof value.clientBinding !== 'string' || !CLIENT_BINDING_PATTERN.test(value.clientBinding))) ||
     (value.accountRevision !== undefined &&
       (!Number.isSafeInteger(value.accountRevision) || (value.accountRevision as number) < 1)) ||
     (value.oauthAttemptId !== undefined && !isOAuthAttemptId(value.oauthAttemptId))
@@ -847,6 +952,9 @@ function parseTokenBundle(raw: string): StoredTokenBundle {
     ...(value.expiresIn !== undefined ? { expiresIn: value.expiresIn } : {}),
     ...(value.scope !== undefined ? { scope: value.scope } : {}),
     obtainedAt: value.obtainedAt,
+    ...(typeof value.clientBinding === 'string'
+      ? { clientBinding: value.clientBinding }
+      : {}),
     ...(typeof value.accountRevision === 'number'
       ? { accountRevision: value.accountRevision }
       : {}),
@@ -876,17 +984,29 @@ function tokenHardExpired(bundle: StoredTokenBundle, currentTime: number): boole
 }
 
 function encodeState(ref: ApiOAuthRef, selectedProvider: ApiOAuthProvider, nonce: string): string {
-  return encodeBase64Url(new TextEncoder().encode(JSON.stringify({ a: ref.agentId, c: ref.connectionId, p: selectedProvider, n: nonce })));
+  return encodeBase64Url(new TextEncoder().encode(JSON.stringify({
+    a: ref.agentId,
+    c: ref.connectionId,
+    ...(ref.credentialRef ? { r: ref.credentialRef } : {}),
+    p: selectedProvider,
+    n: nonce,
+  })));
 }
 
 function decodeState(state: string): { ref: ApiOAuthRef; provider: ApiOAuthProvider } {
   try {
     if (!state || state.length > 2_048 || !/^[A-Za-z0-9_-]+$/.test(state)) throw new Error('bad state');
     const value: unknown = JSON.parse(new TextDecoder().decode(decodeBase64Url(state)));
-    if (!isRecord(value) || typeof value.a !== 'string' || typeof value.c !== 'string' || value.p !== 'google' || typeof value.n !== 'string' || !value.n) {
+    if (!isRecord(value) || typeof value.a !== 'string' || typeof value.c !== 'string' ||
+        (value.r !== undefined && typeof value.r !== 'string') ||
+        value.p !== 'google' || typeof value.n !== 'string' || !value.n) {
       throw new Error('bad state');
     }
-    const ref = { agentId: value.a, connectionId: value.c };
+    const ref = {
+      agentId: value.a,
+      connectionId: value.c,
+      ...(value.r === undefined ? {} : { credentialRef: value.r }),
+    };
     validateRef(ref);
     return { ref, provider: 'google' };
   } catch (error) {
@@ -910,7 +1030,8 @@ function provider(value: ApiOAuthProvider): ApiOAuthProvider {
 }
 
 function validateRef(ref: ApiOAuthRef): void {
-  if (!AGENT_ID_PATTERN.test(ref.agentId) || !CONNECTION_ID_PATTERN.test(ref.connectionId)) {
+  if (!AGENT_ID_PATTERN.test(ref.agentId) || !CONNECTION_ID_PATTERN.test(ref.connectionId) ||
+      (ref.credentialRef !== undefined && !validConnectionCredentialRef(ref.credentialRef))) {
     throw new ApiOAuthError('oauth_unavailable', 'OAuth connection reference is invalid');
   }
 }

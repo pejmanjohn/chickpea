@@ -66,6 +66,8 @@ export interface McpConnectionIdentity {
  */
 export interface McpConnectionConfig {
   id: string;
+  /** Server-owned namespace binding static secrets to this policy incarnation. */
+  credentialRef?: string;
   displayName: string;
   url: string;
   transport: 'streamable-http' | 'sse';
@@ -106,6 +108,8 @@ export interface McpConnectionConfig {
  */
 export interface ApiConnectionConfig {
   id: string;
+  /** Server-owned namespace binding static secrets to this policy incarnation. */
+  credentialRef?: string;
   displayName: string;
   allowedHosts: string[];
   pathPrefixes: string[];
@@ -310,6 +314,8 @@ export interface CustomAgentConfig {
   kind: AgentKind;
   /** Durable optimistic-concurrency token. Persisted agents always expose it. */
   revision: number;
+  /** Internal immutable fence for write-only connection credential operations. */
+  credentialIncarnation?: string;
   name: string;
   description?: string;
   instructions: string;
@@ -858,7 +864,7 @@ export type AgentScheduleReferenceInput = Omit<
 };
 
 /** Create/seed input. Persistence assigns revision 1 regardless of caller input. */
-export type AgentCreateInput = Omit<CustomAgentConfig, 'revision' | 'kind'> & {
+export type AgentCreateInput = Omit<CustomAgentConfig, 'revision' | 'kind' | 'credentialIncarnation'> & {
   revision?: number;
   /** User is the only accepted public default; system creation uses a dedicated gate. */
   kind?: AgentKind;

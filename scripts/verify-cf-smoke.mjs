@@ -1559,6 +1559,10 @@ async function main() {
       adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/linear-mcp', {
         method: 'PUT',
         body: JSON.stringify({
+          expectedRevision: createdAgent.body?.agent?.revision,
+          expectedCredentialBinding: createdAgent.body?.agent?.mcpServers?.find(
+            (connection) => connection.id === 'linear-mcp',
+          )?.credentialBinding,
           bearerToken: 'linear-smoke-token',
           headers: { 'X-Linear-Key': 'linear-smoke-key' },
           headerNames: ['X-Linear-Key'],
@@ -1567,6 +1571,10 @@ async function main() {
       adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/github-mcp', {
         method: 'PUT',
         body: JSON.stringify({
+          expectedRevision: createdAgent.body?.agent?.revision,
+          expectedCredentialBinding: createdAgent.body?.agent?.mcpServers?.find(
+            (connection) => connection.id === 'github-mcp',
+          )?.credentialBinding,
           bearerToken: 'github-smoke-token',
           headers: { 'X-GitHub-Key': 'github-smoke-key' },
           headerNames: ['X-GitHub-Key'],
@@ -1581,7 +1589,14 @@ async function main() {
     const deleteSmokeAgent = await adminFetch(
       baseUrl,
       '/admin/api/agents/agent_cf_smoke',
-      { method: 'DELETE' },
+      {
+        method: 'DELETE',
+        body: JSON.stringify({
+          expectedRevision: createdAgent.body?.agent?.revision,
+          credentialConfigurationBinding:
+            createdAgent.body?.agent?.credentialConfigurationBinding,
+        }),
+      },
     );
     check(
       deleteSmokeAgent.status === 204,
@@ -1595,11 +1610,23 @@ async function main() {
     const [linearSources, githubSources] = await Promise.all([
       adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/linear-mcp', {
         method: 'PUT',
-        body: JSON.stringify({ headerNames: ['X-Linear-Key'] }),
+        body: JSON.stringify({
+          expectedRevision: recreateSmokeAgent.body?.agent?.revision,
+          expectedCredentialBinding: recreateSmokeAgent.body?.agent?.mcpServers?.find(
+            (connection) => connection.id === 'linear-mcp',
+          )?.credentialBinding,
+          headerNames: ['X-Linear-Key'],
+        }),
       }),
       adminFetch(baseUrl, '/admin/api/agents/agent_cf_smoke/mcp/secrets/github-mcp', {
         method: 'PUT',
-        body: JSON.stringify({ headerNames: ['X-GitHub-Key'] }),
+        body: JSON.stringify({
+          expectedRevision: recreateSmokeAgent.body?.agent?.revision,
+          expectedCredentialBinding: recreateSmokeAgent.body?.agent?.mcpServers?.find(
+            (connection) => connection.id === 'github-mcp',
+          )?.credentialBinding,
+          headerNames: ['X-GitHub-Key'],
+        }),
       }),
     ]);
     check(
@@ -1614,7 +1641,14 @@ async function main() {
     const cleanupSmokeAgent = await adminFetch(
       baseUrl,
       '/admin/api/agents/agent_cf_smoke',
-      { method: 'DELETE' },
+      {
+        method: 'DELETE',
+        body: JSON.stringify({
+          expectedRevision: recreateSmokeAgent.body?.agent?.revision,
+          credentialConfigurationBinding:
+            recreateSmokeAgent.body?.agent?.credentialConfigurationBinding,
+        }),
+      },
     );
     check(
       cleanupSmokeAgent.status === 204,

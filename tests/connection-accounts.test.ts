@@ -1581,7 +1581,15 @@ test('narrowed Google bindings derive the complete service policy before resolvi
   const narrowed = applyConnectionCapabilityCeiling(policy, binding);
   assert.equal(narrowed.kind, 'api');
   if (narrowed.kind !== 'api') throw new Error('Expected API policy');
-  const connection = { ...narrowed, id: 'google', displayName: 'Drive', enabled: true, lifecycleStatus: 'ready' as const, statusText: 'Connected' };
+  const connection = {
+    ...narrowed,
+    id: 'google',
+    credentialRef: 'connection_11111111111111111111111111111111',
+    displayName: 'Drive',
+    enabled: true,
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Connected',
+  };
   assert.equal(isValidApiOAuthConnectionPolicy(connection), true);
   assert.deepEqual(connection.allowedHosts, ['www.googleapis.com']);
   assert.deepEqual(connection.allowedMethods, ['GET', 'HEAD']);
@@ -1609,7 +1617,11 @@ test('invalid Google scopes fail closed without breaking other account projectio
   assert.equal(projected.length, 2);
   assert.deepEqual(projected.find(({ id }) => id === 'invalid')?.allowedHosts, []);
   assert.deepEqual(projected.find(({ id }) => id === 'invalid')?.allowedMethods, []);
-  const resolved = await resolveApiConnectionsForTurn('agent_workspace', projected, undefined, {
+  const credentialBound = projected.map((connection, index) => ({
+    ...connection,
+    credentialRef: `connection_${String(index + 1).padStart(32, '0')}`,
+  }));
+  const resolved = await resolveApiConnectionsForTurn('agent_workspace', credentialBound, undefined, {
     resolveOAuthToken: async () => 'fixture-token',
   });
   assert.deepEqual(resolved.map(({ policy }) => policy.id), ['valid']);

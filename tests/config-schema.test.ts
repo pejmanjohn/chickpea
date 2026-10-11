@@ -5,6 +5,7 @@ import {
   CONFIG_CHICKPEA_CUTOVER_MIGRATION,
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
   CONFIG_CHICKPEA_ROUTING_MIGRATION,
+  CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
   CONFIG_MODEL_ROLE_MIGRATION,
   CONFIG_SCHEMA_MARKER,
   CONFIG_SCHEMA_VERSION,
@@ -327,6 +328,178 @@ test('schema 12 receives additive Chickpea contracts without changing its baseli
       modelDefault: reopened.getWorkspaceModelDefault('TACME'),
       route: reopened.getAgentThreadRoute('TACME', 'D1', '100.1'),
     }), before);
+  } finally {
+    db.close();
+  }
+});
+
+test('the credential-binding migration replaces every preexisting internal ref', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const suppliedMcpRef = 'connection_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const suppliedApiRef = 'connection_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    db.run(
+      'UPDATE config_agents SET mcp_servers_json = ?, api_connections_json = ? WHERE id = ?',
+      JSON.stringify([{
+        id: 'legacy-mcp', credentialRef: suppliedMcpRef, displayName: 'Legacy MCP',
+        url: 'https://mcp.example.com/rpc', transport: 'streamable-http', authMode: 'bearer',
+        headerNames: ['X-Api-Key'], enabled: true, lifecycleStatus: 'ready', statusText: '',
+        discoveredTools: [], allowedTools: [],
+      }]),
+      JSON.stringify([{
+        id: 'legacy-api', credentialRef: suppliedApiRef, displayName: 'Legacy API',
+        allowedHosts: ['api.example.com'], pathPrefixes: ['/v1'],
+        headerName: 'Authorization', allowedMethods: ['GET'], enabled: true,
+        authMode: 'credential',
+      }]),
+      'agent_default',
+    );
+    db.exec(`
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    for (const key of [
+      'mcp.agent_default.legacy-mcp.bearer',
+      'mcp.agent_default.legacy-mcp.header.X-Api-Key',
+      'mcp.agent_default.legacy-mcp.oauth.tokens',
+      'mcp.agent_default.orphan-mcp.bearer',
+      'connector.agent_default.legacy-api.credential',
+      'connector.agent_default.legacy-api.oauth.tokens',
+      'connector.agent_default.orphan-api.credential',
+      'connector.agent_default.orphan-api.oauth.tokens',
+      `mcp.agent_default.credential.${suppliedMcpRef}.bearer`,
+      'provider.openai.apiKey',
+    ]) {
+      db.run(
+        'INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+        key,
+        'synthetic-secret',
+        1,
+      );
+    }
+
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    const migrated = store.getAgent('agent_default');
+    const mcpRef = migrated.mcpServers[0]?.credentialRef;
+    const apiRef = migrated.apiConnections[0]?.credentialRef;
+    assert.match(mcpRef ?? '', /^connection_[0-9a-f]{32}$/);
+    assert.match(apiRef ?? '', /^connection_[0-9a-f]{32}$/);
+    assert.notEqual(mcpRef, suppliedMcpRef);
+    assert.notEqual(apiRef, suppliedApiRef);
+    assert.equal(db.get(
+      "SELECT 1 AS present FROM app_settings WHERE key = 'mcp.agent_default.legacy-mcp.bearer'",
+    ), undefined);
+    assert.equal(db.get(
+      "SELECT 1 AS present FROM app_settings WHERE key = 'mcp.agent_default.legacy-mcp.header.X-Api-Key'",
+    ), undefined);
+    assert.equal(db.get(
+      "SELECT 1 AS present FROM app_settings WHERE key = 'connector.agent_default.legacy-api.credential'",
+    ), undefined);
+    for (const retiredKey of [
+      'mcp.agent_default.legacy-mcp.oauth.tokens',
+      'mcp.agent_default.orphan-mcp.bearer',
+      'connector.agent_default.orphan-api.credential',
+      'connector.agent_default.legacy-api.oauth.tokens',
+      'connector.agent_default.orphan-api.oauth.tokens',
+    ]) {
+      assert.equal(
+        db.get('SELECT 1 AS present FROM app_settings WHERE key = ?', retiredKey),
+        undefined,
+        retiredKey,
+      );
+    }
+    assert.ok(db.get(
+      'SELECT 1 AS present FROM app_settings WHERE key = ?',
+      `mcp.agent_default.credential.${suppliedMcpRef}.bearer`,
+    ));
+    assert.ok(db.get(
+      "SELECT 1 AS present FROM app_settings WHERE key = 'provider.openai.apiKey'",
+    ));
+    assert.ok(db.get(
+      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
+      CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+    ));
+
+    const reopened = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_default');
+    assert.equal(reopened.mcpServers[0]?.credentialRef, mcpRef);
+    assert.equal(reopened.apiConnections[0]?.credentialRef, apiRef);
+  } finally {
+    db.close();
+  }
+});
+
+test('credential migration preserves connection-account OAuth keys when an Agent id collides', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const collisionId = 'connection_collision';
+    db.run(
+      `INSERT INTO config_agents (
+        id, revision, name, description, instructions, enabled, lifecycle,
+        creator_membership_id, edit_policy, configuration_generation,
+        slack_presence_json, archived_at, model, skills_json, mcp_servers_json,
+        api_connections_json, repositories_json
+      ) SELECT ?, revision, 'Collision', description, instructions, enabled, lifecycle,
+        creator_membership_id, edit_policy, configuration_generation,
+        slack_presence_json, archived_at, model, skills_json, mcp_servers_json,
+        api_connections_json, repositories_json
+      FROM config_agents WHERE id = 'agent_default'`,
+      collisionId,
+    );
+    db.run(
+      'UPDATE config_agents SET api_connections_json = ? WHERE id = ?',
+      JSON.stringify([{
+        id: 'account',
+        displayName: 'Colliding Agent connection',
+        allowedHosts: ['gmail.googleapis.com'],
+        pathPrefixes: ['/gmail/v1/users/me'],
+        headerName: 'Authorization',
+        headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET', 'HEAD'],
+        enabled: true,
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        oauthAppType: 'external',
+        lifecycleStatus: 'ready',
+        statusText: 'Connected',
+      }]),
+      collisionId,
+    );
+    db.exec(`
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    const protectedKeys = [
+      `mcp.${collisionId}.account.oauth.tokens`,
+      `connector.${collisionId}.account.oauth.tokens`,
+    ];
+    const retiredKey = `connector.${collisionId}.legacy-api.oauth.tokens`;
+    for (const key of [...protectedKeys, retiredKey]) {
+      db.run(
+        'INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)',
+        key,
+        'synthetic-secret',
+        1,
+      );
+    }
+
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    assert.equal(store.getAgent(collisionId).id, collisionId);
+    for (const key of protectedKeys) {
+      assert.ok(db.get('SELECT 1 AS present FROM app_settings WHERE key = ?', key), key);
+    }
+    assert.equal(
+      db.get('SELECT 1 AS present FROM app_settings WHERE key = ?', retiredKey),
+      undefined,
+    );
   } finally {
     db.close();
   }

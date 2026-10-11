@@ -1,5 +1,6 @@
 import { classifyMcpError, safeMcpFailureText } from '../config/mcp-errors.ts';
 import { resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
+import { boundMcpCredentialRef } from '../config/connection-credential-binding.ts';
 import { buildMcpRequestHeaders, resolveMcpSecrets } from '../config/mcp-secrets.ts';
 import { discoverMcpTools } from '../config/mcp-test.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -18,24 +19,34 @@ export async function testManagedMcpConnection(input: {
   const connection = agent.mcpServers.find(({ id }) => id === input.connectionId);
   if (!connection) throw new ManagementError('invalid_request', 'The MCP connection was not found.');
   try {
-    const ref = { agentId: agent.id, connectionId: connection.id };
+    const credentialRef = boundMcpCredentialRef(agent.id, connection);
+    const authorizeRequest = async () => {
+      const currentAgent = await input.config.getAgent(input.agentId);
+      const current = currentAgent.mcpServers.find(({ id }) => id === input.connectionId);
+      if (!current || boundMcpCredentialRef(currentAgent.id, current).credentialBinding !==
+          credentialRef.credentialBinding) {
+        throw new Error('connection_changed');
+      }
+    };
     const resolved = await resolveMcpSecrets(
-      ref,
+      credentialRef,
       connection.headerNames,
       input.env,
       input.settings,
     );
     if (connection.authMode === 'oauth') {
       resolved.bearer = await resolveMcpOAuthAccessToken(
-        { ref, serverUrl: connection.url },
+        { ref: credentialRef, serverUrl: connection.url },
         { settings: input.settings, refreshTelemetry: { trigger: 'admin' } },
       );
     }
+    await authorizeRequest();
     const result = await discoverMcpTools({
       id: connection.id,
       url: connection.url,
       transport: connection.transport,
       headers: buildMcpRequestHeaders(connection.authMode, resolved),
+      authorizeRequest,
     });
     return { ok: true as const, tools: result.tools };
   } catch (error) {

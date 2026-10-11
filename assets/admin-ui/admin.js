@@ -12828,6 +12828,7 @@
     return {
       id: agent.id,
       revision: Number.isInteger(agent.revision) ? agent.revision : 1,
+      credentialConfigurationBinding: agent.credentialConfigurationBinding || "",
       name: agent.name,
       description: agent.description || "",
       // The handle Slack shows. A requested handle is stored as typed (or as the
@@ -12903,6 +12904,10 @@
       allowedTools: (conn.allowedTools || []).slice()
     };
     if (conn.oauthScope !== undefined) copy.oauthScope = conn.oauthScope;
+    if (conn.credentialBinding !== undefined) copy.credentialBinding = conn.credentialBinding;
+    if (conn.credentialHeaderName !== undefined) copy.credentialHeaderName = conn.credentialHeaderName;
+    if (conn.credentialValuePrefix !== undefined) copy.credentialValuePrefix = conn.credentialValuePrefix;
+    if (conn.credentialOptional !== undefined) copy.credentialOptional = conn.credentialOptional;
     if (conn.lastCheckedAt !== undefined) copy.lastCheckedAt = conn.lastCheckedAt;
     if (conn.identity !== undefined) {
       copy.identity = {
@@ -12943,6 +12948,7 @@
     if (conn.credentialSource !== undefined) copy.credentialSource = conn.credentialSource;
     if (conn.oauthClientSource !== undefined) copy.oauthClientSource = conn.oauthClientSource;
     if (conn.oauthTokenSource !== undefined) copy.oauthTokenSource = conn.oauthTokenSource;
+    if (conn.credentialBinding !== undefined) copy.credentialBinding = conn.credentialBinding;
     return copy;
   }
 
@@ -16089,6 +16095,7 @@
       transport: "streamable-http",
       authMode: "none",
       oauthScope: "",
+      credentialBinding: "",
       headerNames: [],
       headerValues: [],
       bearerToken: "",
@@ -16166,6 +16173,10 @@
     editor.transport = conn.transport || "streamable-http";
     editor.authMode = conn.authMode || "none";
     editor.oauthScope = conn.oauthScope || "";
+    editor.credentialBinding = conn.credentialBinding || "";
+    editor.credentialHeaderName = conn.credentialHeaderName;
+    editor.credentialValuePrefix = conn.credentialValuePrefix;
+    editor.credentialOptional = conn.credentialOptional;
     editor.headerNames = (conn.headerNames || []).slice();
     editor.headerValues = editor.headerNames.map(function () { return ""; });
     editor.enabled = !!conn.enabled;
@@ -16260,6 +16271,7 @@
       transport: editor.transport,
       authMode: editor.authMode
     };
+    if (editor.credentialBinding) body.credentialBinding = editor.credentialBinding;
     if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
       body.bearerToken = editor.bearerToken;
     }
@@ -16537,6 +16549,10 @@
     if (editor.authMode === "oauth" && String(editor.oauthScope || "").trim()) {
       conn.oauthScope = String(editor.oauthScope).trim();
     }
+    if (editor.credentialBinding) conn.credentialBinding = editor.credentialBinding;
+    if (editor.credentialHeaderName !== undefined) conn.credentialHeaderName = editor.credentialHeaderName;
+    if (editor.credentialValuePrefix !== undefined) conn.credentialValuePrefix = editor.credentialValuePrefix;
+    if (editor.credentialOptional !== undefined) conn.credentialOptional = editor.credentialOptional;
     if (editor.lastCheckedAt) conn.lastCheckedAt = editor.lastCheckedAt;
     if (editor.identity) conn.identity = editor.identity;
     if (editor.presetId) conn.presetId = editor.presetId;
@@ -16612,18 +16628,64 @@
   // Stage the transient secrets typed into an editor for the settings PUT that
   // saveProfile issues after the profile PATCH. Only non-empty values are staged;
   // an empty box leaves the stored/env value untouched. NEVER goes in the PATCH.
-  function stagePendingSecrets(id, editor, prior) {
+  function credentialPolicySnapshot(lane, connection) {
+    var sorted = function (values, normalize) {
+      return (values || []).map(normalize || function (value) { return value; }).sort(function (left, right) {
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
+    };
+    if (lane === "mcp") {
+      return JSON.stringify({
+        presetId: connection.presetId || null,
+        url: connection.url,
+        transport: connection.transport,
+        authMode: connection.authMode,
+        oauthScope: connection.oauthScope || null,
+        headerNames: sorted(connection.headerNames, function (value) { return String(value).toLowerCase(); }),
+        credentialHeaderName: connection.credentialHeaderName ? String(connection.credentialHeaderName).toLowerCase() : null,
+        credentialValuePrefix: connection.credentialValuePrefix || "",
+        credentialOptional: connection.credentialOptional === true
+      });
+    }
+    return JSON.stringify({
+      presetId: connection.presetId || null,
+      allowedHosts: sorted(connection.allowedHosts, function (value) { return String(value).toLowerCase(); }),
+      pathPrefixes: sorted(connection.pathPrefixes),
+      headerName: String(connection.headerName || "").toLowerCase(),
+      headerValuePrefix: connection.headerValuePrefix || "",
+      allowedMethods: sorted(connection.allowedMethods, function (value) { return String(value).toUpperCase(); }),
+      authMode: connection.authMode || "credential",
+      oauthProvider: connection.oauthProvider || null,
+      oauthScopes: sorted(connection.oauthScopes),
+      oauthAppType: connection.oauthAppType || null
+    });
+  }
+
+  function stagePendingSecrets(id, editor, prior, policy) {
     if (!state.profileDraft) return;
     var pending = state.profileDraft.pendingSecrets || {};
-    var entry = pending[id] || { headerNames: [] };
+    var typedBearer = editor.authMode === "bearer" && String(editor.bearerToken || "").trim();
+    var typedHeaders = {};
+    (editor.headerNames || []).forEach(function (name, i) {
+      var trimmedName = String(name || "").trim();
+      var value = (editor.headerValues || [])[i];
+      if (trimmedName && value) typedHeaders[trimmedName] = applyHeaderPrefix(presetHeaderPrefix(editor, trimmedName), value);
+    });
+    var replacesCredential = !!typedBearer || Object.keys(typedHeaders).length > 0;
+    var entry = replacesCredential ? { headerNames: [] } : (pending[id] || { headerNames: [] });
+    if (!entry.policySnapshot) entry.policySnapshot = credentialPolicySnapshot("mcp", policy);
+    if (!entry.credentialBinding && prior && prior.credentialBinding &&
+        credentialPolicySnapshot("mcp", prior) === entry.policySnapshot) {
+      entry.credentialBinding = prior.credentialBinding;
+    }
     entry.headerNames = (editor.headerNames || []).map(function (name) { return String(name || "").trim(); }).filter(function (name) { return !!name; });
     // Orphan cleanup: a header renamed/removed in this edit, or an auth switch
     // away from bearer, deletes its stored secret on save — otherwise dead
     // values linger in settings under keys nothing references anymore.
     if (prior && prior.id === id) {
       var keptNames = {};
-      entry.headerNames.forEach(function (name) { keptNames[name] = true; });
-      var removedNames = (prior.headerNames || []).filter(function (name) { return !keptNames[name]; });
+      entry.headerNames.forEach(function (name) { keptNames[String(name).toLowerCase()] = true; });
+      var removedNames = (prior.headerNames || []).filter(function (name) { return !keptNames[String(name).toLowerCase()]; });
       if (removedNames.length) {
         var staged = entry.removeHeaderNames || [];
         removedNames.forEach(function (name) { if (staged.indexOf(name) < 0) staged.push(name); });
@@ -16636,19 +16698,12 @@
         entry.clearOAuth = true;
       }
     }
-    if (editor.authMode === "bearer" && String(editor.bearerToken || "").trim()) {
+    if (typedBearer) {
       entry.bearerToken = editor.bearerToken;
       // A re-entered bearer supersedes any staged clear from an earlier edit.
       delete entry.clearBearer;
     }
-    var headers = entry.headers || {};
-    var names = editor.headerNames || [];
-    var values = editor.headerValues || [];
-    names.forEach(function (name, i) {
-      var trimmedName = String(name || "").trim();
-      var value = values[i];
-      if (trimmedName && value) headers[trimmedName] = applyHeaderPrefix(presetHeaderPrefix(editor, trimmedName), value);
-    });
+    var headers = replacesCredential ? typedHeaders : (entry.headers || {});
     if (Object.keys(headers).length) entry.headers = headers;
     pending[id] = entry;
     state.profileDraft.pendingSecrets = pending;
@@ -16668,7 +16723,7 @@
     if (editor.index === null || editor.index === undefined) { servers.push(conn); }
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
-    stagePendingSecrets(conn.id, editor, prior);
+    stagePendingSecrets(conn.id, editor, prior, conn);
     if (customMode) clearCustomConnectionMode();
     else state.connectionEditor = null;
     markProfileDirty();
@@ -16697,7 +16752,7 @@
     if (editor.index === null || editor.index === undefined) { servers.push(conn); }
     else { servers[editor.index] = conn; }
     state.profileDraft.mcpServers = servers;
-    stagePendingSecrets(conn.id, editor, prior);
+    stagePendingSecrets(conn.id, editor, prior, conn);
     if (customMode) clearCustomConnectionMode();
     else state.connectionEditor = null;
     return true;
@@ -16713,7 +16768,13 @@
         if (operation.kind === "pending") succeededPending[operation.id] = true;
         else succeededRemoved[operation.index] = true;
       } else {
-        failed.push({ id: operation.id, op: operation.op });
+        var errorCode = result.reason && result.reason.payload && result.reason.payload.error;
+        if (operation.kind === "pending" && (errorCode === "connection_changed" || errorCode === "not_found")) {
+          delete pending[operation.id];
+          failed.push({ id: operation.id, op: "reenter" });
+        } else {
+          failed.push({ id: operation.id, op: operation.op });
+        }
       }
     });
     Object.keys(succeededPending).forEach(function (id) { delete pending[id]; });
@@ -16728,43 +16789,39 @@
     return { failed: failed, removed: retainedRemoved };
   }
 
-  // After the profile PATCH succeeds, concurrently PUT staged secrets and
-  // DELETE removed connections. Successful operations leave the transient
-  // queue; failures stay staged so the next profile save can retry them.
-  async function flushConnectionSecrets(draft, agentId) {
+  async function flushConnectionSecrets(draft, agentId, savedAgent) {
     var pending = (draft && draft.pendingSecrets) || {};
-    var removed = (draft && draft.removedConnections) || [];
     var operations = [];
     var succeededPending = {};
-    var skippedRemoved = {};
-    // A same-slug remove + re-add in one save stages BOTH a DELETE and a PUT for
-    // that id. Skip the DELETE when a value-bearing PUT is pending for the same
-    // id, so an out-of-order DELETE can't clobber the just-stored secret. (Any
-    // header the re-add dropped is left orphaned but inert — turn time only
-    // sends headers named on the current connection.)
-    function pendingHasValue(id) {
-      var e = pending[id];
-      return !!e && (e.bearerToken !== undefined || e.headers !== undefined);
-    }
-    removed.forEach(function (entry, index) {
-      if (pendingHasValue(entry.id)) { skippedRemoved[index] = true; return; }
-      operations.push({
-        id: entry.id,
-        op: "delete",
-        kind: "removed",
-        index: index,
-        request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(entry.id), "DELETE", { headerNames: entry.headerNames || [] })
-      });
-    });
+    var missingBindings = [];
+    var expectedRevision = savedAgent && savedAgent.revision;
+    var savedConnections = (savedAgent && savedAgent.mcpServers) || [];
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
-      var body = { headerNames: entry.headerNames || [] };
+      var savedConnection = savedConnections.find(function (connection) { return connection.id === id; });
+      var credentialBinding = savedConnection && savedConnection.credentialBinding;
+      var savedPolicy = savedConnection && credentialPolicySnapshot("mcp", savedConnection);
+      if (!savedPolicy || entry.policySnapshot !== savedPolicy) {
+        delete pending[id];
+        missingBindings.push({ id: id, op: "reenter" });
+        return;
+      }
+      if (!entry.credentialBinding && credentialBinding) entry.credentialBinding = credentialBinding;
+      if (!credentialBinding || entry.credentialBinding !== credentialBinding) {
+        delete pending[id];
+        missingBindings.push({ id: id, op: "reenter" });
+        return;
+      }
+      var body = {
+        expectedRevision: expectedRevision,
+        expectedCredentialBinding: entry.credentialBinding,
+        headerNames: entry.headerNames || []
+      };
       if (entry.bearerToken !== undefined) body.bearerToken = entry.bearerToken;
       if (entry.headers !== undefined) body.headers = entry.headers;
       if (entry.removeHeaderNames && entry.removeHeaderNames.length) body.removeHeaderNames = entry.removeHeaderNames;
       if (entry.clearBearer) body.clearBearer = true;
       if (entry.clearOAuth) body.clearOAuth = true;
-      // Round-trip when there is a value to store OR an orphan to clean up.
       if (body.bearerToken !== undefined || body.headers !== undefined || body.removeHeaderNames !== undefined || body.clearBearer !== undefined || body.clearOAuth !== undefined) {
         operations.push({
           id: id,
@@ -16773,14 +16830,12 @@
           request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/mcp/secrets/" + encodeURIComponent(id), "PUT", body)
         });
       } else {
-        // A policy-only edit can create an empty pending entry. It has no
-        // credential operation to retry, so treat it as already complete.
         succeededPending[id] = true;
       }
     });
-    var result = await settleSecretOperations(operations, pending, removed, succeededPending, skippedRemoved);
-    if (draft) { draft.pendingSecrets = pending; draft.removedConnections = result.removed; }
-    return { failed: result.failed };
+    var result = await settleSecretOperations(operations, pending, [], succeededPending, {});
+    if (draft) { draft.pendingSecrets = pending; draft.removedConnections = []; }
+    return { failed: result.failed.concat(missingBindings) };
   }
 
   /* ---- Credentialed REST API connection editor --------------------------- */
@@ -16808,6 +16863,7 @@
       oauthScopes: [],
       savedOAuthScopes: [],
       oauthAppType: "workspace-internal",
+      credentialBinding: "",
       lifecycleStatus: "pending",
       statusText: "Not connected",
       identity: null,
@@ -16872,6 +16928,7 @@
     editor.oauthScopes = (conn.oauthScopes || []).slice();
     editor.savedOAuthScopes = editor.oauthScopes.slice();
     editor.oauthAppType = conn.oauthAppType || "workspace-internal";
+    editor.credentialBinding = conn.credentialBinding || "";
     editor.lifecycleStatus = conn.lifecycleStatus || "pending";
     editor.statusText = conn.statusText || "";
     editor.identity = conn.identity || null;
@@ -16907,6 +16964,7 @@
       enabled: !!editor.enabled
     };
     if (String(editor.headerValuePrefix || "") !== "") conn.headerValuePrefix = String(editor.headerValuePrefix);
+    if (editor.credentialBinding) conn.credentialBinding = editor.credentialBinding;
     if (editor.presetId) conn.presetId = editor.presetId;
     if (isGoogleWorkspaceEditor(editor)) {
       conn.authMode = "oauth";
@@ -16920,17 +16978,31 @@
     return conn;
   }
 
-  function stagePendingApiSecret(id, editor) {
+  function stagePendingApiSecret(id, editor, prior, policy) {
     if (!state.profileDraft) return;
     var pending = state.profileDraft.pendingApiSecrets || {};
     if (isGoogleWorkspaceEditor(editor)) {
       var clientId = String(editor.oauthClientId || "").trim();
       var clientSecret = String(editor.oauthClientSecret || "").trim();
       if (!clientId || !clientSecret) return;
-      pending[id] = { oauthClient: { provider: "google", clientId: clientId, clientSecret: clientSecret } };
+      pending[id] = {
+        oauthClient: { provider: "google", clientId: clientId, clientSecret: clientSecret },
+        policySnapshot: credentialPolicySnapshot("api", policy)
+      };
+      if (prior && prior.credentialBinding &&
+          credentialPolicySnapshot("api", prior) === pending[id].policySnapshot) {
+        pending[id].credentialBinding = prior.credentialBinding;
+      }
     } else {
       if (!String(editor.credential || "").trim()) return;
-      pending[id] = { credential: editor.credential };
+      pending[id] = {
+        credential: editor.credential,
+        policySnapshot: credentialPolicySnapshot("api", policy)
+      };
+      if (prior && prior.credentialBinding &&
+          credentialPolicySnapshot("api", prior) === pending[id].policySnapshot) {
+        pending[id].credentialBinding = prior.credentialBinding;
+      }
     }
     state.profileDraft.pendingApiSecrets = pending;
   }
@@ -16955,10 +17027,11 @@
     var validationError = validateApiConnectionEditor(editor, connections);
     if (validationError) { editor.error = validationError; render(); return; }
     var conn = apiConnectionFromEditor(editor);
+    var prior = (editor.index === null || editor.index === undefined) ? null : connections[editor.index];
     if (editor.index === null || editor.index === undefined) connections.push(conn);
     else connections[editor.index] = conn;
     state.profileDraft.apiConnections = connections;
-    stagePendingApiSecret(conn.id, editor);
+    stagePendingApiSecret(conn.id, editor, prior, conn);
     if (customMode) clearCustomConnectionMode();
     else state.apiConnectionEditor = null;
     markProfileDirty();
@@ -16982,57 +17055,64 @@
     var validationError = validateApiConnectionEditor(editor, connections);
     if (validationError) { editor.error = validationError; render(); return false; }
     var conn = apiConnectionFromEditor(editor);
+    var prior = (editor.index === null || editor.index === undefined) ? null : connections[editor.index];
     if (editor.index === null || editor.index === undefined) connections.push(conn);
     else connections[editor.index] = conn;
     state.profileDraft.apiConnections = connections;
-    stagePendingApiSecret(conn.id, editor);
+    stagePendingApiSecret(conn.id, editor, prior, conn);
     if (customMode) clearCustomConnectionMode();
     else state.apiConnectionEditor = null;
     return true;
   }
 
-  async function flushApiConnectionSecrets(draft, agentId) {
+  async function flushApiConnectionSecrets(draft, agentId, savedAgent) {
     var pending = (draft && draft.pendingApiSecrets) || {};
-    var removed = (draft && draft.removedApiConnections) || [];
     var operations = [];
     var succeededPending = {};
-    var skippedRemoved = {};
-    function pendingHasValue(id) {
-      return !!pending[id] && (pending[id].credential !== undefined || pending[id].oauthClient !== undefined);
-    }
-    removed.forEach(function (entry, index) {
-      if (pendingHasValue(entry.id)) { skippedRemoved[index] = true; return; }
-      operations.push({
-        id: entry.id,
-        op: "delete",
-        kind: "removed",
-        index: index,
-        request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(entry.id), "DELETE", {})
-      });
-    });
+    var missingBindings = [];
+    var expectedRevision = savedAgent && savedAgent.revision;
+    var savedConnections = (savedAgent && savedAgent.apiConnections) || [];
     Object.keys(pending).forEach(function (id) {
       var entry = pending[id];
+      var savedConnection = savedConnections.find(function (connection) { return connection.id === id; });
+      var credentialBinding = savedConnection && savedConnection.credentialBinding;
+      var savedPolicy = savedConnection && credentialPolicySnapshot("api", savedConnection);
+      if (!savedPolicy || entry.policySnapshot !== savedPolicy) {
+        delete pending[id];
+        missingBindings.push({ id: id, op: "reenter" });
+        return;
+      }
+      if (!entry.credentialBinding && credentialBinding) entry.credentialBinding = credentialBinding;
+      if (!credentialBinding || entry.credentialBinding !== credentialBinding) {
+        delete pending[id];
+        missingBindings.push({ id: id, op: "reenter" });
+        return;
+      }
       if (entry.oauthClient !== undefined) {
+        var oauthClientBody = Object.assign({}, entry.oauthClient, {
+          expectedRevision: expectedRevision,
+          expectedCredentialBinding: entry.credentialBinding
+        });
         operations.push({
           id: id,
           op: "put",
           kind: "pending",
-          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/oauth/" + encodeURIComponent(id) + "/client", "PUT", entry.oauthClient)
+          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/oauth/" + encodeURIComponent(id) + "/client", "PUT", oauthClientBody)
         });
       } else if (entry.credential !== undefined) {
         operations.push({
           id: id,
           op: "put",
           kind: "pending",
-          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(id), "PUT", { credential: entry.credential })
+          request: postJson("/admin/api/agents/" + encodeURIComponent(agentId) + "/api-connections/secrets/" + encodeURIComponent(id), "PUT", { expectedRevision: expectedRevision, expectedCredentialBinding: entry.credentialBinding, credential: entry.credential })
         });
       } else {
         succeededPending[id] = true;
       }
     });
-    var result = await settleSecretOperations(operations, pending, removed, succeededPending, skippedRemoved);
-    if (draft) { draft.pendingApiSecrets = pending; draft.removedApiConnections = result.removed; }
-    return { failed: result.failed };
+    var result = await settleSecretOperations(operations, pending, [], succeededPending, {});
+    if (draft) { draft.pendingApiSecrets = pending; draft.removedApiConnections = []; }
+    return { failed: result.failed.concat(missingBindings) };
   }
 
   function openSkillImport() {
@@ -17333,8 +17413,19 @@
       skills: draft.skills || [],
       // POLICY ONLY. connectionFromEditor / cloneConnection strip secrets by
       // construction — no token or header VALUE is ever in this array.
-      mcpServers: draft.mcpServers || [],
-      apiConnections: draft.apiConnections || [],
+      mcpServers: (draft.mcpServers || []).map(function (connection) {
+        var policy = cloneConnection(connection);
+        delete policy.credentialBinding;
+        return policy;
+      }),
+      apiConnections: (draft.apiConnections || []).map(function (connection) {
+        var policy = cloneApiConnection(connection);
+        delete policy.credentialBinding;
+        delete policy.credentialSource;
+        delete policy.oauthClientSource;
+        delete policy.oauthTokenSource;
+        return policy;
+      }),
       repositories: draft.repositories || []
     };
     var isEdit = !!draft.id;
@@ -17342,9 +17433,17 @@
     // post-save re-clone wipes them, so the secret PUT/DELETE still run.
     var secretsDraft = draft;
     if (isEdit) {
+      body.credentialConfigurationBinding = draft.credentialConfigurationBinding;
       body.model = draft.model || null;
       if (draft.kind !== "system") body.imageModel = draft.imageModel || null;
       body.expectedRevision = Number.isInteger(draft.revision) ? draft.revision : 1;
+      var resetMcp = (draft.removedConnections || []).map(function (entry) { return entry.id; });
+      var resetApi = (draft.removedApiConnections || []).map(function (entry) { return entry.id; });
+      if (resetMcp.length || resetApi.length) {
+        body.credentialResets = {};
+        if (resetMcp.length) body.credentialResets.mcp = resetMcp;
+        if (resetApi.length) body.credentialResets.api = resetApi;
+      }
     }
     else {
       if (draft.model) body.model = draft.model;
@@ -17356,7 +17455,7 @@
     (isEdit
       ? postJson("/admin/api/agents/" + encodeURIComponent(draft.id), "PATCH", body)
       : postJson("/admin/api/agents", "POST", body)
-    ).then(async function () {
+    ).then(async function (savedResponse) {
       state.profileError = "";
       state.profileDirty = false;
       state.disableConfirm = false;
@@ -17367,9 +17466,12 @@
       }
       // The profile policy is already saved. Persist both kinds of credentials
       // concurrently, retaining only failed operations for an explicit retry.
+      var savedAgent = savedResponse && savedResponse.agent;
+      var savedRevision = savedAgent && savedAgent.revision;
+      if (!Number.isInteger(savedRevision)) throw new Error("Saved Agent response was missing its revision.");
       var secretResults = await Promise.all([
-        flushConnectionSecrets(secretsDraft, secretAgentId),
-        flushApiConnectionSecrets(secretsDraft, secretAgentId)
+        flushConnectionSecrets(secretsDraft, secretAgentId, savedAgent),
+        flushApiConnectionSecrets(secretsDraft, secretAgentId, savedAgent)
       ]);
       var secretFailures = secretResults[0].failed.concat(secretResults[1].failed);
       var secretsFailed = secretFailures.length > 0;
@@ -17395,9 +17497,12 @@
             state.profileDraft.pendingApiSecrets = secretsDraft.pendingApiSecrets || {};
             state.profileDraft.removedApiConnections = secretsDraft.removedApiConnections || [];
             var putFailed = secretFailures.some(function (failure) { return failure.op === "put"; });
-            state.profileError = putFailed
-              ? "Agent saved, but a credential could not be stored — open the connector and Save again."
-              : "Agent saved, but a credential could not be removed — Save again to retry.";
+            var reentryRequired = secretFailures.some(function (failure) { return failure.op === "reenter"; });
+            state.profileError = reentryRequired
+              ? "Agent saved, but the connector changed before its credential could be stored — open it and enter the credential again."
+              : putFailed
+                ? "Agent saved, but a credential could not be stored — open the connector and Save again."
+                : "Agent saved, but a credential could not be removed — Save again to retry.";
             state.profileDirty = true;
             render();
             if (onFailed) onFailed();
@@ -17634,6 +17739,9 @@
   }
 
   function deleteProfileErrorText(error) {
+    if (error && error.payload && error.payload.error === "agent_revision_conflict") {
+      return "This Agent changed in another session. Reload it before deleting.";
+    }
     if (error && error.payload && error.payload.error === "agent_still_referenced") {
       return "This Agent still has a Channel grant or is the workspace Default Agent. Remove every reference before deleting it.";
     }
@@ -17646,7 +17754,10 @@
   function deleteProfile() {
     var draft = state.profileDraft;
     if (!draft || !draft.id) return;
-    api("/admin/api/agents/" + encodeURIComponent(draft.id), { method: "DELETE" }).then(function () {
+    postJson("/admin/api/agents/" + encodeURIComponent(draft.id), "DELETE", {
+      expectedRevision: draft.revision,
+      credentialConfigurationBinding: draft.credentialConfigurationBinding
+    }).then(function () {
       state.profileScreen = "list";
       state.profileDraft = null;
       state.editingAgentId = null;

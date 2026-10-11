@@ -76,6 +76,8 @@ export interface McpConnectInput {
   connectTimeoutMs?: number;
   /** Per-request timeout passed to `createMcpConnection` (bounds tool calls). */
   callTimeoutMs?: number;
+  /** Live authorization fence run before every transport request. */
+  authorizeRequest?: () => Promise<void>;
 }
 
 export type McpConnector = (
@@ -125,6 +127,7 @@ async function discoverProtocolTools(
   const fetch = createGuardedFetch({
     allowedOrigin: new URL(validated.url).origin,
     signal: controller.signal,
+    ...(input.authorizeRequest ? { authorizeRequest: input.authorizeRequest } : {}),
   });
   const options = { requestInit: { headers: input.headers }, fetch };
   const transport = input.transport === 'sse'
@@ -229,6 +232,7 @@ export async function connectMcp(
   const guardedFetch = createGuardedFetch({
     allowedOrigin: new URL(validated.url).origin,
     signal: controller.signal,
+    ...(input.authorizeRequest ? { authorizeRequest: input.authorizeRequest } : {}),
   });
   const pending = connect(input.id, {
     url: validated.url,

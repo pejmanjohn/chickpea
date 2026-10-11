@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
+import { boundMcpCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { mcpOAuthSettingKeys, resolveMcpOAuthAccessToken } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -273,14 +274,17 @@ test('a legacy per-Agent connection is marked for reconnection instead of an acc
   const f = await fixture();
   try {
     const agent = await f.config.getAgent('agent_triage');
-    await f.config.updateAgent(agent.id, {
+    const updated = await f.config.updateAgent(agent.id, {
       mcpServers: [{
         id: 'errors', displayName: 'Errors', url: SERVER_URL, transport: 'streamable-http',
         authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'ready',
         statusText: 'Connected', discoveredTools: [], allowedTools: [],
       }],
     }, agent.revision);
-    await f.dependencies.onReauthorizationRequired!({ agentId: 'agent_triage', connectionId: 'errors' }, SERVER_URL);
+    await f.dependencies.onReauthorizationRequired!(
+      boundMcpCredentialRef(updated.id, updated.mcpServers[0]!),
+      SERVER_URL,
+    );
     const [server] = (await f.config.getAgent('agent_triage')).mcpServers;
     assert.equal(server?.lifecycleStatus, 'pending');
     assert.equal(server?.statusText, 'Reconnect required');

@@ -48,6 +48,13 @@ import {
 } from '../config/skill-import.ts';
 import { isValidRepositoryFullName } from '../config/github-app.ts';
 import {
+  boundApiCredentialRef,
+  boundMcpCredentialRef,
+  newAgentCredentialIncarnation,
+  reconcileApiCredentialRefs,
+  reconcileMcpCredentialRefs,
+} from '../config/connection-credential-binding.ts';
+import {
   applyConnectionCapabilityCeiling,
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
@@ -124,6 +131,7 @@ import {
   type LiveManagementActor,
   type ManagementApplyResult,
   type ManagementChangeSetPreview,
+  type ManagementChangeSetRecordPreview,
   type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
   type ManagementDuplicateIdentityResult,
@@ -230,7 +238,7 @@ export interface WorkspaceManagementServiceInput {
     | 'putAgentScheduleReference'
     | 'listConnectionAccounts'
     | 'listAgentConnectionBindings'
-  >;
+  > & Partial<Pick<ConfigStore, 'deleteAgentWithMemory'>>;
   management: ManagementStore;
   memory?: Pick<
     MemoryStateStore,
@@ -300,17 +308,21 @@ export interface WorkspaceManagementServiceInput {
     actor: LiveManagementActor;
     agentId: string;
     expectedRevision: number;
+    expectedCredentialIncarnation?: string;
     replacementDefaultAgentId?: string;
   }) => Promise<CustomAgentConfig>;
   restoreAgent?: (input: {
     actor: LiveManagementActor;
     agentId: string;
     expectedRevision: number;
+    expectedCredentialIncarnation?: string;
   }) => Promise<CustomAgentConfig>;
   deleteAgent?: (input: {
     actor: LiveManagementActor;
     agentId: string;
     expectedRevision: number;
+    expectedCredentialIncarnation: string;
+    idempotencyKey: string;
   }) => Promise<boolean>;
   now?: () => number;
   randomId?: () => string;
@@ -2133,7 +2145,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementChangeSetProposalRecord> {
     const proposalId = `changeset_${this.randomId()}`;
     const targetRevisions: Record<string, number> = {};
-    const changes: ManagementChangeSetPreview['changes'] = [];
+    const changes: ManagementChangeSetRecordPreview['changes'] = [];
     const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
     const readiness = this.requestModelReadiness();
     const proposalAgentIds = new Set(operations.flatMap((operation) =>
@@ -2172,6 +2184,9 @@ export class WorkspaceManagementService {
         itemId: operation.itemId,
         operationKind: operation.kind,
         target: managementPreviewTarget(operation),
+        ...(prepared.agentCredentialIncarnation
+          ? { agentCredentialIncarnation: prepared.agentCredentialIncarnation }
+          : {}),
         ...(prepared.before === undefined ? {} : { before: prepared.before }),
         ...(prepared.intendedAfter === undefined ? {} : { after: prepared.intendedAfter }),
       });
@@ -2252,6 +2267,12 @@ export class WorkspaceManagementService {
     }
     if (existing?.status === 'applying') {
       await this.assertProposalStillAllowed(actor, existing);
+      try {
+        await this.assertLegacyProposalAgentIdentity(existing, true);
+      } catch (error) {
+        await this.stores.management.markProposalStale(existing.proposalId, this.now());
+        throw error;
+      }
       const reconciled = await this.reconcileConfirmed(actor, existing);
       if (reconciled) {
         const resumed = await this.resumeConfirmedRequest(actor, input.context, existing, reconciled);
@@ -2304,7 +2325,12 @@ export class WorkspaceManagementService {
       return emitOperationOutcomes(actor.origin.kind, resumed);
     }
 
-    const mutation = await this.executeConfirmed(actor, proposal.operation, proposal.proposalId);
+    const mutation = await this.executeConfirmed(
+      actor,
+      proposal.operation,
+      proposal.proposalId,
+      legacyProposalPreparedItem(proposal),
+    );
     const result = await this.resultFor(
       proposal.proposalId,
       `confirmation:${proposal.proposalId}`,
@@ -2366,7 +2392,16 @@ export class WorkspaceManagementService {
           if (!policy.allowed) {
             throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
           }
-          await this.preflightProposalItem(actor, operation, proposal.proposalId, readiness);
+          const currentPrepared = await this.preflightProposalItem(
+            actor,
+            operation,
+            proposal.proposalId,
+            readiness,
+          );
+          assertPreparedAgentIdentity(
+            changeSetPreparedItem(proposal, operation),
+            currentPrepared,
+          );
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -2409,7 +2444,12 @@ export class WorkspaceManagementService {
         });
       } else {
         let mutation = recovered
-          ? await this.reconcileChangeSetOperation(actor, proposal, operation)
+          ? await this.reconcileChangeSetOperation(actor, proposal, operation).catch((error) => {
+              if (error instanceof ManagementError && error.code === 'revision_conflict') {
+                return undefined;
+              }
+              throw error;
+            })
           : undefined;
         let recoveryDenied = false;
         if (recovered && !mutation) {
@@ -2504,7 +2544,7 @@ export class WorkspaceManagementService {
     if (canExecuteImmediately(operation)) {
       return this.executeImmediate(actor, proposal.proposalId, operation, prepared);
     }
-    return this.executeConfirmed(actor, operation, proposal.proposalId);
+    return this.executeConfirmed(actor, operation, proposal.proposalId, prepared);
   }
 
   private async reconcileChangeSetOperation(
@@ -2513,6 +2553,7 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
   ): Promise<ImmediateMutation | undefined> {
     const prepared = changeSetPreparedItem(proposal, operation);
+    await this.assertPreparedAgentExists(prepared, operation.kind === 'delete_agent');
     const preparedResult = await this.reconcilePrepared(actor, prepared, proposal.proposalId);
     if (preparedResult) return preparedResult;
     const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
@@ -2522,6 +2563,23 @@ export class WorkspaceManagementService {
       resultingRevisions: Object.fromEntries(changed.map((ref) =>
         [objectRevisionKey(ref), ref.revision ?? 0])),
     };
+  }
+
+  private async assertPreparedAgentExists(
+    prepared: ManagementPreparedItem,
+    allowMissing: boolean,
+  ): Promise<void> {
+    const expected = prepared.agentCredentialIncarnation;
+    const agentId = preparedAgentId(prepared.operation);
+    if (!agentId) return;
+    if (!expected) {
+      throw new ManagementError('proposal_stale', 'The reviewed Agent identity is unavailable.');
+    }
+    const current = await optionalAgent(this.stores.config, agentId);
+    if (!current && allowMissing) return;
+    if (!current || current.credentialIncarnation !== expected) {
+      throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
+    }
   }
 
   private async reconcileChangeSetConfirmedOperation(
@@ -2962,6 +3020,7 @@ export class WorkspaceManagementService {
           targetId: `agent:${agent.id}:api:${connection.id}`,
           targetLabel: connection.displayName,
           expectedRevision: agent.revision,
+          credentialBinding: boundApiCredentialRef(agent.id, connection).credentialBinding,
           agentId: agent.id,
           agentName: agent.name,
           connectionId: connection.id,
@@ -2986,6 +3045,7 @@ export class WorkspaceManagementService {
           targetId: `agent:${agent.id}:mcp:${connection.id}`,
           targetLabel: connection.displayName,
           expectedRevision: agent.revision,
+          credentialBinding: boundMcpCredentialRef(agent.id, connection).credentialBinding,
           agentId: agent.id,
           agentName: agent.name,
           connectionId: connection.id,
@@ -3986,6 +4046,7 @@ export class WorkspaceManagementService {
     requestOperationId?: string,
   ): Promise<ManagementProposalRecord> {
     const at = this.now();
+    const proposalId = `proposal_${this.randomId()}`;
     const targetRevisions = await this.targetRevisions(operation);
     // Never mint a confirmation for an already-stale preview. The requester
     // must inspect again instead of confirming a proposal for superseded state.
@@ -3993,13 +4054,16 @@ export class WorkspaceManagementService {
     const summary = operation.kind === 'remove_provider_credential'
       ? await this.providerRemovalSummary(operation.providerId, reason)
       : proposalSummary(operation, reason);
+    const agentId = preparedAgentId(operation);
+    const agent = agentId ? await optionalAgent(this.stores.config, agentId) : undefined;
     return this.stores.management.putProposal({
-      proposalId: `proposal_${this.randomId()}`,
+      proposalId,
       organizationId: actor.organizationId,
       actorUserId: actor.userId,
       actorMembershipId: actor.membershipId,
       originKey: managementActorOriginKey(actor),
       operation,
+      ...(agent ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) } : {}),
       summary,
       targetRevisions,
       ...(requestOperationId ? { requestOperationId } : {}),
@@ -4251,6 +4315,7 @@ export class WorkspaceManagementService {
             nextDefaultAgentAvatarSeed(existingGeneratedSeeds, creationNonce ?? randomUUID()),
           ),
           revision: 1,
+          credentialIncarnation: newAgentCredentialIncarnation(),
         } satisfies CustomAgentConfig;
         return {
           itemId: operation.itemId,
@@ -4277,6 +4342,7 @@ export class WorkspaceManagementService {
         return {
           itemId: operation.itemId,
           operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(before),
           before,
           intendedAfter: applyAgentPatch(before, patch),
           inverse: {
@@ -4288,6 +4354,18 @@ export class WorkspaceManagementService {
               ? { skills: before.skills }
               : fullAgentPatch(before),
           },
+        };
+      }
+      case 'delete_agent':
+      case 'archive_agent':
+      case 'restore_agent': {
+        const before = await this.stores.config.getAgent(operation.agentId);
+        requireExpectedRevision(operation.expectedRevision, before.revision);
+        return {
+          itemId: operation.itemId,
+          operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(before),
+          before,
         };
       }
       case 'put_channel': {
@@ -4316,9 +4394,10 @@ export class WorkspaceManagementService {
         };
       }
       case 'grant_agent_channel': {
-        const [beforeChannel, grants] = await Promise.all([
+        const [beforeChannel, grants, agent] = await Promise.all([
           this.stores.config.getChannel(operation.workspaceId, operation.channelId),
           this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
+          operation.agentId ? optionalAgent(this.stores.config, operation.agentId) : undefined,
         ]);
         // The production Slack publisher resolves the live Channel, verifies
         // requester membership, and imports reach-only Channel inventory as
@@ -4339,6 +4418,9 @@ export class WorkspaceManagementService {
         return {
           itemId: operation.itemId,
           operation,
+          ...(agent
+            ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) }
+            : {}),
           ...(current ? { before: current } : {}),
           intendedAfter,
           inverse: {
@@ -4352,15 +4434,17 @@ export class WorkspaceManagementService {
         };
       }
       case 'revoke_agent_channel': {
-        const current = (await this.stores.config.listAgentChannelGrants(
-          operation.workspaceId,
-          operation.channelId,
-        )).find((grant) => grant.agentId === operation.agentId);
+        const [grants, agent] = await Promise.all([
+          this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
+          this.stores.config.getAgent(operation.agentId),
+        ]);
+        const current = grants.find((grant) => grant.agentId === operation.agentId);
         if (!current) throw new ManagementError('revision_conflict', 'The Channel grant does not exist.');
         requireExpectedRevision(operation.expectedRevision, current.revision);
         return {
           itemId: operation.itemId,
           operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(agent),
           before: current,
           intendedAfter: null,
           inverse: {
@@ -4374,7 +4458,10 @@ export class WorkspaceManagementService {
         };
       }
       case 'update_agent_memory': {
-        const before = await this.requireAgentMemory(operation.agentId);
+        const [before, agent] = await Promise.all([
+          this.requireAgentMemory(operation.agentId),
+          this.stores.config.getAgent(operation.agentId),
+        ]);
         requireExpectedRevision(operation.expectedRevision, before.revision);
         const intendedAfter = {
           agentId: operation.agentId,
@@ -4384,6 +4471,7 @@ export class WorkspaceManagementService {
         return {
           itemId: operation.itemId,
           operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(agent),
           before,
           intendedAfter,
           inverse: {
@@ -4403,8 +4491,37 @@ export class WorkspaceManagementService {
         return {
           itemId: operation.itemId,
           operation,
+          ...(agent
+            ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) }
+            : {}),
           ...(before ? { before: routinePreview(before, agent?.name) } : {}),
           intendedAfter: routineOperationPreview(operation, agent?.name, before),
+        };
+      }
+      case 'reassign_routine_agent': {
+        const agent = await this.stores.config.getAgent(operation.agentId);
+        return {
+          itemId: operation.itemId,
+          operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(agent),
+        };
+      }
+      case 'request_setup': {
+        if (operation.target.kind === 'provider_credential') {
+          return { itemId: operation.itemId, operation };
+        }
+        const setup = await this.resolveSetupTarget(operation.target);
+        if (setup.target.kind === 'provider_credential') {
+          return { itemId: operation.itemId, operation };
+        }
+        if (!setup.target.agentId) {
+          throw new ManagementError('invalid_state', 'The setup Agent identity is unavailable.');
+        }
+        const agent = await this.stores.config.getAgent(setup.target.agentId);
+        return {
+          itemId: operation.itemId,
+          operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(agent),
         };
       }
       default:
@@ -4448,11 +4565,21 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
     prepared: ManagementPreparedItem,
   ): Promise<ImmediateMutation> {
+    await this.assertPreparedAgentExists(prepared, false);
     switch (operation.kind) {
       case 'create_agent': {
         const intended = prepared.intendedAfter as CustomAgentConfig;
-        const { revision: _revision, ...createInput } = intended;
-        const created = await this.stores.config.createAgent(createInput);
+        const {
+          revision: _revision,
+          credentialIncarnation,
+          ...createInput
+        } = intended;
+        if (!credentialIncarnation) {
+          throw new Error('Prepared Agent creation is missing its credential incarnation');
+        }
+        const created = await this.stores.config.createAgent(createInput, {
+          credentialIncarnation,
+        });
         await this.captureAgentCreated(actor, created.id);
         const published = await this.publishCreatedAgent(actor, created, {
           requestId: mutationId,
@@ -4470,7 +4597,10 @@ export class WorkspaceManagementService {
         const agent = await this.updateAgent(
           actor,
           operation.agentId,
-          projectManagementAgentPatch(current, operation.patch),
+          withAgentCredentialRequirement(
+            projectManagementAgentPatch(current, operation.patch),
+            prepared.agentCredentialIncarnation,
+          ),
           operation.expectedRevision,
         );
         return mutationForAgent(agent, prepared.inverse);
@@ -4578,7 +4708,10 @@ export class WorkspaceManagementService {
     if (!prepared.intendedAfter) return undefined;
     if (operation.kind === 'update_agent') {
       const current = await optionalAgent(this.stores.config, operation.agentId);
-      if (current && current.revision >= operation.expectedRevision + 1 &&
+      const before = prepared.before as CustomAgentConfig | undefined;
+      if (current && before?.credentialIncarnation !== undefined &&
+          current.credentialIncarnation === before.credentialIncarnation &&
+          current.revision >= operation.expectedRevision + 1 &&
           agentPatchMatches(current, operation.patch)) {
         return mutationForAgent(current, prepared.inverse);
       }
@@ -4791,9 +4924,18 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operation: ManagementOperation,
     proposalId: string,
+    prepared?: ManagementPreparedItem,
   ): Promise<ImmediateMutation> {
+    if (prepared) {
+      await this.assertPreparedAgentExists(prepared, operation.kind === 'delete_agent');
+    }
     if (operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
       const current = await this.stores.config.getAgent(operation.agentId);
+      const expectedCredentialIncarnation = prepared?.agentCredentialIncarnation;
+      if (expectedCredentialIncarnation &&
+          current.credentialIncarnation !== expectedCredentialIncarnation) {
+        throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
+      }
       let agent: CustomAgentConfig;
       if (operation.kind === 'archive_agent') {
         if (this.stores.archiveAgent) {
@@ -4801,6 +4943,7 @@ export class WorkspaceManagementService {
             actor,
             agentId: operation.agentId,
             expectedRevision: operation.expectedRevision,
+            ...(expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {}),
             ...(operation.replacementDefaultAgentId
               ? { replacementDefaultAgentId: operation.replacementDefaultAgentId }
               : {}),
@@ -4809,6 +4952,7 @@ export class WorkspaceManagementService {
           requireExpectedRevision(operation.expectedRevision, current.revision);
           agent = await this.stores.config.archiveAgent(operation.agentId, {
             expectedRevision: operation.expectedRevision,
+            ...(expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {}),
             ...(operation.replacementDefaultAgentId
               ? { replacementDefaultAgentId: operation.replacementDefaultAgentId }
               : {}),
@@ -4819,15 +4963,25 @@ export class WorkspaceManagementService {
           actor,
           agentId: operation.agentId,
           expectedRevision: operation.expectedRevision,
+          ...(expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {}),
         });
       } else {
         requireExpectedRevision(operation.expectedRevision, current.revision);
-        agent = await this.stores.config.restoreAgent(operation.agentId, operation.expectedRevision);
+        agent = await this.stores.config.restoreAgent(
+          operation.agentId,
+          operation.expectedRevision,
+          expectedCredentialIncarnation,
+        );
       }
       return mutationForAgent(agent);
     }
     if (operation.kind === 'delete_agent') {
       const agent = await this.stores.config.getAgent(operation.agentId);
+      const expectedCredentialIncarnation = prepared?.agentCredentialIncarnation;
+      if (expectedCredentialIncarnation &&
+          agent.credentialIncarnation !== expectedCredentialIncarnation) {
+        throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
+      }
       const references = await this.stores.config.getAgentReferences(operation.agentId);
       if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
         throw new ManagementError(
@@ -4853,9 +5007,23 @@ export class WorkspaceManagementService {
           actor,
           agentId: operation.agentId,
           expectedRevision: operation.expectedRevision,
+          expectedCredentialIncarnation: expectedCredentialIncarnation ??
+            requireAgentCredentialIncarnation(agent),
+          idempotencyKey: `management:${proposalId}:${operation.itemId}`,
         });
+      } else if (this.stores.config.deleteAgentWithMemory) {
+        await this.stores.config.deleteAgentWithMemory(
+          operation.agentId,
+          `management:${proposalId}:${operation.itemId}`,
+          operation.expectedRevision,
+          expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
+        );
       } else {
-        await this.stores.config.deleteAgent(operation.agentId, operation.expectedRevision);
+        await this.stores.config.deleteAgent(
+          operation.agentId,
+          operation.expectedRevision,
+          expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
+        );
       }
       changed.push({ kind: 'agent', id: operation.agentId });
       return { changed, resultingRevisions: Object.fromEntries(changed.map((ref) =>
@@ -4976,9 +5144,12 @@ export class WorkspaceManagementService {
       const agent = await this.updateAgent(
         actor,
         operation.agentId,
-        projectManagementAgentPatch(
-          await this.stores.config.getAgent(operation.agentId),
-          operation.patch,
+        withAgentCredentialRequirement(
+          projectManagementAgentPatch(
+            await this.stores.config.getAgent(operation.agentId),
+            operation.patch,
+          ),
+          prepared?.agentCredentialIncarnation,
         ),
         operation.expectedRevision,
       );
@@ -4989,8 +5160,12 @@ export class WorkspaceManagementService {
           [objectRevisionKey(ref), ref.revision ?? 0])),
       };
     }
-    const prepared = await this.prepareItem(actor, operation, proposalId);
-    return this.executeImmediate(actor, proposalId, operation, prepared);
+    const freshPrepared = await this.prepareItem(actor, operation, proposalId);
+    assertPreparedAgentIdentity(prepared ?? freshPrepared, freshPrepared);
+    const immediatePrepared = prepared?.agentCredentialIncarnation
+      ? { ...freshPrepared, agentCredentialIncarnation: prepared.agentCredentialIncarnation }
+      : freshPrepared;
+    return this.executeImmediate(actor, proposalId, operation, immediatePrepared);
   }
 
   private async targetRevisions(operation: ManagementOperation): Promise<Record<string, number>> {
@@ -5058,6 +5233,7 @@ export class WorkspaceManagementService {
 
   private async assertTargetRevisions(proposal: ManagementProposalRecord): Promise<void> {
     await this.assertRevisionMap(proposal.targetRevisions);
+    await this.assertLegacyProposalAgentIdentity(proposal, false);
     if (proposal.operation.kind === 'delete_agent' || proposal.operation.kind === 'archive_agent' ||
         (proposal.operation.kind === 'update_agent' && proposal.operation.patch.enabled === false)) {
       const agentId = proposal.operation.agentId;
@@ -5074,6 +5250,22 @@ export class WorkspaceManagementService {
       if (canonicalJson(expectedChannelKeys) !== canonicalJson(actualChannelKeys)) {
         throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
       }
+    }
+  }
+
+  private async assertLegacyProposalAgentIdentity(
+    proposal: ManagementProposalRecord,
+    allowMissingDeletedAgent: boolean,
+  ): Promise<void> {
+    const agentId = preparedAgentId(proposal.operation);
+    if (!agentId) return;
+    if (!proposal.agentCredentialIncarnation) {
+      throw new ManagementError('proposal_stale', 'The reviewed Agent identity is unavailable.');
+    }
+    const current = await optionalAgent(this.stores.config, agentId);
+    if (!current && allowMissingDeletedAgent && proposal.operation.kind === 'delete_agent') return;
+    if (!current || current.credentialIncarnation !== proposal.agentCredentialIncarnation) {
+      throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
     }
   }
 
@@ -5180,6 +5372,8 @@ export class WorkspaceManagementService {
     proposal: ManagementProposalRecord,
   ): Promise<ManagementApplyResult | undefined> {
     const operation = proposal.operation;
+    const prepared = legacyProposalPreparedItem(proposal);
+    await this.assertPreparedAgentExists(prepared, operation.kind === 'delete_agent');
     let changed: ManagementObjectRef[] | undefined;
     if (operation.kind === 'delete_agent') {
       const current = await optionalAgent(this.stores.config, operation.agentId);
@@ -5189,7 +5383,12 @@ export class WorkspaceManagementService {
       if (current?.lifecycle === 'archived') {
         changed = [{ kind: 'agent', id: current.id, revision: current.revision }];
       } else if (current) {
-        changed = (await this.executeConfirmed(actor, operation, proposal.proposalId)).changed;
+        changed = (await this.executeConfirmed(
+          actor,
+          operation,
+          proposal.proposalId,
+          prepared,
+        )).changed;
       }
     } else if (operation.kind === 'restore_agent') {
       const current = await optionalAgent(this.stores.config, operation.agentId);
@@ -5198,7 +5397,12 @@ export class WorkspaceManagementService {
       if (current && current.lifecycle !== 'archived' && presenceSettled) {
         changed = [{ kind: 'agent', id: current.id, revision: current.revision }];
       } else if (current) {
-        changed = (await this.executeConfirmed(actor, operation, proposal.proposalId)).changed;
+        changed = (await this.executeConfirmed(
+          actor,
+          operation,
+          proposal.proposalId,
+          prepared,
+        )).changed;
       }
     } else if (operation.kind === 'grant_agent_channel') {
       const current = (await this.stores.config.listAgentChannelGrants(
@@ -5208,10 +5412,12 @@ export class WorkspaceManagementService {
       if (current?.status === 'active' && current.createdByMembershipId === actor.membershipId) {
         changed = mutationForGrant(current).changed;
       } else {
-        changed = (await this.executeImmediate(actor, proposal.proposalId, operation, {
-          itemId: operation.itemId,
+        changed = (await this.executeImmediate(
+          actor,
+          proposal.proposalId,
           operation,
-        })).changed;
+          prepared,
+        )).changed;
       }
     } else if (operation.kind === 'revoke_agent_channel') {
       const current = (await this.stores.config.listAgentChannelGrants(
@@ -5225,10 +5431,12 @@ export class WorkspaceManagementService {
           revision: 0,
         }];
       } else {
-        changed = (await this.executeImmediate(actor, proposal.proposalId, operation, {
-          itemId: operation.itemId,
+        changed = (await this.executeImmediate(
+          actor,
+          proposal.proposalId,
           operation,
-        })).changed;
+          prepared,
+        )).changed;
       }
     } else if (operation.kind === 'update_member') {
       const membership = await this.stores.identity.getMembership(operation.membershipId);
@@ -5611,6 +5819,7 @@ function refusedUpdatePutBack(
 ): ConfigAgentPatch | undefined {
   const putBack: Record<string, unknown> = {};
   for (const key of Object.keys(patch) as (keyof ConfigAgentPatch)[]) {
+    if (key === 'credentialRequirements' || key === 'credentialResets') continue;
     if (key === 'slackPresence' || canonicalJson(latest[key]) !== canonicalJson(written[key])) continue;
     putBack[key] = key === 'model' ? previous.model ?? null : previous[key];
   }
@@ -6034,7 +6243,63 @@ function normalizeAgentIdentityName(name: string): string {
 function agentPatchMatches(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
   const before = { ...agent, revision: agent.revision - 1 };
   const expected = applyAgentPatch(before, projectManagementAgentPatch(before, patch));
+  expected.mcpServers = reconcileMcpCredentialRefs(agent.mcpServers, expected.mcpServers);
+  expected.apiConnections = reconcileApiCredentialRefs(
+    agent.apiConnections,
+    expected.apiConnections,
+  );
   return canonicalJson(agent) === canonicalJson(expected);
+}
+
+function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
+  if (!agent.credentialIncarnation) {
+    throw new ManagementError('invalid_state', 'The Agent identity is unavailable.');
+  }
+  return agent.credentialIncarnation;
+}
+
+function withAgentCredentialRequirement(
+  patch: ConfigAgentPatch,
+  credentialIncarnation: string | undefined,
+): ConfigAgentPatch {
+  if (!credentialIncarnation) return patch;
+  return {
+    ...patch,
+    credentialRequirements: {
+      ...patch.credentialRequirements,
+      agent: credentialIncarnation,
+    },
+  };
+}
+
+function preparedAgentId(operation: ManagementOperation): string | undefined {
+  if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
+      operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
+      operation.kind === 'update_agent_memory' || operation.kind === 'save_routine' ||
+      operation.kind === 'reassign_routine_agent') {
+    return operation.agentId;
+  }
+  if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+    return operation.agentId;
+  }
+  if (operation.kind === 'request_setup' && operation.target.kind !== 'provider_credential') {
+    return operation.target.agentId;
+  }
+  return undefined;
+}
+
+function assertPreparedAgentIdentity(
+  reviewed: ManagementPreparedItem,
+  current: ManagementPreparedItem,
+): void {
+  if (reviewed.agentCredentialIncarnation && current.agentCredentialIncarnation &&
+      reviewed.agentCredentialIncarnation !== current.agentCredentialIncarnation) {
+    throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function proposalSummary(operation: ManagementOperation, reason: string): string {
@@ -6227,7 +6492,9 @@ function routineOperationPreview(
   };
 }
 
-function boundedChangeSetPreview(preview: ManagementChangeSetPreview): ManagementChangeSetPreview {
+function boundedChangeSetPreview(
+  preview: ManagementChangeSetRecordPreview,
+): ManagementChangeSetRecordPreview {
   if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
     throw new ManagementError(
       'invalid_request',
@@ -6245,11 +6512,36 @@ function changeSetPreparedItem(
   if (!change || change.operationKind !== operation.kind) {
     throw new ManagementError('proposal_stale', 'The reviewed change preview is unavailable.');
   }
+  const agentId = preparedAgentId(operation);
+  const creatingChange = agentId
+    ? proposal.preview.changes.find((candidate) =>
+        candidate.operationKind === 'create_agent' &&
+        candidate.target === `agent:${agentId}` &&
+        operation.dependsOn?.includes(candidate.itemId))
+    : undefined;
+  const creationIncarnation = isRecord(creatingChange?.after) &&
+      typeof creatingChange.after.credentialIncarnation === 'string'
+    ? creatingChange.after.credentialIncarnation
+    : undefined;
+  const agentCredentialIncarnation = change.agentCredentialIncarnation ?? creationIncarnation;
   return {
     itemId: operation.itemId,
     operation,
+    ...(agentCredentialIncarnation ? { agentCredentialIncarnation } : {}),
     ...('before' in change ? { before: change.before } : {}),
     ...('after' in change ? { intendedAfter: change.after } : {}),
+  };
+}
+
+function legacyProposalPreparedItem(
+  proposal: ManagementProposalRecord,
+): ManagementPreparedItem {
+  return {
+    itemId: proposal.operation.itemId,
+    operation: proposal.operation,
+    ...(proposal.agentCredentialIncarnation
+      ? { agentCredentialIncarnation: proposal.agentCredentialIncarnation }
+      : {}),
   };
 }
 
@@ -6269,6 +6561,7 @@ function invalidatesChangeSetProposal(error: unknown): boolean {
 function publicChangeSetProposal(
   proposal: ManagementChangeSetProposalRecord,
 ): ProposeWorkspaceChangesResult {
+  const preview = publicChangeSetPreview(proposal.preview);
   return {
     proposalId: proposal.proposalId,
     status: 'pending',
@@ -6278,13 +6571,38 @@ function publicChangeSetProposal(
       uri: AGENT_AUTHORING_GUIDE_URI,
       digest: AGENT_AUTHORING_GUIDE_DIGEST,
     },
-    preview: proposal.preview,
+    preview,
     presentation: {
-      slack: formatSlackChangeSetProposal(proposal.preview),
-      markdown: formatMarkdownChangeSetProposal(proposal.preview),
+      slack: formatSlackChangeSetProposal(preview),
+      markdown: formatMarkdownChangeSetProposal(preview),
     },
     confirmationTool: 'confirm_workspace_change',
   };
+}
+
+function publicChangeSetPreview(
+  preview: ManagementChangeSetRecordPreview,
+): ManagementChangeSetPreview {
+  return {
+    summary: preview.summary,
+    changes: preview.changes.map((change) => ({
+      itemId: change.itemId,
+      operationKind: change.operationKind,
+      target: change.target,
+      ...('before' in change ? { before: scrubPrivatePreviewValue(change.before) } : {}),
+      ...('after' in change ? { after: scrubPrivatePreviewValue(change.after) } : {}),
+    })),
+    missingSetup: preview.missingSetup.map((setup) => ({ ...setup })),
+  };
+}
+
+function scrubPrivatePreviewValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scrubPrivatePreviewValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, nested]) =>
+    key === 'credentialIncarnation' || key === 'credentialRef'
+      ? []
+      : [[key, scrubPrivatePreviewValue(nested)]]));
 }
 
 function capabilityDigest(capability: string): string {

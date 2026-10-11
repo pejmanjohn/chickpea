@@ -37,6 +37,8 @@ export interface McpGuardedFetchOptions {
   allowedOrigin?: string;
   /** Defaults to five same-origin redirects. */
   maxRedirects?: number;
+  /** Re-authorize immediately before every outbound request. */
+  authorizeRequest?: () => Promise<void>;
 }
 
 const BLOCKED_HOSTNAME_SUFFIXES = ['.local', '.internal', '.localhost'];
@@ -135,6 +137,7 @@ export function createMcpGuardedFetch(options: McpGuardedFetchOptions = {}): typ
       });
       url = destination.url;
       const signal = combinedSignal(originalSignal, options.signal);
+      await options.authorizeRequest?.();
       const outbound = new Request(url, {
         method,
         headers,

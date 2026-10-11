@@ -10,6 +10,7 @@ import {
   resolveRuntimePlanMcpConnections,
 } from '../src/config/profile-mcp.ts';
 import { META_ADS_OWNERSHIP_ORIGIN } from '../src/config/meta-ads-write-guard.ts';
+import { createMcpGuardedFetch } from '../src/config/mcp-url.ts';
 import { projectEffectiveMcpConnections } from '../src/connections/runtime.ts';
 import {
   closeNodeStateStores,
@@ -172,6 +173,7 @@ function orderedProvider(
 function runtimeDeclaration(server: McpConnectionConfig): RuntimePlanMcpConnectionV2 {
   return {
     id: server.id,
+    ...(server.credentialRef ? { credentialRef: server.credentialRef } : {}),
     presetId: server.presetId!,
     displayName: server.displayName,
     url: server.url,
@@ -247,7 +249,7 @@ test('RuntimePlanV2 verifies ownership before sending a selected write', async (
       SLACK_STATE_DB_PATH: join(directory, 'state.db'),
       CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
     }, async () => {
-      await getConfigStore().createAgent({
+      const created = await getConfigStore().createAgent({
         id: agentId,
         name: 'Runtime Meta writer',
         instructions: 'Exercise synthetic Meta write policy.',
@@ -260,7 +262,7 @@ test('RuntimePlanV2 verifies ownership before sending a selected write', async (
       });
       const [definition] = resolveRuntimePlanMcpConnections(
         agentId,
-        [runtimeDeclaration(server)],
+        [runtimeDeclaration(created.mcpServers[0]!)],
         undefined,
         undefined,
         { createGuardedFetch: provider.createGuardedFetch },
@@ -284,7 +286,7 @@ test('RuntimePlanV2 blocks a write when Graph reports the wrong owner', async ()
       SLACK_STATE_DB_PATH: join(directory, 'state.db'),
       CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
     }, async () => {
-      await getConfigStore().createAgent({
+      const created = await getConfigStore().createAgent({
         id: agentId,
         name: 'Runtime Meta owner check',
         instructions: 'Exercise synthetic Meta write policy.',
@@ -297,7 +299,7 @@ test('RuntimePlanV2 blocks a write when Graph reports the wrong owner', async ()
       });
       const [definition] = resolveRuntimePlanMcpConnections(
         agentId,
-        [runtimeDeclaration(server)],
+        [runtimeDeclaration(created.mcpServers[0]!)],
         undefined,
         undefined,
         { createGuardedFetch: provider.createGuardedFetch },
@@ -325,7 +327,7 @@ test('RuntimePlanV2 revocation during ownership preflight blocks MCP dispatch', 
       SLACK_STATE_DB_PATH: join(directory, 'state.db'),
       CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
     }, async () => {
-      await getConfigStore().createAgent({
+      const created = await getConfigStore().createAgent({
         id: agentId,
         name: 'Runtime Meta revoked writer',
         instructions: 'Exercise synthetic Meta write policy.',
@@ -338,7 +340,7 @@ test('RuntimePlanV2 revocation during ownership preflight blocks MCP dispatch', 
       });
       const [definition] = resolveRuntimePlanMcpConnections(
         agentId,
-        [runtimeDeclaration(frozen)],
+        [runtimeDeclaration(created.mcpServers[0]!)],
         undefined,
         undefined,
         { createGuardedFetch: provider.createGuardedFetch },
@@ -362,7 +364,7 @@ test('RuntimePlanV2 rejects OAuth reconnection after admission before Graph or M
       CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
     }, async () => {
       const config = getConfigStore();
-      await config.createAgent({
+      const created = await config.createAgent({
         id: agentId,
         name: 'Runtime Meta reconnected writer',
         instructions: 'Exercise synthetic Meta write policy.',
@@ -376,7 +378,7 @@ test('RuntimePlanV2 rejects OAuth reconnection after admission before Graph or M
       const provider = orderedProvider();
       const [definition] = resolveRuntimePlanMcpConnections(
         agentId,
-        [runtimeDeclaration(frozen)],
+        [runtimeDeclaration(created.mcpServers[0]!)],
         undefined,
         undefined,
         { createGuardedFetch: provider.createGuardedFetch },
@@ -400,15 +402,13 @@ test('RuntimePlanV2 rejects a dropped Meta preset marker before any outbound req
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-meta-write-runtime-preset-'));
   const agentId = 'agent_runtime_plan_dropped_preset';
   const server = metaWriteServer({ url: 'https://mcp.example.com/mcp' });
-  const declarationWithoutPreset = runtimeDeclaration(server);
-  delete declarationWithoutPreset.presetId;
   const provider = orderedProvider();
   try {
     await withEnv({
       SLACK_STATE_DB_PATH: join(directory, 'state.db'),
       CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
     }, async () => {
-      await getConfigStore().createAgent({
+      const created = await getConfigStore().createAgent({
         id: agentId,
         name: 'Runtime Meta missing preset',
         instructions: 'Exercise synthetic Meta write policy.',
@@ -419,6 +419,8 @@ test('RuntimePlanV2 rejects a dropped Meta preset marker before any outbound req
         apiConnections: [],
         repositories: [],
       });
+      const declarationWithoutPreset = runtimeDeclaration(created.mcpServers[0]!);
+      delete declarationWithoutPreset.presetId;
       const [definition] = resolveRuntimePlanMcpConnections(
         agentId,
         [declarationWithoutPreset],
@@ -462,6 +464,117 @@ test('revocation during ownership preflight blocks MCP dispatch', async () => {
   });
   await assert.rejects(definition!.fetch!(toolCall()), /policy changed/);
   assert.deepEqual(provider.events, ['ownership GET']);
+});
+
+test('direct Meta ownership check reauthorizes after Graph DNS before credential egress', async () => {
+  const frozen = metaWriteServer();
+  let current = frozen;
+  let releaseDns: (() => void) | undefined;
+  let reachedDns: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseDns = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedDns = resolve; });
+  let outbound = 0;
+  const createGuardedFetch = ((options: Parameters<typeof createMcpGuardedFetch>[0]) => {
+    if (!options) throw new Error('guarded fetch options are required');
+    return createMcpGuardedFetch({
+      ...options,
+      cloudflare: false,
+      resolveAddresses: async () => {
+        if (options.allowedOrigin === META_ADS_OWNERSHIP_ORIGIN) {
+          reachedDns?.();
+          await released;
+        }
+        return [{ address: '93.184.216.34', family: 4 }];
+      },
+      pinnedFetch: async () => {
+        outbound += 1;
+        return Response.json({ id: ARGUMENTS.entity_id, account_id: '123' });
+      },
+    });
+  }) as GuardedFetchFactory;
+  const [definition] = resolveProfileMcpConnections([frozen], {
+    agentId: 'agent_direct_graph_dns_fence',
+    env: NO_SECRETS_ENV,
+    resolveCurrentConnection: async () => current,
+    createGuardedFetch,
+  });
+  try {
+    const pending = definition!.fetch!(toolCall());
+    await reached;
+    current = { ...frozen, enabled: false };
+    releaseDns?.();
+    await assert.rejects(pending, /could not verify/);
+    assert.equal(outbound, 0);
+  } finally {
+    releaseDns?.();
+  }
+});
+
+test('RuntimePlan Meta ownership check reauthorizes after Graph DNS before credential egress', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-meta-graph-dns-fence-'));
+  const agentId = 'agent_runtime_graph_dns_fence';
+  const frozen = metaWriteServer();
+  let releaseDns: (() => void) | undefined;
+  let reachedDns: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => { releaseDns = resolve; });
+  const reached = new Promise<void>((resolve) => { reachedDns = resolve; });
+  let outbound = 0;
+  try {
+    await withEnv({
+      SLACK_STATE_DB_PATH: join(directory, 'state.db'),
+      CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db'),
+    }, async () => {
+      const config = getConfigStore();
+      const created = await config.createAgent({
+        id: agentId,
+        name: 'Runtime Graph DNS fence',
+        instructions: 'Reauthorize Meta ownership probes after DNS.',
+        enabled: true,
+        model: 'local-stub/meta-write',
+        skills: [],
+        mcpServers: [frozen],
+        apiConnections: [],
+        repositories: [],
+      });
+      const createGuardedFetch = ((options: Parameters<typeof createMcpGuardedFetch>[0]) => {
+        if (!options) throw new Error('guarded fetch options are required');
+        return createMcpGuardedFetch({
+          ...options,
+          cloudflare: false,
+          resolveAddresses: async () => {
+            if (options.allowedOrigin === META_ADS_OWNERSHIP_ORIGIN) {
+              reachedDns?.();
+              await released;
+            }
+            return [{ address: '93.184.216.34', family: 4 }];
+          },
+          pinnedFetch: async () => {
+            outbound += 1;
+            return Response.json({ id: ARGUMENTS.entity_id, account_id: '123' });
+          },
+        });
+      }) as GuardedFetchFactory;
+      const [definition] = resolveRuntimePlanMcpConnections(
+        agentId,
+        [runtimeDeclaration(created.mcpServers[0]!)],
+        undefined,
+        undefined,
+        { createGuardedFetch },
+      );
+      const pending = definition!.fetch!(toolCall());
+      await reached;
+      await config.updateAgent(agentId, {
+        mcpServers: [{ ...created.mcpServers[0]!, enabled: false }],
+      }, created.revision);
+      releaseDns?.();
+      await assert.rejects(pending, /could not verify/);
+      assert.equal(outbound, 0);
+    });
+  } finally {
+    releaseDns?.();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('read-only OAuth scope blocks writes before Graph or Meta MCP', async () => {

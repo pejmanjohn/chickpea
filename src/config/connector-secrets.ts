@@ -1,19 +1,9 @@
 import { nonEmpty } from '../security/content-validation.ts';
-import { createSecretCleanupKeys, deploymentSecretOverride, encodeEnvSegment } from './secret-keys.ts';
+import { validConnectionCredentialRef } from './connection-credential-binding.ts';
+import { createSecretCleanupKeys, deploymentBoundSecretOverride, deploymentSecretOverride, encodeEnvSegment } from './secret-keys.ts';
+import { removeSettingStringSetValues } from './setting-string-set.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
-
-/**
- * API connection credentials by reference, parallel to `mcp-secrets.ts`.
- *
- * The raw credential is stored separately from profile policy. In particular,
- * `headerValuePrefix` is not baked into this value; turn-time injection applies
- * that policy later. On standalone, environment variables win over stored
- * values; a deployment serving many installations reads only the stored ones.
- *
- * No cache here: connector credentials are resolved per-use, so a stale cache
- * would be a footgun.
- */
 
 const cleanupKeys = createSecretCleanupKeys({
   keyPrefix: 'connector.',
@@ -23,9 +13,11 @@ const cleanupKeys = createSecretCleanupKeys({
 
 type ConnectorCredentialSource = 'env' | 'stored' | 'missing';
 
-interface ConnectorCredentialRef {
+export interface ConnectorCredentialRef {
   agentId: string;
   connectionId: string;
+  credentialRef: string;
+  credentialBinding: string;
 }
 
 /** Canonical U6 secret reference. It is independent of every Agent binding. */
@@ -75,19 +67,31 @@ export async function tombstoneConnectionAccountSecret(
 }
 
 export function connectorCredentialSettingKey(
-  agentId: string,
-  connectionId: string,
+  ref: ConnectorCredentialRef,
 ): string {
-  return 'connector.' + agentId + '.' + connectionId + '.credential';
+  if (!validConnectionCredentialRef(ref.credentialRef)) {
+    throw new Error('Invalid connector credential reference');
+  }
+  return `connector.${ref.agentId}.credential.${ref.credentialRef}.credential`;
 }
 
-export function connectorCredentialEnvVar(agentId: string, connectionId: string): string {
+export function connectorCredentialEnvVar(ref: ConnectorCredentialRef): string {
   return (
     'CONNECTOR_AGENT_' +
-    encodeEnvSegment(agentId) +
+    encodeEnvSegment(ref.agentId) +
     '_CONNECTION_' +
-    encodeEnvSegment(connectionId) +
+    encodeEnvSegment(ref.connectionId) +
     '_CREDENTIAL'
+  );
+}
+
+export function connectorCredentialBindingEnvVar(ref: ConnectorCredentialRef): string {
+  return (
+    'CONNECTOR_AGENT_' +
+    encodeEnvSegment(ref.agentId) +
+    '_CONNECTION_' +
+    encodeEnvSegment(ref.connectionId) +
+    '_BINDING'
   );
 }
 
@@ -96,21 +100,22 @@ export function connectorCredentialEnvVar(agentId: string, connectionId: string)
  * never credential values, so cleanup stays idempotent and retryable after the
  * profile row has already disappeared.
  */
-export function connectorSecretCleanupMarkerKey(agentId: string): string {
-  return 'connector-secret-cleanup.' + agentId;
+export function connectorSecretCleanupMarkerKey(agentId: string, scope?: string): string {
+  return 'connector-secret-cleanup.' + agentId + cleanupMarkerScope(scope);
 }
 
 export async function stageConnectorSecretCleanup(
   agentId: string,
-  connectionIds: readonly string[],
+  refs: readonly ConnectorCredentialRef[],
   env?: PlatformEnv,
   store?: SettingsStore,
+  scope?: string,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  const markerKey = connectorSecretCleanupMarkerKey(agentId);
+  const markerKey = connectorSecretCleanupMarkerKey(agentId, scope);
   const keys = cleanupKeys.validate(
     agentId,
-    connectionIds.map((connectionId) => connectorCredentialSettingKey(agentId, connectionId)),
+    refs.map(connectorCredentialSettingKey),
   );
   const merged = await settings.mergeSettingStringSet(markerKey, keys);
   cleanupKeys.validate(agentId, merged);
@@ -122,10 +127,11 @@ export async function stageConnectorSettingCleanup(
   settingKeys: readonly string[],
   env?: PlatformEnv,
   store?: SettingsStore,
+  scope?: string,
 ): Promise<void> {
   if (settingKeys.length === 0) return;
   const settings = store ?? getSettingsStore(env);
-  const markerKey = connectorSecretCleanupMarkerKey(agentId);
+  const markerKey = connectorSecretCleanupMarkerKey(agentId, scope);
   const keys = cleanupKeys.validate(agentId, settingKeys);
   const merged = await settings.mergeSettingStringSet(markerKey, keys);
   cleanupKeys.validate(agentId, merged);
@@ -135,9 +141,10 @@ export async function finishConnectorSecretCleanup(
   agentId: string,
   env?: PlatformEnv,
   store?: SettingsStore,
+  scope?: string,
 ): Promise<boolean> {
   const settings = store ?? getSettingsStore(env);
-  const markerKey = connectorSecretCleanupMarkerKey(agentId);
+  const markerKey = connectorSecretCleanupMarkerKey(agentId, scope);
   const raw = await settings.getSetting(markerKey);
   if (raw === undefined) return false;
 
@@ -149,64 +156,101 @@ export async function finishConnectorSecretCleanup(
   return true;
 }
 
+/** Remove successfully retired keys without consuming another connection's cleanup inventory. */
+export async function unstageConnectorSecretCleanup(
+  agentId: string,
+  refs: readonly ConnectorCredentialRef[],
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const settings = store ?? getSettingsStore(env);
+  const keys = cleanupKeys.validate(agentId, refs.map(connectorCredentialSettingKey));
+  await removeSettingStringSetValues(settings, connectorSecretCleanupMarkerKey(agentId), keys);
+}
+
+export async function unstageConnectorSettingCleanup(
+  agentId: string,
+  settingKeys: readonly string[],
+  env?: PlatformEnv,
+  store?: SettingsStore,
+): Promise<void> {
+  const settings = store ?? getSettingsStore(env);
+  const keys = cleanupKeys.validate(agentId, settingKeys);
+  await removeSettingStringSetValues(settings, connectorSecretCleanupMarkerKey(agentId), keys);
+}
+
+function cleanupMarkerScope(scope: string | undefined): string {
+  if (scope === undefined) return '';
+  if (!/^v1:[A-Za-z0-9_-]{43}$/.test(scope)) {
+    throw new Error('Invalid connector secret-cleanup scope');
+  }
+  return '.' + scope.slice(3);
+}
+
 export async function resolveConnectorCredential(
   ref: ConnectorCredentialRef,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<string | undefined> {
   const settings = store ?? getSettingsStore(env);
-  const fromEnv = deploymentSecretOverride(connectorCredentialEnvVar(ref.agentId, ref.connectionId), env);
-  if (fromEnv) return fromEnv;
-  return nonEmpty(
-    await settings.getSetting(connectorCredentialSettingKey(ref.agentId, ref.connectionId)),
+  const fromEnv = deploymentBoundSecretOverride(
+    connectorCredentialEnvVar(ref),
+    connectorCredentialBindingEnvVar(ref),
+    ref.credentialBinding,
+    env,
   );
+  if (fromEnv) return fromEnv;
+  return nonEmpty(await settings.getSetting(connectorCredentialSettingKey(ref)));
 }
 
 export async function saveConnectorCredential(
-  agentId: string,
-  connectionId: string,
+  ref: ConnectorCredentialRef,
   value: string,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  await settings.setSetting(connectorCredentialSettingKey(agentId, connectionId), value);
+  await settings.setSetting(connectorCredentialSettingKey(ref), value);
 }
 
 export async function clearConnectorCredential(
-  agentId: string,
-  connectionId: string,
+  ref: ConnectorCredentialRef,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  await settings.deleteSetting(connectorCredentialSettingKey(agentId, connectionId));
+  await settings.deleteSetting(connectorCredentialSettingKey(ref));
 }
 
 export async function describeConnectorCredentialSource(
-  agentId: string,
-  connectionId: string,
+  ref: ConnectorCredentialRef,
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<ConnectorCredentialSource> {
   const settings = store ?? getSettingsStore(env);
-  if (deploymentSecretOverride(connectorCredentialEnvVar(agentId, connectionId), env)) {
+  if (deploymentBoundSecretOverride(
+    connectorCredentialEnvVar(ref),
+    connectorCredentialBindingEnvVar(ref),
+    ref.credentialBinding,
+    env,
+  )) {
     return 'env';
   }
-  return nonEmpty(await settings.getSetting(connectorCredentialSettingKey(agentId, connectionId)))
+  return nonEmpty(await settings.getSetting(connectorCredentialSettingKey(ref)))
     ? 'stored'
     : 'missing';
 }
 
 export async function deleteConnectorSecrets(
   agentId: string,
-  connectionIds: readonly string[],
+  refs: readonly ConnectorCredentialRef[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<void> {
   const settings = store ?? getSettingsStore(env);
-  for (const connectionId of connectionIds) {
-    await settings.deleteSetting(connectorCredentialSettingKey(agentId, connectionId));
+  for (const ref of refs) {
+    if (ref.agentId !== agentId) throw new Error('Connector cleanup belongs to another Agent');
+    await settings.deleteSetting(connectorCredentialSettingKey(ref));
   }
 }
 

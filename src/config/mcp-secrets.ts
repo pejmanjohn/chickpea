@@ -1,23 +1,9 @@
 import { nonEmpty } from '../security/content-validation.ts';
-import { createSecretCleanupKeys, deploymentSecretOverride, encodeEnvSegment } from './secret-keys.ts';
+import { createSecretCleanupKeys, deploymentBoundSecretOverride, encodeEnvSegment } from './secret-keys.ts';
+import { validConnectionCredentialRef } from './connection-credential-binding.ts';
+import { removeSettingStringSetValues } from './setting-string-set.ts';
 import type { SettingsStore } from './settings-store.ts';
 import { getSettingsStore, type PlatformEnv } from './state-backend.ts';
-
-/**
- * MCP connection secrets by reference — modeled on `provider-keys.ts`.
- *
- * Bearer tokens and custom-header values are never stored in the profile row,
- * snapshots, or API responses. They live in the SettingsStore under
- * `mcp.<agentId>.<connectionId>.bearer` /
- * `mcp.<agentId>.<connectionId>.header.<name>` and are resolved live at turn
- * time. The agent scope is required because connection ids are user-chosen,
- * profile-local slugs. Environment variables use the same two-part scope and,
- * on standalone, win over stored values, exactly like provider API keys; a
- * deployment serving many installations reads only the stored values.
- *
- * No cache here: unlike provider keys, connection secrets are resolved
- * per-use (per test / per turn), so a stale cache would be a footgun.
- */
 
 const cleanupKeys = createSecretCleanupKeys({
   keyPrefix: 'mcp.',
@@ -42,14 +28,27 @@ interface McpSecretSources {
 export interface McpSecretRef {
   agentId: string;
   connectionId: string;
+  credentialRef?: string;
 }
 
-export function mcpBearerSettingKey(ref: McpSecretRef): string {
-  return 'mcp.' + ref.agentId + '.' + ref.connectionId + '.bearer';
+export interface McpCredentialRef extends McpSecretRef {
+  credentialRef: string;
+  credentialBinding: string;
 }
 
-export function mcpHeaderSettingKey(ref: McpSecretRef, name: string): string {
-  return 'mcp.' + ref.agentId + '.' + ref.connectionId + '.header.' + name;
+export function mcpBearerSettingKey(ref: McpCredentialRef): string {
+  return credentialPrefix(ref) + '.bearer';
+}
+
+export function mcpHeaderSettingKey(ref: McpCredentialRef, name: string): string {
+  return credentialPrefix(ref) + '.header.' + name.toLowerCase();
+}
+
+function credentialPrefix(ref: McpCredentialRef): string {
+  if (!validConnectionCredentialRef(ref.credentialRef)) {
+    throw new Error('Invalid MCP credential reference');
+  }
+  return `mcp.${ref.agentId}.credential.${ref.credentialRef}`;
 }
 
 /**
@@ -59,16 +58,17 @@ export function mcpHeaderSettingKey(ref: McpSecretRef, name: string): string {
  * retryable even after the profile row (the original inventory) no longer
  * exists. The marker contains key names only, never secret values.
  */
-export function mcpSecretCleanupMarkerKey(agentId: string): string {
-  return 'mcp-secret-cleanup.' + agentId;
+export function mcpSecretCleanupMarkerKey(agentId: string, scope?: string): string {
+  return 'mcp-secret-cleanup.' + agentId + cleanupMarkerScope(scope);
 }
 
 export async function stageMcpSecretCleanup(
   agentId: string,
   settingKeys: readonly string[],
   store: SettingsStore,
+  scope?: string,
 ): Promise<void> {
-  const markerKey = mcpSecretCleanupMarkerKey(agentId);
+  const markerKey = mcpSecretCleanupMarkerKey(agentId, scope);
   const keys = cleanupKeys.validate(agentId, settingKeys);
   const merged = await store.mergeSettingStringSet(markerKey, keys);
   cleanupKeys.validate(agentId, merged);
@@ -82,8 +82,9 @@ export async function stageMcpSecretCleanup(
 export async function finishMcpSecretCleanup(
   agentId: string,
   store: SettingsStore,
+  scope?: string,
 ): Promise<boolean> {
-  const markerKey = mcpSecretCleanupMarkerKey(agentId);
+  const markerKey = mcpSecretCleanupMarkerKey(agentId, scope);
   const raw = await store.getSetting(markerKey);
   if (raw === undefined) return false;
 
@@ -95,7 +96,25 @@ export async function finishMcpSecretCleanup(
   return true;
 }
 
-export function mcpBearerEnvVar(ref: McpSecretRef): string {
+/** Remove successfully retired keys without consuming another connection's cleanup inventory. */
+export async function unstageMcpSecretCleanup(
+  agentId: string,
+  settingKeys: readonly string[],
+  store: SettingsStore,
+): Promise<void> {
+  const keys = cleanupKeys.validate(agentId, settingKeys);
+  await removeSettingStringSetValues(store, mcpSecretCleanupMarkerKey(agentId), keys);
+}
+
+function cleanupMarkerScope(scope: string | undefined): string {
+  if (scope === undefined) return '';
+  if (!/^v1:[A-Za-z0-9_-]{43}$/.test(scope)) {
+    throw new Error('Invalid MCP secret-cleanup scope');
+  }
+  return '.' + scope.slice(3);
+}
+
+export function mcpBearerEnvVar(ref: McpCredentialRef): string {
   return (
     'MCP_AGENT_' +
     encodeEnvSegment(ref.agentId) +
@@ -105,40 +124,50 @@ export function mcpBearerEnvVar(ref: McpSecretRef): string {
   );
 }
 
-export function mcpHeaderEnvVar(ref: McpSecretRef, name: string): string {
+export function mcpHeaderEnvVar(ref: McpCredentialRef, name: string): string {
   return (
     'MCP_AGENT_' +
     encodeEnvSegment(ref.agentId) +
     '_CONNECTION_' +
     encodeEnvSegment(ref.connectionId) +
     '_HEADER_' +
-    encodeEnvSegment(name)
+    encodeEnvSegment(name.toLowerCase())
+  );
+}
+
+export function mcpCredentialBindingEnvVar(ref: McpCredentialRef): string {
+  return (
+    'MCP_AGENT_' +
+    encodeEnvSegment(ref.agentId) +
+    '_CONNECTION_' +
+    encodeEnvSegment(ref.connectionId) +
+    '_BINDING'
   );
 }
 
 export async function resolveMcpSecrets(
-  ref: McpSecretRef,
+  ref: McpCredentialRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<ResolvedMcpSecrets> {
   const settings = store ?? getSettingsStore(env);
   const [bearer, headers] = await Promise.all([
-    resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings, env),
+    resolveOne(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), ref, settings, env),
     resolveMcpHeaders(ref, headerNames, env, settings),
   ]);
   return { ...(bearer !== undefined ? { bearer } : {}), headers };
 }
 
 export async function resolveMcpHeaders(
-  ref: McpSecretRef,
+  ref: McpCredentialRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<Record<string, string>> {
   const settings = store ?? getSettingsStore(env);
   const headerValues = await Promise.all(headerNames.map((name) =>
-    resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings, env)
+    resolveOne(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), ref, settings, env)
   ));
   const headers: Record<string, string> = {};
   for (const [index, name] of headerNames.entries()) {
@@ -151,16 +180,16 @@ export async function resolveMcpHeaders(
 }
 
 export async function describeMcpSecretSources(
-  ref: McpSecretRef,
+  ref: McpCredentialRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
 ): Promise<McpSecretSources> {
   const settings = store ?? getSettingsStore(env);
   const [bearer, ...headerSources] = await Promise.all([
-    sourceOf(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), settings, env),
+    sourceOf(mcpBearerEnvVar(ref), mcpBearerSettingKey(ref), ref, settings, env),
     ...headerNames.map((name) =>
-      sourceOf(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), settings, env),
+      sourceOf(mcpHeaderEnvVar(ref, name), mcpHeaderSettingKey(ref, name), ref, settings, env),
     ),
   ]);
   const headers: Record<string, McpSecretSource> = {};
@@ -171,7 +200,7 @@ export async function describeMcpSecretSources(
 }
 
 export async function saveMcpSecrets(
-  ref: McpSecretRef,
+  ref: McpCredentialRef,
   input: { bearerToken?: string; headers?: Record<string, string> },
   env?: PlatformEnv,
   store?: SettingsStore,
@@ -188,7 +217,7 @@ export async function saveMcpSecrets(
 }
 
 export async function deleteMcpSecrets(
-  ref: McpSecretRef,
+  ref: McpCredentialRef,
   headerNames: string[],
   env?: PlatformEnv,
   store?: SettingsStore,
@@ -224,10 +253,16 @@ export function buildMcpRequestHeaders(
 async function resolveOne(
   envVar: string,
   settingKey: string,
+  ref: McpCredentialRef,
   settings: SettingsStore,
   env: PlatformEnv | undefined,
 ): Promise<string | undefined> {
-  const fromEnv = deploymentSecretOverride(envVar, env);
+  const fromEnv = deploymentBoundSecretOverride(
+    envVar,
+    mcpCredentialBindingEnvVar(ref),
+    ref.credentialBinding,
+    env,
+  );
   if (fromEnv) {
     return fromEnv;
   }
@@ -237,10 +272,16 @@ async function resolveOne(
 async function sourceOf(
   envVar: string,
   settingKey: string,
+  ref: McpCredentialRef,
   settings: SettingsStore,
   env: PlatformEnv | undefined,
 ): Promise<McpSecretSource> {
-  if (deploymentSecretOverride(envVar, env)) {
+  if (deploymentBoundSecretOverride(
+    envVar,
+    mcpCredentialBindingEnvVar(ref),
+    ref.credentialBinding,
+    env,
+  )) {
     return 'env';
   }
   return nonEmpty(await settings.getSetting(settingKey)) ? 'stored' : 'missing';
