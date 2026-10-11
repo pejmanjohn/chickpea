@@ -954,6 +954,23 @@ test('just-bash exposes its generated secure fetch on Bash instances', () => {
   assert.equal(typeof instance.secureFetch, 'function');
 });
 
+test('just-bash contains hostile printf precision without aborting the sandbox', async () => {
+  const instance = new Bash({ fs: new InMemoryFs() });
+
+  const engineLimit = await instance.exec("printf '%.101f' 1");
+  assert.notEqual(engineLimit.exitCode, 0);
+  assert.match(engineLimit.stderr, /digits argument|precision/i);
+
+  const outputLimit = await instance.exec("printf '%.1000000000f' 1");
+  assert.notEqual(outputLimit.exitCode, 0);
+  assert.match(outputLimit.stderr, /digits argument|limit exceeded|precision/i);
+
+  const alive = await instance.exec('echo alive');
+  assert.equal(alive.stdout, 'alive\n');
+  assert.equal(alive.stderr, '');
+  assert.equal(alive.exitCode, 0);
+});
+
 function fetchResult(url: string) {
   return {
     status: 200,

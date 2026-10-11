@@ -55,7 +55,7 @@ test('stable Slack 8 types retain streams, native tasks, status, and title contr
     readFileSync(`${ROOT}/node_modules/@slack/web-api/package.json`, 'utf8'),
   ) as { version?: unknown };
 
-  assert.equal(packageJson.version, '8.0.0');
+  assert.equal(packageJson.version, '8.2.0');
   assert.equal(start.chunks?.[0]?.type, 'markdown_text');
   assert.equal(append.chunks?.[0]?.type, 'task_update');
   assert.equal(stop.chunks?.[0]?.type, 'blocks');

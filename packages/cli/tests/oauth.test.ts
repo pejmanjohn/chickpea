@@ -55,11 +55,18 @@ test('login registers a public PKCE client, exchanges the code, and stores token
 
   // Stored keyed by origin, 0600, with an absolute expiry derived from expires_in.
   assert.equal(statSync(store.path).mode & 0o777, 0o600);
-  const file = JSON.parse(readFileSync(store.path, 'utf8')) as { deployments: Record<string, { tokens: { expires_at: number; refresh_token: string }; client: { client_id: string } }> };
+  const file = JSON.parse(readFileSync(store.path, 'utf8')) as {
+    deployments: Record<string, {
+      tokens: { expires_at: number; refresh_token: string; issuer?: string };
+      client: { client_id: string; issuer?: string };
+    }>;
+  };
   const entry = file.deployments[deployment.url]!;
   assert.equal(entry.tokens.expires_at, clock.now + 1200 * 1_000);
+  assert.equal(entry.tokens.issuer, `${deployment.url}/api/auth`);
   assert.ok(entry.tokens.refresh_token);
   assert.ok(entry.client.client_id.startsWith('client_'));
+  assert.equal(entry.client.issuer, `${deployment.url}/api/auth`);
 
   // Nothing secret reached the terminal.
   const printed = result.stdout + result.stderr;
@@ -196,6 +203,111 @@ test('login refuses a URL that is not the canonical origin before registering an
   } finally {
     await other.stop();
   }
+});
+
+test('login refuses protected-resource metadata that delegates OAuth to another origin', async () => {
+  const other = new FakeDeployment({ mode: 'wrong-issuer' });
+  await other.start();
+  try {
+    const result = await runCli(['login', other.url], { store: temporaryStore(), now, openBrowser: fakeBrowser, loginTimeoutMs: 5_000 });
+    assert.equal(result.code, 1);
+    assert.equal(
+      result.stderr,
+      `chickpea: DISCOVERY_FAILED: ${other.url} names an unexpected OAuth issuer. Refuse this deployment URL and ask its operator to repair OAuth discovery.\n`,
+    );
+    assert.equal(other.registrations.length, 0);
+  } finally {
+    await other.stop();
+  }
+});
+
+test('login pins the preflight issuer across SDK discovery and never follows a changed document', async () => {
+  const attacker = new FakeDeployment();
+  await attacker.start();
+  const target = new FakeDeployment({
+    mode: 'switch-issuer-after-preflight',
+    alternateAuthorizationServer: `${attacker.url}/api/auth`,
+  });
+  await target.start();
+  try {
+    const store = temporaryStore();
+    let authorizationUrl = '';
+    const result = await runCli(['login', target.url], {
+      store,
+      now,
+      openBrowser: fakeBrowser,
+      onAuthorizationUrl: (url) => { authorizationUrl = url; },
+      loginTimeoutMs: 10_000,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(target.protectedResourceRequests, 1);
+    assert.equal(target.registrations.length, 1);
+    assert.equal(attacker.registrations.length, 0);
+    assert.ok(authorizationUrl.startsWith(`${target.url}/api/auth/oauth2/authorize?`));
+    assert.equal(store.read(target.url)?.client?.issuer, `${target.url}/api/auth`);
+    assert.equal(store.read(target.url)?.tokens?.issuer, `${target.url}/api/auth`);
+  } finally {
+    await target.stop();
+    await attacker.stop();
+  }
+});
+
+test('login refuses authorization metadata that retargets credential endpoints', async () => {
+  const attacker = new FakeDeployment();
+  await attacker.start();
+  const target = new FakeDeployment({
+    mode: 'wrong-endpoints',
+    alternateAuthorizationServer: `${attacker.url}/api/auth`,
+  });
+  await target.start();
+  try {
+    let browserOpened = false;
+    const result = await runCli(['login', target.url], {
+      store: temporaryStore(),
+      now,
+      openBrowser: async () => { browserOpened = true; },
+      loginTimeoutMs: 5_000,
+    });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /DISCOVERY_FAILED.*unexpected OAuth issuer or endpoint/);
+    assert.equal(browserOpened, false);
+    assert.equal(target.registrations.length, 0);
+    assert.equal(attacker.registrations.length, 0);
+    assert.equal(attacker.tokenRequests.length, 0);
+  } finally {
+    await target.stop();
+    await attacker.stop();
+  }
+});
+
+test('legacy credentials without issuer bindings cannot be used or sent to a revocation endpoint', async () => {
+  const store = temporaryStore();
+  const login = await runCli(['login', deployment.url], { store, now, openBrowser: fakeBrowser, loginTimeoutMs: 10_000 });
+  assert.equal(login.code, 0, login.stderr);
+  const entry = store.read(deployment.url)!;
+  delete (entry.client as { issuer?: string }).issuer;
+  delete (entry.tokens as { issuer?: string }).issuer;
+  store.write(entry);
+
+  const tokenRequestsBefore = deployment.tokenRequests.length;
+  const toolCallsBefore = deployment.toolCalls.length;
+  const inspect = await runCli(['workspace', 'inspect', deployment.url], { store, now });
+  assert.equal(inspect.code, 1);
+  assert.equal(
+    inspect.stderr,
+    `chickpea: SESSION_EXPIRED: The saved session for ${deployment.url} is not bound to this deployment's OAuth issuer. Sign in again with: chickpea login ${deployment.url}.\n`,
+  );
+  assert.equal(deployment.tokenRequests.length, tokenRequestsBefore);
+  assert.equal(deployment.toolCalls.length, toolCallsBefore);
+
+  const revocationsBefore = deployment.revocations.length;
+  const logout = await runCli(['logout', deployment.url], { store, now });
+  assert.equal(logout.code, 0, logout.stderr);
+  assert.equal(logout.stdout, `Removed the session for ${deployment.url}.\n`);
+  assert.equal(deployment.revocations.length, revocationsBefore);
+  assert.equal(store.read(deployment.url), undefined);
 });
 
 test('login times out when no authorization response arrives', async () => {

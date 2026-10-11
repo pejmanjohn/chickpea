@@ -192,14 +192,14 @@ test('private config refuses source/receipt locations and oversized symlink targ
 test('the authored root policy covers all locked hooks with explicit decisions', () => {
   const result = resolveNpmInstallPolicy(process.cwd());
   assert.equal(result.legacy, false);
-  assert.equal(result.policy['esbuild@0.28.1'], true);
-  assert.equal(result.policy['workerd@1.20260815.1'], true);
+  assert.equal(result.policy['esbuild@0.28.2'], true);
+  assert.equal(result.policy['workerd@1.20261006.1'], true);
   assert.equal(result.policy['node-liblzma@2.2.0'], false);
   assert.equal(result.policy['@mongodb-js/zstd@7.0.0'], false);
 });
 
 test('reviewed binary installers and denied-hook runtime dependencies remain usable', async () => {
-  for (const [binary, expected] of [['esbuild', /0\.28\.1/], ['workerd', /2026-08-15/]] as const) {
+  for (const [binary, expected] of [['esbuild', /0\.28\.2/], ['workerd', /2026-10-06/]] as const) {
     const result = spawnSync(path.join(process.cwd(), 'node_modules/.bin', binary), ['--version'], { encoding: 'utf8', timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, expected);

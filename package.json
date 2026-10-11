@@ -88,8 +88,11 @@
   },
   "overrides": {
     "@flue/slack": {
-      "hono": "4.13.5"
-    }
+      "hono": "4.13.13"
+    },
+    "proxy-addr": "2.0.8",
+    "smol-toml": "1.9.1",
+    "source-map-js": "1.2.2"
   },
   "scripts": {
     "test": "DO_NOT_TRACK=1 node scripts/run-tests.mjs --typecheck tests/*.test.ts tests/usage/*.test.ts && npm test --workspace packages/cli",
@@ -174,8 +177,8 @@
     "upgrade": "node scripts/upgrade.mjs"
   },
   "allowScripts": {
-    "esbuild@0.28.1": true,
-    "workerd@1.20260815.1": true,
+    "esbuild@0.28.2": true,
+    "workerd@1.20261006.1": true,
     "@google/genai@1.52.0": false,
     "core-js-pure@3.50.0": false,
     "protobufjs@7.6.5": false,
@@ -197,7 +200,7 @@
     "@slack/web-api": "^8.0.0",
     "better-auth": "1.7.1",
     "croner": "10.0.1",
-    "hono": "^4.13.5",
+    "hono": "^4.13.13",
     "image-in-browser": "3.6.0",
     "jose": "6.2.8",
     "just-bash": "3.0.2",
@@ -208,19 +211,21 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.53.0",
-    "@cloudflare/workers-types": "5.20260820.1",
+    "@cloudflare/vite-plugin": "1.63.1",
+    "@cloudflare/workers-types": "5.20261011.1",
     "@flue/cli": "2.1.0",
     "@flue/vite": "2.1.0",
-    "@slack/socket-mode": "^2.0.7",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@slack/socket-mode": "^3.1.0",
     "@slack/types": "3.0.0",
     "@types/node": "26.0.0",
     "@types/pg": "8.23.1",
-    "sharp": "^0.35.4",
+    "agents": "0.20.1",
+    "sharp": "^0.35.5",
     "tsx": "^4.22.4",
     "typescript": "6.0.3",
     "vite": "^8.1.2",
-    "wrangler": "4.124.0"
+    "wrangler": "4.149.0"
   },
   "cloudflare": {
     "label": "Chickpea",

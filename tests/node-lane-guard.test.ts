@@ -19,7 +19,9 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
   assert.equal(packageJson.dependencies['@flue/slack'], '2.1.0');
   assert.equal(packageJson.devDependencies['@flue/cli'], '2.1.0');
   assert.equal(packageJson.devDependencies['@flue/vite'], '2.1.0');
+  assert.equal(packageJson.devDependencies['@modelcontextprotocol/client'], '2.0.0');
   assert.equal(packageJson.dependencies.agents, undefined);
+  assert.equal(packageJson.devDependencies.agents, '0.20.1');
   assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.83.0');
   assert.equal(packages['node_modules/@earendil-works/pi-ai']?.version, '0.83.0');
   assert.equal(
@@ -34,6 +36,7 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
   assert.equal(packages['node_modules/@modelcontextprotocol/sdk']?.version, '1.30.0');
   assert.equal(packages['node_modules/@modelcontextprotocol/client']?.version, '2.0.0');
   assert.equal(packages['node_modules/@modelcontextprotocol/server']?.version, '2.0.0');
+  assert.equal(packages['packages/cli/node_modules/@modelcontextprotocol/client']?.version, '2.3.1');
 });
 
 test('the required Agents runtime is present without installing an unused AI SDK', () => {
