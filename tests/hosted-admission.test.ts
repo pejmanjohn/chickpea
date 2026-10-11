@@ -23,7 +23,6 @@ import {
   installationRefusesWork,
   InstallationNotAdmittedError,
   requireInstallationAdmissionConfigured,
-  INSTALLATION_ADMISSION_LAST_KNOWN_MS,
   INSTALLATION_ADMISSION_TTL_MS,
   resetInstallationAdmissionForTests,
   type InstallationAdmission,
@@ -285,7 +284,7 @@ test('a suspension refuses a running attempt\'s next model step within 30 second
   assert.deepEqual(sent.map(({ step }) => step), ['A1', 'A2', 'B1', 'A5']);
 });
 
-test('answers are cached for 30 seconds per installation, and a read error keeps the last answer for ten minutes', async (t) => {
+test('answers are cached for 30 seconds per installation, and a read error fails closed', async (t) => {
   const time = clock(t);
   const warned: string[] = [];
   t.mock.method(console, 'warn', (line: string) => { warned.push(line); });
@@ -303,26 +302,19 @@ test('answers are cached for 30 seconds per installation, and a read error keeps
   host.statuses.set('inst_a', 'admitted');
   assert.equal(await installationAdmission('inst_a'), 'admitted', 'read again after 30 seconds');
 
-  // The registry becomes unreadable: the last known answer stands for ten minutes.
-  host.statuses.set('inst_a', 'refused');
-  time.now += INSTALLATION_ADMISSION_TTL_MS;
-  assert.equal(await installationAdmission('inst_a'), 'refused');
   host.statuses.set('inst_a', new Error('registry unavailable'));
   time.now += INSTALLATION_ADMISSION_TTL_MS;
-  assert.equal(await installationAdmission('inst_a'), 'refused', 'the last answer stands on a read error');
+  assert.equal(await installationAdmission('inst_a'), 'refused',
+    'a stale admitted answer cannot authorize during an outage');
   const readsDuringOutage = host.reads.length;
   time.now += INSTALLATION_ADMISSION_TTL_MS - 1;
   assert.equal(await installationAdmission('inst_a'), 'refused');
   assert.equal(host.reads.length, readsDuringOutage, 'the fallback is cached: an outage costs one read per 30 seconds');
-  time.now += INSTALLATION_ADMISSION_LAST_KNOWN_MS;
-  assert.equal(await installationAdmission('inst_a'), 'admitted',
-    'past ten minutes nothing is known, so the host boundaries decide alone');
-  // With no answer ever known, a read error admits.
   host.statuses.set('inst_c', new Error('registry unavailable'));
-  assert.equal(await installationAdmission('inst_c'), 'admitted');
+  assert.equal(await installationAdmission('inst_c'), 'refused', 'a cold-cache read error cannot authorize');
   const unavailable = { component: 'installation_admission', event: 'admission_check_unavailable' };
-  assert.deepEqual(warned.map((line) => JSON.parse(line)), [unavailable, unavailable],
-    'the outage is logged at most once a minute (here ten minutes apart), naming no installation');
+  assert.deepEqual(warned.map((line) => JSON.parse(line)), [unavailable],
+    'the outage is logged at most once a minute, naming no installation');
 });
 
 test('work that names no installation on a deployment serving many is a wiring error', async (t) => {
@@ -345,7 +337,7 @@ test('stateless calls and requests inside an attempt, such as compaction, are re
   assert.equal((await withModelAccess(grant('inst_a', 'classifier'), ENV_A, 'intent', () => modelCall(model, 'C1'))).stopReason, 'stop');
   await attempt('agent_a', async () => {
     assert.equal((await modelCall(model, 'compaction-1')).stopReason, 'stop');
-    host.statuses.set('inst_a', 'refused');
+    host.statuses.set('inst_a', new Error('registry unavailable'));
     time.now += INSTALLATION_ADMISSION_TTL_MS;
     const compaction = await modelCall(model, 'compaction-2');
     assert.equal(compaction.stopReason, 'error');

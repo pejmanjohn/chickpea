@@ -37,8 +37,6 @@ export class InstallationNotAdmittedError extends Error {
 
 /** How long one answer serves an installation in this isolate. */
 export const INSTALLATION_ADMISSION_TTL_MS = 30_000;
-/** How long a last known answer stands while the check cannot be read. */
-export const INSTALLATION_ADMISSION_LAST_KNOWN_MS = 10 * 60_000;
 const MAX_CACHED_INSTALLATIONS = 1_024;
 const LOG_INTERVAL_MS = 60_000;
 
@@ -54,8 +52,6 @@ interface CachedAdmission {
   readonly answer: InstallationAdmission;
   /** When this answer was cached: it serves until the TTL passes. */
   readonly at: number;
-  /** When the registry last answered; a fallback answer during an outage keeps the earlier time. */
-  readonly answeredAt: number | undefined;
 }
 
 let check: InstallationAdmissionCheck | undefined;
@@ -90,10 +86,11 @@ export function requireInstallationAdmissionConfigured(env: Record<string, unkno
 
 /**
  * The installation's admission, cached per isolate for 30 seconds. When the
- * check cannot be read, the last known answer stands while it is under ten
- * minutes old; with none, the work is admitted and logged, because the host's
- * boundaries remain the primary gate. Either fallback is cached like an
- * answer, so an outage costs one failed read per installation per 30 seconds.
+ * check cannot be read, work is refused and the refusal is logged. The host's
+ * ingress boundaries cannot protect a queued, resumed, or already-running
+ * operation, so an unavailable registry must never become authorization.
+ * The refusal is cached like an answer, so an outage costs one failed read per
+ * installation per 30 seconds.
  */
 export async function installationAdmission(installationId: string): Promise<InstallationAdmission> {
   if (!check) {
@@ -104,7 +101,7 @@ export async function installationAdmission(installationId: string): Promise<Ins
   if (cached && clock() - cached.at < INSTALLATION_ADMISSION_TTL_MS) return cached.answer;
   const inFlight = pending.get(installationId);
   if (inFlight) return inFlight;
-  const read = readAdmission(check, installationId, cached);
+  const read = readAdmission(check, installationId);
   pending.set(installationId, read);
   try {
     return await read;
@@ -147,23 +144,18 @@ export function isInstallationRefusal(error: unknown): boolean {
 async function readAdmission(
   current: InstallationAdmissionCheck,
   installationId: string,
-  cached: CachedAdmission | undefined,
 ): Promise<InstallationAdmission> {
   let answer: InstallationAdmission;
-  let answeredAt: number | undefined = clock();
   try {
     answer = await current(installationId) === 'admitted' ? 'admitted' : 'refused';
   } catch {
     logAtMostEachMinute('admission_check_unavailable', 'warn');
-    answeredAt = cached?.answeredAt;
-    answer = cached && answeredAt !== undefined && clock() - answeredAt < INSTALLATION_ADMISSION_LAST_KNOWN_MS
-      ? cached.answer
-      : 'admitted';
+    answer = 'refused';
   }
   // A check replaced while this read was in flight does not answer for it.
   if (check !== current) return answer;
   answers.delete(installationId);
-  answers.set(installationId, { answer, at: clock(), answeredAt });
+  answers.set(installationId, { answer, at: clock() });
   if (answers.size > MAX_CACHED_INSTALLATIONS) {
     const oldest = answers.keys().next();
     if (!oldest.done) answers.delete(oldest.value);
