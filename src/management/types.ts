@@ -673,6 +673,8 @@ export interface ManagementApplyResult {
   outcomes: ManagementItemOutcome[];
   /** Links of the first outcome that changed an Agent; response-only. */
   links?: ManagementResultLinks;
+  /** The preview of the change set a confirmation is waiting on; response-only. */
+  presentation?: ManagementPresentation;
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
@@ -1138,6 +1140,8 @@ export interface ManagementChangeSetProposalRecord {
   targetRevisions: Record<string, number>;
   status: 'pending' | 'applying' | 'completed' | 'stale';
   result?: ManagementApplyResult;
+  /** The Slack call this set holds the rest of; it completes when the set is settled. */
+  requestOperationId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1236,6 +1240,7 @@ export interface PutManagementChangeSetProposalInput {
   digest: string;
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
+  requestOperationId?: string;
   at: number;
 }
 

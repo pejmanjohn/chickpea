@@ -144,7 +144,7 @@ async function renameFixture(t: TestContext) {
       health: agent.slackPresence?.health,
     };
   };
-  return { f, slack, tool, renameArgs, update, desk };
+  return { f, slack, tool, renameArgs, update, desk, service };
 }
 
 const DESK = {
@@ -197,18 +197,24 @@ test('a name Slack finds too long for its user group fails to the model with the
 
 test('an approved rename onto a taken handle fails to the model and changes neither name nor handle', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
-    const { slack, tool, renameArgs, update, desk } = await renameFixture(t);
+    const { f, slack, tool, renameArgs, update, desk, service } = await renameFixture(t);
     const rename = { name: 'Support', requestedHandle: 'support' };
     const kept = /^@support is already taken in this Slack workspace, so nothing changed and the Agent keeps @desk\./;
     const deskGroup = { id: 'S0DESK', name: 'Desk', handle: 'desk', description: 'Desk Agent', date_update: 1, date_delete: 0 };
+    const assertRefused = (approved: Awaited<ReturnType<typeof tool>>) => {
+      if (!approved.ok) assert.fail(inspect(approved, { depth: 8 }));
+      const [outcome] = (approved.result as ManagementApplyResult).outcomes;
+      assert.deepEqual(
+        { disposition: outcome?.disposition, code: outcome?.code, warning: outcome?.warning },
+        { disposition: 'failed', code: 'handle_collision', warning: undefined },
+      );
+      assert.match(outcome?.instruction ?? '', kept);
+    };
 
+    // From Slack an inline confirmation is a change set, the same as a proposal.
     const pending = await update('rename Desk to Support with @support', rename);
     assert.equal(pending.disposition, 'confirmation_required');
-    const confirmed = await tool('approve', 'confirm_workspace_change', { proposalId: pending.proposalId! });
-    assert.equal(confirmed.ok, false);
-    const { error } = confirmed as { ok: false; error: { code: string; message: string } };
-    assert.equal(error.code, 'handle_collision');
-    assert.match(error.message, kept);
+    assertRefused(await tool('approve', 'confirm_workspace_change', { proposalId: pending.proposalId! }));
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
 
@@ -216,16 +222,27 @@ test('an approved rename onto a taken handle fails to the model and changes neit
       ...await renameArgs(rename), guideVersion: AGENT_AUTHORING_GUIDE_VERSION, authoringReason: 'agent_edit',
     });
     if (!proposed.ok) assert.fail(inspect(proposed, { depth: 8 }));
-    const approved = await tool('approve', 'confirm_workspace_change', {
+    assertRefused(await tool('approve', 'confirm_workspace_change', {
       proposalId: (proposed.result as { proposalId: string }).proposalId,
+    }));
+    assert.deepEqual(await desk(), DESK);
+    assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
+
+    // A connected coding agent confirms a single-write proposal, whose refusal is an error.
+    const mcp = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'rename-live' },
+    };
+    const single = await service.applyWorkspaceChanges({ context: mcp, ...await renameArgs(rename) });
+    const proposalId = (single as ManagementApplyResult).outcomes[0]?.proposalId ?? '';
+    assert.match(proposalId, /^proposal_/);
+    await assert.rejects(service.confirmWorkspaceChange({ context: mcp, proposalId }), (error: Error & { code?: string }) => {
+      assert.equal(error.code, 'handle_collision');
+      assert.match(error.message, kept);
+      return true;
     });
-    if (!approved.ok) assert.fail(inspect(approved, { depth: 8 }));
-    const [outcome] = (approved.result as ManagementApplyResult).outcomes;
-    assert.deepEqual(
-      { disposition: outcome?.disposition, code: outcome?.code, warning: outcome?.warning },
-      { disposition: 'failed', code: 'handle_collision', warning: undefined },
-    );
-    assert.match(outcome?.instruction ?? '', kept);
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
   });

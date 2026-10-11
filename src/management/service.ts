@@ -1746,8 +1746,10 @@ export class WorkspaceManagementService {
     let progress = request.progress;
     const clientRefs = agentClientRefs(request.operations);
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
+      const settled = await this.settleChangeSetRequest(actor, request);
+      if (settled) return emitOperationOutcomes(actor.origin.kind, settled);
       const pending = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
-      return emitOperationOutcomes(actor.origin.kind, pending);
+      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(pending));
     }
 
     const readiness = this.requestModelReadiness();
@@ -1815,19 +1817,25 @@ export class WorkspaceManagementService {
             code: policy.reason,
           });
         } else if (policy.posture === 'confirmation') {
-          const proposal = await this.createProposal(
-            actor,
-            operation,
-            policy.reason,
-            request.operationId,
-          );
+          const frozen = actor.origin.kind === 'slack'
+            ? await this.freezeSlackConfirmation(actor, request, index, progress)
+            : undefined;
+          // A typed "approve" resolves the newest pending change set before the
+          // Agent reads it, so an older card must not take this proposal's place.
+          if (actor.origin.kind === 'slack' && !frozen) await this.retirePendingChangeSet(actor);
+          const pending = frozen
+            ? { proposalId: frozen.changeSet.proposalId }
+            : await this.createProposal(actor, operation, policy.reason, request.operationId)
+              .then(({ proposalId, summary }) => ({ proposalId, warning: summary }));
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'confirmation_required',
-            proposalId: proposal.proposalId,
-            warning: proposal.summary,
+            ...pending,
           });
+          for (const refused of frozen?.refused ?? []) {
+            progress = appendOutcome(progress, refused.index, refused.outcome);
+          }
         } else if (operation.kind === 'request_setup') {
           const setup = await this.issueSetup(actor, operation);
           progress = appendOutcome(progress, index, {
@@ -1866,7 +1874,7 @@ export class WorkspaceManagementService {
           withoutSetupCapabilitiesFromProgress(progress),
           this.now(),
         );
-        if (progress.outcomes.at(-1)?.disposition === 'confirmation_required') break;
+        if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) break;
       } catch (error) {
         if (!isExpectedMutationError(error)) throw error;
         progress = appendOutcome(progress, index, {
@@ -1905,7 +1913,7 @@ export class WorkspaceManagementService {
       ? { ...baseResult, receiptMetadata: input.receiptMetadata }
       : baseResult;
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
-      return emitOperationOutcomes(actor.origin.kind, result);
+      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(result));
     }
     await this.stores.management.completeRequest(
       request.operationId,
@@ -1923,6 +1931,140 @@ export class WorkspaceManagementService {
     }
     emitAgentCreationApplyOutcome(actor.origin.kind, requestedOperations, result);
     return emitOperationOutcomes(actor.origin.kind, result);
+  }
+
+  /**
+   * In Slack the Approve card and a typed "approve" find only change sets, so
+   * the operation that needs approval and the rest of the call become one.
+   * A later operation the requester can't make fails on its own, as it would
+   * have in the call. A change set can't hold a setup request, whose approval
+   * returns a one-time link only the Agent's reply can carry, or a second
+   * change to an object it already changes. Such a call keeps the single-write
+   * proposal.
+   */
+  private async freezeSlackConfirmation(
+    actor: LiveManagementActor,
+    request: ManagementRequestRecord,
+    index: number,
+    progress: ManagementRequestProgress,
+  ): Promise<{
+    changeSet: ManagementChangeSetProposalRecord;
+    refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
+  } | undefined> {
+    const tail = confirmationTail(request.operations, index, progress.outcomes);
+    if (tail.some(({ kind }) => kind === 'request_setup')) return undefined;
+    const proposalAgentIds = new Set(tail.flatMap((operation) =>
+      operation.kind === 'create_agent' ? [operation.agent.id] : []
+    ));
+    const held = [tail[0]!];
+    const refused: Array<{ index: number; outcome: ManagementItemOutcome }> = [];
+    for (const [offset, operation] of tail.entries()) {
+      if (offset === 0) continue;
+      const outcome = await this.refusedLaterOperation(actor, operation, proposalAgentIds);
+      if (outcome) refused.push({ index: index + offset, outcome });
+      else held.push(operation);
+    }
+    try {
+      const changeSet = await this.createChangeSet(actor, held, {
+        idempotencyKey: `confirmation:${request.operationId}`,
+        guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+        authoringReason: 'agent_edit',
+        requestOperationId: request.operationId,
+      });
+      return { changeSet, refused };
+    } catch (error) {
+      if (held.length > 1 && error instanceof ManagementError && error.code === 'revision_conflict') {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /** The outcome the call would give a later operation the requester can't make, or none. */
+  private async refusedLaterOperation(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+    proposalAgentIds: ReadonlySet<string>,
+  ): Promise<ManagementItemOutcome | undefined> {
+    const item = { itemId: operation.itemId, operationKind: operation.kind };
+    try {
+      const handoff = await this.actingAgentOperationHandoff(actor, operation);
+      if (handoff) return { ...item, disposition: 'chickpea_handoff', handoff };
+      const policy = classifyManagementOperation(await this.policyFacts(actor, operation, {
+        agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
+          proposalAgentIds.has(operation.agentId!),
+      }));
+      return policy.allowed ? undefined : { ...item, disposition: 'failed', code: policy.reason };
+    } catch (error) {
+      if (!isExpectedMutationError(error)) throw error;
+      return { ...item, disposition: 'failed', code: mutationErrorCode(error) };
+    }
+  }
+
+  private async retirePendingChangeSet(actor: LiveManagementActor): Promise<void> {
+    const pending = await this.stores.management.getActiveChangeSetProposal({
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      actorMembershipId: actor.membershipId,
+      approvalScopeKey: managementApprovalScopeKey(actor),
+    });
+    if (pending?.status === 'pending') {
+      await this.stores.management.markChangeSetProposalStale(pending.proposalId, this.now());
+    }
+  }
+
+  /**
+   * Completes the call a Slack change set holds the rest of once the set is
+   * settled, as resumeConfirmedRequest does for a single-write proposal: the
+   * set's outcomes replace the confirmation, and a retired set's operations
+   * fail as stale.
+   */
+  private async settleChangeSetRequest(
+    actor: LiveManagementActor,
+    request: ManagementRequestRecord,
+  ): Promise<ManagementApplyResult | undefined> {
+    const outcomes = request.progress.outcomes;
+    const at = outcomes.findIndex(({ disposition }) => disposition === 'confirmation_required');
+    const proposalId = outcomes[at]?.proposalId;
+    const changeSet = proposalId
+      ? await this.stores.management.getChangeSetProposal(proposalId)
+      : undefined;
+    if (changeSet?.requestOperationId !== request.operationId) return undefined;
+    let settled: ManagementItemOutcome[];
+    if (changeSet.status === 'completed' && changeSet.result) {
+      settled = changeSet.result.outcomes;
+    } else if (changeSet.status === 'stale') {
+      settled = changeSet.operations.map((operation) => ({
+        itemId: operation.itemId,
+        operationKind: operation.kind,
+        disposition: 'failed',
+        code: 'proposal_stale',
+      }));
+    } else {
+      return undefined;
+    }
+    const result = await this.resultFor(
+      request.operationId,
+      publicManagementIdempotencyKey(actor, request.idempotencyKey),
+      [...outcomes.slice(0, at), ...settled, ...outcomes.slice(at + 1)],
+    );
+    await this.stores.management.completeRequest(
+      request.operationId,
+      withoutSetupCapabilities(result),
+      this.now(),
+    );
+    return result;
+  }
+
+  /** The preview of the pending change set a confirmation waits on, for the person to read. */
+  private async withChangeSetPreview(result: ManagementApplyResult): Promise<ManagementApplyResult> {
+    const proposalId = result.outcomes.find(({ disposition }) =>
+      disposition === 'confirmation_required')?.proposalId;
+    const changeSet = proposalId
+      ? await this.stores.management.getChangeSetProposal(proposalId)
+      : undefined;
+    if (changeSet?.status !== 'pending') return result;
+    return { ...result, presentation: publicChangeSetProposal(changeSet).presentation };
   }
 
   async proposeWorkspaceChanges(
@@ -1950,12 +2092,53 @@ export class WorkspaceManagementService {
       );
     }
     const operations = requestedOperations;
+    const proposal = await this.createChangeSet(actor, operations, {
+      idempotencyKey: input.idempotencyKey,
+      guideVersion: input.guideVersion,
+      authoringReason: input.authoringReason,
+    }, async (operation) => {
+      if (operations.length !== 1 || operation.kind !== 'update_agent') return;
+      const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
+      const directSkillChange = reversibleLocalSkillChange(currentAgent, operation.patch);
+      if (directSkillChange && await this.requesterAuthorizedSkillChange(
+        actor,
+        directSkillChange,
+        currentAgent,
+      )) {
+        const actionNoun = directSkillChange.kind === 'remove'
+          ? 'removal'
+          : directSkillChange.kind === 'enable'
+          ? 'enablement'
+          : 'disablement';
+        throw new ManagementError(
+          'invalid_request',
+          `Use manage_agent_skill for this explicit reversible skill ${actionNoun}. No proposal was created.`,
+        );
+      }
+    });
+    return publicChangeSetProposal(proposal);
+  }
 
+  /**
+   * Freezes operations into one reviewed change set, which supersedes this
+   * requester's older pending one in the same conversation. The Slack host
+   * finds it for the Approve card and a typed "approve".
+   */
+  private async createChangeSet(
+    actor: LiveManagementActor,
+    operations: ManagementOperation[],
+    meta: Pick<ProposeWorkspaceChangesInput, 'idempotencyKey' | 'guideVersion' | 'authoringReason'> &
+      { requestOperationId?: string },
+    checkOperation?: (operation: ManagementOperation) => Promise<void>,
+  ): Promise<ManagementChangeSetProposalRecord> {
     const proposalId = `changeset_${this.randomId()}`;
     const targetRevisions: Record<string, number> = {};
     const changes: ManagementChangeSetPreview['changes'] = [];
     const missingSetup: ManagementChangeSetPreview['missingSetup'] = [];
     const readiness = this.requestModelReadiness();
+    const proposalAgentIds = new Set(operations.flatMap((operation) =>
+      operation.kind === 'create_agent' ? [operation.agent.id] : []
+    ));
     for (const operation of operations) {
       const handoff = await this.actingAgentOperationHandoff(actor, operation);
       if (handoff) {
@@ -1965,27 +2148,12 @@ export class WorkspaceManagementService {
         });
         throw new ChickpeaHandoffRequired(handoff);
       }
-      if (operations.length === 1 && operation.kind === 'update_agent') {
-        const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
-        const directSkillChange = reversibleLocalSkillChange(currentAgent, operation.patch);
-        if (directSkillChange && await this.requesterAuthorizedSkillChange(
-          actor,
-          directSkillChange,
-          currentAgent,
-        )) {
-          const actionNoun = directSkillChange.kind === 'remove'
-            ? 'removal'
-            : directSkillChange.kind === 'enable'
-            ? 'enablement'
-            : 'disablement';
-          throw new ManagementError(
-            'invalid_request',
-            `Use manage_agent_skill for this explicit reversible skill ${actionNoun}. No proposal was created.`,
-          );
-        }
-      }
+      await checkOperation?.(operation);
       const policy = classifyManagementOperation(
-        await this.policyFacts(actor, operation),
+        await this.policyFacts(actor, operation, {
+          agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
+            proposalAgentIds.has(operation.agentId!),
+        }),
       );
       if (!policy.allowed) {
         emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'denied' });
@@ -2030,17 +2198,18 @@ export class WorkspaceManagementService {
       actorMembershipId: actor.membershipId,
       originKey: managementActorOriginKey(actor),
       approvalScopeKey: managementApprovalScopeKey(actor),
-      idempotencyKey: input.idempotencyKey,
-      guideVersion: input.guideVersion,
-      authoringReason: input.authoringReason,
+      idempotencyKey: meta.idempotencyKey,
+      guideVersion: meta.guideVersion,
+      authoringReason: meta.authoringReason,
       operations,
       digest: managementOperationDigest(operations),
       preview,
       targetRevisions,
+      ...(meta.requestOperationId ? { requestOperationId: meta.requestOperationId } : {}),
       at,
     });
     emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
-    return publicChangeSetProposal(proposal);
+    return proposal;
   }
 
   async confirmWorkspaceChange(input: ConfirmWorkspaceChangeInput): Promise<ManagementApplyResult> {
@@ -2311,6 +2480,16 @@ export class WorkspaceManagementService {
       this.now(),
       proposal.updatedAt,
     );
+    if (proposal.requestOperationId) {
+      // The approval has applied; settling the call it came from is bookkeeping.
+      await this.stores.management.getRequest(proposal.requestOperationId)
+        .then((request) => request?.status === 'applying'
+          ? this.settleChangeSetRequest(actor, request)
+          : undefined)
+        .catch(() => {
+          console.warn('[chickpea:management] the approved call will settle when it is next read');
+        });
+    }
     return emitOperationOutcomes(actor.origin.kind, result);
   }
 
@@ -5259,6 +5438,26 @@ function resolveClientReferences(
     return { ...operation, target: { ...target, agentId } };
   }
   return operation;
+}
+
+/**
+ * What one approval covers: the operation that needs it and the rest of the
+ * call. A dependency on an item the call already applied is met; any other
+ * stays, so approval skips its dependents the way the call would have.
+ */
+function confirmationTail(
+  operations: readonly ManagementOperation[],
+  index: number,
+  outcomes: readonly ManagementItemOutcome[],
+): ManagementOperation[] {
+  const applied = new Set(outcomes.flatMap(({ itemId, disposition }) =>
+    disposition === 'applied' ? [itemId] : []));
+  return operations.slice(index).map((operation) => {
+    if (!operation.dependsOn) return operation;
+    const { dependsOn, ...rest } = operation;
+    const pending = dependsOn.filter((itemId) => !applied.has(itemId));
+    return (pending.length > 0 ? { ...rest, dependsOn: pending } : rest) as ManagementOperation;
+  });
 }
 
 function requireExpectedRevision(expected: number, actual: number): void {

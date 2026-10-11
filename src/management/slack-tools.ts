@@ -416,7 +416,9 @@ function followOnNoticeFromResult(
   if (!result.ok) return { kind: 'failure', text: FOLLOW_ON_TOOL_ERROR_TEXT };
   if (!result.result || typeof result.result !== 'object') return undefined;
   const value = result.result as Record<string, unknown>;
-  const presentation = value.presentation && typeof value.presentation === 'object'
+  // An apply result's preview is the Agent's to show; the notice stays the fixed line.
+  const presentation = !isManagementApplyResult(value) &&
+      value.presentation && typeof value.presentation === 'object'
     ? (value.presentation as Record<string, unknown>).slack
     : undefined;
   if (typeof presentation === 'string') {
@@ -969,10 +971,26 @@ export async function invokeSlackWorkspaceManagementTool<
       proposalId: (input.args as WorkspaceManagementToolArguments['confirm_workspace_change']).proposalId,
     });
   }
-  return result;
+  return withApprovalInstruction(result);
 }
 
-const PERSON_APPROVAL_INSTRUCTION = 'Nothing was applied. Another Agent\'s ask started this turn, so the person who started the exchange approves these changes. Send presentation.slack verbatim and say what it would change. The person approves with the Approve button or by replying "approve"; do not call confirm_workspace_change yourself.';
+const PERSON_APPROVES = 'Send presentation.slack verbatim and say what it would change. The person approves with the Approve button or by replying "approve"; do not call confirm_workspace_change yourself.';
+const PERSON_APPROVAL_INSTRUCTION = `Nothing was applied. Another Agent's ask started this turn, so the person who started the exchange approves these changes. ${PERSON_APPROVES}`;
+const CHANGE_SET_APPROVAL_INSTRUCTION = `The changes in presentation.slack need the person's approval and were not applied. ${PERSON_APPROVES}`;
+const TYPED_APPROVAL_INSTRUCTION = 'This change needs the person\'s approval and was not applied. Say what it would change and ask them to reply "approve"; when they do, call confirm_workspace_change with its proposalId.';
+
+/**
+ * An apply or undo that stopped for approval. A change set gets the host's
+ * Approve card after the reply; a single-write proposal is the Agent's to
+ * confirm on the person's typed "approve".
+ */
+function withApprovalInstruction(result: WorkspaceManagementToolResult): WorkspaceManagementToolResult {
+  if (!result.ok || !isManagementApplyResult(result.result)) return result;
+  const value = result.result;
+  if (!value.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) return result;
+  const instruction = value.presentation ? CHANGE_SET_APPROVAL_INSTRUCTION : TYPED_APPROVAL_INSTRUCTION;
+  return { ok: true, result: { ...value, instruction } };
+}
 
 /**
  * Another Agent's ask started this turn, so its schedule and memory writes
