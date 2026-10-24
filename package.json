@@ -210,7 +210,7 @@
     "unpdf": "1.8.1",
     "valibot": "^1.4.2",
     "yaml": "2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.63.1",
