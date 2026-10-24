@@ -40,7 +40,7 @@ function createSource(root: string): { directory: string; sha: string } {
   writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'chickpea-test', private: true, version: '0.1.20' }));
   writeFileSync(path.join(directory, 'package-lock.json'), JSON.stringify({ version: '0.1.20', lockfileVersion: 3, packages: { '': { version: '0.1.20' } } }));
   writeFileSync(path.join(directory, 'release.json'), JSON.stringify({ formatVersion: 1, version: '0.1.20' }));
-  writeFileSync(path.join(directory, '.nvmrc'), '24.20.0\n');
+  writeFileSync(path.join(directory, '.nvmrc'), '24.22.1\n');
   writeFileSync(path.join(directory, '.gitattributes'), 'release-source.json export-subst\n');
   writeFileSync(path.join(directory, 'release-source.json'), '{"commit":"$Format:%H$"}\n');
   writeFileSync(path.join(directory, 'scripts', 'install-node.sh'), '#!/bin/bash\n');
@@ -78,7 +78,7 @@ function seedPrivateNode(home: string, log: string): void {
   const bin = path.join(home, 'tools', 'node', 'bin');
   mkdirSync(bin, { recursive: true });
   writeExecutable(path.join(bin, 'node'), `#!/bin/bash
-if [[ \${1-} == --version ]]; then echo v24.20.0; exit 0; fi
+if [[ \${1-} == --version ]]; then echo v24.22.1; exit 0; fi
 exec ${JSON.stringify(REAL_NODE)} "$@"
 `);
   writeExecutable(path.join(bin, 'npm'), `#!/bin/bash
@@ -265,7 +265,7 @@ set -eu
 output=''
 previous=''
 for argument in "$@"; do if [[ $previous == --output ]]; then output=$argument; fi; previous=$argument; done
-printf '%064d  node-v24.20.0-darwin-%s.tar.gz\\n' 0 "$([[ $(uname -m) == arm64 ]] && echo arm64 || echo x64)" > "$output"
+printf '%064d  node-v24.22.1-darwin-%s.tar.gz\\n' 0 "$([[ $(uname -m) == arm64 ]] && echo arm64 || echo x64)" > "$output"
 `);
     const failed = runInstaller(['--home', home, '--ref', 'a'.repeat(40), '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start'], { PATH: `${fakeBin}:${process.env.PATH}` });
     assert.notEqual(failed.status, 0);

@@ -7,9 +7,9 @@ see [SECURITY.md](SECURITY.md).
 
 ## Local development
 
-Use Node 24.x, minimum 24.20.0. `.nvmrc` pins 24.20.0 as the single
+Use Node 24.x, minimum 24.22.1. `.nvmrc` pins 24.22.1 as the single
 development, build, and verification baseline; both packages require
-`>=24.20.0 <25`. Update that pin for future Node 24 patch/security releases
+`>=24.22.1 <25`. Update that pin for future Node 24 patch/security releases
 and verify the new baseline once. No other Node major is a routine test target.
 
 ```sh

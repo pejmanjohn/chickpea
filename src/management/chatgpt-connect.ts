@@ -20,7 +20,7 @@ agent. Do not start the callback receiver on the Cloudflare Worker or a remote V
 1. Confirm the target above is the installation the user wants to connect.
    Preserve its API key, Slack setup, and other settings. Do not redeploy or
    update software merely to connect an account.
-2. Use Node.js 24.20.0 or a newer Node 24 patch. If it is missing, handle installing
+2. Use Node.js 24.22.1 or a newer Node 24 patch. If it is missing, handle installing
    that runtime using the local agent's normal permission flow.
 3. If you have this installation's source checkout, run its bundled connector:
 

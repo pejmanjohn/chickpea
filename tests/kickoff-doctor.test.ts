@@ -27,7 +27,7 @@ function lane(overrides: object = {}) {
 function facts(overrides: object = {}) {
   return {
     generatedAt: '2026-10-01T00:00:00.000Z', worktree: '/work/tree',
-    node: { version: 'v24.20.0', baseline: '24.20.0', supported: true },
+    node: { version: 'v24.22.1', baseline: '24.22.1', supported: true },
     dependencies: { drift: [] }, hostReservation: null,
     source: { status: 'current', approvedTip: 'a'.repeat(40) }, localSchema: SCHEMA,
     lanes: [lane()], ...overrides,
@@ -48,7 +48,7 @@ test('a clean host and a signed-in free lane are ready, with the right deploy co
 
 test('host problems block the run and say how to fix them', () => {
   const report = kickoffReport(facts({
-    node: { version: 'v26.7.0', baseline: '24.20.0', supported: false },
+    node: { version: 'v26.7.0', baseline: '24.22.1', supported: false },
     dependencies: { drift: [{ name: 'fast-uri', installed: '3.1.7', locked: '3.1.8' }] },
     source: { status: 'behind', code: 'QA_SOURCE_BEHIND_MAIN' },
     hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', alive: false },
@@ -206,7 +206,7 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   const gathered = await gatherKickoffFacts({
     root, lanes: ['amber', 'cobalt'],
     readers: {
-      nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(),
+      nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(),
       source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
       capabilities: [
         { target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], secrets: { OPENAI_API_KEY: true, BROWSERBASE_API_KEY: false }, defaultChatModel: 'm', modelRoles: 'm / image unset / coding unset', versionMatchesRegistry: true, missingActorAliases: [] },
@@ -233,14 +233,14 @@ test('facts come from injectable readers, and a claim is ours only for this chec
   assert.ok(report.lanes[1].checks.some((c: any) => c.level === 'block' && /WRANGLER_UNAVAILABLE/.test(c.text)));
   // A browser probe that throws becomes a fact, and a registry that cannot be read ends gathering, not the report.
   const thrown = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     capabilities: [{ target: 'amber', health: 'ready', profile: 'core', liveVersion: 'v1', servingVersion: 'v1', schemaGeneration: SCHEMA, errors: [], missingActorAliases: [] }],
     registry: { targets: { amber: { evidenceRoot: evidence } } },
     browser: async () => { throw new Error('no daemon root'); },
   } });
   assert.deepEqual(thrown.lanes[0].browser, { state: 'error', error: 'no daemon root' });
   const broken = await gatherKickoffFacts({ root, lanes: ['amber'], readers: {
-    nodeVersion: 'v24.20.0', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
+    nodeVersion: 'v24.22.1', lockfileDrift: () => [], hostReservation: null, secretEntries: new Map(), source: { status: 'current', approvedTip: 'b'.repeat(40) }, localSchema: SCHEMA,
     get capabilities() { throw Object.assign(new Error('missing'), { code: 'TARGET_NOT_REGISTERED' }); },
   } });
   assert.equal(broken.lanesError, 'TARGET_NOT_REGISTERED');

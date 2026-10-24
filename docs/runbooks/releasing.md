@@ -44,8 +44,8 @@ npm audit --omit=dev
 npm run verify:regression -- --mode release
 ```
 
-Run the source gates once on Node 24.20.0 from `.nvmrc`. Node 24.x is the only
-supported major, minimum 24.20.0. Update the single baseline for later patch or
+Run the source gates once on Node 24.22.1 from `.nvmrc`. Node 24.x is the only
+supported major, minimum 24.22.1. Update the single baseline for later patch or
 security releases, then verify it once; do not retain a second runtime sweep.
 
 The release command requires clean committed source without private environment
@@ -101,7 +101,7 @@ volume, containers) and the relevant runtime checks pass.
 
 ## Dependency install policy
 
-The pinned Node 24.20.0 baseline includes npm 11.19.0. Install with
+The pinned Node 24.22.1 baseline includes npm 11.19.1. Install with
 `npm ci --strict-allow-scripts`. In npm 11.19, an uncovered dependency hook runs
 with a warning unless strict mode is enabled. Root `allowScripts` records exact
 package/version approvals and denials; the source export exercises strict mode.

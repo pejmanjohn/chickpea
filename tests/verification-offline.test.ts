@@ -20,7 +20,7 @@ function fixture(t: TestContext) {
   const run: any = { id: 'synthetic-run', events: [] };
   const event = (value: object) => offlineEvent(run, value);
   const plan = (steps: object[], extra: object = {}) => event({ type: 'offline_plan', mode: 'changed',
-    steps, source: source(), node: 'v24.20.0', executionFingerprint: 'environment-one',
+    steps, source: source(), node: 'v24.22.1', executionFingerprint: 'environment-one',
     fingerprint: digest({ steps, extra }), ...extra });
   const begin = (p: any, step = p.steps[0]) => event({ type: 'offline_begin', planId: p.id,
     label: offlineStepLabel(step), fingerprint: p.fingerprint, source: p.source, node: p.node });
@@ -151,7 +151,7 @@ test('evidence integrity and Node runtime identity remain required for offline r
   const f = fixture(t), step = npm('verify:durability');
   const node24 = f.plan([step]); f.complete(node24);
   const node22 = f.plan([step], { node: 'v22.19.0' }); f.check(node22, step, 'fail'); f.summary(node22, 'fail');
-  assert.deepEqual(f.view().offlinePlans.map((p: any) => [p.node, p.result]), [['v24.20.0', 'pass'], ['v22.19.0', 'fail']]);
+  assert.deepEqual(f.view().offlinePlans.map((p: any) => [p.node, p.result]), [['v24.22.1', 'pass'], ['v22.19.0', 'fail']]);
   const receipt = f.run.events.find((e: any) => e.type === 'offline_finish' && e.planId === node24.id);
   writeFileSync(receipt.evidence[0].path, 'replaced evidence');
   assert.equal(f.view().offlinePlans[0].result, 'stale');
@@ -188,18 +188,18 @@ test('a failure or stale log after the checkpoint requires a fresh full checkpoi
 test('an older Node 24 checkpoint cannot conceal a later failed full run on another Node 24 patch version', (t) => {
   const f = fixture(t), step = npm('test');
   const first = f.plan([step], { mode: 'release' }); f.complete(first); f.checkpoint(first);
-  const later = f.plan([step], { mode: 'release', node: 'v24.20.1' }); f.check(later, step, 'fail'); f.summary(later, 'fail');
+  const later = f.plan([step], { mode: 'release', node: 'v24.22.2' }); f.check(later, step, 'fail'); f.summary(later, 'fail');
   assert.equal(f.view().checkpoints.length, 0);
-  const focused = f.plan([step], { node: 'v24.20.1' }); f.complete(focused);
+  const focused = f.plan([step], { node: 'v24.22.2' }); f.complete(focused);
   assert.ok(f.view().offlinePlans.every((p: any) => p.result === 'pass'));
   assert.equal(f.view().checkpoints.length, 0);
-  const full = f.plan([step], { mode: 'release', node: 'v24.20.1' }); f.complete(full); const checkpoint = f.checkpoint(full);
+  const full = f.plan([step], { mode: 'release', node: 'v24.22.2' }); f.complete(full); const checkpoint = f.checkpoint(full);
   assert.deepEqual(f.view().checkpoints.map((e: any) => e.id), [checkpoint.id]);
 });
 
 test('a release checkpoint needs intact completed full-plan receipts, current clean source and matching configuration', (t) => {
   const f = fixture(t), step = npm('test');
-  f.event({ type: 'checkpoint', result: 'pass', source: source(), node: 'v24.20.0', evidence: [] });
+  f.event({ type: 'checkpoint', result: 'pass', source: source(), node: 'v24.22.1', evidence: [] });
   assert.equal(f.view().checkpoints.length, 0);
   const plan = f.plan([step], { mode: 'release' }); f.summary(plan); f.checkpoint(plan);
   assert.equal(f.view().checkpoints.length, 0);

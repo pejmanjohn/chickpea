@@ -507,7 +507,7 @@ intermediate full tests and clean export are unnecessary unless
 the impact or failures justify them.
 
 Once the candidate is stable and committed, deliberately run the complete release
-inventory on Node 24.20.0 from `.nvmrc` with `--mode release --record FILE`. The report requires this one current-source checkpoint;
+inventory on Node 24.22.1 from `.nvmrc` with `--mode release --record FILE`. The report requires this one current-source checkpoint;
 a build change invalidates them. Follow [releasing](../../../docs/runbooks/releasing.md)
 for audit and profile checks and finish the selected live release matrix. These
 receipts never tag, publish, deploy, or grant release approval. The clean export

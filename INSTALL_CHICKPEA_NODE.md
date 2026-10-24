@@ -1,7 +1,7 @@
 # Install Chickpea on a Mac
 
 The Node installer prepares Chickpea on one Mac with private SQLite state. It
-downloads Node 24.20.0, builds a versioned application release, creates the
+downloads Node 24.22.1, builds a versioned application release, creates the
 runtime settings and setup link, then starts Chickpea and opens your browser.
 You do not need nvm, Homebrew, a global npm package, or a Cloudflare Worker.
 
