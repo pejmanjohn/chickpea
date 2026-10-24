@@ -224,7 +224,7 @@ test('standalone keeps the bare bucket; tenancy needs an installation and never 
 });
 
 /** The Sandbox SDK release whose R2 calls the view was audited against. */
-const AUDITED_SDK_VERSION = '0.12.10';
+const AUDITED_SDK_VERSION = '0.12.14';
 const SDK_DIST = new URL('../node_modules/@cloudflare/sandbox/dist/', import.meta.url);
 
 test('the installed Sandbox SDK calls on its bucket exactly what the view offers', () => {
