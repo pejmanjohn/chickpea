@@ -186,7 +186,7 @@ test('the 2026-10-07 catalog copies each page\'s list price, cache rates, and lo
   }
 });
 
-test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list prices, cache rates, and long-context tiers', () => {
+test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list prices and Sonnet 5.5\'s corrected cache read', () => {
   const reviewedAt = Date.UTC(2026, 9, 24);
   assert.deepEqual(PRICE_CATALOGS_2026_10_24.map((version) => {
     const rate = tokenRate(version);
@@ -201,6 +201,9 @@ test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list 
     'anthropic-haiku-5-5_2026-10-24', 'anthropic', 'https://platform.claude.com/docs/en/about-claude/pricing', reviewedAt, reviewedAt,
     Date.UTC(2027, 0, 22), ['claude-haiku-5-5'], 100_000, 500_000, 10_000, 125_000, 200_000,
     { fromPromptTokens: 100_001, inputMicrosPerUnit: 500_000, outputMicrosPerUnit: 2_500_000, cacheReadMicrosPerUnit: 50_000, cacheWriteMicrosPerUnit: 625_000, cacheWrite1hMicrosPerUnit: 1_000_000 },
+  ], [
+    'anthropic-sonnet-5-5_2026-10-24', 'anthropic', 'https://platform.claude.com/docs/en/about-claude/pricing', reviewedAt, reviewedAt,
+    Date.UTC(2027, 0, 22), ['claude-sonnet-5-5'], 2_000_000, 10_000_000, 100_000, 2_500_000, 4_000_000, undefined,
   ]]);
 });
 
