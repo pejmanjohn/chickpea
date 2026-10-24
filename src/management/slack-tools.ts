@@ -108,7 +108,8 @@ const SIGNAL_ALLOWED_ATTRIBUTE_KEYS = new Set<string>([
 /**
  * The host appends one attachment-analysis signal to an upload turn, and it
  * becomes the delivery that later renders of the response read until another
- * delivery joins. It carries the triggering message's own identity forward
+ * message reaches the model: a joined delivery or another appended signal,
+ * such as the file-delivery check. It carries the triggering message's own identity forward
  * plus its own bounded evidence counters, so the same Slack request keeps the
  * same management authority on each of its renders.
  */

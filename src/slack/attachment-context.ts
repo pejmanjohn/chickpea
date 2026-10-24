@@ -29,8 +29,9 @@ import { createSlackAttachmentClient } from './attachment-client.ts';
  * Identity the attachment-analysis signal carries forward from the message
  * that triggered it. Once appended, the signal is the delivery that later
  * renders of the same Slack request read (after a tool turn, and at the
- * would-stop seam), so that request's trusted routing facts must reach those
- * renders unchanged; nothing here is derived from a file.
+ * would-stop seam) until another message reaches the model, such as a joined
+ * delivery or the file-delivery check signal. That request's trusted routing
+ * facts must reach those renders unchanged; nothing here is derived from a file.
  */
 const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   'slackUserId',
@@ -98,7 +99,7 @@ interface SlackAttachmentAnalysisInput {
   signal?: AbortSignal;
 }
 
-/** Appending the analysis signal advances useDelivery to it until another delivery joins the response. */
+/** Appending the analysis signal advances useDelivery to it until another message reaches the model: a joined delivery or another appended signal, such as the file-delivery check. */
 export function isSlackAttachmentContextDelivery(delivery: DeliveredMessage, plan: RuntimePlanV2): boolean {
   return delivery.kind === 'signal' && delivery.type === 'slack.attachment_context' &&
     delivery.tagName === 'slack_attachment_context' &&
