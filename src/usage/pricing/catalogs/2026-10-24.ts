@@ -8,7 +8,7 @@ const OPENAI_LONG_CONTEXT_FROM = 272_001;
 /** Anthropic bills a Claude Haiku 5.5 prompt of more than 100K tokens, cache reads and writes included, at its higher rates. */
 const HAIKU_5_5_LONG_CONTEXT_FROM = 100_001;
 
-/** List prices reviewed on 2026-10-24 for GPT-6.1 Sol and Claude Haiku 5.5, which pi-ai 1.1 ships, and Sonnet 5.5's cache-read correction. */
+/** List prices reviewed on 2026-10-24 for Claude Sonnet 5.5, and for GPT-6.1 Sol and Claude Haiku 5.5, which pi-ai 1.1 ships. */
 export const PRICE_CATALOGS_2026_10_24: UsagePriceVersion[] = [
   version({
     id: 'openai-gpt-6.1-sol_2026-10-24',
@@ -68,8 +68,7 @@ export const PRICE_CATALOGS_2026_10_24: UsagePriceVersion[] = [
       },
     }],
   }),
-  // Corrects the 2026-10-07 cache-read rate: Anthropic prices Sonnet 5.5 cache
-  // hits at 0.05x its $2 input, not the usual 0.1x.
+  // Anthropic prices Sonnet 5.5 cache hits at 0.05x its $2 input, not the usual 0.1x.
   version({
     id: 'anthropic-sonnet-5-5_2026-10-24',
     providerId: 'anthropic',

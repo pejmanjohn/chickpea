@@ -637,9 +637,9 @@ test('a platform-funded request without a current list price is refused before s
   const customer = await withModelAccess(grant('inst_credits', 'customer'), env, 'reply', () => modelCall(unpricedAnthropic.model));
   assert.equal(customer.stopReason, 'stop', 'a customer-funded request needs no price');
 
-  const priced = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
-  assert.ok(priced);
-  t.mock.timers.setTime(priced.version.staleAfter);
+  const newest = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
+  assert.ok(newest);
+  t.mock.timers.setTime(newest.version.staleAfter);
   const stale = scriptedProvider(ANTHROPIC_COMPAT_PROVIDER_ID, SONNET, 'anthropic-messages', []);
   const refusedStale = await withModelAccess(grant('inst_credits', 'platform'), env, 'reply', () => modelCall(stale.model));
   assert.match(refusedStale.errorMessage ?? '', /no current price in Chickpea credits/, 'a stale price is not current');
@@ -735,9 +735,11 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
 });
 
 const ADMIN_TOKEN = 'platform-funding-admin-token';
-const SONNET_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW);
-assert.ok(SONNET_PRICE, 'the Admin test model is priced at NOW');
-const AFTER_SONNET_PRICE_STALE = SONNET_PRICE.version.staleAfter;
+assert.ok(priceCatalogFor('standard_input_output', 'anthropic', SONNET, NOW), 'the Admin test model is priced at NOW');
+/** A later version replaces an earlier one, so the model has no current price once its newest version is stale. */
+const SONNET_NEWEST_PRICE = priceCatalogFor('standard_input_output', 'anthropic', SONNET, Number.MAX_SAFE_INTEGER);
+assert.ok(SONNET_NEWEST_PRICE);
+const AFTER_SONNET_PRICE_STALE = SONNET_NEWEST_PRICE.version.staleAfter;
 const PROVIDER_UNAVAILABLE = {
   status: 'repair_required',
   providerId: 'anthropic',
