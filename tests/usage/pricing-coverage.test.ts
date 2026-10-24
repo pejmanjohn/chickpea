@@ -136,11 +136,19 @@ test('one-hour cache writes price at the one-hour rate from the 2026-10-07 revie
     cacheWrite1hTokens: 10_000,
   };
   // 231×2 + 732×10 + 85,706×0.20 + 5,654×2.50 + 10,000×4 USD per million tokens.
-  assert.deepEqual(estimateUsage(measurement('anthropic', 'claude-sonnet-5-5', cached)), {
+  assert.deepEqual(estimateUsage(measurement('anthropic', 'claude-sonnet-5-5', { ...cached, observedAt: Date.UTC(2026, 9, 23, 12) })), {
     estimateCompleteness: 'complete',
     estimateAmountMicros: 79_058,
     estimateCurrency: 'USD',
     priceVersionId: 'anthropic-sonnet-5-5_2026-10-07',
+    priceUnknownReason: null,
+  });
+  // The 2026-10-24 correction reads Sonnet 5.5 cache hits at $0.10: 85,706×0.10.
+  assert.deepEqual(estimateUsage(measurement('anthropic', 'claude-sonnet-5-5', cached)), {
+    estimateCompleteness: 'complete',
+    estimateAmountMicros: 70_488,
+    estimateCurrency: 'USD',
+    priceVersionId: 'anthropic-sonnet-5-5_2026-10-24',
     priceUnknownReason: null,
   });
   assert.equal(
