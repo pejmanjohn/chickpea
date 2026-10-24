@@ -260,3 +260,20 @@ test('pending delivery recovery stops at its total deadline', async () => {
   // The same total deadline bounds fetch and the wait between attempts.
   assert.ok(signal?.aborted || Date.now() - started >= 20);
 });
+
+test('pending delivery recovery waits out its deadline when the wall clock runs ahead of the timers', async (t) => {
+  // Built before the deadline starts: the first Response in a process can take longer than the deadline.
+  const pending = new Response(null, { status: 503 });
+  const capability = createRecoveryAuthority().capability;
+  t.mock.timers.enable({ apis: ['Date'] });
+  let calls = 0;
+  await assert.rejects(requestDeliveryRecovery({ url: 'https://test.workers.dev', workerVersion: 'serving-version', capability,
+    timeoutMs: 20,
+    fetchImpl: async () => {
+      calls++;
+      t.mock.timers.tick(10);
+      return pending;
+    },
+  }), /not verified/);
+  assert.equal(calls, 1);
+});
