@@ -7,8 +7,7 @@
       "canonical": "openai/gpt-6.1-sol",
       "displayName": "GPT-6.1 Sol",
       "lanes": {
-        "subscription": "openai-codex-responses-standard@1",
-        "apiKey": "openai-platform-responses-sol-tier@1"
+        "subscription": "openai-codex-responses-standard@1"
       }
     },
     {

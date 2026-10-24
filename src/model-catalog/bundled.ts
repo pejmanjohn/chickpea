@@ -9,7 +9,9 @@ import type {
 } from './types.ts';
 
 export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
-  openAiEntry('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai-platform-responses-sol-tier@1'),
+  // The Astra profile omits the reasoning effort when no level is set; GPT-6.1
+  // Sol rejects `none`. Usage pricing does not read profile costs.
+  openAiEntry('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai-platform-responses-astra-tier@1'),
   openAiEntry('gpt-6-astra', 'GPT-6 Astra', 'openai-platform-responses-astra-tier@1'),
   openAiEntry('gpt-6-sol', 'GPT-6 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-6-luna', 'GPT-6 Luna', 'openai-platform-responses-luna-tier@1'),

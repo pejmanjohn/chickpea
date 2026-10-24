@@ -74,7 +74,11 @@ function subscriptionModel(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens: 128_000,
-    thinkingLevelMap: { minimal: 'low', xhigh: 'xhigh' },
+    // Since Pi 1.1, a Codex request with no thinking level sends the `off`
+    // value, defaulting to `none`. `null` keeps the backend's own default
+    // effort, which every subscription model accepts; GPT-6.1 Sol and GPT-6
+    // Astra reject `none`.
+    thinkingLevelMap: { off: null, minimal: 'low', xhigh: 'xhigh' },
   };
 }
 

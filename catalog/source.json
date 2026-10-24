@@ -7,16 +7,14 @@
       "canonical": "openai/gpt-6.1-sol",
       "displayName": "GPT-6.1 Sol",
       "lanes": {
-        "subscription": "openai-codex-responses-standard@1",
-        "apiKey": "openai-platform-responses-sol-tier@1"
+        "subscription": "openai-codex-responses-standard@1"
       },
       "provenance": {
         "sourceRefs": ["npm:@earendil-works/pi-ai@1.1.0", "https://developers.openai.com/api/docs/pricing"],
         "reviewedAt": "2026-10-24"
       },
       "laneStatus": {
-        "subscription": { "state": "contract_owned" },
-        "apiKey": { "state": "backfill" }
+        "subscription": { "state": "contract_owned" }
       }
     },
     {
