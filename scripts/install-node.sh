@@ -183,27 +183,54 @@ node_previous="$install_home/tools/node.previous"
 for managed_path in "$install_home/tools" "$node_root" "$node_previous" "$install_home/releases" "$install_home/bin"; do
   [[ ! -L $managed_path ]] || die "managed installation path must not be a symlink: $managed_path"
 done
+# Asks the runtime manager for status as sendControlCommand in
+# scripts/lib/node-installation.mjs does. Send a complete request: a bare
+# connect crashes managers released before early disconnects were handled.
+# Fails closed; only a missing endpoint or token, or a stopped reply, is stopped.
+installation_running() {
+  ! "$node_bin" - "$install_home" <<'NODE'
+const fs=require('fs'),net=require('net'),path=require('path');
+const stopped=()=>process.exit(0),running=()=>process.exit(1);
+const home=fs.realpathSync(process.argv[2]),uid=process.getuid();
+const digest=require('crypto').createHash('sha256').update(home).digest('hex').slice(0,32);
+const socket=`/tmp/chickpea-node-${uid}/${digest}.sock`;
+// Never send the token to an endpoint another user could control.
+for(const [file,isKind] of [[path.dirname(socket),'isDirectory'],[socket,'isSocket']]){
+  const info=fs.lstatSync(file,{throwIfNoEntry:false});
+  if(!info)stopped();
+  if(!info[isKind]()||info.uid!==uid||(info.mode&0o077)!==0)running();
+}
+const tokenFile=path.join(home,'control','token');
+if(!fs.existsSync(tokenFile))stopped();
+const token=fs.readFileSync(tokenFile,'utf8').trim();
+setTimeout(running,2000);
+const client=net.connect(socket);
+let reply='';
+client.setEncoding('utf8');
+client.on('data',(chunk)=>{reply+=chunk;});
+client.once('connect',()=>client.end(`${JSON.stringify({token,command:'status'})}\n`));
+client.once('error',(error)=>['ENOENT','ECONNREFUSED'].includes(error.code)?stopped():running());
+client.once('end',()=>{
+  try{const parsed=JSON.parse(reply);if(parsed.ok===true&&parsed.result?.running===false)stopped();}catch{}
+  running();
+});
+NODE
+}
+
 # Refresh an older patch of the pinned Node major in place; refuse anything else.
 refresh_from=''
 if [[ -e $node_root ]]; then
-  existing_node=''
-  [[ ! -x $node_bin ]] || existing_node=$("$node_bin" --version 2>/dev/null || true)
+  existing_node=$("$node_bin" --version 2>/dev/null || true)
   case $(node_relation "${existing_node#v}") in
     same) ;;
     older) refresh_from=$existing_node ;;
+    newer) die "existing private Node runtime $existing_node is newer than this installer's v$NODE_VERSION; use the current installer from main" ;;
     *) die "existing private Node runtime is incomplete or incompatible at $node_root; preserve it and investigate before retrying" ;;
   esac
 fi
 if [[ -n $refresh_from ]]; then
-  # A connect to the runtime manager's control socket (named as in
-  # scripts/lib/node-installation.mjs) means this installation is running.
-  "$node_bin" -e '
-    const fs=require("fs"),net=require("net"),home=fs.realpathSync(process.argv[1]);
-    const digest=require("crypto").createHash("sha256").update(home).digest("hex").slice(0,32);
-    const socket=net.connect(`/tmp/chickpea-node-${process.getuid()}/${digest}.sock`);
-    socket.once("connect",()=>process.exit(1));socket.once("error",()=>process.exit(0));
-    setTimeout(()=>process.exit(1),2000);' "$install_home" ||
-    die "stop Chickpea before the installer refreshes its private Node runtime from $refresh_from to v$NODE_VERSION: $(quote "$install_home/bin/chickpea-node") stop"
+  running_refusal="stop Chickpea before the installer refreshes its private Node runtime from $refresh_from to v$NODE_VERSION: $(quote "$install_home/bin/chickpea-node") stop"
+  if installation_running; then die "$running_refusal"; fi
 fi
 if [[ ! -e $node_root || -n $refresh_from ]]; then
   node_archive="node-v${NODE_VERSION}-${node_platform}.tar.gz"
@@ -225,6 +252,8 @@ if [[ ! -e $node_root || -n $refresh_from ]]; then
   rm -rf "$install_home/tools/node.incomplete"
   mv "$work/node" "$install_home/tools/node.incomplete"
   if [[ -n $refresh_from ]]; then
+    # `start` does not take the installer lock, so ask again after the download.
+    if installation_running; then die "$running_refusal"; fi
     rm -rf "$node_previous"
     mv "$node_root" "$node_previous"
   fi

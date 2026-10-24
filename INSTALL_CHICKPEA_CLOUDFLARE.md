@@ -135,7 +135,7 @@ Do not change an unrelated project's runtime. The local tools currently require
 Node 24.x with a minimum of 24.22.1; `.nvmrc` is the source for the exact build
 pin. No Node application server is needed for this installation.
 
-The pinned Node baseline includes npm 11.19.0. This release records exact
+The pinned Node baseline includes npm 11.19.1. This release records exact
 reviewed dependency hooks in `package.json` under `allowScripts`; strict mode
 rejects any uncovered hook before running it. npm 11.19 otherwise warns and
 can still run uncovered hooks. Do not run an approval command that edits the

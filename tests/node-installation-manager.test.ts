@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import path from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
@@ -527,6 +527,36 @@ test('control client refuses untrusted endpoint paths before sending its token',
     /must not be accessible by other users/,
   );
   await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+test('a control client that disconnects before sending a request does not stop the runtime manager', async (t) => {
+  const f = fixture();
+  t.after(() => rmSync(f.root, { recursive: true, force: true }));
+  await init(f);
+  symlinkSync(f.release, path.join(f.home, 'current'));
+  writeFileSync(path.join(f.release, 'scripts', 'start-node.mjs'), '// spawn is injected by the test\n');
+  const child = new EventEmitter() as any;
+  child.kill = (signal: string) => { queueMicrotask(() => child.emit('exit', null, signal)); return true; };
+  const start = runStart(f.home, {
+    installSignalHandlers: false,
+    readinessTimeoutMs: 1_000,
+    spawnImpl: () => child,
+    fetchImpl: async () => new Response('ready'),
+  });
+  t.after(() => sendControlCommand(f.home, 'stop').catch(() => undefined));
+  await eventually(async () => (await sendControlCommand(f.home, 'status')).appReady === true);
+
+  // The installer's original probe: connect, then close without sending anything.
+  await new Promise<void>((resolve, reject) => {
+    const probe = createConnection(controlSocketPath(realpathSync(f.home)));
+    probe.once('error', reject);
+    probe.once('connect', () => probe.destroy());
+    probe.once('close', () => resolve());
+  });
+
+  assert.equal((await sendControlCommand(f.home, 'status')).running, true);
+  await sendControlCommand(f.home, 'stop');
+  assert.equal(await start, 0);
 });
 
 test('runtime operation locks refuse same-boot ambiguity and do not block a later boot', async (t) => {

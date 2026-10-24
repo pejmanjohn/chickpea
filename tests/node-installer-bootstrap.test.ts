@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -15,7 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer, type Server } from 'node:net';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -166,6 +166,60 @@ function runInstaller(args: string[], env: NodeJS.ProcessEnv = {}) {
     encoding: 'utf8',
     env: { ...process.env, CHICKPEA_INSTALL_NONINTERACTIVE: '1', ...env },
   });
+}
+
+// For runs that talk to a server in this process, which spawnSync would block.
+function runInstallerAsync(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ status: number | null; stderr: string }> {
+  const child = spawn('/bin/bash', [INSTALLER, ...args], {
+    env: { ...process.env, CHICKPEA_INSTALL_NONINTERACTIVE: '1', ...env },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (status) => resolve({ status, stderr }));
+  });
+}
+
+// Answers status requests on the runtime manager's real control socket for
+// `home` with each of `replies` in turn, as a running or stopped manager would.
+async function serveControlStatus(home: string, replies: boolean[]) {
+  const token = 'test-control-token';
+  mkdirSync(path.join(home, 'control'), { mode: 0o700 });
+  writeFileSync(path.join(home, 'control', 'token'), `${token}\n`, { mode: 0o600 });
+  const socket = controlSocketPath(realpathSync(home));
+  assert.equal(path.dirname(socket), path.join('/tmp', `chickpea-node-${process.getuid?.()}`));
+  // Removed afterwards only if this test created it.
+  const createdDirectory = !existsSync(path.dirname(socket));
+  mkdirSync(path.dirname(socket), { recursive: true, mode: 0o700 });
+  const requests: unknown[] = [];
+  const server = createServer({ allowHalfOpen: true }, (connection) => {
+    let input = '';
+    connection.setEncoding('utf8');
+    connection.on('data', (chunk) => { input += chunk; });
+    connection.on('end', () => {
+      requests.push(JSON.parse(input));
+      const running = replies[Math.min(requests.length, replies.length) - 1];
+      connection.end(`${JSON.stringify({ ok: true, result: { running } })}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socket, resolve);
+  });
+  chmodSync(socket, 0o600);
+  return {
+    token,
+    requests,
+    async close() {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(socket, { force: true });
+      if (createdDirectory) {
+        try { rmdirSync(path.dirname(socket)); } catch { /* another installation is using it */ }
+      }
+    },
+  };
 }
 
 test('bootstrap archives only clean tracked source, builds in an isolated environment, and activates atomically', { skip: process.platform !== 'darwin' }, () => {
@@ -408,37 +462,39 @@ test('a rerun on a stopped installation refreshes an older private Node 24 runti
   }
 });
 
-test('a rerun refuses to refresh the private Node runtime before downloading while the installation is running', { skip: process.platform !== 'darwin' }, async () => {
+test('a rerun asks the runtime manager for status before downloading and again before replacing the private Node runtime', { skip: process.platform !== 'darwin' }, async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-refresh-running-'));
-  let socket = '';
-  let createdDirectory = false;
-  let server: Server | undefined;
   try {
-    const { home, log } = createManagedHome(root, '24.20.0');
-    // The manager's real socket directory; removed afterwards only if this test created it.
-    socket = controlSocketPath(realpathSync(home));
-    assert.equal(path.dirname(socket), path.join('/tmp', `chickpea-node-${process.getuid?.()}`));
-    createdDirectory = !existsSync(path.dirname(socket));
-    mkdirSync(path.dirname(socket), { recursive: true, mode: 0o700 });
-    const listening = createServer((connection) => connection.destroy());
-    server = listening;
-    await new Promise<void>((resolve, reject) => {
-      listening.once('error', reject);
-      listening.listen(socket, resolve);
-    });
-    const download = fakeNodeDownload(root, log);
-    const result = runInstaller(['--home', home, '--no-start', '--no-open'], { PATH: `${download.bin}:${process.env.PATH}` });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /stop Chickpea before the installer refreshes its private Node runtime from v24\.20\.0 to v24\.22\.1: '[^']*\/install home\/bin\/chickpea-node' stop/);
-    assert.equal(existsSync(download.curlLog), false);
-    assert.equal(privateNodeVersion(path.join(home, 'tools', 'node')), 'v24.20.0');
-    assert.equal(existsSync(path.join(home, 'tools', 'node.previous')), false);
-  } finally {
-    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
-    if (socket) rmSync(socket, { force: true });
-    if (createdDirectory) {
-      try { rmdirSync(path.dirname(socket)); } catch { /* another installation is using it */ }
+    const source = createSource(root, '24.20.0');
+    // Running from the start, started during the download, and stopped throughout.
+    for (const replies of [[true], [false, true], [false, false]]) {
+      const caseRoot = path.join(root, replies.join('-'));
+      const { home, log } = createManagedHome(caseRoot);
+      const first = runInstaller(['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start', '--no-open']);
+      assert.equal(first.status, 0, first.stderr);
+      seedPrivateNode(home, log, '24.20.0');
+      const tools = path.join(home, 'tools');
+      const download = fakeNodeDownload(caseRoot, log);
+      const control = await serveControlStatus(home, replies);
+      try {
+        const result = await runInstallerAsync(['--home', home, '--no-start', '--no-open'], { PATH: `${download.bin}:${process.env.PATH}` });
+        assert.deepEqual(control.requests, replies.map(() => ({ token: control.token, command: 'status' })));
+        if (replies.includes(true)) {
+          assert.notEqual(result.status, 0);
+          assert.match(result.stderr, /stop Chickpea before the installer refreshes its private Node runtime from v24\.20\.0 to v24\.22\.1: '[^']*\/install home\/bin\/chickpea-node' stop/);
+          assert.equal(existsSync(download.curlLog), replies.length > 1);
+          assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.20.0');
+          assert.equal(existsSync(path.join(tools, 'node.previous')), false);
+        } else {
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.22.1');
+          assert.equal(privateNodeVersion(path.join(tools, 'node.previous')), 'v24.20.0');
+        }
+      } finally {
+        await control.close();
+      }
     }
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -446,13 +502,16 @@ test('a rerun refuses to refresh the private Node runtime before downloading whi
 test('a rerun keeps refusing a newer or different-major private Node runtime', { skip: process.platform !== 'darwin' }, () => {
   const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-refresh-refused-'));
   try {
-    for (const version of ['24.23.0', '22.22.1']) {
+    for (const [version, refusal] of [
+      ['24.23.0', /existing private Node runtime v24\.23\.0 is newer than this installer's v24\.22\.1; use the current installer from main/],
+      ['22.22.1', /existing private Node runtime is incomplete or incompatible/],
+    ] as const) {
       const caseRoot = path.join(root, version);
       const { home, log } = createManagedHome(caseRoot, version);
       const download = fakeNodeDownload(caseRoot, log);
       const result = runInstaller(['--home', home, '--no-start', '--no-open'], { PATH: `${download.bin}:${process.env.PATH}` });
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /existing private Node runtime is incomplete or incompatible/);
+      assert.match(result.stderr, refusal);
       assert.equal(existsSync(download.curlLog), false);
       assert.equal(privateNodeVersion(path.join(home, 'tools', 'node')), `v${version}`);
       assert.equal(existsSync(path.join(home, 'tools', 'node.previous')), false);

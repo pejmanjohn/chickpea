@@ -662,6 +662,10 @@ async function createControlServer(home, handle) {
   }
   const expectedToken = readFileSync(path.join(home, 'control', 'token'), 'utf8').trim();
   const server = createServer({ allowHalfOpen: true }, (connection) => {
+    // A client that disconnects before the reply (a bare connect probe, or a
+    // sendControlCommand that timed out) makes the reply fail with EPIPE. An
+    // unhandled socket error would kill the runtime manager and orphan its children.
+    connection.on('error', () => {});
     connection.setEncoding('utf8');
     let input = '';
     connection.on('data', (chunk) => {
