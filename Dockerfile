@@ -3,7 +3,7 @@
 # compatibility at startup. The base is pinned by digest (the tag's manifest on
 # Docker Hub), so a retagged upstream image never changes a build; bump the tag
 # and digest together. `npm run verify:hygiene` refuses an unpinned FROM.
-# Ubuntu 22.04, Node 22.23.4, ca-certificates 20260816, git/curl/jq preinstalled.
+# Ubuntu 22.04, Node 22.23.4, git/curl/jq preinstalled.
 # This vendor-owned runtime runs sandbox tools, not the Chickpea host/build.
 # It is independent of the Node 24 policy in .nvmrc; preserve SDK/image parity.
 #
@@ -25,9 +25,9 @@ RUN python3 -m pip install --no-cache-dir pytest==8.3.4
 # — screenshots are on the agent's hot path; a ~150 MB per-turn install would
 # dominate latency). Installed into a fixed, require-able dir; NODE_PATH lets our
 # screenshot helper `require("playwright")` from anywhere. Playwright 1.49.1 is
-# validated against this base's Node 22.23.4 (screenshot passed). Chromium
-# launches with --no-sandbox — the container is the isolation boundary (root by
-# design, matching all reference platforms).
+# validated against this base's Node 22.23.4 (a screenshot passed on 0.12.14).
+# Chromium launches with --no-sandbox — the container is the isolation boundary
+# (root by design, matching all reference platforms).
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV NODE_PATH=/opt/chickpea/node_modules
 RUN mkdir -p /opt/chickpea \
