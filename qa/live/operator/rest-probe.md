@@ -10,7 +10,7 @@ operator workflow. Keep all coordinates and receipts outside the repository.
 
 ## Start the disposable provider
 
-Start `scripts/live-test-rest-probe.mjs` with Node 24.20.0, an absolute `--log`
+Start `scripts/live-test-rest-probe.mjs` with Node 24.22.1, an absolute `--log`
 path in an existing private directory outside Git, and an `--expect-bearer` value
 beginning with `qa-synthetic-` followed by 8–100 letters, digits, underscores, or
 hyphens. This must be a generated synthetic value, never a provider credential.

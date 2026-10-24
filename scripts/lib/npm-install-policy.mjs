@@ -123,7 +123,7 @@ export function prepareNpmInstallPolicy(options) {
   const version = npmRead(['--version'], context).trim();
   const parsedVersion = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!parsedVersion || Number(parsedVersion[1]) !== 11 || Number(parsedVersion[2]) < 19) {
-    throw fail('NPM_VERSION_UNSUPPORTED', 'Use npm 11.19.0 or a compatible newer npm 11 version; the pinned Node 24 baseline includes npm 11.19.0.');
+    throw fail('NPM_VERSION_UNSUPPORTED', 'Use npm 11.19.0 or a compatible newer npm 11 version; the pinned Node 24 baseline includes npm 11.19.1.');
   }
   let config;
   try { config = JSON.parse(npmRead(['config', 'list', '--json'], context)); }

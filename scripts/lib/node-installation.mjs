@@ -662,6 +662,8 @@ async function createControlServer(home, handle) {
   }
   const expectedToken = readFileSync(path.join(home, 'control', 'token'), 'utf8').trim();
   const server = createServer({ allowHalfOpen: true }, (connection) => {
+    // A client that disconnected early makes the reply fail with EPIPE; do not let that kill the manager.
+    connection.on('error', () => {});
     connection.setEncoding('utf8');
     let input = '';
     connection.on('data', (chunk) => {

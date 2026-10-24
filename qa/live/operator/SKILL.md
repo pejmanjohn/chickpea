@@ -94,8 +94,8 @@ widen the authorization above.
 
 ## Node baseline
 
-Use Node 24.20.0 from `.nvmrc` for development, builds, and verification. Node
-24.x is the only supported major, minimum 24.20.0. Update the single pin for
+Use Node 24.22.1 from `.nvmrc` for development, builds, and verification. Node
+24.x is the only supported major, minimum 24.22.1. Update the single pin for
 future Node 24 patch/security releases; do not add another recurring target.
 Retain old receipts with their actual Node version. They cannot establish
 current Node 24 proof. Workerd, artifact, and real Slack acceptance remain

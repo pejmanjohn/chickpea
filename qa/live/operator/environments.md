@@ -469,7 +469,7 @@ four persistent paths beneath it:
 
 Follow the [Node installation procedure](../../../docs/runbooks/operations.md#production-node)
 for the exact candidate, including its Node build and supported Slack transport.
-Use Node 24.20.0. A checkout build uses `npm run flue:build`, with host coordination;
+Use Node 24.22.1. A checkout build uses `npm run flue:build`, with host coordination;
 do not deploy to Cloudflare for this local test. Record the artifact/revision,
 Node version, transport, local port and public endpoint. Inspect pending work and
 use the supported disconnect/install flow for the borrowed workspace. Do not

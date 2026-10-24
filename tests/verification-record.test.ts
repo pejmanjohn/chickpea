@@ -48,7 +48,7 @@ function fixture(t: TestContext) {
 }
 
 function offlinePlan(f: ReturnType<typeof fixture>, scripts: string[], results: string[], options: { node?: string; mode?: string; inputs?: ReturnType<typeof source>; config?: string; summary?: false } = {}) {
-  const node = options.node ?? 'v24.20.0', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
+  const node = options.node ?? 'v24.22.1', mode = options.mode ?? 'changed', inputs = options.inputs ?? source();
   const steps = scripts.map((script) => ({ kind: 'npm', script }));
   const executionFingerprint = digest({ node, config: options.config ?? 'synthetic-config' });
   const fingerprint = digest({ executionFingerprint, source: inputs.tree, steps });
@@ -376,7 +376,7 @@ test('a host wait that ends after the unreserved prefix leaves the run incomplet
     assert.equal(view.offlinePlans[0].result, 'not_run', mode);
     assert.deepEqual(view.offlineObligations.map((o: any) => [o.id, o.result]), [
       ['npm:verify:hygiene', 'pass'], ['npm:typecheck', 'pass'], ['npm:build', 'not_run'], ['npm:verify:durability', 'not_run']], mode);
-    assert.ok(view.incompleteReasons.includes('required offline checks on v24.20.0 are not_run'), mode);
+    assert.ok(view.incompleteReasons.includes('required offline checks on v24.22.1 are not_run'), mode);
     assert.deepEqual(view.openOffline, [], 'nothing is left open');
     if (mode === 'release') assert.equal(view.releasePending, true, 'no checkpoint without the full plan');
     // A rerun that completes the plan completes the run.

@@ -132,10 +132,10 @@ because the example uses it, or replace the user's global Node. If Node or
 Git is missing, use the platform's normal installation method and official
 instructions; involve the user only if an installer requires their approval.
 Do not change an unrelated project's runtime. The local tools currently require
-Node 24.x with a minimum of 24.20.0; `.nvmrc` is the source for the exact build
+Node 24.x with a minimum of 24.22.1; `.nvmrc` is the source for the exact build
 pin. No Node application server is needed for this installation.
 
-The pinned Node baseline includes npm 11.19.0. This release records exact
+The pinned Node baseline includes npm 11.19.1. This release records exact
 reviewed dependency hooks in `package.json` under `allowScripts`; strict mode
 rejects any uncovered hook before running it. npm 11.19 otherwise warns and
 can still run uncovered hooks. Do not run an approval command that edits the

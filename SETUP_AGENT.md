@@ -5,7 +5,7 @@ Use the private setup link printed by the deployment. Chickpea creates the custo
 ## Before starting
 
 For source builds, local Node hosting, or the CLI, use Node 24.x, minimum
-24.20.0. Run `nvm install && nvm use` in the checkout to select `.nvmrc`.
+24.22.1. Run `nvm install && nvm use` in the checkout to select `.nvmrc`.
 A Cloudflare Worker itself runs in workerd, independently of build-time Node.
 
 - Know the Slack workspace where Chickpea should live. The installed `team_id` becomes the deployment's immutable workspace boundary.

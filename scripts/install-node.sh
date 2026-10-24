@@ -4,9 +4,9 @@ set +x
 set -euo pipefail
 
 INSTALLER_HOME_MARKER='chickpea-node-v1'
-NODE_VERSION='24.20.0'
-NODE_DARWIN_ARM64_SHA256='40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8'
-NODE_DARWIN_X64_SHA256='9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4'
+NODE_VERSION='24.22.1'
+NODE_DARWIN_ARM64_SHA256='89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7'
+NODE_DARWIN_X64_SHA256='d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035'
 NGROK_VERSION='3.39.11'
 NGROK_DARWIN_ARM64_SHA256='9324a6552d74e25d5bdfdbedc4b32422c96f044fda37877498ad8ef10bddf7f7'
 NGROK_DARWIN_AMD64_SHA256='c6b9b3d9184fc08c33fb8b181d9f241d8f5d61162a0be0521b6dfc1f11813a96'
@@ -166,15 +166,69 @@ verify_sha256() {
   [[ $actual == "$expected" ]] || die "$label checksum verification failed"
 }
 
+# Prints older, same, or newer for an X.Y.Z on NODE_VERSION's major line; otherwise other.
+node_relation() {
+  IFS=. read -r pinned_major pinned_minor pinned_patch <<< "$NODE_VERSION"
+  [[ $1 =~ ^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$ ]] || { echo other; return; }
+  major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
+  if ((major != pinned_major)); then echo other
+  elif ((minor == pinned_minor && patch == pinned_patch)); then echo same
+  elif ((minor < pinned_minor || (minor == pinned_minor && patch < pinned_patch))); then echo older
+  else echo newer; fi
+}
+
 node_root="$install_home/tools/node"
 node_bin="$node_root/bin/node"
-for managed_path in "$install_home/tools" "$node_root" "$install_home/releases" "$install_home/bin"; do
+node_previous="$install_home/tools/node.previous"
+for managed_path in "$install_home/tools" "$node_root" "$node_previous" "$install_home/releases" "$install_home/bin"; do
   [[ ! -L $managed_path ]] || die "managed installation path must not be a symlink: $managed_path"
 done
-if [[ -e $node_root && ( ! -x $node_bin || $("$node_bin" --version 2>/dev/null || true) != "v$NODE_VERSION" ) ]]; then
-  die "existing private Node runtime is incomplete or incompatible at $node_root; preserve it and investigate before retrying"
+# Asks the runtime manager for status as sendControlCommand does; a bare connect
+# crashes older managers. Fails closed.
+installation_running() {
+  ! "$node_bin" - "$install_home" <<'NODE'
+const fs=require('fs'),net=require('net'),path=require('path');
+const stopped=()=>process.exit(0),running=()=>process.exit(1);
+const home=fs.realpathSync(process.argv[2]),uid=process.getuid();
+const digest=require('crypto').createHash('sha256').update(home).digest('hex').slice(0,32);
+const socket=`/tmp/chickpea-node-${uid}/${digest}.sock`;
+for(const [file,isKind] of [[path.dirname(socket),'isDirectory'],[socket,'isSocket'],[path.join(home,'control','token'),'isFile']]){
+  const info=fs.lstatSync(file,{throwIfNoEntry:false});
+  if(!info)stopped();
+  if(!info[isKind]()||info.uid!==uid||(info.mode&0o077)!==0)running();
+}
+const tokenFile=path.join(home,'control','token');
+const token=fs.readFileSync(tokenFile,'utf8').trim();
+setTimeout(running,2000);
+const client=net.connect(socket);
+let reply='';
+client.setEncoding('utf8');
+client.on('data',(chunk)=>{reply+=chunk;});
+client.once('connect',()=>client.end(`${JSON.stringify({token,command:'status'})}\n`));
+client.once('error',(error)=>['ENOENT','ECONNREFUSED'].includes(error.code)?stopped():running());
+client.once('end',()=>{
+  try{const parsed=JSON.parse(reply);if(parsed.ok===true&&parsed.result?.running===false)stopped();}catch{}
+  running();
+});
+NODE
+}
+
+# Refresh an older patch of the pinned Node major in place; refuse anything else.
+refresh_from=''
+if [[ -e $node_root ]]; then
+  existing_node=$("$node_bin" --version 2>/dev/null || true)
+  case $(node_relation "${existing_node#v}") in
+    same) ;;
+    older) refresh_from=$existing_node ;;
+    newer) die "existing private Node runtime $existing_node is newer than this installer's v$NODE_VERSION; use the current installer from main" ;;
+    *) die "existing private Node runtime is incomplete or incompatible at $node_root; preserve it and investigate before retrying" ;;
+  esac
 fi
-if [[ ! -x $node_bin ]] || [[ $("$node_bin" --version 2>/dev/null || true) != "v$NODE_VERSION" ]]; then
+if [[ -n $refresh_from ]]; then
+  running_refusal="stop Chickpea before the installer refreshes its private Node runtime from $refresh_from to v$NODE_VERSION: $(quote "$install_home/bin/chickpea-node") stop"
+  ! installation_running || die "$running_refusal"
+fi
+if [[ ! -e $node_root || -n $refresh_from ]]; then
   node_archive="node-v${NODE_VERSION}-${node_platform}.tar.gz"
   download "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" "$work/SHASUMS256.txt"
   expected=$(awk -v name="$node_archive" '$2 == name { print $1 }' "$work/SHASUMS256.txt")
@@ -189,12 +243,19 @@ if [[ ! -x $node_bin ]] || [[ $("$node_bin" --version 2>/dev/null || true) != "v
   mkdir "$work/node"
   tar -xzf "$work/$node_archive" -C "$work/node" --strip-components=1
   [[ $("$work/node/bin/node" --version) == "v$NODE_VERSION" ]] || die 'downloaded Node executable has the wrong version'
+  # `start` does not take the installer lock, so ask again after the download.
+  [[ -z $refresh_from ]] || ! installation_running || die "$running_refusal"
   mkdir -p "$install_home/tools"
   [[ ! -L $install_home/tools/node.incomplete ]] || die 'private Node staging path must not be a symlink'
   rm -rf "$install_home/tools/node.incomplete"
   mv "$work/node" "$install_home/tools/node.incomplete"
+  if [[ -n $refresh_from ]]; then
+    rm -rf "$node_previous"
+    mv "$node_root" "$node_previous"
+  fi
   [[ ! -e $node_root ]] || die "refusing to replace existing private Node runtime at $node_root"
   mv "$install_home/tools/node.incomplete" "$node_root"
+  [[ -z $refresh_from ]] || note "Refreshed the private Node runtime from $refresh_from to v$NODE_VERSION; the previous runtime is kept at $node_previous."
 fi
 
 current_sha=''
@@ -346,7 +407,13 @@ manifest_version=$("$node_bin" -e 'const p=require(process.argv[1]);if(typeof p.
 [[ $package_version == "$manifest_version" ]] || die 'package.json and release.json versions disagree'
 [[ -z $release_version || $package_version == "$release_version" ]] || die 'release tag and application version disagree'
 lock_versions=$("$node_bin" -e 'const x=require(process.argv[1]),v=process.argv[2];const a=x.version,b=x.packages?.[""]?.version;if(a!==v||b!==v)process.exit(1);process.stdout.write(v)' "$source_tree/package-lock.json" "$package_version") || die 'package-lock.json root versions disagree with the application version'
-[[ $(tr -d '[:space:]' < "$source_tree/.nvmrc") == "$NODE_VERSION" ]] || die "source requires a different Node pin; this installer supports $NODE_VERSION"
+# Older releases run on a newer patch of their Node major; a newer pin needs a newer installer.
+source_node=$(tr -d '[:space:]' < "$source_tree/.nvmrc") || source_node=''
+case $(node_relation "$source_node") in
+  older|same) ;;
+  newer) die "selected source needs Node $source_node; this installer supports up to Node $NODE_VERSION; use the current installer from main" ;;
+  *) die "selected source has an unsupported Node pin; this installer supports Node ${NODE_VERSION%%.*} up to $NODE_VERSION" ;;
+esac
 [[ -f $source_tree/scripts/install-node.sh && -f $source_tree/scripts/chickpea-node.mjs ]] || die "selected source predates the one-command Node installer; choose a compatible release or use --ref/--source for a reviewed preview"
 [[ $tunnel_mode != ngrok || -f $source_tree/scripts/lib/node-ngrok.mjs ]] || die 'selected release predates guided ngrok setup; choose a release containing it or use --ref/--source for a reviewed preview'
 archive_sha=$("$node_bin" -e 'try{const x=require(process.argv[1]);if(typeof x.commit==="string")process.stdout.write(x.commit)}catch{}' "$source_tree/release-source.json")

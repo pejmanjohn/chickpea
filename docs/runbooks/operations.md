@@ -7,8 +7,8 @@ first-time Slack setup, use [SETUP_AGENT.md](../../SETUP_AGENT.md).
 
 ## Production Node
 
-Use Node 24.x, minimum 24.20.0, and one running Chickpea process per state directory.
-Use the 24.20.0 baseline in `.nvmrc` for reproducible installs and verification.
+Use Node 24.x, minimum 24.22.1, and one running Chickpea process per state directory.
+Use the 24.22.1 baseline in `.nvmrc` for reproducible installs and verification.
 Later Node 24 updates are supported; other majors are outside the support policy.
 
 Node supports scheduled execution while the Chickpea process is running, but not
@@ -378,7 +378,7 @@ set aside this way, so ask the person to send it again.
 ## Build-time Node and Cloudflare runtimes
 
 Cloudflare Workers Builds reads `.nvmrc`; an explicit `NODE_VERSION` build
-variable should match its 24.20.0 pin. Inspect existing build overrides before
+variable should match its 24.22.1 pin. Inspect existing build overrides before
 building a candidate. These are build settings, not Worker runtime variables.
 See [Cloudflare's build image documentation](https://developers.cloudflare.com/workers/ci-cd/builds/build-image/).
 

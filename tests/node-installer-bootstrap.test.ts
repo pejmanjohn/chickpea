@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -10,14 +10,18 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+// @ts-expect-error Installer runtime is plain JavaScript shipped in release archives.
+import { controlSocketPath } from '../scripts/lib/node-installation.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALLER = path.join(ROOT, 'scripts', 'install-node.sh');
@@ -32,7 +36,7 @@ function git(directory: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=Installer Test', '-c', 'user.email=test@example.invalid', '-C', directory, ...args], { encoding: 'utf8' }).trim();
 }
 
-function createSource(root: string): { directory: string; sha: string } {
+function createSource(root: string, nodePin = '24.22.1'): { directory: string; sha: string } {
   const directory = path.join(root, 'source checkout');
   mkdirSync(path.join(directory, 'scripts'), { recursive: true });
   mkdirSync(path.join(directory, 'scripts', 'lib'));
@@ -40,7 +44,7 @@ function createSource(root: string): { directory: string; sha: string } {
   writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'chickpea-test', private: true, version: '0.1.20' }));
   writeFileSync(path.join(directory, 'package-lock.json'), JSON.stringify({ version: '0.1.20', lockfileVersion: 3, packages: { '': { version: '0.1.20' } } }));
   writeFileSync(path.join(directory, 'release.json'), JSON.stringify({ formatVersion: 1, version: '0.1.20' }));
-  writeFileSync(path.join(directory, '.nvmrc'), '24.20.0\n');
+  writeFileSync(path.join(directory, '.nvmrc'), `${nodePin}\n`);
   writeFileSync(path.join(directory, '.gitattributes'), 'release-source.json export-subst\n');
   writeFileSync(path.join(directory, 'release-source.json'), '{"commit":"$Format:%H$"}\n');
   writeFileSync(path.join(directory, 'scripts', 'install-node.sh'), '#!/bin/bash\n');
@@ -74,11 +78,11 @@ writeFileSync(path.join(home, 'setup-url.txt'), 'https://example.test/admin/setu
   return { directory, sha: git(directory, 'rev-parse', 'HEAD') };
 }
 
-function seedPrivateNode(home: string, log: string): void {
-  const bin = path.join(home, 'tools', 'node', 'bin');
+function writePrivateNode(nodeRoot: string, log: string, version = '24.22.1'): void {
+  const bin = path.join(nodeRoot, 'bin');
   mkdirSync(bin, { recursive: true });
   writeExecutable(path.join(bin, 'node'), `#!/bin/bash
-if [[ \${1-} == --version ]]; then echo v24.20.0; exit 0; fi
+if [[ \${1-} == --version ]]; then echo v${version}; exit 0; fi
 exec ${JSON.stringify(REAL_NODE)} "$@"
 `);
   writeExecutable(path.join(bin, 'npm'), `#!/bin/bash
@@ -97,13 +101,64 @@ if [[ "$*" == *'run flue:build'* ]]; then mkdir -p "$prefix/dist"; : > "$prefix/
 `);
 }
 
-function createManagedHome(root: string): { home: string; log: string } {
+function seedPrivateNode(home: string, log: string, version?: string): void {
+  writePrivateNode(path.join(home, 'tools', 'node'), log, version);
+}
+
+function privateNodeVersion(nodeRoot: string): string {
+  return execFileSync(path.join(nodeRoot, 'bin', 'node'), ['--version'], { encoding: 'utf8' }).trim();
+}
+
+function createManagedHome(root: string, nodeVersion?: string): { home: string; log: string } {
   const home = path.join(root, 'install home');
   mkdirSync(home, { recursive: true, mode: 0o700 });
   writeFileSync(path.join(home, '.installer-home'), 'chickpea-node-v1\n');
   const log = path.join(root, 'npm.log');
-  seedPrivateNode(home, log);
+  seedPrivateNode(home, log, nodeVersion);
   return { home, log };
+}
+
+// Serves a fake Node 24.22.1 archive. No archive can be forged to match the
+// installer's pinned official digests, so shasum reports the pinned digest for
+// it; the manifest and pinned-digest comparisons still run unchanged.
+function fakeNodeDownload(root: string, log: string): { bin: string; curlLog: string } {
+  const installer = readFileSync(INSTALLER, 'utf8');
+  const pinned = (name: string) => new RegExp(`^${name}='([0-9a-f]{64})'$`, 'm').exec(installer)![1];
+  const arm64 = pinned('NODE_DARWIN_ARM64_SHA256');
+  const x64 = pinned('NODE_DARWIN_X64_SHA256');
+  const archiveRoot = path.join(root, 'node-archive');
+  writePrivateNode(path.join(archiveRoot, 'node-v24.22.1'), log);
+  const archive = path.join(root, 'node.tar.gz');
+  execFileSync('tar', ['-czf', archive, '-C', archiveRoot, 'node-v24.22.1']);
+  const bin = path.join(root, 'node-download-bin');
+  mkdirSync(bin);
+  const curlLog = path.join(root, 'curl.log');
+  writeExecutable(path.join(bin, 'curl'), `#!/bin/bash
+set -eu
+output=''
+url=''
+previous=''
+for argument in "$@"; do
+  if [[ $previous == --output ]]; then output=$argument; fi
+  previous=$argument
+  case "$argument" in https://*) url=$argument ;; esac
+done
+printf '%s\\n' "$url" >> ${JSON.stringify(curlLog)}
+case "$url" in
+  https://nodejs.org/dist/v24.22.1/SHASUMS256.txt)
+    printf '%s  node-v24.22.1-darwin-arm64.tar.gz\\n%s  node-v24.22.1-darwin-x64.tar.gz\\n' ${arm64} ${x64} > "$output" ;;
+  https://nodejs.org/dist/v24.22.1/node-v24.22.1-darwin-*.tar.gz) cp ${JSON.stringify(archive)} "$output" ;;
+  *) echo unexpected download >&2; exit 92 ;;
+esac
+`);
+  writeExecutable(path.join(bin, 'shasum'), `#!/bin/bash
+case "$3" in
+  */node-v24.22.1-darwin-arm64.tar.gz) echo "${arm64}  $3" ;;
+  */node-v24.22.1-darwin-x64.tar.gz) echo "${x64}  $3" ;;
+  *) exec /usr/bin/shasum "$@" ;;
+esac
+`);
+  return { bin, curlLog };
 }
 
 function runInstaller(args: string[], env: NodeJS.ProcessEnv = {}) {
@@ -111,6 +166,60 @@ function runInstaller(args: string[], env: NodeJS.ProcessEnv = {}) {
     encoding: 'utf8',
     env: { ...process.env, CHICKPEA_INSTALL_NONINTERACTIVE: '1', ...env },
   });
+}
+
+// For runs that talk to a server in this process, which spawnSync would block.
+function runInstallerAsync(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ status: number | null; stderr: string }> {
+  const child = spawn('/bin/bash', [INSTALLER, ...args], {
+    env: { ...process.env, CHICKPEA_INSTALL_NONINTERACTIVE: '1', ...env },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (status) => resolve({ status, stderr }));
+  });
+}
+
+// Answers status requests on the runtime manager's real control socket for
+// `home` with each of `replies` in turn, as a running or stopped manager would.
+async function serveControlStatus(home: string, replies: boolean[]) {
+  const token = 'test-control-token';
+  mkdirSync(path.join(home, 'control'), { mode: 0o700 });
+  writeFileSync(path.join(home, 'control', 'token'), `${token}\n`, { mode: 0o600 });
+  const socket = controlSocketPath(realpathSync(home));
+  assert.equal(path.dirname(socket), path.join('/tmp', `chickpea-node-${process.getuid?.()}`));
+  // Removed afterwards only if this test created it.
+  const createdDirectory = !existsSync(path.dirname(socket));
+  mkdirSync(path.dirname(socket), { recursive: true, mode: 0o700 });
+  const requests: unknown[] = [];
+  const server = createServer({ allowHalfOpen: true }, (connection) => {
+    let input = '';
+    connection.setEncoding('utf8');
+    connection.on('data', (chunk) => { input += chunk; });
+    connection.on('end', () => {
+      requests.push(JSON.parse(input));
+      const running = replies[requests.length - 1];
+      connection.end(`${JSON.stringify({ ok: true, result: { running } })}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socket, resolve);
+  });
+  chmodSync(socket, 0o600);
+  return {
+    token,
+    requests,
+    async close() {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(socket, { force: true });
+      if (createdDirectory) {
+        try { rmdirSync(path.dirname(socket)); } catch { /* another installation is using it */ }
+      }
+    },
+  };
 }
 
 test('bootstrap archives only clean tracked source, builds in an isolated environment, and activates atomically', { skip: process.platform !== 'darwin' }, () => {
@@ -265,7 +374,7 @@ set -eu
 output=''
 previous=''
 for argument in "$@"; do if [[ $previous == --output ]]; then output=$argument; fi; previous=$argument; done
-printf '%064d  node-v24.20.0-darwin-%s.tar.gz\\n' 0 "$([[ $(uname -m) == arm64 ]] && echo arm64 || echo x64)" > "$output"
+printf '%064d  node-v24.22.1-darwin-%s.tar.gz\\n' 0 "$([[ $(uname -m) == arm64 ]] && echo arm64 || echo x64)" > "$output"
 `);
     const failed = runInstaller(['--home', home, '--ref', 'a'.repeat(40), '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start'], { PATH: `${fakeBin}:${process.env.PATH}` });
     assert.notEqual(failed.status, 0);
@@ -277,6 +386,136 @@ printf '%064d  node-v24.20.0-darwin-%s.tar.gz\\n' 0 "$([[ $(uname -m) == arm64 ]
     seedPrivateNode(home, log);
     const recovered = runInstaller(['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start']);
     assert.equal(recovered.status, 0, recovered.stderr);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a fresh install accepts a release pinned to an older Node 24 patch and refuses a newer patch or another major', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-source-pin-'));
+  try {
+    const source = createSource(root, '24.20.0');
+    const args = (home: string) => ['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start', '--no-open'];
+    const older = createManagedHome(path.join(root, 'older'));
+    const accepted = runInstaller(args(older.home));
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(readlinkSync(path.join(older.home, 'current')), `releases/${source.sha}`);
+    for (const [pin, refusal] of [
+      ['24.22.2', /selected source needs Node 24\.22\.2; this installer supports up to Node 24\.22\.1; use the current installer from main/],
+      ['25.0.0', /selected source has an unsupported Node pin; this installer supports Node 24 up to 24\.22\.1/],
+    ] as const) {
+      writeFileSync(path.join(source.directory, '.nvmrc'), `${pin}\n`);
+      git(source.directory, 'commit', '--quiet', '-am', `pin Node ${pin}`);
+      const { home } = createManagedHome(path.join(root, pin));
+      const refused = runInstaller(args(home));
+      assert.notEqual(refused.status, 0);
+      assert.match(refused.stderr, refusal);
+      assert.equal(existsSync(path.join(home, 'releases')), false);
+      assert.equal(existsSync(path.join(home, 'current')), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rerun on a stopped installation refreshes an older private Node 24 runtime and keeps the previous one', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-refresh-'));
+  try {
+    const source = createSource(root, '24.20.0');
+    const { home, log } = createManagedHome(root);
+    const first = runInstaller(['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start', '--no-open']);
+    assert.equal(first.status, 0, first.stderr);
+    // As left by an installer that pinned Node 24.20.0, plus an older kept runtime.
+    seedPrivateNode(home, log, '24.20.0');
+    const tools = path.join(home, 'tools');
+    mkdirSync(path.join(tools, 'node.previous'));
+    writeFileSync(path.join(tools, 'node.previous', 'older-runtime'), '');
+    const settings = readFileSync(path.join(home, 'installation.json'), 'utf8');
+    const wrapper = readFileSync(path.join(home, 'bin', 'chickpea-node'), 'utf8');
+    const builds = readFileSync(log, 'utf8');
+    const download = fakeNodeDownload(root, log);
+    const env = { PATH: `${download.bin}:${process.env.PATH}` };
+
+    const rerun = runInstaller(['--home', home, '--no-start', '--no-open'], env);
+    assert.equal(rerun.status, 0, rerun.stderr);
+    assert.match(rerun.stderr, /Refreshed the private Node runtime from v24\.20\.0 to v24\.22\.1; the previous runtime is kept at .*\/tools\/node\.previous\./);
+    assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.22.1');
+    assert.equal(privateNodeVersion(path.join(tools, 'node.previous')), 'v24.20.0');
+    assert.equal(existsSync(path.join(tools, 'node.previous', 'older-runtime')), false);
+    assert.equal(existsSync(path.join(tools, 'node.incomplete')), false);
+    assert.equal(readlinkSync(path.join(home, 'current')), `releases/${source.sha}`);
+    assert.equal(readFileSync(path.join(home, 'installation.json'), 'utf8'), settings);
+    assert.equal(readFileSync(path.join(home, 'bin', 'chickpea-node'), 'utf8'), wrapper);
+    assert.equal(readFileSync(log, 'utf8'), builds);
+
+    // Interrupted between the two renames: no tools/node, so a rerun downloads it afresh.
+    rmSync(path.join(tools, 'node'), { recursive: true });
+    mkdirSync(path.join(tools, 'node.incomplete'));
+    const recovered = runInstaller(['--home', home, '--no-start', '--no-open'], env);
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.doesNotMatch(recovered.stderr, /Refreshed/);
+    assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.22.1');
+    assert.equal(privateNodeVersion(path.join(tools, 'node.previous')), 'v24.20.0');
+    assert.equal(existsSync(path.join(tools, 'node.incomplete')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rerun asks the runtime manager for status before downloading and again before replacing the private Node runtime', { skip: process.platform !== 'darwin' }, async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-refresh-running-'));
+  try {
+    const source = createSource(root, '24.20.0');
+    // Running from the start, started during the download, and stopped throughout.
+    for (const replies of [[true], [false, true], [false, false]]) {
+      const caseRoot = path.join(root, replies.join('-'));
+      const { home, log } = createManagedHome(caseRoot);
+      const first = runInstaller(['--home', home, '--source', source.directory, '--origin', 'https://chickpea.example.test', '--tunnel', 'external', '--no-start', '--no-open']);
+      assert.equal(first.status, 0, first.stderr);
+      seedPrivateNode(home, log, '24.20.0');
+      const tools = path.join(home, 'tools');
+      const download = fakeNodeDownload(caseRoot, log);
+      const control = await serveControlStatus(home, replies);
+      try {
+        const result = await runInstallerAsync(['--home', home, '--no-start', '--no-open'], { PATH: `${download.bin}:${process.env.PATH}` });
+        assert.deepEqual(control.requests, replies.map(() => ({ token: control.token, command: 'status' })));
+        if (replies.includes(true)) {
+          assert.notEqual(result.status, 0);
+          assert.match(result.stderr, /stop Chickpea before the installer refreshes its private Node runtime from v24\.20\.0 to v24\.22\.1: '[^']*\/install home\/bin\/chickpea-node' stop/);
+          assert.equal(existsSync(download.curlLog), replies.length > 1);
+          assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.20.0');
+          assert.equal(existsSync(path.join(tools, 'node.previous')), false);
+        } else {
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(privateNodeVersion(path.join(tools, 'node')), 'v24.22.1');
+          assert.equal(privateNodeVersion(path.join(tools, 'node.previous')), 'v24.20.0');
+        }
+      } finally {
+        await control.close();
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rerun keeps refusing a newer or different-major private Node runtime', { skip: process.platform !== 'darwin' }, () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'chickpea-node-refresh-refused-'));
+  try {
+    for (const [version, refusal] of [
+      ['24.23.0', /existing private Node runtime v24\.23\.0 is newer than this installer's v24\.22\.1; use the current installer from main/],
+      ['22.22.1', /existing private Node runtime is incomplete or incompatible/],
+    ] as const) {
+      const caseRoot = path.join(root, version);
+      const { home, log } = createManagedHome(caseRoot, version);
+      const download = fakeNodeDownload(caseRoot, log);
+      const result = runInstaller(['--home', home, '--no-start', '--no-open'], { PATH: `${download.bin}:${process.env.PATH}` });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, refusal);
+      assert.equal(existsSync(download.curlLog), false);
+      assert.equal(privateNodeVersion(path.join(home, 'tools', 'node')), `v${version}`);
+      assert.equal(existsSync(path.join(home, 'tools', 'node.previous')), false);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -287,7 +287,7 @@ npx chickpea-cli call https://chickpea.example.com <tool> --args '{...}'
 npx chickpea-cli recipe export https://chickpea.example.com > recipe.json
 ```
 
-The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 24.x, minimum 24.20.0.
+The CLI never takes a token or key as an argument, never confirms a proposal on its own, and sends no telemetry. Node 24.x, minimum 24.22.1.
 
 ---
 
@@ -505,7 +505,7 @@ On a Mac, run:
 curl -fsSL https://chickpea.co/install.sh | bash
 ```
 
-The installer prepares a private Node 24.20.0 runtime, builds a stable application
+The installer prepares a private Node 24.22.1 runtime, builds a stable application
 release, creates persistent SQLite state, and opens setup. It leaves system Node
 and existing Chickpea installations alone. Guided ngrok setup can
 provide a stable HTTPS address without buying a domain or using Cloudflare.
@@ -609,7 +609,7 @@ npm run verify:management-mcp
 npm run verify:oss-export
 ```
 
-Node **24.20.0** is pinned in `.nvmrc` for development, builds, and verification. Node 24.x is the only supported major, with engine range `>=24.20.0 <25`. Later Node 24 updates are supported; update the pin for patch/security releases and verify the new baseline once. Other Node majors are outside this release's support policy. Several `verify:*:live` variants exist for provider- and Slack-touching evaluations; they are opt-in because they spend real quota. Live Slack acceptance should run against a disposable paid workspace so user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore all get exercised for real.
+Node **24.22.1** is pinned in `.nvmrc` for development, builds, and verification. Node 24.x is the only supported major, with engine range `>=24.22.1 <25`. Later Node 24 updates are supported; update the pin for patch/security releases and verify the new baseline once. Other Node majors are outside this release's support policy. Several `verify:*:live` variants exist for provider- and Slack-touching evaluations; they are opt-in because they spend real quota. Live Slack acceptance should run against a disposable paid workspace so user-group policy, handle collisions, public auto-join, private invitation, App Home, avatar updates, archive, and restore all get exercised for real.
 
 Live Slack verification is available through the repo-scoped [`$chickpea-live-verification`](.agents/skills/chickpea-live-verification/SKILL.md) skill. Codex discovers it automatically in this repository. The thin entry point routes to the [canonical operator workflow](qa/live/operator/SKILL.md) and [runbook](docs/runbooks/live-contract-verification.md), so the operating instructions remain in one place.
 

@@ -1,7 +1,7 @@
 # Install Chickpea on a Mac
 
 The Node installer prepares Chickpea on one Mac with private SQLite state. It
-downloads Node 24.20.0, builds a versioned application release, creates the
+downloads Node 24.22.1, builds a versioned application release, creates the
 runtime settings and setup link, then starts Chickpea and opens your browser.
 You do not need nvm, Homebrew, a global npm package, or a Cloudflare Worker.
 
@@ -463,6 +463,22 @@ auth secret, databases, or connected accounts. Stop the installation before
 rerunning. A failed download or build does not activate incomplete source.
 Fix the reported issue and run the same command again.
 
+When the installer pins a newer Node 24 security release than the
+installation's private Node, rerunning the current install command refreshes
+`tools/node` in place. Stop Chickpea first; the installer refuses while it is
+running. It keeps the previous runtime at `tools/node.previous` and leaves the
+release, settings, and state unchanged, so the next start uses the new Node.
+It never downgrades Node or moves to another major version. To roll back, stop
+Chickpea and swap the two directories:
+
+```sh
+"$HOME/.chickpea-node/bin/chickpea-node" stop
+cd "$HOME/.chickpea-node/tools"
+mv node node.new && mv node.previous node && mv node.new node.previous
+```
+
+A later rerun refreshes it again.
+
 For ngrok authentication errors, sign in to the same ngrok account, verify it,
 and copy a valid authtoken into a file readable only by your user. Then run:
 
@@ -517,6 +533,7 @@ The default layout is:
 | Path under `~/.chickpea-node` | Contents |
 | --- | --- |
 | `tools/` | Private Node and optional tunnel executable |
+| `tools/node.previous/` | Previous private Node, kept after a rerun refreshed it |
 | `releases/<commit>/` | Exact application source, dependencies, and build |
 | `current` | Link to the installed release |
 | `bin/chickpea-node` | Installation management command |

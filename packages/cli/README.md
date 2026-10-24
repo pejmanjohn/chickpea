@@ -6,7 +6,7 @@ The official command line for a self-hosted [Chickpea](https://chickpea.co) depl
 npx chickpea-cli doctor https://chickpea.example.com
 ```
 
-Requires Node 24.x, minimum 24.20.0 (`>=24.20.0 <25`). Development and publishing use the repository's `.nvmrc` baseline, 24.20.0. The binary is `chickpea`; install it globally with `npm install -g chickpea-cli` or run it through `npx chickpea-cli`.
+Requires Node 24.x, minimum 24.22.1 (`>=24.22.1 <25`). Development and publishing use the repository's `.nvmrc` baseline, 24.22.1. The binary is `chickpea`; install it globally with `npm install -g chickpea-cli` or run it through `npx chickpea-cli`.
 
 You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on your deployment (`/admin/settings/agents-clients`) shows the same client snippets with a Copy button each and one-click install for Cursor and VS Code, and `https://<your Chickpea>/connect` holds a one-line prompt the agent follows to connect itself. The CLI is for shells and scripts.
 

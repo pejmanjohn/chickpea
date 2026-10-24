@@ -10,12 +10,12 @@ import { assertReleaseEnvironment } from '../scripts/verify-regression.mjs';
 
 test('Node policy accepts the pinned baseline and future 24 updates, rejecting other majors and older releases', () => {
   assert.equal(assertNodeVersion(`v${NODE_BASELINE}`, { baseline: true }), `v${NODE_BASELINE}`);
-  for (const version of ['24.20.1', 'v24.21.0']) assert.equal(isSupportedNodeVersion(version), true);
-  for (const version of ['v22.19.0', 'v24.19.0', 'v25.0.0', 'v26.0.0', 'v24.21.0-rc.1', '24', 'invalid']) {
+  for (const version of ['24.22.2', 'v24.23.0']) assert.equal(isSupportedNodeVersion(version), true);
+  for (const version of ['v22.19.0', 'v24.20.0', 'v24.22.0', 'v25.0.0', 'v26.0.0', 'v24.23.0-rc.1', '24', 'invalid']) {
     assert.equal(isSupportedNodeVersion(version), false, version);
     assert.throws(() => assertNodeVersion(version), /requires Node 24.x/);
   }
-  assert.throws(() => assertNodeVersion('v24.20.1', { baseline: true }), /nvm install && nvm use/);
+  assert.throws(() => assertNodeVersion('v24.22.2', { baseline: true }), /nvm install && nvm use/);
 });
 
 test('package and publish policy share the single baseline without changing dependency engine declarations', () => {

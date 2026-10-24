@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Code cloud session bootstrap (SessionStart hook; see .claude/settings.json).
 #
-# The cloud image ships Node 20/21/22, but this repository pins Node 24.20.0
+# The cloud image ships Node 20/21/22, but this repository pins Node 24.22.1
 # (.nvmrc) and refuses to install or test on anything else. Each cloud session
 # starts from a fresh VM, so this hook installs the pinned Node from nodejs.org
 # (on the default Trusted allowlist), puts it on the session PATH, and installs
