@@ -4,7 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Context } from '@earendil-works/pi-ai';
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  type Context,
+} from '@earendil-works/pi-ai';
 import { init, useDelivery, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
@@ -107,7 +114,6 @@ interface RenderRecord {
   intake: string;
   tools: string[];
   imageHandles: string[];
-  attachmentStatus: string | undefined;
 }
 
 const renders: RenderRecord[] = [];
@@ -136,7 +142,6 @@ function UploadTurnProbe() {
     // plan's own conversation, never one named on the wire.
     imageHandles: conversationThreadImageInventory(PLAN.conversation, slackDeliveryThreadImages(PLAN, delivery))
       .entries.map((entry) => entry.handle),
-    attachmentStatus: delivery.kind === 'signal' ? delivery.attributes?.attachmentStatus : undefined,
   };
   renders.push(record);
 
@@ -188,33 +193,25 @@ async function turnRenders(
 
 let probeRun = 0;
 
-const toolNames = (context: Context): string[] => (context.tools ?? []).map((tool) => tool.name).sort();
+const toolNames = (context: Context): string[] => getCurrentTools(context.messages).map((tool) => tool.name).sort();
+const conversationOf = (context: Context | undefined) => (context?.messages ?? []).filter((message) => message.role !== 'system');
 
-test('an upload turn keeps the normal tool set on both renders', async () => {
+test('an upload turn keeps the normal tool set', async () => {
   const upload = await turnRenders(true);
   const plain = await turnRenders(false);
 
-  assert.equal(upload.renders[0]?.deliveryType, 'slack.message');
-  assert.equal(upload.renders[1]?.deliveryType, 'slack.attachment_context');
-  assert.equal(upload.renders.length, 2);
-
-  // Both renders answer the same Slack request, so every delivery-derived
-  // capability seam resolves identically (R17, KTD11).
-  assert.deepEqual(
-    { management: upload.renders[1]?.management, presentation: upload.renders[1]?.presentation },
-    { management: upload.renders[0]?.management, presentation: upload.renders[0]?.presentation },
-  );
+  // The unreadable file fails before any model call, so Flue sends the
+  // appended attachment signal with the first request: one render answers it.
+  assert.deepEqual(upload.renders.map((render) => render.deliveryType), ['slack.message']);
+  assert.equal(upload.renders[0]?.intake, 'ready');
+  assert.match(JSON.stringify(conversationOf(upload.captures.at(-1))), /<slack_attachment_context /);
   assert.deepEqual(
     { management: upload.renders[0]?.management, presentation: upload.renders[0]?.presentation },
     { management: true, presentation: true },
   );
-  // Attachment intake stays bound to the triggering message, so the rerender
-  // never re-enters retrieval.
-  assert.equal(upload.renders[0]?.intake, 'ready');
-  assert.equal(upload.renders[1]?.intake, 'none');
 
-  // The tools the model actually receives on the post-analysis render are the
-  // same ones the identical request receives with no file attached (AE11).
+  // The tools the model actually receives on the answer are the same ones
+  // the identical request receives with no file attached (AE11).
   const uploadTools = toolNames(upload.captures.at(-1)!);
   const plainTools = toolNames(plain.captures.at(-1)!);
   assert.deepEqual(uploadTools, plainTools);
@@ -226,8 +223,8 @@ test('an upload turn keeps the normal tool set on both renders', async () => {
 
 test('the attachment prompt keeps the untrusted-evidence contract and the authorization limits', async () => {
   const { captures } = await turnRenders(true);
-  const prompt = captures.at(-1)?.systemPrompt ?? '';
-  const conversation = JSON.stringify(captures.at(-1)?.messages ?? []);
+  const prompt = getCurrentSystemPrompt(captures.at(-1)?.messages ?? []);
+  const conversation = JSON.stringify(conversationOf(captures.at(-1)));
 
   assert.match(conversation, /BEGIN UNTRUSTED DERIVED ATTACHMENT EVIDENCE/);
   assert.match(conversation, /END UNTRUSTED DERIVED ATTACHMENT EVIDENCE/);
@@ -239,12 +236,12 @@ test('the attachment prompt keeps the untrusted-evidence contract and the author
   assert.doesNotMatch(prompt.replace(SLACK_LISTS_INSTRUCTION, ''), /read-only/i);
 });
 
-test('the thread image inventory reaches both renders of an upload turn', async () => {
+test('the thread image inventory reaches the render that answers an upload turn', async () => {
+  // AE1: the answer after attachment analysis addresses the triggering
+  // message's `img:N` handles, so a logo referenced after the analysis resolves.
   const upload = await turnRenders(true);
-  // AE1: the post-analysis re-render addresses the same `img:N` handles as the
-  // first render, so a logo referenced after the analysis still resolves.
-  assert.deepEqual(upload.renders.map((render) => render.imageHandles), [['img:1'], ['img:1']]);
-  assert.deepEqual(upload.renders.map((render) => render.management), [true, true]);
+  assert.deepEqual(upload.renders.map((render) => render.imageHandles), [['img:1']]);
+  assert.deepEqual(upload.renders.map((render) => render.management), [true]);
   const resolved = conversationThreadImageInventory(PLAN.conversation, slackDeliveryThreadImages(PLAN, {
     ...slackMessage(true),
   })).resolveHandle('img:1');
@@ -257,22 +254,21 @@ test('the thread image inventory reaches both renders of an upload turn', async 
   );
 
   const withoutImages = await turnRenders(true, false);
-  assert.deepEqual(withoutImages.renders.map((render) => render.imageHandles), [[], []]);
-  assert.deepEqual(withoutImages.renders.map((render) => render.management), [true, true]);
+  assert.deepEqual(withoutImages.renders.map((render) => render.imageHandles), [[]]);
+  assert.deepEqual(withoutImages.renders.map((render) => render.management), [true]);
 });
 
 test('the attachment analysis call reaches the provider tool-free while the upload turn keeps its tools', async () => {
   readableFile = { filename: 'brief.txt', text: 'Headline: Try Free for 7 Days. Audience: ACT students.' };
   try {
     const upload = await turnRenders(true);
-    // Two provider calls: the tool-free analysis, then the post-analysis
-    // render's answer (the first render is superseded before it answers).
+    // Two provider calls: the tool-free analysis, then the answer.
     assert.equal(upload.captures.length, 2);
     assert.deepEqual(toolNames(upload.captures[0]!), []);
-    assert.match(JSON.stringify(upload.captures[0]!.messages), /BEGIN UNTRUSTED ATTACHMENT DATA/);
-    // The analysis succeeded, so the re-render carries complete evidence
-    // instead of a retry request, and the answer render still has its tools.
-    assert.equal(upload.renders[1]?.attachmentStatus, 'complete');
+    assert.match(JSON.stringify(conversationOf(upload.captures[0])), /BEGIN UNTRUSTED ATTACHMENT DATA/);
+    // The analysis succeeded, so the answer reads complete evidence instead
+    // of a retry request, and it still has its tools.
+    assert.match(JSON.stringify(conversationOf(upload.captures.at(-1))), /attachmentStatus=\\"complete\\"/);
     assert.ok(toolNames(upload.captures.at(-1)!).includes('present_table'));
   } finally {
     readableFile = undefined;

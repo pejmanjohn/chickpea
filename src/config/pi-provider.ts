@@ -22,8 +22,7 @@ import { decorateWorkersAiPayloadStreams } from './workers-ai-payload.ts';
 import {
   CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
-  withCurrentWorkersAiModels,
-  workersAiGlmOutputLimit,
+  withReviewedWorkersAiOutputCaps,
 } from './workers-ai-models.ts';
 
 type PiBuiltinProviderId = 'anthropic' | 'openai' | 'openrouter';
@@ -111,7 +110,7 @@ export function setWorkersAiRestPiProvider(options: WorkersAiRestOptions): void 
 /** Pure construction seam for REST payload and credential policy tests. */
 export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Provider {
   const catalog = cloudflareWorkersAIProvider();
-  const models = withCurrentWorkersAiModels(catalog.getModels()).map((model) => ({
+  const models = withReviewedWorkersAiOutputCaps(catalog.getModels()).map((model) => ({
     ...model,
     baseUrl: options.baseUrl,
     ...(
@@ -120,7 +119,7 @@ export function createWorkersAiRestPiProvider(options: WorkersAiRestOptions): Pr
           contextWindow: model.id === CURRENT_WORKERS_AI_MODEL_ID
             ? model.contextWindow
             : Math.min(model.contextWindow, options.contextWindowFloor),
-          maxTokens: Math.min(model.maxTokens, options.maxTokens, workersAiGlmOutputLimit(model.id)),
+          maxTokens: Math.min(model.maxTokens, options.maxTokens),
         }
       : {}),
   }));

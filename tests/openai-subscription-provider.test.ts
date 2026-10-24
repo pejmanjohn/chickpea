@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -404,7 +405,7 @@ test('the registered wire handler streams through the boundary and ignores calle
   assert.ok(api);
   const stream = api.stream(
     model,
-    { messages: [{ role: 'user', content: 'Hello', timestamp: NOW }] },
+    normalizeContext({ messages: [{ role: 'user', content: 'Hello', timestamp: NOW }] }),
     {
       apiKey: 'caller-api-key',
       sessionId: 'caller-session',
@@ -453,7 +454,7 @@ test('malformed subscription streams surface only a bounded adapter error', asyn
   assert.ok(api);
   const result = await api.stream(
     model,
-    { messages: [{ role: 'user', content: 'Hello', timestamp: NOW }] },
+    normalizeContext({ messages: [{ role: 'user', content: 'Hello', timestamp: NOW }] }),
   ).result();
 
   assert.equal(result.stopReason, 'error');
@@ -572,7 +573,7 @@ test('a release-catalog image model registers and streams through the subscripti
   assert.ok(api);
   const result = await api.stream(
     model,
-    {
+    normalizeContext({
       messages: [{
         role: 'user',
         content: [
@@ -581,7 +582,7 @@ test('a release-catalog image model registers and streams through the subscripti
         ],
         timestamp: NOW,
       }],
-    },
+    }),
   ).result();
 
   assert.ok(captured, `subscription stream failed before fetch: ${result.errorMessage ?? result.stopReason}`);
@@ -726,7 +727,7 @@ test('a delayed failing bind cannot clear a newer valid transport binding', asyn
   assert.ok(api);
   const result = await api.stream(
     model,
-    { messages: [{ role: 'user', content: 'Continue', timestamp: NOW }] },
+    normalizeContext({ messages: [{ role: 'user', content: 'Continue', timestamp: NOW }] }),
   ).result();
   assert.equal(result.stopReason, 'stop');
 });

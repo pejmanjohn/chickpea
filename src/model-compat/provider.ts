@@ -1,6 +1,7 @@
 import { registerPiProvider } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
+  normalizeContext,
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
@@ -9,6 +10,7 @@ import {
   type ProviderStreams,
   type SimpleStreamOptions,
   type StreamOptions,
+  type TranscriptContext,
 } from '@earendil-works/pi-ai';
 import {
   stream as streamAnthropic,
@@ -189,7 +191,7 @@ export function resetCapturedModelCompatibilityProvidersForTests(): void {
 
 export function createModelCompatibilityStream(
   incomingModel: Model<string>,
-  context: Context,
+  context: TranscriptContext,
   options: StreamOptions | SimpleStreamOptions | undefined,
   simple: boolean,
   adapters: ModelCompatibilityStreamAdapters = {},
@@ -218,12 +220,12 @@ export function createModelCompatibilityStream(
       return simple
         ? (adapters.openAiStreamSimple ?? streamSimpleOpenAi)(
           model,
-          mappedContext,
+          normalizeContext(mappedContext),
           selectedOptions as SimpleStreamOptions | undefined,
         )
         : (adapters.openAiStream ?? streamOpenAi)(
           model,
-          mappedContext,
+          normalizeContext(mappedContext),
           selectedOptions as OpenAIResponsesOptions | undefined,
         );
     }
@@ -231,12 +233,12 @@ export function createModelCompatibilityStream(
     return simple
       ? (adapters.anthropicStreamSimple ?? streamSimpleAnthropic)(
         model,
-        mappedContext,
+        normalizeContext(mappedContext),
         selectedOptions as SimpleStreamOptions | undefined,
       )
       : (adapters.anthropicStream ?? streamAnthropic)(
         model,
-        mappedContext,
+        normalizeContext(mappedContext),
         selectedOptions as AnthropicOptions | undefined,
       );
   };

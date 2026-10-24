@@ -39,48 +39,15 @@ export function thinkingLevelForModel(model: string): 'off' | undefined {
 export const WORKERS_AI_CONTEXT_WINDOW_FLOOR = 32_768;
 
 /**
- * Flue 2.0 currently shares Pi 0.83 with its agent runtime. Keep that single
- * dependency graph, then supplement only models whose Cloudflare metadata we
- * have reviewed from the provider's own documentation.
+ * Pi's Workers AI catalog with Chickpea's reviewed output caps. Every other
+ * field, including the current model's context window, cost, and input, is
+ * the upstream metadata. The binding and REST request paths apply the same
+ * cap to each generation.
  */
-export function withCurrentWorkersAiModels<TApi extends Api>(
+export function withReviewedWorkersAiOutputCaps<TApi extends Api>(
   models: readonly Model<TApi>[],
 ): Model<TApi>[] {
-  if (models.some((model) => model.id === CURRENT_WORKERS_AI_MODEL_ID)) {
-    return [...models];
-  }
-  const template = models.find((model) => model.id === '@cf/zai-org/glm-5.2');
-  if (!template) return [...models];
-  return [
-    ...models,
-    {
-      ...template,
-      id: CURRENT_WORKERS_AI_MODEL_ID,
-      name: 'GLM 5.3 Flash',
-      reasoning: true,
-      input: ['text', 'image'],
-      cost: {
-        input: 0.15,
-        output: 0.5,
-        cacheRead: 0.03,
-        cacheWrite: 0,
-      },
-      // Use the actual context window: an artificial 32K floor makes Pi
-      // misclassify valid responses as silent overflow and compact/retry them.
-      // https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/
-      contextWindow: 1_048_576,
-      // This budget includes reasoning. The previous 2K cap could end a
-      // generation before the first tool call or user-visible answer.
-      maxTokens: WORKERS_AI_REASONING_MAX_TOKENS,
-      thinkingLevelMap: {
-        off: null,
-        minimal: null,
-        low: 'low',
-        medium: 'medium',
-        high: 'high',
-        xhigh: null,
-        max: null,
-      },
-    },
-  ];
+  return models.map((model) => isWorkersAiGlmModel(model.id)
+    ? { ...model, maxTokens: Math.min(model.maxTokens, workersAiGlmOutputLimit(model.id)) }
+    : model);
 }

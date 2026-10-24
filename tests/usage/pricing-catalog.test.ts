@@ -10,10 +10,12 @@ import {
 } from '../../src/usage/pricing/catalog.ts';
 import { PRICE_CATALOGS_2026_10_07 } from '../../src/usage/pricing/catalogs/2026-10-07.ts';
 import { PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS } from '../../src/usage/pricing/catalogs/2026-10-07-openrouter-makers.ts';
+import { PRICE_CATALOGS_2026_10_24 } from '../../src/usage/pricing/catalogs/2026-10-24.ts';
 import type { TokenPriceRate, UsagePriceVersion } from '../../src/usage/pricing/types.ts';
 
 const EARLIER_RELEASES = RELEASE_PRICE_CATALOGS.filter((version) =>
-  !PRICE_CATALOGS_2026_10_07.includes(version) && !PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS.includes(version));
+  ![...PRICE_CATALOGS_2026_10_07, ...PRICE_CATALOGS_2026_10_07_OPENROUTER_MAKERS, ...PRICE_CATALOGS_2026_10_24]
+    .includes(version));
 
 function tokenRate(version: UsagePriceVersion): TokenPriceRate {
   const rate = version.rates[0];
@@ -182,6 +184,18 @@ test('the 2026-10-07 catalog copies each page\'s list price, cache rates, and lo
       version.id,
     );
   }
+});
+
+test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s list price, cache rates, and long-context tier', () => {
+  assert.deepEqual(PRICE_CATALOGS_2026_10_24.map((version) => {
+    const rate = tokenRate(version);
+    return [version.id, version.sourceUrl, version.effectiveFrom, version.staleAfter, rate.modelAliases, rate.inputMicrosPerUnit,
+      rate.outputMicrosPerUnit, rate.cacheReadMicrosPerUnit, rate.cacheWriteMicrosPerUnit, rate.longContext];
+  }), [[
+    'openai-gpt-6.1-sol_2026-10-24', 'https://developers.openai.com/api/docs/pricing', Date.UTC(2026, 9, 24), Date.UTC(2027, 0, 22),
+    ['gpt-6.1-sol'], 2_000_000, 10_000_000, 100_000, 2_500_000,
+    { fromPromptTokens: 272_001, inputMicrosPerUnit: 4_000_000, outputMicrosPerUnit: 15_000_000, cacheReadMicrosPerUnit: 200_000, cacheWriteMicrosPerUnit: 5_000_000 },
+  ]]);
 });
 
 test('the OpenRouter makers catalog prices each model at its maker\'s own endpoint from when it was read', () => {

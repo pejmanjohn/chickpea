@@ -21,7 +21,7 @@ import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 const NOW = Date.UTC(2026, 9, 7, 12);
 const DEEPSEEK = 'openrouter/deepseek/deepseek-v4.1-flash';
 const OPUS = 'anthropic/claude-opus-5-5';
-const UNPRICED = 'anthropic/claude-opus-4-1';
+const UNPRICED = 'anthropic/claude-opus-4-5';
 const NO_DEPLOYMENT_KEYS = {
   CHICKPEA_TENANCY: undefined,
   ANTHROPIC_API_KEY: undefined,
@@ -174,7 +174,7 @@ test('a workspace on Chickpea\'s models with no key of its own creates Agents pi
     assert.equal(refused.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(
       refused.outcomes[0]?.warning ?? '',
-      /^Cannot change the Agent's model to anthropic\/claude-opus-4-1: it is not available on Chickpea's models\. If the requester did not select a model, leave the model unchanged\./,
+      /^Cannot change the Agent's model to anthropic\/claude-opus-4-5: it is not available on Chickpea's models\. If the requester did not select a model, leave the model unchanged\./,
     );
     assert.equal((await f.config.getAgent('agent_pinned_1')).model, DEEPSEEK, 'a refused change leaves the model as it was');
 

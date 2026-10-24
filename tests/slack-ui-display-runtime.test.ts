@@ -18,7 +18,7 @@ import {
 
 const CHART = { title: 'Signups', type: 'line', categories: ['W1', 'W2'], series: [{ name: 'Signups', values: [120, 135] }] };
 const DETAILS = { title: 'Method', markdown: '(135 - 120) / 120' };
-const call = (name: string, args: Record<string, unknown>) =>
+const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
   fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 
 /**

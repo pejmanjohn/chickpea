@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context, Provider } from '@earendil-works/pi-ai';
 import { setProvider } from '@flue/runtime';
 
@@ -208,13 +209,13 @@ function withChickpeaProviderPolicy(provider: Provider): Provider {
   const stream: Provider['stream'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
     return request.send((sent) => request.redact(
-      provider.stream(sent, restoreForRequest(sent, context), request.options),
+      provider.stream(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
   };
   const streamSimple: Provider['streamSimple'] = (model, context, options) => {
     const request = modelAccessRequest(provider.id, model, options);
     return request.send((sent) => request.redact(
-      provider.streamSimple(sent, restoreForRequest(sent, context), request.options),
+      provider.streamSimple(sent, normalizeContext(restoreForRequest(sent, context)), request.options),
     ));
   };
   return new Proxy(provider, {

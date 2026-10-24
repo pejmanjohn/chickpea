@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 import {
   createAssistantMessageEventStream,
   createProvider,
+  normalizeContext,
   type AssistantMessage,
   type Context,
   type Model,
@@ -136,9 +137,9 @@ function recordingProvider(sent: Sent[], held = new Map<string, Promise<void>>()
 }
 
 function modelCall(model: Model<string>, step: string): Promise<AssistantMessage> {
-  return registeredPiProvider(model.provider)!.streamSimple(model, {
+  return registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({
     systemPrompt: 'probe', messages: [{ role: 'user', content: step, timestamp: 1 }],
-  }, {}).result();
+  }), {}).result();
 }
 
 /** An interceptor whose lookup answers from a table and whose resolver counts what it opened. */

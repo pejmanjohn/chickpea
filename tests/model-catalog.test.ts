@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { normalizeContext, type Model } from '@earendil-works/pi-ai';
+import { streamSimple as streamCodex } from '@earendil-works/pi-ai/api/openai-codex-responses';
+
+import hosted from '../catalog/current.json' with { type: 'json' };
 import {
   BUNDLED_MODEL_CATALOG,
   catalogModelForLane,
@@ -8,9 +12,11 @@ import {
   materializeCatalogModel,
   type ModelCatalogEntry,
 } from '../src/model-catalog/index.ts';
+import { getBuiltinModel } from '../src/model-catalog/pi-builtin-models.ts';
+import { compiledModelProfile, isCompiledModelProfileId } from '../src/model-catalog/profiles.ts';
 
 test('the bundled catalog describes only canonical ids, lane profiles, and shrink-only limits', () => {
-  assert.equal(BUNDLED_MODEL_CATALOG.length, 15);
+  assert.equal(BUNDLED_MODEL_CATALOG.length, 16);
   assert.deepEqual(
     BUNDLED_MODEL_CATALOG.filter((entry) => entry.id.startsWith('openai/gpt-5.6-'))
       .map((entry) => entry.id),
@@ -96,4 +102,46 @@ test('subscription inventory is catalog-backed even when the API-key model is Pi
   assert.equal(subscription?.api, 'openai-codex-responses');
   assert.equal(subscription?.contextWindow, 272_000);
   assert.equal(subscription?.maxTokens, 128_000);
+});
+
+test('no catalog lane sends reasoning effort `none` to a model Pi says cannot turn it off', () => {
+  const lanes = [
+    ...BUNDLED_MODEL_CATALOG.map((entry) => ({ id: entry.id, profiles: Object.values(entry.lanes) })),
+    ...hosted.entries.map((entry) => ({ id: entry.canonical, profiles: Object.values(entry.lanes) })),
+  ];
+  let checked = 0;
+  for (const { id, profiles } of lanes) {
+    const modelId = id.slice(id.indexOf('/') + 1);
+    for (const profile of profiles) {
+      assert.ok(isCompiledModelProfileId(profile), `${id} names compiled profile ${profile}`);
+      const model = compiledModelProfile(profile, { id: modelId, name: modelId });
+      if (getBuiltinModel(model.provider, modelId)?.thinkingLevelMap?.off !== null) continue;
+      assert.equal(model.thinkingLevelMap?.off, null, `${id} on ${profile} would send effort none`);
+      checked += 1;
+    }
+  }
+  assert.ok(checked >= 4, 'GPT-6.1 Sol and GPT-6 Astra are checked on both OpenAI lanes');
+});
+
+test('a subscription request with no thinking level leaves the reasoning effort to the backend', async () => {
+  const claims = { 'https://api.openai.com/auth': { chatgpt_account_id: 'account' } };
+  const apiKey = ['e30', Buffer.from(JSON.stringify(claims)).toString('base64url'), 'signature'].join('.');
+  const context = normalizeContext({ messages: [{ role: 'user', content: 'hi', timestamp: 0 }] });
+  for (const entry of BUNDLED_MODEL_CATALOG) {
+    const model = catalogModelForLane(entry.id, 'openai_subscription', { nativeFirst: false });
+    if (!model) continue;
+    for (const reasoning of [undefined, 'high'] as const) {
+      let payload: { reasoning?: { effort?: string } } | undefined;
+      await streamCodex(model as Model<'openai-codex-responses'>, context, {
+        apiKey,
+        ...(reasoning ? { reasoning } : {}),
+        onPayload: (body) => {
+          payload = body as typeof payload;
+          throw new Error('payload captured');
+        },
+      }).result();
+      assert.ok(payload, `${entry.id} built a request`);
+      assert.equal(payload.reasoning?.effort, reasoning, `${entry.id} with ${reasoning ?? 'no'} thinking level`);
+    }
+  }
 });

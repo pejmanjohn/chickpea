@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { resolveModel } from '@flue/runtime/internal';
 import {
   createAssistantMessageEventStream,
+  normalizeContext,
   type AssistantMessage,
   type Context,
   type Model,
@@ -94,7 +95,7 @@ test('the compatibility stream reconstructs the canonical model and rewrites his
 
   const stream = createModelCompatibilityStream(
     incomingModel,
-    context,
+    normalizeContext(context),
     { apiKey: 'test-key' },
     false,
     {
@@ -125,7 +126,7 @@ test('the compatibility stream reconstructs the canonical model and rewrites his
   assert.deepEqual(adapterModel?.input, ['text', 'image']);
   assert.deepEqual(resolverCalls, ['openai/gpt-5.6-sol:openai_api_key']);
   assert.equal(
-    (adapterContext?.messages[0] as AssistantMessage | undefined)?.provider,
+    (adapterContext?.messages.find((message) => message.role === 'assistant') as AssistantMessage | undefined)?.provider,
     'openai',
   );
   assert.equal(events[0]?.type, 'start');

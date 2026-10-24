@@ -78,6 +78,7 @@ const OUTCOME_BY_STOP_REASON: Readonly<Record<StopReason, ModelRequestOutcome>> 
   aborted: 'stopped',
   error: 'error',
   pending: 'error',
+  deferred: 'error',
 };
 
 export function modelRequestRecord(end: ModelRequestEnd): ModelRequestRecord {

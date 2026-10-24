@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { before, test } from 'node:test';
 
-import { fauxAssistantMessage, fauxProvider, type Context } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxProvider, getCurrentTools, type Context } from '@earendil-works/pi-ai';
 import { init, useDelivery, type AgentProps } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 
@@ -184,7 +184,7 @@ async function mountedToolNames(
     await flue.stop();
   }
   assert.equal(captures.length, 1, `${name} reached the model`);
-  return (captures[0]!.tools ?? []).map(({ name }) => name);
+  return getCurrentTools(captures[0]!.messages).map(({ name }) => name);
 }
 
 async function withLiveAgent<T>(run: () => Promise<T>): Promise<T> {

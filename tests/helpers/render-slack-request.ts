@@ -1,7 +1,8 @@
 /**
  * Render the exact Anthropic Messages request one Slack turn sends, through
  * the production ChickpeaSlack harness, model access and pi-ai, without
- * egress: the SDK's `messages.create` captures its params and throws, and
+ * egress: the SDK's `beta.messages.create`, which pi-ai sends every Anthropic
+ * request through, captures its params and throws, and
  * `fetch` refuses. Import this module before any `src/` module: it scopes the
  * process's state database and provider key first.
  */
@@ -71,7 +72,7 @@ let captured: unknown;
 let charged: { sharedPrefix: SharedPrefixId | null; requestId: string } | undefined;
 const chargedRecords = new WeakMap<RenderedRequest, { sharedPrefix: SharedPrefixId | null; requestId: string }>();
 const blockedUrls: string[] = [];
-Anthropic.Messages.prototype.create = function (params: unknown) {
+Anthropic.Beta.Messages.prototype.create = function (params: unknown) {
   captured = structuredClone(params);
   throw new Error('render only');
 };
@@ -238,7 +239,7 @@ function ToolsOnly() {
  */
 export async function renderToolPayloads(
   tools: readonly unknown[],
-  model = 'chickpea-anthropic-api-bundled-v1/claude-opus-5-5',
+  model = 'anthropic/claude-opus-5-5',
 ): Promise<RenderedRequest['tools']> {
   toolsOnly = { model, tools };
   captured = undefined;

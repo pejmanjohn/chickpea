@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
@@ -487,7 +488,7 @@ async function promptSlackInteractionIntentAgent(
     { env, settings, runId: 'slack-interaction-intent', purpose: 'intent' },
     () => providerStreamsForModel(model).streamSimple(
       model,
-      interactionClassifierContext(context),
+      normalizeContext(interactionClassifierContext(context)),
       // No temperature: most catalog models refuse one.
       { ...sideCallOptions(model, 512), maxRetries: 0, onPayload: cacheInstructionsOnly },
     ).result(),

@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import {
   createAssistantMessageEventStream,
   createProvider,
+  normalizeContext,
   type AssistantMessage,
   type AssistantMessageEventStream,
   type Model,
@@ -322,10 +323,10 @@ function modelCall(
   method: 'stream' | 'streamSimple' = 'streamSimple',
   options: { fetch?: typeof fetch } = {},
 ): Promise<AssistantMessage> {
-  return registeredPiProvider(model.provider)![method](model, {
+  return registeredPiProvider(model.provider)![method](model, normalizeContext({
     systemPrompt: 'probe',
     messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
-  }, options).result();
+  }), options).result();
 }
 
 function grant(

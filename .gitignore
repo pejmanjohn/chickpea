@@ -95,3 +95,4 @@ docs/reference/*
 !docs/runbooks/meta-ads-connector.md
 !docs/runbooks/slack-auth-recovery.md
 !docs/runbooks/workspace-management-mcp.md
+!docs/runbooks/models-and-pi-upgrades.md

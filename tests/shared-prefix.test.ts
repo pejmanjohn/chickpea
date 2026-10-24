@@ -65,6 +65,8 @@ const SHAPE_VARIANTS: Record<WarmedSharedPrefixShape, Pick<SlackRequestVariant, 
 };
 const INTERACTIVE_TOOLS = ['ask_user', 'offer_actions', 'request_form'];
 const IMAGE_TOOLS = ['generate_image', 'recover_image'];
+/** pi-ai declares its deferred-loading placeholder after every mounted tool on these models. */
+const PI_TRAILER_TOOLS = ['__pi_deferred_placeholder__'];
 const SEGMENT_TOOLS = { interactive: INTERACTIVE_TOOLS, streaming: ['stream_answer'], image: IMAGE_TOOLS };
 const SHAPE_TOOLS: Record<WarmedSharedPrefixShape, string[]> = {
   interactive: INTERACTIVE_TOOLS,
@@ -139,7 +141,7 @@ for (const agentKind of ['system', 'user'] as const) {
     test(`${agentKind} Agent, ${shape}: channels, workspaces and DMs send the same bytes through B, cached for an hour`, async () => {
       const alpha = await render({ ...ALPHA, agentKind, ...SHAPE_VARIANTS[shape] });
       const anchor = anchorIndex(alpha);
-      assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name), SHAPE_TOOLS[shape]);
+      assert.deepEqual(alpha.tools.slice(anchor + 1).map((tool: any) => tool.name), [...SHAPE_TOOLS[shape], ...PI_TRAILER_TOOLS]);
       assert.deepEqual(markers(alpha), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
       assert.equal(alpha.system[0].text, sharedSystemBlock(agentKind));
       assert.equal(chargedSharedPrefix(alpha), `${agentKind}/${shape}`, 'the charge names the prefix the request carried');
@@ -173,16 +175,26 @@ test('a group DM, which mounts no interactive tools, also caches B for an hour',
   ] as const) {
     const group = await render({ ...ALPHA_GROUP_DM, progressiveStreamingOffered, ...(imageModel ? { imageModel } : {}) });
     const anchor = anchorIndex(group);
-    assert.deepEqual(group.tools.slice(anchor + 1).map((tool: any) => tool.name), after);
+    assert.deepEqual(group.tools.slice(anchor + 1).map((tool: any) => tool.name), [...after, ...PI_TRAILER_TOOLS]);
     assert.deepEqual(markers(group), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
     assert.equal(chargedSharedPrefix(group), prefix);
   }
 });
 
+test('a model on which pi-ai appends no placeholder tool carries the same shared prefix, cached for an hour', async () => {
+  const sonnet = await render({ ...ALPHA, model: 'claude-sonnet-5' });
+  const anchor = anchorIndex(sonnet);
+  assert.deepEqual(sonnet.tools.slice(anchor + 1).map((tool: any) => tool.name), SHAPE_TOOLS.interactive_streaming,
+    'no pi-ai tool follows the mounted tools');
+  assert.deepEqual(markers(sonnet), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+  assert.equal(chargedSharedPrefix(sonnet), 'system/interactive_streaming');
+});
+
 test('a tool between A and B that no shared shape sends keeps A and caches B for five minutes', async () => {
   const finalAnswer = await render({ ...ALPHA, progressiveStreamingMode: 'final_answer' });
   const anchor = anchorIndex(finalAnswer);
-  assert.equal(finalAnswer.tools.at(-1).name, 'stream_answer', 'the effect-capable stream_answer follows the interactive tools');
+  assert.deepEqual(finalAnswer.tools.slice(-1 - PI_TRAILER_TOOLS.length).map((tool: any) => tool.name),
+    ['stream_answer', ...PI_TRAILER_TOOLS], 'the effect-capable stream_answer follows the interactive tools');
   assert.deepEqual(markers(finalAnswer), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 5m', 'system[1] 5m', 'user 5m']);
   assert.equal(chargedSharedPrefix(finalAnswer), null, 'the charge names no shared prefix');
 
@@ -366,8 +378,9 @@ test('a customer-funded request goes out exactly as pi-ai builds it', async () =
   assert.equal(customer.system.length, 1);
   assert.equal(customer.system[0].text, `${platform.system[0].text}\n\n${platform.system[1].text}`);
   assert.deepEqual(withoutMarkers(customer.tools), withoutMarkers(platform.tools));
-  assert.deepEqual(markers(customer), [`tools[${customer.tools.length - 1}] stream_answer 5m`, 'system[0] 5m', 'user 5m']);
-  assert.deepEqual(customer.tools.at(-1).cache_control, { type: 'ephemeral' });
+  const lastMounted = customer.tools.length - 1 - PI_TRAILER_TOOLS.length;
+  assert.deepEqual(markers(customer), [`tools[${lastMounted}] stream_answer 5m`, 'system[0] 5m', 'user 5m']);
+  assert.deepEqual(customer.tools[lastMounted].cache_control, { type: 'ephemeral' });
 });
 
 test('a request whose system block does not match goes out unchanged and counts a miss', async () => {
@@ -404,10 +417,11 @@ test('a request whose system block does not match goes out unchanged and counts 
 
 test('the last user block keeps a 5-minute marker after the 1-hour ones', async () => {
   const longRetention = structuredClone(await render({ ...ALPHA, funding: 'customer' }));
-  longRetention.messages.at(-1).content.at(-1).cache_control = ONE_HOUR;
+  const lastUser = (request: RenderedRequest) => request.messages.findLast((message: any) => message.role === 'user');
+  lastUser(longRetention).content.at(-1).cache_control = ONE_HOUR;
   const shared = sharePromptPrefix(longRetention, REQUEST_ID).payload as RenderedRequest;
   assert.deepEqual(markers(shared).at(-1), 'user 5m');
-  assert.deepEqual(shared.messages.at(-1).content.at(-1).cache_control, FIVE_MINUTES);
+  assert.deepEqual(lastUser(shared).content.at(-1).cache_control, FIVE_MINUTES);
 });
 
 const MOUNTED_GUIDANCE = [
@@ -453,9 +467,9 @@ for (const [name, variant, unmounted, reason] of [
 
 test('sharedPrefixRequests sends the bytes rendered turns send under the ID their charges report, and its tools match a fresh render', async () => {
   const update = process.env.UPDATE_SHARED_PREFIX === '1';
-  const snapshot: { tools: unknown[]; segments: Record<string, unknown[]>; models: Record<string, unknown> } = {
-    tools: [], segments: {}, models: {},
-  };
+  const snapshot: {
+    tools: unknown[]; segments: Record<string, unknown[]>; trailer: unknown[]; models: Record<string, unknown>;
+  } = { tools: [], segments: {}, trailer: [], models: {} };
   for (const model of SNAPSHOT_MODELS) {
     const prewarms = update ? [] : sharedPrefixRequests(model);
     if (!update) {
@@ -469,10 +483,15 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
       for (const shape of WARMED_SHARED_PREFIX_SHAPES) {
         const real = await render({ ...ALPHA, model, agentKind, ...SHAPE_VARIANTS[shape] });
         const { model: _model, max_tokens: _max, stream: _stream, system: _system, tools, messages: _messages, ...settings } = real;
-        assert.deepEqual(Object.keys(settings).sort(), ['output_config', 'service_tier', 'thinking']);
+        assert.deepEqual(Object.keys(settings).sort(), ['betas', 'output_config', 'service_tier', 'thinking']);
         const anchor = anchorIndex(real);
         snapshot.tools = withoutMarkers(tools.slice(0, anchor + 1)) as unknown[];
         const afterAnchor = withoutMarkers(tools.slice(anchor + 1)) as any[];
+        const segmentNames = Object.values(SEGMENT_TOOLS).flat();
+        const trailerAt = afterAnchor.findIndex((tool) => !segmentNames.includes(tool.name));
+        const trailer = trailerAt < 0 ? [] : afterAnchor.slice(trailerAt);
+        assert.ok(trailer.every((tool) => !segmentNames.includes(tool.name)), 'pi-ai\'s own tools follow every mounted tool');
+        snapshot.trailer = trailer;
         for (const [segment, names] of Object.entries(SEGMENT_TOOLS)) {
           const segmentTools = afterAnchor.filter((tool) => names.includes(tool.name));
           if (segmentTools.length > 0) snapshot.segments[segment] = segmentTools;
@@ -482,12 +501,17 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
         const prewarm = prewarms.find(({ id }) => id === chargedSharedPrefix(real));
         assert.ok(prewarm, `${model} ${agentKind} ${shape}: the real request's charge names a pre-warmed prefix`);
         assert.deepEqual([prewarm.kind, prewarm.shape], [agentKind, shape]);
-        const { request } = prewarm;
-        assert.equal(JSON.stringify(request.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
-        assert.deepEqual(request.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
-        for (const [key, value] of Object.entries(settings)) assert.deepEqual(request[key], value, `${model}: ${key}`);
-        assert.equal(request.max_tokens, 0);
-        assert.equal(request.stream, undefined);
+        const { body, betas } = prewarm;
+        assert.ok(!('betas' in body), `${model}: the wire body carries no betas; they travel as the anthropic-beta header`);
+        assert.equal(JSON.stringify(body.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
+        assert.deepEqual(body.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
+        assert.equal(body.max_tokens, 0);
+        assert.equal(body.stream, undefined);
+        assert.deepEqual(
+          { ...body, betas, max_tokens: real.max_tokens, stream: real.stream, system: real.system, messages: real.messages },
+          real,
+          `${model} ${agentKind} ${shape}: apart from its turn, the prewarm makes the SDK params the real request makes`,
+        );
       }
     }
   }

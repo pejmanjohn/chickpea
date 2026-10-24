@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { init, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import { createCloudflareBindingProvider } from '../src/cloudflare-provider.ts';
@@ -27,7 +28,7 @@ for (const method of ['stream', 'streamSimple'] as const) {
   test(`Workers AI ${method} reports silent overflow as a failed completion`, async () => {
     const provider = createCloudflareBindingProvider({ run: async () => response('partial', 40_000) });
     const model = { ...provider.getModels().find((model) => model.id === modelId)!, contextWindow: 32_768 };
-    const result = await provider[method](model, { messages: [{ role: 'user', content: 'fixture', timestamp: 1 }] }).result();
+    const result = await provider[method](model, normalizeContext({ messages: [{ role: 'user', content: 'fixture', timestamp: 1 }] })).result();
     assert.equal(result.stopReason, 'error');
     assert.match(result.errorMessage ?? '', /exceeds the context window/);
     assert.equal(result.usage.input, 40_000);

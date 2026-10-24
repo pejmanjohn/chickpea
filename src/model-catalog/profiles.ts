@@ -21,8 +21,8 @@ function openAiApiModel(
     cost,
     contextWindow: 272_000,
     maxTokens: 128_000,
-    // Pi 0.80.2 has no `max` ThinkingLevel. The remaining values preserve
-    // every effort level its compiled OpenAI Responses adapter can express.
+    // The map leaves out Pi's `max` ThinkingLevel, so Pi clamps a `max`
+    // request on these profiles to `xhigh`.
     thinkingLevelMap: {
       // Pi sends the `off` value as the default reasoning effort. `null`
       // omits it for models that reject `none`.
@@ -74,7 +74,11 @@ function subscriptionModel(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens: 128_000,
-    thinkingLevelMap: { minimal: 'low', xhigh: 'xhigh' },
+    // Since Pi 1.1, a Codex request with no thinking level sends the `off`
+    // value, defaulting to `none`. `null` keeps the backend's own default
+    // effort, which every subscription model accepts; GPT-6.1 Sol and GPT-6
+    // Astra reject `none`.
+    thinkingLevelMap: { off: null, minimal: 'low', xhigh: 'xhigh' },
   };
 }
 

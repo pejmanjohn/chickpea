@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { Api, Model } from '@earendil-works/pi-ai';
 
 import type { CloudflareAIBinding } from '@flue/runtime/cloudflare/workers-ai';
@@ -222,11 +223,11 @@ for (const [method, contentShape] of [
     });
     const model = provider.getModels().find(({ id }) => id === '@cf/openai/gpt-oss-120b');
     assert.ok(model);
-    const result = await provider[method](model, {
+    const result = await provider[method](model, normalizeContext({
       messages: [{ role: 'user', content: 'Create QA helper.', timestamp: 1 }],
       tools: [{ name: 'create_agent', description: 'Create the requested Agent.',
         parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] } }],
-    }).result();
+    })).result();
 
     assert.equal(result.stopReason, 'toolUse', 'thinking must not consume the entire implicit 256-token budget');
     assert.ok(result.content.some((block) => block.type === 'toolCall' && block.name === 'create_agent'));
@@ -260,9 +261,9 @@ test('gateway Responses models clamp unsupported xhigh and max reasoning to high
   assert.ok(model);
 
   for (const reasoning of ['xhigh', 'max'] as const) {
-    const result = await provider.streamSimple(model, {
+    const result = await provider.streamSimple(model, normalizeContext({
       messages: [{ role: 'user', content: 'Check the fixture.', timestamp: 1 }],
-    }, { reasoning }).result();
+    }), { reasoning }).result();
     assert.equal(result.stopReason, 'stop', result.errorMessage ?? 'reasoning request should complete');
   }
 
@@ -281,9 +282,9 @@ test('a malformed Workers AI text delta fails without exposing its value as cont
   const model = provider.getModels().find(({ id }) => id === '@cf/openai/gpt-oss-120b');
   assert.ok(model);
 
-  const result = await provider.streamSimple(model, {
+  const result = await provider.streamSimple(model, normalizeContext({
     messages: [{ role: 'user', content: 'Use the tool.', timestamp: 1 }],
-  }).result();
+  })).result();
 
   assert.equal(result.stopReason, 'error');
   assert.deepEqual(result.content, []);
@@ -371,7 +372,7 @@ test('the real Flue binding adapter can replay a GPT-OSS tool result without a s
   registerCloudflareBindingProvider(binding);
   const provider = createCloudflareBindingProvider(binding);
   const model = resolveModel('cloudflare/@cf/openai/gpt-oss-120b');
-  const result = await provider.streamSimple(model, {
+  const result = await provider.streamSimple(model, normalizeContext({
     messages: [
       { role: 'user', content: 'Read the fixture.', timestamp: 1 },
       {
@@ -384,7 +385,7 @@ test('the real Flue binding adapter can replay a GPT-OSS tool result without a s
       { role: 'toolResult', toolCallId: 'call_read', toolName: 'read_fixture',
         content: [{ type: 'text', text: 'synthetic result' }], isError: false, timestamp: 3 },
     ],
-  }).result();
+  })).result();
 
   assert.equal(result.stopReason, 'stop', result.errorMessage ?? 'tool replay should complete');
   assert.deepEqual(result.content, [{ type: 'text', text: 'Fixture read.' }]);
@@ -438,7 +439,7 @@ for (const [method, hookStyle] of [
       ],
     };
     const before = structuredClone(context);
-    const result = await provider[method](model, context, {
+    const result = await provider[method](model, normalizeContext(context), {
       apiKey: 'synthetic-key',
       maxRetries: 0,
       ...(hookStyle === 'none' ? {} : { onPayload: async (payload: unknown, hookModel: Model<Api>) => {
@@ -522,10 +523,10 @@ test('the Cloudflare binding provider receives the same request-local attachment
     contentType: 'text/plain',
     text: 'binding-only-evidence',
   }], async () => {
-    await provider.streamSimple(model, {
+    await provider.streamSimple(model, normalizeContext({
       messages: [{ role: 'user', content: 'Read the attachment.', timestamp: 1 }],
       tools: [],
-    }).result();
+    })).result();
   });
 
   assert.match(JSON.stringify(receivedInputs), /binding-only-evidence/);
@@ -570,7 +571,7 @@ test('GPT-OSS mixed attachments retain searchable files through the real binding
     }; },
     async prompt() {
       prompts += 1;
-      const response = await provider.streamSimple(model, context).result();
+      const response = await provider.streamSimple(model, normalizeContext(context)).result();
       if (response.stopReason === 'error') throw new Error(response.errorMessage);
       return { text: response.content.filter((part) => part.type === 'text').map((part) => part.text).join('') };
     },
@@ -616,10 +617,10 @@ test('GLM 5.3 Flash keeps provider reasoning out of assistant text and preserves
       { headers: { 'content-type': 'text/event-stream' } });
   } });
   const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
-  const response = await provider.streamSimple(model, {
+  const response = await provider.streamSimple(model, normalizeContext({
     messages: [{ role: 'user', content: 'Read the fixture.', timestamp: 1 }],
     tools: [{ name: 'read_fixture', description: 'Read the fixture.', parameters: { type: 'object', properties: {} } }],
-  }).result();
+  })).result();
   assert.equal(response.stopReason, 'toolUse');
   assert.equal(response.content.some((part) => part.type === 'text'), false);
   assert.ok(response.content.some((part) => part.type === 'thinking'));
@@ -636,8 +637,8 @@ for (const method of ['stream', 'streamSimple'] as const) {
       ].map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
       { headers: { 'content-type': 'text/event-stream' } }) });
       const model = provider.getModels().find(({ id }) => id === '@cf/zai-org/glm-5.3-flash')!;
-      const stream = provider[method](model, { messages: [{ role: 'user', content: 'Probe.', timestamp: 1 }],
-        tools: [{ name: 'probe', description: 'Probe.', parameters: { type: 'object', properties: {} } }] });
+      const stream = provider[method](model, normalizeContext({ messages: [{ role: 'user', content: 'Probe.', timestamp: 1 }],
+        tools: [{ name: 'probe', description: 'Probe.', parameters: { type: 'object', properties: {} } }] }));
       const events = [];
       for await (const event of stream) events.push(event);
       const result = await stream.result();

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { init, instrument, useModel, useTool, type FlueExecutionInterceptor } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import * as v from 'valibot';
@@ -656,9 +657,9 @@ test('a qualifying tool inside an absorbed purpose, such as reading an attachmen
 test('a stateless call, such as the intent check, posts no fee row', async (t) => {
   const posts = hostedPort(t);
   const { sent, model } = scriptedProvider([answers]);
-  const call = () => registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!.streamSimple(model, {
+  const call = () => registeredPiProvider(ANTHROPIC_COMPAT_PROVIDER_ID)!.streamSimple(model, normalizeContext({
     systemPrompt: 'probe', messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
-  }, {}).result();
+  }), {}).result();
 
   const reply = await withModelAccess(ownKeyGrant('slack-interaction-intent'), hostedEnv(), 'intent', call);
 
