@@ -1,7 +1,7 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context, Model, Provider } from '@earendil-works/pi-ai';
 import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages';
 

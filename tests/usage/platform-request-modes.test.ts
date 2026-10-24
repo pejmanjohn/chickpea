@@ -1,8 +1,8 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Context, StreamOptions } from '@earendil-works/pi-ai';
 
 import {

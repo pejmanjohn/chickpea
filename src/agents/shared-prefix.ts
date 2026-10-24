@@ -271,9 +271,10 @@ function withFiveMinuteMarkers(message: unknown): unknown {
 type RenderedPrefix = {
   tools: Payload[];
   segments: Record<ShapeSegment, Payload[]>;
-  /** Tools pi-ai appends after every mounted tool, such as its deferred-loading placeholder. */
+  /** Tools pi-ai appends after every mounted tool on some models, such as its deferred-loading placeholder. */
   trailer: Payload[];
-  models: Record<string, Payload>;
+  /** Each model's request settings as pi-ai passes them to the SDK, `betas` included. */
+  models: Record<string, Payload & { betas?: string[] }>;
 };
 
 let toolsJson: string | undefined;
@@ -296,20 +297,33 @@ function shapeTools(shape: SharedPrefixShape): Payload[] {
 }
 
 let shapesByTools: ReadonlyMap<string, SharedPrefixShape> | undefined;
+/** The shape of the tools after the anchor, whether or not pi-ai appended its trailer to them. */
 function shapeOf(afterAnchor: unknown[]): SharedPrefixShape | undefined {
   shapesByTools ??= new Map((Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
-    .map((shape) => [JSON.stringify([...shapeTools(shape), ...(rendered as RenderedPrefix).trailer]), shape]));
-  return shapesByTools.get(JSON.stringify(afterAnchor.map(withoutCacheControl)));
+    .map((shape) => [JSON.stringify(shapeTools(shape)), shape]));
+  const { trailer } = rendered as RenderedPrefix;
+  const tools = afterAnchor.map(withoutCacheControl);
+  const mounted = trailer.length > 0 && JSON.stringify(tools.slice(-trailer.length)) === JSON.stringify(trailer)
+    ? tools.slice(0, -trailer.length)
+    : tools;
+  return shapesByTools.get(JSON.stringify(mounted));
 }
 
 const PREWARM_TURN = 'Reply with one word.';
 
+/**
+ * A prewarm as the Anthropic SDK sends it: POST `body` as JSON to
+ * `/v1/messages?beta=true`, with `betas` joined by commas as the
+ * `anthropic-beta` header when it is not empty.
+ */
 export interface SharedPrefixRequest {
   /** The ID a real request carrying this prefix reports to the platform charge. */
   id: SharedPrefixId;
   kind: AgentKind;
   shape: SharedPrefixShape;
-  request: Payload;
+  betas: readonly string[];
+  /** The JSON body, without `betas`, which the API refuses in the body. */
+  body: Payload;
 }
 
 /**
@@ -321,15 +335,17 @@ export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
   const { tools, trailer, models } = rendered as RenderedPrefix;
   const settings = models[model];
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
+  const { betas = [], ...bodySettings } = settings;
   const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
   return AGENT_KINDS.flatMap((kind) => WARMED_SHARED_PREFIX_SHAPES.map((shape) => ({
     id: `${kind}/${shape}` as const,
     kind,
     shape,
-    request: {
+    betas,
+    body: {
       model,
       max_tokens: 0,
-      ...settings,
+      ...bodySettings,
       system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
       tools: [...universal, ...shapeTools(shape), ...trailer],
       messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],

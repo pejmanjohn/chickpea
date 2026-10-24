@@ -1,7 +1,7 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import { registerPiProvider } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
+  normalizeContext,
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,

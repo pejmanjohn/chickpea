@@ -21,8 +21,8 @@ function openAiApiModel(
     cost,
     contextWindow: 272_000,
     maxTokens: 128_000,
-    // Pi 0.80.2 has no `max` ThinkingLevel. The remaining values preserve
-    // every effort level its compiled OpenAI Responses adapter can express.
+    // The map leaves out Pi's `max` ThinkingLevel, so Pi clamps a `max`
+    // request on these profiles to `xhigh`.
     thinkingLevelMap: {
       // Pi sends the `off` value as the default reasoning effort. `null`
       // omits it for models that reject `none`.

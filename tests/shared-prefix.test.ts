@@ -181,6 +181,15 @@ test('a group DM, which mounts no interactive tools, also caches B for an hour',
   }
 });
 
+test('a model on which pi-ai appends no placeholder tool carries the same shared prefix, cached for an hour', async () => {
+  const sonnet = await render({ ...ALPHA, model: 'claude-sonnet-5' });
+  const anchor = anchorIndex(sonnet);
+  assert.deepEqual(sonnet.tools.slice(anchor + 1).map((tool: any) => tool.name), SHAPE_TOOLS.interactive_streaming,
+    'no pi-ai tool follows the mounted tools');
+  assert.deepEqual(markers(sonnet), [`tools[${anchor}] ${SHARED_PREFIX_LAST_TOOL} 1h`, 'system[0] 1h', 'system[1] 5m', 'user 5m']);
+  assert.equal(chargedSharedPrefix(sonnet), 'system/interactive_streaming');
+});
+
 test('a tool between A and B that no shared shape sends keeps A and caches B for five minutes', async () => {
   const finalAnswer = await render({ ...ALPHA, progressiveStreamingMode: 'final_answer' });
   const anchor = anchorIndex(finalAnswer);
@@ -492,12 +501,17 @@ test('sharedPrefixRequests sends the bytes rendered turns send under the ID thei
         const prewarm = prewarms.find(({ id }) => id === chargedSharedPrefix(real));
         assert.ok(prewarm, `${model} ${agentKind} ${shape}: the real request's charge names a pre-warmed prefix`);
         assert.deepEqual([prewarm.kind, prewarm.shape], [agentKind, shape]);
-        const { request } = prewarm;
-        assert.equal(JSON.stringify(request.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
-        assert.deepEqual(request.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
-        for (const [key, value] of Object.entries(settings)) assert.deepEqual(request[key], value, `${model}: ${key}`);
-        assert.equal(request.max_tokens, 0);
-        assert.equal(request.stream, undefined);
+        const { body, betas } = prewarm;
+        assert.ok(!('betas' in body), `${model}: the wire body carries no betas; they travel as the anthropic-beta header`);
+        assert.equal(JSON.stringify(body.tools), JSON.stringify(real.tools), `${model} ${agentKind} ${shape}: tools`);
+        assert.deepEqual(body.system, [real.system[0]], `${model} ${agentKind} ${shape}: shared system block`);
+        assert.equal(body.max_tokens, 0);
+        assert.equal(body.stream, undefined);
+        assert.deepEqual(
+          { ...body, betas, max_tokens: real.max_tokens, stream: real.stream, system: real.system, messages: real.messages },
+          real,
+          `${model} ${agentKind} ${shape}: apart from its turn, the prewarm makes the SDK params the real request makes`,
+        );
       }
     }
   }

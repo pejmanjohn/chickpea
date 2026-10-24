@@ -196,7 +196,7 @@ let probeRun = 0;
 const toolNames = (context: Context): string[] => getCurrentTools(context.messages).map((tool) => tool.name).sort();
 const conversationOf = (context: Context | undefined) => (context?.messages ?? []).filter((message) => message.role !== 'system');
 
-test('an upload turn keeps the normal tool set on both renders', async () => {
+test('an upload turn keeps the normal tool set', async () => {
   const upload = await turnRenders(true);
   const plain = await turnRenders(false);
 
@@ -210,8 +210,8 @@ test('an upload turn keeps the normal tool set on both renders', async () => {
     { management: true, presentation: true },
   );
 
-  // The tools the model actually receives on the post-analysis render are the
-  // same ones the identical request receives with no file attached (AE11).
+  // The tools the model actually receives on the answer are the same ones
+  // the identical request receives with no file attached (AE11).
   const uploadTools = toolNames(upload.captures.at(-1)!);
   const plainTools = toolNames(plain.captures.at(-1)!);
   assert.deepEqual(uploadTools, plainTools);
@@ -262,8 +262,7 @@ test('the attachment analysis call reaches the provider tool-free while the uplo
   readableFile = { filename: 'brief.txt', text: 'Headline: Try Free for 7 Days. Audience: ACT students.' };
   try {
     const upload = await turnRenders(true);
-    // Two provider calls: the tool-free analysis, then the post-analysis
-    // render's answer (the first render is superseded before it answers).
+    // Two provider calls: the tool-free analysis, then the answer.
     assert.equal(upload.captures.length, 2);
     assert.deepEqual(toolNames(upload.captures[0]!), []);
     assert.match(JSON.stringify(conversationOf(upload.captures[0])), /BEGIN UNTRUSTED ATTACHMENT DATA/);

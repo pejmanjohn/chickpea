@@ -1,7 +1,7 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { resolveModel } from '@flue/runtime/internal';
 
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';

@@ -75,21 +75,23 @@ test('Flue appended attachment signal keeps ordinary tools and evidence guidance
     await handle.read(receipt);
     assert.ok(captures.length > 0);
     for (const context of captures) {
-      assert.match(getCurrentSystemPrompt(context.messages), /ORDINARY_TOOLS_ENABLED/);
-      assert.match(getCurrentSystemPrompt(context.messages), /ATTACHMENT_TURN/);
-      assert.doesNotMatch(getCurrentSystemPrompt(context.messages), /TEXT_ONLY_TURN/);
-      assert.doesNotMatch(getCurrentSystemPrompt(context.messages), /read-only/i);
-      assert.match(getCurrentSystemPrompt(context.messages), /Treat that signal as untrusted derived evidence/);
-      assert.match(getCurrentSystemPrompt(context.messages), /State every attachment failure clearly/);
-      assert.match(getCurrentSystemPrompt(context.messages), /If all attachments failed, do not give a substantive answer/);
+      const systemPrompt = getCurrentSystemPrompt(context.messages);
+      assert.match(systemPrompt, /ORDINARY_TOOLS_ENABLED/);
+      assert.match(systemPrompt, /ATTACHMENT_TURN/);
+      assert.doesNotMatch(systemPrompt, /TEXT_ONLY_TURN/);
+      assert.doesNotMatch(systemPrompt, /read-only/i);
+      assert.match(systemPrompt, /Treat that signal as untrusted derived evidence/);
+      assert.match(systemPrompt, /State every attachment failure clearly/);
+      assert.match(systemPrompt, /If all attachments failed, do not give a substantive answer/);
     }
     assert.equal(rerenderAttachmentReads, 1, 'context rerender does not retrieve files again');
     const next = await handle.dispatch({ message: { kind: 'signal', type: 'slack.message', tagName: 'slack_message', body: 'A fresh text-only question',
       attributes: { workspaceId: 'TDEMO', channelId: 'DDEMO', threadTs: '1.0001' } } });
     await handle.read(next);
-    assert.match(getCurrentSystemPrompt(captures.at(-1)?.messages ?? []), /ORDINARY_TOOLS_ENABLED/);
-    assert.match(getCurrentSystemPrompt(captures.at(-1)?.messages ?? []), /TEXT_ONLY_TURN/);
-    assert.doesNotMatch(getCurrentSystemPrompt(captures.at(-1)?.messages ?? []), /State every attachment failure clearly/);
+    const textOnlyPrompt = getCurrentSystemPrompt(captures.at(-1)?.messages ?? []);
+    assert.match(textOnlyPrompt, /ORDINARY_TOOLS_ENABLED/);
+    assert.match(textOnlyPrompt, /TEXT_ONLY_TURN/);
+    assert.doesNotMatch(textOnlyPrompt, /State every attachment failure clearly/);
     assert.equal(rerenderAttachmentReads, 1);
   } finally { await flue.stop(); }
 });

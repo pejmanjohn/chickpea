@@ -1,7 +1,7 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 

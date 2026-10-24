@@ -1,4 +1,3 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createAssistantMessageEventStream,
   createProvider,
+  normalizeContext,
   type AssistantMessage,
   type Context,
   type Model,

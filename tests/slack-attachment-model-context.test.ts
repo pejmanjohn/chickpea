@@ -1,9 +1,11 @@
-import { getCurrentSystemPrompt, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  normalizeContext,
   type AssistantMessage,
   type AssistantMessageEventStream,
   type Context,

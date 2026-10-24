@@ -1,10 +1,10 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
 import {
   createAssistantMessageEventStream,
   createProvider,
+  normalizeContext,
   type AssistantMessage,
   type Context,
   type Model,

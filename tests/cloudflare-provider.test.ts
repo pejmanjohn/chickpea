@@ -1,6 +1,6 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type { Api, Model } from '@earendil-works/pi-ai';
 
 import type { CloudflareAIBinding } from '@flue/runtime/cloudflare/workers-ai';

@@ -1,6 +1,6 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { init, useModel, useTool } from '@flue/runtime';
 import { start } from '@flue/runtime/node';
 import { createCloudflareBindingProvider } from '../src/cloudflare-provider.ts';

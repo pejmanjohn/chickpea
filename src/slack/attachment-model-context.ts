@@ -1,6 +1,6 @@
-import { normalizeContext } from '@earendil-works/pi-ai';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+import { normalizeContext } from '@earendil-works/pi-ai';
 import type {
   Api,
   AssistantMessage,
@@ -423,7 +423,7 @@ function reviewedNativePdfRoute(model: Model<Api>): 'openai' | 'anthropic' | und
   return undefined;
 }
 
-/** A model Pi ships for this provider, on Pi's own wire API. */
+/** The model routes through Pi's own provider and wire API, not a Chickpea compatibility alias. */
 function isPiNativeRoute(model: Model<Api>, provider: 'openai' | 'anthropic', api: Api): boolean {
   return model.provider === provider && model.api === api;
 }
