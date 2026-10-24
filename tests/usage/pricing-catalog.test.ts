@@ -186,15 +186,21 @@ test('the 2026-10-07 catalog copies each page\'s list price, cache rates, and lo
   }
 });
 
-test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s list price, cache rates, and long-context tier', () => {
+test('the 2026-10-24 catalog copies GPT-6.1 Sol\'s and Claude Haiku 5.5\'s list prices, cache rates, and long-context tiers', () => {
+  const reviewedAt = Date.UTC(2026, 9, 24);
   assert.deepEqual(PRICE_CATALOGS_2026_10_24.map((version) => {
     const rate = tokenRate(version);
-    return [version.id, version.sourceUrl, version.effectiveFrom, version.staleAfter, rate.modelAliases, rate.inputMicrosPerUnit,
-      rate.outputMicrosPerUnit, rate.cacheReadMicrosPerUnit, rate.cacheWriteMicrosPerUnit, rate.longContext];
+    return [version.id, version.providerId, version.sourceUrl, version.effectiveFrom, version.reviewedAt, version.staleAfter,
+      rate.modelAliases, rate.inputMicrosPerUnit, rate.outputMicrosPerUnit, rate.cacheReadMicrosPerUnit,
+      rate.cacheWriteMicrosPerUnit, rate.cacheWrite1hMicrosPerUnit ?? null, rate.longContext];
   }), [[
-    'openai-gpt-6.1-sol_2026-10-24', 'https://developers.openai.com/api/docs/pricing', Date.UTC(2026, 9, 24), Date.UTC(2027, 0, 22),
-    ['gpt-6.1-sol'], 2_000_000, 10_000_000, 100_000, 2_500_000,
+    'openai-gpt-6.1-sol_2026-10-24', 'openai', 'https://developers.openai.com/api/docs/pricing', reviewedAt, reviewedAt,
+    Date.UTC(2027, 0, 22), ['gpt-6.1-sol'], 2_000_000, 10_000_000, 100_000, 2_500_000, null,
     { fromPromptTokens: 272_001, inputMicrosPerUnit: 4_000_000, outputMicrosPerUnit: 15_000_000, cacheReadMicrosPerUnit: 200_000, cacheWriteMicrosPerUnit: 5_000_000 },
+  ], [
+    'anthropic-haiku-5-5_2026-10-24', 'anthropic', 'https://platform.claude.com/docs/en/about-claude/pricing', reviewedAt, reviewedAt,
+    Date.UTC(2027, 0, 22), ['claude-haiku-5-5'], 100_000, 500_000, 10_000, 125_000, 200_000,
+    { fromPromptTokens: 100_001, inputMicrosPerUnit: 500_000, outputMicrosPerUnit: 2_500_000, cacheReadMicrosPerUnit: 50_000, cacheWriteMicrosPerUnit: 625_000, cacheWrite1hMicrosPerUnit: 1_000_000 },
   ]]);
 });
 
