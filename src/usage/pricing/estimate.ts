@@ -65,7 +65,7 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   if (rate.longContext && input.inputTokens + cache.read + cache.write >= rate.longContext.fromPromptTokens) {
     // A measurement can total several requests, so a total past the threshold
     // does not show that any one request crossed it.
-    if (!input.singleRequest || oneHourWrites > 0) return unknown('pricing_dimension_unknown', 'partial');
+    if (!input.singleRequest) return unknown('pricing_dimension_unknown', 'partial');
     const { fromPromptTokens: _from, ...longContext } = rate.longContext;
     const {
       cacheReadMicrosPerUnit: _read, cacheWriteMicrosPerUnit: _write, cacheWrite1hMicrosPerUnit: _oneHour,
@@ -75,7 +75,8 @@ export function estimateUsage(input: UsageEstimateInput): UsageEstimateResult {
   }
   if (
     (cache.read > 0 && rate.cacheReadMicrosPerUnit === undefined) ||
-    (fiveMinuteWrites > 0 && rate.cacheWriteMicrosPerUnit === undefined)
+    (fiveMinuteWrites > 0 && rate.cacheWriteMicrosPerUnit === undefined) ||
+    (oneHourWrites > 0 && rate.cacheWrite1hMicrosPerUnit === undefined)
   ) return unknown('pricing_dimension_unknown', 'partial');
   const amount = Math.round(
     (input.inputTokens * rate.inputMicrosPerUnit +

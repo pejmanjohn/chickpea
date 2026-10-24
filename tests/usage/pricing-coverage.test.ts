@@ -194,6 +194,54 @@ test('a measurement whose prompt reaches the long-context tier stays partial', (
   );
 });
 
+test('a Claude Haiku 5.5 request over 100,000 prompt tokens pays the long-context rates, one-hour cache writes included', () => {
+  const request = (
+    inputTokens: number, cacheReadTokens: number, fiveMinuteWrites: number, oneHourWrites: number, outputTokens: number,
+  ) => measurement('anthropic', 'claude-haiku-5-5', {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens: fiveMinuteWrites + oneHourWrites,
+    cacheWrite1hTokens: oneHourWrites,
+    singleRequest: true,
+  });
+  const priced = (amount: number) => ({
+    estimateCompleteness: 'complete',
+    estimateAmountMicros: amount,
+    estimateCurrency: 'USD',
+    priceVersionId: 'anthropic-haiku-5-5_2026-10-24',
+    priceUnknownReason: null,
+  });
+  const partial = {
+    estimateCompleteness: 'partial',
+    estimateAmountMicros: null,
+    estimateCurrency: null,
+    priceVersionId: null,
+    priceUnknownReason: 'pricing_dimension_unknown',
+  };
+  const long = request(1_000, 90_000, 8_000, 12_000, 2_000);
+  // 1,000×0.50 + 2,000×2.50 + 90,000×0.05 + 8,000×0.625 + 12,000×1 USD per million tokens. The base
+  // one-hour rate would give 17,400, and the long-context 5-minute rate 22,500.
+  assert.deepEqual(estimateUsage(long), priced(27_000));
+  // 2,000×0.10 + 1,000×0.50 + 80,000×0.01 + 8,000×0.125 + 10,000×0.20
+  assert.deepEqual(estimateUsage(request(2_000, 80_000, 8_000, 10_000, 1_000)), priced(4_500), 'exactly 100,000 prompt tokens');
+  // 2,000×0.50 + 1,000×2.50 + 80,000×0.05 + 8,000×0.625 + 10,001×1
+  assert.deepEqual(estimateUsage(request(2_000, 80_000, 8_000, 10_001, 1_000)), priced(22_501), '100,001 prompt tokens');
+
+  const { singleRequest: _single, ...severalRequests } = long;
+  assert.deepEqual(estimateUsage(severalRequests), partial, 'a total past the threshold may be several requests under it');
+
+  const tier = priceCatalogFor('standard_input_output', 'anthropic', 'claude-haiku-5-5', REVIEWED)!.rate.longContext!;
+  const oneHour = tier.cacheWrite1hMicrosPerUnit;
+  assert.ok(oneHour);
+  delete tier.cacheWrite1hMicrosPerUnit;
+  try {
+    assert.deepEqual(estimateUsage(long), partial, 'a tier without its own one-hour rate never borrows the base one');
+  } finally {
+    tier.cacheWrite1hMicrosPerUnit = oneHour;
+  }
+});
+
 test('recorded measurements keep their price version; only unpriced ones are backfilled', () => {
   const db = openStateDb(':memory:');
   const beforeReview = Date.UTC(2026, 9, 6, 12);
