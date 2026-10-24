@@ -200,7 +200,7 @@ async function serveControlStatus(home: string, replies: boolean[]) {
     connection.on('data', (chunk) => { input += chunk; });
     connection.on('end', () => {
       requests.push(JSON.parse(input));
-      const running = replies[Math.min(requests.length, replies.length) - 1];
+      const running = replies[requests.length - 1];
       connection.end(`${JSON.stringify({ ok: true, result: { running } })}\n`);
     });
   });

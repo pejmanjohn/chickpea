@@ -183,10 +183,8 @@ node_previous="$install_home/tools/node.previous"
 for managed_path in "$install_home/tools" "$node_root" "$node_previous" "$install_home/releases" "$install_home/bin"; do
   [[ ! -L $managed_path ]] || die "managed installation path must not be a symlink: $managed_path"
 done
-# Asks the runtime manager for status as sendControlCommand in
-# scripts/lib/node-installation.mjs does. Send a complete request: a bare
-# connect crashes managers released before early disconnects were handled.
-# Fails closed; only a missing endpoint or token, or a stopped reply, is stopped.
+# Asks the runtime manager for status as sendControlCommand does; a bare connect
+# crashes older managers. Fails closed.
 installation_running() {
   ! "$node_bin" - "$install_home" <<'NODE'
 const fs=require('fs'),net=require('net'),path=require('path');
@@ -194,14 +192,12 @@ const stopped=()=>process.exit(0),running=()=>process.exit(1);
 const home=fs.realpathSync(process.argv[2]),uid=process.getuid();
 const digest=require('crypto').createHash('sha256').update(home).digest('hex').slice(0,32);
 const socket=`/tmp/chickpea-node-${uid}/${digest}.sock`;
-// Never send the token to an endpoint another user could control.
-for(const [file,isKind] of [[path.dirname(socket),'isDirectory'],[socket,'isSocket']]){
+for(const [file,isKind] of [[path.dirname(socket),'isDirectory'],[socket,'isSocket'],[path.join(home,'control','token'),'isFile']]){
   const info=fs.lstatSync(file,{throwIfNoEntry:false});
   if(!info)stopped();
   if(!info[isKind]()||info.uid!==uid||(info.mode&0o077)!==0)running();
 }
 const tokenFile=path.join(home,'control','token');
-if(!fs.existsSync(tokenFile))stopped();
 const token=fs.readFileSync(tokenFile,'utf8').trim();
 setTimeout(running,2000);
 const client=net.connect(socket);
@@ -230,7 +226,7 @@ if [[ -e $node_root ]]; then
 fi
 if [[ -n $refresh_from ]]; then
   running_refusal="stop Chickpea before the installer refreshes its private Node runtime from $refresh_from to v$NODE_VERSION: $(quote "$install_home/bin/chickpea-node") stop"
-  if installation_running; then die "$running_refusal"; fi
+  ! installation_running || die "$running_refusal"
 fi
 if [[ ! -e $node_root || -n $refresh_from ]]; then
   node_archive="node-v${NODE_VERSION}-${node_platform}.tar.gz"
@@ -247,13 +243,13 @@ if [[ ! -e $node_root || -n $refresh_from ]]; then
   mkdir "$work/node"
   tar -xzf "$work/$node_archive" -C "$work/node" --strip-components=1
   [[ $("$work/node/bin/node" --version) == "v$NODE_VERSION" ]] || die 'downloaded Node executable has the wrong version'
+  # `start` does not take the installer lock, so ask again after the download.
+  [[ -z $refresh_from ]] || ! installation_running || die "$running_refusal"
   mkdir -p "$install_home/tools"
   [[ ! -L $install_home/tools/node.incomplete ]] || die 'private Node staging path must not be a symlink'
   rm -rf "$install_home/tools/node.incomplete"
   mv "$work/node" "$install_home/tools/node.incomplete"
   if [[ -n $refresh_from ]]; then
-    # `start` does not take the installer lock, so ask again after the download.
-    if installation_running; then die "$running_refusal"; fi
     rm -rf "$node_previous"
     mv "$node_root" "$node_previous"
   fi
