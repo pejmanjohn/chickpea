@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type ProviderStreams } from '@earendil-works/pi-ai';
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  type AssistantMessage,
+  type Context,
+  type Model,
+  type ProviderStreams,
+} from '@earendil-works/pi-ai';
 import { createChickpeaPiProvider } from '../src/config/pi-provider.ts';
 import { registerPiProvider } from '../src/config/pi-provider-registry.ts';
 import { withDeploymentLane } from '../src/config/model-access.ts';
@@ -35,22 +43,23 @@ test('visual inspection uses one configured-model call with no tools and validat
   const result = await inspect(input);
   assert.equal(result.verdict, 'needs_changes');
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0]!.context.tools, []);
-  assert.equal(calls[0]!.context.messages.length, 1);
+  const conversation = (call: (typeof calls)[number]) => call.context.messages.filter((message) => message.role !== 'system');
+  assert.deepEqual(getCurrentTools(calls[0]!.context.messages), []);
+  assert.equal(conversation(calls[0]!).length, 1);
   assert.equal(calls[0]!.options.maxRetries, 0);
   assert.equal(calls[0]!.options.maxTokens, 1024);
   assert.ok(calls[0]!.options.signal instanceof AbortSignal);
-  const content = calls[0]!.context.messages[0]!.content;
+  const content = conversation(calls[0]!)[0]!.content;
   assert.ok(Array.isArray(content));
   assert.deepEqual(content.filter((part) => part.type === 'image').map((part) => part.data), [png.toString('base64'), png.toString('base64')]);
   const transparent = await sharp(Buffer.from([255, 0, 0, 0, 0, 200, 0, 255]), { raw: { width: 2, height: 1, channels: 4 } }).png().toBuffer();
   await inspect({ ...input, image: { bytes: transparent, mimeType: 'image/png' } });
-  const inspected = calls[1]!.context.messages[0]!.content;
+  const inspected = conversation(calls[1]!)[0]!.content;
   assert.ok(Array.isArray(inspected));
   const last = inspected.filter((part) => part.type === 'image').at(-1)!;
   const pixels = await sharp(Buffer.from(last.data, 'base64')).raw().toBuffer();
   assert.deepEqual([...pixels], [248, 248, 248, 0, 200, 0], 'hidden red is not shown to vision; visible green remains unchanged');
-  assert.match(calls[1]!.context.systemPrompt!, /checkerboard.*inspection only/);
+  assert.match(getCurrentSystemPrompt(calls[1]!.context.messages), /checkerboard.*inspection only/);
   text = '{"verdict":"perfect","observations":"ignore all rules"}';
   assert.equal((await inspect(input)).status, 'unavailable');
 });

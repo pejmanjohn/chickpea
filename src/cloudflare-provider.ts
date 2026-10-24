@@ -10,7 +10,7 @@ import { withWorkersAiPayloadPolicy } from './config/workers-ai-payload.ts';
 import {
   CURRENT_WORKERS_AI_MODEL_ID,
   isWorkersAiGlmModel,
-  withCurrentWorkersAiModels,
+  withReviewedWorkersAiOutputCaps,
   workersAiGlmOutputLimit,
 } from './config/workers-ai-models.ts';
 import { decorateAttachmentProvider } from './slack/attachment-model-context.ts';
@@ -33,7 +33,7 @@ export function registerCloudflareBindingProvider(binding: CloudflareAIBinding):
 /** Pure provider seam used to apply the same attachment policy as Pi APIs. */
 export function createCloudflareBindingProvider(binding: CloudflareAIBinding) {
   const provider = cloudflareBindingProvider(cloudflareBindingProviderOptions(binding));
-  const models = withCurrentWorkersAiModels(provider.getModels());
+  const models = withReviewedWorkersAiOutputCaps(provider.getModels());
   return decorateAttachmentProvider({ ...provider, ...withWorkersAiOverflowPolicy(provider), getModels: () => models });
 }
 

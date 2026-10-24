@@ -187,7 +187,7 @@
         }
        }
       },
-      "description": "Images from this conversation to include in the child agent prompt"
+      "description": "Images or documents from this conversation to include in the child agent prompt"
      }
     },
     "required": [
@@ -5942,24 +5942,52 @@
    }
   ]
  },
+ "trailer": [
+  {
+   "name": "__pi_deferred_placeholder__",
+   "description": "Reserved placeholder. Never available. Never call this.",
+   "input_schema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   },
+   "defer_loading": true
+  }
+ ],
  "models": {
   "claude-opus-5-5": {
+   "betas": [
+    "mid-conversation-output-config-2026-07-01",
+    "thinking-binding-controls-2026-08-01",
+    "inline-tools-2026-09-15"
+   ],
    "thinking": {
     "type": "adaptive",
-    "display": "summarized"
+    "display": "summarized",
+    "block_binding": {
+     "prefix_mismatch_behavior": "drop_block"
+    }
    },
    "output_config": {
-    "effort": "medium"
+    "effort": "high"
    },
    "service_tier": "standard_only"
   },
   "claude-sonnet-5-5": {
+   "betas": [
+    "mid-conversation-output-config-2026-07-01",
+    "thinking-binding-controls-2026-08-01",
+    "inline-tools-2026-09-15"
+   ],
    "thinking": {
     "type": "adaptive",
-    "display": "summarized"
+    "display": "summarized",
+    "block_binding": {
+     "prefix_mismatch_behavior": "drop_block"
+    }
    },
    "output_config": {
-    "effort": "medium"
+    "effort": "high"
    },
    "service_tier": "standard_only"
   }

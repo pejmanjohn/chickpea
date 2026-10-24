@@ -38,7 +38,7 @@ afterEach(() => {
   invalidateProviderModelCache();
 });
 
-test('the app supplements the compatible Pi catalog with current Workers AI metadata', () => {
+test('the current Workers AI model keeps Pi\'s metadata under the configured output budget', () => {
   setWorkersAiRestPiProvider({
     baseUrl: 'https://workers-ai.example.invalid/v1',
     contextWindowFloor: 32_768,
@@ -46,7 +46,6 @@ test('the app supplements the compatible Pi catalog with current Workers AI meta
   });
   const model = resolveModel('cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash');
 
-  assert.equal(model.name, 'GLM 5.3 Flash');
   // The current GLM model retains its documented context window; applying
   // the legacy floor here would misclassify valid responses as overflow.
   // https://developers.cloudflare.com/workers-ai/models/glm-5.3-flash/

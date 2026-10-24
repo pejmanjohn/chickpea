@@ -43,7 +43,7 @@ const PLAN = compileRuntimePlanV2({
     modelAttribution: { source: 'workspace_default', providerId: 'faux', workspaceDefaultRevision: 1 } },
   instructions: AGENT.instructions, memoryEpoch: 1, effectiveConnections: [],
 });
-const call = (name: string, args: Record<string, unknown> = {}) =>
+const call = (name: string, args: Parameters<typeof fauxToolCall>[1] = {}) =>
   fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 
 test('file reconciliation preserves the distinction between scratch work and an upload attempt', { timeout: 30_000 }, async (t) => {

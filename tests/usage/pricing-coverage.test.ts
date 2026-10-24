@@ -13,7 +13,7 @@ import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { estimateUsage } from '../../src/usage/pricing/estimate.ts';
 import { UsageStoreLogic } from '../../src/usage/store.ts';
 
-const REVIEWED = Date.UTC(2026, 9, 7, 12);
+const REVIEWED = Date.UTC(2026, 9, 24, 12);
 const SNAPSHOT = 'a'.repeat(64);
 
 function measurement(
@@ -94,6 +94,7 @@ test('catalog models under alias providers and dated slugs price as their canoni
     ['anthropic', 'claude-sonnet-5-5', [ANTHROPIC_COMPAT_PROVIDER_ID, revisionedAlias('anthropic', 3, SNAPSHOT).providerId]],
     ['openai', 'gpt-5.6-terra', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 3, SNAPSHOT).providerId]],
     ['openai', 'gpt-6-sol', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 3, SNAPSHOT).providerId]],
+    ['openai', 'gpt-6.1-sol', [OPENAI_PLATFORM_COMPAT_PROVIDER_ID, revisionedAlias('openaiPlatform', 4, SNAPSHOT).providerId]],
   ] as const;
   for (const [canonical, model, aliases] of routes) {
     const expected = estimateUsage(measurement(canonical, model));

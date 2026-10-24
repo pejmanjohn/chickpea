@@ -14420,7 +14420,7 @@ test('Settings tells a credits workspace to choose another model when its defaul
 });
 
 const OFFERED_MODEL = 'anthropic/claude-opus-5-5';
-const UNOFFERED_MODEL = 'anthropic/claude-opus-4-1';
+const UNOFFERED_MODEL = 'anthropic/claude-opus-4-5';
 const NO_KEY_WARNING = '<p class="field-error">No key for this provider yet — replies with this model will fail until one is added in Settings.</p>';
 const NOT_OFFERED_HINT = '<p class="hint">Not available on Chickpea\'s models. Choose another model.</p>';
 const ANTHROPIC_WITHOUT_KEY: ModelProviderFixture = {

@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
@@ -143,10 +144,10 @@ function assistant(provider: string, stopReason: 'stop' | 'error', errorMessage?
 }
 
 async function modelCall(model: Model<string>, step: string): Promise<AssistantMessage> {
-  return registeredPiProvider(model.provider)!.streamSimple(model, {
+  return registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({
     systemPrompt: 'probe',
     messages: [{ role: 'user', content: step, timestamp: 1 }],
-  }, {}).result();
+  }), {}).result();
 }
 
 /** Two installations of a deployment serving many, each with its own settings store and key. */
@@ -334,16 +335,16 @@ test('a deployment serving many installations refuses calls without scope, deplo
 
     // A stateless path invoked without withModelAccess fails before egress, whatever the provider.
     for (const model of [anthropic, ...lanes, localStub]) {
-      assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, { messages: [] }, {}),
+      assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({ messages: [] }), {}),
         (error: unknown) => error instanceof ModelAccessError && error.code === 'scope_missing', model.provider);
     }
     // Inside a grant of this deployment, a lane with its own credential is refused by the cell itself.
     await withModelAccess(grantA, envA, 'reply', async () => {
       for (const model of lanes) {
-        assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, { messages: [] }, {}),
+        assert.throws(() => registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({ messages: [] }), {}),
           (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_not_offered', model.provider);
       }
-      assert.throws(() => registeredPiProvider('local-stub')!.streamSimple(localStub, { messages: [] }, {}),
+      assert.throws(() => registeredPiProvider('local-stub')!.streamSimple(localStub, normalizeContext({ messages: [] }), {}),
         (error: unknown) => error instanceof ModelAccessError && error.code === 'provider_mismatch');
     });
     await assert.rejects(withDeploymentLane(envA, 'lane', 'reply', async () => undefined),
@@ -833,7 +834,7 @@ test('a provider error that echoes the injected key never records it', async (t)
   };
   const events: string[] = [];
   const result = await withModelAccess(grant, undefined, 'reply', async () => {
-    const stream = registeredPiProvider('anthropic')!.streamSimple(model, { messages: [] }, {});
+    const stream = registeredPiProvider('anthropic')!.streamSimple(model, normalizeContext({ messages: [] }), {});
     for await (const event of stream) events.push(JSON.stringify(event));
     return stream.result();
   });

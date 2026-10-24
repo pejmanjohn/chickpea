@@ -163,7 +163,7 @@ function completionResult(reply: AgentReply) {
   return v.parse(FileDeliveryResultSchema, reply.data?.[FILE_DELIVERY_DATA_NAME]?.at(-1));
 }
 
-const call = (name: string, args: Record<string, unknown>) =>
+const call = (name: string, args: Parameters<typeof fauxToolCall>[1]) =>
   fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: 'toolUse' });
 const writeReport = (path = '/home/user/report.md') => call('write', { path, content: REPORT });
 const completeReport = (path = '/home/user/report.md') =>

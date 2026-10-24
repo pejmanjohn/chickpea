@@ -9,6 +9,7 @@ import type {
 } from './types.ts';
 
 export const BUNDLED_MODEL_CATALOG: readonly ModelCatalogEntry[] = [
+  openAiEntry('gpt-6.1-sol', 'GPT-6.1 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-6-astra', 'GPT-6 Astra', 'openai-platform-responses-astra-tier@1'),
   openAiEntry('gpt-6-sol', 'GPT-6 Sol', 'openai-platform-responses-sol-tier@1'),
   openAiEntry('gpt-6-luna', 'GPT-6 Luna', 'openai-platform-responses-luna-tier@1'),
@@ -127,7 +128,8 @@ function openAiEntry(
     | 'gpt-5.6-terra'
     | 'gpt-6-astra'
     | 'gpt-6-luna'
-    | 'gpt-6-sol',
+    | 'gpt-6-sol'
+    | 'gpt-6.1-sol',
   displayName: string,
   apiProfile:
     | 'openai-platform-responses-astra-tier@1'

@@ -76,12 +76,12 @@ test('Chickpea and inheriting user Agents freeze the same Workspace default revi
 
 test('a pinned user Agent ignores later Workspace default revisions', () => {
   const pinned = resolveAgentModelPolicy({
-    agent: agent({ model: 'anthropic/claude-opus-4-1' }),
+    agent: agent({ model: 'anthropic/claude-opus-4-5' }),
     runtimeContract: 'chickpea-v1',
     workspaceDefault,
   });
   const afterDefaultChange = resolveAgentModelPolicy({
-    agent: agent({ model: 'anthropic/claude-opus-4-1' }),
+    agent: agent({ model: 'anthropic/claude-opus-4-5' }),
     runtimeContract: 'chickpea-v1',
     workspaceDefault: { ...workspaceDefault, modelId: 'openai/gpt-5.7', revision: 5 },
   });

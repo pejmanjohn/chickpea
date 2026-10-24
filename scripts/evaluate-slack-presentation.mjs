@@ -23,6 +23,8 @@ import {
   fauxProvider,
   fauxText,
   fauxToolCall,
+  getCurrentSystemPrompt,
+  getCurrentTools,
 } from '@earendil-works/pi-ai';
 import {
   init,
@@ -382,8 +384,8 @@ async function runDeterministicSmoke(corpus) {
     // production table rule and every presentation tool across the boundary.
     const plain = await scenario('plain-answer-refund-window', [
       (context) => {
-        const tools = new Set((context.tools ?? []).map(({ name }) => name));
-        assert(context.systemPrompt?.includes(SLACK_PRESENTATION_GUIDE), 'The presentation guide did not reach the model.');
+        const tools = new Set(getCurrentTools(context.messages).map(({ name }) => name));
+        assert(getCurrentSystemPrompt(context.messages).includes(SLACK_PRESENTATION_GUIDE), 'The presentation guide did not reach the model.');
         for (const name of [...PRESENTATION_TOOL_NAMES, ...STUB_TOOL_NAMES]) assert(tools.has(name), `Tool ${name} did not reach the model.`);
         return fauxAssistantMessage([fauxToolCall('search_docs', { query: 'refund window annual plans' })], { stopReason: 'toolUse' });
       },

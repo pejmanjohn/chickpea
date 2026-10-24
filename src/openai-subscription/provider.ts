@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { registerPiProvider } from '../config/pi-provider-registry.ts';
 import {
   createAssistantMessageEventStream,
@@ -313,8 +314,8 @@ function secureCodexStream(
     ),
   };
   const source = simple
-    ? streamSimpleCodex(codexModel, mappedContext, secureOptions)
-    : streamCodex(codexModel, mappedContext, secureOptions);
+    ? streamSimpleCodex(codexModel, normalizeContext(mappedContext), secureOptions)
+    : streamCodex(codexModel, normalizeContext(mappedContext), secureOptions);
   return rewriteAndSanitizeStream(source, registration.providerId, registration.api);
 }
 

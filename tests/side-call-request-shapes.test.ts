@@ -11,10 +11,12 @@ import { BUNDLED_MODEL_CATALOG } from '../src/model-catalog/bundled.ts';
 import { bootstrapRuntimeProviders } from '../src/runtime-bootstrap.ts';
 import { classifySlackInteraction } from '../src/slack/interaction-intent.ts';
 
-process.env.ANTHROPIC_API_KEY = 'test-not-a-key';
-process.env.OPENAI_API_KEY = 'test-not-a-key';
-process.env.OPENROUTER_API_KEY = 'test-not-a-key';
-configureModelAccessResolver({ resolve: async () => ({ apiKey: 'test-not-a-key' }) } as never);
+// pi-ai reads an OpenAI key without the `sk-` prefix as a ChatGPT sign-in
+// and drops the fields that sign-in refuses, such as max_output_tokens.
+process.env.ANTHROPIC_API_KEY = 'sk-test-not-a-key';
+process.env.OPENAI_API_KEY = 'sk-test-not-a-key';
+process.env.OPENROUTER_API_KEY = 'sk-test-not-a-key';
+configureModelAccessResolver({ resolve: async () => ({ apiKey: 'sk-test-not-a-key' }) } as never);
 bootstrapRuntimeProviders();
 
 // What the provider refuses with a 400, per its model reference.
@@ -57,16 +59,26 @@ function openAiStream(text: string | undefined): string {
   return [
     { type: 'response.created', response: { id: 'resp_1' } },
     ...(text === undefined ? [] : [
-      { type: 'response.output_item.added', item: message('in_progress', []) },
-      { type: 'response.content_part.added', part: { type: 'output_text', text: '', annotations: [] } },
-      { type: 'response.output_text.delta', delta: text },
-      { type: 'response.output_item.done', item: message('completed', [{ type: 'output_text', text, annotations: [] }]) },
+      { type: 'response.output_item.added', output_index: 0, item: message('in_progress', []) },
+      { type: 'response.content_part.added', output_index: 0, part: { type: 'output_text', text: '', annotations: [] } },
+      { type: 'response.output_text.delta', output_index: 0, delta: text },
+      { type: 'response.output_item.done', output_index: 0, item: message('completed', [{ type: 'output_text', text, annotations: [] }]) },
     ]),
     {
       type: 'response.completed',
       response: { id: 'resp_1', status: 'completed', usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30, input_tokens_details: { cached_tokens: 0 } } },
     },
   ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+}
+
+/**
+ * The output config the model answers with. On models that change effort
+ * mid-conversation, pi-ai keeps the top-level config fixed and sends the
+ * active effort in a trailing system message.
+ */
+function effectiveOutputConfig(body: Record<string, any>, topLevel: unknown): unknown {
+  const trailing = (body.messages as Array<Record<string, any>>).findLast((message) => message.role === 'system');
+  return trailing?.output_config ?? topLevel;
 }
 
 function refusal(message: string): Response {
@@ -121,7 +133,8 @@ test('the intent check on an OpenRouter Anthropic route caches only its instruct
   assert.equal(bodies.length, 1);
   const markers = bodies[0]!.messages.map(({ role, content }) =>
     [role, (content as Array<{ cache_control?: unknown }>).map((block) => block.cache_control ?? null)]);
-  assert.deepEqual(markers, [['system', [{ type: 'ephemeral' }]], ['user', [null]]]);
+  // pi-ai sends the instructions as `developer` on OpenRouter's Anthropic and OpenAI models.
+  assert.deepEqual(markers, [['developer', [{ type: 'ephemeral' }]], ['user', [null]]]);
 });
 
 test('every Anthropic catalog model has its refusals recorded here', () => {
@@ -142,7 +155,7 @@ for (const model of [...ANTHROPIC_MODELS, ...OPENAI_MODELS]) {
     assert.equal(classification.failed, false, `request sent ${JSON.stringify({ thinking, reasoning, temperature })}`);
     assert.equal(classification.intent.disposition, 'work');
     assert.equal(temperature, undefined, 'no side call sends a temperature');
-    if (thinking?.type === 'adaptive') assert.deepEqual(outputConfig, { effort: 'low' });
+    if (thinking?.type === 'adaptive') assert.deepEqual(effectiveOutputConfig(bodies[0]!, outputConfig), { effort: 'low' });
     if (reasoning && reasoning.effort !== 'none') assert.equal(reasoning.effort, 'low');
     if (model.startsWith('anthropic/')) {
       const { system, messages } = bodies[0]!;

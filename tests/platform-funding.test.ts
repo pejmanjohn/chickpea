@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
@@ -166,10 +167,10 @@ function scriptedProvider(
 }
 
 function modelCall(model: Model<string>): Promise<AssistantMessage> {
-  return registeredPiProvider(model.provider)!.streamSimple(model, {
+  return registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({
     systemPrompt: 'probe',
     messages: [{ role: 'user', content: 'hello', timestamp: 1 }],
-  }, {}).result();
+  }), {}).result();
 }
 
 function grant(
@@ -832,7 +833,7 @@ test('Admin reads an Agent model on a credits installation as ready by its price
   await withEnv(NO_DEPLOYMENT_KEYS, async () => {
     fakePort();
     assert.equal(await unavailable(`anthropic/${SONNET}`), null, 'credits serve a priced model with no saved key');
-    assert.equal(await unavailable('anthropic/claude-opus-4-1'), 'funding_not_offered', 'credits serve only a priced model');
+    assert.equal(await unavailable('anthropic/claude-opus-4-5'), 'funding_not_offered', 'credits serve only a priced model');
     assert.deepEqual(
       await dropped(),
       DROPPED_ANSWER,

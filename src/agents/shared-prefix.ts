@@ -271,6 +271,8 @@ function withFiveMinuteMarkers(message: unknown): unknown {
 type RenderedPrefix = {
   tools: Payload[];
   segments: Record<ShapeSegment, Payload[]>;
+  /** Tools pi-ai appends after every mounted tool, such as its deferred-loading placeholder. */
+  trailer: Payload[];
   models: Record<string, Payload>;
 };
 
@@ -296,7 +298,7 @@ function shapeTools(shape: SharedPrefixShape): Payload[] {
 let shapesByTools: ReadonlyMap<string, SharedPrefixShape> | undefined;
 function shapeOf(afterAnchor: unknown[]): SharedPrefixShape | undefined {
   shapesByTools ??= new Map((Object.keys(SHARED_PREFIX_SHAPES) as SharedPrefixShape[])
-    .map((shape) => [JSON.stringify(shapeTools(shape)), shape]));
+    .map((shape) => [JSON.stringify([...shapeTools(shape), ...(rendered as RenderedPrefix).trailer]), shape]));
   return shapesByTools.get(JSON.stringify(afterAnchor.map(withoutCacheControl)));
 }
 
@@ -316,7 +318,7 @@ export interface SharedPrefixRequest {
  * shared-prefix-tools.json, which the test pins to a fresh render.
  */
 export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
-  const { tools, models } = rendered as RenderedPrefix;
+  const { tools, trailer, models } = rendered as RenderedPrefix;
   const settings = models[model];
   if (!settings) throw new Error(`No shared prompt prefix is rendered for model ${model}.`);
   const universal = tools.map((tool, index) => index === tools.length - 1 ? { ...tool, cache_control: ONE_HOUR } : tool);
@@ -329,7 +331,7 @@ export function sharedPrefixRequests(model: string): SharedPrefixRequest[] {
       max_tokens: 0,
       ...settings,
       system: [{ type: 'text', text: sharedSystemBlock(kind), cache_control: ONE_HOUR }],
-      tools: [...universal, ...shapeTools(shape)],
+      tools: [...universal, ...shapeTools(shape), ...trailer],
       messages: [{ role: 'user', content: [{ type: 'text', text: PREWARM_TURN }] }],
     },
   })));

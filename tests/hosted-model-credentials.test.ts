@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -129,9 +130,9 @@ function recordingProvider(sent: Array<{ step: string; apiKey: string | undefine
 }
 
 function modelCall(model: Model<string>, step: string) {
-  return registeredPiProvider(model.provider)!.streamSimple(model, {
+  return registeredPiProvider(model.provider)!.streamSimple(model, normalizeContext({
     systemPrompt: 'probe', messages: [{ role: 'user', content: step, timestamp: 1 }],
-  }, {}).result();
+  }), {}).result();
 }
 
 /** Every value the settings store holds in either realm, to look for a key in the clear. */

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import { resolveModel } from '@flue/runtime/internal';
-import type { AssistantMessageEventStream, Model } from '@earendil-works/pi-ai';
+import { normalizeContext, type AssistantMessageEventStream, type Model } from '@earendil-works/pi-ai';
 
 import {
   activeModelCatalogSnapshot,
@@ -87,7 +87,7 @@ test('a thrown compatibility source becomes a sanitized terminal Pi error', asyn
   } as unknown as AssistantMessageEventStream;
   const stream = createModelCompatibilityStream(
     incoming,
-    { messages: [] },
+    normalizeContext({ messages: [] }),
     undefined,
     false,
     {
@@ -181,47 +181,40 @@ test('runtime route reads never fetch and the seventeenth hosted activation requ
   }
 });
 
-test('models newer than the pinned Pi release route through reviewed profiles on every lane', async () => {
-  const apiKeyModels = [
+test('models pi-ai ships route natively on API-key lanes and through reviewed profiles on the subscription lane', async () => {
+  const apiKey = [
+    ['openai/gpt-6.1-sol', 'openai_api_key'],
+    ['openai/gpt-6-astra', 'openai_api_key'],
     ['openai/gpt-6-sol', 'openai_api_key'],
     ['openai/gpt-6-luna', 'openai_api_key'],
-    ['openai/gpt-6-astra', 'openai_subscription'],
-    ['openai/gpt-6-sol', 'openai_subscription'],
-    ['openai/gpt-6-luna', 'openai_subscription'],
     ['anthropic/claude-opus-5-5', 'anthropic_api_key'],
     ['anthropic/claude-sonnet-5-5', 'anthropic_api_key'],
     ['anthropic/claude-fable-5-1', 'anthropic_api_key'],
   ] as const;
+  const subscription = ['openai/gpt-6.1-sol', 'openai/gpt-6-astra', 'openai/gpt-6-sol', 'openai/gpt-6-luna'];
   const published = parseModelCatalogBytes(await readFile(new URL('../catalog/current.json', import.meta.url)));
 
-  // Bundled compatibility providers are registered at app bootstrap, so only
-  // the hosted revision's aliases are resolvable through Flue here.
   for (const source of ['bundled', 'hosted'] as const) {
     resetModelCatalogActivationForTests();
     if (source === 'bundled') activateBundledModelCatalog();
     else activateModelCatalog({ document: published, sha256: 'e'.repeat(64) });
-    for (const [canonical, lane] of apiKeyModels) {
+    for (const [canonical, lane] of apiKey) {
       const route = resolveActiveCatalogRoute(canonical, lane);
-      assert.equal(route?.source, 'catalog', `${canonical} ${lane}`);
+      assert.equal(route?.source, 'pi_native', `${source} ${canonical}`);
+      assert.equal(route.modelSpecifier, canonical);
       assert.equal(route.model.id, canonical.slice(canonical.indexOf('/') + 1));
-      if (source === 'hosted' && lane !== 'openai_subscription') {
-        assert.equal(resolveModel(route.modelSpecifier).id, route.model.id);
-      }
     }
-    // claude-sonnet-5-5 refuses a temperature, which its profile never sends.
-    const sonnet = resolveActiveCatalogRoute('anthropic/claude-sonnet-5-5', 'anthropic_api_key')
-      ?.model as Model<'anthropic-messages'> | undefined;
-    assert.equal(sonnet?.compat?.supportsTemperature, false);
-    assert.equal(sonnet?.compat?.forceAdaptiveThinking, true);
-    // Astra's API-key profile omits the `none` effort Astra rejects. It is
-    // bundled only: installs that predate the profile would reject a hosted
-    // revision naming it.
-    const astra = resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key');
-    if (source === 'hosted') {
-      assert.equal(astra, undefined);
-    } else {
-      assert.equal(astra?.source, 'catalog');
-      assert.equal(astra.model.thinkingLevelMap?.off, null);
+    for (const canonical of subscription) {
+      const route = resolveActiveCatalogRoute(canonical, 'openai_subscription');
+      assert.equal(route?.source, 'catalog', `${source} ${canonical} subscription`);
+      assert.equal(route.model.provider, 'openai-codex');
     }
   }
+  // The request shapes the reviewed profiles carried now come from pi-ai.
+  const sonnet = resolveActiveCatalogRoute('anthropic/claude-sonnet-5-5', 'anthropic_api_key')
+    ?.model as Model<'anthropic-messages'> | undefined;
+  assert.equal(sonnet?.compat?.supportsTemperature, false);
+  assert.equal(sonnet?.compat?.forceAdaptiveThinking, true);
+  // Astra rejects the `none` effort, so `off` must omit it.
+  assert.equal(resolveActiveCatalogRoute('openai/gpt-6-astra', 'openai_api_key')?.model.thinkingLevelMap?.off, null);
 });

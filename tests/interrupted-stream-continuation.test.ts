@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -112,11 +113,12 @@ test('every registered provider streams through the seam and keeps its other mem
   const registered = registeredPiProvider('continuation-test')!;
   assert.deepEqual(registered.getModels(), [model], 'private members still reachable');
   await withDeploymentLane(undefined, 'interrupted-stream', 'reply', async () => {
-    registered.streamSimple(model, recoveredContext(PARTIAL));
-    registered.stream(model, recoveredContext(PARTIAL));
+    registered.streamSimple(model, normalizeContext(recoveredContext(PARTIAL)));
+    registered.stream(model, normalizeContext(recoveredContext(PARTIAL)));
   });
   for (const context of seen) {
-    assert.equal((context.messages[1] as AssistantMessage).stopReason, 'stop');
+    const assistant = context.messages.find((message) => message.role === 'assistant') as AssistantMessage;
+    assert.equal(assistant.stopReason, 'stop');
   }
   assert.equal(seen.length, 2);
 });
@@ -136,7 +138,7 @@ test('an aborted step without Flue\'s two recovery signals right after it is lef
 
 test('the restored partial reaches the real OpenAI Responses and chat-completions payloads', async () => {
   const { convertResponsesMessages } = await import('@earendil-works/pi-ai/api/openai-responses-shared');
-  const responses = convertResponsesMessages(model, restoreInterruptedStreamPartials(recoveredContext(PARTIAL)),
+  const responses = convertResponsesMessages(model, normalizeContext(restoreInterruptedStreamPartials(recoveredContext(PARTIAL))),
     new Set(['openai'])) as unknown as Array<Record<string, unknown>>;
   const assistantItems = responses.filter((item) => item.role === 'assistant' || item.type === 'reasoning');
   assert.equal(assistantItems.length, 1, 'one message item and no orphaned reasoning item');
@@ -145,13 +147,13 @@ test('the restored partial reaches the real OpenAI Responses and chat-completion
   assert.match(String(item.id), /^msg_pi_/, 'a local id, never the incomplete provider item');
   assert.equal(item.phase, 'final_answer');
   assert.deepEqual(item.content, [{ type: 'output_text', text: '## Plan\n\n1. Inventory the col', annotations: [] }]);
-  assert.equal(convertResponsesMessages(model, recoveredContext(PARTIAL), new Set(['openai']))
+  assert.equal(convertResponsesMessages(model, normalizeContext(recoveredContext(PARTIAL)), new Set(['openai']))
     .filter((entry) => (entry as { role?: string }).role === 'assistant').length, 0, 'unrepaired: dropped');
 
   const { convertMessages } = await import('@earendil-works/pi-ai/api/openai-completions');
   const completionsModel = { ...model, api: 'openai-completions', provider: 'cloudflare', id: 'gpt-test' } as unknown as Model<'openai-completions'>;
   const partial = { ...PARTIAL, api: 'openai-completions', provider: 'cloudflare' } as AssistantMessage;
-  const chat = convertMessages(completionsModel, restoreInterruptedStreamPartials(recoveredContext(partial)),
+  const chat = convertMessages(completionsModel, normalizeContext(restoreInterruptedStreamPartials(recoveredContext(partial))),
     {} as never) as unknown as Array<{ role: string; content: unknown }>;
   const assistantTurns = chat.filter((message) => message.role === 'assistant');
   assert.equal(assistantTurns.length, 1);
@@ -239,7 +241,7 @@ async function sentPayload(
   };
   try {
     await withModelAccess(grant, undefined, 'reply', async () => {
-      const stream = provider.streamSimple(model, recoveredContext(partial), {
+      const stream = provider.streamSimple(model, normalizeContext(recoveredContext(partial)), {
         reasoning: 'medium',
         onPayload: (body: unknown) => { payload = body; throw new Error('captured'); },
       } as never);
@@ -268,7 +270,8 @@ test('the restored partial and instruction reach the real OpenAI Responses, Anth
     assert.doesNotMatch(payload, /REASONING/, `${api}: no orphaned reasoning`);
     assert.ok(payload.includes(JSON.stringify(CONTINUATION_INSTRUCTION).slice(1, -1)), `${api}: the instruction is in the request`);
     assert.ok(payload.indexOf('PARTIAL ANSWER TEXT') < payload.indexOf('stream_interrupted'), `${api}: partial before the signals`);
-    assert.deepEqual(logs, [{ provider: id, api, restored: true, messages: 4, assistantMessages: 1, abortedMessages: 1, userSignals: 2 }]);
+    // Five messages: the transcript's leading system message, then the four recovered ones.
+    assert.deepEqual(logs, [{ provider: id, api, restored: true, messages: 5, assistantMessages: 1, abortedMessages: 1, userSignals: 2 }]);
     assert.doesNotMatch(JSON.stringify(logs), /PARTIAL|Plan/, 'the log carries no content');
   }
 });

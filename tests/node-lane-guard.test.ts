@@ -15,19 +15,27 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
   const lock = JSON.parse(readFileSync(path.join(PROJECT_ROOT, 'package-lock.json'), 'utf8'));
   const packages = lock.packages as Record<string, { version?: string }>;
 
-  assert.equal(packageJson.dependencies['@flue/runtime'], '2.1.0');
-  assert.equal(packageJson.dependencies['@flue/slack'], '2.1.0');
-  assert.equal(packageJson.devDependencies['@flue/cli'], '2.1.0');
-  assert.equal(packageJson.devDependencies['@flue/vite'], '2.1.0');
+  assert.equal(packageJson.dependencies['@flue/runtime'], '2.3.0');
+  assert.equal(packageJson.dependencies['@flue/slack'], '2.3.0');
+  assert.equal(packageJson.devDependencies['@flue/cli'], '2.3.0');
+  assert.equal(packageJson.devDependencies['@flue/vite'], '2.3.0');
   assert.equal(packageJson.devDependencies['@modelcontextprotocol/client'], '2.0.0');
   assert.equal(packageJson.dependencies.agents, undefined);
   assert.equal(packageJson.devDependencies.agents, '0.20.1');
-  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '0.83.0');
-  assert.equal(packages['node_modules/@earendil-works/pi-ai']?.version, '0.83.0');
-  assert.equal(
-    Object.keys(packages).filter((entry) => entry.endsWith('node_modules/@earendil-works/pi-ai')).length,
-    1,
+  assert.equal(packageJson.dependencies['@earendil-works/pi-ai'], '1.1.0');
+  assert.equal(packages['node_modules/@earendil-works/pi-ai']?.version, '1.1.0');
+  // Flue is released against one Pi family version. A second copy of any Pi
+  // package (a floated pi-agent-core pins its own pi-ai) splits the graph, so
+  // every package in the family resolves once, at pi-ai's version.
+  const piFamily = Object.entries(packages).filter(([entry]) => /node_modules\/@earendil-works\/[^/]+$/.test(entry));
+  const piNames = piFamily.map(([entry]) => entry.slice(entry.lastIndexOf('@earendil-works/')));
+  assert.deepEqual(piNames.sort(), [...new Set(piNames)].sort(), 'each Pi package resolves once');
+  assert.deepEqual(
+    piFamily.filter(([, entry]) => entry.version !== '1.1.0').map(([name]) => name),
+    [],
+    'every Pi package matches pi-ai',
   );
+  assert.ok(piNames.includes('@earendil-works/pi-agent-core'));
   assert.equal(packages['node_modules/agents']?.version, '0.20.1');
   assert.equal(
     Object.keys(packages).filter((entry) => entry.endsWith('node_modules/agents')).length,

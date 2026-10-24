@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test, type TestContext } from 'node:test';
@@ -20,7 +21,7 @@ import { registerBuiltinPiProvider } from '../../src/config/pi-provider.ts';
 import { registeredPiProvider } from '../../src/config/pi-provider-registry.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../../src/config/platform-funding.ts';
 import type { PlatformEnv } from '../../src/config/state-backend.ts';
-import { ANTHROPIC_COMPAT_PROVIDER_ID, registerModelCompatibilityApis } from '../../src/model-compat/provider.ts';
+import { registerModelCompatibilityApis } from '../../src/model-compat/provider.ts';
 import type { ModelRequestRecord } from '../../src/usage/model-requests.ts';
 import { priceCatalogFor } from '../../src/usage/pricing/catalog.ts';
 import { NO_RUN_FEES } from '../helpers/platform-funding.ts';
@@ -55,7 +56,7 @@ interface Route {
   readonly model: string;
 }
 
-const SONNET: Route = { registeredId: ANTHROPIC_COMPAT_PROVIDER_ID, providerId: 'anthropic', model: 'claude-sonnet-5-5' };
+const SONNET: Route = { registeredId: 'anthropic', providerId: 'anthropic', model: 'claude-sonnet-5-5' };
 const HAIKU: Route = { registeredId: 'anthropic', providerId: 'anthropic', model: 'claude-haiku-4-5' };
 const LUNA: Route = { registeredId: 'openai', providerId: 'openai', model: 'gpt-5.6-luna' };
 
@@ -134,7 +135,7 @@ async function send(
   const model = provider?.getModels().find((candidate) => candidate.id === route.model);
   assert.ok(provider && model, `${route.registeredId} lists ${route.model}`);
   const result = await withModelAccess(access, env, 'reply', () =>
-    provider.streamSimple(model, CONTEXT, { fetch: network, ...(onPayload ? { onPayload } : {}) }).result());
+    provider.streamSimple(model, normalizeContext(CONTEXT), { fetch: network, ...(onPayload ? { onPayload } : {}) }).result());
   return { result, sent };
 }
 
@@ -146,7 +147,8 @@ function listPriceUsdMicros(route: Route, input: number, output: number): number
 }
 
 function tools(body: Record<string, unknown>): Array<Record<string, unknown>> {
-  assert.ok(Array.isArray(body.tools) && body.tools.length === 1, JSON.stringify(body.tools));
+  // pi-ai may follow the declared tool with its deferred-loading placeholder.
+  assert.ok(Array.isArray(body.tools) && body.tools[0]?.name === 'lookup', JSON.stringify(body.tools));
   return body.tools as Array<Record<string, unknown>>;
 }
 
@@ -161,7 +163,7 @@ test('a platform-funded Anthropic request is pinned to standard_only with no reg
 
   assert.equal(result.stopReason, 'stop');
   assert.equal(sent.length, 1);
-  assert.equal(sent[0]!.url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(sent[0]!.url, 'https://api.anthropic.com/v1/messages?beta=true');
   assert.equal(sent[0]!.body.service_tier, 'standard_only');
   assertNoModeKeys(sent[0]!.body, ['inference_geo', 'speed']);
   assert.ok(tools(sent[0]!.body).every((tool) => tool.type === undefined || tool.type === 'custom'),

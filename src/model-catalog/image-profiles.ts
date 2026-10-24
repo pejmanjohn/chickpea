@@ -1,4 +1,4 @@
-import type { ImagesModel } from '@earendil-works/pi-ai';
+import type { ImageModel } from '@earendil-works/pi-ai';
 
 // pi-ai only ships an `openrouter-images` API name; its `ImagesApi` and
 // `ImagesProviderId` types stay open to other strings, so the OpenAI Images
@@ -24,7 +24,7 @@ export const IMAGE_MODEL_IDS = [
 
 export type ImageModelId = (typeof IMAGE_MODEL_IDS)[number];
 
-export interface ImageModelProfile extends ImagesModel<typeof OPENAI_IMAGES_API> {
+export interface ImageModelProfile extends ImageModel<typeof OPENAI_IMAGES_API> {
   id: ImageModelId;
   provider: 'openai';
   /** Wire model id. Catalog ids carry the provider prefix; the API does not. */
@@ -43,6 +43,7 @@ function apiKeyImageProfile(
 ): ImageModelProfile {
   const profile: ImageModelProfile = {
     id,
+    type: 'image',
     name,
     api: OPENAI_IMAGES_API,
     provider: 'openai',
@@ -68,6 +69,7 @@ function apiKeyImageProfile(
 function subscriptionImageProfile(): ImageModelProfile {
   const profile: ImageModelProfile = {
     id: OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
+    type: 'image',
     name: 'ChatGPT Image',
     api: OPENAI_IMAGES_API,
     provider: 'openai',

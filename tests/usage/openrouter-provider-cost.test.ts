@@ -1,3 +1,4 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
@@ -71,7 +72,7 @@ function grant(fundingSource: ModelAccessGrant['fundingSource'], installationId 
 }
 
 function call(model: Model<'openai-completions'>, options: { fetch?: typeof fetch } = {}): Promise<AssistantMessage> {
-  return registeredPiProvider('openrouter')!.streamSimple(model, CONTEXT, options).result();
+  return registeredPiProvider('openrouter')!.streamSimple(model, normalizeContext(CONTEXT), options).result();
 }
 
 function proxiedOpenRouter(t: TestContext) {
@@ -189,7 +190,7 @@ test('the library returns the same message through the proxy as it does called d
 
   const proxied = await withModelAccess(grant('customer'), undefined, 'reply', () =>
     call(model, { fetch: async () => recordedResponse() }));
-  const direct = await openrouterProvider().streamSimple(model, CONTEXT, {
+  const direct = await openrouterProvider().streamSimple(model, normalizeContext(CONTEXT), {
     apiKey: API_KEY, fetch: async () => recordedResponse(),
   }).result();
 

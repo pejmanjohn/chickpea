@@ -1,9 +1,9 @@
+import { normalizeContext } from '@earendil-works/pi-ai';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type {
   Api,
   AssistantMessage,
-  Context,
   ImageContent,
   Message,
   Model,
@@ -13,6 +13,7 @@ import type {
   StreamOptions,
   TextContent,
   ToolResultMessage,
+  TranscriptContext,
   UserMessage,
 } from '@earendil-works/pi-ai';
 
@@ -35,6 +36,7 @@ const OPENAI_COMPAT_API = 'chickpea-openai-platform-responses-bundled-v1';
 const ANTHROPIC_COMPAT_PROVIDER_ID = 'chickpea-anthropic-api-bundled-v1';
 const ANTHROPIC_COMPAT_API = 'chickpea-anthropic-messages-bundled-v1';
 const REVIEWED_OPENAI_MODELS = new Set([
+  'gpt-6.1-sol',
   'gpt-6-astra',
   'gpt-6-sol',
   'gpt-6-luna',
@@ -48,6 +50,7 @@ const REVIEWED_ANTHROPIC_MODELS = new Set([
   'claude-sonnet-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
+  'claude-haiku-5-5',
 ]);
 
 interface AttachmentModelState {
@@ -183,10 +186,10 @@ function attachmentModelFailureError(failure: AttachmentModelFailure): Error {
 
 function prepareAttachmentRequest(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: StreamOptions | SimpleStreamOptions | undefined,
 ): {
-  context: Context;
+  context: TranscriptContext;
   options: StreamOptions | SimpleStreamOptions | undefined;
 } {
   const active = attachmentModelState.getStore();
@@ -195,16 +198,22 @@ function prepareAttachmentRequest(
   if (!model.input.includes('image') && active.attachments.some((attachment) => attachment.kind === 'image')) {
     throw new AttachmentImageModelUnsupportedError();
   }
-  const cloned = cloneContext(context);
+  const messages = context.messages.map(cloneMessage);
   // The analysis call is made tool-free here, at the provider seam, whatever
   // the Agent loop carries. Flue's per-call `tools` option adds to the Agent's
   // declared tools rather than replacing them, and it always injects its static
   // `task` tool, so an upload turn that keeps its normal tool set would
   // otherwise hand every tool to the analysis model. File content must never
-  // be able to trigger a tool, so the request goes out with none.
-  if (cloned.tools) cloned.tools = [];
-  injectAttachmentBaseline(cloned, active.attachments);
-  assertAttachmentModelInputFits(model, cloned);
+  // be able to trigger a tool, so every system message goes out declaring none.
+  for (const message of messages) {
+    if (message.role === 'system') {
+      delete message.toolsAdded;
+      delete message.toolsRemoved;
+    }
+  }
+  injectAttachmentBaseline(messages, active.attachments);
+  assertAttachmentModelInputFits(model, messages);
+  const cloned = normalizeContext({ messages });
 
   const nativeAttachments = active.attachments.filter(
     (attachment): attachment is NormalizedSlackPdfAttachment =>
@@ -236,16 +245,10 @@ function prepareAttachmentRequest(
   return { context: cloned, options: nativeOptions };
 }
 
-function cloneContext(context: Context): Context {
-  return {
-    ...(context.systemPrompt !== undefined ? { systemPrompt: context.systemPrompt } : {}),
-    messages: context.messages.map(cloneMessage),
-    ...(context.tools ? { tools: context.tools.map((tool) => ({ ...tool })) } : {}),
-  };
-}
-
 function cloneMessage(message: Message): Message {
   switch (message.role) {
+    case 'system':
+      return structuredClone(message);
     case 'user':
       return {
         ...message,
@@ -257,9 +260,6 @@ function cloneMessage(message: Message): Message {
       return {
         ...message,
         content: message.content.map(cloneTextOrImage),
-        ...(message.addedToolNames
-          ? { addedToolNames: [...message.addedToolNames] }
-          : {}),
       } satisfies ToolResultMessage;
     case 'assistant':
       return {
@@ -282,14 +282,14 @@ function cloneTextOrImage(part: TextContent | ImageContent): TextContent | Image
 }
 
 function injectAttachmentBaseline(
-  context: Context,
+  messages: Message[],
   attachments: readonly NormalizedSlackAttachment[],
 ): void {
-  const finalUserIndex = context.messages.findLastIndex((message) => message.role === 'user');
+  const finalUserIndex = messages.findLastIndex((message) => message.role === 'user');
   if (finalUserIndex < 0) {
     throw new Error('Attachment analysis requires an admitted Slack user request.');
   }
-  const message = context.messages[finalUserIndex];
+  const message = messages[finalUserIndex];
   if (!message || message.role !== 'user') {
     throw new Error('Attachment analysis requires an admitted Slack user request.');
   }
@@ -319,7 +319,7 @@ function injectAttachmentBaseline(
     }
   }
   attachmentParts.push({ type: 'text', text: END_UNTRUSTED_ATTACHMENTS });
-  context.messages[finalUserIndex] = {
+  messages[finalUserIndex] = {
     ...message,
     content: [...originalParts, ...attachmentParts],
   };
@@ -332,9 +332,9 @@ function neutralizeAttachmentDelimiters(text: string): string {
   );
 }
 
-function assertAttachmentModelInputFits(model: Model<Api>, context: Context): void {
+function assertAttachmentModelInputFits(model: Model<Api>, messages: readonly Message[]): void {
   const budget = Math.floor(model.contextWindow * (1 - CONTEXT_RESERVE_RATIO));
-  if (!Number.isFinite(budget) || budget < 1 || conservativeContextTokens(context) > budget) {
+  if (!Number.isFinite(budget) || budget < 1 || conservativeContextTokens(messages) > budget) {
     throw new AttachmentModelInputLimitError();
   }
 }
@@ -344,11 +344,12 @@ function assertAttachmentModelInputFits(model: Model<Api>, context: Context): vo
  * UTF-8 byte as one token (rather than Pi's optimistic four chars/token) and
  * charge a separate 4,096-token bound for each already-decoded image input.
  */
-function conservativeContextTokens(context: Context): number {
-  let tokens = utf8Bytes(context.systemPrompt ?? '');
-  if (context.tools && context.tools.length > 0) tokens += utf8Bytes(safeJson(context.tools));
-  for (const message of context.messages) {
-    if (message.role === 'user') {
+function conservativeContextTokens(messages: readonly Message[]): number {
+  let tokens = 0;
+  for (const message of messages) {
+    if (message.role === 'system') {
+      tokens += utf8Bytes(safeJson(message));
+    } else if (message.role === 'user') {
       tokens += contentTokens(message.content);
     } else if (message.role === 'toolResult') {
       tokens += contentTokens(message.content);
@@ -356,7 +357,6 @@ function conservativeContextTokens(context: Context): number {
         message.toolCallId,
         message.toolName,
         safeJson(message.details),
-        safeJson(message.addedToolNames),
       ].join(''));
     } else {
       for (const part of message.content) {
@@ -405,20 +405,27 @@ function safeJson(value: unknown): string {
 function reviewedNativePdfRoute(model: Model<Api>): 'openai' | 'anthropic' | undefined {
   const origin = normalizedOrigin(model.baseUrl);
   if (
-    matchingCompatibilityAlias(model, 'openaiPlatform', OPENAI_COMPAT_PROVIDER_ID, OPENAI_COMPAT_API) &&
+    (isPiNativeRoute(model, 'openai', 'openai-responses') ||
+      matchingCompatibilityAlias(model, 'openaiPlatform', OPENAI_COMPAT_PROVIDER_ID, OPENAI_COMPAT_API)) &&
     origin === 'https://api.openai.com' &&
     REVIEWED_OPENAI_MODELS.has(model.id)
   ) {
     return 'openai';
   }
   if (
-    matchingCompatibilityAlias(model, 'anthropic', ANTHROPIC_COMPAT_PROVIDER_ID, ANTHROPIC_COMPAT_API) &&
+    (isPiNativeRoute(model, 'anthropic', 'anthropic-messages') ||
+      matchingCompatibilityAlias(model, 'anthropic', ANTHROPIC_COMPAT_PROVIDER_ID, ANTHROPIC_COMPAT_API)) &&
     origin === 'https://api.anthropic.com' &&
     REVIEWED_ANTHROPIC_MODELS.has(model.id)
   ) {
     return 'anthropic';
   }
   return undefined;
+}
+
+/** A model Pi ships for this provider, on Pi's own wire API. */
+function isPiNativeRoute(model: Model<Api>, provider: 'openai' | 'anthropic', api: Api): boolean {
+  return model.provider === provider && model.api === api;
 }
 
 function matchingCompatibilityAlias(
