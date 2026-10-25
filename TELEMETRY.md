@@ -43,6 +43,8 @@ Unknown event names and properties are discarded by a closed runtime allowlist. 
 - No names, email addresses, usernames, organization names, hostnames, URLs, IP-derived location, headers, tokens, credentials, or secrets.
 - No browser events, page views, clicks, session recordings, cookies, device fingerprint, or person profiles.
 
+Self-hosted Chickpea never stores conversation copies for its maintainers. Chickpea Cloud's "Help improve Chickpea" setting is separate and is described in its privacy policy.
+
 ## Anonymous installation identity
 
 On the first eligible event, Chickpea creates a random UUID and a random 32-byte HMAC key and stores them in the deployment's existing app-settings store under `telemetry.identity.v1`. Neither value is derived from a machine, Slack account, network, hostname, or customer data. The UUID becomes `distinct_id`; the HMAC key remains local and is used only to create the workspace and Agent pseudonyms described above.
