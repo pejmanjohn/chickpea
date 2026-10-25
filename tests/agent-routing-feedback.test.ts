@@ -89,15 +89,19 @@ test('a direct message refusal is posted in its thread and names no Agent', asyn
 });
 
 test('a group DM refusal is told only to the asker, in their thread, and names nobody', async () => {
+  const onlyWorkspaceWide = 'Only Agents everyone in this workspace can use answer in group DMs.';
   for (const [patch, thread, reason, text] of [
-    [{}, {}, 'not_available', 'Only Agents everyone in this workspace can use answer in group DMs.'],
+    [{}, {}, 'not_workspace_wide', onlyWorkspaceWide],
     [
       { source: 'implicit_thread_reply' as const, messageTs: '100.2', text: 'and then?' },
       { thread_ts: '100.1' },
-      'not_available',
-      'Only Agents everyone in this workspace can use answer in group DMs.',
+      'not_workspace_wide',
+      onlyWorkspaceWide,
     ],
+    // Every other refusal keeps its usual words: the group DM rule is not why.
+    [{}, {}, 'not_available', 'That Agent is not available here.'],
     [{}, {}, 'member_required', 'That Agent is not available here.'],
+    [{}, {}, 'temporarily_unavailable', 'That Agent address could not be verified right now. Try again.'],
   ] as const) {
     const ephemeral: unknown[] = [];
     const publicMessages: unknown[] = [];

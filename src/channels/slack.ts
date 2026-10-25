@@ -1348,6 +1348,14 @@ export async function postAgentRoutingFeedback(input: {
   client: ReturnType<typeof createSlackWebClient>;
 }): Promise<void> {
   const denial = input.result.kind === 'denied' ? input.result : undefined;
+  const alternatives = denial?.alternatives.length
+    ? ` Available here: ${denial.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
+    : '';
+  const text = denial?.reason === 'temporarily_unavailable'
+    ? 'That Agent address could not be verified right now. Try again.'
+    : denial?.reason === 'not_workspace_wide'
+      ? 'Only Agents everyone in this workspace can use answer in group DMs.'
+      : `That Agent is not available here.${alternatives}`;
   if (slackConversationKind(input.turn) === 'mpim') {
     // Only the asker hears why, in their thread; a reaction asked nothing.
     if (input.turn.source === 'reaction_added') return;
@@ -1355,18 +1363,10 @@ export async function postAgentRoutingFeedback(input: {
       channel: input.turn.channelId,
       user: input.turn.userId,
       ...(input.turn.threadTs !== input.turn.messageTs ? { thread_ts: input.turn.threadTs } : {}),
-      text: denial?.reason === 'not_available'
-        ? 'Only Agents everyone in this workspace can use answer in group DMs.'
-        : 'That Agent is not available here.',
+      text,
     });
     return;
   }
-  const alternatives = denial?.alternatives.length
-    ? ` Available here: ${denial.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
-    : '';
-  const text = denial?.reason === 'temporarily_unavailable'
-    ? 'That Agent address could not be verified right now. Try again.'
-    : `That Agent is not available here.${alternatives}`;
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible
@@ -2886,7 +2886,8 @@ async function processSlackEvent(
         // Guests and Slack Connect users are refused before this check and
         // keep today's behaviour.
         if (
-          routed.kind === 'denied' && routed.reason === 'not_available' &&
+          routed.kind === 'denied' &&
+          (routed.reason === 'not_available' || routed.reason === 'not_workspace_wide') &&
           agentRoutingActor.routing.fullMember &&
           await refuseIneligibleSlackStop({
             turn,
@@ -3995,7 +3996,8 @@ async function processSlackStopButton(
   if (routed.kind !== 'routed') {
     // As for a typed stop, only a full member is told (AE4); a guest keeps
     // Chickpea's silence.
-    const refusal = routed.kind === 'denied' && routed.reason === 'not_available' &&
+    const refusal = routed.kind === 'denied' &&
+        (routed.reason === 'not_available' || routed.reason === 'not_workspace_wide') &&
         actor.routing.fullMember
       ? await refuseSlackStop({
           threadKey,

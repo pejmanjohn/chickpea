@@ -24,6 +24,7 @@ const OPS = '<!subteam^SOPS|@ops>';
 const HELPER = '<!subteam^SHELPER|@helper>';
 const SOLO = '<!subteam^SSOLO|@solo>';
 const SECRET = '<!subteam^SSECRET|@secret>';
+const OFF = '<!subteam^SOFF|@off>';
 const ONLY_WORKSPACE_WIDE = 'Only Agents everyone in this workspace can use answer in group DMs.';
 const NOT_AVAILABLE = 'That Agent is not available here.';
 
@@ -73,8 +74,8 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
   const stores = resolveStores();
   try {
     const owner = await createSlackOwner(stores.identity, { teamId: 'T1', userId: 'U1' });
-    const createAgent = (id: string, handle: string) => stores.config.createAgent({
-      id, name: handle, instructions: '', enabled: true, lifecycle: 'active', model: 'local-stub/group-dm',
+    const createAgent = (id: string, handle: string, enabled = true) => stores.config.createAgent({
+      id, name: handle, instructions: '', enabled, lifecycle: 'active', model: 'local-stub/group-dm',
       creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
       slackPresence: {
@@ -87,6 +88,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
     for (const [id, handle] of [
       ['agent_ops', 'ops'], ['agent_helper', 'helper'], ['agent_solo', 'solo'], ['agent_secret', 'secret'],
     ] as const) await createAgent(id, handle);
+    await createAgent('agent_off', 'off', false);
     await stores.config.ensureWorkspaceInstallation({
       workspaceId: 'T1', transportMode: 'gateway', appId: 'A1', botUserId: 'UBOT', gatewayBindingId: 'binding1',
     });
@@ -280,6 +282,14 @@ test('a refusal in an Agent\'s thread is told in that thread, to the asker only'
     await harness.deliver({ ts: '1800000810.000100', threadTs: rootTs, user: 'U2', text: `${SOLO} add the budget` });
     assert.equal(harness.jobs.length, 1);
     assert.deepEqual(harness.posts, [refusal(ONLY_WORKSPACE_WIDE, rootTs)]);
+  });
+});
+
+test('a switched-off Agent in a group DM gets the usual refusal, not the group DM rule', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ ts: '1800000650.000100', user: 'U2', text: `${OFF} summarize this` });
+    assert.deepEqual(harness.jobs, []);
+    assert.deepEqual(harness.posts, [refusal(NOT_AVAILABLE)]);
   });
 });
 

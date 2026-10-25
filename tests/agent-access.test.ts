@@ -549,4 +549,10 @@ test('in a group DM only an Agent every workspace member may use answers, whoeve
     conversation: 'mpim',
   }), { status: 'denied', audience: 'private_channel_members' });
   assert.deepEqual(calls, ['lookup:C_PRIVATE'], 'whose private Channels the asker is in does not matter here');
+
+  // A placement Slack cannot vouch for right now is not a refusal under the group DM rule.
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: workspaceWide, workspaceId: 'T1', actor: creator, conversation: 'mpim',
+    grants: [grant(workspaceWide.id, 'C_PUBLIC')], transport: transport(),
+  }), { status: 'unavailable', audience: 'unavailable' });
 });

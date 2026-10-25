@@ -100,10 +100,10 @@ export async function resolveTurnAgentAccess(
 ): Promise<PrivateAgentAccessResult> {
   if (input.conversation !== 'mpim') return resolvePrivateAgentAccess(input);
   const audience = await resolvePrivateAgentAudience(input);
-  return {
-    status: audience === 'workspace_members' && input.actor.fullMember ? 'allowed' : 'denied',
-    audience,
-  };
+  const status = audience === 'unavailable'
+    ? 'unavailable'
+    : audience === 'workspace_members' && input.actor.fullMember ? 'allowed' : 'denied';
+  return { status, audience };
 }
 
 /** Derive the non-sensitive audience explanation used by Agent Admin. */
