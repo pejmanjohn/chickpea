@@ -241,7 +241,7 @@ function pendingConfirmation(result: WorkspaceManagementToolResult, status = 'co
   assert.ok(outcome?.proposalId, 'the confirmation names its proposal');
   const presentation = value.presentation as { slack?: unknown } | undefined;
   assert.equal(typeof presentation?.slack, 'string', 'the person gets a preview to read before the card');
-  assert.match(String(value.instruction), /Approve button/);
+  assert.match(String(value.instruction), /pressing Approve or saying in their own words that they approve it/);
   return { proposalId: outcome.proposalId, preview: presentation!.slack as string };
 }
 
@@ -499,7 +499,7 @@ test('after approval, a held operation whose dependency failed earlier in the ca
     assert.equal(value.status, 'partial');
     assert.deepEqual(value.outcomes.map(({ disposition }) => disposition), ['failed', 'confirmation_required']);
     assert.match(value.presentation?.slack ?? '', /Beta, now described/);
-    assert.match(value.instruction ?? '', /Approve button/);
+    assert.match(value.instruction ?? '', /pressing Approve or saying in their own words that they approve it/);
     const proposalId = value.outcomes[1]!.proposalId!;
 
     const card = await deliverCard(CHICKPEA_AGENT_ID, text);

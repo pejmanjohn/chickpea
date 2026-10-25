@@ -409,6 +409,36 @@ test("a revoked installation serves none of its Agent apps' deliveries and offer
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined);
 }));
 
+test("a person's reply to the change set waiting on them is judged at admission: the exact word stamps the turn, a reply the judge cannot read stays conversation", async (t) => withHarness(t, async (h) => {
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.ok(owner);
+  const scope = `slack:${TEAM}:D1:dm:agent:agent_support`;
+  const proposalId = 'changeset_typed_dm';
+  await h.stores.management.putChangeSetProposal({
+    proposalId, organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_support', expectedRevision: 0, body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'memory:agent_support': 0 }, at: Date.now(),
+  });
+  const reply = async (text: string, ts: string) => {
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `Ev${ts}` }, { text, ts, event_ts: ts }))).status, 200);
+    const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts);
+    assert.ok(job, `"${text}" became a turn`);
+    return job;
+  };
+
+  // This harness grants the judge no model access, so its side call fails.
+  const unread = await reply('yes, go ahead', '1900000200.000100');
+  assert.equal(unread.turn.managementApprovalProposalId, undefined, 'a failed judgment applies nothing');
+  assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
+
+  const typed = await reply('approve', '1900000201.000100');
+  assert.equal(typed.turn.managementApprovalProposalId, proposalId, 'the exact word needs no model');
+}));
+
 test("a click on the app Agent's approval card reaches that Agent, as the thread's owner or its guest, and runs as its bot", async (t) => withHarness(t, async (h) => {
   const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
   assert.ok(owner);

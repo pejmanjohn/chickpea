@@ -7,7 +7,8 @@ import {
   type CreatedAgentHandoffConfig,
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
-import { personRequestTextSource } from '../slack/agent-asks.ts';
+import { isLaterCoAddressedTurn, personRequestTextSource } from '../slack/agent-asks.ts';
+import type { SlackManagementApproval } from '../slack/interaction-intent.ts';
 import {
   escapeSlackControlCharacters,
   renderSlackMarkdownActionLink,
@@ -17,7 +18,11 @@ import { conversationThreadTs, slackConversationKind } from '../slack/thread-key
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
 import { agentWelcomeInGroupDm } from './receipts.ts';
-import { slackManagementOrigin, WorkspaceManagementService } from './service.ts';
+import {
+  slackChangeSetPreviewText,
+  slackManagementOrigin,
+  WorkspaceManagementService,
+} from './service.ts';
 import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
@@ -115,9 +120,43 @@ export async function resolveHostSlackManagementProposal(input: {
   return proposal;
 }
 
+/** What the person's typed message did to the change set waiting on them. */
+export type TypedSlackManagementApproval =
+  | { kind: 'approve'; proposalId: string }
+  | { kind: 'decline'; proposalId: string };
+
+/**
+ * Reads the requester's own typed message against the change set waiting on
+ * them in this conversation and Agent. Only their message is judged, only
+ * when such a set exists, and only against that set's preview: an approval
+ * stamps it for the host to apply, and a decline retires it. Anything else
+ * leaves it waiting. An Agent's ask, a click, a later co-addressed turn or a
+ * reaction is never judged.
+ */
+export async function resolveTypedSlackManagementApproval(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  actorMembershipId: string;
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  management: Pick<ManagementStore, 'getActiveChangeSetProposal' | 'markChangeSetProposalStale'>;
+  judge: (reply: { text: string; preview: string }) => Promise<SlackManagementApproval>;
+}): Promise<TypedSlackManagementApproval | undefined> {
+  const { turn } = input;
+  if (turn.agentAsk || turn.uiResponse || isLaterCoAddressedTurn(turn) || turn.source === 'reaction_added') {
+    return undefined;
+  }
+  const proposal = await resolveHostSlackManagementProposal(input);
+  if (!proposal) return undefined;
+  const approval = await input.judge({ text: turn.text, preview: slackChangeSetPreviewText(proposal) });
+  if (approval === 'approve') return { kind: 'approve', proposalId: proposal.proposalId };
+  if (approval !== 'decline' || proposal.status !== 'pending') return undefined;
+  await input.management.markChangeSetProposalStale(proposal.proposalId, Date.now());
+  return { kind: 'decline', proposalId: proposal.proposalId };
+}
+
 /**
  * The person's approval of one proposal, which the host resolved from their
- * typed "approve" or Approve click. A Slack confirmation applies only with
+ * typed approval or Approve click. A Slack confirmation applies only with
  * this stamp, and no model tool path can produce it.
  */
 export async function resolveSlackApprovalActor(

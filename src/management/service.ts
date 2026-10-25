@@ -1970,7 +1970,7 @@ export class WorkspaceManagementService {
 
   /**
    * In Slack only the person approves, and the Approve card and a typed
-   * "approve" find only change sets, so the operation that waits and the rest
+   * approval find only change sets, so the operation that waits and the rest
    * of the call become one. A later operation the requester can't make fails
    * on its own, as it would have in the call. A setup request waits until the
    * approval, which issues its one-time link with the receipt: its target may
@@ -2216,7 +2216,7 @@ export class WorkspaceManagementService {
   /**
    * Freezes operations into one reviewed change set, which supersedes this
    * requester's older pending one in the same conversation. The Slack host
-   * finds it for the Approve card and a typed "approve".
+   * finds it for the Approve card and a typed approval.
    */
   private async createChangeSet(
     actor: LiveManagementActor,
@@ -2323,7 +2323,7 @@ export class WorkspaceManagementService {
     if (actor.origin.kind === 'slack' && actor.origin.approvedProposalId !== input.proposalId) {
       throw new ManagementError(
         'forbidden',
-        'Only the person can approve this change, with the Approve button or by replying "approve".',
+        'Only the person can approve this change, by pressing Approve or saying in their own words that they approve it.',
       );
     }
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
@@ -6711,6 +6711,11 @@ function publicChangeSetProposal(
     },
     confirmationTool: 'confirm_workspace_change',
   };
+}
+
+/** The Slack preview of a change set, as the person read it. */
+export function slackChangeSetPreviewText(proposal: ManagementChangeSetProposalRecord): string {
+  return formatSlackChangeSetProposal(publicChangeSetPreview(proposal.preview));
 }
 
 function publicChangeSetPreview(

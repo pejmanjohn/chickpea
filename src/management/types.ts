@@ -36,7 +36,7 @@ export type ManagementOrigin =
       requestTextSource?: 'click';
       /**
        * Set only by the Slack host when it resolved the person's typed
-       * "approve" or Approve click to this proposal for the current turn.
+       * approval or Approve click to this proposal for the current turn.
        * Nothing the model sends, and nothing in the delivery, can carry it.
        */
       approvedProposalId?: string;
