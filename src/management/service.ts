@@ -83,6 +83,7 @@ import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '..
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { resolvePrivateAgentAccess, type PrivateAgentPlacementFacts } from '../slack/agent-access.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -321,6 +322,15 @@ export interface WorkspaceManagementServiceInput {
     workspaceId: string;
     channelId: string;
   }) => Promise<void>;
+  /**
+   * Slack's live Channel facts, read with Chickpea's bot, or for an Agent
+   * with its own Slack app the way its DMs are admitted. Without them, every
+   * check that needs Slack fails closed.
+   */
+  slackFacts?: (input: {
+    workspaceId: string;
+    agent?: CustomAgentConfig;
+  }) => Promise<PrivateAgentPlacementFacts>;
   archiveAgent?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -3264,6 +3274,41 @@ export class WorkspaceManagementService {
     return canEditAgent(managementActorPrincipal(actor), agent);
   }
 
+  private async slackFactsFor(
+    workspaceId: string,
+    agent?: CustomAgentConfig,
+  ): Promise<PrivateAgentPlacementFacts> {
+    if (!this.stores.slackFacts) return UNAVAILABLE_SLACK_FACTS;
+    return this.stores.slackFacts({ workspaceId, ...(agent ? { agent } : {}) })
+      .catch(() => UNAVAILABLE_SLACK_FACTS);
+  }
+
+  /** A DM routine needs the private use the person would need to DM its Agent. */
+  private async requirePrivateAgentUse(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    workspaceId: string,
+  ): Promise<void> {
+    const [user, grants, facts] = await Promise.all([
+      this.stores.identity.getUser(actor.userId),
+      this.stores.config.listAgentChannelGrants(workspaceId),
+      this.slackFactsFor(workspaceId, agent),
+    ]);
+    const access = await resolvePrivateAgentAccess({
+      agent,
+      workspaceId,
+      grants,
+      // Only full Slack members are provisioned, and every run asks Slack again.
+      actor: user?.slackTeamId === workspaceId
+        ? { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId }
+        : { fullMember: false },
+      transport: facts,
+    });
+    if (access.status !== 'allowed') {
+      throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+    }
+  }
+
   private async requireEditableAgent(
     actor: LiveManagementActor,
     agentId: string,
@@ -3788,6 +3833,7 @@ export class WorkspaceManagementService {
             kind: 'agent', id: operation.agentId,
           }));
         }
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       } else {
         const grants = await this.stores.config.listAgentChannelGrants(
           operation.workspaceId,
@@ -3838,9 +3884,13 @@ export class WorkspaceManagementService {
           'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
         );
       }
-      if (operation.kind === 'reassign_routine_agent' &&
-          (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack')) {
-        throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+      if (operation.kind === 'reassign_routine_agent') {
+        if (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack') {
+          throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+        }
+        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        if (!agent) throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       }
       return;
     }
@@ -7224,6 +7274,11 @@ function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
     ? `${key}@${actor.origin.eventId}`
     : key;
 }
+
+const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
+  lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+  listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+};
 
 function skillActionOperationId(
   actor: LiveManagementActor,

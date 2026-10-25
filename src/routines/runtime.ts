@@ -24,6 +24,12 @@ import {
 } from '../slack/user-classification.ts';
 import { createSlackWebClient } from '../slack/web-client.ts';
 import { slackPendingExternalShare } from '../slack/transport/shared.ts';
+import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
+import { agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
+import {
+  createDirectSlackTransportFromClient,
+  type DirectSlackApiClient,
+} from '../slack/transport/direct.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
@@ -210,6 +216,27 @@ export async function resolveRoutineRuntimeAccess(
       throw new RoutineRuntimeError(
         'channel_ineligible',
         'The direct-message destination is no longer eligible.',
+      );
+    }
+    const privateUse = await resolvePrivateAgentAccess({
+      agent: authority.agent,
+      workspaceId: routine.workspaceId,
+      grants: authority.agentGrants,
+      actor: {
+        fullMember: true,
+        membershipId: authority.reference.runsAsMembershipId,
+        slackUserId: actorSlackUserId,
+      },
+      transport: await agentDmPlacementFacts(
+        env,
+        authority.agent,
+        createDirectSlackTransportFromClient(directClient as unknown as DirectSlackApiClient),
+      ),
+    });
+    if (privateUse.status !== 'allowed') {
+      throw new RoutineRuntimeError(
+        'access_denied',
+        'The direct schedule owner can no longer use this Agent.',
       );
     }
     const directAccessHash = (configHash: string) => hashRoutineValue(JSON.stringify({

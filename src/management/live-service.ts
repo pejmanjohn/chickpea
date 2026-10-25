@@ -12,7 +12,7 @@ import {
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { agentAppPresenceHooks } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   deleteProviderApiKey,
@@ -286,6 +286,10 @@ export function createLiveWorkspaceManagementService(
           ...avatar,
         }),
       });
+    },
+    slackFacts: async ({ workspaceId, agent }) => {
+      const transport = await slackTransport(workspaceId);
+      return agent ? agentDmPlacementFacts(env, agent, transport) : transport;
     },
     assertAgentChannelMembership: async ({ actor, workspaceId, channelId }) => {
       const user = await actorSlackUser(actor, workspaceId);

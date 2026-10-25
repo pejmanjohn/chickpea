@@ -4,6 +4,7 @@ import { getConfigStore, getIdentityStore, type PlatformEnv } from '../config/st
 import { resolveModelPolicyForAssignment } from '../config/model-policy.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type {
+  AgentChannelGrant,
   AgentScheduleReference,
   CustomAgentConfig,
   ResolvedAssignment,
@@ -38,6 +39,8 @@ export class RoutineAuthorityError extends Error {
 export interface ResolvedRoutineAuthority {
   reference: AgentScheduleReference;
   agent: CustomAgentConfig;
+  /** The Agent's Channel grants in the schedule's workspace, which decide who may DM it. */
+  agentGrants: AgentChannelGrant[];
   assignment: ResolvedAssignment & { model: string; modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']> };
   actorSlackUserId: string;
   effectiveConnections: EffectiveConnectionAccount[];
@@ -362,11 +365,11 @@ export async function resolveRoutineAgentAuthority(
   if (!agent || !agent.enabled || agent.lifecycle === 'archived' || (direct && !isActiveUserAgent(agent))) {
     throw new RoutineAuthorityError('agent_unavailable', 'The schedule Agent is unavailable.');
   }
-  if (!direct) {
-    const grants = await config.listAgentChannelGrants(reference.workspaceId, reference.channelId);
-    if (!grants.some((grant) => grant.agentId === reference.agentId && grant.status === 'active')) {
-      throw new RoutineAuthorityError('destination_unavailable', 'The Agent no longer has access to the destination Channel.');
-    }
+  const agentGrants = (await config.listAgentChannelGrants(reference.workspaceId))
+    .filter((grant) => grant.agentId === reference.agentId);
+  if (!direct && !agentGrants.some((grant) =>
+    grant.channelId === reference.channelId && grant.status === 'active')) {
+    throw new RoutineAuthorityError('destination_unavailable', 'The Agent no longer has access to the destination Channel.');
   }
   const actorSlackUserId = await requireActiveMembership(
     identity,
@@ -389,7 +392,7 @@ export async function resolveRoutineAgentAuthority(
     agentId: agent.id,
     agent,
   }, config, process.env, undefined, env);
-  return { reference, agent, assignment, actorSlackUserId,
+  return { reference, agent, agentGrants, assignment, actorSlackUserId,
     effectiveConnections: effectiveConnections.filter(({ account }) => reference.requiredConnectionAccountIds.includes(account.id)) };
 
 }
