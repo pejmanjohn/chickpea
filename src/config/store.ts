@@ -3177,12 +3177,15 @@ export class ConfigStoreLogic {
           value TEXT NOT NULL
         )`,
       );
+      // `credential_incarnation DEFAULT ''` here and on deletion receipts: after
+      // a rollback, an earlier release inserts both without the column. The
+      // next start gives such an Agent a real incarnation.
       this.db.exec(
         `CREATE TABLE config_agents (
         id TEXT PRIMARY KEY,
         agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')),
         revision INTEGER NOT NULL,
-        credential_incarnation TEXT NOT NULL,
+        credential_incarnation TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL,
         description TEXT,
         instructions TEXT NOT NULL,
@@ -3215,7 +3218,7 @@ export class ConfigStoreLogic {
         idempotency_key TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
-        credential_incarnation TEXT NOT NULL,
+        credential_incarnation TEXT NOT NULL DEFAULT '',
         deleted_at INTEGER NOT NULL
         )`,
       );

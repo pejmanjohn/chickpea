@@ -505,6 +505,62 @@ test('credential migration preserves connection-account OAuth keys when an Agent
   }
 });
 
+test('a fresh installation accepts v0.1.33 Agent writes, and the next start binds them', () => {
+  const db = openStateDb(':memory:');
+  try {
+    new ConfigStoreLogic(db, { agents: [] });
+    // v0.1.33's createAgent and Admin deleteAgentWithMemory statements, which
+    // predate credential_incarnation and connection credential references.
+    const insertAgent = (id: string) => db.run(
+      `INSERT INTO config_agents (
+        id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
+        creator_membership_id, edit_policy, configuration_generation,
+        slack_presence_json, archived_at, model,
+        skills_json, mcp_servers_json, api_connections_json, repositories_json,
+        website_logins_json
+      ) VALUES (?, 'user', 1, ?, NULL, 'Help.', 1, 'active', NULL, 'creator_and_admins', 1,
+        ?, NULL, NULL, '[]', ?, ?, '[]', '[]')`,
+      id,
+      id,
+      JSON.stringify({
+        requestedHandle: id,
+        normalizedHandle: id,
+        desiredState: 'unpublished',
+        health: 'unpublished',
+        avatar: { kind: 'generated', revision: 1, seed: id },
+      }),
+      JSON.stringify([{
+        id: 'docs', displayName: 'Docs', url: 'https://mcp.example.com/rpc',
+        transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+        lifecycleStatus: 'ready', statusText: '', discoveredTools: [], allowedTools: [],
+      }]),
+      JSON.stringify([{
+        id: 'billing', displayName: 'Billing', allowedHosts: ['api.example.com'],
+        pathPrefixes: ['/v1'], headerName: 'Authorization', allowedMethods: ['GET'],
+        enabled: true, authMode: 'credential',
+      }]),
+    );
+    insertAgent('agent_rolled_back');
+    insertAgent('agent_deleted_in_admin');
+    db.run('DELETE FROM config_agents WHERE id = ?', 'agent_deleted_in_admin');
+    db.run(
+      `INSERT INTO config_agent_deletion_receipts (
+        idempotency_key, workspace_id, agent_id, deleted_at
+       ) VALUES (?, ?, ?, ?)`,
+      'delete-in-admin', '*', 'agent_deleted_in_admin', 1,
+    );
+
+    const agent = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_rolled_back');
+    assert.match(agent.credentialIncarnation ?? '', /^agent_[0-9a-f]{32}$/);
+    assert.match(agent.mcpServers[0]?.credentialRef ?? '', /^connection_[0-9a-f]{32}$/);
+    assert.match(agent.apiConnections[0]?.credentialRef ?? '', /^connection_[0-9a-f]{32}$/);
+    const reopened = new ConfigStoreLogic(db, { agents: [] }).getAgent('agent_rolled_back');
+    assert.deepEqual(reopened, agent);
+  } finally {
+    db.close();
+  }
+});
+
 test('Stage 2 materializes one immutable Chickpea principal outside user-Agent lists', () => {
   const db = openStateDb(':memory:');
   try {
