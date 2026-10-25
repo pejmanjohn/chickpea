@@ -372,6 +372,7 @@
     modelPickerFilter: "",
     modelReadiness: null,
     modelEfforts: Object.create(null),
+    effortFieldShown: "",
     // The Agent image field reuses the combobox shape with its own open/filter
     // state so the two pickers can never share or cross-populate options.
     imageModelPickerOpen: false,
@@ -814,6 +815,7 @@
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
     state.modelReadiness = null;
+    state.effortFieldShown = "";
     state.imageModelPickerOpen = false;
     state.imageModelPickerFilter = "";
     state.agentScheduleDeleteConfirm = null;
@@ -5009,8 +5011,8 @@
       : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
     var policy = agent.modelPolicy || {};
     var source = agent.model ? "Pinned" : "Workspace default";
-    var effortLabel = policy.effort ? EFFORT_LABELS[policy.effort] || "" : "";
-    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>' + (effortLabel ? " &middot; " + effortLabel : "");
+    var effort = effortLabel(policy.effort);
+    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>' + (effort ? " &middot; " + esc(effort) : "");
     var usage = "used in " + channelCountLabel(concrete.length);
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     // The image role reads back beside the chat role, but only once one is
@@ -5035,8 +5037,8 @@
       (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
     var source = model ? "Pinned" : "Workspace default";
     var effective = model || workspaceModel || "Not selected";
-    var effortLabel = appliedEffortLabel(agentEffortView(draft));
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective + (effortLabel ? " · " + effortLabel : "")) + '</span></div>';
+    var effort = appliedEffortLabel(agentEffortView(draft));
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
     if (draft.canEdit === false) {
       return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
     }
@@ -5059,13 +5061,17 @@
   // The Settings sections whose model carries an effort, by the action of their Effort radios.
   var EFFORT_SECTIONS = { "workspace-default-effort": "workspaceDefault", "workspace-coding-effort": "workspaceCodingRole" };
 
-  // The levels a model accepts, cached per model: undefined until asked, null
-  // while the request runs, false after it failed. A projection that already
-  // carries the levels seeds the cache, so the first paint needs no request.
+  function effortLabel(level) {
+    return Object.prototype.hasOwnProperty.call(EFFORT_LABELS, level) ? EFFORT_LABELS[level] : "";
+  }
+
+  // The levels a model accepts, cached per model: undefined until asked and
+  // null while the request runs. A projection that already carries the levels
+  // seeds the cache, so the first paint needs no request.
   function modelEffortLevels(model, seed) {
     var cache = state.modelEfforts;
     if (seed && Array.isArray(seed.efforts)) {
-      cache[model] = { efforts: seed.efforts, standard: seed.standardEffort || null };
+      learnEffortLevels(model, seed.efforts, seed.standardEffort);
       return cache[model];
     }
     if (cache[model] !== undefined) return cache[model] || null;
@@ -5073,13 +5079,26 @@
     if (state.modelPickerOpen || !/^[^/]+\/.+$/.test(model)) return null;
     cache[model] = null;
     api("/admin/api/model-efforts?model=" + encodeURIComponent(model)).then(function (body) {
-      cache[model] = { efforts: body.efforts || [], standard: body.standard || null };
-      dropUnsupportedEfforts();
+      learnEffortLevels(model, body.efforts, body.standard);
       renderPreservingPagePosition();
     }).catch(function () {
+      delete cache[model];
+      // The Agent row held while these levels loaded must not outlive the
+      // failure. Paint it away without asking again; the next render asks.
+      if (!state.profileDraft || state.profileDraft.model !== model) return;
       cache[model] = false;
+      renderPreservingPagePosition();
+      delete cache[model];
     });
     return null;
+  }
+
+  // Levels arrive from the server, so only labelled ones are kept. Knowing a
+  // model's levels drops a draft effort it lacks, including a stored one.
+  function learnEffortLevels(model, efforts, standard) {
+    var named = (efforts || []).filter(effortLabel);
+    state.modelEfforts[model] = { efforts: named, standard: effortLabel(standard) ? standard : null };
+    dropUnsupportedEfforts();
   }
 
   // A draft keeps its effort only while its model accepts it. Until the
@@ -5093,8 +5112,7 @@
     }
     var draft = state.profileDraft;
     if (draft && !fits(draft.model, draft.modelEffort)) draft.modelEffort = "";
-    Object.keys(EFFORT_SECTIONS).forEach(function (action) {
-      var key = EFFORT_SECTIONS[action];
+    ["workspaceDefault", "workspaceCodingRole"].forEach(function (key) {
       if (!fits(state[key + "Draft"], state[key + "EffortDraft"])) state[key + "EffortDraft"] = "";
     });
   }
@@ -5107,12 +5125,10 @@
     var level = radio.getAttribute("data-effort");
     var key = EFFORT_SECTIONS[action];
     if (key) {
-      if (state[key + "Busy"]) return;
       state[key + "EffortDraft"] = level;
       state[key + "Error"] = "";
       state[key + "Notice"] = "";
     } else {
-      if (!state.profileDraft) return;
       state.profileDraft.modelEffort = level;
       markProfileDirty();
     }
@@ -5133,20 +5149,21 @@
       var pinned = policy.source === "pinned" && policy.effectiveModel === draft.model ? policy : null;
       return { effort: draft.modelEffort || "", follows: false, levels: modelEffortLevels(draft.model, pinned) };
     }
-    var followed = state.workspaceDefault && state.workspaceDefault.modelId
-      ? { model: state.workspaceDefault.modelId, projection: state.workspaceDefault }
-      : policy.source === "workspace_default" && policy.effectiveModel
-        ? { model: policy.effectiveModel, projection: policy }
-        : null;
-    if (!followed) return null;
-    return { effort: followed.projection.effort || "", follows: true, levels: modelEffortLevels(followed.model, followed.projection) };
+    var projection = state.workspaceDefault || {};
+    var model = projection.modelId;
+    if (!model && policy.source === "workspace_default") {
+      projection = policy;
+      model = policy.effectiveModel;
+    }
+    if (!model) return null;
+    return { effort: projection.effort || "", follows: true, levels: modelEffortLevels(model, projection) };
   }
 
   // The label a model summary appends: only an effort someone chose, never the standard.
   function appliedEffortLabel(view) {
     if (!view || !view.effort) return "";
     if (view.levels && view.levels.efforts.indexOf(view.effort) < 0) return "";
-    return EFFORT_LABELS[view.effort] || "";
+    return effortLabel(view.effort);
   }
 
   // One Effort control for every chat-model choice: the levels the model
@@ -5158,17 +5175,24 @@
     var selected = selectedEffort(levels, options.effort);
     var buttons = levels.efforts.map(function (level) {
       var on = level === selected;
-      return '<button type="button" role="radio" class="' + (on ? "on" : "") + '" aria-checked="' + on + '" tabindex="' + (on ? "0" : "-1") + '" data-action="' + options.action + '" data-effort="' + level + '"' + (options.disabled ? " disabled" : "") + '>' + EFFORT_LABELS[level] + '</button>';
+      return '<button type="button" role="radio" class="' + (on ? "on" : "") + '" aria-checked="' + on + '" tabindex="' + (on ? "0" : "-1") + '" data-action="' + options.action + '" data-effort="' + esc(level) + '"' + (options.disabled ? " disabled" : "") + '>' + esc(effortLabel(level)) + '</button>';
     }).join("");
-    var note = options.note || "Higher effort thinks longer before answering. It is slower and uses more tokens. Standard is " + EFFORT_LABELS[levels.standard] + ".";
+    var note = options.note || "Higher effort thinks longer before answering. It is slower and uses more tokens. Standard is " + effortLabel(levels.standard) + ".";
     return '<div class="seg" role="radiogroup" aria-labelledby="' + options.labelId + '">' + buttons + '</div><p class="hint">' + esc(note) + '</p>';
   }
 
+  // While the picker is open or the chosen model's levels load, the row last
+  // painted holds its place, so the form does not jump on every keystroke.
   function effortFieldHtml(draft) {
     var view = agentEffortView(draft);
-    if (!view || !view.levels) return "";
+    if (view && !view.levels && (state.modelPickerOpen || state.modelEfforts[draft.model] === null)) return state.effortFieldShown;
+    state.effortFieldShown = view && view.levels ? effortFieldRowHtml(draft, view) : "";
+    return state.effortFieldShown;
+  }
+
+  function effortFieldRowHtml(draft, view) {
     if (draft.canEdit === false && view.levels.efforts.length) {
-      return '<div class="field"><span class="field-label">Effort</span><div class="input" aria-label="Agent effort">' + esc(EFFORT_LABELS[selectedEffort(view.levels, view.effort)]) + '</div></div>';
+      return '<div class="field"><span class="field-label">Effort</span><div class="input" aria-label="Agent effort">' + esc(effortLabel(selectedEffort(view.levels, view.effort))) + '</div></div>';
     }
     return '<div class="field effort-field"><span class="field-label" id="p-effort-label">Effort</span>' + effortRowHtml({
       levels: view.levels,
