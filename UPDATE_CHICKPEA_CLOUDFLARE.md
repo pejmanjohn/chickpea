@@ -45,6 +45,11 @@ For releases with the reviewed `allowScripts` policy, use:
 npm ci --strict-allow-scripts
 ```
 
+v0.1.34 needs Node 24.22.1 or a later Node 24 on the machine that runs the
+update. Its dependency install refuses older Node, including 24.20.0,
+the previous pin. If the installation builds with Cloudflare Workers Builds and
+sets a `NODE_VERSION` build variable, change it to 24.22.1 or remove it.
+
 Keep the new release's code and migrations. Restore the installation's live
 deployment settings in the authored `wrangler.jsonc`, including `account_id`,
 Worker `name`, the `AUTH_DB` database name and ID, non-secret variables, and
@@ -59,7 +64,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.33 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.34 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -121,7 +126,39 @@ Agent always replies, even where v0.1.32 would have posted nothing. A turn
 that had already decided to post nothing but had not finished when you rolled
 back may post the literal text `NO_REPLY` once.
 
+Rolling back from v0.1.34 to v0.1.33 does not restore the Agent-level
+connection secrets that v0.1.34 deleted. v0.1.33 also cannot read secrets
+entered on v0.1.34, so those connections have no secret until someone enters
+it on v0.1.33, and v0.1.34 ignores secrets entered on v0.1.33 after the next
+update. While on v0.1.33, do not save an Agent that has its own MCP servers or
+API connections in Admin, and do not add such connections. v0.1.33 saves them
+without the credential reference that v0.1.34 needs. After the next update,
+Admin's Agents page then fails to load, and those connections fail. On an
+installation first created with v0.1.34, v0.1.33 cannot create Agents or
+delete them in Admin. A reply still unsent at the rollback for an Agent that
+uses a team connection needing an admin to reconnect it is set aside without
+an answer, and a thread whose first v0.1.34 turn ran in that state gets
+failed replies on v0.1.33 until you update again. Prefer deploying a fixed
+release forward to rolling back across v0.1.34.
+
 ## 3. Deploy to the same Worker
+
+v0.1.34 is a security update for the eMudhra certificate authority compromise.
+Its Node requirement is in step 2. Before you deploy it:
+
+- On its first start, v0.1.34 deletes the secrets saved directly on each
+  Agent's own MCP servers and API connections: bearer tokens, header values,
+  pasted API credentials, and OAuth sign-ins. Team and personal connection
+  accounts keep theirs. Tell the user before deploying. Afterwards they enter
+  those secrets again, or sign in again, on each affected Agent. An
+  `MCP_AGENT_…` or `CONNECTOR_AGENT_…` secret supplied as a Worker variable
+  applies only when its matching `…_BINDING` variable holds that connection's
+  current credential binding. Admin does not show the binding; the Agent's
+  record in the signed-in Admin API (`GET /admin/api/agents/<id>`) gives
+  editors each connection's `credentialBinding` and variable names.
+- An installation with the coding sandbox must update with
+  `npm run deploy:sandbox`, as described below, so its container moves to the
+  patched image.
 
 v0.1.33 adds an optional ChatGPT plan connection for Cloudflare. Updating keeps
 the current chat provider and API key. If you connect a ChatGPT plan and later
