@@ -203,6 +203,10 @@ export interface NormalizedSlackTurn {
   threadTs: string;
   sessionThreadTs?: string;
   source: SlackTurnSource;
+  /**
+   * Slack's `channel_type`, or `mpim` set at admission for a group DM event
+   * that names none. Read it through slackConversationKind.
+   */
   channelType?: string;
   contextMode: SlackContextMode;
   reaction?: string;

@@ -1,0 +1,17 @@
+{
+  "token": "verification-token-not-a-secret",
+  "team_id": "TDEMO",
+  "api_app_id": "ADEMO",
+  "event_id": "Ev_MPIM_TOP_001",
+  "event_time": 1782770430,
+  "type": "event_callback",
+  "event": {
+    "type": "message",
+    "channel": "C_GROUP_DM",
+    "user": "U_ALICE",
+    "text": "group DM chatter",
+    "ts": "1782770430.000400",
+    "event_ts": "1782770430.000400",
+    "channel_type": "mpim"
+  }
+}

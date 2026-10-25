@@ -30,17 +30,12 @@ interface AssignmentLookupOptions {
   platformEnv?: PlatformEnv;
 }
 
-// Infer the surface from a channel id, for the paths that resolve from a thread
-// key rather than a live turn (the durable agent and admin). Prefer the live
-// turn's authoritative source/channel_type when available (see turnSurface in
-// the Slack channel) — this id heuristic is the fallback.
-//
-// Slack 1:1 DM channel ids are 'D…'; public channels are 'C…'.
-// A 'G…' id is ambiguous — legacy private channel vs group DM (mpim) — and the
-// app_mention event carries no channel_type to disambiguate, so it is treated
-// as a channel: the fail-closed default (better to require an explicit
-// assignment than to let a private channel answer via the DM wildcard). The
-// literal '*' key is the direct-message default row itself.
+// Infer the surface from a channel id, for the paths that resolve from the id
+// alone (Admin, and a Channel turn resolving again). Only a 1:1 DM id ('D…') is
+// unambiguous: a group DM's id ('C…' now, 'G…' before) looks like a
+// Channel's, so a live turn reads its kind from Slack (slackTurnSurface)
+// instead. Anything else is a channel, the fail-closed default. The literal
+// '*' key is the direct-message default row itself.
 export function surfaceForChannelId(channelId: string): AssignmentSurface {
   if (channelId === '*') {
     return 'direct';

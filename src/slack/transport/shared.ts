@@ -122,6 +122,12 @@ export function mapPolicyChannel(channel: SlackApiResult): SlackChannel {
     private: requiredBoolean(channel.is_private, 'conversations'),
     member: requiredBoolean(channel.is_member, 'conversations'),
     archived: requiredBoolean(channel.is_archived, 'conversations'),
+    ...(channel.is_mpim === true ? { mpim: true as const } : {}),
+    ...(channel.is_shared === true || channel.is_ext_shared === true || channel.is_org_shared === true ||
+        channel.is_pending_ext_shared === true ||
+        (Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0)
+      ? { shared: true as const }
+      : {}),
   };
 }
 

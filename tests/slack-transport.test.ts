@@ -385,6 +385,34 @@ test('policy-facing group-DM reads do not synthesize missing membership facts', 
   );
 });
 
+test('a group DM reads as one, and sharing beyond the workspace is reported', async () => {
+  const conversations: Record<string, Record<string, unknown>> = {
+    C0GROUPDM: { id: 'C0GROUPDM', is_mpim: true, is_private: true, is_member: true, is_archived: false },
+    C0CONNECT: {
+      id: 'C0CONNECT', is_mpim: true, is_private: true, is_member: true, is_archived: false,
+      is_shared: true, is_ext_shared: true,
+    },
+    C0PENDING: { id: 'C0PENDING', is_private: false, is_member: true, is_archived: false, pending_shared: ['T2'] },
+    C123: { id: 'C123', is_private: false, is_member: true, is_archived: false, pending_shared: [] },
+  };
+  const gateway = createGatewaySlackTransport({
+    workspaceId: 'T123',
+    async call(_operation, input) {
+      return { channel: conversations[String(input.channel)] };
+    },
+  });
+  assert.deepEqual(await gateway.lookupChannel('C0GROUPDM'), {
+    id: 'C0GROUPDM', private: true, member: true, archived: false, mpim: true,
+  });
+  assert.deepEqual(await gateway.lookupChannel('C0CONNECT'), {
+    id: 'C0CONNECT', private: true, member: true, archived: false, mpim: true, shared: true,
+  });
+  assert.equal((await gateway.lookupChannel('C0PENDING')).shared, true);
+  assert.deepEqual(await gateway.lookupChannel('C123'), {
+    id: 'C123', private: false, member: true, archived: false,
+  }, 'a Channel is no group DM, and not shared');
+});
+
 test('conversation open and public join synthesize only operation-guaranteed facts', async () => {
   const client = fakeClient([]);
   client.conversations.open = async () => ({ ok: true, channel: { id: 'D123' } });

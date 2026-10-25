@@ -375,7 +375,9 @@ export async function resolveAgentRoute(
   } else if (currentRoute) {
     source = 'thread_owner';
     selected = agentsById.get(currentRoute.agentId);
-  } else if (surface === 'direct') {
+  } else if (turn.source === 'dm_message') {
+    // A one-to-one DM needs no address; a group DM, like a Channel, ignores
+    // a message that names no Agent.
     source = 'default_agent';
     selected = agentsById.get(
       installation.runtimeContract === 'chickpea-v1'

@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
+import type { ResolvedAssignment } from '../src/config/types.ts';
 import type { SlackConversationFacts, SlackUserFacts } from '../src/slack/credentials.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import {
+  prepareSlackShadowAdmission,
   resolveSlackAdmissionTruth,
   slackAdmissionTruthReader,
 } from '../src/slack/work-admission.ts';
@@ -93,18 +95,43 @@ test('a member in a channel Chickpea belongs to is eligible, with the channel\'s
 
 test('a direct message is private and never reads the conversation', async () => {
   for (const overrides of [
-    { source: 'dm_message' as const },
-    { channelType: 'im' as const },
-    { channelType: 'mpim' as const },
+    { channelId: 'D_ADMIT', source: 'dm_message' as const },
+    { channelId: 'D_ADMIT', channelType: 'im' as const },
+    // A group DM's id looks like a Channel's; admission marked its kind.
+    { channelId: 'C_GROUP_DM', channelType: 'mpim' as const },
   ]) {
     const { reader: truth, reads } = reader(undefined, { ok: false });
     assert.deepEqual(
-      await resolveSlackAdmissionTruth(turn({ channelId: 'D_ADMIT', ...overrides }), BOT_USER_ID, truth),
+      await resolveSlackAdmissionTruth(turn(overrides), BOT_USER_ID, truth),
       { eligible: true, reason: 'eligible', sourceVisibility: 'private', actorTrustTier: 'member' },
       JSON.stringify(overrides),
     );
     assert.deepEqual(reads, ['user:U_PERSON']);
   }
+});
+
+test('a group DM holds one conversation per thread, as a Channel does; a DM is one across its threads', () => {
+  const assignment: ResolvedAssignment = {
+    workspaceId: 'T_ADMIT', channelId: 'C_ADMIT', agentId: 'agent_admit', model: 'local-stub/admit',
+    agent: {
+      id: 'agent_admit', kind: 'user', revision: 1, name: 'Admit', instructions: '', enabled: true,
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    },
+  };
+  const bindingOf = (patch: Partial<NormalizedSlackTurn>, threadTs: string) => prepareSlackShadowAdmission({
+    turn: turn({ ...patch, messageTs: `${threadTs}1`, threadTs }),
+    assignment,
+    sourceVisibility: 'private',
+    admittedAt: 1,
+  }).binding;
+  const groupDm = { channelId: 'C_GROUP_DM', channelType: 'mpim' } as const;
+  const [first, second] = [bindingOf(groupDm, '1000.0001'), bindingOf(groupDm, '2000.0001')];
+  // One person's long run in a group DM thread never holds back another's.
+  assert.notEqual(first.orderingKey, second.orderingKey);
+  assert.equal(first.configMode, 'frozen_on_open');
+
+  const dm = { channelId: 'D_ADMIT', source: 'dm_message', channelType: 'im' } as const;
+  assert.equal(bindingOf(dm, '1000.0001').orderingKey, bindingOf(dm, '2000.0001').orderingKey);
 });
 
 test('an actor Slack cannot describe, or who is not an eligible person, is refused', async () => {

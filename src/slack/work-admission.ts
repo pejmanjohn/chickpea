@@ -13,7 +13,7 @@ import {
   type SlackUserFacts,
 } from './credentials.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { slackTurnSurface } from './thread-key.ts';
+import { slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { isLaterCoAddressedTurn } from './agent-asks.ts';
 import { classifySlackUserForAdmission } from './user-classification.ts';
 
@@ -123,7 +123,10 @@ export function prepareSlackShadowAdmission(input: {
   executionAuthority?: RunExecutionAuthority;
 }): AdmitShadowRunInput {
   const { turn, assignment, sourceVisibility, admittedAt } = input;
-  const direct = slackTurnSurface(turn) === 'direct';
+  // A 1:1 DM is one conversation across its threads. A group DM, like a
+  // Channel, holds one per thread, so one person's long run there never
+  // holds back another's.
+  const direct = slackConversationKind(turn) === 'im';
   const conversationIdentity = direct
     ? `dm:${turn.channelId}`
     : `thread:${turn.channelId}:${turn.threadTs}`;

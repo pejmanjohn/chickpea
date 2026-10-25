@@ -20,7 +20,8 @@ type MessageFixtureFile =
   | 'message-channel-thread-reply.json'
   | 'message-private-channel-thread-reply.json'
   | 'message-channel-top-level.json'
-  | 'message-im.json';
+  | 'message-im.json'
+  | 'message-mpim-top-level.json';
 
 const fixtureCache = new Map<string, SlackEventFixture>();
 
@@ -54,6 +55,11 @@ export function topLevelChannelMessage(overrides: MessageFixtureOverrides = {}):
 
 export function dmMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {
   return messageFixture('message-im.json', overrides);
+}
+
+/** A group DM message as `message.mpim` delivers it; new group DMs have `C…` ids. */
+export function groupDmMessage(overrides: MessageFixtureOverrides = {}): MessageFixture {
+  return messageFixture('message-mpim-top-level.json', overrides);
 }
 
 function messageFixture(

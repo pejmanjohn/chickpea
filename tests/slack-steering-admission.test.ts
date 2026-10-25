@@ -118,9 +118,15 @@ async function withHarness(
         }
         if (operation === 'conversations.info') {
           if (input.channel === 'C1') return { channel };
-          return String(input.channel).startsWith('G')
-            ? { channel: { id: input.channel, is_mpim: true, is_private: true, is_member: true } }
-            : { channel: { id: input.channel, is_im: true, user: 'U1' } };
+          if (input.channel === 'C0GROUPDM') {
+            return {
+              channel: {
+                id: input.channel, name: 'mpdm-owner--teammate-1', is_mpim: true, is_private: true,
+                is_member: true, is_archived: false,
+              },
+            };
+          }
+          return { channel: { id: input.channel, is_im: true, user: 'U1' } };
         }
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'U3', 'UBOT'] };
         if (operation === 'users.conversations') return { channels: [channel] };
@@ -391,55 +397,23 @@ test('a guest\'s stop keeps today\'s silence and leaves the run alone', async ()
   });
 });
 
-const PRIVATE = '<!subteam^SPRIV|@priv>';
+/**
+ * A group DM, by its production id shape: new ones look like Channels. @ops
+ * answers there because its public Channel lets everyone in the workspace
+ * use it.
+ */
+const GROUP_DM = 'C0GROUPDM';
 
-/** A private Agent: with no Channel grant, only its creator (U1) may use it. */
-async function createPrivateAgent(harness: Harness): Promise<void> {
-  await harness.stores.config.createAgent({
-    id: 'agent_private', name: 'priv', instructions: '', enabled: true, lifecycle: 'active',
-    model: 'local-stub/steering',
-    creatorMembershipId: harness.ownerMembershipId, editPolicy: 'creator_and_admins',
-    skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    slackPresence: {
-      requestedHandle: 'priv', normalizedHandle: 'priv', desiredState: 'active',
-      health: 'healthy', userGroupId: 'SPRIV',
-      avatar: { kind: 'generated', revision: 1, seed: 'priv' },
-    },
-  });
+/** U1 starts @ops's run in the group DM; returns its root row id. */
+async function startGroupRun(harness: Harness, rootTs: string): Promise<string> {
+  await harness.deliver({ channel: GROUP_DM, channelType: 'mpim', ts: rootTs, text: `${OPS} Summarize the report.` });
+  assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_ops');
+  return `msg:${GROUP_DM}:${rootTs}`;
 }
 
-test('a stop addressed to another Agent hands the thread over and never stops the private Agent\'s run (R3)', async () => {
-  await withHarness(async (harness) => {
-    await createPrivateAgent(harness);
-    const rootTs = '1800000300.000100';
-    await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: rootTs, text: `<@UBOT> ${PRIVATE} Summarize the report.`,
-    });
-    assert.equal(harness.jobs.length, 1);
-    assert.equal(harness.jobs[0]?.assignment.agentId, 'agent_private');
-
-    // U2 may not use the private Agent; "@Chickpea stop" routes to Chickpea.
-    await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
-      text: '<@UBOT> stop',
-    });
-    const root = (await harness.pending()).find((job) => job.id === `msg:G1:${rootTs}`);
-    assert.equal(root?.stop, undefined, 'the private Agent\'s run continues');
-    assert.equal(harness.jobs.length, 2, 'the message is today\'s handoff turn');
-    assert.equal(harness.jobs[1]?.assignment.agentId, 'agent_chickpea');
-    assert.deepEqual(harness.posts, []);
-    assert.deepEqual(harness.reactions, [], 'a handoff gets no mid-run 👀 either');
-  });
-});
-
-/** U1 starts the private Agent's run in a group DM; returns its root row id. */
-async function startPrivateGroupRun(harness: Harness, rootTs: string): Promise<string> {
-  await createPrivateAgent(harness);
-  await harness.deliver({
-    channel: 'G1', channelType: 'mpim', ts: rootTs, text: `<@UBOT> ${PRIVATE} Summarize the report.`,
-  });
-  assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_private');
-  return `msg:G1:${rootTs}`;
+/** @ops leaves its public Channel mid-run: in a group DM nobody may use it now. */
+async function narrowOps(harness: Harness): Promise<void> {
+  await harness.stores.config.deleteAgentChannelGrant('T1', 'C1', 'agent_ops');
 }
 
 async function stopOfRow(harness: Harness, id: string) {
@@ -448,34 +422,53 @@ async function stopOfRow(harness: Harness, id: string) {
 
 const INELIGIBLE_STOP = "You can't stop this run. Only people who can use this Agent here can stop it.";
 
-test('after handing a group DM thread to Chickpea, "@Chickpea stop" from someone who may not use the private Agent leaves its run alone (R3)', async () => {
+test('a stop addressed to another Agent hands the group DM thread over and never stops the running Agent\'s run (R3)', async () => {
+  await withHarness(async (harness) => {
+    const rootTs = '1800000300.000100';
+    const root = await startGroupRun(harness, rootTs);
+
+    // "@Chickpea stop" routes to Chickpea.
+    await harness.deliver({
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
+      text: '<@UBOT> stop',
+    });
+    assert.equal(await stopOfRow(harness, root), undefined, 'the run continues');
+    assert.equal(harness.jobs.length, 2, 'the message is today\'s handoff turn');
+    assert.equal(harness.jobs[1]?.assignment.agentId, 'agent_chickpea');
+    assert.deepEqual(harness.posts, []);
+    assert.deepEqual(harness.reactions, [], 'a handoff gets no mid-run 👀 either');
+  });
+});
+
+test('after handing a group DM thread to Chickpea, "@Chickpea stop" from someone who may not use the running Agent leaves its run alone (R3)', async () => {
   await withHarness(async (harness) => {
     const rootTs = '1800000600.000100';
-    const root = await startPrivateGroupRun(harness, rootTs);
+    const root = await startGroupRun(harness, rootTs);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000610.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000610.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> hi',
     });
     assert.equal(harness.jobs.length, 2, 'the handoff is an ordinary turn for Chickpea');
-    const handoff = 'msg:G1:1800000610.000100';
+    const handoff = `msg:${GROUP_DM}:1800000610.000100`;
+    await narrowOps(harness);
 
     // The thread is Chickpea's now, so this is no handoff; the running row is
-    // still the private Agent's, which U2 may not use.
+    // still @ops's, which nobody may use here any more.
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000620.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000620.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> stop',
     });
-    assert.equal(await stopOfRow(harness, root), undefined, 'the private Agent\'s run continues');
+    assert.equal(await stopOfRow(harness, root), undefined, 'the run continues');
     assert.equal(await stopOfRow(harness, handoff), undefined, 'nothing is held either');
     assert.equal(harness.jobs.length, 2, 'the stop is never queued');
     assert.deepEqual(harness.posts, [{
       operation: 'chat.postEphemeral',
-      input: { channel: 'G1', user: 'U2', thread_ts: rootTs, text: INELIGIBLE_STOP },
+      input: { channel: GROUP_DM, user: 'U2', thread_ts: rootTs, text: INELIGIBLE_STOP },
     }]);
 
     // A Slack retry of that stop posts no second note.
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000620.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000620.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> stop',
     });
     assert.equal(harness.posts.length, 1);
@@ -483,40 +476,42 @@ test('after handing a group DM thread to Chickpea, "@Chickpea stop" from someone
   });
 });
 
-test('"@Chickpea stop" twice from someone who may not use the private Agent never stops its run (R3)', async () => {
+test('"@Chickpea stop" twice from someone who may not use the running Agent never stops its run (R3)', async () => {
   await withHarness(async (harness) => {
     const rootTs = '1800000700.000100';
-    const root = await startPrivateGroupRun(harness, rootTs);
+    const root = await startGroupRun(harness, rootTs);
+    await narrowOps(harness);
     for (const ts of ['1800000710.000100', '1800000720.000100']) {
       await harness.deliver({
-        channel: 'G1', channelType: 'mpim', ts, threadTs: rootTs, user: 'U2', text: '<@UBOT> stop',
+        channel: GROUP_DM, channelType: 'mpim', ts, threadTs: rootTs, user: 'U2', text: '<@UBOT> stop',
       });
     }
-    assert.equal(await stopOfRow(harness, root), undefined, 'the private Agent\'s run continues');
-    assert.equal(await stopOfRow(harness, 'msg:G1:1800000710.000100'), undefined);
+    assert.equal(await stopOfRow(harness, root), undefined, 'the run continues');
+    assert.equal(await stopOfRow(harness, `msg:${GROUP_DM}:1800000710.000100`), undefined);
     assert.equal(harness.jobs.length, 2, 'only the first, the handoff, is a turn');
     assert.equal(harness.jobs[1]?.assignment.agentId, 'agent_chickpea');
     assert.deepEqual(harness.posts, [{
       operation: 'chat.postEphemeral',
-      input: { channel: 'G1', user: 'U2', thread_ts: rootTs, text: INELIGIBLE_STOP },
+      input: { channel: GROUP_DM, user: 'U2', thread_ts: rootTs, text: INELIGIBLE_STOP },
     }]);
   });
 });
 
-test('after the handoff, a check-in from someone who may not use the private Agent learns nothing about its run (R3, R11)', async () => {
+test('after the handoff, a check-in from someone who may not use the running Agent learns nothing about its run (R3, R11)', async () => {
   await withHarness(async (harness) => {
     const rootTs = '1800000800.000100';
-    const root = await startPrivateGroupRun(harness, rootTs);
+    const root = await startGroupRun(harness, rootTs);
     const now = Date.now();
     defaultSlackStatusRegistry.saveRunFacts(root, {
       startedAt: now - 42 * 60_000, step: 'Reading the private files…', progressAt: now, milestones: 0,
     });
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000810.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000810.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> hi',
     });
+    await narrowOps(harness);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000820.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000820.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> status',
     });
 
@@ -526,36 +521,37 @@ test('after the handoff, a check-in from someone who may not use the private Age
   });
 });
 
-test('after handing the thread to Chickpea, the private Agent\'s creator still checks in on and stops its run (KTD1)', async () => {
+test('after handing a group DM thread to Chickpea, anyone there still checks in on and stops the Agent\'s run, privately (KTD1)', async () => {
   await withHarness(async (harness) => {
     const rootTs = '1800000900.000100';
-    const root = await startPrivateGroupRun(harness, rootTs);
+    const root = await startGroupRun(harness, rootTs);
     const now = Date.now();
     defaultSlackStatusRegistry.saveRunFacts(root, {
       startedAt: now - 20 * 60_000, step: 'Reading the report…', progressAt: now, milestones: 0,
     });
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000910.000100', threadTs: rootTs, text: '<@UBOT> hi',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000910.000100', threadTs: rootTs, user: 'U2', text: '<@UBOT> hi',
     });
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000915.000100', threadTs: rootTs, text: '<@UBOT> status',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000915.000100', threadTs: rootTs, user: 'U2', text: '<@UBOT> status',
     });
     assert.equal(harness.posts.length, 1);
-    assert.equal(harness.posts[0]?.input.user, 'U1');
+    assert.equal(harness.posts[0]?.operation, 'chat.postEphemeral', 'the rest of the group sees nothing');
+    assert.equal(harness.posts[0]?.input.user, 'U2');
     assert.match(String(harness.posts[0]?.input.text), /Current step: Reading the report…/);
 
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000920.000100', threadTs: rootTs, text: '<@UBOT> stop',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000920.000100', threadTs: rootTs, user: 'U2', text: '<@UBOT> stop',
     });
     const stop = await stopOfRow(harness, root);
-    assert.equal(stop?.role === 'stopped' && stop.stopperUserId, 'U1', 'the handoff does not hide the run');
-    assert.equal((await stopOfRow(harness, 'msg:G1:1800000910.000100'))?.role, 'held');
+    assert.equal(stop?.role === 'stopped' && stop.stopperUserId, 'U2', 'the handoff does not hide the run');
+    assert.equal((await stopOfRow(harness, `msg:${GROUP_DM}:1800000910.000100`))?.role, 'held');
     assert.equal(harness.jobs.length, 2, 'neither the check-in nor the stop is queued');
     assert.equal(harness.posts.length, 1);
   });
 });
 
-test('the Node path refuses a stop across a handoff the same way and lets the creator stop the run', async () => {
+test('the Node path refuses a stop across a handoff the same way and lets someone who may use the Agent stop the run', async () => {
   await stopNodeTurnRelay();
   await withHarness(async (harness) => {
     // Admit the run and the handoff through the Cloudflare lane, then steer
@@ -564,22 +560,28 @@ test('the Node path refuses a stop across a handoff the same way and lets the cr
       configurable: true, value: { userAgent: 'Cloudflare-Workers' },
     });
     const rootTs = '1800001000.000100';
-    const root = await startPrivateGroupRun(harness, rootTs);
+    const root = await startGroupRun(harness, rootTs);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800001010.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800001010.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> hi',
     });
     Reflect.deleteProperty(globalThis, 'navigator');
 
+    await narrowOps(harness);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800001020.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800001020.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> stop',
     });
     assert.equal(await stopOfRow(harness, root), undefined);
     assert.deepEqual(harness.posts.map(({ input }) => input.text), [INELIGIBLE_STOP]);
 
+    // Back in its public Channel, everyone may use @ops again.
+    await harness.stores.config.putAgentChannelGrant({
+      workspaceId: 'T1', channelId: 'C1', agentId: 'agent_ops', status: 'active',
+      createdByMembershipId: harness.ownerMembershipId, channelLabel: 'ops', channelIsPrivate: false,
+    }, 0);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800001030.000100', threadTs: rootTs, text: '<@UBOT> stop',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800001030.000100', threadTs: rootTs, text: '<@UBOT> stop',
     });
     const stop = await stopOfRow(harness, root);
     assert.equal(stop?.role === 'stopped' && stop.stopperUserId, 'U1');
@@ -869,28 +871,25 @@ test('a check-in whose thread\'s run moves on to a third Agent while it is decid
 
 test('a stop addressed to the running Agent, or to Chickpea in its own thread, still stops the run', async () => {
   await withHarness(async (harness) => {
-    await createPrivateAgent(harness);
-    const privateRoot = '1800000400.000100';
+    const opsRoot = '1800000400.000100';
+    const root = await startGroupRun(harness, opsRoot);
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: privateRoot, text: `<@UBOT> ${PRIVATE} Summarize the report.`,
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000410.000100', threadTs: opsRoot, user: 'U2',
+      text: `<@UBOT> ${OPS} stop`,
     });
-    await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000410.000100', threadTs: privateRoot,
-      text: `<@UBOT> ${PRIVATE} stop`,
-    });
-    const privateStop = (await harness.pending()).find((job) => job.id === `msg:G1:${privateRoot}`)?.stop;
-    assert.equal(privateStop?.role === 'stopped' && privateStop.stopperUserId, 'U1', 'its creator stops it');
+    const opsStop = await stopOfRow(harness, root);
+    assert.equal(opsStop?.role === 'stopped' && opsStop.stopperUserId, 'U2', 'anyone there may stop it');
 
     const chickpeaRoot = '1800000500.000100';
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: chickpeaRoot, text: '<@UBOT> Draft the plan.',
+      channel: GROUP_DM, channelType: 'mpim', ts: chickpeaRoot, text: '<@UBOT> Draft the plan.',
     });
     assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_chickpea');
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000510.000100', threadTs: chickpeaRoot, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000510.000100', threadTs: chickpeaRoot, user: 'U2',
       text: '<@UBOT> stop',
     });
-    const chickpeaStop = (await harness.pending()).find((job) => job.id === `msg:G1:${chickpeaRoot}`)?.stop;
+    const chickpeaStop = await stopOfRow(harness, `msg:${GROUP_DM}:${chickpeaRoot}`);
     assert.equal(chickpeaStop?.role === 'stopped' && chickpeaStop.stopperUserId, 'U2');
     assert.equal(harness.jobs.length, 2, 'neither stop is queued');
   });

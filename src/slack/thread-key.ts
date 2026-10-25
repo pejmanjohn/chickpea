@@ -41,7 +41,7 @@ export function slackConversationKind(
   return 'channel';
 }
 
-/** A group DM is decided like a DM: by the private use of the people in it, never by a Channel grant. */
+/** A group DM's access is a DM's, private use (resolveTurnAgentAccess), never a Channel grant. */
 export function slackTurnSurface(
   turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
 ): AssignmentSurface {

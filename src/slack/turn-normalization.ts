@@ -309,8 +309,9 @@ export function stripSlackMessageAppContext(payload: SlackEventFixture): SlackEv
   return { ...payload, event };
 }
 
+/** A group DM is addressed as a Channel is: by mention, or by replying in an Agent's thread. */
 function isChannelConversation(event: SlackMessageEvent): boolean {
-  return event.channel_type === 'channel' || event.channel_type === 'group';
+  return event.channel_type === 'channel' || event.channel_type === 'group' || event.channel_type === 'mpim';
 }
 
 function isAppAuthoredMessage(event: {
