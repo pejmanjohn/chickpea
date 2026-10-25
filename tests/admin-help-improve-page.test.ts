@@ -24,6 +24,7 @@ const LABEL = 'Help improve Chickpea';
 const HELP = 'Chickpea keeps a copy of each Agent conversation for 30 days so the Chickpea team can find and fix bugs. Copies are encrypted, have credentials removed, and are never used to train AI models. Turning this off deletes the copies kept so far.';
 const UPDATE_ERROR = 'Could not update Help improve Chickpea.';
 const LOAD_ERROR = 'Could not load Help improve Chickpea.';
+const LEARN_MORE = `<a class="hint-link" href="${PRIVACY_URL}" target="_blank" rel="noopener noreferrer">Learn more</a>`;
 
 const TRY = {
   stage: 'try', revision: 'revision_try', agentId: 'agent_chickpea', redirectTo: null,
@@ -178,7 +179,7 @@ test('hosted Settings shows the setting with its approved copy, its Learn more l
   assert.match(html, /data-section="help-improve"[^>]*><span class="chan-name">Help improve Chickpea<\/span><\/button>/);
   assert.ok(html.includes(`<h1 class="page-title">${LABEL}</h1>`));
   assert.ok(html.includes(HELP));
-  assert.ok(html.includes(`<a href="${PRIVACY_URL}" target="_blank" rel="noopener noreferrer">Learn more</a>`));
+  assert.ok(html.includes(LEARN_MORE));
   assert.equal(switchState(page.html()), 'on');
   assert.deepEqual(settingRequests(page.requests), [['GET', undefined]]);
 });
@@ -220,6 +221,7 @@ for (const stage of ['try', 'complete'] as const) {
     const html = decoded(page.html());
     assert.ok(html.includes(LABEL));
     assert.ok(html.includes(HELP));
+    assert.ok(html.includes(LEARN_MORE));
     assert.equal(switchState(page.html()), 'on');
     await page.toggle(false);
     assert.equal(switchState(page.html()), 'off');

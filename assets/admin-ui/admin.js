@@ -12458,7 +12458,7 @@
       ? '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="help-improve-enabled"' + (ui.enabled ? " checked" : "") + ' aria-label="' + HELP_IMPROVE_COPY.label + '"' + (ui.busy ? " disabled" : "") + '></label>'
       : "";
     var learnMore = HELP_IMPROVE_PRIVACY_URL
-      ? ' <a href="' + esc(HELP_IMPROVE_PRIVACY_URL) + '" target="_blank" rel="noopener noreferrer">' + HELP_IMPROVE_COPY.learnMore + '</a>'
+      ? ' <a class="hint-link" href="' + esc(HELP_IMPROVE_PRIVACY_URL) + '" target="_blank" rel="noopener noreferrer">' + HELP_IMPROVE_COPY.learnMore + '</a>'
       : "";
     var failure = ui.loadFailed
       ? '<p class="field-error" role="alert">' + HELP_IMPROVE_COPY.loadError + '</p><div><button type="button" class="btn btn-soft btn-sm" data-action="help-improve-retry">Try again</button></div>'
