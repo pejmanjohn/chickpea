@@ -415,7 +415,7 @@ test('an MCP 2025-11-25 SDK client signs in from the challenge alone and receive
 
 test('a registration flood cannot cancel a sign-in in progress, and registration recovers after the consent window', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-01T00:00:00.000Z') });
-  const f = await fixture(undefined, { maxClients: 3 });
+  const f = await fixture(undefined, { maxPendingClients: 3 });
   t.after(() => f.backend.close());
   const register = async (name: string) => {
     t.mock.timers.tick(1_000);

@@ -8,6 +8,7 @@ import type {
   BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
+  PendingMcpOAuthClientPrune,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
@@ -16,6 +17,7 @@ import {
   mapBetterAuthUser,
   parseBetterAuthDate,
   SQLITE_ORGANIZATION_ERASURE,
+  SQLITE_PENDING_MCP_CLIENT_PRUNE,
   sqliteOrganizationErasure,
 } from './better-auth-backend.ts';
 
@@ -118,30 +120,14 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     return sqliteOrganizationErasure(counted?.results?.[0] as Record<string, unknown> | undefined);
   }
 
-  async countMcpOAuthClients(): Promise<number> {
-    const row = await this.database.prepare(
-      `SELECT count(*) AS count FROM oauthClient
-       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL`,
-    ).first<{ count: number }>();
-    return Number(row?.count ?? 0);
-  }
-
-  async pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number> {
-    const result = await this.database.prepare(
-      `DELETE FROM oauthClient
-       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL
-         AND createdAt < ?
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthAccessToken WHERE oauthAccessToken.clientId = oauthClient.clientId
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthRefreshToken WHERE oauthRefreshToken.clientId = oauthClient.clientId
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthConsent WHERE oauthConsent.clientId = oauthClient.clientId
-         )`,
-    ).bind(createdBefore).run();
-    return Number(result.meta.changes ?? 0);
+  async prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number> {
+    // A D1 batch commits or rolls back as one transaction, one result per statement.
+    const [, counted] = await this.database.batch([
+      this.database.prepare(SQLITE_PENDING_MCP_CLIENT_PRUNE.delete)
+        .bind(prune.expiredBefore.toISOString(), prune.evictableBefore.toISOString(), prune.keep),
+      this.database.prepare(SQLITE_PENDING_MCP_CLIENT_PRUNE.count),
+    ]);
+    return Number((counted?.results?.[0] as { count?: number } | undefined)?.count ?? 0);
   }
 
   async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {

@@ -1,12 +1,16 @@
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import {
+  BETTER_AUTH_BASE_PATH,
   createBetterAuth,
   requireSupportedOrigin,
   type BetterAuthPrivateSeam,
 } from './better-auth.ts';
-import { validatePublicMcpClientRegistration } from './mcp-oauth.ts';
+import {
+  MCP_OFFLINE_SCOPE,
+  MCP_WORKSPACE_SCOPE,
+  validatePublicMcpClientRegistration,
+} from './mcp-oauth.ts';
 import { validateBrowserMutationProvenance } from './request-provenance.ts';
-import { requestAuthSourceKey } from './source-key.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
 import { readBoundedRequestBody, requestWithBufferedBody } from '../security/request-body-limit.ts';
 
@@ -40,20 +44,22 @@ export interface BetterAuthPublicHandlerInput {
 }
 
 interface McpRegistrationPolicy {
-  maxRegistrationsPerWindow: number;
-  windowMs: number;
-  maxClients: number;
-  unusedClientRetentionMs: number;
+  maxPendingClients: number;
+  pendingClientRetentionMs: number;
+  consentWindowMs: number;
   now: () => number;
 }
 
 const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
-  maxRegistrationsPerWindow: 20,
-  windowMs: 10 * 60_000,
-  maxClients: 1_000,
-  unusedClientRetentionMs: 30 * 24 * 60 * 60_000,
-  now: Date.now,
+  maxPendingClients: 1_000,
+  pendingClientRetentionMs: 7 * 24 * 60 * 60_000,
+  // Outlasts the 10-minute sign-in continuation and authorization code, and
+  // holds a full cap no longer than the durable limiter's 15-minute window.
+  consentWindowMs: 15 * 60_000,
+  now: () => Date.now(),
 };
+
+const AUTHORIZE_PATH = `${BETTER_AUTH_BASE_PATH}/oauth2/authorize`;
 
 /**
  * A deny-by-default public boundary around Better Auth. Setup, enrollment,
@@ -63,10 +69,7 @@ const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
 export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInput) {
   const baseURL = requireSupportedOrigin(input.baseURL);
   let auth: ReturnType<typeof createBetterAuth> | undefined;
-  const registrationGate = new McpRegistrationGate({
-    ...DEFAULT_MCP_REGISTRATION_POLICY,
-    ...input.mcpRegistrationPolicy,
-  });
+  const registrationPolicy = { ...DEFAULT_MCP_REGISTRATION_POLICY, ...input.mcpRegistrationPolicy };
 
   return async function handleBetterAuthPublicRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -89,19 +92,24 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
         return validation;
       }
       request = validation;
-      const registrationDenied = await registrationGate.check(request, input.backend);
-      if (registrationDenied) {
-        emitManagementMetric('oauth.dcr', {
-          stage: 'quota',
-          outcome: 'denied',
-          reason: `http_${registrationDenied.status}`,
-        });
-        return registrationDenied;
+      const { maxPendingClients, pendingClientRetentionMs, consentWindowMs, now } = registrationPolicy;
+      const at = now();
+      const pending = await input.backend.prunePendingMcpOAuthClients({
+        expiredBefore: new Date(at - pendingClientRetentionMs),
+        evictableBefore: new Date(at - consentWindowMs),
+        keep: Math.max(0, maxPendingClients - 1),
+      });
+      if (pending >= maxPendingClients) {
+        emitManagementMetric('oauth.dcr', { stage: 'quota', outcome: 'denied', reason: 'http_429' });
+        return Response.json({ error: 'registration_quota_exceeded' }, { status: 429 });
       }
     }
 
     auth ??= createBetterAuth({ ...input, baseURL });
-    await auth.$context;
+    const context = await auth.$context;
+    if (request.method === 'GET' && url.pathname === AUTHORIZE_PATH) {
+      request = await withOfflineAccessForRenewableClient(request, context.adapter);
+    }
     const response = await auth.handler(request);
     if (route === 'registration') {
       emitManagementMetric('oauth.dcr', {
@@ -143,41 +151,35 @@ async function revocationResponse(response: Response): Promise<Response> {
     : response;
 }
 
-class McpRegistrationGate {
-  private readonly windows = new Map<string, { count: number; startedAt: number }>();
+type BetterAuthAdapter = Awaited<ReturnType<typeof createBetterAuth>['$context']>['adapter'];
 
-  constructor(private readonly policy: McpRegistrationPolicy) {}
+interface RegisteredClient {
+  grantTypes?: string[] | null;
+  scopes?: string[] | null;
+}
 
-  async check(request: Request, backend: BetterAuthDatabaseBackend): Promise<Response | null> {
-    const now = this.policy.now();
-    for (const [key, candidate] of this.windows) {
-      if (candidate.startedAt + this.policy.windowMs <= now) this.windows.delete(key);
-    }
-    const source = requestAuthSourceKey(request);
-    const current = this.windows.get(source);
-    const window = !current || current.startedAt + this.policy.windowMs <= now
-      ? { count: 0, startedAt: now }
-      : current;
-    if (window.count >= this.policy.maxRegistrationsPerWindow) {
-      const retryAfter = Math.max(1, Math.ceil(
-        (window.startedAt + this.policy.windowMs - now) / 1_000,
-      ));
-      return Response.json(
-        { error: 'registration_rate_limited' },
-        { status: 429, headers: { 'retry-after': String(retryAfter) } },
-      );
-    }
+/**
+ * MCP 2026-07-28 keeps offline_access out of the resource's challenge and
+ * metadata and leaves renewal to the authorization server, so a client that
+ * follows them asks for the workspace scope alone, and Better Auth issues a
+ * refresh token only for offline_access.
+ */
+async function withOfflineAccessForRenewableClient(request: Request, adapter: BetterAuthAdapter): Promise<Request> {
+  const url = new URL(request.url);
+  const scopes = url.searchParams.get('scope')?.split(/\s+/).filter(Boolean) ?? [];
+  const clientId = url.searchParams.get('client_id');
+  if (!clientId || !scopes.includes(MCP_WORKSPACE_SCOPE) || scopes.includes(MCP_OFFLINE_SCOPE)) return request;
+  const client = await adapter.findOne<RegisteredClient>({
+    model: 'oauthClient',
+    where: [{ field: 'clientId', value: clientId }],
+  });
+  if (!client || !registeredForRenewal(client)) return request;
+  url.searchParams.set('scope', [...scopes, MCP_OFFLINE_SCOPE].join(' '));
+  return new Request(url, request);
+}
 
-    const createdBefore = new Date(now - this.policy.unusedClientRetentionMs).toISOString();
-    await backend.pruneUnusedMcpOAuthClients(createdBefore);
-    if (await backend.countMcpOAuthClients() >= this.policy.maxClients) {
-      return Response.json({ error: 'registration_quota_exceeded' }, { status: 429 });
-    }
-
-    window.count += 1;
-    this.windows.set(source, window);
-    return null;
-  }
+function registeredForRenewal(client: RegisteredClient): boolean {
+  return Boolean(client.grantTypes?.includes('refresh_token') && client.scopes?.includes(MCP_OFFLINE_SCOPE));
 }
 
 async function validateRegistrationRequest(request: Request): Promise<Request | Response> {

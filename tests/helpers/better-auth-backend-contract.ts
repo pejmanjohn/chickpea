@@ -68,7 +68,7 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     }
     assert.equal(await backend.findUserByEmail('nobody@identity.invalid'), null);
     assert.equal(await backend.absoluteExpiryForToken('missing'), null);
-    assert.equal(await backend.countMcpOAuthClients(), 0);
+    assert.equal(await backend.prunePendingMcpOAuthClients({ expiredBefore: new Date(), evictableBefore: new Date(), keep: 0 }), 0);
   });
 
   it('two installations with colliding Slack user IDs stay separate', async (f) => {
@@ -120,14 +120,24 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     assert.equal((await f.session(cookieB))?.user.id, b.userId);
   });
 
-  it('an unauthenticated MCP client registers, counts and is pruned once unused', async (f) => {
-    const registered = await f.handler(json('/api/auth/oauth2/register', registration('Contract')));
-    assert.equal(registered.status, 201, await registered.clone().text());
-    assert.equal(await f.backend.countMcpOAuthClients(), 1);
-    assert.equal(await f.backend.pruneUnusedMcpOAuthClients(new Date(Date.now() - 60_000).toISOString()), 0);
-    assert.equal(await f.backend.countMcpOAuthClients(), 1);
-    assert.equal(await f.backend.pruneUnusedMcpOAuthClients(new Date(Date.now() + 60_000).toISOString()), 1);
-    assert.equal(await f.backend.countMcpOAuthClients(), 0);
+  it('an unauthenticated MCP client waits out its consent window, then expires or makes room until someone consents', async (f) => {
+    const a = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const inUse = await f.grant(await f.signIn(a, 'TAAAA', 'U0001'), { resource: true });
+    for (const name of ['Pending 1', 'Pending 2']) {
+      const registered = await f.handler(json('/api/auth/oauth2/register', registration(name)));
+      assert.equal(registered.status, 201, await registered.clone().text());
+    }
+    const earlier = new Date(Date.now() - 60_000);
+    const later = new Date(Date.now() + 60_000);
+    const prune = (expiredBefore: Date, evictableBefore: Date, keep: number) =>
+      f.backend.prunePendingMcpOAuthClients({ expiredBefore, evictableBefore, keep });
+    assert.equal(await f.count('oauthClient'), 3);
+    assert.equal(await prune(earlier, earlier, 0), 2, 'a registration in its consent window stays past the cap');
+    assert.equal(await prune(earlier, later, 1), 1, 'past its consent window one makes room');
+    assert.equal(await f.count('oauthClient'), 2);
+    assert.equal(await prune(later, later, 1), 0, 'an expired registration goes');
+    assert.equal(await f.count('oauthClient'), 1);
+    assert.equal((await f.refresh(inUse)).status, 200, 'the client someone consented to stays');
   });
 
   it('an OAuth continuation is consumed once and an expired one is refused', async (f) => {

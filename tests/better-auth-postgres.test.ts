@@ -208,7 +208,7 @@ test('a request-scoped PostgreSQL backend closes every connection it opened', as
     const backend = openPostgresBetterAuthBackend(config);
     await Promise.all([
       backend.hasIdentityAuthority(),
-      backend.countMcpOAuthClients(),
+      backend.findUserByEmail('nobody@identity.invalid'),
       backend.absoluteExpiryForToken('missing'),
     ]);
     assert.ok(await activeConnections(config) >= 1);

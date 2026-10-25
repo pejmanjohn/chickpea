@@ -115,6 +115,7 @@ async function hostedDeployment(t: TestContext) {
   };
   const routing: HostedRouting<PlatformEnv> = {
     environment,
+    throttleRegistration: async () => undefined,
     installationEnv: (login) => resolveInstallationEnv(
       lookup,
       withBetterAuthBackend(HOSTED as PlatformEnv, backend),
@@ -625,10 +626,10 @@ test('discovery, JWKS and the MCP sign-in continuation are served before any ins
   }
 });
 
-test('the host\'s registration limits reach Core\'s registration gate', { timeout: 120_000 }, async (t) => {
+test('the host\'s registration throttle and client cap reach Core\'s registration', { timeout: 120_000 }, async (t) => {
   const hosted = await hostedDeployment(t);
   if (!hosted) return;
-  const register = (policy: HostedRouting<PlatformEnv>['mcpRegistrationPolicy']) => serveHostedSharedAuth(
+  const register = (host: Partial<HostedRouting<PlatformEnv>>) => serveHostedSharedAuth(
     new Request(`${ORIGIN}/api/auth/oauth2/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: ORIGIN },
@@ -637,14 +638,16 @@ test('the host\'s registration limits reach Core\'s registration gate', { timeou
         redirect_uris: [REDIRECT], response_types: ['code'], token_endpoint_auth_method: 'none',
       }),
     }),
-    { ...hosted.routing, mcpRegistrationPolicy: policy },
+    { ...hosted.routing, ...host },
   ) as Promise<Response>;
-  assert.equal((await register({ maxClients: 1 })).status, 201);
-  const full = await register({ maxClients: 1 });
+  assert.equal((await register({ mcpRegistrationPolicy: { maxPendingClients: 1 } })).status, 201);
+  const full = await register({ mcpRegistrationPolicy: { maxPendingClients: 1 } });
   assert.equal(full.status, 429);
   assert.deepEqual(await full.json(), { error: 'registration_quota_exceeded' });
-  assert.equal((await register({ maxClients: 2 })).status, 201, 'the cap is the host\'s to set');
-  const throttled = await register({ maxRegistrationsPerWindow: 0 });
+  assert.equal((await register({ mcpRegistrationPolicy: { maxPendingClients: 2 } })).status, 201, 'the cap is the host\'s to set');
+  const throttled = await register({
+    throttleRegistration: async () => Response.json({ error: 'registration_rate_limited' }, { status: 429 }),
+  });
   assert.equal(throttled.status, 429);
   assert.deepEqual(await throttled.json(), { error: 'registration_rate_limited' });
 });
