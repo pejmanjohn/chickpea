@@ -59,7 +59,7 @@ import {
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from '../connections/runtime.ts';
-import type { IdentityStore, Membership } from '../identity/types.ts';
+import type { IdentityStore, Membership, Organization } from '../identity/types.ts';
 import type {
   AgentMemory,
   MemoryStateStore,
@@ -106,6 +106,7 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
+import type { McpConnectionTestActor } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import {
   formatMarkdownChangeSetProposal,
@@ -275,7 +276,11 @@ export interface WorkspaceManagementServiceInput {
     refresh: boolean,
     actor: LiveManagementActor,
   ) => Promise<unknown>;
-  testMcpConnection?: (agentId: string, connectionId: string) => Promise<unknown>;
+  testMcpConnection?: (
+    agentId: string,
+    connectionId: string,
+    actor: McpConnectionTestActor | undefined,
+  ) => Promise<unknown>;
   managedConnectorAvailable?: (input: {
     toolkit: string;
     accessLane: 'read' | 'write';
@@ -1541,7 +1546,12 @@ export class WorkspaceManagementService {
     if (!this.stores.testMcpConnection) {
       throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
     }
-    return this.stores.testMcpConnection(agentId, connectionId);
+    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    return this.stores.testMcpConnection(
+      agentId,
+      connectionId,
+      workspaceId ? { workspaceId, actorMembershipId: actor.membershipId } : undefined,
+    );
   }
 
   async inspectMemory(
@@ -3384,11 +3394,7 @@ export class WorkspaceManagementService {
     const agents = userAgentScoped
       ? editable.filter(({ id }) => id === actor.actingAgentId)
       : editable;
-    const workspaceIds = actor.origin.kind === 'slack'
-      ? [actor.origin.workspaceId]
-      : organization?.id === actor.organizationId && organization.slackTeamId
-        ? [organization.slackTeamId]
-        : [];
+    const workspaceIds = connectionWorkspaceIds(actor, organization);
     const connectionAgents = currentAgent && !agents.some(({ id }) => id === currentAgent.id)
       ? [...agents, currentAgent]
       : agents;
@@ -5500,6 +5506,18 @@ function appendOutcome(
   outcome: ManagementItemOutcome,
 ): ManagementRequestProgress {
   return { nextIndex: index + 1, outcomes: [...progress.outcomes, outcome] };
+}
+
+/** The Slack workspace whose connection accounts the actor manages. */
+function connectionWorkspaceIds(
+  actor: LiveManagementActor,
+  organization: Organization | undefined,
+): string[] {
+  return actor.origin.kind === 'slack'
+    ? [actor.origin.workspaceId]
+    : organization?.id === actor.organizationId && organization.slackTeamId
+      ? [organization.slackTeamId]
+      : [];
 }
 
 export function managementActorPrincipal(actor: LiveManagementActor): AuthPrincipal {
