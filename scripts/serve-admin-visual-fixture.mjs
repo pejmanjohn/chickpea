@@ -1060,9 +1060,7 @@ export async function startAdminVisualFixture(options = {}) {
           };
         },
       },
-      // Anthropic counts as configured without a stored key, so the Agent
-      // pinned to it reads as ready and Settings offers its models.
-      knownProviders: new Set(onboardingStage ? ['local-stub', 'cloudflare'] : ['local-stub', 'anthropic']),
+      knownProviders: new Set(onboardingStage ? ['local-stub', 'cloudflare'] : ['local-stub']),
       runtimeDrain: async () => ({
         drained: true,
         categories: {
