@@ -87,6 +87,14 @@ export interface RunReviewInput {
 export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
 export const RUN_REVIEW_RECORD_BYTES = 256 * 1024;
 
+/**
+ * Slack reading tools that can read a conversation other than the current
+ * one. Their authority lets an Agent read another Channel of this workspace
+ * even when that Channel is shared through Slack Connect, which no copy keeps.
+ */
+export const RUN_REVIEW_CONVERSATION_READ_TOOLS: ReadonlySet<string> = new Set(['read_slack_thread', 'read_slack_channel']);
+export const OTHER_CONVERSATION_OMITTED = '[other conversation omitted]';
+
 const PSEUDONYM_LABEL = 'chickpea-run-review-user-v1\0';
 const PSEUDONYM_HEX_CHARS = 20;
 // A mention's ID, or a bare token shaped like a Slack user ID. The digit
@@ -113,9 +121,9 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 /**
  * The record a port stores. Every string loses recognizable credentials,
  * then every Slack user ID, then is cut to its cap; file notes keep only a
- * name and size. The builder adds no Slack team, channel, thread or message
- * IDs. Past the record cap the oldest steps go first, then the oldest
- * context.
+ * name and size, and a reading tool's result from another conversation is
+ * omitted. The builder adds no Slack team, channel, thread or message IDs.
+ * Past the record cap the oldest steps go first, then the oldest context.
  */
 export function buildRunReviewRecord(
   input: RunReviewInput,
@@ -153,7 +161,7 @@ export function buildRunReviewRecord(
           kind: 'tool',
           name: field(step.name),
           input: field(step.input),
-          ...(step.output === undefined ? {} : { output: field(step.output) }),
+          ...(step.output === undefined ? {} : { output: field(keptReadOutput(step.name, step.output)) }),
           ...(step.error === undefined ? {} : { error: field(step.error) }),
           ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
         }
@@ -166,6 +174,20 @@ export function buildRunReviewRecord(
     source: input.source,
   };
   return fitRecord({ ...record, truncated });
+}
+
+/** A reading tool's result is kept only when it says it read the current conversation, or read nothing. */
+function keptReadOutput(toolName: string, output: string): string {
+  if (!RUN_REVIEW_CONVERSATION_READ_TOOLS.has(toolName)) return output;
+  let result: { status?: unknown; conversation?: { current?: unknown } } | null;
+  try {
+    result = JSON.parse(output) as typeof result;
+  } catch {
+    return OTHER_CONVERSATION_OMITTED;
+  }
+  return result?.status === 'not_read' || result?.conversation?.current === true
+    ? output
+    : OTHER_CONVERSATION_OMITTED;
 }
 
 function fitRecord(record: RunReviewRecordV1): RunReviewRecordV1 {

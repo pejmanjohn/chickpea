@@ -20,12 +20,15 @@ import {
 } from '../src/review/port.ts';
 import {
   buildRunReviewRecord,
+  OTHER_CONVERSATION_OMITTED,
+  RUN_REVIEW_CONVERSATION_READ_TOOLS,
   RUN_REVIEW_FIELD_BYTES,
   RUN_REVIEW_RECORD_BYTES,
   runReviewPseudonymizer,
   type RunReviewInput,
   type RunReviewRecordV1,
 } from '../src/review/record.ts';
+import { SLACK_READ_TOOL_NAMES } from '../src/slack/reading/tools.ts';
 import { RUNNER_PREFETCHED_SETTINGS, runnerPrefetchedSettings } from '../src/slack/thread-runner-rpc.ts';
 
 const INSTALLATION = 'inst_review';
@@ -267,7 +270,8 @@ test('every Slack user ID in every string becomes the same per-installation pseu
     ],
     steps: [{
       kind: 'tool', name: 'read_slack_thread', input: '{}',
-      output: '{"author":{"kind":"person","id":"U012ABCDEF3","name":"Ana"},"channel":"C012ABCDEF3"}',
+      output: '{"conversation":{"id":"C012ABCDEF3","kind":"channel","current":true},' +
+        '"messages":[{"author":{"kind":"person","id":"U012ABCDEF3","name":"Ana"}}]}',
     }],
   }), pseudonymOf);
   const ana = pseudonymOf('U012ABCDEF3');
@@ -280,9 +284,39 @@ test('every Slack user ID in every string becomes the same per-installation pseu
   assert.equal(record.context[1]?.author, 'Helper Agent');
   const tool = record.steps[0];
   assert.equal(tool?.kind === 'tool' && tool.output,
-    `{"author":{"kind":"person","id":"${ana}","name":"Ana"},"channel":"C012ABCDEF3"}`);
+    '{"conversation":{"id":"C012ABCDEF3","kind":"channel","current":true},' +
+    `"messages":[{"author":{"kind":"person","id":"${ana}","name":"Ana"}}]}`);
   assert.equal(JSON.stringify(record).includes('U012ABCDEF3'), false);
   assert.notEqual(runReviewPseudonymizer(new Uint8Array(32).fill(8))('U012ABCDEF3'), ana, 'another installation differs');
+});
+
+test('a Slack read of another conversation, which may be a Slack Connect one, keeps its call but not its result', () => {
+  const read = (name: string, output: string) => ({ kind: 'tool' as const, name, input: '{"channel":"C0OTHER123"}', output });
+  const current = JSON.stringify({ status: 'ok', conversation: { id: 'C0HERE1234', kind: 'channel', current: true }, messages: [] });
+  const other = JSON.stringify({ status: 'ok', conversation: { id: 'C0OTHER123', kind: 'channel', current: false }, messages: [{ text: 'partner notes' }] });
+  const refused = JSON.stringify({ status: 'not_read', code: 'needs_agent_access', message: 'Ask an admin.' });
+  const record = buildRunReviewRecord(input({
+    steps: [
+      read('read_slack_thread', current),
+      read('read_slack_channel', other),
+      read('read_slack_thread', other),
+      read('read_slack_channel', refused),
+      read('read_slack_thread', `${other.slice(0, 40)}`),
+      read('lookup_slack_user', '{"id":"U0ZZZZZZZZ9","name":"Bo"}'),
+    ],
+  }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps.map((step) => step.kind === 'tool' && [step.name, step.input, step.output]), [
+    ['read_slack_thread', '{"channel":"C0OTHER123"}', current],
+    ['read_slack_channel', '{"channel":"C0OTHER123"}', OTHER_CONVERSATION_OMITTED],
+    ['read_slack_thread', '{"channel":"C0OTHER123"}', OTHER_CONVERSATION_OMITTED],
+    ['read_slack_channel', '{"channel":"C0OTHER123"}', refused],
+    ['read_slack_thread', '{"channel":"C0OTHER123"}', OTHER_CONVERSATION_OMITTED],
+    ['lookup_slack_user', '{"channel":"C0OTHER123"}', `{"id":"${runReviewPseudonymizer(KEY)('U0ZZZZZZZZ9')}","name":"Bo"}`],
+  ]);
+  assert.equal(JSON.stringify(record).includes('partner notes'), false);
+  for (const name of RUN_REVIEW_CONVERSATION_READ_TOOLS) {
+    assert.ok((SLACK_READ_TOOL_NAMES as readonly string[]).includes(name), `${name} is a Slack reading tool`);
+  }
 });
 
 test('credentials are redacted before the cap, and the builder adds no Slack coordinates', () => {
