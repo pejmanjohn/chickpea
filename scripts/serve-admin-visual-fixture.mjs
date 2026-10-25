@@ -265,6 +265,8 @@ function visualAgents() {
       description: '',
       instructions: 'Summarize customer feedback and distinguish recurring evidence from anecdotes.',
       enabled: false,
+      model: 'anthropic/claude-opus-5-5',
+      modelEffort: 'xhigh',
       slackPresence: slackPresence('agent_customer', 'customer-insights', 'b6a1f4b55c4c81e3da8a5f3c12f2ef7f'),
       skills: [],
       mcpServers: [],
@@ -1058,7 +1060,9 @@ export async function startAdminVisualFixture(options = {}) {
           };
         },
       },
-      knownProviders: new Set(onboardingStage ? ['local-stub', 'cloudflare'] : ['local-stub']),
+      // Anthropic counts as configured without a stored key, so the Agent
+      // pinned to it reads as ready and Settings offers its models.
+      knownProviders: new Set(onboardingStage ? ['local-stub', 'cloudflare'] : ['local-stub', 'anthropic']),
       runtimeDrain: async () => ({
         drained: true,
         categories: {

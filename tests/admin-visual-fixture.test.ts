@@ -52,6 +52,8 @@ interface ChannelProjection {
 
 interface AgentProjection {
   id: string;
+  modelEffort: string | null;
+  modelPolicy: { effectiveModel: string | null; effort: string | null; efforts: string[] };
   capabilityPreviews: {
     skills: Array<{ name: string }>;
     connectors: Array<{ name: string }>;
@@ -291,6 +293,11 @@ test('visual fixture seeds the real Agent, Channel, readiness, capability, and m
     assert.equal(research.capabilityPreviews.skills[0]?.name, 'research-brief');
     assert.equal(research.capabilityPreviews.connectors[0]?.name, 'Linear');
     assert.equal(research.capabilityPreviews.repositories[0]?.name, 'acme/research');
+    // One Agent pins a model with effort levels, so the Model tab shows the Effort row.
+    const customer = agents.agents.find((agent) => agent.id === 'agent_customer');
+    assert.equal(customer?.modelEffort, 'xhigh');
+    assert.equal(customer?.modelPolicy.effectiveModel, 'anthropic/claude-opus-5-5');
+    assert.deepEqual(customer?.modelPolicy.efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
 
     const environment = await fixtureJson<{
       selectedTarget: string;
