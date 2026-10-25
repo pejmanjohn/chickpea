@@ -1,6 +1,10 @@
 import { describeSkillPaths } from '../config/skill-package.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
+import {
+  revokeBetterAuthUserAccess,
+  type BetterAuthAccessRevoker,
+} from '../auth/better-auth-backend.ts';
 import { canEditAgent } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
@@ -336,6 +340,14 @@ export interface WorkspaceManagementServiceInput {
     expectedCredentialIncarnation: string;
     idempotencyKey: string;
   }) => Promise<boolean>;
+  /**
+   * Runs a membership change with the Better Auth backend that ends the
+   * member's sessions and MCP grants (withBetterAuthAccessRevoker). `use`
+   * receives undefined where Better Auth does not sign people in.
+   */
+  withBetterAuthAccessRevoker?: <T>(
+    use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
+  ) => Promise<T>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -5088,18 +5100,39 @@ export class WorkspaceManagementService {
       return mutationForChanged(changed);
     }
     if (operation.kind === 'update_member') {
-      const result = await this.stores.identity.updateMembershipAuthority({
-        membershipId: operation.membershipId,
-        ...(operation.role ? { role: operation.role } : {}),
-        ...(operation.status ? { status: operation.status } : {}),
-        actorMembershipId: actor.membershipId,
-        correlationId: proposalId,
-        authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
-        reasonCode: basis === 'direct'
-          ? 'workspace_management_direct'
-          : 'workspace_management_confirmation',
-        idempotencyKey: `management:${proposalId}`,
-      });
+      const [before, bindings] = await Promise.all([
+        this.stores.identity.getMembership(operation.membershipId),
+        this.stores.identity.listExternalIdentities(),
+      ]);
+      const betterAuthUserId = bindings.find(({ membershipId }) =>
+        membershipId === operation.membershipId)?.betterAuthUserId;
+      const change = async (revoker: BetterAuthAccessRevoker | undefined) => {
+        const updated = await this.stores.identity.updateMembershipAuthority({
+          membershipId: operation.membershipId,
+          ...(operation.role ? { role: operation.role } : {}),
+          ...(operation.status ? { status: operation.status } : {}),
+          actorMembershipId: actor.membershipId,
+          correlationId: proposalId,
+          authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
+          reasonCode: basis === 'direct'
+            ? 'workspace_management_direct'
+            : 'workspace_management_confirmation',
+          idempotencyKey: `management:${proposalId}`,
+        });
+        if (updated.changed && revoker && betterAuthUserId) {
+          // A status change ends MCP grants too; a role change only needs new
+          // sessions, because the MCP resource rereads the role on every request.
+          if (updated.membership.status !== before?.status) {
+            await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+          } else {
+            await revoker.deleteSessionsForUser(betterAuthUserId);
+          }
+        }
+        return updated;
+      };
+      const result = this.stores.withBetterAuthAccessRevoker
+        ? await this.stores.withBetterAuthAccessRevoker(change)
+        : await change(undefined);
       return mutationForChanged([{
         kind: 'membership',
         id: result.membership.id,

@@ -1,3 +1,4 @@
+import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -378,6 +379,10 @@ export function createLiveWorkspaceManagementService(
           )
         : config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
     },
+    withBetterAuthAccessRevoker: async (use) => withBetterAuthAccessRevoker(
+      { control: await identity.getAuthControl(), platformEnv: env },
+      use,
+    ),
     ...agentAvatarInstallationField(env),
     ...overrides,
   });
