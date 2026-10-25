@@ -606,6 +606,22 @@ test('MCP sends back a destructive change that cannot share a confirmation with 
     ['failed', 'confirmation_needs_own_call'],
     ['failed', 'revision_conflict'],
   ]);
-  assert.match(result.outcomes[0]?.instruction ?? '', /in its own apply_workspace_changes call/);
+  assert.match(result.outcomes[0]?.instruction ?? '', /other operations in this call were handled without it/);
+  assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in its own apply_workspace_changes call/);
   assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 1);
+}));
+
+test('MCP keeps only the newest destructive change confirmable', () => withFixture('mcp-supersede', async (f) => {
+  const first = await createAgent(f, f.owner, 'agent_first');
+  const second = await createAgent(f, f.owner, 'agent_second');
+  const firstProposal = pendingConfirmation(await apply(f, f.owner, 'delete-first', [{
+    itemId: 'delete', kind: 'delete_agent', agentId: first.id, expectedRevision: first.revision,
+  }]), 'first delete');
+  pendingConfirmation(await apply(f, f.owner, 'delete-second', [{
+    itemId: 'delete', kind: 'delete_agent', agentId: second.id, expectedRevision: second.revision,
+  }]), 'second delete');
+
+  const stale = await call(f, f.owner, 'confirm_workspace_change', { proposalId: firstProposal });
+  assert.equal(stale.ok ? undefined : stale.error.code, 'proposal_stale');
+  assert.equal((await f.config.getAgent(first.id)).id, first.id);
 }));

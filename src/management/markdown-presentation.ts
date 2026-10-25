@@ -10,7 +10,7 @@ const MARKDOWN_PRESENTATION_TEXT_LIMIT = 20_000;
 
 const MARKDOWN_APPROVAL_INSTRUCTION =
   'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
-  'proposalId; if they want changes, propose again.';
+  'proposalId; if they want something different, inspect again and send a new change.';
 
 /** Portable Markdown: double-asterisk bold and no Slack mrkdwn escaping. */
 export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {

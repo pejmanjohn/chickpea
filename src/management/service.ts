@@ -1882,7 +1882,7 @@ export class WorkspaceManagementService {
               operationKind: operation.kind,
               disposition: 'failed',
               code: 'confirmation_needs_own_call',
-              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. Send this operation in its own apply_workspace_changes call, then send the rest after the person confirms it.',
+              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in its own apply_workspace_changes call.',
             });
           }
         } else if (operation.kind === 'request_setup') {
