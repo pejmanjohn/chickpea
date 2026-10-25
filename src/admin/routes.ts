@@ -7691,8 +7691,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         organizationId: principal.organizationId,
         origin: { kind: 'admin' as const, sessionId: principal.correlationId },
       };
-      const service = managementService(c);
-      const proposed = await service.applyWorkspaceChanges({
+      const applied = await managementService(c).applyWorkspaceChanges({
         context,
         idempotencyKey: `admin:provider:remove:${principal.correlationId}:${id}`,
         operations: [{
@@ -7701,14 +7700,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           providerId: id,
         }],
       });
-      if (proposed.status === 'clarification_required') {
+      if (applied.status === 'clarification_required') {
         return c.json({ error: 'provider_key_unavailable' }, 409);
       }
-      const proposalId = proposed.outcomes[0]?.proposalId;
-      if (!proposalId) {
-        return c.json({ error: proposed.outcomes[0]?.code ?? 'provider_key_unavailable' }, 409);
+      const outcome = applied.outcomes[0];
+      if (outcome?.disposition !== 'applied') {
+        return c.json({ error: outcome?.code ?? 'provider_key_unavailable' }, 409);
       }
-      await service.confirmWorkspaceChange({ context, proposalId });
       const source = (await describeProviderKeySources(platformEnv, settingsStore))[id];
       const impact = await providerRemovalImpact(store(c), id);
       return c.json({

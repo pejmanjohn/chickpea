@@ -481,7 +481,7 @@ test('public setup routes reject oversized streamed bodies before buffering', as
   }
 });
 
-test('stored provider replacement requires confirmation and reissue invalidates the old link', async () => {
+test('stored provider replacement issues its link directly and reissue invalidates the old link', async () => {
   let now = START;
   let sequence = 0;
   let capabilitySequence = 0;
@@ -506,7 +506,7 @@ test('stored provider replacement requires confirmation and reissue invalidates 
       organizationId: owner.membership.organizationId,
       origin: { kind: 'mcp' as const, clientId: 'codex' },
     };
-    const proposed = await service.applyWorkspaceChanges({
+    const confirmed = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'replace_openai',
       operations: [{
@@ -515,15 +515,7 @@ test('stored provider replacement requires confirmation and reissue invalidates 
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
-    requireMutationResult(proposed);
-    assert.equal(proposed.status, 'confirmation_required');
-    assert.equal(proposed.outcomes[0]?.setupUrl, undefined);
-
-    now += 1;
-    const confirmed = await service.confirmWorkspaceChange({
-      context,
-      proposalId: proposed.outcomes[0]!.proposalId!,
-    });
+    requireMutationResult(confirmed);
     assert.equal(confirmed.outcomes[0]?.disposition, 'setup_required');
     const firstId = confirmed.outcomes[0]!.setupOperationId!;
     const firstUrl = confirmed.outcomes[0]!.setupUrl!;
@@ -609,9 +601,7 @@ test('management provider impact includes the Workspace default and inheriting A
     });
     requireMutationResult(proposed);
     assert.equal(proposed.status, 'confirmation_required');
-    const proposal = await management.getProposal(proposed.outcomes[0]!.proposalId!);
-    assert.match(proposal?.summary ?? '', /workspace_default=affected/);
-    assert.match(proposal?.summary ?? '', /Support \(agent_support\)/);
+    assert.match(proposed.presentation?.markdown ?? '', /provider:anthropic/);
   } finally {
     identity.close();
     config.close();
@@ -1619,7 +1609,7 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
       origin: { kind: 'mcp' as const, clientId: 'codex' },
     };
     const issue = async (key: string) => {
-      const proposed = await service.applyWorkspaceChanges({
+      const issued = await service.applyWorkspaceChanges({
         context,
         idempotencyKey: key,
         operations: [{
@@ -1627,11 +1617,8 @@ test('an older provider setup link cannot overwrite a newer rotation', async () 
           target: { kind: 'provider_credential', providerId: 'openai' },
         }],
       });
-      requireMutationResult(proposed);
-      return service.confirmWorkspaceChange({
-        context,
-        proposalId: proposed.outcomes[0]!.proposalId!,
-      });
+      requireMutationResult(issued);
+      return issued;
     };
     const older = await issue('older-provider-link');
     const newer = await issue('newer-provider-link');
@@ -1698,7 +1685,7 @@ test('invalid replacement input is cleared while the prior provider credential s
       organizationId: owner.membership.organizationId,
       origin: { kind: 'mcp' as const, clientId: 'codex' },
     };
-    const proposed = await service.applyWorkspaceChanges({
+    const issued = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'invalid_replace',
       operations: [{
@@ -1706,12 +1693,8 @@ test('invalid replacement input is cleared while the prior provider credential s
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
-    requireMutationResult(proposed);
-    const confirmed = await service.confirmWorkspaceChange({
-      context,
-      proposalId: proposed.outcomes[0]!.proposalId!,
-    });
-    const setupId = confirmed.outcomes[0]!.setupOperationId!;
+    requireMutationResult(issued);
+    const setupId = issued.outcomes[0]!.setupOperationId!;
     const app = createManagementSetupRoutes({
       management, config, settings, usage, identity,
       authenticatePrincipal: async () => browserPrincipal(owner),

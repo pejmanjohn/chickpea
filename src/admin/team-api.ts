@@ -135,8 +135,7 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
       const binding = (await identity.listExternalIdentities()).find((row) => row.membershipId === target.id);
       if (!binding) return c.json({ error: 'membership_unavailable' }, 404);
       if (options.management) {
-        const service = options.management(c);
-        const proposed = await service.applyWorkspaceChanges({
+        const applied = await options.management(c).applyWorkspaceChanges({
           context: managementContext(principal),
           idempotencyKey: `admin:membership:update:${principal.correlationId}:${membershipId}`,
           operations: [{
@@ -147,15 +146,11 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
             ...(parsed.output.status === undefined ? {} : { status: parsed.output.status }),
           }],
         });
-        if (proposed.status === 'clarification_required') {
+        if (applied.status === 'clarification_required') {
           return managementFailure(c, 'invalid_state');
         }
-        const proposalId = proposed.outcomes[0]?.proposalId;
-        if (!proposalId) return managementFailure(c, proposed.outcomes[0]?.code);
-        await service.confirmWorkspaceChange({
-          context: managementContext(principal),
-          proposalId,
-        });
+        const outcome = applied.outcomes[0];
+        if (outcome?.disposition !== 'applied') return managementFailure(c, outcome?.code);
         const membership = await identity.getMembership(membershipId);
         if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
         if (membership.role !== target.role || membership.status !== target.status) {
