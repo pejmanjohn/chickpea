@@ -15,15 +15,19 @@ import {
 } from '../src/config/installation-admission.ts';
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
 import { closeNodeStateStores } from '../src/config/state-backend.ts';
+import { SqliteConfigStore } from '../src/config/store.ts';
 import { configureRunReview } from '../src/review/port.ts';
 import type { RunReviewRecordV1 } from '../src/review/record.ts';
 import { executeRoutineOccurrence } from '../src/routines/execution.ts';
+import { routineDestinationBindingDigest } from '../src/routines/ids.ts';
 import { prepareRoutinePrompt } from '../src/routines/prompt.ts';
 import type { RoutineRuntimeAccess } from '../src/routines/runtime.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
-import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
+import type { RoutineDefinition, RoutineDestination, RoutineRun } from '../src/routines/types.ts';
 
 /** A hosted routine occurrence is copied once it settles, unless its Channel is shared. */
+
+type DirectDestination = Extract<RoutineDestination, { kind: 'direct_thread' }>;
 
 const INSTALLATION = 'inst_review_routine';
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: INSTALLATION });
@@ -40,7 +44,7 @@ const CONFIG = {
   modelAttribution: { source: 'pinned', providerId: 'anthropic' },
 } as unknown as EffectiveSlackConfig;
 
-function state(t: TestContext): void {
+function state(t: TestContext): string {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-review-routine-'));
   const statePath = join(directory, 'state.sqlite');
   const keys = ['SLACK_STATE_DB_PATH', 'TAG_DB_PATH', 'CHICKPEA_AUTH_DB_PATH'] as const;
@@ -59,6 +63,7 @@ function state(t: TestContext): void {
     });
     rmSync(directory, { recursive: true, force: true });
   });
+  return statePath;
 }
 
 function reviewPort(): RunReviewRecordV1[] {
@@ -76,22 +81,30 @@ function reviewPort(): RunReviewRecordV1[] {
   return records;
 }
 
-async function occurrence(access: Partial<RoutineRuntimeAccess> = {}): Promise<void> {
-  const store = new SqliteRoutineStore(':memory:', () => DUE_AT);
+/** A direct routine's store shares its database with the config store that holds its Agent's schedule reference. */
+async function occurrence(
+  access: Partial<RoutineRuntimeAccess> = {},
+  direct?: { statePath: string; destination: DirectDestination },
+): Promise<void> {
+  const store = new SqliteRoutineStore(direct?.statePath ?? ':memory:', () => DUE_AT);
+  const channelId = direct?.destination.conversationId ?? 'C_REVIEW';
   try {
-    await store.save({
-      actorId: 'U0MEMBER12', actorClass: 'member', workspaceId: 'T_REVIEW', channelId: 'C_REVIEW',
+    const routine = await store.save({
+      actorId: 'U0MEMBER12', actorClass: 'member', workspaceId: 'T_REVIEW', channelId,
+      ...(direct ? { destination: direct.destination, sourceVisibility: 'private' as const } : {}),
       draft: {
         action: 'create', routineId: 'routine_review', nextRunAt: DUE_AT, projectedDailyStarts: 0,
         reservations: [{ windowStart: DUE_AT, count: 1 }],
         definition: {
           name: 'Incidents', description: '', taskText: TASK, timezone: 'UTC', outputPolicy: 'post',
-          authorityMode: 'live_channel_v1', triggerKind: 'once', scheduleInput: '2026-10-25T09:00',
+          authorityMode: direct ? 'live_direct_member_v1' : 'live_channel_v1',
+          triggerKind: 'once', scheduleInput: '2026-10-25T09:00',
           scheduleJson: JSON.stringify({ version: 1, kind: 'once', localDateTime: '2026-10-25T09:00', at: DUE_AT }),
         },
       },
       idempotencyKey: 'create:routine_review',
     });
+    if (direct) await activateDirectRoutine(store, routine, direct);
     const run = await store.createOccurrence({
       runId: 'rrun_review', idempotencyKey: 'run:review', routineId: 'routine_review',
       routineVersion: 1, scheduledFor: DUE_AT, triggerSource: 'once', queuedAt: DUE_AT, deadlineAt: DUE_AT + 60_000,
@@ -176,6 +189,50 @@ test('a settled routine occurrence is copied as a routine run, its task as the t
     { kind: 'text', text: 'Nothing open.' },
   ]);
   assert.equal(JSON.stringify(record).includes('U0MEMBER12'), false);
+});
+
+async function activateDirectRoutine(
+  store: SqliteRoutineStore,
+  routine: RoutineDefinition,
+  direct: { statePath: string; destination: DirectDestination },
+): Promise<void> {
+  const { destination } = direct;
+  const config = new SqliteConfigStore(direct.statePath, { agents: [] });
+  try {
+    await config.createAgent({
+      ...CONFIG.agent, lifecycle: 'active', creatorMembershipId: destination.ownerMembershipId,
+      editPolicy: 'creator_and_admins',
+    });
+    const digest = routineDestinationBindingDigest(routine.id, routine.workspaceId, destination);
+    const reference = await config.putAgentScheduleReference({
+      boundRoutineVersion: routine.authorityBindingVersion ?? routine.version,
+      scheduleId: routine.id, agentId: CONFIG.agentId, workspaceId: routine.workspaceId,
+      channelId: destination.conversationId, destinationKind: 'direct_thread',
+      destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+      runsAsMembershipId: destination.ownerMembershipId,
+      authorityReceiptId: 'receipt_review', requiredConnectionAccountIds: [], state: 'active',
+    });
+    await store.activateDirectRoutine({
+      routineId: routine.id, expectedVersion: routine.version,
+      expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+    });
+  } finally {
+    config.close();
+  }
+}
+
+test('a direct routine is copied though Slack reports no Channel sharing for it', async (t) => {
+  const statePath = state(t);
+  const records = reviewPort();
+  await occurrence({}, {
+    statePath,
+    destination: {
+      kind: 'direct_thread', conversationId: 'D_REVIEW', threadTs: '1792915200.000100', ownerMembershipId: 'membership_member',
+    },
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.surface, 'routine');
+  assert.equal(records[0]?.outcome, 'no_op');
 });
 
 test('a routine in a shared Channel, or one whose sharing Slack did not report, is not copied', async (t) => {

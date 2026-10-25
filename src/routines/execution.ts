@@ -120,6 +120,7 @@ import {
   type RunReviewEnding,
   type RunReviewSession,
 } from '../review/capture.ts';
+import type { RunReviewOutcome } from '../review/record.ts';
 import {
   emitRoutinePersistenceTelemetry,
   type RoutinePersistenceSummary,
@@ -369,6 +370,12 @@ export async function executeRoutineOccurrence(
     }
     await prepared.workLifecycle?.markInvoked();
 
+    review = await startRunReview(input.env, {
+      surface: 'routine',
+      // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
+      sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
+      settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
+    });
     const remainingMs = prepared.run.deadlineAt - now();
     if (remainingMs <= 0) {
       await handle.abort();
@@ -377,12 +384,6 @@ export async function executeRoutineOccurrence(
         'The routine occurrence exceeded its execution deadline.',
       );
     }
-    review = await startRunReview(input.env, {
-      surface: 'routine',
-      // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
-      sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
-      settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
-    });
     const { submissionId } = receipt;
     let reply: AgentReply;
     try {
@@ -1092,8 +1093,8 @@ function routineRunReviewEnding(
   const { run } = prepared;
   const completed = settlement.outcome === 'completed' ? settlement.result : undefined;
   const returned = (settlement.outcome === 'completed' ? settlement.result.usage : settlement.usage)?.returnedModel;
-  const outcome = run.status === 'succeeded' || run.status === 'no_op' ? run.status
-    : settlement.outcome === 'aborted' ? 'stopped' as const : 'failed' as const;
+  const outcome: RunReviewOutcome = run.status === 'succeeded' || run.status === 'no_op' ? run.status
+    : settlement.outcome === 'aborted' ? 'stopped' : 'failed';
   const failureClass = settlement.outcome === 'completed' ? run.failureClass : settlement.failureClass;
   const publicError = settlement.outcome === 'completed' ? run.publicError : settlement.publicError;
   return {

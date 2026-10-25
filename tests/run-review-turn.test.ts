@@ -150,9 +150,9 @@ function slackClient(calls: string[]): WebClient {
 /** One turn through runTurn on the legacy presenter; returns its Slack writes and delivery outcomes. */
 async function reviewedTurn(
   env: PlatformEnv | undefined,
-  extra: Partial<RunTurnOptions> & { turn?: NormalizedSlackTurn; assignment?: ResolvedAssignment } = {},
+  extra: Partial<RunTurnOptions> & { turn?: NormalizedSlackTurn; assignment?: ResolvedAssignment; ids?: boolean } = {},
 ) {
-  const { turn: givenTurn, assignment = ASSIGNMENT, ...options } = extra;
+  const { turn: givenTurn, assignment = ASSIGNMENT, ids = true, ...options } = extra;
   const turn = givenTurn ?? dmTurn();
   const installation = installationOwnershipOf(env);
   const runtimePlan = compileRuntimePlanV2({
@@ -163,8 +163,7 @@ async function reviewedTurn(
   const delivered: Array<string | undefined> = [];
   await runTurn(turn, assignment, env, {
     client: slackClient(calls),
-    turnId: `turn_${turn.eventId}`,
-    runId: `run_${turn.eventId}`,
+    ...(ids ? { turnId: `turn_${turn.eventId}`, runId: `run_${turn.eventId}` } : {}),
     statusRegistry: new SlackStatusRegistry(),
     usageRecordingEnabled: false,
     runtimePlanDecision: { runtimePlan, instanceId: deriveRuntimePlanInstanceId(runtimePlan) },
@@ -282,12 +281,13 @@ test('a recovered answer after a failed read is copied as succeeded, though deli
   assert.equal(port.records[0]?.record.answer, 'Opened the pull request.');
 });
 
-test('a replay, a shared channel, a host not capturing, and standalone copy nothing', async (t) => {
+test('a replay, a shared channel, a turn with no run or turn ID, a host not capturing, and standalone copy nothing', async (t) => {
   await turnState(t);
   const port = reviewPort();
   await reviewedTurn(HOSTED_ENV, { replayText: 'Here is the plan.' });
   await reviewedTurn(HOSTED_ENV, { turn: dmTurn({ sharedChannel: true }) });
-  assert.equal(port.asked(), 0, 'neither asks the host');
+  await reviewedTurn(HOSTED_ENV, { ids: false });
+  assert.equal(port.asked(), 0, 'none asks the host');
   await reviewedTurn(undefined);
   assert.equal(port.asked(), 0, 'standalone has no installation to ask about');
   assert.deepEqual(port.records, []);
@@ -318,6 +318,21 @@ test('a Channel turn asks the host for a session only when admission read its Ch
   assert.equal(port.asked(), 0, 'shared, or never read, fails closed before asking the host');
   await reviewedTurn(HOSTED_ENV, { turn: channelTurn(false), assignment });
   assert.equal(port.asked(), 1, 'an unshared Channel is eligible');
+});
+
+test('a group DM is copied only once admission read it unshared, like a Channel', async (t) => {
+  await turnState(t);
+  t.mock.method(console, 'warn', () => undefined);
+  const port = reviewPort();
+  const assignment = { ...ASSIGNMENT, channelId: 'GREVIEW1' };
+  const groupTurn = (sharedChannel?: boolean) => dmTurn({
+    channelId: 'GREVIEW1', channelType: 'mpim',
+    ...(sharedChannel === undefined ? {} : { sharedChannel }),
+  });
+  await reviewedTurn(HOSTED_ENV, { turn: groupTurn(), assignment });
+  assert.equal(port.asked(), 0, 'a group DM whose sharing was never read is not copied');
+  await reviewedTurn(HOSTED_ENV, { turn: groupTurn(false), assignment });
+  assert.equal(port.asked(), 1, 'an unshared group DM is eligible');
 });
 
 test('a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {

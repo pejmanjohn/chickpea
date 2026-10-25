@@ -88,11 +88,17 @@ export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
 export const RUN_REVIEW_RECORD_BYTES = 256 * 1024;
 
 /**
- * Slack reading tools that can read a conversation other than the current
- * one. Their authority lets an Agent read another Channel of this workspace
- * even when that Channel is shared through Slack Connect, which no copy keeps.
+ * Reads whose results a copy omits unless they say they read the current
+ * conversation. They can reach another Channel of this workspace, or a Slack
+ * List linked from one, even when it is shared through Slack Connect, which
+ * no copy keeps. A List read never says, so its result is always omitted.
  */
-export const RUN_REVIEW_CONVERSATION_READ_TOOLS: ReadonlySet<string> = new Set(['read_slack_thread', 'read_slack_channel']);
+export const RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT: ReadonlySet<string> = new Set([
+  'read_slack_thread',
+  'read_slack_channel',
+  'read_slack_list',
+  'read_slack_list_item',
+]);
 export const OTHER_CONVERSATION_OMITTED = '[other conversation omitted]';
 
 const PSEUDONYM_LABEL = 'chickpea-run-review-user-v1\0';
@@ -178,7 +184,7 @@ export function buildRunReviewRecord(
 
 /** A reading tool's result is kept only when it says it read the current conversation, or read nothing. */
 function keptReadOutput(toolName: string, output: string): string {
-  if (!RUN_REVIEW_CONVERSATION_READ_TOOLS.has(toolName)) return output;
+  if (!RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT.has(toolName)) return output;
   let result: { status?: unknown; conversation?: { current?: unknown } } | null;
   try {
     result = JSON.parse(output) as typeof result;

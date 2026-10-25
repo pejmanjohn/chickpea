@@ -261,15 +261,23 @@ export function createCloudflareBoundedAgentReplyReader(
   agentName: string = CHICKPEA_SLACK_AGENT_NAME,
 ): BoundedReplyReader {
   const bindingName = agentObjectBindingName(agentName);
-  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
-  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
-    throw new AgentObjectBindingUnavailableError(bindingName);
-  }
+  const binding = agentObjectNamespace(env, bindingName);
+  if (!binding) throw new AgentObjectBindingUnavailableError(bindingName);
   return createBoundedAgentReplyReader({
     agentName,
     adaptive: {},
     resolveRoute: (instanceId) => agentObjectRoute(binding, instanceId),
   });
+}
+
+function agentObjectNamespace(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+): AgentObjectNamespace | undefined {
+  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
+  return binding && typeof binding.idFromName === 'function' && typeof binding.get === 'function'
+    ? binding
+    : undefined;
 }
 
 function agentObjectRoute(binding: AgentObjectNamespace, instanceId: string): AgentUpdatesRoute {
@@ -290,8 +298,8 @@ export async function readAgentHistoryBounded(
   limit: number,
   agentName: string = CHICKPEA_SLACK_AGENT_NAME,
 ): Promise<AgentConversationSnapshot | undefined> {
-  const binding = env?.[agentObjectBindingName(agentName)] as AgentObjectNamespace | undefined;
-  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') return undefined;
+  const binding = agentObjectNamespace(env, agentObjectBindingName(agentName));
+  if (!binding) return undefined;
   const base = `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
   const response = await agentObjectRoute(binding, instanceId)(new Request(`${base}?view=history&limit=${limit}`));
   return response.ok ? await response.json() as AgentConversationSnapshot : undefined;

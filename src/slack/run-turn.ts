@@ -338,7 +338,7 @@ export interface RunTurnOptions {
   workStore?: WorkStore;
   /** Local override avoids a Durable Object calling its own settings RPC. */
   settingsStore?: SettingsStore;
-  /** Where a hosted run review reads its key; a thread runner answers it from its `begin` read. */
+  /** A thread runner's `begin` read, which answers a hosted run review's first read of its key. */
   runReviewSettings?: SettingsStore;
   /**
    * The public URL the executor already resolved (null: none is configured),
@@ -1159,14 +1159,18 @@ async function runTurnAttempt(
     modelRepairText,
   } = prepared;
   deliveryLifecycle = workLifecycle;
+  const reviewRunId = options.runId ?? options.turnId;
   // Asked now so the answer overlaps the context reads; awaited where the Agent is prompted.
-  const reviewStarting = runtimePlanDecision && options.replayText === undefined && !stoppedBeforeDispatch
+  const reviewStarting = reviewRunId !== undefined && runtimePlanDecision &&
+      options.replayText === undefined && !stoppedBeforeDispatch
     ? startRunReview(platformEnv, {
         surface: RUN_REVIEW_SURFACES[slackConversationKind(turn)],
         // Fails closed: a Channel or group DM is copied only once admission read it unshared.
-        sharedChannel: turn.sharedChannel === true ||
-          (slackConversationKind(turn) !== 'im' && turn.sharedChannel !== false),
-        settings: () => options.runReviewSettings ?? settingsStore ?? getSettingsStore(platformEnv),
+        sharedChannel: slackConversationKind(turn) === 'im'
+          ? turn.sharedChannel === true
+          : turn.sharedChannel !== false,
+        settings: () => settingsStore ?? getSettingsStore(platformEnv),
+        ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
       })
     : undefined;
   if (preparedMemory) presenter.setMemoryFooterItems(preparedMemory.footerItems);
@@ -1365,8 +1369,10 @@ async function runTurnAttempt(
       }
     }
     await removeWorkAcknowledgment();
-    if (review.session && reviewOutcome) {
-      await review.session.finish(slackRunReviewEnding(turn, assignment.agent.id, options, platformEnv, review, reviewOutcome));
+    if (review.session && reviewOutcome && reviewRunId !== undefined) {
+      await review.session.finish(
+        slackRunReviewEnding(turn, reviewRunId, assignment.agent.id, options, platformEnv, review, reviewOutcome),
+      );
     }
   };
   onNativeStarted = async (): Promise<void> => {
@@ -2580,6 +2586,7 @@ const RUN_REVIEW_HISTORY_MESSAGES = 20;
 
 function slackRunReviewEnding(
   turn: NormalizedSlackTurn,
+  runId: string,
   agentId: string,
   options: RunTurnOptions,
   platformEnv: PlatformEnv | undefined,
@@ -2591,7 +2598,7 @@ function slackRunReviewEnding(
   const latency = options.turnLatency;
   const model = review.model;
   return {
-    runId: options.runId ?? options.turnId ?? `msg:${turn.channelId}:${turn.messageTs}`,
+    runId,
     agentId,
     ...(model ? { model: model.id.includes('/') ? model.id : `${model.provider}/${model.id}` } : {}),
     ...slackRunReviewConversation(turn, review.context),

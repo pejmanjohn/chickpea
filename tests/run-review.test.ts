@@ -21,13 +21,15 @@ import {
 import {
   buildRunReviewRecord,
   OTHER_CONVERSATION_OMITTED,
-  RUN_REVIEW_CONVERSATION_READ_TOOLS,
   RUN_REVIEW_FIELD_BYTES,
+  RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT,
   RUN_REVIEW_RECORD_BYTES,
   runReviewPseudonymizer,
   type RunReviewInput,
   type RunReviewRecordV1,
 } from '../src/review/record.ts';
+import { encodeBase64Url } from '../src/security/base64url.ts';
+import { SLACK_LIST_TOOL_NAMES } from '../src/slack/lists/tools.ts';
 import { SLACK_READ_TOOL_NAMES } from '../src/slack/reading/tools.ts';
 import { RUNNER_PREFETCHED_SETTINGS, runnerPrefetchedSettings } from '../src/slack/thread-runner-rpc.ts';
 
@@ -150,6 +152,8 @@ test('a session starts only with a port, an installation, a capturing host and a
   t.mock.method(console, 'warn', () => undefined);
   configureRunReview({ ...runReview()!, capturing: async () => { throw new Error('registry down'); } });
   assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', settings }), undefined, 'a failing answer fails closed');
+  configureRunReview({ ...runReview()!, capturing: () => { throw new Error('registry down'); } });
+  assert.equal(await startRunReview(HOSTED_ENV, { surface: 'dm', settings }), undefined, 'so does a synchronous throw');
 });
 
 test('a slow capturing answer fails closed after about a second', async (t) => {
@@ -314,9 +318,24 @@ test('a Slack read of another conversation, which may be a Slack Connect one, ke
     ['lookup_slack_user', '{"channel":"C0OTHER123"}', `{"id":"${runReviewPseudonymizer(KEY)('U0ZZZZZZZZ9')}","name":"Bo"}`],
   ]);
   assert.equal(JSON.stringify(record).includes('partner notes'), false);
-  for (const name of RUN_REVIEW_CONVERSATION_READ_TOOLS) {
-    assert.ok((SLACK_READ_TOOL_NAMES as readonly string[]).includes(name), `${name} is a Slack reading tool`);
+  for (const name of RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT) {
+    assert.ok(([...SLACK_READ_TOOL_NAMES, ...SLACK_LIST_TOOL_NAMES] as readonly string[]).includes(name), `${name} is a Slack tool`);
   }
+});
+
+test('a Slack List read, which says nothing of where the List is shared, keeps its call but not its result', () => {
+  const list = JSON.stringify({ status: 'ok', list: { id: 'F0LIST1234', name: 'Partner launch' }, items: [{ task: 'partner notes' }] });
+  const record = buildRunReviewRecord(input({
+    steps: [
+      { kind: 'tool', name: 'read_slack_list', input: '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}', output: list },
+      { kind: 'tool', name: 'read_slack_list_item', input: '{"itemId":"Rec1"}', output: list },
+    ],
+  }), runReviewPseudonymizer(KEY));
+  assert.deepEqual(record.steps.map((step) => step.kind === 'tool' && [step.name, step.input, step.output]), [
+    ['read_slack_list', '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}', OTHER_CONVERSATION_OMITTED],
+    ['read_slack_list_item', '{"itemId":"Rec1"}', OTHER_CONVERSATION_OMITTED],
+  ]);
+  assert.equal(JSON.stringify(record).includes('partner notes'), false);
 });
 
 test('credentials are redacted before the cap, and the builder adds no Slack coordinates', () => {
@@ -358,6 +377,22 @@ test('a field is cut to 16 KiB and the record to 256 KiB, oldest steps first', (
   assert.equal(buildRunReviewRecord(input(), pseudonymOf).truncated, false);
 });
 
+test('past 256 KiB with every step dropped, the oldest context rows go next', () => {
+  const context = Array.from({ length: 40 }, (_, row) => ({
+    author: 'Helper Agent', role: 'agent' as const, text: `${row}:`.padEnd(15_000, 'z'), files: [],
+  }));
+  const fitted = buildRunReviewRecord(input({
+    steps: [{ kind: 'text', text: 'one step' }, { kind: 'text', text: 'another step' }],
+    context,
+  }), runReviewPseudonymizer(KEY));
+  assert.ok(new TextEncoder().encode(JSON.stringify(fitted)).byteLength <= RUN_REVIEW_RECORD_BYTES);
+  assert.equal(fitted.truncated, true);
+  assert.deepEqual(fitted.steps, []);
+  assert.ok(fitted.context.length > 0 && fitted.context.length < 40);
+  assert.ok(!fitted.context[0]?.text.startsWith('0:'), 'the oldest row is the one dropped');
+  assert.ok(fitted.context.at(-1)?.text.startsWith('39:'), 'the newest row stays');
+});
+
 test('a finished session scrubs and records once, with one key per installation', async (t) => {
   const { records } = fakePort(t);
   const settings = memorySettings();
@@ -383,6 +418,17 @@ test('a finished session scrubs and records once, with one key per installation'
   const again = await startRunReview(HOSTED_ENV, { surface: 'channel', settings: () => settings });
   await again!.finish(ENDING);
   assert.equal(records[1]?.record.trigger.author, record.trigger.author, 'the stored key is reused');
+});
+
+test('a key another isolate wrote after the runner prefetched is read back from the store', async (t) => {
+  const { records } = fakePort(t);
+  const store = memorySettings();
+  store.values.set(RUN_REVIEW_PSEUDONYM_SETTING, JSON.stringify({ version: 1, key: encodeBase64Url(KEY) }));
+  // The runner's snapshot predates the other write; writes reach the store.
+  const prefetched: SettingsStore = { ...store, getSetting: async () => undefined, getSettings: async (keys) => keys.map(() => undefined) };
+  const session = await startRunReview(HOSTED_ENV, { surface: 'dm', settings: () => store, prefetched });
+  await session!.finish(ENDING);
+  assert.equal(records[0]?.record.trigger.author, runReviewPseudonymizer(KEY)('U012ABCDEF3'));
 });
 
 test('a session with no observed stream reads the settled history once', async (t) => {

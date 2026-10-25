@@ -31,6 +31,8 @@ export interface RunReviewStart {
   sharedChannel?: boolean;
   /** Where the installation's review key is kept; reached only once a copy is built. */
   settings: () => SettingsStore;
+  /** A read of the key already made, as a thread runner's is; it answers the first read only. */
+  prefetched?: SettingsStore;
 }
 
 /** The message the Agent answered and the rows its prompt carried with it. */
@@ -71,12 +73,7 @@ export async function startRunReview(
   if (!port || start.sharedChannel) return undefined;
   const installationId = installationScopeOf(env)?.installationId;
   if (!installationId) return undefined;
-  let capturing: boolean | typeof TIMED_OUT;
-  try {
-    capturing = await within(port.capturing(installationId), CAPTURING_BOUND_MS);
-  } catch {
-    capturing = TIMED_OUT;
-  }
+  const capturing = await within(() => port.capturing(installationId), CAPTURING_BOUND_MS).catch(() => TIMED_OUT);
   if (capturing === TIMED_OUT) warn('capturing_unavailable');
   return capturing === true ? new Session(port, installationId, start) : undefined;
 }
@@ -137,7 +134,7 @@ class Session implements RunReviewSession {
     this.#finished = true;
     let abandoned = false;
     try {
-      if (await within(this.#store(ending, () => abandoned), FINISH_BOUND_MS) === TIMED_OUT) {
+      if (await within(() => this.#store(ending, () => abandoned), FINISH_BOUND_MS) === TIMED_OUT) {
         abandoned = true;
         warn('record_timed_out');
       }
@@ -156,7 +153,7 @@ class Session implements RunReviewSession {
         source = 'history';
       }
     }
-    const key = await loadOrCreateRunReviewKey(this.start.settings());
+    const key = await loadOrCreateRunReviewKey(this.start.settings(), this.start.prefetched);
     const now = new Date().toISOString();
     const record = buildRunReviewRecord({
       runId: ending.runId,
@@ -183,8 +180,11 @@ class Session implements RunReviewSession {
   }
 }
 
-async function loadOrCreateRunReviewKey(settings: SettingsStore): Promise<Uint8Array> {
-  const current = await settings.getSetting(RUN_REVIEW_PSEUDONYM_SETTING);
+async function loadOrCreateRunReviewKey(
+  settings: SettingsStore,
+  prefetched: SettingsStore = settings,
+): Promise<Uint8Array> {
+  const current = await prefetched.getSetting(RUN_REVIEW_PSEUDONYM_SETTING);
   if (current !== undefined) return parseStoredKey(current);
   const key = crypto.getRandomValues(new Uint8Array(KEY_BYTES));
   const written = await settings.applySettingsPatch({
@@ -207,11 +207,12 @@ function parseStoredKey(raw: string): Uint8Array {
   return key;
 }
 
-async function within<T>(work: Promise<T>, milliseconds: number): Promise<T | typeof TIMED_OUT> {
+/** `work` is called here so a port that throws synchronously rejects like one that fails. */
+async function within<T>(work: () => Promise<T>, milliseconds: number): Promise<T | typeof TIMED_OUT> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      work,
+      work(),
       new Promise<typeof TIMED_OUT>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), milliseconds);
       }),
