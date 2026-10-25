@@ -5,8 +5,8 @@ import { sha256HexNode } from '../security/digest.ts';
 
 /**
  * Request hygiene shared by the /admin/api sub-apps: JSON body reads, the
- * invalid-request shape, idempotency-key validation, the cross-origin mutation
- * guard, and admin identity derivation.
+ * invalid-request shape, the no-store header, idempotency-key validation, the
+ * cross-origin mutation guard, and admin identity derivation.
  */
 
 export async function readJson(c: Context, maxBytes?: number): Promise<unknown> {
@@ -26,6 +26,11 @@ export async function readJson(c: Context, maxBytes?: number): Promise<unknown> 
 
 export function invalidRequest(c: Context): Response {
   return c.json({ error: 'invalid_request' }, 400);
+}
+
+export async function noStore(c: Context, next: () => Promise<void>): Promise<void> {
+  c.header('Cache-Control', 'no-store');
+  await next();
 }
 
 export function readIdempotencyKey(c: Context): string | undefined {

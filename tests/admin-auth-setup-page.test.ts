@@ -332,6 +332,15 @@ test('every Slack journey page sets its text in onboarding\'s Baloo 2 and Quicks
   }
 });
 
+test('a link in a journey page\'s help text, as in a host\'s consent line, takes the palette\'s link color; a button link keeps its own', () => {
+  const html = renderSlackJourneyPage({
+    surface: 'sign-up', eyebrow: 'E', title: 'T',
+    body: '<p class="auth-help">By continuing you agree to the <a href="https://chickpea.example/terms">Terms</a>.</p>',
+  });
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  assert.ok(style.includes('.auth-help a:not(.auth-link){color:#8a6410}'));
+});
+
 test('a host\'s onboarding page can be a split screen: the scene on the left, brand, steps and the page on the right', () => {
   const steps = onboardingSteps({ selfHosted: false, onChickpeaModels: true, githubOffered: true });
   const html = renderSlackJourneyPage({

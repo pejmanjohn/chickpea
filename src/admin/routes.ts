@@ -61,7 +61,9 @@ import {
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
+import { createRunReviewAdminApi } from './run-review-api.ts';
 import { platformBilling } from '../config/platform-billing.ts';
+import { runReview } from '../review/port.ts';
 import { installationFunding } from '../config/platform-funding.ts';
 import {
   BROWSER_ENV_VARS,
@@ -6399,6 +6401,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       browserOffered: standalone,
       selfHosted: standalone,
       billingOffered: !standalone && platformBilling() !== undefined,
+      helpImprovePrivacyUrl: standalone ? undefined : runReview()?.privacyUrl,
       workspaceAdminUi,
       assetVersion: await adminUiAssetVersion(),
       onboarding,
@@ -6535,6 +6538,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     channelLabels: async (c) => new Map((await store(c).listChannels()).flatMap((channel) =>
       channel.label ? [[channelLabelKey(channel.workspaceId, channel.channelId), channel.label]] : [])),
   }));
+  app.route('/admin/api', createRunReviewAdminApi({ identity }));
   app.route('/admin/api', createBillingAdminApi({
     agentNames: async (c) => new Map([
       [CHICKPEA_AGENT_ID, 'Chickpea'],
