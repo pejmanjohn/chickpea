@@ -4296,7 +4296,9 @@ export class WorkspaceManagementService {
     }
     const reconciled = await this.reconcilePrepared(actor, prepared, requestId);
     if (reconciled) return reconciled;
-    if (canExecuteImmediately(operation)) {
+    // Disabling an Agent with Channel grants is confirmed through a change set,
+    // so a direct disable keeps the immediate executor and its undo.
+    if (canExecuteImmediately(operation) || operation.kind === 'update_agent') {
       return this.executeImmediate(actor, requestId, operation, prepared);
     }
     // A door without this operation's confirmation runs the confirmed

@@ -3190,6 +3190,44 @@ test('change-set confirmation preserves the cascading disable behavior for an Ag
   }
 });
 
+test('a Slack disable without Channel reach applies at once and keeps its undo', async () => {
+  const f = await createManagementAdapterFixture('slack-disable-unreached');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: {
+      kind: 'slack', workspaceId: f.admin.user.slackTeamId,
+      channelId: 'D123', threadTs: '1800000000.000001', conversationKind: 'im',
+      requestText: 'Disable the Unreached Agent.',
+    },
+  };
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_unreached', name: 'Unreached', instructions: 'Answer in DMs.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const disabled = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'slack-disable-unreached',
+      operations: [{
+        itemId: 'disable', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { enabled: false },
+      }],
+    });
+    assert.equal(disabled.status, 'completed');
+    assert.ok('outcomes' in disabled);
+    assert.deepEqual(
+      disabled.outcomes.map(({ disposition, undoAvailable }) => [disposition, undoAvailable]),
+      [['applied', true]],
+    );
+    assert.equal((await f.config.getAgent(agent.id)).enabled, false);
+  } finally {
+    f.close();
+  }
+});
+
 test('an applying change set cannot resume after the requester loses Agent edit authority', async () => {
   const f = await createManagementAdapterFixture('proposal-recovery-authority');
   let now = 1_800_000_000_000;

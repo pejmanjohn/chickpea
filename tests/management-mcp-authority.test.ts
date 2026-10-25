@@ -233,14 +233,22 @@ test('MCP applies every allowed non-destructive change in one call', () => withF
   assert.notEqual(agent.lifecycle, 'archived');
 
   const unreached = await createAgent(f, f.owner, 'agent_unreached');
-  assertApplied(await apply(f, f.owner, 'disable-unreached', [{
+  const disabled = await apply(f, f.owner, 'disable-unreached', [{
     itemId: 'disable',
     kind: 'update_agent',
     agentId: unreached.id,
     expectedRevision: unreached.revision,
     patch: { enabled: false },
-  }]), 'disable without Channel reach');
+  }]);
+  assertApplied(disabled, 'disable without Channel reach');
+  assert.equal(disabled.outcomes[0]?.undoAvailable, true, 'a disable without Channel reach keeps its undo');
   assert.equal((await f.config.getAgent(unreached.id)).enabled, false);
+  const reenabled = await call(f, f.owner, 'undo_workspace_change', {
+    operationId: disabled.operationId,
+    idempotencyKey: 'undo-disable-unreached',
+  });
+  assert.equal(reenabled.ok, true, JSON.stringify(reenabled));
+  assert.equal((await f.config.getAgent(unreached.id)).enabled, true);
 
   const repositoryAgent = await createAgent(f, f.owner, 'agent_repository', {
     repositories: [docsRepository],
