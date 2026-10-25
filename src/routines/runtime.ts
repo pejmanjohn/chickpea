@@ -55,8 +55,12 @@ export interface RoutineRuntimeAccess {
   actorSlackUserId?: string;
   authorityReceiptId?: string;
   effectiveConnections?: EffectiveConnectionAccount[];
-  /** The routine's Channel is shared beyond this workspace (Slack Connect or across an organization), or about to be. */
-  channelShared?: true;
+  /**
+   * Whether the routine's Channel is shared beyond this workspace (Slack
+   * Connect or across an organization), or about to be, as Slack said just
+   * now. Absent for a direct-message routine.
+   */
+  channelShared?: boolean;
   /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
   legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
 }
@@ -335,9 +339,7 @@ export async function resolveRoutineRuntimeAccess(
         }
       : {}),
     // A pending Slack Connect share counts, as it does for a Slack turn.
-    ...(facts.shared || facts.externallyShared || facts.organizationShared || facts.pendingShared
-      ? { channelShared: true as const }
-      : {}),
+    channelShared: facts.shared || facts.externallyShared || facts.organizationShared || facts.pendingShared,
   };
 }
 

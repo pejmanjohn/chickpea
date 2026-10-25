@@ -379,7 +379,8 @@ export async function executeRoutineOccurrence(
     }
     review = await startRunReview(input.env, {
       surface: 'routine',
-      sharedChannel: prepared.access.channelShared === true,
+      // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
+      sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
       settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
     });
     const { submissionId } = receipt;

@@ -160,7 +160,7 @@ async function occurrence(access: Partial<RoutineRuntimeAccess> = {}): Promise<v
 test('a settled routine occurrence is copied as a routine run, its task as the trigger', async (t) => {
   state(t);
   const records = reviewPort();
-  await occurrence();
+  await occurrence({ channelShared: false });
   assert.equal(records.length, 1);
   const [record] = records as [RunReviewRecordV1];
   assert.equal(record.surface, 'routine');
@@ -178,9 +178,10 @@ test('a settled routine occurrence is copied as a routine run, its task as the t
   assert.equal(JSON.stringify(record).includes('U0MEMBER12'), false);
 });
 
-test('a routine in a shared Channel is not copied', async (t) => {
+test('a routine in a shared Channel, or one whose sharing Slack did not report, is not copied', async (t) => {
   state(t);
   const records = reviewPort();
   await occurrence({ channelShared: true });
+  await occurrence();
   assert.deepEqual(records, []);
 });

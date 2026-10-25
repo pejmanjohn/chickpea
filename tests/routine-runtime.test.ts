@@ -151,7 +151,7 @@ test('runtime access resolves current channel membership and hashes only non-sec
 
 test('runtime access carries whether the routine Channel is shared beyond the workspace', async () => {
   const plain = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies());
-  assert.equal(plain.channelShared, undefined);
+  assert.equal(plain.channelShared, false);
   const facts = (await dependencies().conversation()).facts;
   for (const shared of ['shared', 'externallyShared', 'organizationShared'] as const) {
     const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
@@ -188,7 +188,7 @@ test('bot-token routine access counts either pending Slack Connect signal as sha
     raw = fields;
     return resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({ conversation: slackConversationsInfo }));
   };
-  assert.equal((await access({})).channelShared, undefined);
+  assert.equal((await access({})).channelShared, false);
   assert.equal((await access({ is_pending_ext_shared: true })).channelShared, true);
   assert.equal((await access({ pending_shared: ['T_PARTNER'] })).channelShared, true);
 });
@@ -209,7 +209,7 @@ test('gateway routine access counts either pending Slack Connect signal as share
       } as unknown as WebClient,
     }),
   }));
-  assert.equal((await access({})).channelShared, undefined);
+  assert.equal((await access({})).channelShared, false);
   assert.equal((await access({ is_pending_ext_shared: true })).channelShared, true);
   assert.equal((await access({ pending_shared: ['T_PARTNER'] })).channelShared, true);
 });

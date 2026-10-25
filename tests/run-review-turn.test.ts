@@ -150,18 +150,18 @@ function slackClient(calls: string[]): WebClient {
 /** One turn through runTurn on the legacy presenter; returns its Slack writes and delivery outcomes. */
 async function reviewedTurn(
   env: PlatformEnv | undefined,
-  extra: Partial<RunTurnOptions> & { turn?: NormalizedSlackTurn } = {},
+  extra: Partial<RunTurnOptions> & { turn?: NormalizedSlackTurn; assignment?: ResolvedAssignment } = {},
 ) {
-  const { turn: givenTurn, ...options } = extra;
+  const { turn: givenTurn, assignment = ASSIGNMENT, ...options } = extra;
   const turn = givenTurn ?? dmTurn();
   const installation = installationOwnershipOf(env);
   const runtimePlan = compileRuntimePlanV2({
     ...(installation ? { installation } : {}),
-    turn, assignment: ASSIGNMENT, instructions: 'Answer directly.', memoryEpoch: 1,
+    turn, assignment, instructions: 'Answer directly.', memoryEpoch: 1,
   });
   const calls: string[] = [];
   const delivered: Array<string | undefined> = [];
-  await runTurn(turn, ASSIGNMENT, env, {
+  await runTurn(turn, assignment, env, {
     client: slackClient(calls),
     turnId: `turn_${turn.eventId}`,
     runId: `run_${turn.eventId}`,
@@ -302,6 +302,24 @@ test('a replay, a shared channel, a host not capturing, and standalone copy noth
   assert.deepEqual(delivered, ['succeeded'], 'a hosted deployment with no port is unchanged');
 });
 
+test('a Channel turn asks the host for a session only when admission read its Channel as unshared', async (t) => {
+  await turnState(t);
+  t.mock.method(console, 'warn', () => undefined);
+  const port = reviewPort();
+  const assignment = { ...ASSIGNMENT, channelId: 'CREVIEW1' };
+  const channelTurn = (sharedChannel?: boolean) => dmTurn({
+    channelId: 'CREVIEW1', channelType: 'channel', source: 'agent_mention', contextMode: 'thread',
+    ...(sharedChannel === undefined ? {} : { sharedChannel }),
+  });
+  // This harness's Channel memory cannot reach Slack, so each turn ends
+  // before its prompt; whether a session started is what the gate decides.
+  await reviewedTurn(HOSTED_ENV, { turn: channelTurn(true), assignment });
+  await reviewedTurn(HOSTED_ENV, { turn: channelTurn(), assignment });
+  assert.equal(port.asked(), 0, 'shared, or never read, fails closed before asking the host');
+  await reviewedTurn(HOSTED_ENV, { turn: channelTurn(false), assignment });
+  assert.equal(port.asked(), 1, 'an unshared Channel is eligible');
+});
+
 test('a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {
   await turnState(t);
   const port = reviewPort();
@@ -322,7 +340,7 @@ test('a settlement replayed from its checkpoint is copied from one bounded histo
               {
                 id: 'response', role: 'assistant', purpose: 'assistant', display: 'visible', submissionId,
                 parts: [
-                  { type: 'dynamic-tool', toolName: 'read_slack_thread', toolCallId: 'call_1', state: 'output-available', input: {}, output: 'ok' },
+                  { type: 'dynamic-tool', toolName: 'web_fetch', toolCallId: 'call_1', state: 'output-available', input: {}, output: 'ok' },
                   { type: 'text', text: 'Here is the plan.', state: 'done' },
                 ],
               },
@@ -348,7 +366,7 @@ test('a settlement replayed from its checkpoint is copied from one bounded histo
   assert.equal(port.records[0]?.record.source, 'history');
   assert.equal(port.records[0]?.record.model, 'local-stub/review-1');
   assert.deepEqual(port.records[0]?.record.steps, [
-    { kind: 'tool', name: 'read_slack_thread', input: '{}', output: 'ok' },
+    { kind: 'tool', name: 'web_fetch', input: '{}', output: 'ok' },
     { kind: 'text', text: 'Here is the plan.' },
   ]);
 });

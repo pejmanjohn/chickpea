@@ -1163,7 +1163,9 @@ async function runTurnAttempt(
   const reviewStarting = runtimePlanDecision && options.replayText === undefined && !stoppedBeforeDispatch
     ? startRunReview(platformEnv, {
         surface: RUN_REVIEW_SURFACES[slackConversationKind(turn)],
-        sharedChannel: turn.sharedChannel === true,
+        // Fails closed: a Channel or group DM is copied only once admission read it unshared.
+        sharedChannel: turn.sharedChannel === true ||
+          (slackConversationKind(turn) !== 'im' && turn.sharedChannel !== false),
         settings: () => options.runReviewSettings ?? settingsStore ?? getSettingsStore(platformEnv),
       })
     : undefined;
