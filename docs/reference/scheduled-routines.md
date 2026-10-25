@@ -16,7 +16,7 @@ This division deliberately uses Flue for durable Agent tool execution and struct
 - Existing-work actions inspect the scoped routine list first. Ambiguous names must be disambiguated before mutation.
 - A user Agent can own and manage only its own scheduled work. Chickpea can administer an eligible user Agent's schedules in the same one-to-one DM, but Chickpea never becomes the schedule owner.
 - DM destinations, requester identity, acting Agent, and thread coordinates come from the trusted Slack delivery. Model arguments cannot supply or replace them.
-- Group-DM scheduled work is unsupported.
+- Scheduled work is not available in group DMs. `!routines` commands do not run there, and `manage_scheduled_work` refuses with `Scheduling in group DMs is not supported.`
 - One-time and recurring results return to the stored origin thread. Repeated recurring failures pause the work and produce one content-free notice at the DM root so failure cannot remain invisible.
 
 ## Acknowledgements and recovery

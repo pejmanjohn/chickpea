@@ -8,9 +8,10 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 - Threads: the first Agent to reply owns the thread. Mention-free follow-ups and emoji reactions in it reach that Agent.
 - A reply that names an Agent's handle in a thread nobody owns, for example under an alert, addresses that Agent like a root mention.
 - Handoff: a person mentioning a different Agent in an owned thread hands it over in the open. The new owner needs its own grant and gets the newest 20 messages, up to 12,000 characters.
-- Several handles in one channel message: each Agent answers in turn, up to six, and the first keeps the thread. In a DM, Chickpea asks for one Agent at a time.
+- Several handles in one message, in a channel, a DM or a group DM: each Agent answers in turn, up to six, and the first keeps the thread.
 - Refusals reach only the sender, for example `That Agent is not available here.` with the handles that are.
 - DMs and App Home: who may DM an Agent follows where it is published. The Home tab's **Message** button opens a thread with `<Agent name> is ready.`; a DM naming no handle goes to `@Chickpea`.
+- Group DMs are addressed as a channel is: a handle, `@Chickpea`, or a reply in an owned thread, and nothing else. Only `@Chickpea` and Agents everyone in the workspace can use (added to a public channel) answer there; any other gets the sender a private `Only Agents everyone in this workspace can use answer in group DMs.` and never an Add button. A root mention reads the group's recent messages. No Agent answers in a group DM shared with another organization.
 - The thread keeps one conversation per Agent across turns and speakers, so a second person's follow-up sees the earlier exchange.
 - A reply is one message under the Agent's name and avatar, ending with the footer `Agent name | model | Configure`. Up to six rows render as a Markdown table, a native table needs at least seven, and very long answers continue in follow-up messages.
 - Streaming: the model may declare `stream_answer`, and only complete lines and finished words stream. Agents with connections or repositories stream only the final answer, after their last tool settles.
@@ -20,7 +21,7 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 
 ## How a person reaches it
 
-- Slack only: a channel root mention, a mention-free thread reply, a reaction in an owned thread, a DM, the App Home **Message** button, a file upload, or a button click.
+- Slack only: a channel or group DM root mention, a mention-free thread reply, a reaction in an owned thread, a DM, the App Home **Message** button, a file upload, or a button click.
 
 ## How to drive it on a lane
 
@@ -30,12 +31,14 @@ Docs: `/slack/conversations/`, `/slack/replies/`, `/slack/handles-and-channels/`
 - Streaming: use a fresh Agent with no saved memory and ask for a long direct prose answer. Do not write "do not use any tools", which suppresses the declaration.
 - Files: upload a run-owned PNG or PDF in the thread and ask about it; for output, ask for a CSV and a PNG in one reply.
 - Block Kit: ask a question with a few known options, answer by clicking as the requester, and click as a second signed-in actor when one is available.
+- Group DMs: start one in Slack with two test people and the app's bot; membership is fixed, so a new person means a new group DM. Cover a bare `@Chickpea`, a workspace-wide Agent's handle at the root, a second person's mention-free follow-up, a creator-only Agent's refusal, and two handles together. The lane's app needs `message.mpim` and `mpim:history` ([setup](../../../SETUP_AGENT.md#group-dms)); without them only `@Chickpea` arrives.
 - Cleanup: archive every run-owned Agent. Slack messages stay as residue; register them only when the case declares them, with `--ownership retain` and an exact `--expected-file`.
 
 ## Proof and gotchas
 
 - Reply text does not prove the route. Check the sender name, avatar and footer on the exact message after a fresh load, and that the thread holds one terminal reply.
 - A handoff to an Agent without a grant in the channel changes nothing: the owner keeps the thread and only the sender sees the refusal.
+- New group DM ids start with `C`, like channels. Check that a group DM turn behaved as one: Agent memory works with no grant, a refusal names group DMs, and Admin lists no grant on it.
 - Read the exact reply with `npm run lane:slack -- <alias> thread <message link>`: sender, custom name, footer blocks and files with their owner. Without a readback token, pair the signed-in client view with finalization records from a bounded `npm run lane:tail` started before the action, and report the exact readback as a gap ([hosts.md](../operator/hosts.md#slack-evidence-on-gateway-lanes)).
 - `lane:slack --out` refuses to overwrite an existing file, so a polling loop that reuses one path keeps its first readback and looks like a missing reply, and a loop that silences errors hides the refusal. Write each read to a new path, or delete the file first. A name built from the current second is not unique: two reads in one second collide, and a scan that drops the error loses threads silently. Add the process ID and a random suffix, and check the thread count against the history roots.
 - Slack web paints a final post in two passes, so a partial-then-full sample is not streaming proof. Use the tail's `Slack presentation finalized` record (offer, intent, accepted bytes).
