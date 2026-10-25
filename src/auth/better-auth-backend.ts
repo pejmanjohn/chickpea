@@ -255,8 +255,11 @@ export interface BetterAuthDatabaseBackend {
   /**
    * Deletes the public, ownerless MCP clients that no one has consented to:
    * every one registered before `expiredBefore`, then the oldest registered
-   * before `evictableBefore` until at most `keep` remain. A client with a
-   * consent or token is in use and stays. Answers how many such clients remain.
+   * before `evictableBefore` until `keep` remain. A client with a consent or
+   * token is in use and stays. Answers how many such clients remain. The cap
+   * is approximate under a concurrent burst: overlapping callers each count
+   * before the others register, so more than `keep` can briefly remain, and
+   * refusal applies once a caller sees the count at the cap.
    */
   prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number>;
   putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void>;

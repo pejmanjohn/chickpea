@@ -1,6 +1,6 @@
+import type { DBAdapter } from 'better-auth';
 import type { BetterAuthDatabaseBackend } from './better-auth-backend.ts';
 import {
-  BETTER_AUTH_BASE_PATH,
   createBetterAuth,
   requireSupportedOrigin,
   type BetterAuthPrivateSeam,
@@ -52,14 +52,12 @@ interface McpRegistrationPolicy {
 
 const DEFAULT_MCP_REGISTRATION_POLICY: McpRegistrationPolicy = {
   maxPendingClients: 1_000,
-  pendingClientRetentionMs: 7 * 24 * 60 * 60_000,
+  pendingClientRetentionMs: 30 * 24 * 60 * 60_000,
   // Outlasts the 10-minute sign-in continuation and authorization code, and
   // holds a full cap no longer than the durable limiter's 15-minute window.
   consentWindowMs: 15 * 60_000,
   now: () => Date.now(),
 };
-
-const AUTHORIZE_PATH = `${BETTER_AUTH_BASE_PATH}/oauth2/authorize`;
 
 /**
  * A deny-by-default public boundary around Better Auth. Setup, enrollment,
@@ -107,7 +105,7 @@ export function createBetterAuthPublicHandler(input: BetterAuthPublicHandlerInpu
 
     auth ??= createBetterAuth({ ...input, baseURL });
     const context = await auth.$context;
-    if (request.method === 'GET' && url.pathname === AUTHORIZE_PATH) {
+    if (route === 'read' && url.pathname === '/api/auth/oauth2/authorize') {
       request = await withOfflineAccessForRenewableClient(request, context.adapter);
     }
     const response = await auth.handler(request);
@@ -151,8 +149,6 @@ async function revocationResponse(response: Response): Promise<Response> {
     : response;
 }
 
-type BetterAuthAdapter = Awaited<ReturnType<typeof createBetterAuth>['$context']>['adapter'];
-
 interface RegisteredClient {
   grantTypes?: string[] | null;
   scopes?: string[] | null;
@@ -164,7 +160,7 @@ interface RegisteredClient {
  * follows them asks for the workspace scope alone, and Better Auth issues a
  * refresh token only for offline_access.
  */
-async function withOfflineAccessForRenewableClient(request: Request, adapter: BetterAuthAdapter): Promise<Request> {
+async function withOfflineAccessForRenewableClient(request: Request, adapter: DBAdapter): Promise<Request> {
   const url = new URL(request.url);
   const scopes = url.searchParams.get('scope')?.split(/\s+/).filter(Boolean) ?? [];
   const clientId = url.searchParams.get('client_id');

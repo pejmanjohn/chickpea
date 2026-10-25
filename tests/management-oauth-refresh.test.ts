@@ -38,10 +38,13 @@ interface AuthModules {
   createBetterAuthPublicHandler: typeof createBetterAuthPublicHandler;
 }
 
-async function fixture(
-  modules: AuthModules = { createBetterAuth, createBetterAuthPublicHandler },
-  mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'],
-) {
+async function fixture({
+  modules = { createBetterAuth, createBetterAuthPublicHandler },
+  mcpRegistrationPolicy,
+}: {
+  modules?: AuthModules;
+  mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
+} = {}) {
   const backend = new NodeBetterAuthBackend(':memory:');
   let admission: BetterAuthAdmissionOperation | null = null;
   const options = {
@@ -81,7 +84,7 @@ async function fixture(
   const token = (body: Record<string, string>) => form('/api/auth/oauth2/token', body);
   const revoke = (clientId: string, value: string, hint: 'access_token' | 'refresh_token') =>
     form('/api/auth/oauth2/revoke', { client_id: clientId, token: value, token_type_hint: hint });
-  function register(metadata: Record<string, unknown> = {}, { signedIn = true } = {}) {
+  function register(metadata: Record<string, unknown> = {}, { signedIn = false } = {}) {
     const registration = {
       application_type: 'native', client_name: 'Refresh fixture',
       grant_types: ['authorization_code', 'refresh_token'], redirect_uris: [REDIRECT],
@@ -161,9 +164,9 @@ async function workerBuildAuthModules(t: TestContext): Promise<AuthModules> {
 
 for (const variant of ['source', 'Worker build'] as const) {
   test(`revoking an expired, unknown or already revoked token answers 200; a request with no token answers 400 (${variant})`, async (t) => {
-    const modules = variant === 'source' ? undefined : await workerBuildAuthModules(t);
+    const options = variant === 'source' ? {} : { modules: await workerBuildAuthModules(t) };
     t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-    const f = await fixture(modules);
+    const f = await fixture(options);
     t.after(() => f.backend.close());
     const client = await (await f.register({ scope: RENEWABLE_SCOPE })).json() as { client_id: string };
     const tokens = await (await f.authorize(client.client_id, RENEWABLE_SCOPE)).json() as Record<string, string>;
@@ -298,7 +301,7 @@ test('a refresh token needs a registration that allows one, and registration rej
   assert.deepEqual(await denied.json(), { error: 'invalid_scope' });
   assert.equal((await f.register({ scope: 'offline_access' })).status, 400, 'workspace permission is required');
 
-  const single = await (await f.register({ grant_types: ['authorization_code'], scope: WORKSPACE_SCOPE }, { signedIn: false }))
+  const single = await (await f.register({ grant_types: ['authorization_code'], scope: WORKSPACE_SCOPE }))
     .json() as { client_id: string };
   const exchange = await f.authorize(single.client_id, WORKSPACE_SCOPE);
   assert.equal(exchange.status, 200);
@@ -351,7 +354,7 @@ test('a client that requests only the scopes the resource advertises still renew
   assert.equal(challenged, WORKSPACE_SCOPE);
   assert.deepEqual(metadata.scopes_supported, [WORKSPACE_SCOPE]);
 
-  const client = await (await f.register({ scope: WORKSPACE_SCOPE }, { signedIn: false })).json() as { client_id: string };
+  const client = await (await f.register({ scope: WORKSPACE_SCOPE })).json() as { client_id: string };
   const signedOut = await f.beginAuthorize(client.client_id, WORKSPACE_SCOPE, { signedIn: false });
   const login = new URL(signedOut.response.headers.get('location')!, ORIGIN);
   assert.equal(login.pathname, '/auth/mcp/login');
@@ -415,11 +418,11 @@ test('an MCP 2025-11-25 SDK client signs in from the challenge alone and receive
 
 test('a registration flood cannot cancel a sign-in in progress, and registration recovers after the consent window', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-01T00:00:00.000Z') });
-  const f = await fixture(undefined, { maxPendingClients: 3 });
+  const f = await fixture({ mcpRegistrationPolicy: { maxPendingClients: 3 } });
   t.after(() => f.backend.close());
   const register = async (name: string) => {
     t.mock.timers.tick(1_000);
-    return f.register({ client_name: name, scope: RENEWABLE_SCOPE }, { signedIn: false });
+    return f.register({ client_name: name, scope: RENEWABLE_SCOPE });
   };
   const names = () => (f.backend.database.prepare('SELECT name FROM oauthClient ORDER BY createdAt').all() as { name: string }[])
     .map((row) => row.name);
@@ -445,13 +448,38 @@ test('a registration flood cannot cancel a sign-in in progress, and registration
   assert.deepEqual(names(), ['In use', 'In progress', 'Flood 2', 'Flood 3', 'After the window'],
     'past its consent window the oldest registration makes room');
 
-  t.mock.timers.tick(7 * 24 * 60 * 60_000);
-  assert.equal((await register('A week on')).status, 201);
-  assert.deepEqual(names(), ['In use', 'In progress', 'A week on'], 'a registration without consent for a week is pruned');
-  const renewed = await f.token({
+  // The refresh token itself lives 30 days, so renew it before the prune and again after.
+  t.mock.timers.tick(29 * 24 * 60 * 60_000);
+  const renewedOnce = await f.token({
     grant_type: 'refresh_token', client_id: inUse.client_id, refresh_token: tokens.refresh_token!, resource: RESOURCE,
   });
+  assert.equal(renewedOnce.status, 200);
+  t.mock.timers.tick(2 * 24 * 60 * 60_000);
+  assert.equal((await register('30 days on')).status, 201);
+  assert.deepEqual(names(), ['In use', 'In progress', '30 days on'], 'a registration without consent for 30 days is pruned');
+  const renewed = await f.token({
+    grant_type: 'refresh_token', client_id: inUse.client_id,
+    refresh_token: (await renewedOnce.json() as Record<string, string>).refresh_token!, resource: RESOURCE,
+  });
   assert.equal(renewed.status, 200, 'the client in use keeps renewing');
+});
+
+test('a registration that no one consents to is kept for 30 days, then pruned', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-01T00:00:00.000Z') });
+  const f = await fixture();
+  t.after(() => f.backend.close());
+  const day = 24 * 60 * 60_000;
+  const names = () => (f.backend.database.prepare('SELECT name FROM oauthClient ORDER BY createdAt').all() as { name: string }[])
+    .map((row) => row.name);
+  assert.equal((await f.register({ client_name: 'Abandoned', scope: RENEWABLE_SCOPE })).status, 201);
+
+  t.mock.timers.tick(29 * day);
+  assert.equal((await f.register({ client_name: 'Day 29', scope: RENEWABLE_SCOPE })).status, 201);
+  assert.deepEqual(names(), ['Abandoned', 'Day 29'], 'a client that stayed away for weeks can still sign in');
+
+  t.mock.timers.tick(2 * day);
+  assert.equal((await f.register({ client_name: 'Day 31', scope: RENEWABLE_SCOPE })).status, 201);
+  assert.deepEqual(names(), ['Day 29', 'Day 31'], 'past 30 days the abandoned registration is pruned');
 });
 
 test('MCP consent names the registered app instead of its client id', async (t) => {
