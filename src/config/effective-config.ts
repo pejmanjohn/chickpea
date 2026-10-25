@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { ModelResolutionError } from './errors.ts';
+import type { ModelEffort } from './model-effort.ts';
 import { resolveAssignment, surfaceForChannelId, type ConfigStores } from './resolver.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import type {
@@ -42,6 +43,7 @@ export interface EffectiveSlackConfig {
   ownerIncarnation?: number;
   agent: CustomAgentConfig;
   model: string;
+  effort?: ModelEffort;
   provider: string;
   instructions: string;
   modelCredential?: ModelCredentialAttribution;
@@ -92,6 +94,7 @@ export function effectiveSlackConfigFromAssignment(
     ...(assignment.ownerIncarnation ? { ownerIncarnation: assignment.ownerIncarnation } : {}),
     agent: assignment.agent,
     model,
+    ...(assignment.effort ? { effort: assignment.effort } : {}),
     provider: assignment.modelAttribution.providerId,
     modelAttribution: assignment.modelAttribution,
     instructions,
@@ -110,6 +113,7 @@ export function resolvedAssignmentFromEffectiveConfig(
     ...(config.ownerIncarnation ? { ownerIncarnation: config.ownerIncarnation } : {}),
     agent: config.agent,
     model: config.model,
+    ...(config.effort ? { effort: config.effort } : {}),
     modelAttribution: config.modelAttribution,
     ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
   };
@@ -200,6 +204,7 @@ export function computeSnapshotHash(config: EffectiveSlackConfig): string {
         channelId: config.channelId,
         agentId: config.agentId,
         model: config.model,
+        ...(config.effort ? { effort: config.effort } : {}),
         modelAttribution: config.modelAttribution,
         ...(config.modelCredential ? { modelCredential: config.modelCredential } : {}),
         instructions: config.instructions,

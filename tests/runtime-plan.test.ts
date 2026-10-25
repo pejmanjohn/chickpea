@@ -1522,6 +1522,40 @@ test('the coding model freezes inside an available coding workspace and rotates 
   assert.notEqual(withCoding.harnessRevision, noWorkspace.harnessRevision);
 });
 
+test('the chosen effort freezes with each model and revises the harness only when set', () => {
+  const standard = compile();
+  assert.equal(Object.hasOwn(standard, 'effort'), false);
+  // A plan without an effort keeps the revision it had before efforts existed.
+  assert.equal(standard.harnessRevision, compatibilityHarnessRevision(standard));
+
+  const high = compile({ assignment: assignment({ effort: 'high' }) });
+  assert.equal(high.effort, 'high');
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(high)), high);
+  const max = compile({ assignment: assignment({ effort: 'max' }) });
+  assert.equal(new Set([standard, high, max].map(({ harnessRevision }) => harnessRevision)).size, 3);
+  // Like a model change, an effort change keeps the thread's instance.
+  assert.equal(new Set([standard, high, max].map(deriveRuntimePlanInstanceId)).size, 1);
+  assert.throws(
+    () => parseRuntimePlanV2({ ...structuredClone(high), effort: 'minimal' }),
+    /effort is invalid/,
+  );
+
+  const coding = compile({ codingWorkspace: true, codingModel: { ...CODING_MODEL, effort: 'xhigh' } });
+  assert.equal(coding.codingWorkspace?.codingModel?.effort, 'xhigh');
+  assert.deepEqual(parseRuntimePlanV2(structuredClone(coding)), coding);
+  assert.notEqual(
+    coding.harnessRevision,
+    compile({ codingWorkspace: true, codingModel: CODING_MODEL }).harnessRevision,
+  );
+  assert.throws(
+    () => parseRuntimePlanV2({
+      ...structuredClone(coding),
+      codingWorkspace: { available: true, codingModel: { ...CODING_MODEL, effort: 'off' } },
+    }),
+    /codingModel\.effort is invalid/,
+  );
+});
+
 test('a malformed coding workspace or coding model is rejected', () => {
   const plan = compile({ codingWorkspace: true, codingModel: CODING_MODEL });
   const withWorkspace = (codingWorkspace: unknown) => ({ ...structuredClone(plan), codingWorkspace });

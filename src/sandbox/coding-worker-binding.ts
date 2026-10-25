@@ -51,13 +51,13 @@ export interface CodingWorkerBindingV2 extends Omit<CodingWorkerBindingV1, 'sche
   modelCredential?: RuntimePlanModelCredentialV3;
 }
 
-export type CodingWorkerModel = Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute'>;
+export type CodingWorkerModel = Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'effort'>;
 
 export function codingWorkerBindingForPlan(
   plan: Pick<
     RuntimePlanV2,
-    'agentId' | 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'codingWorkspace' | 'repositories' |
-    'installation' | 'modelCredential'
+    'agentId' | 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'effort' | 'codingWorkspace' |
+    'repositories' | 'installation' | 'modelCredential'
   >,
   workspaceId: string,
 ): CodingWorkerBinding {
@@ -65,12 +65,17 @@ export function codingWorkerBindingForPlan(
   // plan carries none: a coding role that resolved to nothing falls back to
   // the Agent's model, never to "no model".
   const frozen = plan.codingWorkspace?.codingModel;
-  const { model, runtimeModel = model, runtimeModelRoute } = frozen ?? plan;
+  const { model, runtimeModel = model, runtimeModelRoute, effort } = frozen ?? plan;
   const binding: CodingWorkerBindingV1 = {
     schemaVersion: 1,
     workspaceId,
     agentId: plan.agentId,
-    codingModel: { model, runtimeModel, ...(runtimeModelRoute ? { runtimeModelRoute } : {}) },
+    codingModel: {
+      model,
+      runtimeModel,
+      ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+      ...(effort ? { effort } : {}),
+    },
     repositories: plan.repositories.map((repository) => ({ ...repository })),
   };
   if (!plan.installation) return binding;
@@ -106,6 +111,8 @@ export function codingWorkerInstanceId(binding: CodingWorkerBinding): string {
     binding.codingModel.runtimeModelRoute
       ? frozenRuntimeModelRouteIdentity(binding.codingModel.runtimeModelRoute)
       : null,
+    // Present only when chosen, so workers addressed before efforts existed keep their ids.
+    ...(binding.codingModel.effort ? [{ effort: binding.codingModel.effort }] : []),
     repositories,
   ];
   if (binding.schemaVersion === 1) return opaqueId('codingworker', JSON.stringify(identity));

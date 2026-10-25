@@ -234,6 +234,8 @@ export interface RuntimePlanV2 {
   /** Safe hosted-catalog inputs needed to register that route in a cold isolate. */
   runtimeModelRoute?: FrozenRuntimeModelRoute;
   model: string;
+  /** Reasoning effort frozen with `model`; absent runs the model's standard level. */
+  effort?: ModelEffort;
   /**
    * Frozen shape of the image model role: whether the role resolved to a model
    * at all and whether that model accepts image input. Deliberately carries no
@@ -320,6 +322,7 @@ export interface RuntimePlanCodingModelV1 {
   /** Internal Flue route for the coding model. */
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
+  effort?: ModelEffort;
   attribution: RuntimePlanCodingModelAttributionV1;
   /**
    * The coding model's credential epoch, frozen like the plan's own
@@ -495,6 +498,7 @@ export function compileRuntimePlanV2(input: CompileRuntimePlanV2Input): RuntimeP
     runtimeModel: input.runtimeModel ?? requireFrozenModel(input.assignment),
     ...(input.runtimeModelRoute ? { runtimeModelRoute: input.runtimeModelRoute } : {}),
     model: requireFrozenModel(input.assignment),
+    ...(input.assignment.effort ? { effort: input.assignment.effort } : {}),
     ...(input.imageCapability
       ? {
           imageCapability: {
@@ -891,6 +895,7 @@ export function parseRuntimePlanV2(
     'runtimeModel',
     'runtimeModelRoute',
     'model',
+    'effort',
     'imageCapability',
     'browserCapability',
     'codingWorkspace',
@@ -921,6 +926,7 @@ export function parseRuntimePlanV2(
     'handoffContext',
     'runtimeModel',
     'runtimeModelRoute',
+    'effort',
     'imageCapability',
     'browserCapability',
     'codingWorkspace',
@@ -1030,6 +1036,7 @@ export function parseRuntimePlanV2(
     ? undefined
     : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
   validateFrozenRuntimeModelRoute(model, runtimeModel ?? model, runtimeModelRoute);
+  const effort = record.effort === undefined ? undefined : modelEffort(record.effort, 'effort');
   const imageCapability = record.imageCapability === undefined
     ? undefined
     : parseImageCapability(record.imageCapability);
@@ -1130,6 +1137,7 @@ export function parseRuntimePlanV2(
     ...(runtimeModel ? { runtimeModel } : {}),
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
     model,
+    ...(effort ? { effort } : {}),
     ...(imageCapability ? { imageCapability } : {}),
     ...(browserCapability ? { browserCapability } : {}),
     ...(codingWorkspace ? { codingWorkspace } : {}),
@@ -1406,6 +1414,7 @@ function computeHarnessRevision(plan: HarnessRevisionInput): string {
         ? { runtimeModelRoute: frozenRuntimeModelRouteIdentity(plan.runtimeModelRoute) }
         : {}),
       model: plan.model,
+      ...(plan.effort ? { effort: plan.effort } : {}),
       ...(plan.imageCapability ? { imageCapability: plan.imageCapability } : {}),
       ...(plan.browserCapability ? { browserCapability: plan.browserCapability } : {}),
       // Hashed because the plan is the instance's immutable initial data: a
@@ -1478,10 +1487,10 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
   const record = exactRecord(
     value,
     'codingWorkspace.codingModel',
-    ['model', 'runtimeModel', 'runtimeModelRoute', 'attribution', 'modelCredential'],
-    ['runtimeModelRoute', 'modelCredential'],
+    ['model', 'runtimeModel', 'runtimeModelRoute', 'effort', 'attribution', 'modelCredential'],
+    ['runtimeModelRoute', 'effort', 'modelCredential'],
   );
-  const { model, runtimeModel, runtimeModelRoute } = parseCodingModelRoute(record);
+  const { model, runtimeModel, runtimeModelRoute, effort } = parseCodingModelRoute(record);
   const attributionRecord = exactRecord(
     record.attribution,
     'codingModel.attribution',
@@ -1501,6 +1510,7 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
     model,
     runtimeModel,
     ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+    ...(effort ? { effort } : {}),
     attribution: {
       role: oneOf(attributionRecord.role, 'codingModel.attribution.role', ['coding'] as const),
       source,
@@ -1516,15 +1526,20 @@ function parseCodingModel(value: unknown): RuntimePlanCodingModelV1 {
 /** The model half of a frozen coding model, as a coding worker's binding carries it. */
 export function parseRuntimePlanCodingModelRoute(
   value: unknown,
-): Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute'> {
+): Pick<RuntimePlanCodingModelV1, 'model' | 'runtimeModel' | 'runtimeModelRoute' | 'effort'> {
   const record = exactRecord(
     value,
     'codingModel',
-    ['model', 'runtimeModel', 'runtimeModelRoute'],
-    ['runtimeModelRoute'],
+    ['model', 'runtimeModel', 'runtimeModelRoute', 'effort'],
+    ['runtimeModelRoute', 'effort'],
   );
-  const { model, runtimeModel, runtimeModelRoute } = parseCodingModelRoute(record);
-  return { model, runtimeModel, ...(runtimeModelRoute ? { runtimeModelRoute } : {}) };
+  const { model, runtimeModel, runtimeModelRoute, effort } = parseCodingModelRoute(record);
+  return {
+    model,
+    runtimeModel,
+    ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+    ...(effort ? { effort } : {}),
+  };
 }
 
 function parseCodingModelRoute(record: Record<string, unknown>) {
@@ -1534,7 +1549,8 @@ function parseCodingModelRoute(record: Record<string, unknown>) {
     ? undefined
     : parseFrozenRuntimeModelRoute(record.runtimeModelRoute);
   validateFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
-  return { model, runtimeModel, runtimeModelRoute };
+  const effort = record.effort === undefined ? undefined : modelEffort(record.effort, 'codingModel.effort');
+  return { model, runtimeModel, runtimeModelRoute, effort };
 }
 
 function parseWebsiteLogin(value: unknown, index: number): RuntimePlanWebsiteLoginV1 {

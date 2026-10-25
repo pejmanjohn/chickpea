@@ -124,3 +124,25 @@ test('V2 snapshots remain readable and upgrade when model attribution is next re
     store.close();
   }
 });
+
+test('a thread snapshot freezes the effort with its model', async () => {
+  const store = new SqliteAgentSnapshotStore(':memory:');
+  try {
+    const attribution: AgentModelAttribution = { source: 'workspace_default', providerId: 'openai', workspaceDefaultRevision: 6 };
+    const standard = snapshotFromEffectiveConfig(config('openai/gpt-5.5', attribution), 100);
+    const high = await getOrReplaceSnapshotForRoute(
+      store,
+      'T_SNAPSHOT:D_SNAPSHOT:effort',
+      { agentId: 'agent_support', agentGeneration: 3, modelAttribution: attribution },
+      () => ({ ...config('openai/gpt-5.5', attribution), effort: 'high' }),
+      () => 100,
+    );
+    assert.equal(high.effort, 'high');
+    assert.equal(Object.hasOwn(standard, 'effort'), false);
+    assert.notEqual(high.snapshotHash, standard.snapshotHash);
+    // A persisted snapshot keeps serving its frozen effort.
+    assert.equal((await store.get('T_SNAPSHOT:D_SNAPSHOT:effort'))?.effort, 'high');
+  } finally {
+    store.close();
+  }
+});
