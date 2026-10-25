@@ -1122,6 +1122,23 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       created.id,
       'ordinary welcomes still hand off after durable delivery settlement',
     );
+
+    const groupDmWelcome = {
+      ...ordinaryWelcome,
+      outboxId: 'agent_welcome_creation_group_dm',
+      destination: { ...welcome.destination, channelId: 'C_CREATION_GROUP_DM', threadTs: '200.610000' },
+      deliveryRef: 'slack:C_CREATION_GROUP_DM:200.620000',
+    };
+    await completeSettledAgentWelcomeHandoff(groupDmWelcome, f.config, f.management);
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        groupDmWelcome.destination.workspaceId,
+        groupDmWelcome.destination.channelId,
+        groupDmWelcome.destination.threadTs,
+      ),
+      undefined,
+      'a welcome in a group DM leaves the thread with Chickpea, since a new creator-only Agent cannot answer there',
+    );
   } finally {
     f.close();
   }

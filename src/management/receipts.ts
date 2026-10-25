@@ -133,7 +133,10 @@ export async function completeManagementSetupReceipt(
   });
 }
 
-export function formatManagementSetupReceipt(receipt: ManagementReceipt): string {
+export function formatManagementSetupReceipt(
+  receipt: ManagementReceipt,
+  options: { groupDm?: boolean } = {},
+): string {
   if (isRoutineSavedAcknowledgement(receipt) || isScheduleActionReaction(receipt)) {
     throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
   }
@@ -146,7 +149,7 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
     }
     return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
-  if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt);
+  if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt, options.groupDm === true);
   if (isChickpeaIntroduction(receipt)) return formatChickpeaIntroduction(receipt);
   if (isConnectorConnectedReceipt(receipt)) {
     const scope = receipt.ownerKind === 'member' ? 'personal' : 'team';
@@ -385,6 +388,7 @@ export async function completeSettledAgentWelcomeHandoff(
   }
   const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(record.deliveryRef ?? '');
   if (!delivery || delivery[1] !== record.destination.channelId) return;
+  if (agentWelcomeInGroupDm(record.receipt, record.destination.channelId)) return;
   await handoffCreatedAgentThread({
     workspaceId: record.destination.workspaceId,
     channelId: record.destination.channelId,
@@ -606,7 +610,10 @@ export async function deliverManagementReceiptToSlack(
     if (!opened.ok || !opened.channel?.id) throw new Error('Slack did not open the receipt DM.');
     channel = opened.channel.id;
   }
-  const text = formatManagementSetupReceipt(record.receipt);
+  const text = formatManagementSetupReceipt(record.receipt, {
+    groupDm: record.destination.kind === 'thread' &&
+      agentWelcomeInGroupDm(record.receipt, record.destination.channelId),
+  });
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -718,13 +725,23 @@ export function isAgentCreatedWelcome(
   return 'kind' in receipt && receipt.kind === 'agent_created_welcome';
 }
 
+/**
+ * A new Agent starts creator-only, and only Agents everyone in the workspace
+ * can use answer in a group DM, so a welcome there leaves the thread with
+ * Chickpea. Only a 1:1 DM's id starts with `D`; a group DM's looks like a
+ * Channel's.
+ */
+export function agentWelcomeInGroupDm(receipt: ManagementReceipt, channelId: string): boolean {
+  return isAgentCreatedWelcome(receipt) && receipt.surface === 'direct' && !channelId.startsWith('D');
+}
+
 function isChickpeaIntroduction(
   receipt: ManagementReceipt,
 ): receipt is ManagementChickpeaIntroduction {
   return 'kind' in receipt && receipt.kind === 'chickpea_introduction';
 }
 
-function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): string {
+function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {
   const incomplete = receipt.publication?.incomplete ?? [];
   if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt);
   const description = receipt.agentDescription
@@ -752,6 +769,9 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   if (receipt.followOnNotices?.length) {
     lines.push(...receipt.followOnNotices.map(boundedFollowOnNoticeText));
   }
+  if (groupDm) {
+    lines.push('Only Agents everyone in this workspace can use answer in group DMs, so I’ll answer here once I’m in a public Channel. Until then, message me directly.');
+  }
   if (receipt.viewAgentUrl) {
     lines.push(renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL));
     return lines.join('\n\n');
@@ -764,7 +784,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   } else if (receipt.setupUrl) {
     lines.push('You can configure my connections and capabilities from my Agent page.');
     lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
-  } else {
+  } else if (!groupDm) {
     lines.push('Tell me what you’d like to work on first.');
   }
   return lines.join('\n\n');

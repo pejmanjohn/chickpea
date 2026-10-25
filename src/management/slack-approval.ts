@@ -11,6 +11,7 @@ import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { conversationThreadTs, slackConversationKind } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
+import { agentWelcomeInGroupDm } from './receipts.ts';
 import { WorkspaceManagementService } from './service.ts';
 import {
   resolveSlackManagementActor,
@@ -195,6 +196,7 @@ async function completeDeferredAgentCreationHandoff(input: {
       welcome.receipt.publication?.incomplete.includes('slack_presence')) return;
   const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(welcome.deliveryRef ?? '');
   if (!delivery || delivery[1] !== input.turn.channelId) return;
+  if (agentWelcomeInGroupDm(welcome.receipt, welcome.destination.channelId)) return;
   await handoffCreatedAgentThread({
     workspaceId: welcome.destination.workspaceId,
     channelId: welcome.destination.channelId,

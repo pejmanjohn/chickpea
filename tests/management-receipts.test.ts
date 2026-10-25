@@ -652,6 +652,15 @@ test('Agent welcomes say in plain words what happened to the handle and the Chan
       ],
     },
     {
+      name: 'created from a group DM',
+      receipt: { ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT, surface: 'direct' },
+      persona: 'agent',
+      paragraphs: [
+        'Hi — I’m *Support* (@support).',
+        'Only Agents everyone in this workspace can use answer in group DMs, so I’ll answer here once I’m in a public Channel. Until then, message me directly.',
+      ],
+    },
+    {
       name: 'handle not published',
       receipt: { ...SUPPORT_WELCOME, publication: { status: 'partial', incomplete: ['slack_presence'] } },
       persona: 'chickpea',
