@@ -101,6 +101,7 @@ import {
   managementOperationDigest,
   managementOriginKey,
   assertValidRepositoryGrants,
+  managementIdempotencyScope,
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
@@ -577,8 +578,9 @@ export class WorkspaceManagementService {
     };
   }
 
-  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult> {
-    const actor = await this.requireLiveActor(input.context);
+  async importSkill(request: ImportSkillInput): Promise<ImportSkillResult> {
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
     const replay = await this.stores.management.getRequest(replayOperationId);
@@ -654,8 +656,9 @@ export class WorkspaceManagementService {
     };
   }
 
-  async manageAgentSkill(input: ManageAgentSkillInput): Promise<ManageAgentSkillResult> {
-    const actor = await this.requireLiveActor(input.context);
+  async manageAgentSkill(request: ManageAgentSkillInput): Promise<ManageAgentSkillResult> {
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     const agentId = input.agentId ??
       (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
     if (!agentId || !isAgentId(agentId)) {
@@ -5607,10 +5610,9 @@ export function managementActorPrincipal(actor: LiveManagementActor): AuthPrinci
 }
 
 function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
-  if (!actor.actingAgentId) return storageKey;
-  const prefix = `agent.${actor.actingAgentId}.`;
+  const prefix = managementIdempotencyScope(actor);
   if (!storageKey.startsWith(prefix)) {
-    throw new ManagementError('idempotency_conflict', 'The management request Agent changed.');
+    throw new ManagementError('idempotency_conflict', 'The management request belongs to another conversation.');
   }
   return storageKey.slice(prefix.length);
 }
@@ -7210,6 +7212,17 @@ function skillImportOperationId(
     replaceExisting: input.replaceExisting === true,
   })).digest('hex').slice(0, 32);
   return `management_skill_import_${digest}`;
+}
+
+/**
+ * A Slack model reuses keys such as `disable-foo` in later turns. Scoping a
+ * skill key to the requester's message keeps a retry within the turn
+ * idempotent without replaying an earlier turn's receipt.
+ */
+function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
+  return actor.origin.kind === 'slack' && actor.origin.eventId
+    ? `${key}@${actor.origin.eventId}`
+    : key;
 }
 
 function skillActionOperationId(

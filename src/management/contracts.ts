@@ -138,11 +138,23 @@ export function assertValidRepositoryGrants(
   }
 }
 
+/**
+ * Where a requester-chosen idempotency key is unique: one MCP client, one
+ * Admin session, or one Slack conversation, under the acting Agent. A retry
+ * there replays; the same key from another client or door is a new request.
+ * An approval resumes the request in the conversation that proposed it.
+ */
+export function managementIdempotencyScope(
+  actor: Pick<ManagementActorContext, 'origin' | 'actingAgentId'>,
+): string {
+  return `${createHash('sha256').update(managementApprovalScopeKey(actor)).digest('hex').slice(0, 32)}.`;
+}
+
 export function managementStorageIdempotencyKey(
-  actor: Pick<ManagementActorContext, 'actingAgentId'>,
+  actor: Pick<ManagementActorContext, 'origin' | 'actingAgentId'>,
   publicKey: string,
 ): string {
-  return actor.actingAgentId ? `agent.${actor.actingAgentId}.${publicKey}` : publicKey;
+  return `${managementIdempotencyScope(actor)}${publicKey}`;
 }
 
 function operationAgentIds(operation: ManagementOperation): string[] {
