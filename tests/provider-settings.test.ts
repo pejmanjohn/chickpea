@@ -183,6 +183,9 @@ test('Workspace default reads expose live inheritance health and exclude drafts 
       workspaceDefault: {
         workspaceId: 'T_TEST',
         modelId: 'openai/gpt-5.6-sol',
+        effort: null,
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        standardEffort: 'medium',
         revision: 2,
         provenance: 'admin_selected',
         runtimeContract: 'chickpea-v1',
@@ -244,6 +247,9 @@ test('Workspace default updates are optimistic and return the current value on c
       workspaceDefault: {
         workspaceId: 'T_TEST',
         modelId: 'openai/gpt-5.6-sol',
+        effort: null,
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        standardEffort: 'medium',
         revision: 2,
         provenance: 'admin_selected',
         runtimeContract: 'legacy',
