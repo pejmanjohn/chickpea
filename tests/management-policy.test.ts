@@ -387,8 +387,10 @@ test('the direct apply tool admits one exact skill toggle but proposes a content
       },
     });
     assert.equal(compound.ok, true);
-    assert.equal((compound as { ok: true; result: { status: string } }).result.status,
-      'confirmation_required');
+    // The second toggle needs the revision the first one makes, so only the first waits for approval.
+    assert.deepEqual((compound as { ok: true; result: { outcomes: Array<{ disposition: string; code?: string }> } })
+      .result.outcomes.map(({ disposition, code }) => [disposition, code]),
+    [['confirmation_required', undefined], ['skipped', 'revision_conflict']]);
 
     for (const [id, requesterText] of [
       ['negated', "Don't enable the unslop skill."],
@@ -1279,7 +1281,7 @@ async function skillChangeFixture(suffix: string) {
   return { f, agent, askedBy, saidBy, skillNames };
 }
 
-test('an ask cannot remove a skill directly with the asking Agent\'s words; it can only propose', async () => {
+test('an ask cannot remove a skill directly with the asking Agent\'s words; it only proposes', async () => {
   const { f, agent, askedBy, saidBy, skillNames } = await skillChangeFixture('ask-manage-skill');
   const words = 'Remove the unslop skill';
   const manage = (signal: SlackManagementSignal, idempotencyKey: string) => invokeSlackWorkspaceManagementTool({
@@ -1302,13 +1304,10 @@ test('an ask cannot remove a skill directly with the asking Agent\'s words; it c
     },
   });
   try {
-    assert.deepEqual(await manage(askedBy('900.2', words), 'ask-remove-unslop'), {
-      ok: false,
-      error: {
-        code: 'invalid_request',
-        message: 'The current requester message must explicitly remove the unslop skill. No change was made.',
-      },
-    });
+    const askedRemoval = await manage(askedBy('900.2', words), 'ask-remove-unslop');
+    assert.equal(askedRemoval.ok, true);
+    assert.equal((askedRemoval as { ok: true; result: { status: string } }).result.status, 'pending',
+      'the asking Agent\'s words only propose the removal to the person');
     assert.deepEqual(await skillNames(), ['unslop', 'keep-me']);
     const proposed = await propose(askedBy('900.3', words), 'ask-propose-unslop-removal');
     assert.equal(proposed.ok, true);
