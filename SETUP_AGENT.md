@@ -106,9 +106,10 @@ lane's own app:
 5. When Slack asks to reinstall the app, reinstall it to the workspace so it
    grants the new permission.
 
-Credential recovery never adds either. Installations on the shared Chickpea
-app hear only `@Chickpea` in group DMs until its maintainer adds both to that
-app.
+Credential recovery never adds either. The shared Chickpea app has both. An
+installation on it gets the permission when an Owner or Admin uses
+**Reconnect with Slack** in **Settings → Slack**, and hears only `@Chickpea` in
+group DMs until then.
 
 ## Recovery
 
