@@ -152,6 +152,14 @@ release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
 
+v0.1.36 lets people use Chickpea in Slack group DMs. There, `@Chickpea`
+and any Agent that everyone in the workspace can use answer in a thread.
+Updating changes nothing in Channels or DMs. An installation on the shared
+Chickpea app hears Agent handles and thread replies in group DMs, and lets
+Agents read a group DM's earlier messages, once an Owner or Admin uses
+**Reconnect with Slack** in Admin settings. Until then, group DMs answer only
+`@Chickpea`. A rollback to v0.1.35 was not tested.
+
 v0.1.35 adds an effort level to each chat-model choice. Updating changes no
 Agent's behavior: every model keeps running at its standard level until
 someone picks another in Admin. One exception is an OpenRouter model that
