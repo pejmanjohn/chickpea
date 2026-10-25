@@ -92,6 +92,10 @@
     "@flue/slack": {
       "hono": "4.13.13"
     },
+    "agents": {
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk",
+      "@modelcontextprotocol/server": "$@modelcontextprotocol/server"
+    },
     "proxy-addr": "2.0.8",
     "smol-toml": "1.9.1",
     "source-map-js": "1.2.2"
@@ -195,9 +199,9 @@
     "@earendil-works/pi-ai": "1.1.0",
     "@flue/runtime": "2.3.0",
     "@flue/slack": "2.3.0",
-    "@modelcontextprotocol/core": "2.0.0",
-    "@modelcontextprotocol/sdk": "1.30.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/core": "2.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@slack/web-api": "^8.0.0",
     "better-auth": "1.7.1",
@@ -210,7 +214,7 @@
     "unpdf": "1.8.1",
     "valibot": "^1.4.2",
     "yaml": "2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.63.1",
