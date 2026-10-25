@@ -6,7 +6,6 @@ import {
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
   CONFIG_CHICKPEA_ROUTING_MIGRATION,
   CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
-  CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION,
   CONFIG_MODEL_ROLE_MIGRATION,
   CONFIG_SCHEMA_MARKER,
   CONFIG_SCHEMA_VERSION,
@@ -567,9 +566,7 @@ test('the first start removes every legacy Agent secret, including those of dele
 
     new ConfigStoreLogic(db, { agents: [] });
     assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
-    const migrations = appliedMigrations(db).map(({ id }) => id);
-    assert.ok(migrations.includes(CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION));
-    assert.ok(migrations.includes(CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION));
+    assert.ok(appliedMigrations(db).some(({ id }) => id === CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION));
 
     const before = JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) });
     new ConfigStoreLogic(db, { agents: [] });
@@ -579,30 +576,77 @@ test('the first start removes every legacy Agent secret, including those of dele
   }
 });
 
-test('an installation that already ran the credential-binding step gets the legacy secret sweep', () => {
+// v0.1.33's createAgent statement, which predates credential_incarnation and
+// connection credential references.
+function insertV0133Agent(db: StateDb, id: string): void {
+  db.run(
+    `INSERT INTO config_agents (
+      id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
+      creator_membership_id, edit_policy, configuration_generation,
+      slack_presence_json, archived_at, model,
+      skills_json, mcp_servers_json, api_connections_json, repositories_json,
+      website_logins_json
+    ) VALUES (?, 'user', 1, ?, NULL, 'Help.', 1, 'active', NULL, 'creator_and_admins', 1,
+      ?, NULL, NULL, '[]', ?, ?, '[]', '[]')`,
+    id,
+    id,
+    JSON.stringify({
+      requestedHandle: id,
+      normalizedHandle: id,
+      desiredState: 'unpublished',
+      health: 'unpublished',
+      avatar: { kind: 'generated', revision: 1, seed: id },
+    }),
+    JSON.stringify([{
+      id: 'docs', displayName: 'Docs', url: 'https://mcp.example.com/rpc',
+      transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
+      lifecycleStatus: 'ready', statusText: '', discoveredTools: [], allowedTools: [],
+    }]),
+    JSON.stringify([{
+      id: 'billing', displayName: 'Billing', allowedHosts: ['api.example.com'],
+      pathPrefixes: ['/v1'], headerName: 'Authorization', allowedMethods: ['GET'],
+      enabled: true, authMode: 'credential',
+    }]),
+  );
+}
+
+test('every start removes the legacy Agent secrets an earlier release saved after a rollback', () => {
   const db = openStateDb(':memory:');
   try {
     installSchema12Fixture(db);
+    seedAppSettings(db, NON_LEGACY_SECRET_KEYS);
     new ConfigStoreLogic(db, { agents: [] });
-    // As the binding step alone left it: an Agent deleted before the update
-    // kept its secrets because its row was already gone.
-    db.run('DELETE FROM config_migrations WHERE id = ?', CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION);
-    seedAppSettings(db, [...LEGACY_AGENT_SECRET_KEYS, ...NON_LEGACY_SECRET_KEYS]);
+    // Release-candidate builds recorded the removal as a one-time step.
+    db.run(
+      'INSERT OR IGNORE INTO config_migrations (id, applied_at) VALUES (?, 1)',
+      '2026-10-24-legacy-agent-connection-secret-sweep-v1',
+    );
     const bindingApplied = db.get(
       'SELECT applied_at FROM config_migrations WHERE id = ?',
       CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
     );
 
+    // Rolled back to v0.1.33: it saves an Agent's secrets under the Agent's
+    // ID, and deleting the Agent from Slack writes no receipt and keeps them.
+    insertV0133Agent(db, 'agent_reused');
+    const savedOnRollback = [
+      'mcp.agent_reused.docs.bearer',
+      'mcp.agent_reused.docs.header.X-Api-Key',
+      'mcp.agent_reused.docs.oauth.tokens',
+      'connector.agent_reused.billing.credential',
+      'connector.agent_reused.billing.oauth.tokens',
+    ];
+    seedAppSettings(db, savedOnRollback);
+    db.run('DELETE FROM config_agents WHERE id = ?', 'agent_reused');
+
+    // Forward again. Rolling back once more and creating an Agent with the
+    // same ID would otherwise show it these secrets as already saved.
     new ConfigStoreLogic(db, { agents: [] });
     assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
     assert.deepEqual(db.get(
       'SELECT applied_at FROM config_migrations WHERE id = ?',
       CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
     ), bindingApplied);
-
-    const before = JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) });
-    new ConfigStoreLogic(db, { agents: [] });
-    assert.equal(JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) }), before);
   } finally {
     db.close();
   }
@@ -612,39 +656,10 @@ test('a fresh installation accepts v0.1.33 Agent writes, and the next start bind
   const db = openStateDb(':memory:');
   try {
     new ConfigStoreLogic(db, { agents: [] });
-    // v0.1.33's createAgent and Admin deleteAgentWithMemory statements, which
-    // predate credential_incarnation and connection credential references.
-    const insertAgent = (id: string) => db.run(
-      `INSERT INTO config_agents (
-        id, agent_kind, revision, name, description, instructions, enabled, lifecycle,
-        creator_membership_id, edit_policy, configuration_generation,
-        slack_presence_json, archived_at, model,
-        skills_json, mcp_servers_json, api_connections_json, repositories_json,
-        website_logins_json
-      ) VALUES (?, 'user', 1, ?, NULL, 'Help.', 1, 'active', NULL, 'creator_and_admins', 1,
-        ?, NULL, NULL, '[]', ?, ?, '[]', '[]')`,
-      id,
-      id,
-      JSON.stringify({
-        requestedHandle: id,
-        normalizedHandle: id,
-        desiredState: 'unpublished',
-        health: 'unpublished',
-        avatar: { kind: 'generated', revision: 1, seed: id },
-      }),
-      JSON.stringify([{
-        id: 'docs', displayName: 'Docs', url: 'https://mcp.example.com/rpc',
-        transport: 'streamable-http', authMode: 'bearer', headerNames: [], enabled: true,
-        lifecycleStatus: 'ready', statusText: '', discoveredTools: [], allowedTools: [],
-      }]),
-      JSON.stringify([{
-        id: 'billing', displayName: 'Billing', allowedHosts: ['api.example.com'],
-        pathPrefixes: ['/v1'], headerName: 'Authorization', allowedMethods: ['GET'],
-        enabled: true, authMode: 'credential',
-      }]),
-    );
-    insertAgent('agent_rolled_back');
-    insertAgent('agent_deleted_in_admin');
+    insertV0133Agent(db, 'agent_rolled_back');
+    insertV0133Agent(db, 'agent_deleted_in_admin');
+    // v0.1.33's Admin deleteAgentWithMemory, whose receipt predates
+    // credential_incarnation.
     db.run('DELETE FROM config_agents WHERE id = ?', 'agent_deleted_in_admin');
     db.run(
       `INSERT INTO config_agent_deletion_receipts (

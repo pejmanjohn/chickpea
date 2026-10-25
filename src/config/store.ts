@@ -128,8 +128,6 @@ export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1
 export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
 export const CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION =
   '2026-10-11-agent-connection-credential-binding-v1';
-export const CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION =
-  '2026-10-24-legacy-agent-connection-secret-sweep-v1';
 
 /**
  * Secrets that releases before v0.1.34 kept under an Agent's ID, which a later
@@ -3339,7 +3337,7 @@ export class ConfigStoreLogic {
     this.installChickpeaRoutingExtensions();
     this.installModelRoleExtensions();
     this.installConnectionCredentialBindingMigration();
-    this.installLegacyAgentSecretSweep();
+    this.removeLegacyAgentSecrets();
     this.refillMissingConnectionCredentialRefs();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
@@ -3512,30 +3510,21 @@ export class ConfigStoreLogic {
   }
 
   /**
-   * Deletes every legacy Agent secret. A step of its own, so a database that
-   * already ran the binding step gets it too; matching keys rather than Agents
-   * also covers Agents deleted before the update.
+   * Deletes every legacy Agent secret, on every start: this release never
+   * reads them, and after a rollback an earlier release writes them again and
+   * keeps them when it deletes the Agent. Matching keys rather than Agents
+   * covers Agents that no longer exist.
    */
-  private installLegacyAgentSecretSweep(): void {
-    if (this.db.get(
-      'SELECT 1 AS present FROM config_migrations WHERE id = ?',
-      CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION,
-    )) return;
-    if (tableExists(this.db, 'app_settings')) {
-      for (const setting of this.db.all(
-        "SELECT key FROM app_settings WHERE key GLOB 'mcp.*' OR key GLOB 'connector.*' ORDER BY key",
-      )) {
-        const key = String(setting.key);
-        if (LEGACY_AGENT_SECRET_KEY.test(key) && !CURRENT_SECRET_KEY.test(key)) {
-          this.db.run('DELETE FROM app_settings WHERE key = ?', key);
-        }
+  private removeLegacyAgentSecrets(): void {
+    if (!tableExists(this.db, 'app_settings')) return;
+    for (const setting of this.db.all(
+      "SELECT key FROM app_settings WHERE key GLOB 'mcp.*' OR key GLOB 'connector.*' ORDER BY key",
+    )) {
+      const key = String(setting.key);
+      if (LEGACY_AGENT_SECRET_KEY.test(key) && !CURRENT_SECRET_KEY.test(key)) {
+        this.db.run('DELETE FROM app_settings WHERE key = ?', key);
       }
     }
-    this.db.run(
-      'INSERT INTO config_migrations (id, applied_at) VALUES (?, ?)',
-      CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION,
-      Date.now(),
-    );
   }
 
   /**
