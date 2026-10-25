@@ -11,6 +11,7 @@ import {
   type WorkspaceManagementToolName,
 } from '../src/management/tool-adapter.ts';
 import type {
+  ImportSkillResult,
   ManagementActorContext,
   ManagementApplyResult,
   ManagementOperation,
@@ -73,15 +74,32 @@ async function call<TName extends WorkspaceManagementToolName>(
   }, name, args);
 }
 
+interface ToolResults {
+  apply_workspace_changes: ManagementApplyResult;
+  confirm_workspace_change: ManagementApplyResult;
+  undo_workspace_change: ManagementApplyResult;
+  import_skill: ImportSkillResult;
+}
+
+/** The service result the adapter passes through, once the call succeeded. */
+async function succeed<TName extends keyof ToolResults>(
+  f: Fixture,
+  person: Pick<Person, 'user' | 'membership'>,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+): Promise<ToolResults[TName]> {
+  const response = await call(f, person, name, args);
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ToolResults[TName] }).result;
+}
+
 async function apply(
   f: Fixture,
   person: Pick<Person, 'user' | 'membership'>,
   key: string,
   operations: ManagementOperation[],
 ): Promise<ManagementApplyResult> {
-  const response = await call(f, person, 'apply_workspace_changes', { idempotencyKey: key, operations });
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+  return succeed(f, person, 'apply_workspace_changes', { idempotencyKey: key, operations });
 }
 
 async function confirm(
@@ -89,9 +107,7 @@ async function confirm(
   person: Pick<Person, 'user' | 'membership'>,
   proposalId: string,
 ): Promise<ManagementApplyResult> {
-  const response = await call(f, person, 'confirm_workspace_change', { proposalId });
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+  return succeed(f, person, 'confirm_workspace_change', { proposalId });
 }
 
 function assertApplied(result: ManagementApplyResult, label: string): void {
@@ -243,11 +259,10 @@ test('MCP applies every allowed non-destructive change in one call', () => withF
   assertApplied(disabled, 'disable without Channel reach');
   assert.equal(disabled.outcomes[0]?.undoAvailable, true, 'a disable without Channel reach keeps its undo');
   assert.equal((await f.config.getAgent(unreached.id)).enabled, false);
-  const reenabled = await call(f, f.owner, 'undo_workspace_change', {
+  assertApplied(await succeed(f, f.owner, 'undo_workspace_change', {
     operationId: disabled.operationId,
     idempotencyKey: 'undo-disable-unreached',
-  });
-  assert.equal(reenabled.ok, true, JSON.stringify(reenabled));
+  }), 'undo of a disable');
   assert.equal((await f.config.getAgent(unreached.id)).enabled, true);
 
   const repositoryAgent = await createAgent(f, f.owner, 'agent_repository', {
@@ -466,7 +481,9 @@ test('MCP grants a member exactly the Admin UI authority', () => withFixture('mc
     agentId: locked.id,
     expectedRevision: locked.revision,
   }]);
-  assert.equal(denied.outcomes[0]?.disposition, 'failed');
+  assert.deepEqual(denied.outcomes.map(({ disposition, code }) => [disposition, code]), [
+    ['failed', 'forbidden'],
+  ]);
   assert.equal((await f.config.getAgent(locked.id)).lifecycle, 'active');
 
   const memberChange = await apply(f, member, 'member-promote', [{
@@ -501,12 +518,10 @@ test('MCP undo applies directly unless the inverse removes a connection', () => 
     patch: { instructions: 'A newer role.' },
   }]);
   assertApplied(edited, 'instruction edit');
-  const undone = await call(f, f.owner, 'undo_workspace_change', {
+  assertApplied(await succeed(f, f.owner, 'undo_workspace_change', {
     operationId: edited.operationId,
     idempotencyKey: 'undo-instructions',
-  });
-  assert.equal(undone.ok, true, JSON.stringify(undone));
-  assertApplied((undone as { result: ManagementApplyResult }).result, 'undo of an instruction edit');
+  }), 'undo of an instruction edit');
   agent = await f.config.getAgent(agent.id);
   assert.equal(agent.instructions, 'Help the team.');
 
@@ -518,15 +533,10 @@ test('MCP undo applies directly unless the inverse removes a connection', () => 
     patch: { mcpServers: [knowledgeServer] },
   }]);
   assertApplied(added, 'connection addition');
-  const undoAddition = await call(f, f.owner, 'undo_workspace_change', {
+  const proposalId = pendingConfirmation(await succeed(f, f.owner, 'undo_workspace_change', {
     operationId: added.operationId,
     idempotencyKey: 'undo-connection',
-  });
-  assert.equal(undoAddition.ok, true, JSON.stringify(undoAddition));
-  const proposalId = pendingConfirmation(
-    (undoAddition as { result: ManagementApplyResult }).result,
-    'undo that removes a connection',
-  );
+  }), 'undo that removes a connection');
   assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 1);
   assert.equal((await confirm(f, f.owner, proposalId)).status, 'completed');
   assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 0);
@@ -536,14 +546,13 @@ test('MCP import_skill installs from the authenticated call itself', () => {
   const resolved: ParsedSkillSource[] = [];
   return withFixture('mcp-import-skill', async (f) => {
     const agent = await createAgent(f, f.owner, 'agent_importer');
-    const response = await call(f, f.owner, 'import_skill', {
+    const installed = await succeed(f, f.owner, 'import_skill', {
       agentId: agent.id,
       source: 'https://github.com/acme/skills/tree/main/changelog',
       idempotencyKey: 'import-changelog',
       guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     });
-    assert.equal(response.ok, true, JSON.stringify(response));
-    assert.equal((response as { result: { status: string } }).result.status, 'installed');
+    assert.equal(installed.status, 'installed');
     assert.equal(resolved.length, 1);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['changelog']);
 
@@ -552,20 +561,17 @@ test('MCP import_skill installs from the authenticated call itself', () => {
       source: 'https://github.com/acme/skills/tree/main/changelog',
       guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
     };
-    const clarification = await call(f, f.owner, 'import_skill', { ...changed, idempotencyKey: 'import-changed' });
-    assert.equal(clarification.ok, true, JSON.stringify(clarification));
-    const instruction = (clarification as { result: { status: string; instruction: string } }).result;
-    assert.equal(instruction.status, 'replacement_confirmation_required');
-    assert.match(instruction.instruction, /replaceExisting true/);
-    assert.doesNotMatch(instruction.instruction, /reply exactly/, 'an MCP call needs no Slack replacement phrase');
+    const clarification = await succeed(f, f.owner, 'import_skill', { ...changed, idempotencyKey: 'import-changed' });
+    assert.ok(clarification.status === 'replacement_confirmation_required', clarification.status);
+    assert.match(clarification.instruction, /replaceExisting true/);
+    assert.doesNotMatch(clarification.instruction, /reply exactly/, 'an MCP call needs no Slack replacement phrase');
 
-    const replaced = await call(f, f.owner, 'import_skill', {
+    const replaced = await succeed(f, f.owner, 'import_skill', {
       ...changed,
       replaceExisting: true,
       idempotencyKey: 'import-replace',
     });
-    assert.equal(replaced.ok, true, JSON.stringify(replaced));
-    assert.equal((replaced as { result: { status: string } }).result.status, 'installed');
+    assert.equal(replaced.status, 'installed');
     assert.equal(
       (await f.config.getAgent(agent.id)).skills[0]?.instructions,
       'Summarize merged changes for people. Revision 3.',
@@ -637,3 +643,36 @@ test('MCP keeps only the newest destructive change confirmable', () => withFixtu
   assert.equal(stale.ok ? undefined : stale.error.code, 'proposal_stale');
   assert.equal((await f.config.getAgent(first.id)).id, first.id);
 }));
+
+test('MCP retries a direct archive whose first attempt failed after the write', () => {
+  let fixture: Fixture | undefined;
+  let writes = 0;
+  return withFixture('mcp-direct-retry', async (f) => {
+    fixture = f;
+    const agent = await createAgent(f, f.owner, 'agent_retry');
+    const operations: ManagementOperation[] = [{
+      itemId: 'archive',
+      kind: 'archive_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    }];
+    const lost = await call(f, f.owner, 'apply_workspace_changes', { idempotencyKey: 'archive-retry', operations });
+    assert.equal(lost.ok ? undefined : lost.error.code, 'management_error');
+    assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'archived');
+
+    assertApplied(await apply(f, f.owner, 'archive-retry', operations), 'retried archive');
+    assert.equal(writes, 1, 'the retry must not archive twice');
+    assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'archived');
+  }, {
+    archiveAgent: async ({ agentId, expectedRevision, expectedCredentialIncarnation }) => {
+      assert.ok(fixture);
+      writes += 1;
+      const archived = await fixture.config.archiveAgent(agentId, {
+        expectedRevision,
+        ...(expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {}),
+      });
+      if (writes === 1) throw new Error('The archive response was lost after the write.');
+      return archived;
+    },
+  });
+});
