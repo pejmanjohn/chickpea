@@ -12,6 +12,7 @@ import {
   type WebsiteLoginGrant,
 } from '../config/types.ts';
 import type { WebsiteLogin } from '../browser/logins.ts';
+import { isModelEffort, MODEL_EFFORTS, type ModelEffort } from '../config/model-effort.ts';
 import { opaqueId } from '../work/admission.ts';
 import {
   parseInstallationOwnership,
@@ -1799,7 +1800,8 @@ function parseFrozenOpenRouterLiveModelRoute(value: unknown): FrozenOpenRouterLi
     'reasoning',
     'input',
     'cost',
-  ]);
+    'efforts',
+  ], ['efforts']);
   if (!Array.isArray(record.input) || record.input.length < 1 || record.input.length > 2) {
     throw new Error('Runtime plan runtimeModelRoute.input is invalid.');
   }
@@ -1814,6 +1816,17 @@ function parseFrozenOpenRouterLiveModelRoute(value: unknown): FrozenOpenRouterLi
     'cacheRead',
     'cacheWrite',
   ]);
+  const efforts = record.efforts === undefined
+    ? undefined
+    : arrayOf(
+      record.efforts,
+      'runtimeModelRoute.efforts',
+      (effort, index) => modelEffort(effort, `runtimeModelRoute.efforts[${index}]`),
+      MODEL_EFFORTS.length,
+    );
+  if (efforts && (efforts.length === 0 || new Set(efforts).size !== efforts.length)) {
+    throw new Error('Runtime plan runtimeModelRoute.efforts is invalid.');
+  }
   return {
     source: 'openrouter_live_catalog',
     displayName: boundedString(record.displayName, 'runtimeModelRoute.displayName', 1, 160),
@@ -1827,7 +1840,13 @@ function parseFrozenOpenRouterLiveModelRoute(value: unknown): FrozenOpenRouterLi
       cacheRead: finiteNumber(cost.cacheRead, 'runtimeModelRoute.cost.cacheRead'),
       cacheWrite: finiteNumber(cost.cacheWrite, 'runtimeModelRoute.cost.cacheWrite'),
     },
+    ...(efforts ? { efforts } : {}),
   };
+}
+
+function modelEffort(value: unknown, label: string): ModelEffort {
+  if (!isModelEffort(value)) throw new Error(`Runtime plan ${label} is invalid.`);
+  return value;
 }
 
 function finiteNumber(value: unknown, label: string): number {

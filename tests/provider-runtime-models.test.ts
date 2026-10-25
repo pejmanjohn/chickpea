@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
 
+import { clampThinkingLevel, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { resetModelsForTests, resolveModel } from '@flue/runtime/internal';
 import {
   invalidateProviderKeyCache,
@@ -13,6 +14,7 @@ import {
   setWorkersAiRestPiProvider,
 } from '../src/config/pi-provider.ts';
 import { registeredPiProvider } from '../src/config/pi-provider-registry.ts';
+import { openRouterModelEfforts } from '../src/config/openrouter-runtime-model.ts';
 import {
   freezeRuntimeModelRoute,
   registerFrozenRuntimeModelRoute,
@@ -205,6 +207,63 @@ test('an admitted OpenRouter overlay is frozen and recreated in a cold isolate',
     const baselineName = resolveModel(baseline).name;
     registerFrozenRuntimeModelRoute(baseline, baseline, { ...route, displayName: 'Stale overlay' });
     assert.equal(resolveModel(baseline).name, baselineName);
+  } finally {
+    settings.close();
+  }
+});
+
+test('an OpenRouter overlay accepts exactly the efforts OpenRouter lists, in warm and cold isolates', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await settings.setSetting(PROVIDER_KEY_SETTING_KEYS.openrouter, 'openrouter-stored-key');
+    globalThis.fetch = async () => Response.json({
+      data: [{
+        id: 'acme/effort-live-model',
+        name: 'Acme Effort Model',
+        context_length: 131_072,
+        supported_parameters: ['reasoning'],
+        reasoning: { supported_efforts: ['max', 'high', 'low', 'minimal', 'none'], default_effort: 'high' },
+      }, {
+        id: 'acme/unlisted-effort-model',
+        name: 'Acme Unlisted Effort Model',
+        context_length: 131_072,
+        supported_parameters: ['reasoning'],
+      }],
+    });
+    const canonical = 'openrouter/acme/effort-live-model';
+    const dependencies = {
+      settings,
+      loadCatalog: async () => ({ status: 'bundled' as const, revision: 0 }),
+    };
+    assert.deepEqual(await openRouterModelEfforts(canonical, undefined, settings), ['low', 'high', 'max']);
+    // Pi's reviewed entry decides for a model Pi knows, without the live list.
+    assert.deepEqual(
+      await openRouterModelEfforts('openrouter/anthropic/claude-opus-5.5', undefined, settings),
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+    );
+    assert.deepEqual(await openRouterModelEfforts('openrouter/acme/not-listed', undefined, settings), []);
+
+    const resolved = await resolveRuntimeModel('agent_openrouter', canonical, dependencies);
+    const warm = resolveModel(resolved.model);
+    assert.deepEqual(getSupportedThinkingLevels(warm).filter((level) => level !== 'off'), ['low', 'high', 'max']);
+    // An unset effort runs at Flue's medium, which this model lacks.
+    assert.equal(clampThinkingLevel(warm, 'medium'), 'high');
+    assert.equal(clampThinkingLevel(warm, 'max'), 'max');
+
+    const route = freezeRuntimeModelRoute(canonical, resolved.providerAuthRoute);
+    if (route?.source !== 'openrouter_live_catalog') throw new Error('Expected a live-catalog route.');
+    assert.deepEqual(route.efforts, ['low', 'high', 'max']);
+    resetModelsForTests();
+    resetBuiltinProviderModelOverlaysForTests();
+    registerBuiltinPiProvider('openrouter');
+    registerFrozenRuntimeModelRoute(canonical, resolved.model, route);
+    assert.deepEqual(getSupportedThinkingLevels(resolveModel(canonical)), getSupportedThinkingLevels(warm));
+
+    // A model OpenRouter lists no efforts for keeps Pi's default reasoning levels.
+    await resolveRuntimeModel('agent_openrouter', 'openrouter/acme/unlisted-effort-model', dependencies);
+    const unlisted = freezeRuntimeModelRoute('openrouter/acme/unlisted-effort-model', undefined);
+    assert.equal(unlisted?.source === 'openrouter_live_catalog' && 'efforts' in unlisted, false);
+    assert.equal(resolveModel('openrouter/acme/unlisted-effort-model').thinkingLevelMap, undefined);
   } finally {
     settings.close();
   }
