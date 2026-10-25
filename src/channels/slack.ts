@@ -3242,10 +3242,11 @@ async function processSlackEvent(
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
   // The requester's own message approves or declines the change set waiting
-  // on them: the exact approval words at once, other wording by one side call
-  // that reads only their message and the set's preview. The judgment runs
-  // here, before the TurnJob freezes the turn, so a retried job never repeats
-  // it, and the claim keeps a redelivered event from paying for it twice.
+  // on them: the exact approval words at once, other wording, when it answers
+  // the set, by one side call that reads only their message and a fixed-label
+  // summary of the set. The judgment runs here, before the TurnJob freezes
+  // the turn, so a retried job never repeats it, and the claim keeps a
+  // redelivered event from paying for it twice.
   const typedApproval = typedByPerson && !browserActionAnswered && !candidateTurn &&
       admissionTruth.eligible && admittedActorMembershipId
     ? await resolveTypedSlackManagementApproval({
@@ -3254,6 +3255,7 @@ async function processSlackEvent(
         actorMembershipId: admittedActorMembershipId,
         identity: stores.identity,
         management: stores.management,
+        latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
         judge: async (reply) => {
           const requestedModel = assignment.model ?? null;
           const judgment = await classifySlackManagementApproval(

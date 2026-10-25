@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Slack approval intent calibration. Offline (default): the corpus contract
 // plus a deterministic smoke of the production side call against a stubbed
-// provider endpoint. --live: the same side call against real models, with a
-// private report and a gate on false approvals and recall.
+// provider endpoint, which also proves no change content reaches the judge.
+// --live: the same side call against real models, with a private report and
+// a gate on false approvals and recall.
 
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -12,6 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs, parseEnv } from 'node:util';
 
 import { configureModelAccessResolver } from '../src/config/model-access.ts';
+import { approvalChangeSummary } from '../src/management/slack-approval.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import { bootstrapRuntimeProviders } from '../src/runtime-bootstrap.ts';
 import {
@@ -48,7 +50,7 @@ function validateCorpus(corpus) {
     ids.add(entry.id);
     assert(LABELS.includes(entry.expected), `${entry.id}: expected must be one of ${LABELS.join(', ')}.`);
     assert(typeof entry.text === 'string' && entry.text.trim(), `${entry.id}: text is required.`);
-    assert(typeof corpus.previews[entry.preview] === 'string', `${entry.id}: unknown preview ${entry.preview}.`);
+    assert(Array.isArray(corpus.changes[entry.change]), `${entry.id}: unknown change ${entry.change}.`);
     counts[entry.expected] += 1;
     if (entry.expected === 'other') otherCategories.add(entry.category);
   }
@@ -61,8 +63,21 @@ function validateCorpus(corpus) {
   return counts;
 }
 
+/** What the host gives the judge for a case: the message and its summary of the change, never the change. */
 function caseInput(corpus, entry) {
-  return { text: entry.text, preview: corpus.previews[entry.preview] };
+  return { text: entry.text, change: approvalChangeSummary({ operations: corpus.changes[entry.change] }) };
+}
+
+/** Every string a change carries, which must never appear in the judge's request. */
+function changeContent(operations) {
+  const strings = [];
+  const walk = (value) => {
+    if (typeof value === 'string') strings.push(value);
+    else if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === 'object') Object.values(value).forEach(walk);
+  };
+  operations.forEach((operation) => walk(operation.patch ?? {}));
+  return strings.filter((value) => value.length >= 8);
 }
 
 // ── Offline smoke ──────────────────────────────────────────────────────────
@@ -126,7 +141,12 @@ async function runOfflineSmoke(corpus, settings) {
     assert(sent.system === SLACK_MANAGEMENT_APPROVAL_INSTRUCTIONS, `${entry.id}: the instructions were not sent as the system prompt.`);
     assert(sent.messages.length === 1 && sent.messages[0].role === 'user' &&
       sent.messages[0].text === slackManagementApprovalMessage(input),
-    `${entry.id}: the judge must see exactly the person's message and the preview.`);
+    `${entry.id}: the judge must see exactly the person's message and the host's summary.`);
+    const read = [sent.system, ...sent.messages.map(({ text }) => text)].join('\n');
+    for (const content of changeContent(corpus.changes[entry.change])) {
+      assert(!read.includes(content) && !read.includes(JSON.stringify(content).slice(1, -1)),
+        `${entry.id}: change content reached the judge: ${content}`);
+    }
     assert(judgment.approval === entry.expected && judgment.failed === false,
       `${entry.id}: the side call answer was not parsed (${JSON.stringify(judgment)}).`);
     smoke.push({ caseId: entry.id, judged: judgment.approval });
@@ -134,7 +154,7 @@ async function runOfflineSmoke(corpus, settings) {
 
   const exact = stubProvider(() => '{"approval":"other"}');
   try {
-    const judgment = await judge({ text: 'approve', preview: corpus.previews.instructions });
+    const judgment = await judge({ text: 'approve', change: caseInput(corpus, corpus.cases[0]).change });
     assert(judgment.approval === 'approve' && exact.bodies.length === 0, 'The exact word must approve without a side call.');
   } finally {
     exact.restore();
@@ -146,7 +166,7 @@ async function runOfflineSmoke(corpus, settings) {
   ]) {
     const provider = stubProvider(answer);
     try {
-      const judgment = await judge({ text: 'sure', preview: corpus.previews.instructions });
+      const judgment = await judge({ text: 'sure', change: caseInput(corpus, corpus.cases[0]).change });
       assert(judgment.approval === 'other', `A ${name} must judge other, not ${judgment.approval}.`);
     } finally {
       provider.restore();
@@ -310,8 +330,9 @@ function printHelp() {
     '',
     'Offline (default): validates evals/slack-approval-intent/cases.json, then sends every case through the',
     'production approval side call to a stubbed provider endpoint. It checks the judge sees only the',
-    'person\'s message and the preview, that answers parse, and that the exact word, a provider error and a',
-    'malformed answer behave. No network, no credentials, and no real model: it does not measure judgment.',
+    'person\'s message and the host\'s fixed-label summary of the change, that no change content reaches the',
+    'request, that answers parse, and that the exact word, a provider error and a malformed answer behave.',
+    'No network, no credentials, and no real model: it does not measure judgment.',
     '',
     `Live: judges every selected case with each model from --model (repeatable or comma-separated) or`,
     `${MODEL_ENV}, through the same side call the host runs. Providers: anthropic, openai, openrouter;`,

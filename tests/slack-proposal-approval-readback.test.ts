@@ -48,3 +48,37 @@ test('approval readback scopes before limiting, includes delivered turns, and ne
     assert.throws(() => turns.listProposalApprovalTurns({ ...query, proposalId: '' }));
   } finally { db.close(); }
 });
+
+test('the latest Agent turn is read per Channel thread, or across a whole DM, and per Agent', async () => {
+  const db = openStateDb(':memory:');
+  const turns = new TurnJobStoreLogic(db, () => 100);
+  const insert = (id: string, threadKey: string, messageTs: string, agentId: string, at: number) => {
+    db.run(`INSERT INTO turn_jobs (id, evt_key, msg_key, turn_json, assignment_json, delivered, status, enqueued_at, thread_key)
+      VALUES (?, ?, ?, ?, ?, 1, 'done', ?, ?)`, id, id, id, JSON.stringify({ messageTs, text: 'PRIVATE' }),
+    JSON.stringify({ agent: { id: agentId } }), at, threadKey);
+  };
+  try {
+    const thread = { workspaceId: 'T1', channelId: 'C1', threadTs: '100.1', agentId: 'agent_desk' };
+    assert.equal(turns.latestAgentTurnMessageTs(thread), undefined);
+    insert('proposing', 'T1:C1:100.1', '100.2', 'agent_desk', 1);
+    insert('other_thread', 'T1:C1:200.1', '200.2', 'agent_desk', 5);
+    insert('other_agent', 'T1:C1:100.1', '100.3', 'agent_other', 6);
+    insert('other_channel', 'T1:C2:100.1', '100.4', 'agent_desk', 7);
+    assert.equal(turns.latestAgentTurnMessageTs(thread), '100.2', 'other threads, Agents and Channels do not count');
+    insert('later', 'T1:C1:100.1', '100.5', 'agent_desk', 8);
+    assert.equal(turns.latestAgentTurnMessageTs(thread), '100.5');
+
+    insert('dm_first', 'T1:D1:300.1', '300.1', 'agent_desk', 9);
+    insert('dm_second', 'T1:D1:400.1', '400.1', 'agent_desk', 10);
+    insert('dm_neighbor', 'T1:D10:500.1', '500.1', 'agent_desk', 11);
+    assert.equal(turns.latestAgentTurnMessageTs({ workspaceId: 'T1', channelId: 'D1', agentId: 'agent_desk' }), '400.1',
+      'a DM is one conversation across its threads, and D10 is another DM');
+
+    const proxy = new CfSlackStateStore({ slackLatestAgentTurn: async (input) => ({ ok: true,
+      value: turns.latestAgentTurnMessageTs(input) ?? null }) } as TagStateRpc);
+    assert.equal(await proxy.latestAgentTurnMessageTs(thread), '100.5', 'Cloudflare reads the same answer over RPC');
+    assert.equal(await proxy.latestAgentTurnMessageTs({ ...thread, threadTs: '999.1' }), undefined);
+  } finally {
+    db.close();
+  }
+});

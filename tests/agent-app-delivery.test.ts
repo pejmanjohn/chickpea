@@ -409,9 +409,19 @@ test("a revoked installation serves none of its Agent apps' deliveries and offer
   assert.equal(await agentSlackAppIngress(h.base, AGENT_APP), undefined);
 }));
 
-test("a person's reply to the change set waiting on them is judged at admission: the exact word stamps the turn, a reply the judge cannot read stays conversation", async (t) => withHarness(t, async (h) => {
+test("a person's reply right after a proposal is judged at admission; after another turn only the exact word approves", async (t) => withHarness(t, async (h) => {
   const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
   assert.ok(owner);
+  const reply = async (text: string, ts: string) => {
+    assert.equal((await h.deliver('events', dmEvent({ event_id: `Ev${ts}` }, { text, ts, event_ts: ts }))).status, 200);
+    const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts);
+    assert.ok(job, `"${text}" became a turn`);
+    return job;
+  };
+  const judged = async (ts: string) =>
+    (await h.stores.usage.getOperation(`management_approval:${TEAM}:D1:Ev${ts}`)) !== undefined;
+
+  const proposing = await reply('remember that refunds go to account 99', '1900000200.000100');
   const scope = `slack:${TEAM}:D1:dm:agent:agent_support`;
   const proposalId = 'changeset_typed_dm';
   await h.stores.management.putChangeSetProposal({
@@ -422,21 +432,21 @@ test("a person's reply to the change set waiting on them is judged at admission:
     operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_support', expectedRevision: 0, body: 'Refunds go to account 99.' }],
     preview: { summary: 'Preview', changes: [], missingSetup: [] },
     targetRevisions: { 'memory:agent_support': 0 }, at: Date.now(),
+    proposedMessageTs: proposing.turn.messageTs,
   });
-  const reply = async (text: string, ts: string) => {
-    assert.equal((await h.deliver('events', dmEvent({ event_id: `Ev${ts}` }, { text, ts, event_ts: ts }))).status, 200);
-    const job = await pendingTurn(h.stores, (pending) => pending.turn.messageTs === ts);
-    assert.ok(job, `"${text}" became a turn`);
-    return job;
-  };
 
   // This harness grants the judge no model access, so its side call fails.
-  const unread = await reply('yes, go ahead', '1900000200.000100');
-  assert.equal(unread.turn.managementApprovalProposalId, undefined, 'a failed judgment applies nothing');
+  const adjacent = await reply('yes, go ahead', '1900000201.000100');
+  assert.equal(await judged('1900000201.000100'), true, 'the reply right after the proposal is judged');
+  assert.equal(adjacent.turn.managementApprovalProposalId, undefined, 'a failed judgment applies nothing');
   assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
 
-  const typed = await reply('approve', '1900000201.000100');
-  assert.equal(typed.turn.managementApprovalProposalId, proposalId, 'the exact word needs no model');
+  const later = await reply('sounds good', '1900000202.000100');
+  assert.equal(await judged('1900000202.000100'), false, 'the Agent took a turn since the proposal');
+  assert.equal(later.turn.managementApprovalProposalId, undefined);
+
+  const typed = await reply('approve', '1900000203.000100');
+  assert.equal(typed.turn.managementApprovalProposalId, proposalId, 'the exact word needs no model and no adjacency');
 }));
 
 test("a click on the app Agent's approval card reaches that Agent, as the thread's owner or its guest, and runs as its bot", async (t) => withHarness(t, async (h) => {

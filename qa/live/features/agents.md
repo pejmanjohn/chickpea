@@ -44,7 +44,7 @@ npm run verify:live:record -- case-add --spec "$run_dir/spec.json" --output "$ru
 
 - Creation passes only when Admin shows one active Agent with a healthy handle and an active grant for the source channel, and the request thread holds exactly one welcome. Record the Agent ID from Admin, never from the display name.
 - Approval proof is the full saved value against the frozen proposal. The Slack preview may truncate; it is not the comparison.
-- The requester's own reply approves when it clearly agrees to the preview, in any wording ("yes, go ahead"). A conditional or partial reply ("yes, but rename it first") or a question reaches the Agent as conversation, a refusal ("no, leave it") retires the change set, and an approval from another person or thread applies nothing.
+- The requester's reply right after the preview approves when it clearly agrees, in any wording ("yes, go ahead"). A conditional or partial reply ("yes, but rename it first") or a question reaches the Agent as conversation, and a refusal ("no, leave it") retires the change set. Once the Agent has answered anything else, only Approve or a typed `approve` applies it. An approval from another person or thread applies nothing.
 - A welcome can succeed while a bad model pin breaks the first real request. Send one real request and check the model in the reply footer.
 - Insert mentions with Slack's mention control and confirm the draft holds a mention token. A plain-text `@handle` reaches no Agent, so its silence proves nothing.
 - An Admin-created Agent answers nowhere until it has a channel; a plain `@handle` typed before that goes to `@Chickpea`.

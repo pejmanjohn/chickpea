@@ -1175,6 +1175,11 @@ export interface ManagementChangeSetProposalRecord {
   result?: ManagementApplyResult;
   /** The Slack call this set holds the rest of; it completes when the set is settled. */
   requestOperationId?: string;
+  /**
+   * The Slack message whose turn produced this set. A typed reply is judged
+   * as an approval only while that turn is the Agent's latest in the scope.
+   */
+  proposedMessageTs?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1276,6 +1281,7 @@ export interface PutManagementChangeSetProposalInput {
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
+  proposedMessageTs?: string;
   at: number;
 }
 

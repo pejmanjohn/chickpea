@@ -2303,6 +2303,7 @@ export class WorkspaceManagementService {
       preview,
       targetRevisions,
       ...(meta.requestOperationId ? { requestOperationId: meta.requestOperationId } : {}),
+      ...(actor.origin.kind === 'slack' ? { proposedMessageTs: actor.origin.messageTs } : {}),
       at,
     });
     emitAgentAuthoringOutcome(actor, operations, { proposalOutcome: 'created' });
@@ -6711,11 +6712,6 @@ function publicChangeSetProposal(
     },
     confirmationTool: 'confirm_workspace_change',
   };
-}
-
-/** The Slack preview of a change set, as the person read it. */
-export function slackChangeSetPreviewText(proposal: ManagementChangeSetProposalRecord): string {
-  return formatSlackChangeSetProposal(publicChangeSetPreview(proposal.preview));
 }
 
 function publicChangeSetPreview(

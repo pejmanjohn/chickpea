@@ -250,6 +250,14 @@ export interface SlackProposalApprovalQuery {
   actingAgentId: string;
 }
 
+/** One Agent's conversation: a Channel thread, or a whole DM or group DM when `threadTs` is absent. */
+export interface SlackLatestAgentTurnQuery {
+  workspaceId: string;
+  channelId: string;
+  threadTs?: string;
+  agentId: string;
+}
+
 /** Content-free retained approval coordinates, including completed turns. */
 export interface SlackProposalApprovalTurn extends SlackProposalApprovalQuery {
   turnJobId: string;
@@ -1316,6 +1324,37 @@ export class TurnJobStoreLogic {
       runId,
     ) as unknown as TurnJobRow | undefined;
     return row ? this.decodeRow(row) : undefined;
+  }
+
+  /**
+   * The message that started the latest turn this Agent was given in one
+   * conversation, while its row is retained. A row an older release left
+   * without a thread key is not found.
+   */
+  latestAgentTurnMessageTs(input: SlackLatestAgentTurnQuery): string | undefined {
+    for (const part of [input.workspaceId, input.channelId]) {
+      validateBoundedString(part, 'Slack conversation coordinate', 128);
+      if (part.includes(':')) throw new Error('Slack conversation coordinate is invalid.');
+    }
+    validateBoundedString(input.agentId, 'Agent id', 256);
+    const conversation = `${input.workspaceId}:${input.channelId}`;
+    const row = input.threadTs === undefined
+      ? this.db.get(
+          `SELECT json_extract(turn_json, '$.messageTs') AS messageTs FROM turn_jobs
+           WHERE thread_key >= ? AND thread_key < ? AND json_extract(assignment_json, '$.agent.id') = ?
+           ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+          `${conversation}:`,
+          `${conversation};`,
+          input.agentId,
+        )
+      : this.db.get(
+          `SELECT json_extract(turn_json, '$.messageTs') AS messageTs FROM turn_jobs
+           WHERE thread_key = ? AND json_extract(assignment_json, '$.agent.id') = ?
+           ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+          `${conversation}:${validateBoundedString(input.threadTs, 'Thread timestamp', 128)}`,
+          input.agentId,
+        );
+    return typeof row?.messageTs === 'string' ? row.messageTs : undefined;
   }
 
   listProposalApprovalTurns(input: SlackProposalApprovalQuery): SlackProposalApprovalTurn[] {
