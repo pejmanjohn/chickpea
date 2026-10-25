@@ -8,6 +8,8 @@ import type {
 import type { UsagePersistenceEvent } from '../usage/runtime-recorder.ts';
 import type { WorkspaceInstallation } from '../config/types.ts';
 import { installationObjectName } from '../config/installation-scope.ts';
+import { RUN_REVIEW_PSEUDONYM_SETTING } from '../review/capture.ts';
+import { runReviewConfigured } from '../review/port.ts';
 import { SLACK_SETTING_KEYS } from './credentials.ts';
 import { GATEWAY_DEPLOYMENT_IDENTITY_SETTING } from './gateway/identity.ts';
 import { GATEWAY_BINDING_SETTING } from './gateway/settings.ts';
@@ -76,7 +78,7 @@ export interface RunnerTurnBegin {
   view: RunnerTurnJobView;
   /** The pending turn's workspace installation, when there is one. */
   installation?: WorkspaceInstallation;
-  /** RUNNER_PREFETCHED_SETTINGS values; null when unset. */
+  /** runnerPrefetchedSettings() values; null when unset. */
   settings: Record<string, string | null>;
   /**
    * The newest session generation the state store holds for the turn's Slack
@@ -97,6 +99,13 @@ export const RUNNER_PREFETCHED_SETTINGS: readonly string[] = [
   GATEWAY_DEPLOYMENT_IDENTITY_SETTING,
   SLACK_SETTING_KEYS.publicUrl,
 ];
+
+/** RUNNER_PREFETCHED_SETTINGS, and the run review key where the host captures runs. */
+export function runnerPrefetchedSettings(): readonly string[] {
+  return runReviewConfigured()
+    ? [...RUNNER_PREFETCHED_SETTINGS, RUN_REVIEW_PSEUDONYM_SETTING]
+    : RUNNER_PREFETCHED_SETTINGS;
+}
 
 export type ThreadRunnerTurnKind = keyof ThreadRunnerTurnOps;
 

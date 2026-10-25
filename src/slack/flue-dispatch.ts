@@ -294,6 +294,11 @@ interface PromptSlackAgentInput {
   observationSignal?: AbortSignal;
   /** Called once the durable receipt exists and observation is about to begin. */
   onObservationStarted?: () => void;
+  /**
+   * Every chunk the reply's observation reads, in stream order, beside the
+   * dispatched submission. A saved settlement observes nothing. Must not throw.
+   */
+  onConversationChunk?: (chunk: ConversationStreamChunk, submissionId: string) => void;
   /** Focused contract seam; production uses the real Flue handle. */
   handle?: ReturnType<typeof init>;
   /**
@@ -508,12 +513,14 @@ export async function promptSlackThreadAgent(
       )
     : undefined;
   const toolCalls = new SubmissionToolCalls(receipt.submissionId);
+  const { submissionId } = receipt;
   let reply: AgentReply;
   const onEvent = (chunk: ConversationStreamChunk) => {
     terminalText.onEvent(chunk);
     progressiveRelay?.onEvent(chunk);
     milestones?.onEvent(chunk);
     toolCalls.onEvent(chunk);
+    input.onConversationChunk?.(chunk, submissionId);
   };
   input.onObservationStarted?.();
   const signal = input.observationSignal;

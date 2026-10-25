@@ -23,6 +23,7 @@ import {
   slackWebClientUserFacts,
 } from '../slack/user-classification.ts';
 import { createSlackWebClient } from '../slack/web-client.ts';
+import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
@@ -54,6 +55,12 @@ export interface RoutineRuntimeAccess {
   actorSlackUserId?: string;
   authorityReceiptId?: string;
   effectiveConnections?: EffectiveConnectionAccount[];
+  /**
+   * Whether the routine's Channel is shared beyond this workspace (Slack
+   * Connect or across an organization), or about to be, as Slack said just
+   * now. Absent for a direct-message routine.
+   */
+  channelShared?: boolean;
   /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
   legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
 }
@@ -331,6 +338,8 @@ export async function resolveRoutineRuntimeAccess(
           effectiveConnections: authority.effectiveConnections,
         }
       : {}),
+    // A pending Slack Connect share counts, as it does for a Slack turn.
+    channelShared: facts.shared || facts.externallyShared || facts.organizationShared || facts.pendingShared,
   };
 }
 
@@ -376,7 +385,7 @@ async function conversationFromClient(client: WebClient, channelId: string) {
         shared: channel.is_shared === true,
         externallyShared: channel.is_ext_shared === true,
         organizationShared: channel.is_org_shared === true,
-        pendingShared: channel.is_pending_ext_shared === true,
+        pendingShared: slackPendingExternalShare(channel),
         member: channel.is_member === true,
         ...(typeof channel.team_id === 'string' ? { teamId: channel.team_id } : {}),
         im: channel.is_im === true,

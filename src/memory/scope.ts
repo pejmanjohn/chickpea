@@ -8,6 +8,7 @@ import {
   type SlackConversationFacts,
   type SlackUserFacts,
 } from '../slack/credentials.ts';
+import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { isRetryableDependencyFailure, SlackTransportError } from '../slack/transport/types.ts';
 import { slackWebClientUserFacts } from '../slack/user-classification.ts';
 
@@ -148,7 +149,7 @@ function webClientConversationFacts(raw: unknown): SlackConversationFacts | unde
     shared: channel.is_shared === true,
     externallyShared: channel.is_ext_shared === true,
     organizationShared: channel.is_org_shared === true,
-    pendingShared: Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0,
+    pendingShared: slackPendingExternalShare(channel),
     member: channel.is_member === true,
     teamId: typeof channel.context_team_id === 'string'
       ? channel.context_team_id

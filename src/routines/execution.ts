@@ -115,6 +115,13 @@ import {
 } from './runtime.ts';
 import { markRoutineAuthorityNeedsAttention } from './agent-authority.ts';
 import {
+  slackRunReviewConversation,
+  startRunReview,
+  type RunReviewEnding,
+  type RunReviewSession,
+} from '../review/capture.ts';
+import type { RunReviewOutcome } from '../review/record.ts';
+import {
   emitRoutinePersistenceTelemetry,
   type RoutinePersistenceSummary,
   type RoutinePersistenceTelemetrySink,
@@ -328,6 +335,7 @@ export async function executeRoutineOccurrence(
   let failureCause: RoutineFailureClass | undefined;
   let settledUsage: RoutineAgentUsageV1 | null = null;
   let settlement: RoutineAgentSettlementV1;
+  let review: RunReviewSession | undefined;
   // Only model execution and result validation belong to this catch. Once a
   // settlement is saved, delivery cannot rewrite it as a different execution.
   try {
@@ -362,6 +370,12 @@ export async function executeRoutineOccurrence(
     }
     await prepared.workLifecycle?.markInvoked();
 
+    review = await startRunReview(input.env, {
+      surface: 'routine',
+      // Fails closed: a Channel routine is copied only once Slack said its Channel is unshared.
+      sharedChannel: prepared.routine.destination.kind !== 'direct_thread' && prepared.access.channelShared !== false,
+      settings: () => dependencies.settingsStore ?? getSettingsStore(input.env),
+    });
     const remainingMs = prepared.run.deadlineAt - now();
     if (remainingMs <= 0) {
       await handle.abort();
@@ -370,11 +384,15 @@ export async function executeRoutineOccurrence(
         'The routine occurrence exceeded its execution deadline.',
       );
     }
+    const { submissionId } = receipt;
     let reply: AgentReply;
     try {
       reply = await handle.read(receipt as DispatchReceipt, {
         signal: AbortSignal.timeout(remainingMs),
-        onEvent: (event) => toolCalls.observe(event),
+        onEvent: (event) => {
+          toolCalls.observe(event);
+          review?.ingest(event, submissionId);
+        },
       });
     } catch (error) {
       if (isLocalReadInterruption(error) && now() < prepared.run.deadlineAt) return 'resumable';
@@ -458,7 +476,10 @@ export async function executeRoutineOccurrence(
     // is skipped, and nothing is posted or counted against the routine.
     withoutResult ??= await installationRefusesWork(input.env) ? REFUSED_SKIP : undefined;
     if (withoutResult) return await skipWithoutResult(prepared, withoutResult, now());
-    return await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId, failureCause);
+    const finalized = await finalizeSettlement(prepared, settlement, now(), receipt?.submissionId, failureCause);
+    // Last, after the result and any failure or pause notice reached Slack.
+    if (finalized === 'completed') await review?.finish(routineRunReviewEnding(prepared, settlement));
+    return finalized;
   } finally {
     await prepared.usageRecorder?.repairAfterTerminal();
     prepared.persistence.emit();
@@ -1063,6 +1084,31 @@ function captureScheduledRun(
     triggerKind: 'scheduled',
     outcome,
   });
+}
+
+function routineRunReviewEnding(
+  prepared: PreparedExecution,
+  settlement: RoutineAgentSettlementV1,
+): RunReviewEnding {
+  const { run } = prepared;
+  const completed = settlement.outcome === 'completed' ? settlement.result : undefined;
+  const returned = (settlement.outcome === 'completed' ? settlement.result.usage : settlement.usage)?.returnedModel;
+  const outcome: RunReviewOutcome = run.status === 'succeeded' || run.status === 'no_op' ? run.status
+    : settlement.outcome === 'aborted' ? 'stopped' : 'failed';
+  const failureClass = settlement.outcome === 'completed' ? run.failureClass : settlement.failureClass;
+  const publicError = settlement.outcome === 'completed' ? run.publicError : settlement.publicError;
+  return {
+    runId: run.canonicalRunId ?? run.id,
+    agentId: prepared.access.config.agentId,
+    ...(returned ? { model: returned.id.includes('/') ? returned.id : `${returned.provider}/${returned.id}` } : {}),
+    ...slackRunReviewConversation({ userId: 'routine', text: prepared.prompt.turn.text }, prepared.prompt.context),
+    ...(completed?.message ? { answer: completed.message } : {}),
+    outcome,
+    ...(failureClass && outcome !== 'succeeded' && outcome !== 'no_op'
+      ? { error: { class: failureClass, message: publicError ?? '' } }
+      : {}),
+    ...(run.startedAt === null ? {} : { admittedAt: run.startedAt }),
+  };
 }
 
 async function recordUsage(
