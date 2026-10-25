@@ -99,12 +99,7 @@ async function testProfileMcpConnection(
   }
 }
 
-/**
- * Test a connection account bound to the Agent with the credentials a turn by
- * this actor would use. The actor sees team accounts and their own personal
- * accounts; another member's personal account is not found, whatever the
- * actor's role.
- */
+/** Tests team accounts and the actor's own personal accounts as the actor's turn would; never another member's. */
 async function testConnectionAccountMcp(
   input: TestManagedMcpConnectionInput,
   actor: McpConnectionTestActor,
@@ -129,16 +124,16 @@ async function testConnectionAccountMcp(
       message: 'This connection is not ready for this Agent. Finish its setup in Admin, then test it again.',
     };
   }
-  const [server] = projectEffectiveMcpConnections([selected]);
-  if (!server) throw new ManagementError('invalid_request', NOT_FOUND);
-  const current = async () => {
-    if (!(await isActiveConnectionActor({ identity: input.identity, ...actor }))) return undefined;
+  const server = projectEffectiveMcpConnections([selected])[0]!;
+  const effective = async () => {
+    if (!(await isActiveConnectionActor({ identity: input.identity, ...actor }))) {
+      throw new Error('connection_changed');
+    }
     return (await resolveEffectiveConnectionAccounts({ ...actor, config: input.config, agentId: input.agentId }))
-      .find((effective) =>
-        effective.account.id === account.id && effective.account.revision === account.revision);
+      .find((entry) => entry.account.id === account.id);
   };
   const authorizeRequest = async () => {
-    if (!(await current())) throw new Error('connection_changed');
+    if ((await effective())?.account.revision !== account.revision) throw new Error('connection_changed');
   };
   try {
     const secrets = await resolveConnectionAccountMcpSecrets(server, (connectionAccountId) =>
@@ -159,7 +154,7 @@ async function testConnectionAccountMcp(
           refreshTelemetry: { trigger: 'admin' },
           ...mcpOAuthLifecycleDependencies(input.config, input.settings, actor.workspaceId),
           validateConnection: async (_ref, serverUrl, _revision, attemptId) => {
-            const policy = (await current())?.policy;
+            const policy = (await effective())?.policy;
             return policy?.kind === 'mcp' && policy.authMode === 'oauth' && policy.url === serverUrl &&
               (attemptId === undefined || policy.oauthAttemptId === attemptId);
           },

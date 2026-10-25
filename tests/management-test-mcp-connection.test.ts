@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
@@ -48,6 +48,7 @@ function fakeRemoteServers() {
     requests,
     createGuardedFetch: ((options) => createMcpGuardedFetch({
       ...options,
+      cloudflare: false,
       resolveAddresses: async () => [{ address: '93.184.216.34', family: 4 }],
       pinnedFetch: respond,
     })) satisfies typeof createMcpGuardedFetch,
@@ -109,6 +110,63 @@ async function fixture() {
   return {
     ...f, settings, remote, agent, member, otherMember, admin, workspaceId, createConnection, testAs,
     close() { settings.close(); f.close(); },
+  };
+}
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/**
+ * A ready team OAuth connection whose stored access token has expired, so the
+ * next test refreshes it. `refresh.during` runs while the token endpoint answers.
+ */
+async function expiredOAuthConnection(t: TestContext, f: Fixture) {
+  const origin = 'https://oauth-refresh.example.com';
+  const url = `${origin}/mcp`;
+  f.remote.servers.set(origin, {
+    credential: { header: 'authorization', value: 'Bearer refreshed-access-token' },
+    tools: ['fixture_status'],
+  });
+  const created = await f.createConnection({
+    by: f.admin, ownerKind: 'team', policy: mcpPolicy(url, { authMode: 'oauth' }),
+  });
+  const account = await f.config.putConnectionAccount({ ...created, lifecycle: 'ready' }, created.revision);
+  const tokenKey = mcpOAuthSettingKeys(connectionAccountOAuthRef(account.id))[2];
+  await f.settings.setSetting(tokenKey, JSON.stringify({
+    serverUrl: url, authorizationServerUrl: 'https://auth.example.com',
+    metadata: {
+      issuer: 'https://auth.example.com', authorization_endpoint: 'https://auth.example.com/authorize',
+      token_endpoint: 'https://auth.example.com/token', response_types_supported: ['code'],
+    },
+    resource: url, clientInformation: { client_id: 'client' },
+    tokens: {
+      access_token: 'expired-access-token', refresh_token: 'refresh-token', token_type: 'Bearer', expires_in: 3600,
+    },
+    obtainedAt: Date.now() - 2 * 3_600_000,
+  }));
+  const refresh = { requests: 0, during: async () => {} };
+  // The Worker target sends the OAuth refresh through globalThis.fetch.
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(new Request(input, init).url, 'https://auth.example.com/token');
+    refresh.requests += 1;
+    await refresh.during();
+    return Response.json({
+      access_token: 'refreshed-access-token', refresh_token: 'rotated-refresh-token',
+      token_type: 'Bearer', expires_in: 3600,
+    });
+  });
+  return {
+    account,
+    refresh,
+    async storedTokens(): Promise<{ access_token: string; refresh_token?: string } | undefined> {
+      const raw = await f.settings.getSetting(tokenKey);
+      return raw ? (JSON.parse(raw) as { tokens: { access_token: string; refresh_token?: string } }).tokens : undefined;
+    },
   };
 }
 
@@ -227,6 +285,44 @@ test('test_mcp_connection tests an Admin-created OAuth connection once its sign-
     await f.config.putConnectionAccount({ ...account, lifecycle: 'ready' }, account.revision);
 
     assert.deepEqual(toolNames(await f.testAs(f.member, account.id)), ['fixture_status']);
+  } finally { f.close(); }
+});
+
+test('an Admin save during a test\'s OAuth refresh keeps the refreshed team token', async (t) => {
+  const f = await fixture();
+  try {
+    const { account, refresh, storedTokens } = await expiredOAuthConnection(t, f);
+    refresh.during = async () => {
+      const current = (await f.config.listConnectionAccounts(f.workspaceId)).find(({ id }) => id === account.id)!;
+      await f.config.putConnectionAccount({ ...current, label: 'Renamed MCP' }, current.revision);
+    };
+
+    // The test in flight is refused because the connection changed under it.
+    assert.equal(((await f.testAs(f.member, account.id)) as { ok: boolean }).ok, false);
+    assert.deepEqual(await storedTokens(), {
+      access_token: 'refreshed-access-token', refresh_token: 'rotated-refresh-token',
+      token_type: 'Bearer', expires_in: 3600,
+    });
+    assert.deepEqual(toolNames(await f.testAs(f.member, account.id)), ['fixture_status']);
+    assert.equal(refresh.requests, 1);
+  } finally { f.close(); }
+});
+
+test('a tester suspended during a test\'s OAuth refresh does not delete the team token', async (t) => {
+  const f = await fixture();
+  try {
+    const { account, refresh, storedTokens } = await expiredOAuthConnection(t, f);
+    refresh.during = async () => {
+      await f.identity.updateMembershipAuthority({
+        membershipId: f.member.membership.id, status: 'suspended', actorMembershipId: f.owner.membership.id,
+        authenticationSurface: 'better_auth', correlationId: 'suspend-tester', reasonCode: 'owner_suspended_member',
+      });
+    };
+
+    assert.equal(((await f.testAs(f.member, account.id)) as { ok: boolean }).ok, false);
+    assert.equal((await storedTokens())?.access_token, 'refreshed-access-token');
+    assert.deepEqual(toolNames(await f.testAs(f.admin, account.id)), ['fixture_status']);
+    assert.equal(refresh.requests, 1);
   } finally { f.close(); }
 });
 
