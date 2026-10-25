@@ -93,9 +93,11 @@ import {
   type AgentConnectionCredentialRequirements,
   type AgentConnectionCredentialResets,
   newAgentCredentialIncarnation,
+  newConnectionCredentialRef,
   reconcileApiCredentialRefs,
   reconcileMcpCredentialRefs,
   validAgentCredentialIncarnation,
+  validConnectionCredentialRef,
 } from './connection-credential-binding.ts';
 
 export interface ConfigSeed {
@@ -3314,6 +3316,7 @@ export class ConfigStoreLogic {
     this.installChickpeaRoutingExtensions();
     this.installModelRoleExtensions();
     this.installConnectionCredentialBindingMigration();
+    this.refillMissingConnectionCredentialRefs();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
@@ -3529,6 +3532,36 @@ export class ConfigStoreLogic {
       CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
       Date.now(),
     );
+  }
+
+  /**
+   * An earlier release's Admin saves an Agent's connections without their
+   * credential references. Like the incarnation refill, this runs on every
+   * start: each such connection gets a new reference and reads as having no
+   * secret until one is entered again.
+   */
+  private refillMissingConnectionCredentialRefs(): void {
+    if (!tableExists(this.db, 'config_agents')) return;
+    const lacksRef = (connection: unknown): connection is object =>
+      typeof connection === 'object' && connection !== null &&
+      !validConnectionCredentialRef((connection as { credentialRef?: string }).credentialRef);
+    for (const row of this.db.all(
+      `SELECT id, mcp_servers_json, api_connections_json FROM config_agents
+       WHERE mcp_servers_json <> '[]' OR api_connections_json <> '[]'
+       ORDER BY id`,
+    )) {
+      for (const column of ['mcp_servers_json', 'api_connections_json'] as const) {
+        const connections = parseJsonArray<unknown>(row[column] as string | null);
+        if (!connections.some(lacksRef)) continue;
+        this.db.run(
+          `UPDATE config_agents SET ${column} = ? WHERE id = ?`,
+          JSON.stringify(connections.map((connection) => lacksRef(connection)
+            ? { ...connection, credentialRef: newConnectionCredentialRef() }
+            : connection)),
+          String(row.id),
+        );
+      }
+    }
   }
 
   private installChickpeaRoutingExtensions(): void {
