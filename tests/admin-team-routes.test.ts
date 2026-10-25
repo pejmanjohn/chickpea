@@ -251,27 +251,27 @@ test('membership updates delegate to the shared management service', async () =>
   });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
+  const revoked: string[] = [];
+  const store = withBetterAuthUser(identity, member.resolution!.membership.id, 'ba_user_managed');
   let sequence = 0;
   const service = new WorkspaceManagementService({
-    identity,
+    identity: store,
     config,
     management,
     setupBaseUrl: 'https://app.example',
     now: () => NOW,
     randomId: () => `team_management_${++sequence}`,
     randomCapability: () => `${'m'.repeat(42)}${sequence % 10}`,
+    withBetterAuthAccessRevoker: (use) => use(revokingBackend(revoked)),
   });
   const app = new Hono();
   app.use('/admin/api/*', async (c, next) => {
     setRequestPrincipal(c.req.raw, principal(owner));
     await next();
   });
-  const revoked: string[] = [];
-  const store = withBetterAuthUser(identity, member.resolution!.membership.id, 'ba_user_managed');
   app.route('/admin/api', createTeamAdminApi({
     store: () => store,
     management: () => service,
-    betterAuthBackend: async () => revokingBackend(revoked),
   }));
   try {
     const response = await app.request(

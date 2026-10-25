@@ -99,7 +99,8 @@ const directAuthority: ResolvedRoutineAuthority = {
     createdAt: 1,
     updatedAt: 1,
   },
-  agent: config.agent,
+  agent: { ...config.agent, creatorMembershipId: 'membership_direct' },
+  agentGrants: [],
   assignment: {
     workspaceId: directRoutine.workspaceId,
     channelId: directRoutine.channelId,
@@ -111,6 +112,33 @@ const directAuthority: ResolvedRoutineAuthority = {
   actorSlackUserId: 'U_DIRECT',
   effectiveConnections: [],
 };
+
+function directClient(memberChannels: readonly string[]): WebClient {
+  return {
+    users: {
+      info: async () => ({
+        ok: true,
+        user: {
+          id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false,
+          is_app_user: false, is_restricted: false, is_ultra_restricted: false,
+          is_stranger: false,
+        },
+      }),
+      conversations: async () => ({
+        ok: true,
+        channels: memberChannels.map((id) => ({ id })),
+        response_metadata: { next_cursor: '' },
+      }),
+    },
+    conversations: {
+      open: async () => ({ ok: true, channel: { id: 'D_TEST', is_im: true } }),
+      info: async ({ channel }: { channel: string }) => ({
+        ok: true,
+        channel: { id: channel, is_private: true, is_member: true, is_archived: false },
+      }),
+    },
+  } as unknown as WebClient;
+}
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
@@ -494,6 +522,36 @@ test('direct runtime rejects ineligible Slack identities and a mismatched DM', a
         error.failureClass === 'channel_ineligible',
     );
   }
+});
+
+test('direct runtime refuses an Agent the owner can no longer use privately', async () => {
+  const resolve = (authority: ResolvedRoutineAuthority, memberChannels: readonly string[]) =>
+    resolveRoutineRuntimeAccess(
+      { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+      directRoutine,
+      undefined,
+      dependencies({
+        authority: async () => authority,
+        installationExecution: async () => ({
+          workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT',
+          client: directClient(memberChannels),
+        }),
+      }),
+    );
+  const privateRoom = {
+    workspaceId: 'T_TEST', channelId: 'G_ROOM', agentId: config.agentId, revision: 1,
+    status: 'active' as const, createdByMembershipId: 'membership_other', createdAt: 1, updatedAt: 1,
+  };
+  const inRoom = { ...directAuthority, agentGrants: [privateRoom] };
+  const rejected = (error: unknown) => error instanceof RoutineRuntimeError &&
+    error.failureClass === 'access_denied';
+
+  assert.equal((await resolve(inRoom, ['G_ROOM'])).actorSlackUserId, 'U_DIRECT');
+  await assert.rejects(resolve(inRoom, []), rejected, 'left the private Channel');
+  await assert.rejects(resolve({
+    ...directAuthority,
+    agent: { ...directAuthority.agent, creatorMembershipId: 'membership_other' },
+  }, []), rejected, 'someone else\'s unplaced Agent');
 });
 
 test('runtime access resolves the one workspace Slack installation', async () => {
