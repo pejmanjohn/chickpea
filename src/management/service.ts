@@ -4301,7 +4301,7 @@ export class WorkspaceManagementService {
       ? await this.reconcileChangeSetConfirmedOperation(actor, operation)
       : undefined;
     if (changed) return mutationForChanged(changed);
-    return this.executeConfirmed(actor, operation, requestId, prepared);
+    return this.executeConfirmed(actor, operation, requestId, prepared, 'direct');
   }
 
   private requestModelReadiness(): RequestModelReadiness {
@@ -4983,6 +4983,7 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
     proposalId: string,
     prepared?: ManagementPreparedItem,
+    basis: 'confirmation' | 'direct' = 'confirmation',
   ): Promise<ImmediateMutation> {
     if (prepared) {
       await this.assertPreparedAgentExists(prepared, operation.kind === 'delete_agent');
@@ -5094,7 +5095,9 @@ export class WorkspaceManagementService {
         actorMembershipId: actor.membershipId,
         correlationId: proposalId,
         authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
-        reasonCode: 'workspace_management_confirmation',
+        reasonCode: basis === 'direct'
+          ? 'workspace_management_direct'
+          : 'workspace_management_confirmation',
         idempotencyKey: `management:${proposalId}`,
       });
       return mutationForChanged([{

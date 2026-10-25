@@ -274,6 +274,12 @@ test('MCP applies every allowed non-destructive change in one call', () => withF
     role: 'admin',
   }]), 'member to Admin role change');
   assert.equal((await f.identity.getMembership(member.membership.id))?.role, 'admin');
+  assert.deepEqual(
+    (await f.identity.listAuditEvents())
+      .filter(({ subjectId }) => subjectId === member.membership.id)
+      .map(({ reasonCode }) => reasonCode),
+    ['workspace_management_direct'],
+  );
 }));
 
 test('MCP keeps revision protection on a direct archive', () => withFixture('mcp-direct-stale', async (f) => {
@@ -320,6 +326,12 @@ test('MCP asks before each destructive change and applies it on confirmation', (
     assert.equal((await f.identity.getMembership(member.membership.id))?.status, 'active');
     assert.equal((await confirm(f, f.owner, memberProposal)).status, 'completed');
     assert.equal((await f.identity.getMembership(member.membership.id))?.status, 'suspended');
+    assert.deepEqual(
+      (await f.identity.listAuditEvents())
+        .filter(({ subjectId }) => subjectId === member.membership.id)
+        .map(({ reasonCode }) => reasonCode),
+      ['workspace_management_confirmation'],
+    );
 
     const ownerProposal = pendingConfirmation(await apply(f, f.owner, 'make-owner', [{
       itemId: 'make-owner',
