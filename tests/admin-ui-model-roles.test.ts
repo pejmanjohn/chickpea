@@ -6,13 +6,18 @@ import { renderAdminPageWithInlineAssets as renderAdminPage } from './helpers/ad
 
 // The Admin client is a static asset executed here the way the browser runs it:
 // the shell's inline script inside a fake document, driven through its own
-// document-level listeners. This file owns the image model role surface only;
+// document-level listeners. This file owns the model role and effort surfaces;
 // the broader page contract lives in tests/admin-page.test.ts.
 
 const FLARE = 'openai/gpt-image-2.5-flare';
 const SUNBURST = 'openai/gpt-image-2.5-sunburst';
 const CHATGPT_IMAGE = 'openai/chatgpt-image';
 const CHAT_MODEL = 'local-stub/release';
+const OPUS = 'anthropic/claude-opus-5-5';
+const SONNET = 'anthropic/claude-sonnet-5';
+const HAIKU = 'anthropic/claude-haiku-4-5';
+const ALL_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const HAIKU_EFFORTS = ['low', 'medium', 'high'];
 
 interface FakeResponse {
   ok: boolean;
@@ -155,13 +160,40 @@ const releaseAgent = {
   tabs: ['instructions', 'skills', 'connectors', 'repositories', 'memory', 'schedules', 'model'],
 };
 
+/** The levels each model accepts, as /admin/api/model-efforts answers them. */
+const MODEL_EFFORTS: Record<string, string[]> = {
+  [OPUS]: ALL_EFFORTS,
+  [SONNET]: ALL_EFFORTS,
+  [HAIKU]: HAIKU_EFFORTS,
+  [CHAT_MODEL]: [],
+};
+
+function standardEffort(efforts: string[]): string | null {
+  return ['medium', 'high', 'xhigh', 'max', 'low'].find((level) => efforts.includes(level)) ?? null;
+}
+
+function effortProjection(model: string | null, effort: string | null) {
+  const efforts = model ? MODEL_EFFORTS[model] ?? [] : [];
+  return { effort, efforts, standardEffort: standardEffort(efforts) };
+}
+
+interface WorkspaceDefaultFixture {
+  modelId: string;
+  effort: string | null;
+  revision: number;
+}
+
 interface HarnessOptions {
   initialPath?: string;
+  workspaceDefault?: WorkspaceDefaultFixture;
+  agentPatchError?: { status: number; body: Record<string, unknown> };
   imageModels?: ImageCatalogFixture;
   imageRole?: ImageRoleFixture | null;
   imageRolePutError?: { status: number; body: Record<string, unknown> };
   /** Number of leading /admin/api/image-models GETs answered with a failure. */
   imageModelsFailures?: number;
+  /** Number of leading /admin/api/model-efforts GETs answered with a failure. */
+  modelEffortsFailures?: number;
   deferImageRolePut?: boolean;
   agents?: Array<Record<string, unknown>>;
   codingRole?: CodingRoleFixture;
@@ -171,12 +203,25 @@ interface CodingRoleFixture {
   workspaceId: string;
   role: 'coding';
   modelId: string | null;
+  effort?: string | null;
   revision: number;
   ready: boolean | null;
 }
 
 function runHarness(options: HarnessOptions = {}) {
-  const app = { innerHTML: '' };
+  // The chat model input reads back the value each render writes, the way the
+  // browser's does; a pick then overwrites it before the draft collects it.
+  const modelInput = { value: '' };
+  let appHtml = '';
+  const app = {
+    get innerHTML() {
+      return appHtml;
+    },
+    set innerHTML(html: string) {
+      appHtml = html;
+      modelInput.value = html.match(/id="p-model"[^>]* value="([^"]*)"/)?.[1] ?? '';
+    },
+  };
   const modalRoot = { innerHTML: '' };
   const region = {
     inert: false,
@@ -192,31 +237,37 @@ function runHarness(options: HarnessOptions = {}) {
   const listeners: Record<string, Listener> = {};
   const windowListeners: Record<string, Listener> = {};
   const imageRolePuts: Array<{ modelId: string | null; expectedRevision: number }> = [];
-  const codingRolePuts: Array<{ modelId: string | null; expectedRevision: number }> = [];
+  const codingRolePuts: Array<{ modelId: string | null; effort?: string | null; expectedRevision: number }> = [];
+  const workspaceDefaultPuts: Array<{ modelId: string; effort?: string | null; expectedRevision: number }> = [];
   let codingRole: CodingRoleFixture = options.codingRole ??
     { workspaceId: 'T_DESIGN', role: 'coding', modelId: null, revision: 0, ready: null };
   const agentPatchBodies: Array<{ id: string; body: Record<string, unknown> }> = [];
   const fetchCalls: Array<{ path: string; method: string }> = [];
   let imageRolePutResolver: ((response: FakeResponse) => void) | null = null;
   let imageModelCalls = 0;
+  let modelEffortsCalls = 0;
   let focusedAction: string | null = null;
 
   const imageModels = options.imageModels ?? imageCatalog(true);
   let imageRole: ImageRoleFixture | null = options.imageRole === undefined
     ? { workspaceId: 'T_DESIGN', role: 'image', modelId: null, revision: 0 }
     : options.imageRole;
-  const agents = (options.agents ?? [releaseAgent]).map((agent) => ({ ...agent }));
+  const agents: Array<Record<string, unknown>> = (options.agents ?? [releaseAgent]).map((agent) => ({ ...agent }));
 
-  const workspaceDefault = {
+  const workspaceDefaultValue = (value: WorkspaceDefaultFixture) => ({
     workspaceId: 'T_DESIGN',
-    modelId: CHAT_MODEL,
-    revision: 2,
+    modelId: value.modelId,
+    ...effortProjection(value.modelId, value.effort),
+    revision: value.revision,
     provenance: 'admin_selected',
     runtimeContract: 'chickpea-v1',
     live: true,
     inheritingAgentCount: 1,
-    health: { status: 'ready', providerId: 'local-stub' },
-  };
+    health: { status: 'ready', providerId: value.modelId.split('/')[0] },
+  });
+  let workspaceDefault = workspaceDefaultValue(
+    options.workspaceDefault ?? { modelId: CHAT_MODEL, effort: null, revision: 2 },
+  );
 
   const focusElement = (action: string) => ({
     focus() {
@@ -234,6 +285,7 @@ function runHarness(options: HarnessOptions = {}) {
     getElementById(id: string) {
       if (id === 'app') return app;
       if (id === 'modal-root') return modalRoot;
+      if (id === 'p-model' && app.innerHTML.includes('id="p-model"')) return modelInput;
       if (id === 'p-image-model' && app.innerHTML.includes('id="p-image-model"')) {
         return imageModelInput;
       }
@@ -278,9 +330,26 @@ function runHarness(options: HarnessOptions = {}) {
     if (agentDetail && method === 'PATCH') {
       const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
       agentPatchBodies.push({ id: agentDetail[1] as string, body });
+      if (options.agentPatchError) {
+        return Promise.resolve(jsonResponse(options.agentPatchError.body, options.agentPatchError.status));
+      }
       const agent = agents.find((candidate) => candidate.id === agentDetail[1]);
       if (agent) {
         agent.revision = Number(agent.revision) + 1;
+        if (body.model !== undefined) {
+          const model = (body.model as string | null) ?? null;
+          const modelEffort = (body.modelEffort as string | null | undefined) ?? null;
+          agent.model = model;
+          agent.modelEffort = modelEffort;
+          agent.modelPolicy = model
+            ? { source: 'pinned', effectiveModel: model, ...effortProjection(model, modelEffort), live: true }
+            : {
+                source: 'workspace_default',
+                effectiveModel: workspaceDefault.modelId,
+                ...effortProjection(workspaceDefault.modelId, workspaceDefault.effort),
+                live: true,
+              };
+        }
         agent.imageModel = (body.imageModel as string | null) ?? null;
         agent.imageModelPolicy = {
           source: body.imageModel ? 'pinned' : 'workspace_default',
@@ -296,8 +365,22 @@ function runHarness(options: HarnessOptions = {}) {
           configured: true,
           source: 'registered in src/app.ts',
           suggestions: [CHAT_MODEL],
+        }, {
+          id: 'anthropic',
+          configured: true,
+          source: 'via ANTHROPIC_API_KEY',
+          suggestions: [OPUS, SONNET, HAIKU],
         }],
       }));
+    }
+    if (path.startsWith('/admin/api/model-efforts?')) {
+      modelEffortsCalls += 1;
+      if (modelEffortsCalls <= (options.modelEffortsFailures ?? 0)) {
+        return Promise.resolve(jsonResponse({ error: 'unavailable' }, 503));
+      }
+      const model = new URLSearchParams(path.slice(path.indexOf('?'))).get('model') ?? '';
+      const efforts = MODEL_EFFORTS[model] ?? [];
+      return Promise.resolve(jsonResponse({ model, efforts, standard: standardEffort(efforts) }));
     }
     if (path === '/admin/api/image-models') {
       imageModelCalls += 1;
@@ -310,23 +393,36 @@ function runHarness(options: HarnessOptions = {}) {
       return Promise.resolve(jsonResponse({ channels: [] }));
     }
     if (path.startsWith('/admin/api/workspace-model-default')) {
+      if (method === 'PUT') {
+        const body = JSON.parse(init?.body ?? '{}') as { modelId: string; effort?: string | null; expectedRevision: number };
+        workspaceDefaultPuts.push(body);
+        workspaceDefault = workspaceDefaultValue({
+          modelId: body.modelId,
+          effort: body.effort ?? null,
+          revision: workspaceDefault.revision + 1,
+        });
+      }
       return Promise.resolve(jsonResponse({ workspaceDefault }));
     }
     if (path.startsWith('/admin/api/workspace-model-roles/coding')) {
       if (method === 'PUT') {
         const body = JSON.parse(init?.body ?? '{}') as {
           modelId: string | null;
+          effort?: string | null;
           expectedRevision: number;
         };
         codingRolePuts.push(body);
         codingRole = {
           ...codingRole,
           modelId: body.modelId,
+          effort: body.effort ?? null,
           revision: codingRole.revision + 1,
           ready: body.modelId ? true : null,
         };
       }
-      return Promise.resolve(jsonResponse({ workspaceModelRole: { ...codingRole } }));
+      return Promise.resolve(jsonResponse({
+        workspaceModelRole: { ...codingRole, ...effortProjection(codingRole.modelId, codingRole.effort ?? null) },
+      }));
     }
     if (path.startsWith('/admin/api/workspace-model-roles/image')) {
       if (method === 'PUT') {
@@ -441,6 +537,7 @@ function runHarness(options: HarnessOptions = {}) {
     listeners,
     imageRolePuts,
     codingRolePuts,
+    workspaceDefaultPuts,
     agentPatchBodies,
     fetchCalls,
     focusedAction: () => focusedAction,
@@ -769,7 +866,7 @@ test('saving the default coding model sends the revision and re-renders the read
   click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
   await flushAsync();
 
-  assert.deepEqual(harness.codingRolePuts, [{ modelId: CHAT_MODEL, expectedRevision: 0 }]);
+  assert.deepEqual(harness.codingRolePuts, [{ modelId: CHAT_MODEL, effort: null, expectedRevision: 0 }]);
   const html = harness.app.innerHTML;
   const section = html.slice(html.indexOf('workspace-coding-model-heading'));
   assert.match(section, new RegExp(`<option value="${CHAT_MODEL.replace('/', '\\/')}" selected>`));
@@ -782,7 +879,7 @@ test('saving the default coding model sends the revision and re-renders the read
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
   await flushAsync();
-  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, expectedRevision: 1 });
+  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, effort: null, expectedRevision: 1 });
   assert.match(harness.app.innerHTML, /Default coding model cleared/);
 });
 
@@ -799,4 +896,424 @@ test('a coding model whose provider is not ready shows repair required', async (
   assert.match(section, /use each Agent&#39;s own model|use each Agent's own model/);
   // A stored choice the picker no longer lists stays selectable as itself.
   assert.match(section, /<option value="openai\/gpt-5\.6-sol" selected>/);
+});
+
+/** An Agent pinned to `model` at `effort`, projected the way the server does. */
+function pinnedAgent(model: string, effort: string | null, fields: Record<string, unknown> = {}) {
+  return {
+    ...releaseAgent,
+    model,
+    modelEffort: effort,
+    modelPolicy: { source: 'pinned', effectiveModel: model, ...effortProjection(model, effort), live: true },
+    ...fields,
+  };
+}
+
+/** The Effort radios in `html`, as `[level, checked, disabled]`. */
+function effortRadios(html: string, action: string): Array<[string, boolean, boolean]> {
+  return [...html.matchAll(/<button type="button" role="radio"[^>]*>/g)]
+    .map((match) => match[0])
+    .filter((button) => button.includes(`data-action="${action}"`))
+    .map((button) => [
+      button.match(/data-effort="([^"]+)"/)?.[1] ?? '',
+      button.includes('aria-checked="true"'),
+      / disabled[ >]/.test(button),
+    ]);
+}
+
+function effortCount(harness: { fetchCalls: Array<{ path: string }> }): number {
+  return harness.fetchCalls.filter((call) => call.path.startsWith('/admin/api/model-efforts')).length;
+}
+
+function chooseEffortTarget(action: string, level: string): unknown {
+  return actionTarget({ 'data-action': action, 'data-effort': level, 'aria-checked': 'false' });
+}
+
+test('the Agent Effort row offers only the levels its model accepts, at the standard level when unset', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(HAIKU, null)],
+  });
+  await flushAsync();
+
+  const html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'profile-effort'), [
+    ['low', false, false],
+    ['medium', true, false],
+    ['high', false, false],
+  ]);
+  assert.match(html, /role="radiogroup" aria-labelledby="p-effort-label"/);
+  assert.match(html, />Low<\/button>.*>Medium<\/button>.*>High<\/button>/);
+  assert.match(html, /Higher effort thinks longer before answering\. It is slower and uses more tokens\. Standard is Medium\./);
+  // The standard level is no choice, so the summary names the model alone.
+  assert.match(html, new RegExp(`<span class="mono hint">${HAIKU.replace('/', '\\/')}</span>`));
+  assert.equal(effortCount(harness), 0, 'the projection carries the levels for the first paint');
+});
+
+test('choosing an Agent effort marks it dirty and saves modelEffort with the model', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, null)],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  assert.match(harness.app.innerHTML, /save-bar-sticky is-clean/);
+
+  click({ target: chooseEffortTarget('profile-effort', 'xhigh') });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.doesNotMatch(html, /save-bar-sticky is-clean/);
+  assert.deepEqual(effortRadios(html, 'profile-effort').find(([, checked]) => checked), ['xhigh', true, false]);
+  assert.match(html, new RegExp(`<span class="mono hint">${OPUS.replace('/', '\\/')} · Extra high</span>`));
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies.length, 1);
+  assert.equal(harness.agentPatchBodies[0]?.body.model, OPUS);
+  assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, 'xhigh');
+
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, new RegExp(`<span class="mono">${OPUS.replace('/', '\\/')}</span> &middot; Extra high &middot; used in`));
+});
+
+test('an Agent keeps its effort on a model that accepts it and drops it on one that does not', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, 'max')],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': SONNET }) });
+  await flushAsync();
+  assert.equal(effortCount(harness), 1, 'a new model asks the server for its levels');
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort').find(([, checked]) => checked), ['max', true, false]);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': HAIKU }) });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'profile-effort').map(([level]) => level), HAIKU_EFFORTS);
+  assert.deepEqual(effortRadios(html, 'profile-effort').find(([, checked]) => checked), ['medium', true, false]);
+  assert.match(html, new RegExp(`<span class="mono hint">${HAIKU.replace('/', '\\/')}</span>`));
+
+  // Back on a model with Max, the dropped effort stays dropped.
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': SONNET }) });
+  await flushAsync();
+  assert.equal(effortCount(harness), 2, 'levels are cached per model');
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort').find(([, checked]) => checked), ['medium', true, false]);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies[0]?.body.model, SONNET);
+  assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, null);
+});
+
+test('a model without effort levels says so instead of offering a row', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, 'high')],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': CHAT_MODEL }) });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /<span class="field-label" id="p-effort-label">Effort<\/span><p class="hint">This model has no effort setting\.<\/p>/);
+  assert.deepEqual(effortRadios(html, 'profile-effort'), []);
+  assert.doesNotMatch(html, /Standard is/);
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, null);
+});
+
+test('an Agent following the Workspace default shows its effort, disabled, until a model is pinned', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    workspaceDefault: { modelId: OPUS, effort: 'high', revision: 4 },
+    agents: [pinnedAgent(SONNET, 'xhigh')],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  // "Use the Workspace default" clears the pin and its effort together.
+  click({ target: actionTarget({ 'data-action': 'profile-model-reset' }) });
+  await flushAsync();
+  let html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'profile-effort'), [
+    ['low', false, true],
+    ['medium', false, true],
+    ['high', true, true],
+    ['xhigh', false, true],
+    ['max', false, true],
+  ]);
+  assert.match(html, /Follows the Workspace default\. Pin a model to choose a different effort\./);
+  assert.doesNotMatch(html, /Standard is/);
+  assert.match(html, new RegExp(`<span class="mono hint">${OPUS.replace('/', '\\/')} · High</span>`));
+
+  // Pinning again starts from the model's standard level, not the cleared effort.
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': SONNET }) });
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort').find(([, checked]) => checked), ['medium', true, false]);
+  click({ target: actionTarget({ 'data-action': 'profile-model-reset' }) });
+  await flushAsync();
+
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies[0]?.body.model, null);
+  assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, null);
+
+  // The saved readback still follows the default's effort.
+  html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'profile-effort').find(([, checked]) => checked), ['high', true, true]);
+});
+
+test('a read-only Agent shows its effort as text', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, 'xhigh', { canEdit: false })],
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, /<div class="input" aria-label="Agent effort">Extra high<\/div>/);
+  assert.deepEqual(effortRadios(html, 'profile-effort'), []);
+});
+
+test('an effort the server refuses shows its message with the other save errors', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, null)],
+    agentPatchError: {
+      status: 422,
+      body: { error: 'effort_not_supported', message: `${OPUS} does not support max effort.` },
+    },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: chooseEffortTarget('profile-effort', 'max') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /<div class="field-error" role="alert" aria-live="polite">anthropic\/claude-opus-5-5 does not support max effort\./);
+});
+
+test('the Agents list names an effort after the model only when one applies', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents',
+    agents: [
+      pinnedAgent(OPUS, 'xhigh', { id: 'agent_pinned', name: 'Pinned Effort' }),
+      pinnedAgent(HAIKU, null, { id: 'agent_standard', name: 'Standard Effort' }),
+    ],
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.match(html, new RegExp(`<span class="mono">${OPUS.replace('/', '\\/')}</span> &middot; Extra high &middot; Image`));
+  assert.match(html, new RegExp(`<span class="mono">${HAIKU.replace('/', '\\/')}</span> &middot; Image`));
+});
+
+test('the Default model card saves an effort change on its own', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: OPUS, effort: null, revision: 2 },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  let html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').map(([level, checked]) => [level, checked]), [
+    ['low', false], ['medium', true], ['high', false], ['xhigh', false], ['max', false],
+  ]);
+  assert.match(html, /data-action="workspace-default-save" disabled/);
+  // The image model has no effort setting.
+  const imageSection = html.slice(html.indexOf('workspace-image-model-heading'), html.indexOf('workspace-coding-model-heading'));
+  assert.doesNotMatch(imageSection, /role="radiogroup"|Effort/);
+
+  click({ target: chooseEffortTarget('workspace-default-effort', 'high') });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-default-save" disabled/);
+  // Back at the stored level, nothing is left to save.
+  click({ target: chooseEffortTarget('workspace-default-effort', 'medium') });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="workspace-default-save" disabled/);
+
+  click({ target: chooseEffortTarget('workspace-default-effort', 'high') });
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts, [{ modelId: OPUS, effort: 'high', expectedRevision: 2 }]);
+  html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').find(([, checked]) => checked)?.[0], 'high');
+  assert.match(html, /data-action="workspace-default-save" disabled/);
+});
+
+test('the Default model card drops an effort the newly selected model lacks', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: OPUS, effort: 'max', revision: 3 },
+  });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-default-model' }, HAIKU) });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').map(([level, checked]) => [level, checked]), [
+    ['low', false], ['medium', true], ['high', false],
+  ]);
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts, [{ modelId: HAIKU, effort: null, expectedRevision: 3 }]);
+});
+
+test('the Default coding model card offers an effort for a chosen model and saves it', async () => {
+  const harness = runHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'workspace-coding-effort'), [], 'Not set has no effort');
+
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, OPUS) });
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'workspace-coding-effort').find(([, checked]) => checked)?.[0], 'medium');
+  click({ target: chooseEffortTarget('workspace-coding-effort', 'xhigh') });
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.codingRolePuts, [{ modelId: OPUS, effort: 'xhigh', expectedRevision: 0 }]);
+  const section = harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('workspace-coding-model-heading'));
+  assert.deepEqual(effortRadios(section, 'workspace-coding-effort').find(([, checked]) => checked)?.[0], 'xhigh');
+  assert.match(section, /data-action="workspace-coding-model-save" disabled/);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, '') });
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, effort: null, expectedRevision: 1 });
+});
+
+test('a failed levels request hides the Effort row until the model is chosen again', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, null)],
+    modelEffortsFailures: 1,
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': SONNET }) });
+  await flushAsync();
+  assert.equal(effortCount(harness), 1, 'a failure does not ask again by itself');
+  assert.doesNotMatch(harness.app.innerHTML, /p-effort-label/);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  await flushAsync();
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': SONNET }) });
+  await flushAsync();
+  assert.equal(effortCount(harness), 2);
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort').map(([level]) => level), ALL_EFFORTS);
+});
+
+test('an Agent drops a stored effort its model no longer accepts before an unrelated save', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(HAIKU, 'max')],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort').find(([, checked]) => checked), ['medium', true, false]);
+
+  input({ target: valueTarget({ 'data-action': 'profile-instructions' }, 'Summarize the release.') });
+  click({ target: actionTarget({ 'data-action': 'save-profile' }) });
+  await flushAsync();
+  assert.equal(harness.agentPatchBodies[0]?.body.model, HAIKU);
+  assert.equal(harness.agentPatchBodies[0]?.body.modelEffort, null);
+});
+
+test('the Default model card drops a stored effort its model no longer accepts', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: HAIKU, effort: 'max', revision: 5 },
+  });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  // Sonnet accepts Max, so a kept stored effort would resurface here.
+  change({ target: valueTarget({ 'data-action': 'workspace-default-model' }, SONNET) });
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'workspace-default-effort').find(([, checked]) => checked)?.[0], 'medium');
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts, [{ modelId: SONNET, effort: null, expectedRevision: 5 }]);
+});
+
+test('the Effort row holds its place while the picker is open and the next levels load', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, 'max')],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  const input = harness.listeners.input;
+  assert.ok(click && input);
+  const opusRow = effortRadios(harness.app.innerHTML, 'profile-effort');
+  assert.equal(opusRow.length, 5);
+
+  click({ target: comboTarget({ 'data-action': 'profile-model' }) });
+  input({ target: valueTarget({ 'data-action': 'profile-model' }, 'anthropic/claude-ha') });
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort'), opusRow);
+  assert.equal(effortCount(harness), 0, 'a half-typed model asks for no levels');
+
+  click({ target: comboTarget({ 'data-action': 'pick-model', 'data-model': HAIKU }) });
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort'), opusRow, 'the row stays while Haiku levels load');
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'profile-effort'), [
+    ['low', false, false],
+    ['medium', true, false],
+    ['high', false, false],
+  ]);
+});
+
+test('an effort level the Admin cannot name is skipped and never rendered raw', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/agents/agent_release?tab=model',
+    agents: [pinnedAgent(OPUS, null, {
+      modelPolicy: {
+        source: 'pinned',
+        effectiveModel: OPUS,
+        effort: null,
+        efforts: ['low', '"><img src=x>', 'high'],
+        standardEffort: 'high',
+        live: true,
+      },
+    })],
+  });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'profile-effort').map(([level]) => level), ['low', 'high']);
+  assert.doesNotMatch(html, /<img src=x>/);
 });

@@ -2698,6 +2698,16 @@ button.capability-pill { cursor: pointer; }
 .seg button + button { box-shadow: inset 1.5px 0 0 rgba(59, 50, 32, 0.12); }
 .seg button.on { background: var(--ember); box-shadow: inset 0 1.5px 0 rgba(255, 240, 205, 0.6); color: #3a2a08; font-weight: 700; }
 .seg button:disabled { color: var(--text-3); cursor: not-allowed; opacity: 0.55; }
+.seg [role="radio"]:focus-visible { outline: 2px solid var(--ember-press); outline-offset: -2px; }
+.effort-field { margin-top: 2px; }
+.effort-field .seg { align-self: flex-start; }
+.effort-field .seg button { padding: 8px 16px; }
+.effort-field .hint { margin-top: 8px; }
+.workspace-default-effort { align-items: center; display: grid; gap: 8px 12px; grid-template-columns: auto minmax(0, 1fr); margin-top: 12px; }
+.workspace-default-effort .field-label { color: var(--text-2); min-width: 48px; }
+.workspace-default-effort .seg { justify-self: start; }
+.workspace-default-effort .seg button { padding: 7px 13px; }
+.workspace-default-effort .seg + .hint { grid-column: 1 / -1; }
 .conn-tools { display: flex; flex-direction: column; gap: 6px; }
 .conn-tool {
   align-items: flex-start;

@@ -272,6 +272,7 @@
     workspaceDefault: null,
     workspaceDefaultLoaded: false,
     workspaceDefaultDraft: "",
+    workspaceDefaultEffortDraft: "",
     workspaceDefaultBusy: false,
     workspaceDefaultError: "",
     workspaceDefaultNotice: "",
@@ -293,6 +294,7 @@
     workspaceCodingRole: null,
     workspaceCodingRoleLoaded: false,
     workspaceCodingRoleDraft: "",
+    workspaceCodingRoleEffortDraft: "",
     workspaceCodingRoleBusy: false,
     workspaceCodingRoleError: "",
     workspaceCodingRoleNotice: "",
@@ -369,6 +371,8 @@
     modelPickerOpen: false,
     modelPickerFilter: "",
     modelReadiness: null,
+    modelEfforts: Object.create(null),
+    effortFieldShown: "",
     // The Agent image field reuses the combobox shape with its own open/filter
     // state so the two pickers can never share or cross-populate options.
     imageModelPickerOpen: false,
@@ -811,6 +815,7 @@
     state.modelPickerOpen = false;
     state.modelPickerFilter = "";
     state.modelReadiness = null;
+    state.effortFieldShown = "";
     state.imageModelPickerOpen = false;
     state.imageModelPickerFilter = "";
     state.agentScheduleDeleteConfirm = null;
@@ -5006,7 +5011,8 @@
       : '<span class="badge badge-off"><span class="dot"></span>Disabled</span>';
     var policy = agent.modelPolicy || {};
     var source = agent.model ? "Pinned" : "Workspace default";
-    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>';
+    var effort = effortLabel(policy.effort);
+    var modelPart = '<span class="badge-src">' + source + '</span> <span class="mono">' + esc(policy.effectiveModel || agent.model || "Not selected") + '</span>' + (effort ? " &middot; " + esc(effort) : "");
     var usage = "used in " + channelCountLabel(concrete.length);
     var handle = (agent.slackPresence && agent.slackPresence.normalizedHandle) || handleFromAgentName(agent.name);
     // The image role reads back beside the chat role, but only once one is
@@ -5031,7 +5037,8 @@
       (projected.source === "workspace_default" ? projected.effectiveModel : "") || "";
     var source = model ? "Pinned" : "Workspace default";
     var effective = model || workspaceModel || "Not selected";
-    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective) + '</span></div>';
+    var effort = appliedEffortLabel(agentEffortView(draft));
+    var sourceSummary = '<div class="workspace-default-meta"><span class="badge-src">' + source + '</span><span class="mono hint">' + esc(effective + (effort ? " · " + effort : "")) + '</span></div>';
     if (draft.canEdit === false) {
       return '<div class="field"><span class="field-label">Model</span>' + sourceSummary + '<div class="input mono" aria-label="Agent model">' + esc(effective) + '</div></div>';
     }
@@ -5048,6 +5055,153 @@
       '<p class="hint">' + (model ? 'This Agent stays on its pinned model until you <button type="button" class="link-btn" data-action="profile-model-reset">use the Workspace default</button>.' : 'This Agent follows live Workspace default changes.') + ' Manage choices in <button type="button" class="link-btn" data-action="open-settings">Settings &nearr;</button></p>' +
       modelWarningHtml(model) +
       '</div>';
+  }
+
+  var EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+  // The Settings sections whose model carries an effort, by the action of their Effort radios.
+  var EFFORT_SECTIONS = { "workspace-default-effort": "workspaceDefault", "workspace-coding-effort": "workspaceCodingRole" };
+
+  function effortLabel(level) {
+    return Object.prototype.hasOwnProperty.call(EFFORT_LABELS, level) ? EFFORT_LABELS[level] : "";
+  }
+
+  // The levels a model accepts, cached per model: undefined until asked and
+  // null while the request runs. A projection that already carries the levels
+  // seeds the cache, so the first paint needs no request.
+  function modelEffortLevels(model, seed) {
+    var cache = state.modelEfforts;
+    if (seed && Array.isArray(seed.efforts)) {
+      learnEffortLevels(model, seed.efforts, seed.standardEffort);
+      return cache[model];
+    }
+    if (cache[model] !== undefined) return cache[model] || null;
+    // Typing into the open picker names partial models; wait for the choice.
+    if (state.modelPickerOpen || !/^[^/]+\/.+$/.test(model)) return null;
+    cache[model] = null;
+    api("/admin/api/model-efforts?model=" + encodeURIComponent(model)).then(function (body) {
+      learnEffortLevels(model, body.efforts, body.standard);
+      renderPreservingPagePosition();
+    }).catch(function () {
+      delete cache[model];
+      // The Agent row held while these levels loaded must not outlive the
+      // failure. Paint it away without asking again; the next render asks.
+      if (!state.profileDraft || state.profileDraft.model !== model) return;
+      cache[model] = false;
+      renderPreservingPagePosition();
+      delete cache[model];
+    });
+    return null;
+  }
+
+  // Levels arrive from the server, so only labelled ones are kept. Knowing a
+  // model's levels drops a draft effort it lacks, including a stored one.
+  function learnEffortLevels(model, efforts, standard) {
+    var named = (efforts || []).filter(effortLabel);
+    state.modelEfforts[model] = { efforts: named, standard: effortLabel(standard) ? standard : null };
+    dropUnsupportedEfforts();
+  }
+
+  // A draft keeps its effort only while its model accepts it. Until the
+  // server says which levels a model accepts, the effort stays.
+  function dropUnsupportedEfforts() {
+    function fits(model, effort) {
+      if (!effort) return true;
+      if (!model) return false;
+      var levels = state.modelEfforts[model];
+      return !levels || levels.efforts.indexOf(effort) >= 0;
+    }
+    var draft = state.profileDraft;
+    if (draft && !fits(draft.model, draft.modelEffort)) draft.modelEffort = "";
+    ["workspaceDefault", "workspaceCodingRole"].forEach(function (key) {
+      if (!fits(state[key + "Draft"], state[key + "EffortDraft"])) state[key + "EffortDraft"] = "";
+    });
+  }
+
+  // A click or arrow key on an Effort radio. The checked radio already shows
+  // the draft's level, so choosing it again changes nothing.
+  function chooseEffort(radio) {
+    if (radio.getAttribute("aria-checked") === "true") return;
+    var action = radio.getAttribute("data-action");
+    var level = radio.getAttribute("data-effort");
+    var key = EFFORT_SECTIONS[action];
+    if (key) {
+      state[key + "EffortDraft"] = level;
+      state[key + "Error"] = "";
+      state[key + "Notice"] = "";
+    } else {
+      state.profileDraft.modelEffort = level;
+      markProfileDirty();
+    }
+    renderPreservingPagePosition();
+    var next = document.querySelector('[data-action="' + action + '"][data-effort="' + level + '"]');
+    if (next && next.focus) next.focus();
+  }
+
+  function selectedEffort(levels, effort) {
+    return levels.efforts.indexOf(effort) >= 0 ? effort : levels.standard;
+  }
+
+  // The Agent's effort sits beside a pinned model. An Agent without a pin
+  // follows the Workspace default's model and effort. Null while no model applies.
+  function agentEffortView(draft) {
+    var policy = draft.modelPolicy || {};
+    if (draft.model) {
+      var pinned = policy.source === "pinned" && policy.effectiveModel === draft.model ? policy : null;
+      return { effort: draft.modelEffort || "", follows: false, levels: modelEffortLevels(draft.model, pinned) };
+    }
+    var projection = state.workspaceDefault || {};
+    var model = projection.modelId;
+    if (!model && policy.source === "workspace_default") {
+      projection = policy;
+      model = policy.effectiveModel;
+    }
+    if (!model) return null;
+    return { effort: projection.effort || "", follows: true, levels: modelEffortLevels(model, projection) };
+  }
+
+  // The label a model summary appends: only an effort someone chose, never the standard.
+  function appliedEffortLabel(view) {
+    if (!view || !view.effort) return "";
+    if (view.levels && view.levels.efforts.indexOf(view.effort) < 0) return "";
+    return effortLabel(view.effort);
+  }
+
+  // One Effort control for every chat-model choice: the levels the model
+  // accepts as a radiogroup, selected at the chosen effort or else the
+  // model's standard level, and one line under it.
+  function effortRowHtml(options) {
+    var levels = options.levels;
+    if (!levels.efforts.length) return '<p class="hint">This model has no effort setting.</p>';
+    var selected = selectedEffort(levels, options.effort);
+    var buttons = levels.efforts.map(function (level) {
+      var on = level === selected;
+      return '<button type="button" role="radio" class="' + (on ? "on" : "") + '" aria-checked="' + on + '" tabindex="' + (on ? "0" : "-1") + '" data-action="' + options.action + '" data-effort="' + esc(level) + '"' + (options.disabled ? " disabled" : "") + '>' + esc(effortLabel(level)) + '</button>';
+    }).join("");
+    var note = options.note || "Higher effort thinks longer before answering. It is slower and uses more tokens. Standard is " + effortLabel(levels.standard) + ".";
+    return '<div class="seg" role="radiogroup" aria-labelledby="' + options.labelId + '">' + buttons + '</div><p class="hint">' + esc(note) + '</p>';
+  }
+
+  // While the picker is open or the chosen model's levels load, the row last
+  // painted holds its place, so the form does not jump on every keystroke.
+  function effortFieldHtml(draft) {
+    var view = agentEffortView(draft);
+    if (view && !view.levels && (state.modelPickerOpen || state.modelEfforts[draft.model] === null)) return state.effortFieldShown;
+    state.effortFieldShown = view && view.levels ? effortFieldRowHtml(draft, view) : "";
+    return state.effortFieldShown;
+  }
+
+  function effortFieldRowHtml(draft, view) {
+    if (draft.canEdit === false && view.levels.efforts.length) {
+      return '<div class="field"><span class="field-label">Effort</span><div class="input" aria-label="Agent effort">' + esc(effortLabel(selectedEffort(view.levels, view.effort))) + '</div></div>';
+    }
+    return '<div class="field effort-field"><span class="field-label" id="p-effort-label">Effort</span>' + effortRowHtml({
+      levels: view.levels,
+      effort: view.effort,
+      action: "profile-effort",
+      labelId: "p-effort-label",
+      disabled: view.follows,
+      note: view.follows ? "Follows the Workspace default. Pin a model to choose a different effort." : ""
+    }) + '</div>';
   }
 
   // The image role's per-Agent override. Mirrors the Model field, including the
@@ -5537,7 +5691,7 @@
       (BROWSER_OFFERED ? panel(tabs[4], websitesPanelHtml(draft, readOnly)) : "") +
       panel(tabs[5], ownerMemoryPanelHtml("agent", draft.id, draft.name)) +
       panel(tabs[6], agentSchedulesPanelHtml(draft)) +
-      panel(tabs[7], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
+      panel(tabs[7], '<div class="agent-model-row agent-model-tab-row">' + modelFieldHtml(draft) + effortFieldHtml(draft) + imageModelFieldHtml(draft) + '</div>') +
       '</div>' +
       '</section>';
   }
@@ -10414,7 +10568,7 @@
       : health.code === "funding_not_offered"
         ? NOT_OFFERED_HINT_HTML
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
-    var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
+    var changed = workspaceModelDraftChanged("workspaceDefault");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
     var status = state.workspaceDefaultError
       ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceDefaultError) + '</p>'
@@ -10423,7 +10577,36 @@
         : '<span class="sr-only" role="status" aria-live="polite"></span>';
     return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + '</div><div class="workspace-default-copy"><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p><p class="hint">' + esc(inheritors) + '</p></div>' + repair + '</div>' +
       '<div><div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="sr-only">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
+      workspaceEffortRowHtml("workspace-default-effort") +
       '<p class="hint workspace-default-timing">' + esc(timing) + '</p>' + status + '</div></div></section>';
+  }
+
+  function workspaceEffortRowHtml(action) {
+    var key = EFFORT_SECTIONS[action];
+    var model = state[key + "Draft"];
+    if (!model) return "";
+    var stored = state[key];
+    var levels = modelEffortLevels(model, stored && stored.modelId === model ? stored : null);
+    if (!levels) return "";
+    return '<div class="workspace-default-effort"><span class="field-label" id="' + action + '-label">Effort</span>' + effortRowHtml({
+      levels: levels,
+      effort: state[key + "EffortDraft"],
+      action: action,
+      labelId: action + "-label",
+      disabled: state[key + "Busy"]
+    }) + '</div>';
+  }
+
+  // A Workspace model draft differs from what is stored when its model does,
+  // or when its Effort radios show a different level.
+  function workspaceModelDraftChanged(key) {
+    var stored = state[key] || {};
+    var model = String(state[key + "Draft"] || "");
+    if (model !== String(stored.modelId || "")) return true;
+    var draftEffort = state[key + "EffortDraft"] || "";
+    var storedEffort = stored.effort || "";
+    var levels = state.modelEfforts[model];
+    return levels ? selectedEffort(levels, draftEffort) !== selectedEffort(levels, storedEffort) : draftEffort !== storedEffort;
   }
 
   function imageModelCatalog() {
@@ -10558,7 +10741,7 @@
       values.map(function (modelId) {
         return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(modelId) + '</option>';
       }).join("");
-    var changed = draft !== chosen;
+    var changed = workspaceModelDraftChanged("workspaceCodingRole");
     var disabled = state.workspaceCodingRoleBusy ? " disabled" : "";
     var status = state.workspaceCodingRoleError
       ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceCodingRoleError) + '</p>'
@@ -10571,7 +10754,7 @@
       '<button type="button" class="btn btn-primary" data-action="workspace-coding-model-save"' +
       (!changed || state.workspaceCodingRoleBusy ? " disabled" : "") + '>' +
       (state.workspaceCodingRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save coding model") + '</button></div>' +
-      status + '</div>';
+      workspaceEffortRowHtml("workspace-coding-effort") + status + '</div>';
     return shelf(summary, control);
   }
 
@@ -11691,12 +11874,15 @@
     var errorKey = stateKey + "Error";
     var noticeKey = stateKey + "Notice";
     var requestIdKey = stateKey + "RequestId";
+    var effortDraftKey = stateKey + "EffortDraft";
     var responseKey = options.responseKey;
 
     function apply(value, preserveDraft) {
       state[stateKey] = value || null;
       state[loadedKey] = true;
-      if (!preserveDraft) state[draftKey] = (value && value.modelId) || "";
+      if (preserveDraft) return;
+      state[draftKey] = (value && value.modelId) || "";
+      if (options.withEffort) state[effortDraftKey] = (value && value.effort) || "";
     }
 
     function load(generation, preserveDraft) {
@@ -11732,12 +11918,14 @@
       state[errorKey] = "";
       state[noticeKey] = "";
       render();
-      postJson(options.endpoint, "PUT", {
+      var request = {
         // A section that can be cleared sends an explicit null for the empty
         // draft; the chat default never gets here empty (its validate refuses).
         modelId: modelId || (options.clearable ? null : modelId),
         expectedRevision: current.revision
-      }).then(function (body) {
+      };
+      if (options.withEffort) request.effort = (modelId && state[effortDraftKey]) || null;
+      postJson(options.endpoint, "PUT", request).then(function (body) {
         apply(body[responseKey], false);
         state[busyKey] = false;
         state[noticeKey] = options.savedNotice(body[responseKey]);
@@ -11766,6 +11954,7 @@
     responseKey: "workspaceDefault",
     conflictCode: "workspace_model_default_revision_conflict",
     actionId: "workspace-default-model",
+    withEffort: true,
     // The chat default is free text, so the provider/model shape is checked here
     // before the request; the image field only offers catalog entries and leans
     // on the server's catalog check instead.
@@ -11810,6 +11999,7 @@
     responseKey: "workspaceModelRole",
     conflictCode: "model_role_revision_conflict",
     actionId: "workspace-coding-model",
+    withEffort: true,
     // Options are the configured chat models and the empty option is the
     // clear; the server checks the catalog and provider before saving.
     clearable: true,
@@ -12809,6 +12999,7 @@
       instructions: "",
       enabled: true,
       model: "",
+      modelEffort: "",
       kind: "user",
       imageModel: "",
       // New profiles carry no custom skills; the array is what the API persists.
@@ -12844,6 +13035,7 @@
       instructions: agent.instructions,
       enabled: agent.enabled,
       model: agent.model || "",
+      modelEffort: agent.modelEffort || "",
       modelPolicy: agent.modelPolicy ? JSON.parse(JSON.stringify(agent.modelPolicy)) : null,
       // The image role travels with the draft so an unrelated save cannot clear
       // a pin the editor never showed.
@@ -14428,7 +14620,8 @@
     // carries data-action="profile-model"; the same action feeds keystrokes to
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
-    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); markProfileDirty(); closeModelPicker(); }
+    if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); dropUnsupportedEfforts(); markProfileDirty(); closeModelPicker(); }
+    if (action === "profile-effort" || EFFORT_SECTIONS[action]) { chooseEffort(target); }
     if (action === "profile-image-model") { openImageModelPicker(); }
     if (action === "pick-image-model") {
       var imagePickInput = document.getElementById("p-image-model");
@@ -14447,6 +14640,7 @@
     }
     if (action === "profile-model-reset" && state.profileDraft) {
       state.profileDraft.model = "";
+      state.profileDraft.modelEffort = "";
       state.modelPickerOpen = false;
       state.modelPickerFilter = "";
       markProfileDirty();
@@ -14914,7 +15108,7 @@
       if (action === "profile-description") { state.profileDraft.description = target.value; markProfileDirty(); }
       // Mirror the typed model too: tab switches re-render from the draft, and
       // without this a half-typed specifier would be lost with the picker open.
-      if (action === "profile-model") { state.profileDraft.model = target.value; markProfileDirty(); filterModelPicker(target); }
+      if (action === "profile-model") { state.profileDraft.model = target.value; dropUnsupportedEfforts(); markProfileDirty(); filterModelPicker(target); }
       if (action === "profile-image-model") { state.profileDraft.imageModel = target.value; markProfileDirty(); filterImageModelPicker(target); }
       if (action === "profile-instructions") { state.profileDraft.instructions = target.value; markProfileDirty(); }
       // Skill editor fields mirror into state.skillEditor without a re-render so
@@ -15065,6 +15259,7 @@
     if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
     if (action === "workspace-default-model" && !state.workspaceDefaultBusy) {
       state.workspaceDefaultDraft = target.value;
+      dropUnsupportedEfforts();
       state.workspaceDefaultError = "";
       state.workspaceDefaultNotice = "";
       render();
@@ -15072,6 +15267,7 @@
     }
     if (action === "workspace-coding-model" && !state.workspaceCodingRoleBusy) {
       state.workspaceCodingRoleDraft = target.value;
+      dropUnsupportedEfforts();
       state.workspaceCodingRoleError = "";
       state.workspaceCodingRoleNotice = "";
       render();
@@ -15396,6 +15592,14 @@
         render();
         return;
       }
+    }
+    var effortRadio = event.target && event.target.closest ? event.target.closest('[role="radio"][data-effort]') : null;
+    if (effortRadio && /^Arrow(Left|Right|Up|Down)$/.test(event.key)) {
+      var effortRadios = Array.prototype.slice.call(effortRadio.parentNode.querySelectorAll('[role="radio"]'));
+      var effortStep = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+      event.preventDefault();
+      chooseEffort(effortRadios[(effortRadios.indexOf(effortRadio) + effortStep + effortRadios.length) % effortRadios.length]);
+      return;
     }
     if ((event.key === "Escape" || event.key === "Esc") && document.querySelector) {
       var openProviderActionMenu = document.querySelector(".provider-action-menu[open]");
@@ -17435,6 +17639,7 @@
     if (isEdit) {
       body.credentialConfigurationBinding = draft.credentialConfigurationBinding;
       body.model = draft.model || null;
+      body.modelEffort = (draft.model && draft.modelEffort) || null;
       if (draft.kind !== "system") body.imageModel = draft.imageModel || null;
       body.expectedRevision = Number.isInteger(draft.revision) ? draft.revision : 1;
       var resetMcp = (draft.removedConnections || []).map(function (entry) { return entry.id; });
@@ -17446,7 +17651,10 @@
       }
     }
     else {
-      if (draft.model) body.model = draft.model;
+      if (draft.model) {
+        body.model = draft.model;
+        body.modelEffort = draft.modelEffort || null;
+      }
       if (draft.imageModel) body.imageModel = draft.imageModel;
       if (draft.avatar) body.avatar = draft.avatar;
       body.id = slugId(draft.name);

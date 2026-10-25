@@ -265,6 +265,8 @@ function visualAgents() {
       description: '',
       instructions: 'Summarize customer feedback and distinguish recurring evidence from anecdotes.',
       enabled: false,
+      model: 'anthropic/claude-opus-5-5',
+      modelEffort: 'xhigh',
       slackPresence: slackPresence('agent_customer', 'customer-insights', 'b6a1f4b55c4c81e3da8a5f3c12f2ef7f'),
       skills: [],
       mcpServers: [],
