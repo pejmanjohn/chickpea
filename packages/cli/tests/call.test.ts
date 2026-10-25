@@ -35,18 +35,15 @@ const deployment = new FakeDeployment({
     }),
     get_operation: (args) => ({ ok: true, result: { operation: { operationId: args.operationId, status: 'completed' } } }),
     inspect_memory: () => ({ ok: false, error: { code: 'not_found', message: 'No such Agent.' } }),
-    propose_workspace_changes: () => ({
-      ok: true,
-      result: { proposalId: 'prop_123', status: 'pending', digest: 'd', guide: {}, preview: { summary: 'Delete Support' }, presentation: { slack: 'Delete Support?' }, confirmationTool: 'confirm_workspace_change' },
-    }),
     apply_workspace_changes: () => ({
       ok: true,
       result: {
         operationId: 'op_1', idempotencyKey: 'k', status: 'confirmation_required', effectiveRevision: 'rev_9', activation: 'next_turn',
         outcomes: [
-          { itemId: 'archive', operationKind: 'archive_agent', disposition: 'confirmation_required', proposalId: 'prop_456' },
+          { itemId: 'delete', operationKind: 'delete_agent', disposition: 'confirmation_required', proposalId: 'changeset_456' },
           { itemId: 'setup', operationKind: 'request_setup', disposition: 'setup_required', setupOperationId: 'setup_1', setupUrl: SETUP_URL },
         ],
+        presentation: { markdown: 'Delete Support?' },
       },
     }),
     confirm_workspace_change: (args) => ({ ok: true, result: { proposalId: args.proposalId, status: 'applied' } }),
@@ -88,17 +85,18 @@ test('call prints the error envelope as JSON and exits 1', async () => {
   assert.deepEqual(JSON.parse(result.stdout), { ok: false, error: { code: 'not_found', message: 'No such Agent.' } });
 });
 
-test('a proposal is shown with the exact confirm command and is never auto-confirmed', async () => {
+test('a destructive change is shown with the exact confirm command and is never auto-confirmed', async () => {
   const calls = deployment.toolCalls.length;
-  const result = await call(['propose_workspace_changes', '--args', '{"idempotencyKey":"k","guideVersion":"1","authoringReason":"agent_edit","operations":[]}']);
+  const result = await call(['apply_workspace_changes', '--args', '{"idempotencyKey":"k","operations":[]}']);
   assert.equal(result.code, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).result.proposalId, 'prop_123');
-  assert.match(result.stderr, /Proposal prop_123 is waiting for confirmation\. Nothing has been applied\./);
-  assert.match(result.stderr, new RegExp(`chickpea call ${deployment.url} confirm_workspace_change --args '\\{"proposalId":"prop_123"\\}'`));
+  assert.equal(JSON.parse(result.stdout).result.status, 'confirmation_required');
+  assert.match(result.stderr, /This change is destructive and waits for your confirmation \(changeset_456\)\. Nothing has been applied\./);
+  assert.match(result.stderr, /result\.presentation\.markdown/);
+  assert.match(result.stderr, new RegExp(`chickpea call ${deployment.url} confirm_workspace_change --args '\\{"proposalId":"changeset_456"\\}'`));
   assert.equal(deployment.toolCalls.length, calls + 1);
-  assert.equal(deployment.toolCalls.at(-1)!.name, 'propose_workspace_changes');
+  assert.equal(deployment.toolCalls.at(-1)!.name, 'apply_workspace_changes');
 
-  const explicit = await call(['confirm_workspace_change', '--args', '{"proposalId":"prop_123"}']);
+  const explicit = await call(['confirm_workspace_change', '--args', '{"proposalId":"changeset_456"}']);
   assert.equal(explicit.code, 0, explicit.stderr);
   assert.equal(JSON.parse(explicit.stdout).result.status, 'applied');
 });
@@ -106,7 +104,7 @@ test('a proposal is shown with the exact confirm command and is never auto-confi
 test('confirmation_required outcomes and setup links inside an apply result are both surfaced', async () => {
   const result = await call(['apply_workspace_changes', '--args', '{"idempotencyKey":"k","operations":[]}']);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stderr, /confirm_workspace_change --args '\{"proposalId":"prop_456"\}'/);
+  assert.match(result.stderr, /confirm_workspace_change --args '\{"proposalId":"changeset_456"\}'/);
   assert.match(result.stderr, /Setup link issued\. Anyone who holds it can complete its exact action without signing in; it expires in 24 hours\./);
   assert.match(result.stderr, new RegExp(`  ${SETUP_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.equal(deployment.toolCalls.at(-1)!.name, 'apply_workspace_changes');
@@ -120,8 +118,8 @@ test('envelope parsing prefers structured content and hint collection ignores un
   assert.deepEqual(parsed, { ok: true, result: { x: 2 } });
   const textOnly = parseToolEnvelope({ content: [{ type: 'text', text: '{"ok":false,"error":{"code":"e","message":"m"}}' }], isError: true });
   assert.equal(textOnly.ok, false);
-  assert.deepEqual(collectEnvelopeHints({ ok: true, result: { proposalId: 'prop_done', status: 'completed', outcomes: [{ disposition: 'applied', proposalId: 'x' }] } }), { proposals: [], setupLinks: [] });
-  assert.deepEqual(collectEnvelopeHints({ ok: false, error: { code: 'e', message: 'm' } }), { proposals: [], setupLinks: [] });
+  assert.deepEqual(collectEnvelopeHints({ ok: true, result: { proposalId: 'prop_done', status: 'completed', outcomes: [{ disposition: 'applied', proposalId: 'x' }] } }), { confirmations: [], setupLinks: [] });
+  assert.deepEqual(collectEnvelopeHints({ ok: false, error: { code: 'e', message: 'm' } }), { confirmations: [], setupLinks: [] });
 });
 
 test('--args-file reads arguments from disk and malformed arguments fail before any call', async () => {

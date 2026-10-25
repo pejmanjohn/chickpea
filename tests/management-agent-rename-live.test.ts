@@ -228,21 +228,14 @@ test('an approved rename onto a taken handle fails to the model and changes neit
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
 
-    // A connected coding agent confirms a single-write proposal, whose refusal is an error.
+    // A connected coding agent renames directly and gets the same refusal.
     const mcp = {
       userId: f.admin.user.id,
       membershipId: f.admin.membership.id,
       organizationId: f.admin.membership.organizationId,
       origin: { kind: 'mcp' as const, clientId: 'rename-live' },
     };
-    const single = await service.applyWorkspaceChanges({ context: mcp, ...await renameArgs(rename) });
-    const proposalId = (single as ManagementApplyResult).outcomes[0]?.proposalId ?? '';
-    assert.match(proposalId, /^proposal_/);
-    await assert.rejects(service.confirmWorkspaceChange({ context: mcp, proposalId }), (error: Error & { code?: string }) => {
-      assert.equal(error.code, 'handle_collision');
-      assert.match(error.message, kept);
-      return true;
-    });
+    assertRefused({ ok: true, result: await service.applyWorkspaceChanges({ context: mcp, ...await renameArgs(rename) }) });
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
   });

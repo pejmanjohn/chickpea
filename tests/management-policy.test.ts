@@ -9,6 +9,7 @@ import {
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
 import type { LiveManagementActor, ManagementOperation } from '../src/management/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -19,7 +20,7 @@ const actor: LiveManagementActor = {
   membershipId: 'membership_policy',
   organizationId: 'org_policy',
   role: 'admin',
-  origin: { kind: 'mcp', clientId: 'policy-test' },
+  origin: { kind: 'slack', workspaceId: 'T_POLICY', channelId: 'C_POLICY', threadTs: '1.1' },
 };
 
 const skillUpdate: ManagementOperation = {
@@ -117,7 +118,63 @@ test('base Agent creation and only its trusted source-Channel grant are immediat
   });
 });
 
-test('direct apply keeps ordinary creation immediate but reviews workspace-wide edit authority', async () => {
+test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about', () => {
+  const enabledAgent: CustomAgentConfig = {
+    id: 'agent_policy',
+    kind: 'user',
+    name: 'Policy',
+    instructions: 'Answer.',
+    enabled: true,
+    revision: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  };
+  const owner = { ...actor, role: 'owner' as const };
+  const removable = {
+    id: 'knowledge',
+    displayName: 'Knowledge',
+    url: 'https://mcp.example.test/mcp',
+    transport: 'streamable-http' as const,
+    authMode: 'none' as const,
+    headerNames: [],
+    enabled: true,
+    lifecycleStatus: 'ready' as const,
+    statusText: 'Ready',
+    discoveredTools: [],
+    allowedTools: [],
+  };
+  const reached = {
+    agentEditable: true,
+    agentReferences: { agentId: 'agent_policy', channelGrants: [{ workspaceId: 'T', channelId: 'C' }] },
+  };
+  const cases: Array<[string, Parameters<typeof classifyManagementOperation>[0]['operation'], Omit<Parameters<typeof classifyManagementOperation>[0], 'actor' | 'operation'>, 'immediate' | 'confirmation']> = [
+    ['delete an Agent', { itemId: 'd', kind: 'delete_agent', agentId: 'agent_policy', expectedRevision: 1 }, { agentEditable: true }, 'confirmation'],
+    ['delete a routine', { itemId: 'r', kind: 'delete_routine', workspaceId: 'T', routineId: 'routine_1', expectedVersion: 1 }, { agentEditable: true }, 'confirmation'],
+    ['suspend a member', { itemId: 'm', kind: 'update_member', membershipId: 'membership_x', status: 'suspended' }, { adminRequired: true }, 'confirmation'],
+    ['promote to Owner', { itemId: 'm', kind: 'update_member', membershipId: 'membership_x', role: 'owner' }, { adminRequired: true }, 'confirmation'],
+    ['demote an Owner', { itemId: 'm', kind: 'update_member', membershipId: 'membership_x', role: 'admin' }, { adminRequired: true, currentMemberRole: 'owner' }, 'confirmation'],
+    ['make a member an Admin', { itemId: 'm', kind: 'update_member', membershipId: 'membership_x', role: 'admin' }, { adminRequired: true, currentMemberRole: 'member' }, 'immediate'],
+    ['reactivate a member', { itemId: 'm', kind: 'update_member', membershipId: 'membership_x', status: 'active' }, { adminRequired: true, currentMemberRole: 'member' }, 'immediate'],
+    ['remove a provider key', { itemId: 'p', kind: 'remove_provider_credential', providerId: 'openai' }, { adminRequired: true }, 'confirmation'],
+    ['remove a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { mcpServers: [] } }, { agentEditable: true, connectionRemoved: true }, 'confirmation'],
+    ['disable an Agent in Channels', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { enabled: false } }, { ...reached, currentAgent: enabledAgent }, 'confirmation'],
+    ['add a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { mcpServers: [removable] } }, { agentEditable: true, capabilityScopeExpanded: true }, 'immediate'],
+    ['archive an Agent', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { agentEditable: true }, 'immediate'],
+    ['grant Channel reach', { itemId: 'g', kind: 'grant_agent_channel', workspaceId: 'T', channelId: 'C', agentId: 'agent_policy', expectedRevision: 0 }, { agentEditable: true }, 'immediate'],
+    ['rewrite a skill', skillUpdate, { agentEditable: true }, 'immediate'],
+  ];
+  for (const [label, operation, facts, mcpPosture] of cases) {
+    const decide = (origin: LiveManagementActor['origin']) =>
+      posture(classifyManagementOperation({ actor: { ...owner, origin }, operation, ...facts }));
+    assert.equal(decide({ kind: 'mcp', clientId: 'policy-test' }), mcpPosture, `${label} over MCP`);
+    assert.equal(decide({ kind: 'admin', sessionId: 'session_policy' }), 'immediate', `${label} from Admin, which asks in the browser`);
+    assert.equal(decide(actor.origin), 'confirmation', `${label} in Slack`);
+  }
+});
+
+test('direct apply over MCP creates Agents immediately, including workspace-wide edit authority', async () => {
   const f = await createManagementAdapterFixture('create-edit-authority-policy');
   const context = {
     userId: f.admin.user.id,
@@ -168,12 +225,11 @@ test('direct apply keeps ordinary creation immediate but reviews workspace-wide 
         ),
       }],
     });
-    assert.equal(workspaceWide.status, 'confirmation_required');
-    assert.equal(workspaceWide.outcomes[0]?.disposition, 'confirmation_required');
-    assert.match(workspaceWide.outcomes[0]?.proposalId ?? '', /^proposal_/);
+    assert.equal(workspaceWide.status, 'completed');
+    assert.equal(workspaceWide.outcomes[0]?.disposition, 'applied');
     assert.equal(
-      (await f.config.listUserAgents()).some(({ id }) => id === 'agent_workspace_wide_authority'),
-      false,
+      (await f.config.getAgent('agent_workspace_wide_authority')).editPolicy,
+      'all_workspace_members',
     );
   } finally {
     f.close();

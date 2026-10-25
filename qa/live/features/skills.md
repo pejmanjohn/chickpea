@@ -20,7 +20,7 @@ Docs: `/agents/skills/`. Record areas: `skills`. Legacy contracts: LC-06.
 
 - Slack: hand the Agent the link, or ask it to enable, disable or remove a named skill.
 - Admin: Agents → the Agent → Skills (suggestions, New skill, Import from URL, then Find skills and Add selected).
-- MCP: `propose_skill_import` for a reviewed import and `manage_agent_skill` to enable, disable or remove. `import_skill` called from an MCP client fails with `invalid_request` by design.
+- MCP: `import_skill` installs immediately and `manage_agent_skill` enables, disables or removes.
 
 ## How to drive it on a lane
 
