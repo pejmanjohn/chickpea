@@ -148,6 +148,53 @@ test('runtime access resolves current channel membership and hashes only non-sec
   assert.notEqual(changed.accessHash, access.accessHash);
 });
 
+test('runtime access carries whether the routine Channel is shared beyond the workspace', async () => {
+  const plain = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies());
+  assert.equal(plain.channelShared, undefined);
+  const facts = (await dependencies().conversation()).facts;
+  for (const shared of ['shared', 'externallyShared', 'organizationShared'] as const) {
+    const access = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
+      conversation: async () => ({
+        ok: true, error: undefined, retryAfterMs: undefined,
+        channel: { id: 'C_TEST', name: 'test', isPrivate: false, isMember: true },
+        facts: { ...facts, [shared]: true },
+      }),
+    }));
+    assert.equal(access.channelShared, true, shared);
+    assert.notEqual(access.accessHash, plain.accessHash, 'sharing still changes the access fence');
+  }
+  const pending = await resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
+    conversation: async () => ({
+      ok: true, error: undefined, retryAfterMs: undefined,
+      channel: { id: 'C_TEST', name: 'test', isPrivate: false, isMember: true },
+      facts: { ...facts, pendingShared: true },
+    }),
+  }));
+  assert.equal(pending.channelShared, true, 'a pending Slack Connect share counts');
+  assert.equal(pending.accessHash, plain.accessHash, 'and leaves the access fence as it was');
+});
+
+test('gateway routine access counts either pending Slack Connect signal as shared', async () => {
+  const channel = {
+    id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true, is_private: false, is_archived: false,
+    is_frozen: false, is_shared: false, is_ext_shared: false, is_org_shared: false, is_im: false, is_mpim: false,
+  };
+  const access = (raw: Record<string, unknown>) => resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId, transportMode: 'gateway', botUserId: 'UBOT',
+      client: {
+        conversations: {
+          info: async () => ({ ok: true, channel: { ...channel, ...raw } }),
+          members: async () => ({ ok: true, members: ['U_CREATOR', 'UBOT'], response_metadata: { next_cursor: '' } }),
+        },
+      } as unknown as WebClient,
+    }),
+  }));
+  assert.equal((await access({})).channelShared, undefined);
+  assert.equal((await access({ is_pending_ext_shared: true })).channelShared, true);
+  assert.equal((await access({ pending_shared: ['T_PARTNER'] })).channelShared, true);
+});
+
 test('injected effective config fences credential attribution in stable and legacy routine hashes', async () => {
   const credential = (version: number): EffectiveSlackConfig['modelCredential'] => ({
     credentialRefId: 'credential_test', version, providerId: 'anthropic',

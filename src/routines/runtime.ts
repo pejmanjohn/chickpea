@@ -54,6 +54,8 @@ export interface RoutineRuntimeAccess {
   actorSlackUserId?: string;
   authorityReceiptId?: string;
   effectiveConnections?: EffectiveConnectionAccount[];
+  /** The routine's Channel is shared beyond this workspace (Slack Connect or across an organization), or about to be. */
+  channelShared?: true;
   /** One-release bridge for v0.1.19 runs whose stored fence used the catalog revision. */
   legacyAccessHashForCatalogRevision?: (catalogRevision: string | undefined) => string;
 }
@@ -331,6 +333,10 @@ export async function resolveRoutineRuntimeAccess(
           effectiveConnections: authority.effectiveConnections,
         }
       : {}),
+    // A pending Slack Connect share counts, as it does for a Slack turn.
+    ...(facts.shared || facts.externallyShared || facts.organizationShared || facts.pendingShared
+      ? { channelShared: true as const }
+      : {}),
   };
 }
 
@@ -376,7 +382,8 @@ async function conversationFromClient(client: WebClient, channelId: string) {
         shared: channel.is_shared === true,
         externallyShared: channel.is_ext_shared === true,
         organizationShared: channel.is_org_shared === true,
-        pendingShared: channel.is_pending_ext_shared === true,
+        pendingShared: channel.is_pending_ext_shared === true ||
+          (Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0),
         member: channel.is_member === true,
         ...(typeof channel.team_id === 'string' ? { teamId: channel.team_id } : {}),
         im: channel.is_im === true,
