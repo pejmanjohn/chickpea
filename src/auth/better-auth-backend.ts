@@ -109,6 +109,25 @@ export const SQLITE_ORGANIZATION_ERASURE = {
   ],
 } as const;
 
+const SQLITE_PENDING_MCP_CLIENTS = `pending AS (
+  SELECT c.clientId, c.createdAt FROM oauthClient AS c
+  WHERE c.tokenEndpointAuthMethod = 'none' AND c.userId IS NULL
+    AND NOT EXISTS (SELECT 1 FROM oauthConsent AS t WHERE t.clientId = c.clientId)
+    AND NOT EXISTS (SELECT 1 FROM oauthAccessToken AS t WHERE t.clientId = c.clientId)
+    AND NOT EXISTS (SELECT 1 FROM oauthRefreshToken AS t WHERE t.clientId = c.clientId)
+)`;
+export const SQLITE_PENDING_MCP_CLIENT_PRUNE = {
+  delete: `WITH ${SQLITE_PENDING_MCP_CLIENTS}
+DELETE FROM oauthClient WHERE clientId IN (
+  SELECT clientId FROM pending
+  WHERE createdAt < ?1
+     OR (createdAt < ?2 AND clientId NOT IN (
+       SELECT clientId FROM pending ORDER BY createdAt DESC, clientId DESC LIMIT ?3
+     ))
+)`,
+  count: `WITH ${SQLITE_PENDING_MCP_CLIENTS} SELECT count(*) AS count FROM pending`,
+} as const;
+
 /** The erasure's counts, from SQLite's count row. */
 export function sqliteOrganizationErasure(counts: Record<string, unknown> | undefined): BetterAuthOrganizationErasure {
   const count = (field: string) => Number(counts?.[field] ?? 0);
@@ -188,6 +207,12 @@ export function parseBetterAuthDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+export interface PendingMcpOAuthClientPrune {
+  expiredBefore: Date;
+  evictableBefore: Date;
+  keep: number;
+}
+
 export interface BetterAuthDatabaseBackend {
   database: NonNullable<BetterAuthOptions['database']>;
   /**
@@ -227,8 +252,16 @@ export interface BetterAuthDatabaseBackend {
    * Safe to repeat.
    */
   eraseOrganization(slug: string): Promise<BetterAuthOrganizationErasure>;
-  countMcpOAuthClients(): Promise<number>;
-  pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number>;
+  /**
+   * Deletes the public, ownerless MCP clients that no one has consented to:
+   * every one registered before `expiredBefore`, then the oldest registered
+   * before `evictableBefore` until `keep` remain. A client with a consent or
+   * token is in use and stays. Answers how many such clients remain. The cap
+   * is approximate under a concurrent burst: overlapping callers each count
+   * before the others register, so more than `keep` can briefly remain, and
+   * refusal applies once a caller sees the count at the cap.
+   */
+  prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number>;
   putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void>;
   consumeMcpOAuthContinuation(idHash: string, now: number): Promise<string | null>;
 }

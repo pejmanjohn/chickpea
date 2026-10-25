@@ -17,6 +17,7 @@ import {
   type BetterAuthEnvironment,
 } from './better-auth-environment.ts';
 import {
+  MCP_OFFLINE_SCOPE,
   MCP_WORKSPACE_SCOPE,
   mcpResourceForOrigin,
 } from './mcp-oauth.ts';
@@ -564,7 +565,7 @@ export function renderMcpConsentPage(input: {
     : 'An unnamed app';
   const permission = input.scope.split(/\s+/).filter(Boolean).map((scope) => {
     if (scope === MCP_WORKSPACE_SCOPE) return 'Manage this Chickpea workspace';
-    if (scope === 'offline_access') return 'stay signed in';
+    if (scope === MCP_OFFLINE_SCOPE) return 'stay signed in';
     return scope;
   }).join(' and ');
   return brandPage('Authorize Chickpea', `      <h1>Allow workspace management?</h1>

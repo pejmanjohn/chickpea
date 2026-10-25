@@ -12,6 +12,7 @@ import type {
   BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
+  PendingMcpOAuthClientPrune,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
@@ -20,6 +21,7 @@ import {
   mapBetterAuthUser,
   parseBetterAuthDate,
   SQLITE_ORGANIZATION_ERASURE,
+  SQLITE_PENDING_MCP_CLIENT_PRUNE,
   sqliteOrganizationErasure,
 } from './better-auth-backend.ts';
 
@@ -143,30 +145,11 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
     }
   }
 
-  async countMcpOAuthClients(): Promise<number> {
-    const row = this.database.prepare(
-      `SELECT count(*) AS count FROM oauthClient
-       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL`,
-    ).get() as { count?: number } | undefined;
+  async prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number> {
+    this.database.prepare(SQLITE_PENDING_MCP_CLIENT_PRUNE.delete)
+      .run(prune.expiredBefore.toISOString(), prune.evictableBefore.toISOString(), prune.keep);
+    const row = this.database.prepare(SQLITE_PENDING_MCP_CLIENT_PRUNE.count).get() as { count?: number } | undefined;
     return Number(row?.count ?? 0);
-  }
-
-  async pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number> {
-    const result = this.database.prepare(
-      `DELETE FROM oauthClient
-       WHERE tokenEndpointAuthMethod = 'none' AND userId IS NULL
-         AND createdAt < ?
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthAccessToken WHERE oauthAccessToken.clientId = oauthClient.clientId
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthRefreshToken WHERE oauthRefreshToken.clientId = oauthClient.clientId
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM oauthConsent WHERE oauthConsent.clientId = oauthClient.clientId
-         )`,
-    ).run(createdBefore);
-    return Number(result.changes);
   }
 
   async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {

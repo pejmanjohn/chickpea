@@ -153,7 +153,7 @@ test('public DCR validation rejects malformed and oversized bodies before regist
         error: status === 413 ? 'request_too_large' : 'invalid_client_metadata',
       });
     }
-    assert.equal(await backend.countMcpOAuthClients(), 0);
+    assert.equal((backend.database.prepare('SELECT count(*) AS count FROM oauthClient').get() as { count: number }).count, 0);
   } finally {
     backend.close();
   }
@@ -163,14 +163,14 @@ test('runtime DCR rate limits persist across fresh per-request handlers', async 
   const identity = new SqliteIdentityStore(':memory:');
   const backend = new NodeBetterAuthBackend(':memory:');
   if (global.gc) {
-    const countClients = backend.countMcpOAuthClients.bind(backend);
-    context.mock.method(backend, 'countMcpOAuthClients', async () => {
+    const prune = backend.prunePendingMcpOAuthClients.bind(backend);
+    context.mock.method(backend, 'prunePendingMcpOAuthClients', async (input: Parameters<typeof prune>[0]) => {
       // Validation has finished; collect its temporary Request before Better
       // Auth reads the original. Do not mock clone() and retain its results.
       await new Promise<void>((resolve) => setImmediate(resolve));
       global.gc?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
-      return countClients();
+      return prune(input);
     });
   }
   try {

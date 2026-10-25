@@ -6,13 +6,20 @@ This runbook covers Chickpea's requester-bound workspace control plane: the publ
 
 The deployment publishes an OAuth-protected MCP at `https://<chickpea-origin>/mcp`, protected-resource metadata at `/.well-known/oauth-protected-resource/mcp`, and authorization-server metadata through Better Auth under `/api/auth`. The product scope is `chickpea:workspace`.
 
-The authorization server also supports `offline_access` for renewable client
-sessions. Clients request `chickpea:workspace offline_access` during registration
-and authorization to receive a refresh token. Protected-resource metadata and
-the MCP permission check still use only `chickpea:workspace`. Access tokens last
-15 minutes; refresh tokens last 30 days and rotate on use. The real-handler
-regression in `tests/management-oauth-refresh.test.ts` verifies renewal after
-access-token expiry, resource binding, and opt-out of offline access.
+The 401 challenge, the protected-resource metadata, and the MCP permission
+check name only `chickpea:workspace`. MCP 2026-07-28 asks resources to keep
+`offline_access` out of the challenge and metadata, and leaves renewal to the
+authorization server. Chickpea's authorization server issues a refresh token to
+every client registered for the `refresh_token` grant. A client that follows
+the challenge asks for `chickpea:workspace` alone; the server adds
+`offline_access` to that authorization request, and consent shows that the
+agent stays signed in. A client can also request
+`chickpea:workspace offline_access` itself, as `chickpea-cli` does. A client
+registered without the `refresh_token` grant gets no refresh token. Access
+tokens last 15 minutes; refresh tokens last 30 days and rotate on use. The
+real-handler regressions in `tests/management-oauth-refresh.test.ts` verify
+renewal after access-token expiry, renewal for a client that requests only the
+challenge scope, resource binding, and clients without renewal.
 
 Older deployments advertised the refresh grant but rejected `offline_access`,
 so their clients received no refresh token. Update the server before signing
@@ -25,7 +32,8 @@ registers again with `codex mcp login chickpea`. In Claude Code, use `/mcp` →
 the terminal commands can use `claude mcp logout chickpea` followed by
 `claude mcp login chickpea`. Merely re-authenticating can preserve the old client
 registration. CLI `doctor` reports missing refresh support independently of
-initial sign-in.
+initial sign-in. A connection approved before the server added renewal to
+workspace-only requests asks for consent once more on its next sign-in.
 
 The MCP tool surface (`WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES` in `src/management/mcp.ts`) is:
 
@@ -93,9 +101,9 @@ failed. Compare with a direct callback in an isolated local fixture before
 attributing the block to Chickpea's consent handoff; do not relax OAuth or
 browser protections to hide the error.
 
-Authorization should show one permission: manage this Chickpea workspace. Slack OIDC proves the person, while Chickpea independently requires the exact active workspace binding and membership on every MCP request. Disconnect or revoke the MCP connection from the client when it should no longer hold a refresh token. Suspending or removing the Chickpea member immediately blocks live MCP requests without waiting for client cleanup.
+Authorization should show one permission: manage this Chickpea workspace. For a client registered for renewal, it also says the agent stays signed in. Slack OIDC proves the person, while Chickpea independently requires the exact active workspace binding and membership on every MCP request. Disconnect or revoke the MCP connection from the client when it should no longer hold a refresh token. Suspending or removing the Chickpea member immediately blocks live MCP requests without waiting for client cleanup.
 
-Dynamic Client Registration is an intentionally bounded compatibility window for current clients. It accepts public clients only, validates exact loopback or HTTPS redirects, rate-limits registrations, caps stored clients, and prunes unused clients. Do not enable confidential client metadata or widen redirect rules. Replacing DCR with client-ID metadata is a follow-up gate: the Worker implementation must safely resolve DNS, reject special addresses, pin the resolved address through TLS, and refuse redirects before remote metadata is trusted.
+Dynamic Client Registration is an intentionally bounded compatibility window for current clients. It accepts public clients only and validates exact loopback or HTTPS redirects. The deployment's durable limiter allows 20 registrations per source and 1,000 in total per 15 minutes; a hosted host supplies its own per-source limit, which Core calls before every registration. About 1,000 registrations that no one has consented to are kept. The cap is approximate under a concurrent burst: requests that arrive together each count before the others register, so more than 1,000 can briefly remain, and refusal applies once a request sees the count at the cap. Past the cap, the oldest one older than 15 minutes makes room for the new one. A registration younger than 15 minutes is never evicted, so a flood cannot cancel a sign-in in progress; when the cap is full of registrations that young, registration answers 429 `registration_quota_exceeded` until the oldest turns 15 minutes old. A registration that no one consents to within 30 days is pruned. A client someone consented to is never pruned. A client that kept a pruned registration cannot sign in. Better Auth redirects its browser to `/api/auth/error?error=invalid_client`, which is not a public route, so the person sees a bare "Not Found" page. To recover, clear this server's stored authentication in the client, then connect again so it registers anew. Do not enable confidential client metadata or widen redirect rules. Replacing DCR with client-ID metadata is a follow-up gate: the Worker implementation must safely resolve DNS, reject special addresses, pin the resolved address through TLS, and refuse redirects before remote metadata is trusted.
 
 ## CLI
 
@@ -241,7 +249,7 @@ Exact proposals return a bounded preview, missing-setup list, target revisions, 
 | Claude Code | Automated | Requires disposable deployment | Requires disposable connector | Local contract verified; live pending authorization |
 | MCP Inspector | Automated for 2026 and 2025-era stateless requests | Requires disposable deployment | Requires disposable connector | Local contract verified; live pending authorization |
 
-`tests/management-client-compatibility.test.ts` covers public-client metadata and stateless tool discovery for these profiles. `tests/management-oauth.test.ts` covers discovery, DCR, PKCE/resource binding, live membership denial, continuation safety, registration limits, and revocation behavior. These fixtures do not claim that a particular installed desktop build completed a real browser authorization.
+`tests/management-client-compatibility.test.ts` covers public-client metadata and stateless tool discovery for these profiles. `tests/management-oauth.test.ts` covers discovery, DCR, PKCE/resource binding, live membership denial, continuation safety, and revocation behavior; `tests/management-oauth-refresh.test.ts` covers registration pruning. These fixtures do not claim that a particular installed desktop build completed a real browser authorization.
 
 Run `npm run verify:management-mcp` against a disposable deployment for read-only live acceptance. Supply a bearer token only through the environment; the verifier never prints it or response bodies. The authenticated default path checks the exact 3.0.0 tool inventory, reads the guide, inspects the workspace twice, and proves the effective revision did not change. It writes nothing. A live mutation or third-party connector canary requires separate explicit authorization, `MANAGEMENT_MCP_ALLOW_MUTATION=1`, and a supplied canary payload.
 
