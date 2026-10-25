@@ -18,7 +18,7 @@ You do not need the CLI to connect a coding agent. Admin **Settings → MCP** on
 | `chickpea mcp config <url> [--client claude-code\|codex\|cursor\|vscode\|windsurf\|gemini-cli\|json]` | no | Prints the MCP client configuration for `<url>/mcp`, the same snippets the deployment serves at `/connect.md` and in Admin Settings. Default: every client. |
 | `chickpea login <url>` | browser | Registers a public PKCE client, opens the browser for Slack sign-in and consent, and saves the tokens. |
 | `chickpea chatgpt connect <url>` | browser | Opens owner approval in Chickpea, completes ChatGPT sign-in through a local callback, and waits for account confirmation. OpenAI tokens stay on the deployment. |
-| `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. |
+| `chickpea logout <url>` | saved | Revokes the refresh token at the deployment and deletes the saved session. The last access token keeps working until it expires, up to 15 minutes. |
 | `chickpea workspace inspect <url> [--json]` | saved | Calls `inspect_workspace` and prints Agents, skills, connections, repositories, channels, provider availability, and team. |
 | `chickpea tools list <url>` | saved | Lists every management tool with its annotations. |
 | `chickpea call <url> <tool> [--args '<json>' \| --args-file <file>]` | saved | Calls any tool and prints its `{ ok, result \| error }` envelope as JSON. Exit 1 when `ok` is false. |
@@ -92,7 +92,7 @@ A recipe preview returns typed operations. Apply them with `chickpea call <url> 
 4. The code comes back to a listener on `127.0.0.1` and is exchanged with PKCE (S256).
 5. The tokens are saved to `$XDG_CONFIG_HOME/chickpea/credentials.json` (or `~/.config/chickpea/credentials.json`), keyed by deployment origin, file mode 0600.
 
-Access tokens are short-lived. Commands refresh them silently when they expire. `chickpea logout <url>` revokes the refresh token at `/api/auth/oauth2/revoke` and deletes the entry. Suspending or removing a member in Chickpea blocks their CLI session immediately, without waiting for logout.
+Access tokens last 15 minutes. Commands refresh them silently when they expire. `chickpea logout <url>` revokes the refresh token at `/api/auth/oauth2/revoke` and deletes the entry, so the session can no longer be refreshed. The deployment accepts an access token by its signature and expiry, not by looking up the session, so an access token issued before logout keeps working against `/mcp` until it expires, up to 15 minutes later. Suspending or removing a member in Chickpea blocks their CLI session immediately, without waiting for logout or for the access token to expire. Do that if the credentials file may have been copied.
 
 The protocol pieces come from the official `@modelcontextprotocol/client` SDK. The CLI does not implement OAuth or MCP itself.
 

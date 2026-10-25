@@ -198,11 +198,13 @@ export function createLiveWorkspaceManagementService(
         throw new ManagementError('invalid_request', 'The connected Slack directory is unavailable.');
       }
     },
-    testMcpConnection: (agentId, connectionId) => testManagedMcpConnection({
+    testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,
+      ...(actor ? { actor } : {}),
       ...(env ? { env } : {}),
-      config,
+      config: config as ConfigStore,
+      identity,
       settings,
     }),
     managedConnectorAvailable: async ({ toolkit, accessLane }) => {
