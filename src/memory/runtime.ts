@@ -232,7 +232,7 @@ async function isWorkspaceManagementTurn(input: {
   if (input.turn.source !== 'app_mention') return false;
   // The workspace-management route only exists on the Channel surface (see
   // isWorkspaceManagementRoute in src/slack/agent-routing.ts). A base-bot
-  // mention typed inside a DM normalizes to `app_mention` too, and recovering
+  // mention typed inside a DM or group DM is an `app_mention` too, and recovering
   // it here would hand the turn to a lease validator that rejects every
   // im/mpim conversation.
   if (slackConversationKind(input.turn) !== 'channel') return false;
@@ -408,8 +408,10 @@ async function resolveAgentMemoryRuntime(
   }
   // A `<@bot>` mention typed inside a DM normalizes to `app_mention`, not
   // `dm_message`, so the trusted conversation shape decides the surface. A DM
-  // has no Channel grant to look up; only mpim keeps the Channel contract.
-  if (slackConversationKind(turn) === 'im') {
+  // or group DM has no Channel grant to look up; a group DM's lease still asks
+  // Slack whether it is one the bot and the asker are in.
+  const kind = slackConversationKind(turn);
+  if (kind === 'im') {
     return {
       state,
       config,
@@ -421,9 +423,11 @@ async function resolveAgentMemoryRuntime(
       platformEnv,
     };
   }
-  const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
-  if (!grants.some((grant) => grant.agentId === assignment.agentId && grant.status === 'active')) {
-    throw new MemoryStateError('memory_owner_unavailable', 'The Agent is not permitted in this Channel.');
+  if (kind === 'channel') {
+    const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
+    if (!grants.some((grant) => grant.agentId === assignment.agentId && grant.status === 'active')) {
+      throw new MemoryStateError('memory_owner_unavailable', 'The Agent is not permitted in this Channel.');
+    }
   }
   const credentials = resolvedBotToken
     ? { botToken: resolvedBotToken, botUserId: identityBotUserId }
@@ -443,7 +447,7 @@ async function resolveAgentMemoryRuntime(
     slack: credentials.botToken
       ? createMemoryScopeSlack(credentials.botToken, turn.workspaceId)
       : createMemoryScopeSlackFromWebClient(client, turn.workspaceId),
-    surface: 'channel',
+    surface: kind === 'mpim' ? 'dm' : 'channel',
     botUserId,
     assignment,
     platformEnv,
@@ -495,12 +499,17 @@ async function validateAgentMemoryLease(
           : current.revision !== receiptRevision)) return false;
     // An explicit base-bot mention inside a DM still normalizes to
     // `app_mention`, so trust the conversation shape rather than the source
-    // alone: a DM has no Channel grant and no non-im conversation facts.
-    if (slackConversationKind(turn) === 'im') return true;
-    const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
-    if (!grants.some((grant) =>
-      grant.agentId === runtime.assignment.agentId && grant.status === 'active'
-    ) || !runtime.slack || !runtime.botUserId) return false;
+    // alone: a DM has no Channel grant and no non-im conversation facts. A
+    // group DM has no grant either, but must still be the group DM it was.
+    const kind = slackConversationKind(turn);
+    if (kind === 'im') return true;
+    if (kind === 'channel') {
+      const grants = await config.listAgentChannelGrants(turn.workspaceId, turn.channelId);
+      if (!grants.some((grant) =>
+        grant.agentId === runtime.assignment.agentId && grant.status === 'active'
+      )) return false;
+    }
+    if (!runtime.slack || !runtime.botUserId) return false;
     const [conversation, actor, members] = await Promise.all([
       runtime.slack.conversation(turn.channelId),
       runtime.slack.user(turn.userId),
@@ -511,7 +520,7 @@ async function validateAgentMemoryLease(
     return Boolean(
       conversation.ok && facts && facts.id === turn.channelId &&
       (!facts.teamId || facts.teamId === turn.workspaceId) && !facts.archived && !facts.frozen &&
-      !facts.im && !facts.mpim && facts.member && actor.ok && actor.user &&
+      !facts.im && facts.mpim === (kind === 'mpim') && facts.member && actor.ok && actor.user &&
       members.ok && members.ids.includes(turn.userId) && members.ids.includes(runtime.botUserId),
     );
   } catch (error) {
