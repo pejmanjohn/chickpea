@@ -38,7 +38,12 @@ npm run verify:host -- npm run build
 npm run verify:host -- npm run verify:cf-smoke
 npm run verify:host -- --wait-ms 300000 npm run build
 npm run verify:regression -- --area verification --wait-ms 300000
+npm run verify:host -- status
 ```
+
+`status` prints the owner's PID, checkout, start time and whether that PID is
+live, or that the reservation is free. It never reserves. To run a command
+that is itself named `status`, put `--` before it.
 
 For a deliberate multi-command group, pass a shell explicitly and set isolated
 database variables as in CONTRIBUTING. Nested commands inherit the owner's
@@ -76,6 +81,8 @@ holding the reservation. The slowest test in a full pass takes about 9 s.
 Treat a timed-out test as a failure to diagnose; do not raise the limit to get
 a pass.
 
+A command that cannot start, such as a misspelled name, never ran a child, so
+`verify:host` releases the reservation at once and exits 2.
 After interruption, the reservation stays in place. Inspect its PID, descendants,
 checkout and partial logs. Only after proving that its entire group has stopped
 may its owner remove that exact file. A dead parent alone is insufficient. Do not

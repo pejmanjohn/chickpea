@@ -14,6 +14,7 @@ export interface LongContextRates {
   outputMicrosPerUnit: number;
   cacheReadMicrosPerUnit?: number;
   cacheWriteMicrosPerUnit?: number;
+  cacheWrite1hMicrosPerUnit?: number;
 }
 
 export interface TokenPriceRate extends PriceRateIdentity {

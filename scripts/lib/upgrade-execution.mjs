@@ -87,24 +87,23 @@ export class DeliveryRecoveryAuthorityUnavailableError extends Error {
 export async function requestDeliveryRecovery({ url, workerVersion, capability, fetchImpl = fetch, timeoutMs = 15_000 }) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 15_000) throw new Error('Invalid delivery recovery deadline.');
   const controller = new AbortController();
-  const deadline = Date.now() + timeoutMs;
+  // The timer is the only deadline. A wait sized from Date.now() can end just
+  // before the timer fires and start an attempt the deadline no longer allows.
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const failure = () => new Error('Delivery recovery was not verified. Previous code was not deployed; preserve the receipt and retry recovery.');
   try {
-    while (!controller.signal.aborted && Date.now() < deadline) {
+    while (!controller.signal.aborted) {
       const response = await fetchImpl(new URL('/internal/deployment/recover-delivery', url), {
         method: 'POST', redirect: 'manual', signal: controller.signal,
         headers: { Authorization: `Bearer ${capability}`, 'X-Chickpea-Target-Version': workerVersion },
       });
-      if (response.status === 204 && !controller.signal.aborted && Date.now() < deadline) return;
+      if (response.status === 204 && !controller.signal.aborted) return;
       if (response.status === 404) throw new DeliveryRecoveryAuthorityUnavailableError();
       // Socket establishment is asynchronous. Only its explicit pending status
       // is retryable; authentication failures and redirects remain terminal.
       if (response.status !== 503) throw failure();
       await response.body?.cancel();
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-      await delay(Math.min(500, remaining), undefined, { signal: controller.signal });
+      await delay(500, undefined, { signal: controller.signal });
     }
     throw failure();
   } catch (error) {

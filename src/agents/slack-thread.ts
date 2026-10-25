@@ -921,7 +921,8 @@ function readDurableNodeTurnInput(turnJobId: string): string | undefined {
 /**
  * Register the exact main-turn capability set. A file upload no longer narrows
  * it: an upload turn runs with the same tools as any other message, on the
- * initial render and on the attachment-analysis re-render alike.
+ * first render and on every later render that reads the attachment-analysis
+ * signal.
  */
 export function useChickpeaSlackRuntimeCapabilities(
   plan: RuntimePlanV2,
