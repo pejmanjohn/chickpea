@@ -61,6 +61,8 @@ export function adminUiConfig(input: {
   selfHosted?: boolean;
   /** True where the host sells Chickpea's models: Admin has the Plan page and onboarding offers them. */
   billingOffered?: boolean;
+  /** Where the host offers "Help improve Chickpea": its privacy policy section. */
+  helpImprovePrivacyUrl?: string | undefined;
   targetChip?: string | undefined;
   onboarding?: (AdminOnboardingPage & { steps: OnboardingStep[]; scenes: Record<OnboardingSceneId, string> }) | undefined;
   firstRun?: AdminFirstRun | undefined;
@@ -73,6 +75,8 @@ export function adminUiConfig(input: {
     browserOffered: input.browserOffered !== false,
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
+    helpImproveOffered: input.helpImprovePrivacyUrl !== undefined,
+    ...(input.helpImprovePrivacyUrl ? { helpImprovePrivacyUrl: input.helpImprovePrivacyUrl } : {}),
     ...(input.targetChip ? { targetChip: input.targetChip } : {}),
     ...(input.onboarding ? { onboarding: input.onboarding } : {}),
     ...(input.firstRun ? { firstRun: input.firstRun } : {}),
@@ -132,6 +136,7 @@ export function renderAdminPage(
     browserOffered?: boolean;
     selfHosted?: boolean;
     billingOffered?: boolean;
+    helpImprovePrivacyUrl?: string | undefined;
     assetVersion?: string;
     onboarding?: AdminOnboardingPage | undefined;
     firstRun?: AdminFirstRun | undefined;
@@ -206,7 +211,8 @@ ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><m
 <script id="chickpea-admin-config" type="application/json">${adminUiConfigJson({
     isCloudflare, usageAdminUi, workspaceAdminUi, installationOwner: options.installationOwner === true,
     browserOffered: options.browserOffered !== false, selfHosted,
-    billingOffered: options.billingOffered === true, targetChip, onboarding, firstRun: options.firstRun,
+    billingOffered: options.billingOffered === true, helpImprovePrivacyUrl: options.helpImprovePrivacyUrl,
+    targetChip, onboarding, firstRun: options.firstRun,
   })}</script>
 <script src="${adminUiAssetUrl(ADMIN_UI_SCRIPT_PATH, assetVersion)}"></script>
 </body>
