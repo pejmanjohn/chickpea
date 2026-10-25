@@ -108,7 +108,7 @@ import {
 } from '../usage/run-settlement.ts';
 import { currentMessageOnlyContext } from './thread-context.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
-import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind } from './thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
 import {
   assembleRetainedSlackContext, formatSlackPublicHandoff, type SlackPublicDelivery,
@@ -2412,9 +2412,7 @@ async function recordExplicitInteractionClassifierUsage(input: {
   if (!enabled) return;
   // Deterministic edge rules invoke no provider and therefore create no usage.
   if (!input.classification.result && !input.classification.failed) return;
-  const direct = input.turn.source === 'dm_message' ||
-    input.turn.channelType === 'im' ||
-    input.turn.channelType === 'mpim';
+  const direct = slackTurnSurface(input.turn) === 'direct';
   const operationId =
     `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`;
   const recorder = new InteractionUsageRecorder({

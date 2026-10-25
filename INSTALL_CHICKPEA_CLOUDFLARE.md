@@ -371,7 +371,11 @@ Do not switch to this route merely because a shared-app callback is slow.
 An app created from this release's manifest already subscribes to
 `agent_session_stopped`, which lets people stop a run with Slack's **Stop**
 button. An adopted app created earlier works without it; to add the button,
-follow [Slack's Stop button](SETUP_AGENT.md#slacks-stop-button).
+follow [Slack's Stop button](SETUP_AGENT.md#slacks-stop-button). The same
+manifest subscribes to `message.mpim` and requests `mpim:history`, so Agents
+in group DMs hear their handles and thread replies; for an adopted app
+without them, see
+[Group DMs](SETUP_AGENT.md#group-dms).
 
 ## 5. Choose the provider and model
 

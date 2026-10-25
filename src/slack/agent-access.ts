@@ -1,4 +1,5 @@
 import type { AgentChannelGrant, CustomAgentConfig } from '../config/types.ts';
+import type { SlackConversationKind } from './thread-key.ts';
 import {
   SlackTransportError,
   type SlackChannel,
@@ -86,6 +87,23 @@ export async function resolvePrivateAgentAccess(
     memberChannelsUnavailable,
     ...(memberChannels ? { memberChannels } : {}),
   });
+}
+
+/**
+ * Private use of one user Agent for one turn. A group DM's answer reaches
+ * everyone in it, and nothing records who may use an Agent there, so only an
+ * Agent every workspace member may use answers in one. Elsewhere the asker's
+ * own private use decides.
+ */
+export async function resolveTurnAgentAccess(
+  input: PrivateAgentAccessInput & { conversation: SlackConversationKind },
+): Promise<PrivateAgentAccessResult> {
+  if (input.conversation !== 'mpim') return resolvePrivateAgentAccess(input);
+  const audience = await resolvePrivateAgentAudience(input);
+  const status = audience === 'unavailable'
+    ? 'unavailable'
+    : audience === 'workspace_members' && input.actor.fullMember ? 'allowed' : 'denied';
+  return { status, audience };
 }
 
 /** Derive the non-sensitive audience explanation used by Agent Admin. */

@@ -582,6 +582,35 @@ test('a lane installed before Slack\'s Stop event keeps its baseline without an 
   }
 });
 
+test('a lane installed between two optional features keeps its baseline without an install continuation', async (context) => {
+  // For example after the Stop event and Lists, but before group DMs: neither
+  // the full manifest nor the one with every optional feature removed.
+  const between = { manifestDigest: `sha256:${'8'.repeat(64)}`, requiredScopes: ['chat:write', 'lists:read'] };
+  const baseline = splitBaseline(between);
+  const observe = async () => authority('amber', { slack: { ...authority().slack, scopes: between.requiredScopes } });
+  const accepted = fixture({ baseline });
+  context.after(() => rmSync(accepted.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', accepted.options);
+  const preflight = await preflightEnvironmentMutation('amber', {
+    ...accepted.options, baseline, observeAuthority: observe,
+    localContract: optionalListsLocalContract({ installedVariants: [between] }),
+  });
+  assert.equal(preflight.deploymentMetadata.manifestDigest, between.manifestDigest);
+
+  const refused = fixture({ baseline });
+  context.after(() => rmSync(refused.parent, { recursive: true, force: true }));
+  claimEnvironment('amber', refused.options);
+  await assert.rejects(preflightEnvironmentMutation('amber', {
+    ...refused.options, baseline, observeAuthority: observe, localContract: optionalListsLocalContract(),
+  }), rejects('INSTALL_CONTINUATION_REQUIRED'));
+  for (const installedVariants of [[], [{ ...between, extra: true }], [{ ...between, manifestDigest: 'sha256:short' }]]) {
+    await assert.rejects(preflightEnvironmentMutation('amber', {
+      ...refused.options, baseline, observeAuthority: observe,
+      localContract: optionalListsLocalContract({ installedVariants }),
+    }), rejects('INVALID_LOCAL_CONTRACT'));
+  }
+});
+
 test('forward-only schema rejects local rollback and backward intents before authority or D1', async (context) => {
   const f = fixture({ schemaGeneration: 'd1:0003_reviewed;do:v10' });
   context.after(() => rmSync(f.parent, { recursive: true, force: true }));

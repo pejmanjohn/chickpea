@@ -45,7 +45,7 @@ import { deploymentTenancy, requireInstallationScope } from '../config/installat
 import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { createRequestTelemetryLifecycle } from '../telemetry/runtime.ts';
-import { surfaceForChannelId, type AssignmentSurface } from '../config/resolver.ts';
+import type { AssignmentSurface } from '../config/resolver.ts';
 import {
   getOrCreateSnapshot,
   getOrReplaceSnapshotForRoute,
@@ -83,6 +83,7 @@ import {
 import {
   listPrivatelyUsableAgents,
   resolvePrivateAgentAccess,
+  resolveTurnAgentAccess,
   type PrivateAgentActor,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
@@ -153,6 +154,7 @@ import {
   slackConversationKind,
   slackGuestThreadKey,
   slackThreadKey,
+  slackTurnSurface,
 } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
@@ -203,6 +205,7 @@ import { createDirectSlackTransport } from '../slack/transport/direct.ts';
 import { ownerUserGroupToken } from '../slack/user-group-authority.ts';
 import {
   isRetryableDependencyFailure,
+  type SlackChannel as SlackConversation,
   type SlackInboundEnvelope,
   type SlackTransport,
 } from '../slack/transport/types.ts';
@@ -1341,15 +1344,29 @@ async function resolvedAgentAvatarUrl(
 export async function postAgentRoutingFeedback(input: {
   turn: NormalizedSlackTurn;
   surface: AssignmentSurface;
-  result: Extract<AgentRoutingResult, { kind: 'denied' }>;
+  result: Exclude<AgentRoutingResult, { kind: 'ignore' | 'routed' }>;
   client: ReturnType<typeof createSlackWebClient>;
 }): Promise<void> {
-  const alternatives = input.result.alternatives.length > 0
-    ? ` Available here: ${input.result.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
+  const denial = input.result.kind === 'denied' ? input.result : undefined;
+  const alternatives = denial?.alternatives.length
+    ? ` Available here: ${denial.alternatives.map(({ handle }) => `@${handle}`).join(', ')}.`
     : '';
-  const text = input.result.reason === 'temporarily_unavailable'
+  const text = denial?.reason === 'temporarily_unavailable'
     ? 'That Agent address could not be verified right now. Try again.'
-    : `That Agent is not available here.${alternatives}`;
+    : denial?.reason === 'not_workspace_wide'
+      ? 'Only Agents everyone in this workspace can use answer in group DMs.'
+      : `That Agent is not available here.${alternatives}`;
+  if (slackConversationKind(input.turn) === 'mpim') {
+    // Only the asker hears why, in their thread; a reaction asked nothing.
+    if (input.turn.source === 'reaction_added') return;
+    await input.client.chat.postEphemeral({
+      channel: input.turn.channelId,
+      user: input.turn.userId,
+      ...(input.turn.threadTs !== input.turn.messageTs ? { thread_ts: input.turn.threadTs } : {}),
+      text,
+    });
+    return;
+  }
   if (input.surface === 'channel') {
     // Explicit base-app and Agent-handle mentions receive a private denial.
     // Ambient roots remain silent, and a denied Agent never becomes visible
@@ -1357,10 +1374,7 @@ export async function postAgentRoutingFeedback(input: {
     const explicitAgentMention = input.turn.source === 'agent_mention' ||
       (input.turn.source === 'implicit_thread_reply' &&
         parseAgentUserGroupMentions(input.turn.text).length > 0);
-    if (
-      (input.turn.source !== 'app_mention' && !explicitAgentMention) ||
-      (!input.turn.channelId.startsWith('C') && input.turn.channelType !== 'group')
-    ) return;
+    if (input.turn.source !== 'app_mention' && !explicitAgentMention) return;
     await input.client.chat.postEphemeral({
       channel: input.turn.channelId,
       user: input.turn.userId,
@@ -2728,18 +2742,9 @@ async function processSlackEvent(
     };
   }
   const state = stores.slackState;
-  const preliminarySurface = turnSurface(turn);
   const liveChannelConfig = liveChannelConfigurationEnabled(platformEnv);
   let candidateTurn = turn.source === 'reaction_added';
   let threadKey = slackThreadKey(turn);
-
-  // c. Implicit thread replies require a thread this app already started (a
-  //    prior mention/DM). An unknown thread key produces nothing on the wire
-  //    (S13). With the file-backed state store the registry survives
-  //    restarts; `:memory:` keeps the old process-local semantics. Checked
-  //    before any claim so a dropped reply stays fully silent.
-  const surface = turnSurface(turn);
-  if (surface !== preliminarySurface) return;
 
   // d. Claim BOTH the event id and the (channel, message-ts) so the
   //    app_mention + message fan-out for a single mention replies once.
@@ -2772,6 +2777,29 @@ async function processSlackEvent(
     threadKey = slackThreadKey(turn);
   }
 
+  // Implicit thread replies require a thread this app already started (a
+  // prior mention/DM). An unknown thread key produces nothing on the wire
+  // (S13). With the file-backed state store the registry survives restarts;
+  // `:memory:` keeps the old process-local semantics. Checked before any
+  // claim, or any Slack read, so a dropped reply stays fully silent.
+  if (
+    !ask &&
+    turnRequiresOwnedThread(turn) &&
+    !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
+  ) {
+    return;
+  }
+  if (!runtimeTransport || !runtimeClient || !resolvedBotUserId) return;
+  let conversation: SlackConversation | undefined;
+  try {
+    conversation = await resolveTurnConversation(turn, runtimeTransport);
+  } catch (err) {
+    if (isRetryableDependencyFailure(err)) throw err;
+    console.warn('[chickpea] turn conversation unavailable:', sanitizeError(err));
+    return;
+  }
+  const surface = slackTurnSurface(turn);
+
   // e. Resolve the config for this turn before canonical admission acquires
   //    the claims. A failure here must not release keys owned by a concurrent
   //    sibling event or Slack retry. Reaction events that cannot resolve a
@@ -2780,16 +2808,8 @@ async function processSlackEvent(
   //    TurnJob below freezes that result for retries and an in-flight response;
   //    a later event in the same Slack thread resolves again. Channels remain
   //    fail-closed and never fall through to the global direct-message default.
-  if (
-    !ask &&
-    turnRequiresOwnedThread(turn) &&
-    !(await stores.config.getAgentThreadRoute(turn.workspaceId, turn.channelId, turn.threadTs))
-  ) {
-    return;
-  }
   try {
     const store = stores.config;
-    if (!runtimeTransport || !runtimeClient || !resolvedBotUserId) return;
       agentRoutingActor = await resolveAgentRoutingActor({
         workspaceId: turn.workspaceId,
         userId: turn.userId,
@@ -2799,6 +2819,13 @@ async function processSlackEvent(
         transport: runtimeTransport,
         stores,
       });
+      if (conversation?.mpim && conversation.shared) {
+        // A group DM shared beyond the workspace gets no Agent's answer.
+        agentRoutingActor = {
+          ...agentRoutingActor,
+          routing: { ...agentRoutingActor.routing, fullMember: false },
+        };
+      }
       // An Approve or Cancel click answers the Agent that posted the card. A
       // guest's card is answered by that guest, as an ask is.
       const cardAgentId = ui?.surface.namespace === 'host' && ui.surface.spec.kind === 'approval'
@@ -2816,8 +2843,9 @@ async function processSlackEvent(
         config: store,
         transport: runtimeTransport,
         ...(ask ? { askAgentId: ask.targetAgentId } : guestCardAgentId ? { askAgentId: guestCardAgentId } : {}),
-        authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
+        authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
           agent,
+          conversation: slackConversationKind(turn),
           workspaceId: turn.workspaceId,
           grants: await store.listAgentChannelGrants(turn.workspaceId),
           actor: privateAgentActor(agentRoutingActor!, turn.userId),
@@ -2831,7 +2859,8 @@ async function processSlackEvent(
       });
       if (routed.kind === 'ignore') return;
       if (routed.kind !== 'routed' && ui) return;
-      if (routed.kind === 'not_in_channel') {
+      // Only a Channel can have an Agent added to it.
+      if (routed.kind === 'not_in_channel' && surface === 'channel') {
         const actor = agentRoutingActor;
         await replyToRefusedMessageOnce(state, msgKey, () => offerAgentForChannel({
           workspaceId: turn.workspaceId,
@@ -2850,14 +2879,15 @@ async function processSlackEvent(
       if (routed.kind !== 'routed' && ask) {
         // The asking Agent's teammates list names whom it can reach; an ask
         // that cannot run here is not answered, and nobody is told in Slack.
-        console.info(`[chickpea] host-addressed turn not admitted: ${routed.reason}`);
+        console.info(`[chickpea] host-addressed turn not admitted: ${routed.kind === 'denied' ? routed.reason : routed.kind}`);
         return;
       }
       if (routed.kind !== 'routed') {
         // Guests and Slack Connect users are refused before this check and
         // keep today's behaviour.
         if (
-          routed.kind === 'denied' && routed.reason === 'not_available' &&
+          routed.kind === 'denied' &&
+          (routed.reason === 'not_available' || routed.reason === 'not_workspace_wide') &&
           agentRoutingActor.routing.fullMember &&
           await refuseIneligibleSlackStop({
             turn,
@@ -2924,7 +2954,7 @@ async function processSlackEvent(
       );
       candidateTurn = turn.source === 'reaction_added';
       if (surface === 'channel') {
-        const channel = await runtimeTransport.lookupChannel(turn.channelId);
+        const channel = conversation ?? await runtimeTransport.lookupChannel(turn.channelId);
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
@@ -3018,11 +3048,12 @@ async function processSlackEvent(
   }
   if (
     assignment.runtimeContract === 'chickpea-v1' &&
-    surface === 'direct' &&
+    slackConversationKind(turn) === 'im' &&
     turn.messageTs === turn.threadTs
   ) {
     // A user-Agent root is a new owned conversation, not an invitation to
-    // hydrate unrelated Agent roots from the shared base-app DM history.
+    // hydrate unrelated Agent roots from the shared base-app DM history. A
+    // group DM root reads the group's recent messages, as a Channel root does.
     turn.contextMode = 'thread';
   }
   let claimsHeldByCanonicalAdmission = false;
@@ -3906,7 +3937,7 @@ async function processSlackStopButton(
   if (!transport || !client || !botUserId) return;
 
   // The press, as a reply of that person's in the Agent Session's thread.
-  const surface = surfaceForChannelId(press.channelId);
+  const direct = press.channelId.startsWith('D');
   const turn: NormalizedSlackTurn = {
     workspaceId: payload.team_id,
     channelId: press.channelId,
@@ -3915,13 +3946,16 @@ async function processSlackStopButton(
     userId: press.userId,
     messageTs: press.eventTs,
     threadTs: press.threadTs,
-    ...(surface === 'direct' ? { sessionThreadTs: 'dm', channelType: 'im' } : {}),
-    source: surface === 'direct' ? 'dm_message' : 'implicit_thread_reply',
+    ...(direct ? { sessionThreadTs: 'dm', channelType: 'im' } : {}),
+    source: direct ? 'dm_message' : 'implicit_thread_reply',
     contextMode: 'thread',
   };
+  let surface: AssignmentSurface;
   let actor: ResolvedAgentRoutingActor;
   let routed: AgentRoutingResult;
   try {
+    await resolveTurnConversation(turn, transport);
+    surface = slackTurnSurface(turn);
     // No membership proof comes with a press: the channel is asked.
     actor = await resolveAgentRoutingActor({
       workspaceId: turn.workspaceId,
@@ -3937,8 +3971,9 @@ async function processSlackStopButton(
       actor: actor.routing,
       config: stores.config,
       transport,
-      authorizeUserAgent: async (agent) => resolvePrivateAgentAccess({
+      authorizeUserAgent: async (agent) => resolveTurnAgentAccess({
         agent,
+        conversation: slackConversationKind(turn),
         workspaceId: turn.workspaceId,
         grants: await stores.config.listAgentChannelGrants(turn.workspaceId),
         actor: privateAgentActor(actor, turn.userId),
@@ -3961,7 +3996,8 @@ async function processSlackStopButton(
   if (routed.kind !== 'routed') {
     // As for a typed stop, only a full member is told (AE4); a guest keeps
     // Chickpea's silence.
-    const refusal = routed.kind === 'denied' && routed.reason === 'not_available' &&
+    const refusal = routed.kind === 'denied' &&
+        (routed.reason === 'not_available' || routed.reason === 'not_workspace_wide') &&
         actor.routing.fullMember
       ? await refuseSlackStop({
           threadKey,
@@ -4189,8 +4225,9 @@ async function mayUseRunningSlackAgent(input: {
     surface: input.surface,
     actor: actor.routing,
     config,
-    authorizeUserAgent: async (candidate) => resolvePrivateAgentAccess({
+    authorizeUserAgent: async (candidate) => resolveTurnAgentAccess({
       agent: candidate,
+      conversation: slackConversationKind(turn),
       workspaceId: turn.workspaceId,
       grants: await config.listAgentChannelGrants(turn.workspaceId),
       actor: privateAgentActor(actor, turn.userId),
@@ -4615,6 +4652,24 @@ export function turnRequiresOwnedThread(turn: Pick<NormalizedSlackTurn, 'source'
   return turn.source === 'implicit_thread_reply' && parseAgentUserGroupMentions(turn.text).length === 0;
 }
 
+/**
+ * Slack's facts about a turn's conversation, read once at admission. Slack
+ * names no conversation kind on an `app_mention` or a reaction, and a group
+ * DM's id (`C…` now, `G…` before) looks like a Channel's, so such a turn in a
+ * group DM is marked as one here. A group DM is always read, for whether it
+ * is shared beyond the workspace; a Channel's facts serve its later Channel
+ * lookup.
+ */
+async function resolveTurnConversation(
+  turn: NormalizedSlackTurn,
+  transport: Pick<SlackTransport, 'lookupChannel'>,
+): Promise<SlackConversation | undefined> {
+  if (turn.channelType ? turn.channelType !== 'mpim' : turn.channelId.startsWith('D')) return undefined;
+  const conversation = await transport.lookupChannel(turn.channelId);
+  if (conversation.mpim) turn.channelType = 'mpim';
+  return conversation;
+}
+
 /** A Slack event's files, for the image references the thread record keeps. */
 function slackEventFiles(event: SlackEventFixture['event']): unknown {
   return 'files' in event ? event.files : undefined;
@@ -4747,18 +4802,3 @@ function slackEventTimestampMs(value: string): number | null {
   return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
-// The turn's surface, from the normalizer's authoritative source/channel_type
-// (not a channel-id prefix): a DM message ('dm_message'), and any im/mpim
-// thread, is 'direct'; everything else is a channel. A group-DM
-// app_mention carries no channel_type and falls through to 'channel' — the
-// fail-closed default (see surfaceForChannelId for the id ambiguity).
-function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
-  if (turn.source === 'dm_message') {
-    return 'direct';
-  }
-  const channelType = turn.channelType;
-  if (channelType === 'im' || channelType === 'mpim') {
-    return 'direct';
-  }
-  return 'channel';
-}

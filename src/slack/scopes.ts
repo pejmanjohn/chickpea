@@ -12,10 +12,11 @@ export const REQUESTED_SLACK_BOT_SCOPES = Object.freeze([
  * Requested scopes an installation may lack while ordinary chat keeps working.
  * A scope added after an installation exists belongs here, never in the
  * required set, and its feature explains its absence: existing grants stay
- * valid for reinstall and recovery until an Owner updates them. Lists are the
- * only one today.
+ * valid for reinstall and recovery until an Owner updates them. Without
+ * `mpim:history`, an Agent answering in a group DM reads none of its earlier
+ * messages.
  */
-export const SLACK_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write']);
+export const SLACK_FEATURE_SCOPES = Object.freeze(['lists:read', 'lists:write', 'mpim:history']);
 /** Feature scopes are additive: a core-only installation must keep serving ordinary chat. */
 export const REQUIRED_SLACK_BOT_SCOPES = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope)));
 /**
@@ -31,12 +32,16 @@ export const SLACK_USER_GROUP_SCOPES = Object.freeze(['usergroups:read', 'usergr
 /**
  * What an Agent's own Slack app asks for: the workspace app's bot scopes
  * without user groups, sender customization or email reads, none of which an
- * Agent that is its own bot needs. It keeps `channels:join` so that adding
+ * Agent that is its own bot needs, and without group DM history: group DMs
+ * are served through the workspace app, and an Agent app's scopes and events
+ * are not changed for them, so a mention of its bot in a group DM reads none
+ * of the group's earlier messages. It keeps `channels:join` so that adding
  * the Agent to a public Channel brings its bot in: Chickpea's bot cannot
  * invite it without a scope every installation would have to approve.
  */
 export const AGENT_APP_BOT_SCOPES: readonly string[] = Object.freeze(REQUESTED_SLACK_BOT_SCOPES.filter((scope) =>
-  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email'
+  !scope.startsWith('usergroups:') && scope !== 'chat:write.customize' && scope !== 'users:read.email' &&
+  scope !== 'mpim:history'
 ));
 
 /** Parse Slack's comma-delimited `x-oauth-scopes` response header. */

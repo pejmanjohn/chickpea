@@ -5,6 +5,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import { AgentRevisionConflictError } from '../src/config/errors.ts';
 import type { CustomAgentConfig, UserGroupPresence } from '../src/config/types.ts';
+import type { PrivateAgentAccessResult } from '../src/slack/agent-access.ts';
 import {
   handoffCreatedAgentThread,
   resolveAgentRoute,
@@ -1173,6 +1174,40 @@ test('a direct message that mentions an Agent this person cannot use privately a
     assert.deepEqual(result, { kind: 'denied', reason: 'not_available', alternatives: [] });
     assert.ok(authorized.includes('agent_finance'), 'the later Agent was checked as the person may use it here');
     assert.equal(await store.getAgentThreadRoute('T1', 'D1', '100.1'), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('in a group DM, only an Agent not everyone in the workspace may use is refused as such', async () => {
+  const { store, support } = await fixture();
+  try {
+    await activateChickpea(store);
+    const groupDm = (text: string) => turn({ channelId: 'C0GROUPDM', channelType: 'mpim', text });
+    const route = (text: string, access: (agent: CustomAgentConfig) => PrivateAgentAccessResult) =>
+      resolveAgentRoute({
+        turn: groupDm(text), surface: 'direct', actor: DM_ACTOR, config: store,
+        authorizeUserAgent: async (agent) => access(agent),
+      });
+    const privateUse = (): PrivateAgentAccessResult => ({ status: 'denied', audience: 'creator_only' });
+    const unverifiable = (): PrivateAgentAccessResult => ({ status: 'unavailable', audience: 'unavailable' });
+    const allowed = (): PrivateAgentAccessResult => ({ status: 'allowed', audience: 'workspace_members' });
+
+    assert.deepEqual(await route('<!subteam^SSUPPORT|@support> help', privateUse),
+      { kind: 'denied', reason: 'not_workspace_wide', alternatives: [] });
+    assert.deepEqual(await route('<!subteam^SSUPPORT|@support> <!subteam^SFINANCE|@finance> compare notes',
+      (agent) => agent.id === support.id ? allowed() : privateUse()),
+    { kind: 'denied', reason: 'not_workspace_wide', alternatives: [] }, 'a later Agent named is checked too');
+    // A placement Slack could not verify is the usual refusal.
+    assert.deepEqual(await route('<!subteam^SSUPPORT|@support> help', unverifiable),
+      { kind: 'denied', reason: 'not_available', alternatives: [] });
+    assert.equal(await store.getAgentThreadRoute('T1', 'C0GROUPDM', '100.1'), undefined);
+
+    // In a direct message the same private refusal keeps its reason.
+    assert.deepEqual(await resolveAgentRoute({
+      turn: dmTurn({ text: '<!subteam^SFINANCE|@finance> help' }), surface: 'direct', actor: DM_ACTOR, config: store,
+      authorizeUserAgent: async () => privateUse(),
+    }), { kind: 'denied', reason: 'not_available', alternatives: [] });
   } finally {
     store.close();
   }

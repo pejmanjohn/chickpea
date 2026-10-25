@@ -972,9 +972,10 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
     const approveWithResult = async (
       result: ManagementApplyResult,
       outboxOverride?: ManagementReceiptOutboxRecord,
+      channelId: string = approvalTurn.channelId,
     ) =>
       executeHostSlackManagementApproval({
-        turn: approvalTurn,
+        turn: { ...approvalTurn, channelId },
         assignment: approvalAssignment,
         turnJobId: 'turn_CREATION_REACH_APPROVE',
         proposalId,
@@ -1033,6 +1034,17 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       ),
       undefined,
       'a runtime persona fallback cannot transfer the thread after approval',
+    );
+
+    await approveWithResult(completedResult, {
+      ...welcome,
+      destination: { ...welcome.destination, channelId: 'C_CREATION_GROUP_DM' },
+      deliveryRef: welcome.deliveryRef!.replace(welcome.destination.channelId, 'C_CREATION_GROUP_DM'),
+    }, 'C_CREATION_GROUP_DM');
+    assert.equal(
+      await f.config.getAgentThreadRoute(welcome.destination.workspaceId, 'C_CREATION_GROUP_DM', threadTs),
+      undefined,
+      'approving a creation from a group DM leaves the thread with Chickpea',
     );
 
     await approveWithResult(completedResult);
@@ -1121,6 +1133,23 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       ))?.agentId,
       created.id,
       'ordinary welcomes still hand off after durable delivery settlement',
+    );
+
+    const groupDmWelcome = {
+      ...ordinaryWelcome,
+      outboxId: 'agent_welcome_creation_group_dm',
+      destination: { ...welcome.destination, channelId: 'C_CREATION_GROUP_DM', threadTs: '200.610000' },
+      deliveryRef: 'slack:C_CREATION_GROUP_DM:200.620000',
+    };
+    await completeSettledAgentWelcomeHandoff(groupDmWelcome, f.config, f.management);
+    assert.equal(
+      await f.config.getAgentThreadRoute(
+        groupDmWelcome.destination.workspaceId,
+        groupDmWelcome.destination.channelId,
+        groupDmWelcome.destination.threadTs,
+      ),
+      undefined,
+      'a welcome in a group DM leaves the thread with Chickpea, since a new creator-only Agent cannot answer there',
     );
   } finally {
     f.close();

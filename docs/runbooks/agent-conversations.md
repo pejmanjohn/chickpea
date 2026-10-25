@@ -63,11 +63,11 @@ admits nobody later. A message that mentions only Agent-app bots is answered on 
 apps' own deliveries. Without the host's Agent-app port (see
 [How it is turned on](slack-message-identity.md#how-it-is-turned-on)) no app
 is served, so its bot's mention addresses nobody, as before Agents had apps.
-A group DM counts as a Channel here: Slack sends a mention there only as
-`app_mention`, without a conversation type.
 
 Every mentioned Agent must be available to that person where they wrote: in
-a Channel, granted there; in a direct message, one they may use privately.
+a Channel, granted there; in a direct message, one they may use privately;
+in a group DM, one everyone in the workspace may use (see
+[In a group DM](#in-a-group-dm)).
 If one is not, nobody answers and the person gets the usual note that the
 Agent is not available here, once per message. In a Channel each Agent also
 answers as its own bot, its app's or Chickpea's, so that bot must be in the
@@ -98,7 +98,8 @@ exchange, in that thread:
 
 - In a Channel, the asked Agent needs an active grant there, and the person
   must be a full member who is in the Channel. In a direct message, see
-  [In a direct message](#in-a-direct-message).
+  [In a direct message](#in-a-direct-message), and in a group DM,
+  [In a group DM](#in-a-group-dm).
 - The asked Agent works with that person's access and its own connected
   accounts. The asking Agent's words cannot grant anything.
 - Only people approve, stop, check in, or run memory and schedule commands.
@@ -137,6 +138,41 @@ unless the person asks, and a write it makes anyway waits for the person's
 approval. An ask carries no request text from the person: a check that needs
 the person's own words, such as a schedule change or a skill import, does not
 take the asking Agent's words as theirs.
+
+## In a group DM
+
+A group DM is addressed like a Channel and decided like a direct message. An
+Agent hears a message there only when it names the Agent's handle or
+`@Chickpea`, or replies in a thread the Agent owns. A message that names no
+Agent is people talking to each other, and no Agent reads it. Anyone in the
+group DM may send the follow-up in an Agent's thread.
+
+No grant applies to a group DM, and nothing records who may use an Agent
+there. Its answer reaches everyone in it, so a user Agent answers in a group
+DM only when everyone in the workspace may already use it privately: it has
+been added to at least one public Channel. An Agent limited to its creator,
+or to the people in its private Channels, never answers in a group DM, even
+for its creator. The person who asked gets one private note:
+`Only Agents everyone in this workspace can use answer in group DMs.` It has
+no Add button, and Chickpea never adds an Agent to a group DM. Chickpea
+itself answers any full member there, as in a direct message.
+
+The rule covers every Agent one message names and every ask between Agents,
+each checked for the person whose message started the exchange. The Agents
+in a group DM thread are found as in a direct message. Guests, people from
+another organization, and deactivated people are not answered. No Agent
+answers in a group DM shared with another organization.
+
+A mention at the root of a group DM reads the group's recent messages, as a
+Channel mention does. Each Agent keeps its one memory there, as in a direct
+message. Refusals, check-in answers, and the note that someone cannot stop a
+run are ephemeral, as in a Channel: only the person who asked sees them.
+
+A Slack app made before group DM support hears only `@Chickpea` in group DMs,
+and reads none of their earlier messages: its Agents' handles and thread
+replies there never arrive, and a bare `@Chickpea` in an Agent's thread takes
+the thread over. [Group DMs](../../SETUP_AGENT.md#group-dms) in the setup
+guide adds what such an app needs.
 
 ## Limits
 
@@ -191,7 +227,7 @@ every other answer.
 
 | Line | Meaning |
 |---|---|
-| `[chickpea] host-addressed turn not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, or, in a direct message, one not in the thread; `not_eligible` when admission could not authorize it. |
+| `[chickpea] host-addressed turn not admitted: <reason>` | Routing refused the ask, for example `not_available` for an Agent without a grant, in a direct message one not in the thread, or in a group DM one not everyone in the workspace may use; `not_eligible` when admission could not authorize it. |
 | `[chickpea] agent ask limit reached; exchange paused` | The exchange used its asks and the pause line was posted. |
 | `[chickpea] agent ask was not admitted: <error>` | Admission failed after its retries. The asked Agent does not answer. |
 | `[chickpea] agent ask dispatch failed: <name>` | The executor could not hand the reply's asks over. |

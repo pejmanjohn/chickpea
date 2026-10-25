@@ -28,7 +28,10 @@ test('routine handling admits Channels and one-to-one DMs but never group DMs', 
   assert.equal(isRoutineSlackTurn({ ...base, source: 'implicit_thread_reply', channelType: 'im' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'im' }), true);
   assert.equal(isRoutineSlackTurn({ ...base, source: 'agent_mention', channelType: 'im' }), true);
-  assert.equal(isRoutineSlackTurn({ ...base, source: 'dm_message', channelType: 'mpim' }), false);
+  // Scheduled work is not offered in group DMs, however the Agent is addressed there.
+  for (const source of ['app_mention', 'agent_mention', 'implicit_thread_reply'] as const) {
+    assert.equal(isRoutineSlackTurn({ ...base, channelId: 'C_GROUP_DM', source, channelType: 'mpim' }), false);
+  }
 });
 
 test('only exact Routine commands bypass the interactive Agent authoring loop', () => {

@@ -24,7 +24,7 @@ import { loadCredentialKeyring } from './credential-keyring.ts';
 import { resolveChickpeaGatewayUrl } from './gateway/runtime.ts';
 import { createGatewaySlackWebClient } from './gateway/web-client.ts';
 import type { NormalizedSlackTurn } from './types.ts';
-import { isDirectSlackTurn } from './work-admission.ts';
+import { slackTurnSurface } from './thread-key.ts';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -179,7 +179,7 @@ export async function verifySlackInstallationTurnAccess(
   if (context.workspaceId !== turn.workspaceId) {
     throw new SlackInstallationUnavailableError(context.workspaceId, 'workspace_mismatch');
   }
-  if (isDirectSlackTurn(turn)) return;
+  if (slackTurnSurface(turn) === 'direct') return;
   if (context.transportMode === 'direct' && context.botToken) {
     const conversation = await slackConversationsInfo(context.botToken, turn.channelId);
     if (

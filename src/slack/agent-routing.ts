@@ -9,6 +9,7 @@ import {
 import { agentAppPostingBot, agentAppRouteSelection } from './agent-apps/index.ts';
 import { agentMayAskTeammates, agentSlackHandle } from './agent-asks.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
+import { slackConversationKind } from './thread-key.ts';
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { boundedSlackPublicHandoff } from './public-context.ts';
 import { normalizeAgentHandle } from './agent-presence/handles.ts';
@@ -31,6 +32,8 @@ type AgentRouteSource =
 
 type AgentRoutingDenialReason =
   | 'not_available'
+  /** A group DM: the Agent is one not everyone in the workspace may use. */
+  | 'not_workspace_wide'
   | 'member_required'
   | 'installation_unavailable'
   | 'temporarily_unavailable';
@@ -199,6 +202,7 @@ export async function resolveAgentRoute(
   );
   const activeGrants = channelGrants.filter((grant) => grant.status === 'active');
   const available = await availableAlternatives(activeGrants, agentsById);
+  const groupDm = slackConversationKind(turn) === 'mpim';
   let answered: Promise<string[]> | undefined;
   // A person's row never counts: a refused mention is recorded too.
   const answeredInThread = () => answered ??= Promise.resolve(
@@ -343,7 +347,7 @@ export async function resolveAgentRoute(
         ...(input.authorizeUserAgent ? { authorizeUserAgent: input.authorizeUserAgent } : {}),
       });
       if (await postingBotAbsent(agent, access)) return { kind: 'not_in_channel', agent, postingBotAbsent: true };
-      if (access !== 'allowed') return refusal(agent, access, available, true);
+      if (access !== 'allowed') return refusal(agent, access, available, true, groupDm);
     }
   }
 
@@ -375,7 +379,9 @@ export async function resolveAgentRoute(
   } else if (currentRoute) {
     source = 'thread_owner';
     selected = agentsById.get(currentRoute.agentId);
-  } else if (surface === 'direct') {
+  } else if (turn.source === 'dm_message') {
+    // A one-to-one DM needs no address; a group DM, like a Channel, ignores
+    // a message that names no Agent.
     source = 'default_agent';
     selected = agentsById.get(
       installation.runtimeContract === 'chickpea-v1'
@@ -400,7 +406,7 @@ export async function resolveAgentRoute(
     return { kind: 'not_in_channel', agent: selected, postingBotAbsent: true };
   }
   if (!selected || access !== 'allowed') {
-    return refusal(selected, access, available, source === 'agent_handle' || source === 'agent_app');
+    return refusal(selected, access, available, source === 'agent_handle' || source === 'agent_app', groupDm);
   }
 
   const routed = await withTeammates(await commitSelectedAgentRoute({
@@ -486,7 +492,8 @@ type AgentAccess = 'allowed' | 'unavailable' | 'private_denied' | 'not_in_channe
  * an active Agent; in a Channel, a member of it with the Agent's active grant
  * there (a workspace-management route needs none; a user-created Agent
  * without one is `not_in_channel`); elsewhere, a user-created Agent's live
- * placement authority (`private_denied` when that says no).
+ * placement authority (`private_denied` when that says no, `unavailable`
+ * when it cannot tell).
  */
 async function agentAccess(input: {
   agent: CustomAgentConfig | undefined;
@@ -506,7 +513,8 @@ async function agentAccess(input: {
   }
   if (agent.kind !== 'user') return 'allowed';
   const access = await input.authorizeUserAgent?.(agent);
-  return access?.status === 'allowed' ? 'allowed' : 'private_denied';
+  if (access?.status === 'allowed') return 'allowed';
+  return access?.status === 'unavailable' ? 'unavailable' : 'private_denied';
 }
 
 /**
@@ -747,16 +755,20 @@ function assignmentForAgent(
 
 /**
  * How routing answers someone who cannot use `agent` here. Only an Agent the
- * person mentioned is named as missing from the Channel; any other refusal
- * lists the Agents this Channel has, unless that would disclose a private one.
+ * person mentioned is named as missing from the Channel; in a group DM, an
+ * Agent refused because not everyone in the workspace may use it is named as
+ * such; any other refusal lists the Agents this Channel has, unless that
+ * would disclose a private one.
  */
 function refusal(
   agent: CustomAgentConfig | undefined,
   access: AgentAccess,
   available: AgentRouteAlternative[],
   mentioned: boolean,
+  groupDm: boolean,
 ): Exclude<AgentRoutingResult, { kind: 'ignore' | 'routed' }> {
   if (mentioned && agent && access === 'not_in_channel') return { kind: 'not_in_channel', agent };
+  if (groupDm && access === 'private_denied') return denied('not_workspace_wide', []);
   return denied('not_available', access === 'private_denied' ? [] : available);
 }
 

@@ -16,6 +16,7 @@ import {
   appMention as fixture,
   channelThreadMessage,
   dmMessage,
+  groupDmMessage,
   privateChannelThreadMessage,
   topLevelChannelMessage,
 } from './helpers/slack-fixtures.ts';
@@ -89,14 +90,40 @@ test('Slack turn normalization classifies mentions, owned-thread replies, and DM
   const unsupportedChannelType = normalizeSlackTurn(missingChannelType, options);
   assert.ok(unsupportedChannelType.status === 'ignored');
   assert.equal(unsupportedChannelType.reason, 'unsupported_channel_type');
+});
 
-  const groupDm = channelThreadMessage({
-    event_id: 'Ev_MSG_GROUP_DM',
-    event: { channel: 'G_GROUP_DM', channel_type: 'mpim' },
+test('a group DM is addressed as a Channel is, and its messages keep their kind', () => {
+  const options = { botUserId: 'UBOT' };
+  // People talking to each other: no Agent hears it.
+  assert.deepEqual(normalizeSlackTurn(groupDmMessage(), options), {
+    status: 'ignored', reason: 'unaddressed_channel_message',
   });
-  const unsupportedGroupDm = normalizeSlackTurn(groupDm, options);
-  assert.ok(unsupportedGroupDm.status === 'ignored');
-  assert.equal(unsupportedGroupDm.reason, 'unsupported_channel_type');
+
+  const botMention = normalizeSlackTurn(groupDmMessage({ event: { text: '<@UBOT> what did we decide?' } }), options);
+  assert.ok(botMention.status === 'runnable');
+  assert.deepEqual(
+    [botMention.turn.source, botMention.turn.channelType, botMention.turn.contextMode, botMention.turn.sessionThreadTs],
+    ['app_mention', 'mpim', 'channel_history', undefined],
+    'a root mention reads the group DM\'s history, and is no DM session',
+  );
+
+  const handle = normalizeSlackTurn(groupDmMessage({ event: { text: '<!subteam^SOPS|@ops> look' } }), options);
+  assert.ok(handle.status === 'runnable');
+  assert.deepEqual([handle.turn.source, handle.turn.channelType], ['agent_mention', 'mpim']);
+
+  const reply = normalizeSlackTurn(groupDmMessage({
+    event: { text: 'and the dates?', thread_ts: '1782770400.000100' },
+  }), options);
+  assert.ok(reply.status === 'runnable');
+  assert.deepEqual(
+    [reply.turn.source, reply.turn.channelType, reply.turn.threadTs],
+    ['implicit_thread_reply', 'mpim', '1782770400.000100'],
+  );
+
+  // Slack's app_mention names no kind; admission asks Slack which it is.
+  const mention = normalizeSlackTurn(fixture({ event: { channel: 'C_GROUP_DM' } }), options);
+  assert.ok(mention.status === 'runnable');
+  assert.equal(mention.turn.channelType, undefined);
 });
 
 test('a direct message without a channel type is a DM turn, so turns built from it stay DM turns', () => {

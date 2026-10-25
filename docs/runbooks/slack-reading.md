@@ -31,12 +31,13 @@ another Chickpea Agent reaches an Agent only by asking it (see
 
 An Agent can read:
 
-- the conversation it was asked in, including a DM or a Slack Connect channel;
+- the conversation it was asked in, including a DM, a group DM, or a Slack
+  Connect channel;
 - another channel only when the Agent has been added to it, the requester is a
   member, and the Chickpea app is in the channel.
 
-It cannot read other people's DMs, group DMs, or, from a Slack Connect channel,
-any other channel or anyone's profile. @Chickpea reads only the conversation it was asked in. A
+It cannot read other DMs or group DMs, or, from a Slack Connect channel, any
+other channel or anyone's profile. @Chickpea reads only the conversation it was asked in. A
 refusal never says whether a private channel exists; when the requester is a
 member, the Agent says whether it needs to be added to the channel or the app
 needs an invite.
@@ -75,4 +76,6 @@ code reads an app's row as a person's. See
 
 Reading uses scopes the app already has: `channels:history`, `groups:history`,
 `im:history`, `channels:read`, `groups:read`, and `users:read`. No reconnect is
-needed.
+needed. A group DM also needs `mpim:history`, which apps made before group DM
+support lack. Without it, a group DM turn sees only its own message, and the
+reading tools cannot read that group DM.

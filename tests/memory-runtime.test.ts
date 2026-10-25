@@ -583,3 +583,91 @@ test('a rate-limited Slack lease check retries the attempt instead of rejecting 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('an Agent answering in a group DM keeps memory as in a DM, while Slack still calls it that group DM', async () => {
+  // Amber 2026-10-25: "@Chickpea" in a group DM was admitted, then every run
+  // died at delivery with memory_delivery_lease_rejected, because both lease
+  // validators refused any group DM.
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-group-dm-memory-'));
+  const previousStatePath = process.env.SLACK_STATE_DB_PATH;
+  process.env.SLACK_STATE_DB_PATH = join(directory, 'state.sqlite');
+  closeNodeStateStores();
+  try {
+    const config = getConfigStore();
+    const helper = await config.createAgent({
+      id: 'agent_helper', name: 'Helper', description: 'Helps', instructions: '', enabled: true,
+      lifecycle: 'active', creatorMembershipId: 'membership_owner', editPolicy: 'creator_and_admins',
+      model: 'local-stub/helper', skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'helper', normalizedHandle: 'helper', desiredState: 'active',
+        health: 'healthy', userGroupId: 'SHELPER',
+        avatar: { kind: 'generated', revision: 1, seed: 'helper' },
+      },
+    });
+    const installed = await config.ensureWorkspaceInstallation({
+      workspaceId: 'T_GROUP', teamId: 'T_GROUP', transportMode: 'direct', runtimeContract: 'legacy',
+      defaultAgentId: helper.id, botUserId: 'U_CHICKPEA',
+    });
+    const healthy = await config.updateWorkspaceInstallation('T_GROUP', { health: 'healthy' }, installed.revision);
+    const workspaceDefault = await config.putWorkspaceModelDefault({
+      workspaceId: 'T_GROUP', modelId: 'local-stub/group', provenance: 'admin_selected',
+    }, 1);
+    await config.activateChickpeaCutover({
+      workspaceId: 'T_GROUP', expectedInstallationRevision: healthy.revision,
+      expectedDefaultRevision: workspaceDefault.revision, defaultReady: true,
+    });
+
+    let conversation: Record<string, unknown> = {
+      id: 'C0GROUPDM', context_team_id: 'T_GROUP', is_mpim: true, is_private: true, is_member: true,
+    };
+    let members = ['U_MEMBER', 'U_OTHER', 'U_CHICKPEA'];
+    const client = {
+      auth: { test: async () => ({ user_id: 'U_CHICKPEA' }) },
+      conversations: {
+        info: async () => ({ channel: conversation }),
+        members: async () => ({ members }),
+      },
+      users: { info: async () => ({ user: { id: 'U_MEMBER', team_id: 'T_GROUP' } }) },
+    } as unknown as WebClient;
+
+    for (const text of ['<@U_CHICKPEA> what did we decide?', '<!subteam^SHELPER|@helper> what did we decide?']) {
+      const turn: NormalizedSlackTurn = {
+        workspaceId: 'T_GROUP', channelId: 'C0GROUPDM', eventId: `Ev-${text.length}`, text,
+        userId: 'U_MEMBER', messageTs: '400.1', threadTs: '400.1',
+        source: text.startsWith('<@') ? 'app_mention' : 'agent_mention',
+        channelType: 'mpim', contextMode: 'channel_history',
+      };
+      const routed = await resolveAgentRoute({
+        turn,
+        surface: 'direct',
+        actor: { channelMember: false, fullMember: true },
+        config,
+        authorizeUserAgent: async () => ({ status: 'allowed', audience: 'creator_only' }),
+      });
+      assert.equal(routed.kind, 'routed', text);
+      if (routed.kind !== 'routed') return;
+      assert.equal(routed.assignment.interactionMode, undefined, 'a group DM is no workspace-management thread');
+
+      conversation = { ...conversation, is_archived: false, is_mpim: true };
+      members = ['U_MEMBER', 'U_OTHER', 'U_CHICKPEA'];
+      const prepared = await prepareMemoryTurn({
+        turn, assignment: routed.assignment, client, botUserId: 'U_CHICKPEA', platformEnv: undefined,
+      });
+      assert.doesNotMatch(prepared.conversationKey, /:workspace-management$|:memory-q-/);
+      assert.equal(await prepared.validateLease(), true, `no Channel grant is needed: ${text}`);
+
+      conversation = { ...conversation, is_archived: true };
+      assert.equal(await prepared.validateLease(), false, 'an archived group DM ends the lease');
+      conversation = { ...conversation, is_archived: false, is_mpim: false };
+      assert.equal(await prepared.validateLease(), false, 'a conversation Slack no longer calls a group DM ends it');
+      conversation = { ...conversation, is_mpim: true };
+      members = ['U_OTHER', 'U_CHICKPEA'];
+      assert.equal(await prepared.validateLease(), false, 'an asker no longer in it ends it');
+    }
+  } finally {
+    closeNodeStateStores();
+    if (previousStatePath === undefined) delete process.env.SLACK_STATE_DB_PATH;
+    else process.env.SLACK_STATE_DB_PATH = previousStatePath;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

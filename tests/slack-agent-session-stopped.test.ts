@@ -18,6 +18,8 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 const ROOT_TS = '1800000000.000100';
 const ROOT_ID = `msg:C1:${ROOT_TS}`;
 const OPS = '<!subteam^SOPS|@ops>';
+/** A group DM, by its production id shape: new ones look like Channels. */
+const GROUP_DM = 'C0GROUPDM';
 
 const USERS: Record<string, Record<string, unknown>> = {
   U1: { id: 'U1', team_id: 'T1', name: 'Owner' },
@@ -123,8 +125,13 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
         }
         if (operation === 'conversations.info') {
           if (input.channel === 'C1') return { channel };
-          return String(input.channel).startsWith('G')
-            ? { channel: { id: input.channel, is_mpim: true, is_private: true, is_member: true } }
+          return input.channel === GROUP_DM
+            ? {
+                channel: {
+                  id: input.channel, name: 'mpdm-owner--teammate-1', is_mpim: true, is_private: true,
+                  is_member: true, is_archived: false,
+                },
+              }
             : { channel: { id: input.channel, is_im: true, user: 'U1' } };
         }
         if (operation === 'conversations.members') return { members: ['U1', 'U2', 'U3', 'UBOT'] };
@@ -259,16 +266,16 @@ test('a press in a DM thread stops that thread\'s run', async () => {
 
 test('a press in a group DM stops its thread\'s run, as a mention there is admitted', async () => {
   await withHarness(async (harness) => {
-    // Group DMs deliver only `app_mention` (no message.mpim subscription),
-    // with no channel_type: admission and the press both take the G… id as a
-    // Channel, where the thread's Chickpea needs no grant.
+    // Neither the mention nor the press names a conversation kind, and the
+    // id looks like a Channel's: both ask Slack, and both find a group DM.
     const rootTs = '1800000300.000100';
-    await harness.deliver({ channel: 'G1', ts: rootTs, text: '<@UBOT> Draft the plan.', appMention: true });
+    await harness.deliver({ channel: GROUP_DM, ts: rootTs, text: '<@UBOT> Draft the plan.', appMention: true });
     assert.equal(harness.jobs.length, 1);
     assert.equal(harness.jobs[0]?.assignment.agentId, 'agent_chickpea');
-    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000310.000100', user: 'U2' });
+    assert.equal(harness.jobs[0]?.turn.channelType, 'mpim');
+    await harness.press({ channel: GROUP_DM, threadTs: rootTs, eventTs: '1800000310.000100', user: 'U2' });
 
-    const stop = (await harness.pending()).find((job) => job.id === `msg:G1:${rootTs}`)?.stop;
+    const stop = (await harness.pending()).find((job) => job.id === `msg:${GROUP_DM}:${rootTs}`)?.stop;
     assert.equal(stop?.role === 'stopped' && stop.source, 'button');
     assert.equal(stop?.role === 'stopped' && stop.stopperUserId, 'U2');
     assert.deepEqual(harness.posts, []);
@@ -384,46 +391,36 @@ test('covers AE4: a press by someone who may not use the thread\'s Agent gets a 
 
 test('after a handoff to Chickpea, a press by someone who may not use the running Agent gets a private note only (R3)', async () => {
   await withHarness(async (harness) => {
-    // A private Agent: with no grant anywhere, only its creator (U1) may use it.
-    const owner = await harness.stores.config.getAgent('agent_ops');
-    await harness.stores.config.createAgent({
-      id: 'agent_private', name: 'priv', instructions: '', enabled: true, lifecycle: 'active',
-      model: 'local-stub/steering',
-      creatorMembershipId: owner!.creatorMembershipId!, editPolicy: 'creator_and_admins',
-      skills: [], mcpServers: [], apiConnections: [], repositories: [],
-      slackPresence: {
-        requestedHandle: 'priv', normalizedHandle: 'priv', desiredState: 'active',
-        health: 'healthy', userGroupId: 'SPRIV',
-        avatar: { kind: 'generated', revision: 1, seed: 'priv' },
-      },
-    });
+    // @ops answers in a group DM while its public Channel lets everyone use it.
     const rootTs = '1800000300.000100';
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: rootTs, text: '<@UBOT> <!subteam^SPRIV|@priv> Summarize the report.',
+      channel: GROUP_DM, channelType: 'mpim', ts: rootTs, text: `${OPS} Summarize the report.`,
     });
-    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_private');
-    // U2 hands the thread to Chickpea; the private Agent's run keeps going.
+    assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_ops');
+    // U2 hands the thread to Chickpea; @ops's run keeps going.
     await harness.deliver({
-      channel: 'G1', channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
+      channel: GROUP_DM, channelType: 'mpim', ts: '1800000310.000100', threadTs: rootTs, user: 'U2',
       text: '<@UBOT> hi',
     });
     assert.equal(harness.jobs.at(-1)?.assignment.agentId, 'agent_chickpea');
+    // @ops leaves its public Channel: in a group DM nobody may use it now.
+    await harness.stores.config.deleteAgentChannelGrant('T1', 'C1', 'agent_ops');
 
-    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
+    await harness.press({ channel: GROUP_DM, threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
     const pending = await harness.pending();
-    assert.equal(pending.find((job) => job.id === `msg:G1:${rootTs}`)?.stop, undefined, 'the run continues');
-    assert.equal(pending.find((job) => job.id === 'msg:G1:1800000310.000100')?.stop, undefined);
+    assert.equal(pending.find((job) => job.id === `msg:${GROUP_DM}:${rootTs}`)?.stop, undefined, 'the run continues');
+    assert.equal(pending.find((job) => job.id === `msg:${GROUP_DM}:1800000310.000100`)?.stop, undefined);
     assert.deepEqual(harness.posts, [{
       operation: 'chat.postEphemeral',
       input: {
-        channel: 'G1', user: 'U2', thread_ts: rootTs,
+        channel: GROUP_DM, user: 'U2', thread_ts: rootTs,
         text: "You can't stop this run. Only people who can use this Agent here can stop it.",
       },
     }]);
     assert.deepEqual(harness.sessions, [], 'the session is the running Agent\'s to settle');
 
     // A Slack retry of the same press posts no second note.
-    await harness.press({ channel: 'G1', threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
+    await harness.press({ channel: GROUP_DM, threadTs: rootTs, eventTs: '1800000320.000100', user: 'U2' });
     assert.equal(harness.posts.length, 1);
   });
 });
@@ -583,7 +580,12 @@ test('a customer-owned app\'s signed Stop event (direct transport) stops the run
         }
       : method === 'conversations.members'
         ? { ok: true, members: ['U1', 'U2', 'UBOT'], response_metadata: { next_cursor: '' } }
-        : undefined,
+        : method === 'conversations.info'
+          ? {
+              ok: true,
+              channel: { id: 'C1', name: 'ops', is_channel: true, is_private: false, is_member: true, is_archived: false },
+            }
+          : undefined,
   }, async ({ stores, ownerMembershipId, calls, deliver }) => {
     await stores.config.createAgent({
       id: 'agent_ops', name: 'ops', instructions: '', enabled: true, lifecycle: 'active',

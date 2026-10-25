@@ -6,6 +6,7 @@ import {
   listPrivatelyUsableAgents,
   resolvePrivateAgentAccess,
   resolvePrivateAgentAudience,
+  resolveTurnAgentAccess,
 } from '../src/slack/agent-access.ts';
 import { agentAppPlacementFacts } from '../src/slack/agent-apps/index.ts';
 import {
@@ -508,3 +509,50 @@ for (const failure of ['placement', 'membership'] as const) {
     assert.doesNotMatch(warnings.join('\n'), /C_PRIVATE|U1|member_1|private conversation content/);
   });
 }
+
+test('in a group DM only an Agent every workspace member may use answers, whoever asks', async () => {
+  const creator = { ...fullMember, membershipId: 'creator' };
+  const workspaceWide = agent('public');
+  const publicPlacement = {
+    grants: [grant(workspaceWide.id, 'C_PUBLIC')],
+    transport: transport({ channels: { C_PUBLIC: channel('C_PUBLIC') } }),
+  };
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: workspaceWide, workspaceId: 'T1', actor: creator, conversation: 'mpim', ...publicPlacement,
+  }), { status: 'allowed', audience: 'workspace_members' });
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: workspaceWide, workspaceId: 'T1', actor: { ...creator, fullMember: false }, conversation: 'mpim', ...publicPlacement,
+  }), { status: 'denied', audience: 'workspace_members' }, 'the asker must still be a full member');
+
+  // Its creator, or a member of its private Channel, may use it privately,
+  // but the group DM's other people may not: it does not answer there.
+  const creatorOnly = agent('unplaced', { creatorMembershipId: 'creator' });
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: creatorOnly, workspaceId: 'T1', grants: [], actor: creator, transport: transport(), conversation: 'im',
+  }), { status: 'allowed', audience: 'creator_only' });
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: creatorOnly, workspaceId: 'T1', grants: [], actor: creator, transport: transport(), conversation: 'mpim',
+  }), { status: 'denied', audience: 'creator_only' });
+
+  const privateOnly = agent('private');
+  const calls: string[] = [];
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: privateOnly,
+    workspaceId: 'T1',
+    grants: [grant(privateOnly.id, 'C_PRIVATE')],
+    actor: creator,
+    transport: transport({
+      channels: { C_PRIVATE: channel('C_PRIVATE', { private: true }) },
+      memberChannels: new Set(['C_PRIVATE']),
+      calls,
+    }),
+    conversation: 'mpim',
+  }), { status: 'denied', audience: 'private_channel_members' });
+  assert.deepEqual(calls, ['lookup:C_PRIVATE'], 'whose private Channels the asker is in does not matter here');
+
+  // A placement Slack cannot vouch for right now is not a refusal under the group DM rule.
+  assert.deepEqual(await resolveTurnAgentAccess({
+    agent: workspaceWide, workspaceId: 'T1', actor: creator, conversation: 'mpim',
+    grants: [grant(workspaceWide.id, 'C_PUBLIC')], transport: transport(),
+  }), { status: 'unavailable', audience: 'unavailable' });
+});

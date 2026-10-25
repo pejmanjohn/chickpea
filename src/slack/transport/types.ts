@@ -39,6 +39,10 @@ export interface SlackChannel {
   private: boolean;
   member: boolean;
   archived: boolean;
+  /** Slack's `is_mpim`: a group DM, whose id looks like a Channel's. */
+  mpim?: true;
+  /** Shared beyond this workspace (Slack Connect or across an organization), or about to be. */
+  shared?: true;
 }
 
 export interface SlackChannelList {

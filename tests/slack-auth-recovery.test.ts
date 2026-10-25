@@ -24,7 +24,7 @@ import {
   slackManifestFingerprint,
   slackManifestWithOptionalEvents,
 } from '../src/slack/app-manifest.ts';
-import { REQUIRED_SLACK_BOT_SCOPES, REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
+import { REQUIRED_SLACK_BOT_SCOPES, REQUESTED_SLACK_BOT_SCOPES, SLACK_FEATURE_SCOPES } from '../src/slack/scopes.ts';
 
 const NOW = 1_786_000_000_000;
 const ORIGIN = 'https://chickpea.example';
@@ -375,7 +375,7 @@ test('recovery sends its Slack Web API calls to a configured API base', async ()
   } finally { fixture.close(); }
 });
 
-for (const repairUrls of [false, true]) test(`core-only installation recovers without adding Lists permissions (URL repair: ${repairUrls})`, async () => {
+for (const repairUrls of [false, true]) test(`core-only installation recovers without adding Lists or group DM permissions (URL repair: ${repairUrls})`, async () => {
   const fixture = await recoveryFixture({ coreOnly: true, manifestFlow: repairUrls, initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN });
   try {
     const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
@@ -401,20 +401,24 @@ for (const repairUrls of [false, true]) test(`core-only installation recovers wi
   } finally { fixture.close(); }
 });
 
-for (const repairUrls of [false, true]) test(`an app made before the Stop event recovers without subscribing it (URL repair: ${repairUrls})`, async () => {
-  for (const coreOnly of [false, true]) {
+// Apps made before the Stop event, and before group DM messages.
+for (const repairUrls of [false, true]) test(`an app made before an optional event recovers without subscribing it (URL repair: ${repairUrls})`, async () => {
+  for (const [coreOnly, optionalEvents] of [
+    [false, []], [true, []], [false, ['agent_session_stopped']], [true, ['agent_session_stopped']],
+  ] as const) {
     const fixture = await recoveryFixture({
-      withoutStopEvent: true,
+      optionalEvents,
       coreOnly,
       manifestFlow: repairUrls,
       initialOrigin: repairUrls ? 'https://old-chickpea.example' : ORIGIN,
     });
     try {
       const authority = { ...await fixture.service.begin({ recoveryToken: TOKEN, browserBinding: BROWSER }), browserBinding: BROWSER };
-      // The recovery page builds today's manifest, which has the Stop event.
+      // The recovery page builds today's manifest, which has every optional event.
       const current = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
       assert.ok(current.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
-      const held = slackManifestWithOptionalEvents(current, []);
+      assert.ok(current.settings.event_subscriptions.bot_events.includes('message.mpim'));
+      const held = slackManifestWithOptionalEvents(current, optionalEvents);
       if (coreOnly) held.oauth_config.scopes.bot = [...REQUIRED_SLACK_BOT_SCOPES];
       if (repairUrls) {
         await fixture.service.repairUrls({ ...authority, configurationToken: 'xoxe.configuration-token-secret', expectedManifest: current });
@@ -431,7 +435,7 @@ for (const repairUrls of [false, true]) test(`an app made before the Stop event 
       await assert.rejects(fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: other }), (e: unknown) => e instanceof SlackCredentialRecoveryError && e.code === 'manifest_mismatch');
       await fixture.service.stageAppCredentials({ ...authority, appId: 'A12345678', teamId: 'TACME', clientId: '123.456', clientSecret: 'replacement-client-secret', signingSecret: 'replacement-signing-secret', manifest: current });
       const started = await fixture.service.startBotOAuth({ ...authority, redirectUri: REDIRECT });
-      await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: `stop-event-recovery-${coreOnly}` });
+      await fixture.service.callback({ ...authority, state: started.state, redirectUri: REDIRECT, code: `optional-event-recovery-${coreOnly}-${optionalEvents.length}` });
       await fixture.recordChallenge('replacement-signing-secret');
       assert.deepEqual(await fixture.service.finalize(authority), { status: 'repaired' });
       const active = await fixture.identity.getActiveSlackCredentialRevision(WORKSPACE_SLACK_INSTALLATION_ID);
@@ -445,8 +449,8 @@ async function recoveryFixture(options: {
   initialOrigin?: string;
   manifestFlow?: boolean;
   coreOnly?: boolean;
-  /** The app was created from a manifest without Slack's Stop event. */
-  withoutStopEvent?: boolean;
+  /** The optional events of the manifest the app was created from; every one by default. */
+  optionalEvents?: readonly string[];
   apiBaseUrl?: string;
 } = {}) {
   const clock = { now: NOW };
@@ -457,11 +461,9 @@ async function recoveryFixture(options: {
   const manifest = buildSlackAppManifest({
     kind: 'workspace_app', origin: options.initialOrigin ?? ORIGIN,
   });
-  if (options.coreOnly) manifest.oauth_config.scopes.bot = manifest.oauth_config.scopes.bot.filter(scope => !scope.startsWith('lists:'));
-  if (options.withoutStopEvent) {
-    manifest.settings.event_subscriptions.bot_events = manifest.settings.event_subscriptions.bot_events
-      .filter((event) => event !== 'agent_session_stopped');
-  }
+  if (options.coreOnly) manifest.oauth_config.scopes.bot = manifest.oauth_config.scopes.bot.filter(scope => !SLACK_FEATURE_SCOPES.includes(scope));
+  const created = options.optionalEvents ? slackManifestWithOptionalEvents(manifest, options.optionalEvents) : manifest;
+  manifest.settings.event_subscriptions.bot_events = created.settings.event_subscriptions.bot_events;
   const grantedScopes = [...manifest.oauth_config.scopes.bot];
   const app = await stageSlackCredentialBundle(credentials, {
     identityId: WORKSPACE_SLACK_INSTALLATION_ID,

@@ -83,6 +83,33 @@ new permission is requested. Credential recovery never adds the event: it
 keeps the app's subscriptions as they are. Installations on the shared
 Chickpea app get the button when its maintainer subscribes that app.
 
+## Group DMs
+
+People can ask Agents in a Slack group DM. Only `@Chickpea` and Agents that
+everyone in the workspace can use answer there. A customer-owned app created
+from this release's manifest subscribes to the `message.mpim` bot event and
+has the `mpim:history` permission. With both, an Agent in a group DM answers
+its handle and replies in its thread, and it reads the group's recent
+messages before a mention.
+
+An app created earlier keeps working without them: setup and recovery still
+pass. In its group DMs only `@Chickpea` mentions arrive, and Agents read no
+earlier messages there. To add both to such an app, including a local Worker
+lane's own app:
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps) and select the app.
+2. Go to **OAuth & Permissions**. Under **Bot Token Scopes**, add
+   `mpim:history`.
+3. Go to **Event Subscriptions**, open **Subscribe to bot events**, and choose
+   **Add Bot User Event**.
+4. Add `message.mpim`, then **Save Changes**.
+5. When Slack asks to reinstall the app, reinstall it to the workspace so it
+   grants the new permission.
+
+Credential recovery never adds either. Installations on the shared Chickpea
+app hear only `@Chickpea` in group DMs until its maintainer adds both to that
+app.
+
 ## Recovery
 
 If credential key material or the installed Slack app credentials are lost, use the hidden scoped recovery flow in [docs/runbooks/slack-auth-recovery.md](docs/runbooks/slack-auth-recovery.md). It can repair only the unchanged app and workspace. It cannot create an Owner, grant a role, or sign anyone in.

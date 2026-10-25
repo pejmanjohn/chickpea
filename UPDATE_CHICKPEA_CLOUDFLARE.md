@@ -90,6 +90,13 @@ run by replying `stop` in its thread. Tell the user this optional step is in
 Slack app only if they ask. Installations on the shared Chickpea app need
 nothing. See [Slack steering](docs/runbooks/slack-steering.md#rollback).
 
+Releases that let Agents answer in group DMs need nothing to configure. A
+customer-owned Slack app created before that support hears only `@Chickpea`
+in group DMs, and reads no earlier group DM messages, until it subscribes to
+the `message.mpim` event and has the `mpim:history` permission. Tell the user
+this optional step is in [Group DMs](SETUP_AGENT.md#group-dms), and change
+their Slack app only if they ask.
+
 v0.1.27, v0.1.28 and v0.1.29 cannot read two kinds of record that v0.1.30
 writes, and a single one stalls them after a rollback. On a shared-gateway
 installation, a button click or form submission that is still queued stops the

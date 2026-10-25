@@ -88,6 +88,45 @@ test('a direct message refusal is posted in its thread and names no Agent', asyn
   assert.deepEqual(posts, [{ channel: 'D1', thread_ts: '100.1', text: 'That Agent is not available here.' }]);
 });
 
+test('a group DM refusal is told only to the asker, in their thread, and names nobody', async () => {
+  const onlyWorkspaceWide = 'Only Agents everyone in this workspace can use answer in group DMs.';
+  for (const [patch, thread, reason, text] of [
+    [{}, {}, 'not_workspace_wide', onlyWorkspaceWide],
+    [
+      { source: 'implicit_thread_reply' as const, messageTs: '100.2', text: 'and then?' },
+      { thread_ts: '100.1' },
+      'not_workspace_wide',
+      onlyWorkspaceWide,
+    ],
+    // Every other refusal keeps its usual words: the group DM rule is not why.
+    [{}, {}, 'not_available', 'That Agent is not available here.'],
+    [{}, {}, 'member_required', 'That Agent is not available here.'],
+    [{}, {}, 'temporarily_unavailable', 'That Agent address could not be verified right now. Try again.'],
+  ] as const) {
+    const ephemeral: unknown[] = [];
+    const publicMessages: unknown[] = [];
+    await postAgentRoutingFeedback({
+      turn: turn({ channelId: 'C0GROUPDM', channelType: 'mpim', ...patch }),
+      surface: 'direct',
+      result: { kind: 'denied', reason, alternatives: [] },
+      client: {
+        chat: {
+          async postEphemeral(input: unknown) {
+            ephemeral.push(input);
+            return { ok: true };
+          },
+          async postMessage(input: unknown) {
+            publicMessages.push(input);
+            return { ok: true };
+          },
+        },
+      } as never,
+    });
+    assert.deepEqual(ephemeral, [{ channel: 'C0GROUPDM', user: 'U1', ...thread, text }]);
+    assert.deepEqual(publicMessages, [], 'the rest of the group sees nothing');
+  }
+});
+
 test('a thread reply that names an Agent does not need an existing Agent thread', async () => {
   const { turnRequiresOwnedThread } = await import('../src/channels/slack.ts');
   // "@oncall what is this?" under an alert nobody has answered.

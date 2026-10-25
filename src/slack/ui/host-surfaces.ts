@@ -78,8 +78,8 @@ export async function deliverHostApprovalSurfaces(input: {
   if (!input.state.executeUiSurface) return;
   const state = input.state as SurfaceState;
   const kind = slackConversationKind(turn);
-  // Group DMs are not admitted as plain thread replies, so a click there
-  // could never be admitted: keep typed approval only.
+  // A click comes back as a message in its card's conversation, which a card
+  // records only as a Channel or a DM: a group DM keeps typed approval only.
   if (kind === 'mpim') return;
   const startedAt = turnStartedAtMs(turn);
   const threadTs = conversationThreadTs(turn, assignment.runtimeContract);

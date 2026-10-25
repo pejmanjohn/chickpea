@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 import {
+  AGENT_APP_BOT_EVENTS,
   buildSlackAppManifest,
   canonicalSlackAppManifestJson,
   SLACK_OPTIONAL_BOT_EVENTS,
@@ -11,6 +12,12 @@ import {
   slackManifestWithOptionalEvents,
   validateSlackAppManifest,
 } from '../src/slack/app-manifest.ts';
+import {
+  AGENT_APP_BOT_SCOPES,
+  REQUESTED_SLACK_BOT_SCOPES,
+  REQUIRED_SLACK_BOT_SCOPES,
+  SLACK_FEATURE_SCOPES,
+} from '../src/slack/scopes.ts';
 import acceptedFixture from './fixtures/slack/slack-oauth-accepted-manifest.json' with { type: 'json' };
 
 const ORIGIN = 'https://chickpea.example';
@@ -119,21 +126,22 @@ test('manifest validation accepts Slack exported PKCE defaults without accepting
 
 test('new manifests subscribe to Slack\'s Stop event, and an app without it still validates (R25)', () => {
   const expected = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
-  assert.deepEqual(SLACK_OPTIONAL_BOT_EVENTS, ['agent_session_stopped']);
+  assert.deepEqual(SLACK_OPTIONAL_BOT_EVENTS, ['agent_session_stopped', 'message.mpim']);
   assert.ok(expected.settings.event_subscriptions.bot_events.includes('agent_session_stopped'));
   // Slack requires only `chat:write` for it, which the manifest already requests.
   assert.ok(expected.oauth_config.scopes.bot.includes('chat:write'));
 
-  // An app created before the Stop button: the same manifest without the event.
+  // An app created before the Stop button: the same manifest without the
+  // event, and without the group DM messages that came later.
   const earlier = slackManifestWithOptionalEvents(expected, []);
   assert.equal(earlier.settings.event_subscriptions.bot_events.includes('agent_session_stopped'), false);
   assert.deepEqual(
     earlier.settings.event_subscriptions.bot_events,
-    expected.settings.event_subscriptions.bot_events.filter((event) => event !== 'agent_session_stopped'),
+    expected.settings.event_subscriptions.bot_events.filter((event) => !SLACK_OPTIONAL_BOT_EVENTS.includes(event)),
     'every other event keeps its place',
   );
   assert.notEqual(slackManifestFingerprint(earlier), slackManifestFingerprint(expected));
-  assert.deepEqual(slackManifestWithOptionalEvents(expected, ['agent_session_stopped']), expected);
+  assert.deepEqual(slackManifestWithOptionalEvents(expected, SLACK_OPTIONAL_BOT_EVENTS), expected);
 
   assert.deepEqual(validateSlackAppManifest(expected, expected), {
     fingerprint: slackManifestFingerprint(expected),
@@ -153,4 +161,30 @@ test('new manifests subscribe to Slack\'s Stop event, and an app without it stil
   assert.throws(() => validateSlackAppManifest(extra, expected), /does not match/i);
   // An expectation without the event does not accept an app that has it.
   assert.throws(() => validateSlackAppManifest(expected, earlier), /does not match/i);
+});
+
+test('new manifests hear group DM messages and read their history, and an app without either still validates', () => {
+  const expected = buildSlackAppManifest({ kind: 'workspace_app', origin: ORIGIN });
+  assert.ok(expected.settings.event_subscriptions.bot_events.includes('message.mpim'));
+  assert.ok(expected.oauth_config.scopes.bot.includes('mpim:history'));
+  // Optional, like the Stop event: an app made before it keeps passing setup and recovery.
+  assert.ok(SLACK_OPTIONAL_BOT_EVENTS.includes('message.mpim'));
+  assert.ok(SLACK_FEATURE_SCOPES.includes('mpim:history'));
+  assert.equal(REQUIRED_SLACK_BOT_SCOPES.includes('mpim:history'), false);
+
+  const beforeGroupDms = slackManifestWithOptionalEvents(expected, ['agent_session_stopped']);
+  assert.equal(beforeGroupDms.settings.event_subscriptions.bot_events.includes('message.mpim'), false);
+  assert.deepEqual(validateSlackAppManifest(structuredClone(beforeGroupDms), expected), {
+    fingerprint: slackManifestFingerprint(beforeGroupDms),
+  });
+});
+
+test('an Agent\'s own app neither hears group DMs nor reads their history', () => {
+  assert.equal(AGENT_APP_BOT_SCOPES.includes('mpim:history'), false);
+  assert.equal(AGENT_APP_BOT_EVENTS.includes('message.mpim'), false);
+  assert.deepEqual(
+    AGENT_APP_BOT_SCOPES,
+    REQUESTED_SLACK_BOT_SCOPES.filter((scope) => !scope.startsWith('usergroups:') &&
+      !['chat:write.customize', 'users:read.email', 'mpim:history'].includes(scope)),
+  );
 });

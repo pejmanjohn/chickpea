@@ -19,7 +19,7 @@ export const SLACK_BOT_SCOPES = Object.freeze([
   'app_mentions:read', 'assistant:write', 'channels:history', 'channels:join',
   'channels:read', 'chat:write', 'chat:write.customize', 'files:read', 'files:write',
   'groups:history', 'groups:read',
-  'im:history', 'im:write', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
+  'im:history', 'im:write', 'mpim:history', 'mpim:read', 'reactions:read', 'reactions:write', 'users:read',
   'usergroups:read', 'usergroups:write', 'users:read.email',
   'lists:read', 'lists:write',
 ] as const);
@@ -27,17 +27,19 @@ export const SLACK_BOT_SCOPES = Object.freeze([
 const SHARED_BOT_EVENTS = Object.freeze([
   'agent_session_stopped',
   'app_context_changed', 'app_home_opened', 'app_mention', 'member_joined_channel',
-  'message.channels', 'message.groups', 'message.im', 'reaction_added',
+  'message.channels', 'message.groups', 'message.im', 'message.mpim', 'reaction_added',
 ] as const);
 
 /**
- * Bot events an app created from an earlier manifest may lack. Slack draws
- * the Stop button on a working Agent Session only for an app subscribed to
- * `agent_session_stopped` (it needs only `chat:write`); an app without it
- * keeps passing setup and recovery, and its people stop a run by typing
- * (R25). Recovery never adds one.
+ * Bot events an app created from an earlier manifest may lack; it keeps
+ * passing setup and recovery, and recovery never adds one. Slack draws the
+ * Stop button on a working Agent Session only for an app subscribed to
+ * `agent_session_stopped` (it needs only `chat:write`); without it, people
+ * stop a run by typing (R25). Without `message.mpim`, a group DM delivers
+ * only mentions of the app's bot: Agent handles and thread replies there are
+ * never heard.
  */
-export const SLACK_OPTIONAL_BOT_EVENTS: readonly string[] = Object.freeze(['agent_session_stopped']);
+export const SLACK_OPTIONAL_BOT_EVENTS: readonly string[] = Object.freeze(['agent_session_stopped', 'message.mpim']);
 
 const CONTROL_PLANE_EVENTS = Object.freeze([
   ...SHARED_BOT_EVENTS, 'app_uninstalled', 'tokens_revoked', 'user_change',

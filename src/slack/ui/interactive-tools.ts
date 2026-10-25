@@ -41,9 +41,10 @@ const SLACK_TS = /^\d{1,16}\.\d{1,16}$/;
 /**
  * Where ask_user and offer_actions may mount: the trusted Slack signal's
  * coordinates, or undefined wherever a click could never be admitted like a
- * reply. Group DMs admit no plain thread replies, and a legacy DM session
- * signals its channel-wide key ('dm') rather than the Slack thread a card
- * would be posted in, so a card there could never be delivered or clicked.
+ * reply. A click comes back as a message in a Channel or a DM, the only
+ * conversations a card records, so a group DM gets none; and a legacy DM
+ * session signals its channel-wide key ('dm') rather than the Slack thread a
+ * card would be posted in, so a card there could never be delivered or clicked.
  */
 export function interactiveSurfaceScope(
   signal: {

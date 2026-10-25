@@ -1,4 +1,5 @@
 import type { NormalizedSlackTurn } from './types.ts';
+import type { AssignmentSurface } from '../config/resolver.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 
 export function slackThreadKey(turn: NormalizedSlackTurn): string {
@@ -26,16 +27,25 @@ export function slackConversationKey(conversation: {
   return `${conversation.workspaceId}:${conversation.channelId}:${conversation.threadTs}`;
 }
 
+export type SlackConversationKind = 'channel' | 'im' | 'mpim';
+
 /**
  * Trusted Slack conversation shape. Direct-message events can omit
  * `channel_type`, so the normalized DM source is authoritative as well.
  */
 export function slackConversationKind(
   turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
-): 'channel' | 'im' | 'mpim' {
+): SlackConversationKind {
   if (turn.channelType === 'mpim') return 'mpim';
   if (turn.source === 'dm_message' || turn.channelType === 'im') return 'im';
   return 'channel';
+}
+
+/** A group DM's access is a DM's, private use (resolveTurnAgentAccess), never a Channel grant. */
+export function slackTurnSurface(
+  turn: Pick<NormalizedSlackTurn, 'source' | 'channelType'>,
+): AssignmentSurface {
+  return slackConversationKind(turn) === 'channel' ? 'channel' : 'direct';
 }
 
 /**

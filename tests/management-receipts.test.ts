@@ -652,6 +652,24 @@ test('Agent welcomes say in plain words what happened to the handle and the Chan
       ],
     },
     {
+      name: 'created from a group DM',
+      receipt: { ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT, surface: 'direct' },
+      persona: 'agent',
+      paragraphs: [
+        'Hi — I’m *Support* (@support).',
+        'Only Agents everyone in this workspace can use answer in group DMs. Once I’m in a public Channel, mention me here. Until then, you can message me directly.',
+      ],
+    },
+    {
+      name: 'created from a group DM when Slack refuses the Agent persona',
+      receipt: { ...SUPPORT_WELCOME_WITHOUT_VIEW_AGENT, surface: 'direct' },
+      refusePersona: true,
+      persona: 'chickpea',
+      paragraphs: [
+        'I created *Support* (@support). Slack wouldn’t let me post its welcome as Support, so I’m posting it here. Only Agents everyone in this workspace can use answer in group DMs. Once it’s in a public Channel, mention it here.',
+      ],
+    },
+    {
       name: 'handle not published',
       receipt: { ...SUPPORT_WELCOME, publication: { status: 'partial', incomplete: ['slack_presence'] } },
       persona: 'chickpea',

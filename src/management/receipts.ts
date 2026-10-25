@@ -133,7 +133,10 @@ export async function completeManagementSetupReceipt(
   });
 }
 
-export function formatManagementSetupReceipt(receipt: ManagementReceipt): string {
+export function formatManagementSetupReceipt(
+  receipt: ManagementReceipt,
+  options: { groupDm?: boolean } = {},
+): string {
   if (isRoutineSavedAcknowledgement(receipt) || isScheduleActionReaction(receipt)) {
     throw new Error('A reaction acknowledgement cannot be formatted as a setup receipt.');
   }
@@ -146,7 +149,7 @@ export function formatManagementSetupReceipt(receipt: ManagementReceipt): string
     }
     return `✅ That scheduled-work action completed.${scheduleActionSafeStateText(receipt.safeState)}`;
   }
-  if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt);
+  if (isAgentCreatedWelcome(receipt)) return formatAgentCreatedWelcome(receipt, options.groupDm === true);
   if (isChickpeaIntroduction(receipt)) return formatChickpeaIntroduction(receipt);
   if (isConnectorConnectedReceipt(receipt)) {
     const scope = receipt.ownerKind === 'member' ? 'personal' : 'team';
@@ -385,6 +388,7 @@ export async function completeSettledAgentWelcomeHandoff(
   }
   const delivery = /^slack:([^:]+):(\d+\.\d+)$/.exec(record.deliveryRef ?? '');
   if (!delivery || delivery[1] !== record.destination.channelId) return;
+  if (agentWelcomeInGroupDm(record.receipt, record.destination.channelId)) return;
   await handoffCreatedAgentThread({
     workspaceId: record.destination.workspaceId,
     channelId: record.destination.channelId,
@@ -606,7 +610,9 @@ export async function deliverManagementReceiptToSlack(
     if (!opened.ok || !opened.channel?.id) throw new Error('Slack did not open the receipt DM.');
     channel = opened.channel.id;
   }
-  const text = formatManagementSetupReceipt(record.receipt);
+  const groupDm = record.destination.kind === 'thread' &&
+    agentWelcomeInGroupDm(record.receipt, record.destination.channelId);
+  const text = formatManagementSetupReceipt(record.receipt, { groupDm });
   const baseMessage = {
     channel,
     ...(threadTs ? { thread_ts: threadTs } : {}),
@@ -631,7 +637,7 @@ export async function deliverManagementReceiptToSlack(
       'slack_presence',
     ) ?? false;
     if (slackPresenceIncomplete) {
-      deliveredText = formatAgentWelcomeFallback(record.receipt);
+      deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
       response = await execution.client.chat.postMessage({
         ...baseMessage,
         text: deliveredText,
@@ -649,7 +655,7 @@ export async function deliverManagementReceiptToSlack(
       } catch (error) {
         const code = slackPlatformErrorCode(error);
         if (!code || !PERSONA_FALLBACK_CODES.has(code)) throw error;
-        deliveredText = formatAgentWelcomeFallback(record.receipt);
+        deliveredText = formatAgentWelcomeFallback(record.receipt, groupDm);
         response = await execution.client.chat.postMessage({
           ...baseMessage,
           text: deliveredText,
@@ -718,15 +724,27 @@ export function isAgentCreatedWelcome(
   return 'kind' in receipt && receipt.kind === 'agent_created_welcome';
 }
 
+const GROUP_DM_ANSWER_RULE = 'Only Agents everyone in this workspace can use answer in group DMs.';
+
+/**
+ * A new Agent starts creator-only, and only Agents everyone in the workspace
+ * can use answer in a group DM, so a welcome there leaves the thread with
+ * Chickpea. Only a 1:1 DM's id starts with `D`; a group DM's looks like a
+ * Channel's.
+ */
+export function agentWelcomeInGroupDm(receipt: ManagementReceipt, channelId: string): boolean {
+  return isAgentCreatedWelcome(receipt) && receipt.surface === 'direct' && !channelId.startsWith('D');
+}
+
 function isChickpeaIntroduction(
   receipt: ManagementReceipt,
 ): receipt is ManagementChickpeaIntroduction {
   return 'kind' in receipt && receipt.kind === 'chickpea_introduction';
 }
 
-function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): string {
+function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {
   const incomplete = receipt.publication?.incomplete ?? [];
-  if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt);
+  if (incomplete.includes('slack_presence')) return formatAgentWelcomeFallback(receipt, groupDm);
   const description = receipt.agentDescription
     ? boundedSlackText(receipt.agentDescription, 400)
     : undefined;
@@ -752,6 +770,9 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   if (receipt.followOnNotices?.length) {
     lines.push(...receipt.followOnNotices.map(boundedFollowOnNoticeText));
   }
+  if (groupDm) {
+    lines.push(`${GROUP_DM_ANSWER_RULE} Once I’m in a public Channel, mention me here. Until then, you can message me directly.`);
+  }
   if (receipt.viewAgentUrl) {
     lines.push(renderSlackActionLink(receipt.viewAgentUrl, VIEW_AGENT_LINK_LABEL));
     return lines.join('\n\n');
@@ -764,13 +785,13 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome): stri
   } else if (receipt.setupUrl) {
     lines.push('You can configure my connections and capabilities from my Agent page.');
     lines.push(renderSlackActionLink(receipt.setupUrl, VIEW_AGENT_LINK_LABEL));
-  } else {
+  } else if (!groupDm) {
     lines.push('Tell me what you’d like to work on first.');
   }
   return lines.join('\n\n');
 }
 
-function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): string {
+function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, groupDm: boolean): string {
   const name = boundedSlackText(receipt.agentName, 80);
   const handle = receipt.agentHandle ? `@${boundedSlackText(receipt.agentHandle, 80)}` : undefined;
   const incomplete = receipt.publication?.incomplete ?? [];
@@ -785,7 +806,11 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome): str
     ? `${created}, but Slack wouldn’t create its handle${handle ? `, ${handle}` : ''}, so people can’t mention it yet.${openViewAgent('fix it')}`
     : channelMissing
     ? `${created}${handle ? ` (${handle})` : ''}, but I couldn’t add it to this Channel yet, so people here can’t mention it.${openViewAgent('add it')}`
-    : `${created}${handle ? ` (${handle})` : ''}. Slack wouldn’t let me post its welcome as ${name}, so I’m posting it here.${handle ? ` Mention ${handle} to talk to it.` : ''}`;
+    : `${created}${handle ? ` (${handle})` : ''}. Slack wouldn’t let me post its welcome as ${name}, so I’m posting it here.${
+      groupDm
+        ? ` ${GROUP_DM_ANSWER_RULE} Once it’s in a public Channel, mention it here.`
+        : handle ? ` Mention ${handle} to talk to it.` : ''
+    }`;
   const handleChange = handleMissing ? undefined : takenHandleText(receipt, 'its');
   const lines = [
     lead,
