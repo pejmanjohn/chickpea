@@ -1,3 +1,5 @@
+import type { ModelEffort } from './model-effort.ts';
+
 /**
  * An Agent-attached skill: a named playbook the Agent can load on demand.
  * `name` must satisfy Flue's `defineSkill` rule (`^[a-z0-9]+(?:-[a-z0-9]+)*$`,
@@ -328,6 +330,8 @@ export interface CustomAgentConfig {
   slackPresence?: AgentSlackPresence;
   archivedAt?: number;
   model?: string;
+  /** Effort pinned with `model`; absent when unset or when the Agent follows the Workspace default. */
+  modelEffort?: ModelEffort;
   skills: SkillConfig[];
   mcpServers: McpConnectionConfig[];
   apiConnections: ApiConnectionConfig[];
@@ -357,6 +361,7 @@ export interface WorkspaceModelDefault {
   workspaceId: string;
   /** Missing while migration or installation requires an administrator to choose a model. */
   modelId?: string;
+  effort?: ModelEffort;
   revision: number;
   provenance: WorkspaceModelDefaultProvenance;
   lastChangedByMembershipId?: string;
@@ -367,6 +372,7 @@ export interface WorkspaceModelDefault {
 export interface WorkspaceModelDefaultInput {
   workspaceId: string;
   modelId?: string;
+  effort?: ModelEffort;
   provenance: WorkspaceModelDefaultProvenance;
   lastChangedByMembershipId?: string;
 }
@@ -394,6 +400,8 @@ export interface WorkspaceModelRole {
   role: NonChatModelRole;
   /** Absent means the role is unset; the Agent gets no capability for it. */
   modelId?: string;
+  /** Only the coding role carries an effort. */
+  effort?: ModelEffort;
   revision: number;
   lastChangedByMembershipId?: string;
   createdAt: number;
@@ -404,6 +412,7 @@ export interface WorkspaceModelRoleInput {
   workspaceId: string;
   role: NonChatModelRole;
   modelId?: string;
+  effort?: ModelEffort;
   lastChangedByMembershipId?: string;
 }
 
@@ -942,6 +951,8 @@ export interface ResolvedAssignment {
   // from a frozen thread snapshot; undefined means resolve from the agent via
   // model policy at turn time.
   model?: string;
+  /** Effort frozen with `model`; absent runs the model's standard level. */
+  effort?: ModelEffort;
   modelAttribution?: AgentModelAttribution;
   modelCredential?: ModelCredentialAttribution;
 }
