@@ -1,13 +1,49 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 // @ts-expect-error Shared executable JavaScript helper.
 import { acquireHostChecks } from '../scripts/lib/verification-host.mjs';
 // @ts-expect-error Shared executable JavaScript helper.
 import { waitForHostChecks } from '../scripts/lib/verification-host-wait.mjs';
+
+function isolatedHome(t: TestContext) {
+  const home = mkdtempSync(join(tmpdir(), 'chickpea-verify-host-'));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  return { home, file: join(home, '.chickpea', 'verification-host', 'owner.json') };
+}
+
+function verifyHost(home: string, ...args: string[]) {
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  delete env.CHICKPEA_CHECK_OWNER;
+  return spawnSync(process.execPath, [resolve('scripts/verify-host.mjs'), ...args], { env, encoding: 'utf8' });
+}
+
+test('a command that cannot start releases the host reservation and names the command', (t) => {
+  const { home, file } = isolatedHome(t);
+  const notExecutable = join(home, 'not-executable');
+  writeFileSync(notExecutable, '#!/bin/sh\n', { mode: 0o600 });
+  for (const [command, code] of [['chickpea-no-such-command', 'ENOENT'], [notExecutable, 'EACCES']] as const) {
+    const run = verifyHost(home, command);
+    assert.equal(existsSync(file), false, `${code}: no child ran, so no reservation is left behind`);
+    assert.notEqual(run.status, 0);
+    assert.ok(run.stderr.includes(`Command could not start: ${command} (${code}). Host reservation released.`), run.stderr);
+  }
+});
+
+test('a child that exits releases the reservation; a child stopped by a signal keeps it', (t) => {
+  const { home, file } = isolatedHome(t);
+  const exited = verifyHost(home, process.execPath, '-e', 'process.exit(5)');
+  assert.equal(exited.status, 5, 'the child exit status passes through');
+  assert.equal(existsSync(file), false, 'a failing check still releases the reservation');
+
+  const killed = verifyHost(home, process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')");
+  assert.notEqual(killed.status, 0);
+  assert.ok(killed.stderr.includes('Interrupted command: host reservation retained. Reconcile its processes before removing the exact owner.json.'), killed.stderr);
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).pid, killed.pid, 'the interrupted owner keeps the slot for reconciliation');
+});
 
 test('bounded host wait acquires only after release and reports contention once', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-wait-'));
