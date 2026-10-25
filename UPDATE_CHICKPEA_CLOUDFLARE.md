@@ -47,8 +47,11 @@ npm ci --strict-allow-scripts
 
 v0.1.34 needs Node 24.22.1 or a later Node 24 on the machine that runs the
 update. Its dependency install refuses older Node, including 24.20.0,
-the previous pin. If the installation builds with Cloudflare Workers Builds and
-sets a `NODE_VERSION` build variable, change it to 24.22.1 or remove it.
+the previous pin. Cloudflare Workers Builds, which the Deploy to Cloudflare
+button also uses, reads `.nvmrc`. If the installation sets a `NODE_VERSION`
+build variable, change it to 24.22.1 or remove it; a build on older Node stops
+at dependency install. A Workers Builds build of v0.1.34 was not tested before
+release, so check that its build log shows Node 24.22.1.
 
 Keep the new release's code and migrations. Restore the installation's live
 deployment settings in the authored `wrangler.jsonc`, including `account_id`,
@@ -126,16 +129,15 @@ Agent always replies, even where v0.1.32 would have posted nothing. A turn
 that had already decided to post nothing but had not finished when you rolled
 back may post the literal text `NO_REPLY` once.
 
-Rolling back from v0.1.34 to v0.1.33 does not restore the Agent-level
-connection secrets that v0.1.34 deleted. v0.1.33 also cannot read secrets
-entered on v0.1.34, so those connections have no secret until someone enters
-it on v0.1.33, and v0.1.34 ignores secrets entered on v0.1.33 after the next
-update. While on v0.1.33, do not save an Agent that has its own MCP servers or
-API connections in Admin, and do not add such connections. v0.1.33 saves them
-without the credential reference that v0.1.34 needs. After the next update,
-Admin's Agents page then fails to load, and those connections fail. On an
-installation first created with v0.1.34, v0.1.33 cannot create Agents or
-delete them in Admin. A reply still unsent at the rollback for an Agent that
+Rolling back from v0.1.34 to v0.1.33 keeps Admin and Slack replies working.
+The Agent-level connection secrets that v0.1.34 deleted (see step 3) do not
+come back, and v0.1.33 cannot read secrets entered on v0.1.34. Each v0.1.34
+start deletes any Agent-level secret that v0.1.33 saved, and connections saved
+in Admin on v0.1.33 need their secret entered again after the next update.
+Replies do not use these connections on either release. While on v0.1.33, an
+Agent created with the name of an Agent deleted during the rollback picks up
+the Agent-level secrets that Agent saved there, as v0.1.33 always did. A reply
+still unsent at the rollback for an Agent that
 uses a team connection needing an admin to reconnect it is set aside without
 an answer, and a thread whose first v0.1.34 turn ran in that state gets
 failed replies on v0.1.33 until you update again. Prefer deploying a fixed
@@ -146,12 +148,21 @@ release forward to rolling back across v0.1.34.
 v0.1.34 is a security update for the eMudhra certificate authority compromise.
 Its Node requirement is in step 2. Before you deploy it:
 
-- On its first start, v0.1.34 deletes the secrets saved directly on each
-  Agent's own MCP servers and API connections: bearer tokens, header values,
+- v0.1.34 deletes the secrets saved directly on an Agent's own MCP servers and
+  API connections (Agent-level connections): bearer tokens, header values,
   pasted API credentials, and OAuth sign-ins. Team and personal connection
-  accounts keep theirs. Tell the user before deploying. Afterwards they enter
-  those secrets again, or sign in again, on each affected Agent. An
-  `MCP_AGENT_…` or `CONNECTOR_AGENT_…` secret supplied as a Worker variable
+  accounts keep theirs. Admin's Connections tab lists only those accounts, and
+  Agents use only those accounts in Slack, on v0.1.33 as on v0.1.34. Replies do
+  not change, and an ordinary update needs no action. Someone who uses an
+  Agent-level connection through the Admin API or a Chickpea setup link enters
+  its secret again: ask Chickpea in Slack for a setup link, and finish one link
+  before opening the next, or call
+  `PUT /admin/api/agents/<id>/mcp/secrets/<connectionId>` or
+  `PUT /admin/api/agents/<id>/api-connections/secrets/<connectionId>` with
+  `expectedRevision` and `expectedCredentialBinding` set to the Agent's
+  `revision` and the connection's `credentialBinding` from
+  `GET /admin/api/agents/<id>`. An `MCP_AGENT_…` or `CONNECTOR_AGENT_…` secret
+  supplied as a Worker variable
   applies only when its matching `…_BINDING` variable holds that connection's
   current credential binding. Admin does not show the binding; the Agent's
   record in the signed-in Admin API (`GET /admin/api/agents/<id>`) gives
