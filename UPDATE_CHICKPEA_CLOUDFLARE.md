@@ -45,6 +45,14 @@ For releases with the reviewed `allowScripts` policy, use:
 npm ci --strict-allow-scripts
 ```
 
+v0.1.34 needs Node 24.22.1 or a later Node 24 on the machine that runs the
+update. Its dependency install refuses older Node, including 24.20.0,
+the previous pin. Cloudflare Workers Builds, which the Deploy to Cloudflare
+button also uses, reads `.nvmrc`. If the installation sets a `NODE_VERSION`
+build variable, change it to 24.22.1 or remove it; a build on older Node stops
+at dependency install. A Workers Builds build of v0.1.34 was not tested before
+release, so check that its build log shows Node 24.22.1.
+
 Keep the new release's code and migrations. Restore the installation's live
 deployment settings in the authored `wrangler.jsonc`, including `account_id`,
 Worker `name`, the `AUTH_DB` database name and ID, non-secret variables, and
@@ -59,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.33 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.34 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -121,7 +129,47 @@ Agent always replies, even where v0.1.32 would have posted nothing. A turn
 that had already decided to post nothing but had not finished when you rolled
 back may post the literal text `NO_REPLY` once.
 
+Rolling back from v0.1.34 to v0.1.33 keeps Admin and Slack replies working.
+The Agent-level connection secrets that v0.1.34 deleted (see step 3) do not
+come back, and v0.1.33 cannot read secrets entered on v0.1.34. Each v0.1.34
+start deletes any Agent-level secret that v0.1.33 saved, and connections saved
+in Admin on v0.1.33 need their secret entered again after the next update.
+Replies do not use these connections on either release. While on v0.1.33, an
+Agent created with the name of an Agent deleted during the rollback picks up
+the Agent-level secrets that Agent saved there, as v0.1.33 always did. A reply
+still unsent at the rollback for an Agent that
+uses a team connection needing an admin to reconnect it is set aside without
+an answer, and a thread whose first v0.1.34 turn ran in that state gets
+failed replies on v0.1.33 until you update again. Prefer deploying a fixed
+release forward to rolling back across v0.1.34.
+
 ## 3. Deploy to the same Worker
+
+v0.1.34 is a security update for the eMudhra certificate authority compromise.
+Its Node requirement is in step 2. Before you deploy it:
+
+- v0.1.34 deletes the secrets saved directly on an Agent's own MCP servers and
+  API connections (Agent-level connections): bearer tokens, header values,
+  pasted API credentials, and OAuth sign-ins. Team and personal connection
+  accounts keep theirs. Admin's Connections tab lists only those accounts, and
+  Agents use only those accounts in Slack, on v0.1.33 as on v0.1.34. Replies do
+  not change, and an ordinary update needs no action. Someone who uses an
+  Agent-level connection through the Admin API or a Chickpea setup link enters
+  its secret again: ask Chickpea in Slack for a setup link, and finish one link
+  before opening the next, or call
+  `PUT /admin/api/agents/<id>/mcp/secrets/<connectionId>` or
+  `PUT /admin/api/agents/<id>/api-connections/secrets/<connectionId>` with
+  `expectedRevision` and `expectedCredentialBinding` set to the Agent's
+  `revision` and the connection's `credentialBinding` from
+  `GET /admin/api/agents/<id>`. An `MCP_AGENT_…` or `CONNECTOR_AGENT_…` secret
+  supplied as a Worker variable
+  applies only when its matching `…_BINDING` variable holds that connection's
+  current credential binding. Admin does not show the binding; the Agent's
+  record in the signed-in Admin API (`GET /admin/api/agents/<id>`) gives
+  editors each connection's `credentialBinding` and variable names.
+- An installation with the coding sandbox must update with
+  `npm run deploy:sandbox`, as described below, so its container moves to the
+  patched image.
 
 v0.1.33 adds an optional ChatGPT plan connection for Cloudflare. Updating keeps
 the current chat provider and API key. If you connect a ChatGPT plan and later
