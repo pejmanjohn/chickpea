@@ -261,18 +261,48 @@ export function createCloudflareBoundedAgentReplyReader(
   agentName: string = CHICKPEA_SLACK_AGENT_NAME,
 ): BoundedReplyReader {
   const bindingName = agentObjectBindingName(agentName);
-  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
-  if (!binding || typeof binding.idFromName !== 'function' || typeof binding.get !== 'function') {
-    throw new AgentObjectBindingUnavailableError(bindingName);
-  }
+  const binding = agentObjectNamespace(env, bindingName);
+  if (!binding) throw new AgentObjectBindingUnavailableError(bindingName);
   return createBoundedAgentReplyReader({
     agentName,
     adaptive: {},
-    resolveRoute: (instanceId) => {
-      const stub = binding.get(binding.idFromName(instanceId));
-      return (request) => stub.fetch(request);
-    },
+    resolveRoute: (instanceId) => agentObjectRoute(binding, instanceId),
   });
+}
+
+function agentObjectNamespace(
+  env: Record<string, unknown> | undefined,
+  bindingName: string,
+): AgentObjectNamespace | undefined {
+  const binding = env?.[bindingName] as AgentObjectNamespace | undefined;
+  return binding && typeof binding.idFromName === 'function' && typeof binding.get === 'function'
+    ? binding
+    : undefined;
+}
+
+function agentObjectRoute(binding: AgentObjectNamespace, instanceId: string): AgentUpdatesRoute {
+  const stub = binding.get(binding.idFromName(instanceId));
+  return (request) => stub.fetch(request);
+}
+
+type AgentConversationSnapshot = Extract<ConversationStreamChunk, { type: 'conversation-reset' }>['snapshot'];
+
+/**
+ * One immediate read of an agent instance's newest `limit` history messages,
+ * through its namespace as the bounded reader reaches it. Undefined where
+ * the deployment has no such binding or the read is refused.
+ */
+export async function readAgentHistoryBounded(
+  env: Record<string, unknown> | undefined,
+  instanceId: string,
+  limit: number,
+  agentName: string = CHICKPEA_SLACK_AGENT_NAME,
+): Promise<AgentConversationSnapshot | undefined> {
+  const binding = agentObjectNamespace(env, agentObjectBindingName(agentName));
+  if (!binding) return undefined;
+  const base = `https://flue.invalid/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+  const response = await agentObjectRoute(binding, instanceId)(new Request(`${base}?view=history&limit=${limit}`));
+  return response.ok ? await response.json() as AgentConversationSnapshot : undefined;
 }
 
 /** An abort whose reason was not an Error; the reader never throws a bare value. */

@@ -2955,6 +2955,7 @@ async function processSlackEvent(
       candidateTurn = turn.source === 'reaction_added';
       if (surface === 'channel') {
         const channel = conversation ?? await runtimeTransport.lookupChannel(turn.channelId);
+        turn.sharedChannel = channel.shared === true;
         agentSourceVisibility = channel.private ? 'private' : 'public';
         liveChannelName = channel.name;
         if (liveChannelName && routedAssignment.channelLabel !== liveChannelName) {
@@ -4702,6 +4703,7 @@ async function resolveTurnConversation(
   if (turn.channelType ? turn.channelType !== 'mpim' : turn.channelId.startsWith('D')) return undefined;
   const conversation = await transport.lookupChannel(turn.channelId);
   if (conversation.mpim) turn.channelType = 'mpim';
+  turn.sharedChannel = conversation.shared === true;
   return conversation;
 }
 

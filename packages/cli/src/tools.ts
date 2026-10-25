@@ -55,30 +55,25 @@ export async function callManagementTool(
 }
 
 export interface EnvelopeHints {
-  /** Proposal ids that need an explicit confirm_workspace_change call. */
-  proposals: string[];
+  /** Proposal ids of destructive changes that wait for an explicit confirm_workspace_change call. */
+  confirmations: string[];
   /** Credential-bearing setup links, each one-use and valid for 24 hours. */
   setupLinks: string[];
 }
 
 export function collectEnvelopeHints(envelope: ToolEnvelope): EnvelopeHints {
-  const proposals = new Set<string>();
+  const confirmations = new Set<string>();
   const setupLinks = new Set<string>();
-  if (!envelope.ok) return { proposals: [], setupLinks: [] };
+  if (!envelope.ok) return { confirmations: [], setupLinks: [] };
   const result = envelope.result;
   if (result && typeof result === 'object' && !Array.isArray(result)) {
     const record = result as Record<string, unknown>;
-    if (typeof record.proposalId === 'string' &&
-        (record.status === 'pending' || record.status === 'confirmation_required' ||
-         record.confirmationTool === 'confirm_workspace_change')) {
-      proposals.add(record.proposalId);
-    }
     if (Array.isArray(record.outcomes)) {
       for (const outcome of record.outcomes) {
         if (!outcome || typeof outcome !== 'object') continue;
         const item = outcome as Record<string, unknown>;
         if (item.disposition === 'confirmation_required' && typeof item.proposalId === 'string') {
-          proposals.add(item.proposalId);
+          confirmations.add(item.proposalId);
         }
       }
     }
@@ -86,7 +81,7 @@ export function collectEnvelopeHints(envelope: ToolEnvelope): EnvelopeHints {
   walk(result, (key, value) => {
     if (key === 'setupUrl' && typeof value === 'string') setupLinks.add(value);
   });
-  return { proposals: [...proposals], setupLinks: [...setupLinks] };
+  return { confirmations: [...confirmations], setupLinks: [...setupLinks] };
 }
 
 function walk(value: unknown, visit: (key: string, value: unknown) => void, depth = 0): void {
@@ -103,10 +98,10 @@ function walk(value: unknown, visit: (key: string, value: unknown) => void, dept
 
 export function renderEnvelopeHints(hints: EnvelopeHints, origin: string): string[] {
   const lines: string[] = [];
-  for (const proposalId of hints.proposals) {
+  for (const proposalId of hints.confirmations) {
     lines.push(
-      `Proposal ${proposalId} is waiting for confirmation. Nothing has been applied.`,
-      'Review the preview in the result, then confirm it from this same CLI session with:',
+      `This change is destructive and waits for your confirmation (${proposalId}). Nothing has been applied.`,
+      'Read the preview in result.presentation.markdown, then confirm it from this same CLI session with:',
       `  chickpea call ${origin} confirm_workspace_change --args '${JSON.stringify({ proposalId })}'`,
     );
   }

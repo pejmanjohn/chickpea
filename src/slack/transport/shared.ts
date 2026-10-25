@@ -124,11 +124,16 @@ export function mapPolicyChannel(channel: SlackApiResult): SlackChannel {
     archived: requiredBoolean(channel.is_archived, 'conversations'),
     ...(channel.is_mpim === true ? { mpim: true as const } : {}),
     ...(channel.is_shared === true || channel.is_ext_shared === true || channel.is_org_shared === true ||
-        channel.is_pending_ext_shared === true ||
-        (Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0)
+        slackPendingExternalShare(channel)
       ? { shared: true as const }
       : {}),
   };
+}
+
+/** Slack reports a Slack Connect invitation to a conversation either way. */
+export function slackPendingExternalShare(channel: SlackApiResult): boolean {
+  return channel.is_pending_ext_shared === true ||
+    (Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0);
 }
 
 export function mapOpenedDirectConversation(channel: SlackApiResult): SlackChannel {

@@ -1147,10 +1147,7 @@ test("asking Chickpea to add the app Agent greets the Channel the same way", asy
     idempotencyKey: 'add-support-c2',
     operations: [{ itemId: 'reach', kind: 'grant_agent_channel', workspaceId: TEAM, channelId: 'C2', agentId: 'agent_support', expectedRevision: 0 }],
   });
-  const proposalId = (applied as { result?: { outcomes?: Array<{ proposalId?: string }> } }).result?.outcomes?.[0]?.proposalId;
-  assert.ok(proposalId, JSON.stringify(applied));
-  const confirmed = await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', { proposalId });
-  assert.equal((confirmed as { result?: { status?: string } }).result?.status, 'completed', JSON.stringify(confirmed));
+  assert.equal((applied as { result?: { status?: string } }).result?.status, 'completed', JSON.stringify(applied));
   assert.deepEqual(h.calls.filter((call) => call.method === 'chat.postMessage').map((call) => [call.token, call.body.get('channel'), call.body.get('text')]),
     [[AGENT_BOT, 'C2', SUPPORT_WELCOME_IN_THREADS]]);
 }, { notMemberOf: { [MAIN_BOT]: ['C2'], [AGENT_BOT]: ['C2'] } }));

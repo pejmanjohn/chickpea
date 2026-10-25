@@ -232,10 +232,10 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
       'revoked',
     );
 
-    // With a key stored, the typed request_setup path returns a proposal that
-    // carries the Settings link, and confirming it yields the setup link with
-    // the same Settings link derived from the setup record itself.
-    const proposed = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
+    // With a key stored, the typed request_setup path issues the replacement
+    // link directly, as Admin replaces a key without asking, and carries the
+    // Settings link derived from the setup record itself.
+    const replaced = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
       idempotencyKey: 'replace-openai-typed',
       operations: [{
         itemId: 'openai',
@@ -243,17 +243,9 @@ test('an Owner gets a 24-hour provider key handoff over MCP and the key never en
         target: { kind: 'provider_credential', providerId: 'openai' },
       }],
     });
-    observed.push(proposed);
-    assert.ok(proposed.ok, JSON.stringify(proposed));
-    const proposal = proposed.result as ManagementApplyResult;
-    assert.equal(proposal.outcomes[0]?.disposition, 'confirmation_required');
-    assert.deepEqual(proposal.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });
-    const confirmed = await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', {
-      proposalId: proposal.outcomes[0]!.proposalId!,
-    });
-    observed.push(confirmed);
-    assert.ok(confirmed.ok, JSON.stringify(confirmed));
-    const confirmedResult = confirmed.result as ManagementApplyResult;
+    observed.push(replaced);
+    assert.ok(replaced.ok, JSON.stringify(replaced));
+    const confirmedResult = replaced.result as ManagementApplyResult;
     assert.equal(confirmedResult.outcomes[0]?.disposition, 'setup_required');
     assert.match(confirmedResult.outcomes[0]?.setupUrl ?? '', /#setup=/);
     assert.deepEqual(confirmedResult.outcomes[0]?.links, { admin: PROVIDERS_SETTINGS_URL });

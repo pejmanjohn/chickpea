@@ -331,21 +331,13 @@ export const applyWorkspaceChangesZodSchema = z.strictObject({
   idempotencyKey: zText(256),
   operations: z.array(managementOperationZodSchema).min(1).max(25),
 });
-export const proposeWorkspaceChangesZodSchema = z.strictObject({
-  idempotencyKey: zText(256),
-  guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
-  authoringReason: z.enum(AGENT_AUTHORING_REASONS),
-  operations: z.array(managementOperationZodSchema).min(1).max(25),
-});
-export const proposeSkillImportZodSchema = z.strictObject({
+export const importSkillZodSchema = z.strictObject({
   agentId: zAgentId,
   source: zText(2_000),
   skillName: zSkillName.optional(),
+  replaceExisting: z.boolean().optional(),
   idempotencyKey: zText(256),
   guideVersion: z.literal(AGENT_AUTHORING_GUIDE_VERSION),
-});
-export const importSkillZodSchema = proposeSkillImportZodSchema.extend({
-  replaceExisting: z.boolean().optional(),
 });
 export const manageAgentSkillZodSchema = z.strictObject({
   agentId: zAgentId,

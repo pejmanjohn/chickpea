@@ -173,6 +173,8 @@ export interface TurnExecutionOptions {
   control?: AlarmTurnJobControl;
   /** The public URL the caller already resolved (null: none); see RunTurnOptions. */
   publicUrl?: string | null;
+  /** See RunTurnOptions. */
+  runReviewSettings?: SettingsStore;
   /**
    * The job stays pending and should be driven again soon; `afterMs` is the
    * least delay an unavailable installation asked for.
@@ -486,6 +488,7 @@ export async function executeTurnJob(
       ...(ports.workStore ? { workStore: ports.workStore } : {}),
       ...(ports.settingsStore ? { settingsStore: ports.settingsStore } : {}),
       ...(options.publicUrl !== undefined ? { publicUrl: options.publicUrl } : {}),
+      ...(options.runReviewSettings ? { runReviewSettings: options.runReviewSettings } : {}),
       ...(ports.usageStore ? { usageStore: ports.usageStore } : {}),
       ...(ports.appStores ? { appStores: ports.appStores } : {}),
       ...(ports.managementApproval ? { managementApproval: ports.managementApproval } : {}),

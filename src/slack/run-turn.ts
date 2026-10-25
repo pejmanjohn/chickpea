@@ -106,7 +106,16 @@ import {
   withCreditedBack,
   type SlackFailureKind,
 } from '../usage/run-settlement.ts';
-import { currentMessageOnlyContext } from './thread-context.ts';
+import { currentMessageOnlyContext, type SlackTurnContext } from './thread-context.ts';
+import {
+  runReviewError,
+  slackRunReviewConversation,
+  startRunReview,
+  type RunReviewEnding,
+  type RunReviewSession,
+} from '../review/capture.ts';
+import type { RunReviewOutcome } from '../review/record.ts';
+import { readAgentHistoryBounded } from './bounded-agent-observation.ts';
 import { collectAdmittedSlackListIds } from './lists/admission.ts';
 import { conversationThreadTs, slackAgentContinuityKey, slackAgentThreadKey, slackConversationKind, slackTurnSurface } from './thread-key.ts';
 import { slackTimestampMs } from './timestamp.ts';
@@ -329,6 +338,8 @@ export interface RunTurnOptions {
   workStore?: WorkStore;
   /** Local override avoids a Durable Object calling its own settings RPC. */
   settingsStore?: SettingsStore;
+  /** A thread runner's `begin` read, which answers a hosted run review's first read of its key. */
+  runReviewSettings?: SettingsStore;
   /**
    * The public URL the executor already resolved (null: none is configured),
    * so the turn does not read it again. Absent, the turn resolves it.
@@ -1148,6 +1159,20 @@ async function runTurnAttempt(
     modelRepairText,
   } = prepared;
   deliveryLifecycle = workLifecycle;
+  const reviewRunId = options.runId ?? options.turnId;
+  // Asked now so the answer overlaps the context reads; awaited where the Agent is prompted.
+  const reviewStarting = reviewRunId !== undefined && runtimePlanDecision &&
+      options.replayText === undefined && !stoppedBeforeDispatch
+    ? startRunReview(platformEnv, {
+        surface: RUN_REVIEW_SURFACES[slackConversationKind(turn)],
+        // Fails closed: a Channel or group DM is copied only once admission read it unshared.
+        sharedChannel: slackConversationKind(turn) === 'im'
+          ? turn.sharedChannel === true
+          : turn.sharedChannel !== false,
+        settings: () => settingsStore ?? getSettingsStore(platformEnv),
+        ...(options.runReviewSettings ? { prefetched: options.runReviewSettings } : {}),
+      })
+    : undefined;
   if (preparedMemory) presenter.setMemoryFooterItems(preparedMemory.footerItems);
   agentViewPresentation?.setFooterMemoryItems(preparedMemory?.footerItems);
   const statusInstanceId = runtimePlanDecision?.instanceId ?? agentConversationKey;
@@ -1313,8 +1338,16 @@ async function runTurnAttempt(
     workAcknowledgment = undefined;
     await recordInteractionProgress({ acknowledgment: { ...persisted, cleanup: 'done' } });
   };
+  /** What a hosted run review copies, filled in as the turn learns it. */
+  const review: SlackRunReview = {};
+  /**
+   * `reviewOutcome` differs from `outcome` only for the two Agent endings
+   * that report none to `onDelivered`; the copy is made last, after every
+   * Slack write.
+   */
   const finishDelivery = async (
     outcome?: 'succeeded' | 'no_op' | 'failed' | 'stopped',
+    reviewOutcome: RunReviewOutcome | undefined = outcome,
   ): Promise<void> => {
     // Delivery gets its durable tombstone before the best-effort repair so a
     // slow reporting backend can never make Slack retry already-delivered work.
@@ -1336,6 +1369,11 @@ async function runTurnAttempt(
       }
     }
     await removeWorkAcknowledgment();
+    if (review.session && reviewOutcome && reviewRunId !== undefined) {
+      await review.session.finish(
+        slackRunReviewEnding(turn, reviewRunId, assignment.agent.id, options, platformEnv, review, reviewOutcome),
+      );
+    }
   };
   onNativeStarted = async (): Promise<void> => {
     if (!workChecklistTs || !interactionProgress.checklist ||
@@ -1675,6 +1713,7 @@ async function runTurnAttempt(
     const promptContext = continuation
       ? slackContextSinceWatermark(context, continuation.messageTs, assignment.agentId)
       : context;
+    review.context = promptContext;
     const continuityNote = continuation && runtimePlanDecision
       ? threadContinuityNote({
           previous: continuation,
@@ -1851,6 +1890,8 @@ async function runTurnAttempt(
         const streamAgeChecks = agentViewPresentation
           ? watchAgentViewStreamAge(agentViewPresentation)
           : undefined;
+        review.session = await reviewStarting;
+        const reviewSession = review.session;
         try {
           agentResult = await (options.agentPrompt ?? promptSlackThreadAgent)({
             message: executionPrompt,
@@ -1883,6 +1924,9 @@ async function runTurnAttempt(
               ? { onObservationStarted: options.onObservationStarted }
               : {}),
             ...(options.codingTaskStarted ? { codingTaskStarted: true } : {}),
+            ...(reviewSession
+              ? { onConversationChunk: (chunk, submissionId) => reviewSession.ingest(chunk, submissionId) }
+              : {}),
             onWorkspaceMilestone: async (record) => {
               await signalCodingTaskStarted();
               codingProgress.apply(record);
@@ -1899,6 +1943,7 @@ async function runTurnAttempt(
           : agentResult.text;
         tablePresentation = agentResult.tablePresentations?.[0];
         artifacts = agentResult.artifacts;
+        review.model = agentResult.returnedModel;
         if (agentResult.codingModel) {
           const codingFooterLabel = replyFooterModelLabel({
             agentModel: resolvedModel,
@@ -1929,6 +1974,7 @@ async function runTurnAttempt(
         if (!(err instanceof AgentPromptFailure) && isSandboxDisconnect(err)) {
           throw new StateStoreUnavailable();
         }
+        review.error = err;
         // A stop's abort took effect (live or replayed): the stopped ending,
         // never the failure text or a replayed pull-request answer.
         if (err instanceof AgentRunAborted && options.stopEnding) {
@@ -1981,7 +2027,8 @@ async function runTurnAttempt(
             'markdown',
           );
           await finishStatus('answer');
-          await finishDelivery();
+          review.answer = recoveredText;
+          await finishDelivery(undefined, 'succeeded');
           return;
         }
         const components = err instanceof AgentPromptFailure && err.kind === 'credits-exhausted'
@@ -2080,7 +2127,7 @@ async function runTurnAttempt(
       if (!finalized.created &&
           (finalized.outbox.status === 'delivered' || finalized.outbox.status === 'failed')) {
         await finishStatus(finalized.outbox.status === 'delivered' ? 'answer' : 'failure');
-        await finishDelivery();
+        await finishDelivery(undefined, finalized.outbox.status === 'delivered' ? 'succeeded' : 'failed');
         return;
       }
       await options.onDeferredTerminal?.();
@@ -2185,6 +2232,7 @@ async function runTurnAttempt(
     if (installationContext) {
       text = renderSlackSelfMention(text, installationContext.botUserId);
     }
+    review.answer = text;
     // Teammates' answers already completed the request: nothing is posted, and
     // the turn ends like a reaction-only one. Anything else still delivers.
     const silentEnding = handedBack && options.replayTerminalResult === undefined &&
@@ -2517,6 +2565,59 @@ async function createSlackShadowLifecycle(input: {
     console.warn('[work] shadow lifecycle initialization failed; legacy execution will continue');
     return undefined;
   }
+}
+
+interface SlackRunReview {
+  session?: RunReviewSession | undefined;
+  context?: SlackTurnContext;
+  answer?: string;
+  error?: unknown;
+  model?: AgentDispatchResult['returnedModel'];
+}
+
+const RUN_REVIEW_SURFACES = {
+  channel: 'channel',
+  im: 'dm',
+  mpim: 'group_dm',
+} as const satisfies Record<ReturnType<typeof slackConversationKind>, string>;
+
+// A settled response folds into one history message, so the newest few hold it.
+const RUN_REVIEW_HISTORY_MESSAGES = 20;
+
+function slackRunReviewEnding(
+  turn: NormalizedSlackTurn,
+  runId: string,
+  agentId: string,
+  options: RunTurnOptions,
+  platformEnv: PlatformEnv | undefined,
+  review: SlackRunReview,
+  outcome: RunReviewOutcome,
+): RunReviewEnding {
+  const receipt = options.flueDispatch?.dispatchReceipt;
+  const instanceId = options.flueDispatch?.dispatchEnvelope?.instanceId;
+  const latency = options.turnLatency;
+  const model = review.model;
+  return {
+    runId,
+    agentId,
+    ...(model ? { model: model.id.includes('/') ? model.id : `${model.provider}/${model.id}` } : {}),
+    ...slackRunReviewConversation(turn, review.context),
+    ...(review.answer === undefined ? {} : { answer: review.answer }),
+    outcome,
+    ...(review.error === undefined ? {} : { error: runReviewError(review.error) }),
+    ...(latency?.receivedAt === undefined ? {} : { receivedAt: latency.receivedAt }),
+    ...(latency?.admittedAt === undefined ? {} : { admittedAt: latency.admittedAt }),
+    // A settlement saved by an earlier attempt is replayed without observing
+    // its stream; its steps are read back once, from the settled history.
+    ...(receipt && instanceId
+      ? {
+          history: {
+            submissionId: receipt.submissionId,
+            read: () => readAgentHistoryBounded(platformEnv, instanceId, RUN_REVIEW_HISTORY_MESSAGES),
+          },
+        }
+      : {}),
+  };
 }
 
 function slackFailureKind(error: unknown, settlement: FlueSettlementCheckpointV1 | undefined): SlackFailureKind {

@@ -4,7 +4,7 @@ Docs: `/agents/agents/`, `/agents/create-an-agent/`, `/agents/instructions/`, `/
 
 ## What it covers
 
-- Creating an Agent from Slack, Admin or the management MCP. Slack and MCP creation apply at once with no proposal, unless the edit policy is "any workspace member".
+- Creating an Agent from Slack, Admin or the management MCP. Slack and MCP creation apply at once with no proposal; in Slack an edit policy of "any workspace member" waits for approval.
 - Reach at creation: a channel request grants that channel only, a DM request grants none, an MCP create grants none, and an Admin create is a draft until a channel is attached.
 - The welcome: the new Agent introduces itself in the request thread under its own name, handle and avatar, with a **View Agent** link and up to three **Connect X** links for connectors the request named.
 - The first teammate: a person who describes their team to `@Chickpea` gets three starters from a catalog of five, and a numbered reply creates that one immediately with a welcome. It works in direct messages until someone publishes it.

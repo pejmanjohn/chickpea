@@ -1288,11 +1288,7 @@ test('self-archive is confirmed, seals the next Agent turn, and restores from an
         expectedRevision: archived.revision,
       }],
     });
-    assert.equal(restore.status, 'confirmation_required');
-    await f.service.confirmWorkspaceChange({
-      context: mcpContext,
-      proposalId: restore.outcomes[0]!.proposalId!,
-    });
+    assert.equal(restore.status, 'completed', 'MCP restores with the Admin authority');
     assert.equal((await f.config.getAgent(support.id)).lifecycle, 'active');
     assert.equal((await invokeSlackWorkspaceManagementTool({
       signal,

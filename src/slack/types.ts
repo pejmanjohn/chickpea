@@ -208,6 +208,12 @@ export interface NormalizedSlackTurn {
    * that names none. Read it through slackConversationKind.
    */
   channelType?: string;
+  /**
+   * Set at admission only from the conversation's Slack facts: whether it is
+   * shared beyond this workspace (Slack Connect or across an organization),
+   * or about to be. Absent when admission read no facts, as for a DM.
+   */
+  sharedChannel?: boolean;
   contextMode: SlackContextMode;
   reaction?: string;
   reactionTargetTs?: string;

@@ -22,10 +22,7 @@ import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
 import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
-import {
-  resolveProviderRuntimeImpact,
-  resolveProviderRuntimeImpacts,
-} from '../config/provider-impact.ts';
+import { resolveProviderRuntimeImpacts } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import {
   type AgentChannelGrant,
@@ -596,11 +593,13 @@ export class WorkspaceManagementService {
     if (existing && input.replaceExisting !== true) {
       return {
         status: 'replacement_confirmation_required',
-        instruction: `Skill ${skill.name} already exists with different content. Ask the requester to reply exactly \`replace ${skill.name} from ${skill.sourceUrl}\`. On that new message, call import_skill with that immutable source, replaceExisting true, and a new idempotencyKey. Do not ask for a separate approval after that clarification.`,
+        instruction: actor.origin.kind === 'mcp'
+          ? `Skill ${skill.name} already exists with different content. If the person wants it replaced, call import_skill again with source ${skill.sourceUrl}, replaceExisting true, and a new idempotencyKey.`
+          : `Skill ${skill.name} already exists with different content. Ask the requester to reply exactly \`replace ${skill.name} from ${skill.sourceUrl}\`. On that new message, call import_skill with that immutable source, replaceExisting true, and a new idempotencyKey. Do not ask for a separate approval after that clarification.`,
         import: { ...metadata, replacedExisting: true },
       };
     }
-    if (existing &&
+    if (existing && actor.origin.kind !== 'mcp' &&
         !explicitSkillReplacementRequest(requestAddressedHere(actor), skill)) {
       throw new ManagementError(
         'invalid_request',
@@ -1826,9 +1825,10 @@ export class WorkspaceManagementService {
           operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
-        const waitsForPerson = policy.allowed && actor.origin.kind === 'slack' &&
-          (policy.posture === 'confirmation' ||
-            (heldForPersonOnAsk(actor, input.approvalBasis) && operation.kind !== 'request_setup'));
+        // Another Agent's ask started this turn, so every write but a setup waits for the
+        // person. Schedule actions admitted on their own message carry an approval basis.
+        const heldOnAsk = startedByAgentAsk(actor) && input.approvalBasis === undefined &&
+          operation.kind !== 'request_setup';
         if (!policy.allowed) {
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
@@ -1845,31 +1845,27 @@ export class WorkspaceManagementService {
             code: policy.reason,
             instruction: SLACK_SETUP_APPROVAL_UNAVAILABLE,
           });
-        } else if (waitsForPerson) {
-          const frozen = await this.freezeSlackConfirmation(actor, request, index, progress);
-          progress = appendOutcome(progress, index, {
-            itemId: operation.itemId,
-            operationKind: operation.kind,
-            disposition: 'confirmation_required',
-            proposalId: frozen.changeSet.proposalId,
-          });
-          for (const refused of frozen.refused) {
-            progress = appendOutcome(progress, refused.index, refused.outcome);
+        } else if (policy.posture === 'confirmation' || heldOnAsk) {
+          const frozen = await this.freezeConfirmation(actor, request, index, progress);
+          if (frozen) {
+            progress = appendOutcome(progress, index, {
+              itemId: operation.itemId,
+              operationKind: operation.kind,
+              disposition: 'confirmation_required',
+              proposalId: frozen.changeSet.proposalId,
+            });
+            for (const refused of frozen.refused) {
+              progress = appendOutcome(progress, refused.index, refused.outcome);
+            }
+          } else {
+            progress = appendOutcome(progress, index, {
+              itemId: operation.itemId,
+              operationKind: operation.kind,
+              disposition: 'failed',
+              code: 'confirmation_needs_own_call',
+              instruction: 'This change needs the person\'s confirmation, and a confirmation cannot hold a setup request or a second change to the same object. The other operations in this call were handled without it, so check their outcomes. Resend only this operation, in its own apply_workspace_changes call.',
+            });
           }
-        } else if (policy.posture === 'confirmation') {
-          const { proposalId, summary } = await this.createProposal(
-            actor,
-            operation,
-            policy.reason,
-            request.operationId,
-          );
-          progress = appendOutcome(progress, index, {
-            itemId: operation.itemId,
-            operationKind: operation.kind,
-            disposition: 'confirmation_required',
-            proposalId,
-            warning: summary,
-          });
         } else if (operation.kind === 'request_setup') {
           const setup = await this.issueSetup(actor, operation);
           progress = appendOutcome(progress, index, {
@@ -1969,16 +1965,17 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * In Slack only the person approves, and the Approve card and a typed
-   * approval find only change sets, so the operation that waits and the rest
-   * of the call become one. A later operation the requester can't make fails
-   * on its own, as it would have in the call. A setup request waits until the
-   * approval, which issues its one-time link with the receipt: its target may
-   * not exist until the set applies. When a later change conflicts with the
-   * first one's target revisions, as a second change to the same object does,
-   * it waits for its own request after this approval.
+   * The operation that needs approval and the rest of the call become one
+   * change set with a preview: the Slack Approve card and a typed approval
+   * find only change sets, and an MCP client shows the preview before it
+   * confirms. A later operation the requester can't make fails on its own, as
+   * it would have in the call. In Slack a later setup request waits for the
+   * approval, which issues its link with the receipt, because its target may
+   * not exist until the set applies; a later change to an object the set
+   * already changes waits for a new request. An MCP client can resend, so
+   * such a call returns nothing and the item goes back to be confirmed alone.
    */
-  private async freezeSlackConfirmation(
+  private async freezeConfirmation(
     actor: LiveManagementActor,
     request: ManagementRequestRecord,
     index: number,
@@ -1986,8 +1983,10 @@ export class WorkspaceManagementService {
   ): Promise<{
     changeSet: ManagementChangeSetProposalRecord;
     refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
-  }> {
+  } | undefined> {
     const tail = confirmationTail(request.operations, index, progress.outcomes);
+    const waitsForApproval = actor.origin.kind === 'slack';
+    if (!waitsForApproval && tail.some(({ kind }) => kind === 'request_setup')) return undefined;
     const proposalAgentIds = new Set(tail.flatMap((operation) =>
       operation.kind === 'create_agent' ? [operation.agent.id] : []
     ));
@@ -2014,6 +2013,7 @@ export class WorkspaceManagementService {
       throw error;
     });
     if (changeSet) return { changeSet, refused };
+    if (!waitsForApproval) return undefined;
     const conflicting = held.slice(1).map(({ index: at, operation }) => ({
       index: at,
       outcome: waitingOutcome(operation, 'revision_conflict', CHANGE_AFTER_APPROVAL),
@@ -2183,7 +2183,10 @@ export class WorkspaceManagementService {
       );
     }
     if (requestedOperations.some(({ kind }) => kind === 'request_setup')) {
-      throw new ManagementError('invalid_request', SETUP_AFTER_APPROVAL);
+      throw new ManagementError(
+        'invalid_request',
+        'Prepare connector or repository setup separately after the reviewed Agent change.',
+      );
     }
     const operations = requestedOperations;
     const proposal = await this.createChangeSet(actor, operations, {
@@ -2655,12 +2658,7 @@ export class WorkspaceManagementService {
     const preparedResult = await this.reconcilePrepared(actor, prepared, proposal.proposalId);
     if (preparedResult) return preparedResult;
     const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
-    if (!changed) return undefined;
-    return {
-      changed,
-      resultingRevisions: Object.fromEntries(changed.map((ref) =>
-        [objectRevisionKey(ref), ref.revision ?? 0])),
-    };
+    return changed ? mutationForChanged(changed) : undefined;
   }
 
   private async assertPreparedAgentExists(
@@ -2855,20 +2853,11 @@ export class WorkspaceManagementService {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
     await this.assertRevisionMap(undo.resultingRevisions);
-    const explicitSlackUndo = requesterExplicitlyRequestsUndo(requestAddressedHere(actor));
-    const originalRequest = actor.origin.kind === 'mcp'
-      ? await this.stores.management.getRequest(input.operationId)
-      : undefined;
-    const trustedConnectorSkillUndo = actor.origin.kind === 'mcp' &&
-      originalRequest?.organizationId === actor.organizationId &&
-      originalRequest.actorUserId === actor.userId &&
-      originalRequest.actorMembershipId === actor.membershipId &&
-      originalRequest.result?.receiptMetadata?.skillAction?.outcome === 'updated';
     const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
       operations: [undo.inverse],
-      ...(explicitSlackUndo || trustedConnectorSkillUndo
+      ...(requesterExplicitlyRequestsUndo(requestAddressedHere(actor))
         ? {
             approvalBasis: 'explicit_requester_command' as const,
             trustedReversibleOperationIds: [undo.inverse.itemId],
@@ -4013,7 +4002,15 @@ export class WorkspaceManagementService {
       operationCount?: number;
     } = {},
   ) {
-    if (operation.kind === 'update_member') return { actor, operation, adminRequired: true };
+    if (operation.kind === 'update_member') {
+      const current = await this.stores.identity.getMembership(operation.membershipId);
+      return {
+        actor,
+        operation,
+        adminRequired: true,
+        ...(current ? { currentMemberRole: current.role } : {}),
+      };
+    }
     if (operation.kind === 'update_agent_memory') {
       const agent = await this.requireEditableAgent(actor, operation.agentId);
       const memory = await this.requireAgentMemory(operation.agentId);
@@ -4088,6 +4085,7 @@ export class WorkspaceManagementService {
         currentAgent,
         ...(agentReferences ? { agentReferences } : {}),
         capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
+        connectionRemoved: connectionRemoved(currentAgent, operation.patch),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
           ? { approvalBasis: 'explicit_requester_command' as const }
@@ -4135,51 +4133,6 @@ export class WorkspaceManagementService {
     return { actor, operation };
   }
 
-  private async createProposal(
-    actor: LiveManagementActor,
-    operation: ManagementOperation,
-    reason: string,
-    requestOperationId?: string,
-  ): Promise<ManagementProposalRecord> {
-    const at = this.now();
-    const proposalId = `proposal_${this.randomId()}`;
-    const targetRevisions = await this.targetRevisions(operation);
-    // Never mint a confirmation for an already-stale preview. The requester
-    // must inspect again instead of confirming a proposal for superseded state.
-    await this.assertRevisionMap(targetRevisions);
-    const summary = operation.kind === 'remove_provider_credential'
-      ? await this.providerRemovalSummary(operation.providerId, reason)
-      : proposalSummary(operation, reason);
-    const agentId = preparedAgentId(operation);
-    const agent = agentId ? await optionalAgent(this.stores.config, agentId) : undefined;
-    return this.stores.management.putProposal({
-      proposalId,
-      organizationId: actor.organizationId,
-      actorUserId: actor.userId,
-      actorMembershipId: actor.membershipId,
-      originKey: managementActorOriginKey(actor),
-      operation,
-      ...(agent ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) } : {}),
-      summary,
-      targetRevisions,
-      ...(requestOperationId ? { requestOperationId } : {}),
-      at,
-    });
-  }
-
-  private async providerRemovalSummary(
-    providerId: ManagedProviderId,
-    reason: string,
-  ): Promise<string> {
-    const impact = await resolveProviderRuntimeImpact(this.stores.config, providerId);
-    const affected = [...impact.pinnedAgents, ...impact.inheritingAgents]
-      .map(({ id, name }) => `${name} (${id})`);
-    return `${reason}:remove_provider_credential:provider:${providerId}:workspace_default=${
-      impact.workspaceDefaultAffected ? 'affected' : 'unaffected'
-    }:affected=${
-      affected.length ? affected.join(', ') : 'none'
-    }`;
-  }
 
   private async executeMemoryMutation(
     operation: Extract<ManagementOperation, { kind: 'update_agent_memory' }>,
@@ -4344,9 +4297,8 @@ export class WorkspaceManagementService {
     progress: ManagementRequestProgress,
     readiness: RequestModelReadiness,
   ): Promise<ImmediateMutation> {
-    const prepared = progress.prepared?.itemId === operation.itemId
-      ? progress.prepared
-      : await this.prepareItem(actor, operation, undefined, readiness);
+    const resumed = progress.prepared?.itemId === operation.itemId ? progress.prepared : undefined;
+    const prepared = resumed ?? await this.prepareItem(actor, operation, undefined, readiness);
     if (!progress.prepared) {
       await this.stores.management.saveRequestProgress(
         requestId,
@@ -4355,7 +4307,19 @@ export class WorkspaceManagementService {
       );
     }
     const reconciled = await this.reconcilePrepared(actor, prepared, requestId);
-    return reconciled ?? await this.executeImmediate(actor, requestId, operation, prepared);
+    if (reconciled) return reconciled;
+    // Disabling an Agent with Channel grants is confirmed through a change set,
+    // so a direct disable keeps the immediate executor and its undo.
+    if (canExecuteImmediately(operation) || operation.kind === 'update_agent') {
+      return this.executeImmediate(actor, requestId, operation, prepared);
+    }
+    // A door without this operation's confirmation runs the confirmed
+    // executor directly; a resumed call may have applied it already.
+    const changed = resumed
+      ? await this.reconcileChangeSetConfirmedOperation(actor, operation)
+      : undefined;
+    if (changed) return mutationForChanged(changed);
+    return this.executeConfirmed(actor, operation, requestId, prepared, 'direct');
   }
 
   private requestModelReadiness(): RequestModelReadiness {
@@ -5037,6 +5001,7 @@ export class WorkspaceManagementService {
     operation: ManagementOperation,
     proposalId: string,
     prepared?: ManagementPreparedItem,
+    basis: 'confirmation' | 'direct' = 'confirmation',
   ): Promise<ImmediateMutation> {
     if (prepared) {
       await this.assertPreparedAgentExists(prepared, operation.kind === 'delete_agent');
@@ -5138,8 +5103,7 @@ export class WorkspaceManagementService {
         );
       }
       changed.push({ kind: 'agent', id: operation.agentId });
-      return { changed, resultingRevisions: Object.fromEntries(changed.map((ref) =>
-        [objectRevisionKey(ref), ref.revision ?? 0])) };
+      return mutationForChanged(changed);
     }
     if (operation.kind === 'update_member') {
       const result = await this.stores.identity.updateMembershipAuthority({
@@ -5149,35 +5113,27 @@ export class WorkspaceManagementService {
         actorMembershipId: actor.membershipId,
         correlationId: proposalId,
         authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
-        reasonCode: 'workspace_management_confirmation',
+        reasonCode: basis === 'direct'
+          ? 'workspace_management_direct'
+          : 'workspace_management_confirmation',
         idempotencyKey: `management:${proposalId}`,
       });
-      const changed = [{
-        kind: 'membership' as const,
+      return mutationForChanged([{
+        kind: 'membership',
         id: result.membership.id,
         revision: membershipRevision(result.membership),
-      }];
-      return {
-        changed,
-        resultingRevisions: {
-          [`membership:${result.membership.id}`]: membershipRevision(result.membership),
-        },
-      };
+      }]);
     }
     if (operation.kind === 'remove_provider_credential') {
       if (!this.stores.removeProviderCredential) {
         throw new ManagementError('invalid_request', 'Provider credential removal is unavailable.');
       }
       const source = await this.stores.removeProviderCredential(operation.providerId);
-      const changed = [{
-        kind: 'provider' as const,
+      return mutationForChanged([{
+        kind: 'provider',
         id: operation.providerId,
         revision: providerRevision(source),
-      }];
-      return {
-        changed,
-        resultingRevisions: { [`provider:${operation.providerId}`]: providerRevision(source) },
-      };
+      }]);
     }
     if (operation.kind === 'delete_routine') {
       await this.requireRoutineMutation(actor, operation);
@@ -5266,11 +5222,7 @@ export class WorkspaceManagementService {
         operation.expectedRevision,
       );
       changed.push({ kind: 'agent', id: agent.id, revision: agent.revision });
-      return {
-        changed,
-        resultingRevisions: Object.fromEntries(changed.map((ref) =>
-          [objectRevisionKey(ref), ref.revision ?? 0])),
-      };
+      return mutationForChanged(changed);
     }
     const freshPrepared = await this.prepareItem(actor, operation, proposalId);
     assertPreparedAgentIdentity(prepared ?? freshPrepared, freshPrepared);
@@ -5893,6 +5845,14 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
   };
 }
 
+function mutationForChanged(changed: ManagementObjectRef[]): ImmediateMutation {
+  return {
+    changed,
+    resultingRevisions: Object.fromEntries(changed.map((ref) =>
+      [objectRevisionKey(ref), ref.revision ?? 0])),
+  };
+}
+
 function mutationForAgent(
   agent: CustomAgentConfig,
   inverse?: ManagementOperation,
@@ -6103,6 +6063,12 @@ function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgen
   if (patch.mcpServers && containsExpandedMcp(agent.mcpServers, patch.mcpServers)) return true;
   if (patch.apiConnections && containsExpandedApi(agent.apiConnections, patch.apiConnections)) return true;
   return false;
+}
+
+function connectionRemoved(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
+  const keeps = (before: ReadonlyArray<{ id: string }>, after?: ReadonlyArray<{ id: string }>) =>
+    !after || before.every(({ id }) => after.some((entry) => entry.id === id));
+  return !keeps(agent.mcpServers, patch.mcpServers) || !keeps(agent.apiConnections, patch.apiConnections);
 }
 
 function uniqueModelChoices(
@@ -6436,30 +6402,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function proposalSummary(operation: ManagementOperation, reason: string): string {
-  const target = operation.kind === 'update_member'
-    ? operation.membershipId
-    : operation.kind === 'remove_provider_credential'
-      ? `provider:${operation.providerId}`
-    : operation.kind === 'update_agent_memory'
-      ? `memory:${operation.agentId}`
-    : operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'run_routine' ||
-        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent'
-      ? `routine:${operation.routineId ?? ('channelId' in operation ? operation.channelId : undefined)}`
-    : operation.kind === 'put_channel'
-      ? channelKey(operation.channel.workspaceId, operation.channel.channelId)
-      : operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel'
-        ? grantKey(operation.workspaceId, operation.channelId, operation.agentId!)
-        : operation.kind === 'create_agent'
-          ? operation.agent.id
-          : operation.kind === 'request_setup'
-            ? operation.target.kind === 'provider_credential'
-              ? `provider:${operation.target.providerId}`
-              : operation.target.agentId ?? operation.target.agentClientRef ?? 'agent'
-            : operation.agentId;
-  return `${reason}:${operation.kind}:${target}`;
-}
 
 function assertBaseAgentCreationContract(operations: readonly ManagementOperation[]): void {
   for (const operation of operations) {
@@ -6763,20 +6705,6 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
   };
 }
 
-/**
- * No message of the person's asked for a write on a turn another Agent's ask
- * started, so every write waits in a change set the person approves. Schedule
- * actions admitted on the person's own message pass an approval basis,
- * including on retries that no longer carry it.
- */
-function heldForPersonOnAsk(
-  actor: LiveManagementActor,
-  approvalBasis: ApplyWorkspaceChangesInput['approvalBasis'],
-): boolean {
-  return startedByAgentAsk(actor) && approvalBasis === undefined;
-}
-
-const SETUP_AFTER_APPROVAL = 'Prepare connector or repository setup separately after the reviewed Agent change.';
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
@@ -7176,10 +7104,12 @@ function requesterExplicitlyRequestsUndo(requestText: string | undefined): boole
     .some((clause) => /^(?:please )?undo\b/.test(clause.trim()));
 }
 
+/** An authenticated MCP call is the person's typed command; Slack proves it from their message. */
 function assertExplicitSkillImportRequest(
   actor: LiveManagementActor,
   input: ImportSkillInput,
 ): void {
+  if (actor.origin.kind === 'mcp') return;
   const requestText = requestAddressedHere(actor);
   if (!requestText || !requesterTextContainsExactSource(requestText, input.source)) {
     throw new ManagementError(

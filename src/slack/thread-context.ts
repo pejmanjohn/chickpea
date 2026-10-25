@@ -345,6 +345,8 @@ export function slackContextWatermark(
 export function ensureTriggerMessage(
   messages: SlackContextMessage[],
   turn: NormalizedSlackTurn,
+  /** The trigger row's files, when a read saw that row; the turn names none. */
+  triggerFiles?: SlackFileSummary[],
 ): SlackContextMessage[] {
   const triggerIndex = messages.findIndex((message) => message.ts === turn.messageTs);
   if (triggerIndex >= 0) {
@@ -354,7 +356,8 @@ export function ensureTriggerMessage(
     }));
   }
 
-  return orderMessages([...messages, triggerMessage(turn)]);
+  const trigger = triggerMessage(turn);
+  return orderMessages([...messages, triggerFiles?.length ? { ...trigger, files: triggerFiles } : trigger]);
 }
 
 /** The `userId` a context row carries for a message an Agent wrote. */

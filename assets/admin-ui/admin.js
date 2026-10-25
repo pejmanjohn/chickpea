@@ -23,6 +23,19 @@
   // The host sells Chickpea's models: Admin has the Plan page, and
   // onboarding offers them.
   var BILLING_OFFERED = CONFIG.billingOffered === true;
+  // The host keeps review copies of Agent conversations while "Help improve
+  // Chickpea" is on; it alone offers the setting and keeps its state.
+  var HELP_IMPROVE_OFFERED = CONFIG.helpImproveOffered === true;
+  var HELP_IMPROVE_PRIVACY_URL = typeof CONFIG.helpImprovePrivacyUrl === "string" ? CONFIG.helpImprovePrivacyUrl : "";
+  var HELP_IMPROVE_API = "/admin/api/settings/help-improve";
+  // One copy for the Settings row and the onboarding row (HELP_IMPROVE_TEXT_VERSION in run-review-api.ts).
+  var HELP_IMPROVE_COPY = {
+    label: "Help improve Chickpea",
+    help: "Chickpea keeps a copy of each Agent conversation for 30 days so the Chickpea team can find and fix bugs. Copies are encrypted, have credentials removed, and are never used to train AI models. Turning this off deletes the copies kept so far.",
+    learnMore: "Learn more",
+    updateError: "Could not update Help improve Chickpea.",
+    loadError: "Could not load Help improve Chickpea."
+  };
   var ONBOARDING_PAGE = CONFIG.onboarding || { initial: null, githubConnectPath: null, steps: [] };
   // Settings sections the host manages for a hosted installation; their pages,
   // links and requests do not exist there.
@@ -1878,6 +1891,7 @@
       // The host runs a hosted installation's coding sandbox.
       return (BROWSER_OFFERED || section.id !== "browser") && (SELF_HOSTED || !HOST_MANAGED_SETTINGS_SECTIONS.includes(section.id));
     }) : [codingAgents];
+    if (WORKSPACE_ADMIN_UI && HELP_IMPROVE_OFFERED) sections.splice(sections.length - 1, 0, { id: "help-improve", name: HELP_IMPROVE_COPY.label });
     if (WORKSPACE_ADMIN_UI && INSTALLATION_OWNER && SELF_HOSTED) sections.push({ id: "updates", name: "About &amp; updates", meta: "Version and support" });
     var primaryShell = isPrimaryAdminSurface();
     var html = '<nav class="rail' + (primaryShell ? ' primary-shell-sidebar' : '') + '" aria-label="Settings">' +
@@ -1886,7 +1900,7 @@
     sections.forEach(function (section) {
       var active = state.settingsSection === section.id;
       html += '<button type="button" class="chan-item' + (active ? " active" : "") + '" data-action="settings-section" data-section="' + section.id + '"' +
-        (active ? ' aria-current="page"' : '') + '><span class="chan-name">' + section.name + '</span><span class="chan-meta">' + section.meta + '</span></button>';
+        (active ? ' aria-current="page"' : '') + '><span class="chan-name">' + section.name + '</span>' + (section.meta ? '<span class="chan-meta">' + section.meta + '</span>' : '') + '</button>';
     });
     return html + '</div>' + sectionSwitcherHtml() + '</nav>';
   }
@@ -2896,7 +2910,8 @@
         '<p class="onboarding-eyebrow">All set</p><h1 class="onboarding-title">Chickpea is ready!</h1>' +
         '<p class="onboarding-lede">Your setup works. Next, give your team its first Agent, in Slack or in the dashboard.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
-        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div></section>';
+        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div>' +
+        onboardingHelpImproveHtml() + '</section>';
     }
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
@@ -2908,7 +2923,15 @@
       '</div>' +
       '<p class="onboarding-status" role="status">This page moves on when Chickpea replies</p>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
-      '</section>';
+      onboardingHelpImproveHtml() + '</section>';
+  }
+
+  // The setting's own read, once per visit, apart from the journey's poll.
+  function onboardingHelpImproveHtml() {
+    if (!HELP_IMPROVE_OFFERED) return "";
+    var ui = helpImproveState();
+    if (!ui.loaded && !ui.loading && !ui.loadFailed) loadHelpImprove();
+    return helpImproveRowHtml(true);
   }
 
   // Hosted onboarding offers Connect GitHub (optional) between the model and
@@ -10245,6 +10268,9 @@
         slackWorkspaceSettingsHtml();
     }
     if (state.settingsSection === "browser") return browserSettingsHtml();
+    if (state.settingsSection === "help-improve") {
+      return '<div class="section-head"><div><h1 class="page-title">' + HELP_IMPROVE_COPY.label + '</h1></div></div>' + helpImproveRowHtml(false);
+    }
     if (state.settingsSection === "connectors") {
       return '<div class="section-head"><div><h1 class="page-title">Connectors</h1><p class="hint">Configure managed integrations and review connected accounts for this Chickpea installation.</p></div></div>' + connectorsSettingsHtml();
     }
@@ -11283,6 +11309,7 @@
     if (section === "updates" && INSTALLATION_OWNER && SELF_HOSTED) return section;
     if (section === "browser" && !BROWSER_OFFERED) return "providers";
     if (!SELF_HOSTED && HOST_MANAGED_SETTINGS_SECTIONS.includes(section)) return "providers";
+    if (section === "help-improve" && HELP_IMPROVE_OFFERED) return section;
     return ["slack", "connectors", "providers", "github", "sandbox", "browser", "agents-clients"].includes(section) ? section : "providers";
   }
 
@@ -11326,6 +11353,7 @@
       return;
     }
     if (state.settingsSection === "updates") { loadInstallation(false); return; }
+    if (state.settingsSection === "help-improve") { render(); loadHelpImprove(); return; }
     if (state.settingsSection === "slack") {
       render();
       revalidateCurrentVisibleResources();
@@ -12380,6 +12408,64 @@
       ui.enabledError = mutationErrorText(error, "Could not update Workers AI.");
       render();
     });
+  }
+
+  function helpImproveState() {
+    if (!state.helpImprove) state.helpImprove = { loaded: false, loading: false, loadFailed: false, enabled: false, busy: false, error: "" };
+    return state.helpImprove;
+  }
+
+  // Read each time the setting is shown: the host keeps it, and another
+  // Owner or Admin may have changed it since this page loaded.
+  function loadHelpImprove() {
+    var ui = helpImproveState();
+    if (ui.loading) return;
+    ui.loading = true;
+    ui.loadFailed = false;
+    api(HELP_IMPROVE_API, { cache: "no-store" }).then(function (body) {
+      ui.loading = false;
+      ui.loaded = true;
+      if (!ui.busy) ui.enabled = !!(body && body.enabled === true);
+      render();
+    }).catch(function () {
+      ui.loading = false;
+      ui.loadFailed = !ui.loaded;
+      render();
+    });
+  }
+
+  function setHelpImproveEnabled(enabled) {
+    var ui = helpImproveState();
+    if (ui.busy) return;
+    ui.busy = true;
+    ui.error = "";
+    render();
+    postJson(HELP_IMPROVE_API, "PUT", { enabled: enabled }).then(function (body) {
+      ui.busy = false;
+      ui.enabled = !!(body && body.enabled === true);
+      render();
+    }).catch(function () {
+      ui.busy = false;
+      ui.error = HELP_IMPROVE_COPY.updateError;
+      render();
+    });
+  }
+
+  // The same row in Settings and onboarding; `labelled` names it where no page title does.
+  function helpImproveRowHtml(labelled) {
+    var ui = helpImproveState();
+    var control = ui.loaded
+      ? '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="help-improve-enabled"' + (ui.enabled ? " checked" : "") + ' aria-label="' + HELP_IMPROVE_COPY.label + '"' + (ui.busy ? " disabled" : "") + '></label>'
+      : "";
+    var learnMore = HELP_IMPROVE_PRIVACY_URL
+      ? ' <a class="hint-link" href="' + esc(HELP_IMPROVE_PRIVACY_URL) + '" target="_blank" rel="noopener noreferrer">' + HELP_IMPROVE_COPY.learnMore + '</a>'
+      : "";
+    var failure = ui.loadFailed
+      ? '<p class="field-error" role="alert">' + HELP_IMPROVE_COPY.loadError + '</p><div><button type="button" class="btn btn-soft btn-sm" data-action="help-improve-retry">Try again</button></div>'
+      : ui.error ? '<p class="field-error" role="alert">' + esc(ui.error) + '</p>' : "";
+    return '<div class="help-improve-row"><div class="help-improve-copy">' +
+      (labelled ? '<p class="help-improve-label">' + HELP_IMPROVE_COPY.label + '</p>' : "") +
+      '<p class="hint">' + HELP_IMPROVE_COPY.help + learnMore + '</p>' + failure + '</div>' + control + '</div>';
   }
 
   // Open/close/filter plumbing shared by the two profile comboboxes. Only the
@@ -14410,7 +14496,7 @@
     if (action === "settings-section") {
       var nextSettingsSection = normalizeSettingsSection(target.getAttribute("data-section") || "providers");
       if (nextSettingsSection === "slack") openDestination("connection");
-      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "browser" || state.settingsSection === "browser" || nextSettingsSection === "updates" || state.settingsSection === "updates") openSettings(nextSettingsSection);
+      else if (state.view !== "settings" || nextSettingsSection === "connectors" || state.settingsSection === "connectors" || nextSettingsSection === "browser" || state.settingsSection === "browser" || nextSettingsSection === "updates" || state.settingsSection === "updates" || nextSettingsSection === "help-improve" || state.settingsSection === "help-improve") openSettings(nextSettingsSection);
       else {
         state.settingsSection = nextSettingsSection;
         render();
@@ -14528,6 +14614,7 @@
     }
     if (state.sandboxSaving && action.indexOf("sandbox-") === 0) return;
     if (action === "browser-refresh") { loadBrowserStatus().then(render); }
+    if (action === "help-improve-retry") loadHelpImprove();
     if (action === "browser-connect") { connectBrowserKey(); }
     if (action === "browser-replace-open") { state.browser.replacing = true; state.browser.confirmDisconnect = false; state.browser.keyError = ""; render(); }
     if (action === "browser-replace-cancel" && !state.browser.busy) { state.browser.replacing = false; state.browser.key = ""; state.browser.keyError = ""; render(); }
@@ -15257,6 +15344,7 @@
       render();
     }
     if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
+    if (action === "help-improve-enabled") setHelpImproveEnabled(!!target.checked);
     if (action === "workspace-default-model" && !state.workspaceDefaultBusy) {
       state.workspaceDefaultDraft = target.value;
       dropUnsupportedEfforts();

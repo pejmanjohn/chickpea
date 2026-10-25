@@ -101,21 +101,6 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
   } as Parameters<typeof parseSlackManagementSignal>[1]);
   assert.ok(signal);
   try {
-    await assert.rejects(f.service.importSkill({
-      context: {
-        userId: f.admin.user.id,
-        membershipId: f.admin.membership.id,
-        organizationId: f.admin.membership.organizationId,
-        origin: { kind: 'mcp', clientId: 'skill-import-test' },
-      },
-      agentId: agent.id,
-      source: requestSource,
-        ...selector,
-      idempotencyKey: 'mcp-import-unslop',
-      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
-    }), (error: unknown) =>
-      error instanceof Error && 'code' in error && error.code === 'invalid_request');
-
     const installed = await invokeSlackWorkspaceManagementTool({
       signal,
       identity: f.identity,
@@ -279,21 +264,6 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
     assert.deepEqual(updated.skills.map(({ name }) => name), ['existing-skill', 'unslop']);
     assert.equal(updated.skills[1]?.enabled, true);
     assert.equal(updated.skills[1]?.instructions, 'Rewrite the draft plainly and preserve its meaning.');
-
-    const mcpUndo = await f.service.undoWorkspaceChange({
-      context: {
-        userId: f.admin.user.id,
-        membershipId: f.admin.membership.id,
-        organizationId: f.admin.membership.organizationId,
-        origin: { kind: 'mcp', clientId: 'skill-import-test' },
-      },
-      operationId: result.operationId,
-      idempotencyKey: 'mcp-undo-unslop',
-    });
-    assert.equal(mcpUndo.status, 'confirmation_required');
-    assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), [
-      'existing-skill', 'unslop',
-    ]);
 
     const undone = await invokeSlackWorkspaceManagementTool({
       signal: {

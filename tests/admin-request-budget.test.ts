@@ -289,6 +289,7 @@ async function hostedSignedInAdmin(t: TestContext, options: { hostReadsLogin: bo
   const countedIdentity = counted<IdentityStore>(identity, calls, 'identity');
   const routing: HostedRouting<PlatformEnv> = {
     environment,
+    throttleRegistration: async () => undefined,
     installationEnv: (login) => resolveInstallationEnv({
       async find() { return { identity: installation, slackTeamId: 'TACME', status: 'active' }; },
       async listActive() { return []; },

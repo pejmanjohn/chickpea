@@ -8,8 +8,6 @@ import {
   applyWorkspaceChangesZodSchema,
   importSkillZodSchema,
   manageAgentSkillZodSchema,
-  proposeSkillImportZodSchema,
-  proposeWorkspaceChangesZodSchema,
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
@@ -38,15 +36,37 @@ import type { ProductTelemetryCapture } from '../telemetry/client.ts';
 import {
   invokeWorkspaceManagementTool,
   workspaceManagementToolDescription,
-  WORKSPACE_MANAGEMENT_TOOL_NAMES,
+  type WorkspaceManagementToolName,
   type WorkspaceManagementToolResult,
 } from './tool-adapter.ts';
 import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '2.9.0',
+  version: '3.0.0',
 } as const;
+/** The coding-agent door has no propose tools: it acts with the person's Admin authority. */
+export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
+  'inspect_workspace',
+  'prepare_connector_setup',
+  'prepare_provider_setup',
+  'discover_slack_channels',
+  'test_mcp_connection',
+  'inspect_memory',
+  'inspect_routines',
+  'export_workspace_recipe',
+  'preview_workspace_recipe',
+  'import_skill',
+  'manage_agent_skill',
+  'apply_workspace_changes',
+  'confirm_workspace_change',
+  'undo_workspace_change',
+  'get_operation',
+  'revoke_setup_link',
+] as const satisfies readonly WorkspaceManagementToolName[];
+const READ_ONLY = { readOnlyHint: true } as const;
+/** destructiveHint defaults to true, so a write the person need not confirm says false. */
+const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true } as const;
 export const WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI =
   'chickpea://schema/operations/v2' as const;
 export const WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI =
@@ -99,7 +119,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Inspect Chickpea workspace',
     description: workspaceManagementToolDescription('inspect_workspace', 'mcp'),
     inputSchema: inspectWorkspaceZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_workspace',
@@ -110,7 +130,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Prepare Agent connector setup',
     description: workspaceManagementToolDescription('prepare_connector_setup', 'mcp'),
     inputSchema: prepareConnectorSetupZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'prepare_connector_setup',
@@ -121,7 +141,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Prepare model provider key setup',
     description: workspaceManagementToolDescription('prepare_provider_setup', 'mcp'),
     inputSchema: prepareProviderSetupZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: { ...WRITE, idempotentHint: false },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'prepare_provider_setup',
@@ -132,7 +152,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Discover Slack Channels',
     description: workspaceManagementToolDescription('discover_slack_channels', 'mcp'),
     inputSchema: discoverSlackChannelsZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'discover_slack_channels',
@@ -143,7 +163,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Test saved MCP connection',
     description: workspaceManagementToolDescription('test_mcp_connection', 'mcp'),
     inputSchema: testMcpConnectionZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'test_mcp_connection',
@@ -154,7 +174,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Inspect Chickpea memory',
     description: workspaceManagementToolDescription('inspect_memory', 'mcp'),
     inputSchema: inspectMemoryZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_memory',
@@ -165,7 +185,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Inspect Chickpea routines',
     description: workspaceManagementToolDescription('inspect_routines', 'mcp'),
     inputSchema: inspectRoutinesZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'inspect_routines',
@@ -176,7 +196,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Export Chickpea workspace recipe',
     description: workspaceManagementToolDescription('export_workspace_recipe', 'mcp'),
     inputSchema: exportRecipeZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'export_workspace_recipe',
@@ -187,21 +207,10 @@ export function createWorkspaceManagementMcpServer(
     title: 'Preview Chickpea workspace recipe',
     description: workspaceManagementToolDescription('preview_workspace_recipe', 'mcp'),
     inputSchema: previewRecipeZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'preview_workspace_recipe',
-    args,
-  )));
-
-  server.registerTool('propose_skill_import', {
-    title: 'Propose GitHub skill import',
-    description: workspaceManagementToolDescription('propose_skill_import', 'mcp'),
-    inputSchema: proposeSkillImportZodSchema,
-    annotations: { readOnlyHint: false, idempotentHint: false },
-  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
-    adapter,
-    'propose_skill_import',
     args,
   )));
 
@@ -209,7 +218,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Install GitHub skill',
     description: workspaceManagementToolDescription('import_skill', 'mcp'),
     inputSchema: importSkillZodSchema,
-    annotations: { readOnlyHint: false, idempotentHint: true },
+    annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'import_skill',
@@ -220,29 +229,18 @@ export function createWorkspaceManagementMcpServer(
     title: 'Manage an installed Agent skill',
     description: workspaceManagementToolDescription('manage_agent_skill', 'mcp'),
     inputSchema: manageAgentSkillZodSchema,
-    annotations: { readOnlyHint: false, idempotentHint: true },
+    annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'manage_agent_skill',
     args,
   )));
 
-  server.registerTool('propose_workspace_changes', {
-    title: 'Propose Chickpea workspace changes',
-    description: workspaceManagementToolDescription('propose_workspace_changes', 'mcp'),
-    inputSchema: proposeWorkspaceChangesZodSchema,
-    annotations: { readOnlyHint: false, idempotentHint: false },
-  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
-    adapter,
-    'propose_workspace_changes',
-    { ...args, operations: args.operations as ManagementOperation[] },
-  )));
-
   server.registerTool('apply_workspace_changes', {
     title: 'Apply Chickpea workspace changes',
     description: workspaceManagementToolDescription('apply_workspace_changes', 'mcp'),
     inputSchema: applyWorkspaceChangesZodSchema,
-    annotations: { idempotentHint: true },
+    annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'apply_workspace_changes',
@@ -256,7 +254,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Confirm Chickpea workspace change',
     description: workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
     inputSchema: confirmWorkspaceChangeZodSchema,
-    annotations: { destructiveHint: true, idempotentHint: true },
+    annotations: { ...WRITE, destructiveHint: true },
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'confirm_workspace_change',
@@ -267,7 +265,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Undo Chickpea workspace change',
     description: workspaceManagementToolDescription('undo_workspace_change', 'mcp'),
     inputSchema: undoWorkspaceChangeZodSchema,
-    annotations: { destructiveHint: true, idempotentHint: true },
+    annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'undo_workspace_change',
@@ -278,7 +276,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Get Chickpea operation',
     description: workspaceManagementToolDescription('get_operation', 'mcp'),
     inputSchema: getOperationZodSchema,
-    annotations: { readOnlyHint: true },
+    annotations: READ_ONLY,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'get_operation',
@@ -289,7 +287,7 @@ export function createWorkspaceManagementMcpServer(
     title: 'Revoke Chickpea setup link',
     description: workspaceManagementToolDescription('revoke_setup_link', 'mcp'),
     inputSchema: revokeSetupLinkZodSchema,
-    annotations: { destructiveHint: true, idempotentHint: true },
+    annotations: WRITE,
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'revoke_setup_link',
@@ -322,11 +320,11 @@ export function createWorkspaceManagementMcpServer(
       mimeType: 'application/json',
       text: JSON.stringify({
         schemaVersion: 2,
-        tools: WORKSPACE_MANAGEMENT_TOOL_NAMES,
+        tools: WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
         prompts: WORKSPACE_MANAGEMENT_PROMPT_NAMES,
         operationKinds: MANAGEMENT_OPERATION_KINDS,
         activation: 'next_turn',
-        confirmation: 'Use proposalId with confirm_workspace_change.',
+        confirmation: 'Only a destructive change returns confirmation_required, with presentation.markdown and a proposalId. Pass the proposalId to confirm_workspace_change after the person agrees.',
       }),
     }],
   }));

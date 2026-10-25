@@ -9,6 +9,7 @@ import { createSlackWebClient } from '../slack/run-turn.ts';
 import { resolveSlackContextNames } from '../slack/context-names.ts';
 import { sharesSlackAppReadBudget } from '../slack/read-budget.ts';
 import { hydrateTurnSlackContext } from '../slack/turn-context-reads.ts';
+import type { SlackTurnContext } from '../slack/thread-context.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   assembleSlackPrompt,
@@ -31,6 +32,8 @@ type RoutineModelResult = v.InferOutput<typeof RoutineModelResultSchema>;
 export interface PreparedRoutinePrompt {
   prompt: string;
   turn: NormalizedSlackTurn;
+  /** The Slack rows the prompt carries. */
+  context?: SlackTurnContext;
   memoryEpoch: number;
   confirmMemory(): Promise<void>;
   validateMemoryLease(): Promise<boolean>;
@@ -151,6 +154,7 @@ export async function prepareRoutinePrompt(
       ordinaryPrompt,
     ].join('\n'),
     turn,
+    context,
     memoryEpoch: memory.memoryEpoch,
     confirmMemory: async () => {
       await memory.confirmInjection();

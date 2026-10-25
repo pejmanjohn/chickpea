@@ -11,8 +11,11 @@ import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
-import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
-import type { ManagementActorContext } from '../src/management/types.ts';
+import {
+  invokeWorkspaceManagementTool,
+  type WorkspaceManagementToolResult,
+} from '../src/management/tool-adapter.ts';
+import type { ManagementActorContext, ManagementApplyResult } from '../src/management/types.ts';
 import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { syncHostedWorkspaceInstallation } from '../src/slack/hosted-installation.ts';
 import { slackInstallationCredentialId } from '../src/slack/hosted-slack-app.ts';
@@ -214,7 +217,7 @@ test('a revoked Owner token reaches Admin as today\'s archive recovery, with no 
 
 async function hostedManagement(
   t: TestContext,
-  run: (archive: () => Promise<unknown[]>, ownerTokenWorks: () => Promise<boolean>) => Promise<void>,
+  run: (archive: () => Promise<WorkspaceManagementToolResult>, ownerTokenWorks: () => Promise<boolean>) => Promise<void>,
 ) {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
     const env = scopeInstallationEnv(HOSTED, { installationId: 'inst_w16_management' });
@@ -243,16 +246,10 @@ async function hostedManagement(
     const ownerTokenWorks = async () => ownerUserGroupTokenWorks(
       await resolveSlackInstallationCredentials(slackInstallationCredentialId(env), env, credentials), settings,
     );
-    await run(async () => {
-      const applied = await invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
-        idempotencyKey: 'w16-archive',
-        operations: [{ itemId: 'archive', kind: 'archive_agent', agentId: 'agent_support', expectedRevision: 1 }],
-      });
-      const proposalId = (applied as { result?: { outcomes?: Array<{ proposalId?: string }> } })
-        .result?.outcomes?.[0]?.proposalId;
-      if (!proposalId) return [applied];
-      return [applied, await invokeWorkspaceManagementTool(adapter, 'confirm_workspace_change', { proposalId })];
-    }, ownerTokenWorks);
+    await run(() => invokeWorkspaceManagementTool(adapter, 'apply_workspace_changes', {
+      idempotencyKey: 'w16-archive',
+      operations: [{ itemId: 'archive', kind: 'archive_agent', agentId: 'agent_support', expectedRevision: 1 }],
+    }), ownerTokenWorks);
   });
 }
 
@@ -260,16 +257,14 @@ test('a management tool\'s archive finishes through the installing Owner\'s toke
   const output = captureConsole(t);
   const slack = fakeSlackApi(t, botDenied);
   await hostedManagement(t, async (archive, ownerTokenWorks) => {
-    const results = await archive();
-    assert.equal(results.length, 2, 'the archive asks for confirmation first');
+    const archived = await archive();
     assert.equal(await ownerTokenWorks(), true);
-    const confirmed = results[1] as { ok: boolean; result?: { status?: string } };
-    assert.equal(confirmed.ok, true, inspect(confirmed, { depth: 8 }));
-    assert.equal(confirmed.result?.status, 'completed');
+    assert.equal(archived.ok, true, inspect(archived, { depth: 8 }));
+    assert.equal((archived as { result?: { status?: string } }).result?.status, 'completed', 'the archive applies in one call');
     assert.equal(slack.group.date_delete, 2, 'Slack holds the user group disabled');
     assert.deepEqual(slack.calls.filter((call) => call.includes(':usergroups.')),
       ['owner:usergroups.list', 'owner:usergroups.disable']);
-    assertNoUserGroupToken({ 'the tool results': results, 'the console': output });
+    assertNoUserGroupToken({ 'the tool result': archived, 'the console': output });
   });
 });
 
@@ -277,20 +272,18 @@ test('a revoked Owner token reaches a management tool as a refusal with no token
   const output = captureConsole(t);
   const slack = fakeSlackApi(t, ownerRevoked);
   await hostedManagement(t, async (archive, ownerTokenWorks) => {
-    const results = await archive();
+    const refused = await archive();
     assert.equal(slack.group.date_delete, 0, 'the user group is still active');
     assert.equal(await ownerTokenWorks(), false, 'Admin\'s bar asks for an update again');
     assert.deepEqual(slack.calls.filter((call) => call.includes(':usergroups.')), [
       'owner:usergroups.list', 'bot:usergroups.list', 'owner:usergroups.disable', 'bot:usergroups.disable',
     ]);
-    assert.equal(results.length, 2, 'the archive asks for confirmation first');
-    assert.deepEqual(results[1], {
-      ok: false,
-      error: {
-        code: 'user_group_policy_denied',
-        message: 'Slack did not allow Chickpea to deactivate the @support user group. The Agent is not archived until that user group is deactivated.',
-      },
-    });
-    assertNoUserGroupToken({ 'the tool results': results, 'the console': output });
+    assert.equal(refused.ok, true, inspect(refused, { depth: 8 }));
+    assert.deepEqual(
+      (refused as { result: ManagementApplyResult }).result.outcomes.map(({ disposition, code }) => [disposition, code]),
+      [['failed', 'user_group_policy_denied']],
+      'the archive applies in one call and reports the refusal',
+    );
+    assertNoUserGroupToken({ 'the tool result': refused, 'the console': output });
   });
 });

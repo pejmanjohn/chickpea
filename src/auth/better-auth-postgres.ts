@@ -9,6 +9,7 @@ import type {
   BetterAuthOrganizationErasure,
   BetterAuthOrganizationRecord,
   BetterAuthUserRecord,
+  PendingMcpOAuthClientPrune,
 } from './better-auth-backend.ts';
 import {
   BETTER_AUTH_IDENTITY_AUTHORITY_SQL,
@@ -205,25 +206,29 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
     }
   }
 
-  async countMcpOAuthClients(): Promise<number> {
+  async prunePendingMcpOAuthClients(prune: PendingMcpOAuthClientPrune): Promise<number> {
+    // Both CTEs read one snapshot, so pending still counts the deleted rows.
     const [row] = await this.rows<{ count: number }>(
-      `SELECT count(*)::int AS count FROM "oauthClient"
-       WHERE "tokenEndpointAuthMethod" = 'none' AND "userId" IS NULL`,
+      `WITH pending AS (
+         SELECT c."clientId", c."createdAt" FROM "oauthClient" AS c
+         WHERE c."tokenEndpointAuthMethod" = 'none' AND c."userId" IS NULL
+           AND NOT EXISTS (SELECT 1 FROM "oauthConsent" AS t WHERE t."clientId" = c."clientId")
+           AND NOT EXISTS (SELECT 1 FROM "oauthAccessToken" AS t WHERE t."clientId" = c."clientId")
+           AND NOT EXISTS (SELECT 1 FROM "oauthRefreshToken" AS t WHERE t."clientId" = c."clientId")
+       ), deleted AS (
+         DELETE FROM "oauthClient" WHERE "clientId" IN (
+           SELECT "clientId" FROM pending
+           WHERE "createdAt" < $1::timestamptz
+              OR ("createdAt" < $2::timestamptz AND "clientId" NOT IN (
+                SELECT "clientId" FROM pending ORDER BY "createdAt" DESC, "clientId" DESC LIMIT $3
+              ))
+         )
+         RETURNING 1
+       )
+       SELECT ((SELECT count(*) FROM pending) - (SELECT count(*) FROM deleted))::int AS count`,
+      [prune.expiredBefore.toISOString(), prune.evictableBefore.toISOString(), prune.keep],
     );
     return row?.count ?? 0;
-  }
-
-  async pruneUnusedMcpOAuthClients(createdBefore: string): Promise<number> {
-    const result = await this.pool.query(
-      `DELETE FROM "oauthClient" AS c
-       WHERE c."tokenEndpointAuthMethod" = 'none' AND c."userId" IS NULL
-         AND c."createdAt" < $1::timestamptz
-         AND NOT EXISTS (SELECT 1 FROM "oauthAccessToken" AS t WHERE t."clientId" = c."clientId")
-         AND NOT EXISTS (SELECT 1 FROM "oauthRefreshToken" AS t WHERE t."clientId" = c."clientId")
-         AND NOT EXISTS (SELECT 1 FROM "oauthConsent" AS t WHERE t."clientId" = c."clientId")`,
-      [createdBefore],
-    );
-    return result.rowCount ?? 0;
   }
 
   async putMcpOAuthContinuation(record: BetterAuthMcpOAuthContinuationRecord): Promise<void> {

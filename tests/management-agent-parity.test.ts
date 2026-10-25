@@ -47,6 +47,7 @@ import type {
   ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
+import { managementActorOriginKey } from '../src/management/contracts.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
@@ -243,7 +244,7 @@ test('legacy Agent writes direct Meta Ads through the reviewed connection catalo
         },
       }],
     });
-    assert.equal(customMcp.status, 'confirmation_required');
+    assert.equal(customMcp.status, 'completed', 'a custom MCP server applies with the Admin authority');
 
     const rejected = await f.service.applyWorkspaceChanges({
       context,
@@ -260,7 +261,7 @@ test('legacy Agent writes direct Meta Ads through the reviewed connection catalo
     assert.equal(rejected.outcomes[0]?.disposition, 'failed');
     assert.equal(rejected.outcomes[0]?.code, 'invalid_request');
     assert.equal(rejected.outcomes[0]?.warning, catalogMessage);
-    assert.deepEqual((await f.config.getAgent(agent.id)).mcpServers, []);
+    assert.deepEqual((await f.config.getAgent(agent.id)).mcpServers.map(({ id }) => id), ['custom-mcp']);
   } finally {
     f.close();
   }
@@ -1896,7 +1897,7 @@ test('base Agent creation inherits the default and rejects an unconfigured model
   }
 });
 
-test('direct apply creates a standalone base Agent immediately but still reviews consequential edits', async () => {
+test('direct apply creates a standalone base Agent and applies its follow-on edits with Admin authority', async () => {
   const f = await createManagementAdapterFixture('legacy-review-floor');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -1914,7 +1915,6 @@ test('direct apply creates a standalone base Agent immediately but still reviews
     assert.equal(create.outcomes[0]?.disposition, 'applied');
     assert.equal(create.outcomes[0]?.undoAvailable, undefined);
     assert.equal(create.links?.admin, 'http://localhost/admin/agents/agent_support');
-    const current = await f.config.getAgent('agent_support');
 
     const patches: Array<[string, ManagementAgentPatch]> = [
       ['compound', { name: 'Support', description: 'Updated.' }],
@@ -1923,6 +1923,7 @@ test('direct apply creates a standalone base Agent immediately but still reviews
       }] }],
     ];
     for (const [idempotencyKey, patch] of patches) {
+      const current = await f.config.getAgent('agent_support');
       const result = await f.service.applyWorkspaceChanges({
         context,
         idempotencyKey,
@@ -1934,8 +1935,11 @@ test('direct apply creates a standalone base Agent immediately but still reviews
           patch,
         }],
       });
-      assert.equal(result.status, 'confirmation_required');
+      assert.equal(result.status, 'completed', idempotencyKey);
     }
+    const edited = await f.config.getAgent('agent_support');
+    assert.equal(edited.name, 'Support');
+    assert.deepEqual(edited.skills.map(({ name }) => name), ['support-triage']);
   } finally {
     f.close();
   }
@@ -2984,19 +2988,23 @@ test('a legacy pending lifecycle proposal does not follow an Agent id across del
   };
   try {
     const original = await f.config.createAgent(input);
-    const proposed = await f.service.applyWorkspaceChanges({
-      context,
-      idempotencyKey: 'legacy-pending-agent-replacement',
-      operations: [{
+    const { proposalId } = await f.management.putProposal({
+      proposalId: 'proposal_legacy_pending_replacement',
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: managementActorOriginKey(context),
+      operation: {
         itemId: 'archive',
         kind: 'archive_agent',
         agentId: original.id,
         expectedRevision: original.revision,
-      }],
+      },
+      agentCredentialIncarnation: original.credentialIncarnation!,
+      summary: `archive_agent_reach:archive_agent:${original.id}`,
+      targetRevisions: { [`agent:${original.id}`]: original.revision },
+      at: 1_800_000_000_000,
     });
-    assert.equal(proposed.status, 'confirmation_required');
-    const proposalId = proposed.outcomes[0]?.proposalId;
-    assert.ok(proposalId);
 
     await f.config.deleteAgent(
       original.id,
@@ -3175,6 +3183,44 @@ test('change-set confirmation preserves the cascading disable behavior for an Ag
       [],
     );
     assert.ok(confirmed.outcomes[0]?.changed?.some(({ kind }) => kind === 'channel_grant'));
+  } finally {
+    f.close();
+  }
+});
+
+test('a Slack disable without Channel reach applies at once and keeps its undo', async () => {
+  const f = await createManagementAdapterFixture('slack-disable-unreached');
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: {
+      kind: 'slack', workspaceId: f.admin.user.slackTeamId,
+      channelId: 'D123', threadTs: '1800000000.000001', conversationKind: 'im',
+      requestText: 'Disable the Unreached Agent.',
+    },
+  };
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_unreached', name: 'Unreached', instructions: 'Answer in DMs.', enabled: true,
+      lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
+      configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const disabled = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'slack-disable-unreached',
+      operations: [{
+        itemId: 'disable', kind: 'update_agent', agentId: agent.id,
+        expectedRevision: agent.revision, patch: { enabled: false },
+      }],
+    });
+    assert.equal(disabled.status, 'completed');
+    assert.ok('outcomes' in disabled);
+    assert.deepEqual(
+      disabled.outcomes.map(({ disposition, undoAvailable }) => [disposition, undoAvailable]),
+      [['applied', true]],
+    );
+    assert.equal((await f.config.getAgent(agent.id)).enabled, false);
   } finally {
     f.close();
   }
@@ -3672,7 +3718,7 @@ test('confirmation preflights deterministic failures before an earlier item writ
   }
 });
 
-test('a full member creates an owned Agent before confirmed Channel publication', async () => {
+test('a full member creates an owned Agent and then publishes it to a Channel', async () => {
   const f = await createManagementAdapterFixture('member-agent-parity');
   const provisioned = await f.identity.provisionSlackMember({
     slackTeamId: f.owner.binding.slackTeamId,
@@ -3776,13 +3822,8 @@ test('a full member creates an owned Agent before confirmed Channel publication'
         },
       ],
     });
-    assert.equal(result.status, 'confirmation_required');
-    assert.equal(membershipChecks, 1);
-    assert.equal(publishCalls, 0);
-    await service.confirmWorkspaceChange({
-      context,
-      proposalId: result.outcomes.find(({ itemId }) => itemId === 'grant')!.proposalId!,
-    });
+    assert.equal(result.status, 'completed', JSON.stringify(result));
+    assert.equal(membershipChecks, 2, 'the Channel and its grant each recheck live Slack membership');
     assert.equal(publishCalls, 1);
     const agent = await f.config.getAgent('agent_support');
     assert.equal(agent.creatorMembershipId, member.membership.id);
@@ -4303,12 +4344,7 @@ test('Agent presentation updates preserve avatar and observed Slack state', asyn
         },
       }],
     });
-    assert.equal(result.status, 'confirmation_required');
-    assert.equal(reconciles, 0);
-    await service.confirmWorkspaceChange({
-      context,
-      proposalId: result.outcomes[0]!.proposalId!,
-    });
+    assert.equal(result.status, 'completed', JSON.stringify(result));
     assert.equal(reconciles, 1);
     const updated = await f.config.getAgent('agent_present');
     assert.equal(updated.description, 'After.');
@@ -4329,7 +4365,7 @@ test('Agent presentation updates preserve avatar and observed Slack state', asyn
   }
 });
 
-test('member-owned Agent archive and restore remain explicit confirmed operations', async () => {
+test('a member archives and restores their own Agent directly through the lifecycle stores', async () => {
   const f = await createManagementAdapterFixture('member-agent-lifecycle');
   const member = (await f.identity.provisionSlackMember({
     slackTeamId: f.owner.binding.slackTeamId,
@@ -4380,7 +4416,7 @@ test('member-owned Agent archive and restore remain explicit confirmed operation
     origin: { kind: 'mcp', clientId: 'lifecycle-client' },
   };
   try {
-    const proposedArchive = await service.applyWorkspaceChanges({
+    const archived = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'archive-owned-agent',
       operations: [{
@@ -4390,18 +4426,12 @@ test('member-owned Agent archive and restore remain explicit confirmed operation
         expectedRevision: 1,
       }],
     });
-    assert.equal(proposedArchive.status, 'confirmation_required');
-    assert.equal(archives, 0);
-    const archived = await service.confirmWorkspaceChange({
-      context,
-      proposalId: proposedArchive.outcomes[0]!.proposalId!,
-    });
     assert.equal(archived.status, 'completed');
     assert.equal(archives, 1);
     const archivedAgent = await f.config.getAgent('agent_lifecycle');
     assert.equal(archivedAgent.lifecycle, 'archived');
 
-    const proposedRestore = await service.applyWorkspaceChanges({
+    const restored = await service.applyWorkspaceChanges({
       context,
       idempotencyKey: 'restore-owned-agent',
       operations: [{
@@ -4411,12 +4441,7 @@ test('member-owned Agent archive and restore remain explicit confirmed operation
         expectedRevision: archivedAgent.revision,
       }],
     });
-    assert.equal(proposedRestore.status, 'confirmation_required');
-    assert.equal(restores, 0);
-    await service.confirmWorkspaceChange({
-      context,
-      proposalId: proposedRestore.outcomes[0]!.proposalId!,
-    });
+    assert.equal(restored.status, 'completed');
     assert.equal(restores, 1);
     assert.equal((await f.config.getAgent('agent_lifecycle')).lifecycle, 'active');
   } finally {
@@ -4479,7 +4504,7 @@ test('confirmed Agent deletion uses the live cleanup boundary before removing th
   }
 });
 
-test('a confirmed Channel publication resumes an interrupted pending Slack reconciliation', async () => {
+test('a Channel publication resumes an interrupted pending Slack reconciliation', async () => {
   const f = await createManagementAdapterFixture('member-channel-resume');
   const member = (await f.identity.provisionSlackMember({
     slackTeamId: f.owner.binding.slackTeamId,
@@ -4546,36 +4571,28 @@ test('a confirmed Channel publication resumes an interrupted pending Slack recon
     origin: { kind: 'mcp', clientId: 'channel-resume-client' },
   };
   try {
-    const proposed = await service.applyWorkspaceChanges({
+    const grant = (key: string, expectedRevision: number) => service.applyWorkspaceChanges({
       context,
-      idempotencyKey: 'publish-resume',
+      idempotencyKey: key,
       operations: [{
         itemId: 'grant',
         kind: 'grant_agent_channel',
         workspaceId: f.owner.binding.slackTeamId,
         channelId: 'CRESUME',
         agentId: 'agent_resume',
-        expectedRevision: 0,
+        expectedRevision,
       }],
     });
-    assert.equal(proposed.status, 'confirmation_required');
-    const proposalId = proposed.outcomes[0]!.proposalId!;
-    assert.deepEqual(await invokeWorkspaceManagementTool({
-      service,
-      resolveContext: async () => context,
-    }, 'confirm_workspace_change', { proposalId }), {
-      ok: false,
-      error: {
-        code: 'slack_unavailable',
-        message: 'Slack disconnected after the pending grant was saved.',
-      },
-    });
-    assert.equal((await f.config.listAgentChannelGrants(
-      f.owner.binding.slackTeamId,
-      'CRESUME',
-    ))[0]?.status, 'pending');
-    const resumed = await service.confirmWorkspaceChange({ context, proposalId });
-    assert.equal(resumed.status, 'completed');
+    const interrupted = await grant('publish-resume', 0);
+    assert.ok('outcomes' in interrupted, JSON.stringify(interrupted));
+    assert.deepEqual(
+      interrupted.outcomes.map(({ disposition, code }) => [disposition, code]),
+      [['failed', 'slack_unavailable']],
+    );
+    const [pending] = await f.config.listAgentChannelGrants(f.owner.binding.slackTeamId, 'CRESUME');
+    assert.equal(pending?.status, 'pending');
+    const resumed = await grant('publish-resume-again', pending!.revision);
+    assert.equal(resumed.status, 'completed', JSON.stringify(resumed));
     assert.equal(attempts, 2);
     assert.equal((await f.config.listAgentChannelGrants(
       f.owner.binding.slackTeamId,

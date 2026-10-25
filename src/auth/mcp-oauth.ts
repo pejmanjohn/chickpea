@@ -1,5 +1,6 @@
 export const MCP_WORKSPACE_SCOPE = 'chickpea:workspace';
-export const MCP_OAUTH_SCOPES: readonly string[] = Object.freeze([MCP_WORKSPACE_SCOPE, 'offline_access']);
+export const MCP_OFFLINE_SCOPE = 'offline_access';
+export const MCP_OAUTH_SCOPES: readonly string[] = Object.freeze([MCP_WORKSPACE_SCOPE, MCP_OFFLINE_SCOPE]);
 const MCP_RESOURCE_PATH = '/mcp';
 const MAX_MCP_DCR_BODY_BYTES = 16 * 1024;
 

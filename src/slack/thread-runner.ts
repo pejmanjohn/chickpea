@@ -454,6 +454,7 @@ export class SlackThreadRunner extends DurableObject implements SlackThreadRunne
           control,
           onRetry,
           ...(publicUrl === undefined ? {} : { publicUrl }),
+          runReviewSettings: prefetchedSettings(getSettingsStore(env), start.settings),
           // A stopped turn's note reports its coding workers' confirmation.
           codingStopReport: () => this.stops().codingReport(job.id),
           // R22: a stop this runner took, else one its notice has not brought yet.

@@ -1052,6 +1052,55 @@ test('a failed trigger read leaves the window context intact', async () => {
   assert.ok(context.messages.some((message) => message.text === 'the brief'));
 });
 
+test('a history turn\'s trigger keeps the file names its own row carried, on either app, outside the prompt', async () => {
+  const turn = threadTurn({
+    contextMode: 'channel_history', source: 'app_mention', text: 'what does this report say?',
+    messageTs: '2000.000000', threadTs: '2000.000000',
+    attachments: [{ fileId: 'F00000000TR' }], attachmentIntake: { status: 'ok', count: 1 },
+  });
+  const row = {
+    type: 'message', user: 'U_HUMAN', ts: turn.messageTs, text: turn.text,
+    files: [{ id: 'F00000000TR', name: 'q3-report.pdf', filetype: 'pdf', size: 48_213 }],
+  };
+  // The shared app's one window read includes the trigger row.
+  const shared = { conversations: { async history() { return { ok: true, messages: [row] }; } } };
+  const gate = { gated: true, async reserve() { return { ok: true as const }; }, async rateLimited() {} };
+  for (const context of [
+    await hydrateSlackContextViaWebClient(fakeHistoryClient([], [row]) as never, turn),
+    await hydrateSlackContextViaWebClient(shared as never, turn, { readGate: gate }),
+  ]) {
+    assert.deepEqual(
+      context.messages.filter((message) => message.isTrigger).map((message) => message.files),
+      [[{ name: 'q3-report.pdf', type: 'pdf', sizeBytes: 48_213 }]],
+    );
+    assert.equal(assembleSlackPrompt(turn, context).includes('q3-report.pdf'), false);
+  }
+});
+
+test('assembling the prompt context keeps the trigger\'s files, from the read or the thread record', async () => {
+  const turn = threadTurn({ messageTs: '2000.0000', threadTs: '1000.0000' });
+  const files = [{ name: 'q3-report.pdf', type: 'pdf', sizeBytes: 48_213 }];
+  const triggerFiles = (context: { messages: SlackContextMessage[] }) =>
+    context.messages.filter((message) => message.isTrigger).map((message) => message.files);
+  const read = currentMessageOnlyContext(turn);
+  read.messages = read.messages.map((message) => ({ ...message, files }));
+  assert.deepEqual(triggerFiles(await assembleRetainedSlackContext(read, turn)), [files]);
+
+  const store = new SqliteConfigStore(':memory:');
+  try {
+    await store.putSlackPublicContext({
+      workspaceId: turn.workspaceId, channelId: turn.channelId, rootTs: turn.threadTs,
+      messageTs: turn.messageTs, role: 'human', text: turn.text, authorId: turn.userId, files,
+    });
+    const recorded = await assembleRetainedSlackContext(currentMessageOnlyContext(turn), turn, {
+      store, agentId: 'agent_support',
+    });
+    assert.deepEqual(triggerFiles(recorded), [files]);
+  } finally {
+    store.close();
+  }
+});
+
 test('the thread path collects the trigger row without a second read', async () => {
   const turn = threadTurn({ messageTs: '2000.000000', threadTs: '1000.000000',
     attachments: [{ fileId: 'F00000000TR' }] });

@@ -401,7 +401,7 @@ test('skill proposal instructions are visibly bounded while approval keeps the f
 
 const MARKDOWN_APPROVAL_INSTRUCTION =
   'Show these changes to the person. When they approve, call confirm_workspace_change with the ' +
-  'proposalId; if they want changes, propose again.';
+  'proposalId; if they want something different, inspect again and send a new change.';
 
 test('Markdown Agent creation previews carry the same facts in a portable dialect', () => {
   const preview = {

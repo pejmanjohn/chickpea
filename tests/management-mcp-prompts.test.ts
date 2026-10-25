@@ -104,10 +104,11 @@ test('new-agent asks the opening question and offers only curated starters', () 
   }
 });
 
-test('edit-agent routes through a proposal the person approves', () => {
+test('edit-agent applies the agreed draft and confirms only a destructive change', () => {
   const text = render('edit-agent', FILLED_INVOCATIONS['edit-agent']);
+  assert.ok(!text.includes('propose_'), 'the MCP door has no propose tools');
   for (const required of [
-    'propose_workspace_changes',
+    'apply_workspace_changes',
     'update_agent',
     'expectedRevision',
     'presentation.markdown',
@@ -157,18 +158,15 @@ test('schedule reuses routines and pins the accounts the work needs', () => {
   ]) assert.ok(text.includes(required), `schedule must mention ${required}`);
 });
 
-test('import-skill proposes instead of importing and treats the source as untrusted', () => {
+test('import-skill installs directly and treats the source as untrusted', () => {
   const text = render('import-skill', FILLED_INVOCATIONS['import-skill']);
+  assert.ok(!text.includes('propose_'), 'the MCP door has no propose tools');
   for (const required of [
-    'propose_skill_import',
+    'import_skill',
     'sourceUrl',
-    'confirm_workspace_change',
+    'replaceExisting',
     'untrusted',
   ]) assert.ok(text.includes(required), `import-skill must mention ${required}`);
-  assert.ok(
-    text.includes('Do not call import_skill'),
-    'import-skill must steer away from the Slack-only immediate import',
-  );
 });
 
 test('status reads the workspace and changes nothing', () => {

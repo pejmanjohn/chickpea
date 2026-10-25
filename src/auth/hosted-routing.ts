@@ -53,12 +53,11 @@ export interface HostedRouting<E extends PlatformEnv> {
   /** The installation's identity store; by default its TagStateStore. */
   identity?: (env: E) => IdentityStore;
   /**
-   * Client registration limits for the whole deployment, which every
-   * installation shares: set `maxClients` (default 1,000 public clients not
-   * used for 30 days) explicitly. Core's per-source window lives in a handler
-   * that here serves one request, so it never trips; the host throttles
-   * registration per source before calling.
+   * The host's per-source limit on client registration: a response that
+   * refuses this request, or undefined to let it through. Core keeps no
+   * per-source state on the shared path, so every host supplies one.
    */
+  throttleRegistration(request: Request): Promise<Response | undefined>;
   mcpRegistrationPolicy?: BetterAuthPublicHandlerInput['mcpRegistrationPolicy'];
 }
 
@@ -82,6 +81,7 @@ export type HostedRoute<E extends PlatformEnv> =
   | { kind: 'refused'; response?: Response };
 
 const MCP_PATH = '/mcp';
+const REGISTRATION_PATH = '/api/auth/oauth2/register';
 const SLACK_ACCOUNT = /^slack:([A-Za-z0-9]+):([A-Za-z0-9]+)$/;
 const SHARED_PATHS = new Set([
   '/api/auth',
@@ -102,15 +102,19 @@ export function isHostedSharedAuthPath(pathname: string): boolean {
  * Answers a request that belongs to no installation (Better Auth is shared:
  * one origin, secret and database), or returns undefined for the host to
  * route; every token it issues waits for the user's installation to admit
- * them. Run it before routeHostedRequest. Throttle client
- * registration (`POST /api/auth/oauth2/register`) per source before it: no
- * installation's limiter applies here (see `mcpRegistrationPolicy`).
+ * them. Run it before routeHostedRequest. Client registration passes the
+ * host's `throttleRegistration` first: no installation's limiter applies here.
  */
 export async function serveHostedSharedAuth<E extends PlatformEnv>(
   request: Request,
   routing: HostedRouting<E>,
 ): Promise<Response | undefined> {
-  if (!isHostedSharedAuthPath(new URL(request.url).pathname)) return undefined;
+  const { pathname } = new URL(request.url);
+  if (!isHostedSharedAuthPath(pathname)) return undefined;
+  if (request.method.toUpperCase() === 'POST' && pathname === REGISTRATION_PATH) {
+    const refused = await routing.throttleRegistration(request);
+    if (refused) return refused;
+  }
   const logins = hostedLogins(routing.environment, routing.readLogin);
   const handler = createBetterAuthPublicHandler({
     ...routing.environment,

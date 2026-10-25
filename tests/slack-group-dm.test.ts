@@ -45,6 +45,10 @@ const CHANNELS: Record<string, Record<string, unknown>> = {
     id: CONNECT_DM, name: 'mpdm-owner--partner-1', is_mpim: true, is_private: true,
     is_member: true, is_archived: false, is_shared: true, is_ext_shared: true,
   },
+  CPARTNERS: {
+    id: 'CPARTNERS', name: 'partners', is_channel: true, is_private: false, is_member: true,
+    is_archived: false, is_shared: true, is_ext_shared: true,
+  },
 };
 
 interface Harness {
@@ -62,6 +66,8 @@ interface Harness {
     threadTs?: string;
     eventId?: string;
     appMention?: boolean;
+    /** A `message` event's `channel_type`; `mpim` unless given. */
+    channelType?: string;
   }): Promise<void>;
 }
 
@@ -94,6 +100,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
     });
     for (const [agentId, channelId, channelIsPrivate] of [
       ['agent_ops', 'C1', false], ['agent_helper', 'C1', false], ['agent_secret', 'CPRIVATE', true],
+      ['agent_ops', 'CPARTNERS', false],
     ] as const) {
       await stores.config.putAgentChannelGrant({
         workspaceId: 'T1', channelId, agentId, status: 'active',
@@ -155,7 +162,7 @@ async function withHarness(run: (harness: Harness) => Promise<void>): Promise<vo
           eventTime: Math.floor(Number(message.ts)),
           event: message.appMention
             ? { type: 'app_mention', event_ts: message.ts, ...posted }
-            : { type: 'message', channel_type: 'mpim', event_ts: message.ts, ...posted },
+            : { type: 'message', channel_type: message.channelType ?? 'mpim', event_ts: message.ts, ...posted },
         }, undefined, gateway, {
           stores,
           enqueueTurn: async (job) => {
@@ -314,6 +321,22 @@ test('a group DM shared with another organization gets no Agent, Chickpea includ
     assert.deepEqual(harness.posts.map(({ operation, input }) => [operation, input.channel, input.text]), [
       ['chat.postEphemeral', CONNECT_DM, NOT_AVAILABLE],
       ['chat.postEphemeral', CONNECT_DM, NOT_AVAILABLE],
+    ]);
+  });
+});
+
+test('a Channel turn records only whether Slack says the Channel is shared beyond the workspace', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ channel: 'C1', ts: '1800001020.000100', text: '<@UBOT> help', appMention: true });
+    await harness.deliver({ channel: 'CPARTNERS', ts: '1800001030.000100', text: '<@UBOT> help', appMention: true });
+    // A Channel message names its kind, so only the routed Agent's Channel lookup reads the facts.
+    await harness.deliver({ channel: 'C1', ts: '1800001040.000100', text: `${OPS} help`, channelType: 'channel' });
+    await harness.deliver({ channel: 'CPARTNERS', ts: '1800001050.000100', text: `${OPS} help`, channelType: 'channel' });
+    assert.deepEqual(harness.jobs.map((job) => [job.turn.channelId, job.turn.source, job.turn.sharedChannel]), [
+      ['C1', 'app_mention', false],
+      ['CPARTNERS', 'app_mention', true],
+      ['C1', 'agent_mention', false],
+      ['CPARTNERS', 'agent_mention', true],
     ]);
   });
 });
