@@ -3,7 +3,12 @@ import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
 import { MODEL_EFFORTS, modelEffortsFor, type ModelEffort } from './model-effort.ts';
 import { addBuiltinProviderModelOverlay, builtinProviderModelOverlay } from './pi-provider.ts';
-import { listProviderModels, type ProviderModel } from './provider-models.ts';
+import {
+  listProviderModels,
+  ProviderModelsUnavailableError,
+  ProviderUnreachableError,
+  type ProviderModel,
+} from './provider-models.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 
@@ -148,7 +153,10 @@ export async function openRouterModelEfforts(
   let models: ProviderModel[];
   try {
     ({ models } = await listProviderModels('openrouter', { ...(env ? { env } : {}), store: settings }));
-  } catch {
+  } catch (error) {
+    // Admin pages project efforts for every Agent; an OpenRouter outage shows
+    // no setting instead of failing the page.
+    if (!(error instanceof ProviderModelsUnavailableError || error instanceof ProviderUnreachableError)) throw error;
     const overlay = builtinProviderModelOverlay('openrouter', modelId);
     return overlay ? modelEffortsFor(overlay) : [];
   }

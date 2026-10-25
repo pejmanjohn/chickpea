@@ -20,7 +20,7 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
-import type { modelEffortChoiceError } from '../config/model-effort-capability.ts';
+import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
 import {
   resolveProviderRuntimeImpact,
@@ -262,7 +262,7 @@ export interface WorkspaceManagementServiceInput {
   modelEffortChoice?: (
     model: string | undefined,
     effort: ModelEffort,
-  ) => ReturnType<typeof modelEffortChoiceError>;
+  ) => Promise<ModelEffortChoice>;
   providerCredentialRevision?: (
     providerId: ManagedProviderId,
   ) => Promise<number>;
@@ -4368,7 +4368,6 @@ export class WorkspaceManagementService {
         }
         if (operation.patch.modelEffort) {
           const model = operation.patch.model === undefined ? before.model : operation.patch.model ?? undefined;
-          // Chickpea can pin no model, so it can pin no effort either.
           await this.assertModelEffortChoice(before.kind === 'system' ? undefined : model, operation.patch.modelEffort);
         }
         const patch = projectManagementAgentPatch(before, operation.patch);

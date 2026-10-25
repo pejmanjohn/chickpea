@@ -1,6 +1,7 @@
 import { loadModelCatalog, resolveActiveCatalogRoute } from '../model-catalog/index.ts';
 import { getBuiltinModel } from '../model-catalog/pi-builtin-models.ts';
 import type { ModelAuthLane } from '../model-catalog/types.ts';
+import { providerPrefix } from './model-access.ts';
 import { modelEffortsFor, type ModelEffort } from './model-effort.ts';
 import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import { openRouterModelEfforts } from './openrouter-runtime-model.ts';
@@ -24,17 +25,16 @@ export async function resolveModelEfforts(
 ): Promise<ModelEffort[]> {
   // Curated GLM models run with thinking forced off whatever is selected.
   if (thinkingLevelForModel(canonicalModel) === 'off') return [];
-  const separator = canonicalModel.indexOf('/');
-  const provider = separator > 0 ? canonicalModel.slice(0, separator) : '';
-  const modelId = canonicalModel.slice(separator + 1);
+  const provider = providerPrefix(canonicalModel);
+  const modelId = canonicalModel.slice(provider.length + 1);
   switch (provider) {
     case 'anthropic':
       return catalogEfforts(canonicalModel, 'anthropic_api_key', dependencies);
+    // The Node subscription provider drops `max`; no live turn has proven the
+    // Cloudflare plan accepts it.
     case 'openai':
       return await resolveOpenAiAuthMethod(dependencies.settings) === 'api_key'
         ? catalogEfforts(canonicalModel, 'openai_api_key', dependencies)
-        // The Node subscription provider drops `max`; no live turn has proven
-        // the Cloudflare plan accepts it.
         : catalogEfforts(canonicalModel, 'openai_subscription', dependencies, 'xhigh');
     case 'openrouter':
       return openRouterModelEfforts(canonicalModel, dependencies.env, dependencies.settings);
@@ -64,13 +64,14 @@ async function catalogEfforts(
 }
 
 export type ModelEffortRejection = 'effort_not_supported' | 'effort_requires_model';
+export type ModelEffortChoice = { code: ModelEffortRejection; message: string } | undefined;
 
 /** Why a named effort cannot ride with `model`; every write path checks here. */
 export async function modelEffortChoiceError(
   model: string | undefined,
   effort: ModelEffort,
   dependencies: ModelEffortDependencies,
-): Promise<{ code: ModelEffortRejection; message: string } | undefined> {
+): Promise<ModelEffortChoice> {
   if (!model) {
     return { code: 'effort_requires_model', message: 'Choose a model before choosing an effort.' };
   }
