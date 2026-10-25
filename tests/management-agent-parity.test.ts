@@ -972,9 +972,10 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
     const approveWithResult = async (
       result: ManagementApplyResult,
       outboxOverride?: ManagementReceiptOutboxRecord,
+      channelId: string = approvalTurn.channelId,
     ) =>
       executeHostSlackManagementApproval({
-        turn: approvalTurn,
+        turn: { ...approvalTurn, channelId },
         assignment: approvalAssignment,
         turnJobId: 'turn_CREATION_REACH_APPROVE',
         proposalId,
@@ -1033,6 +1034,17 @@ test('creation follow-on approval keeps Chickpea ownership until the exact propo
       ),
       undefined,
       'a runtime persona fallback cannot transfer the thread after approval',
+    );
+
+    await approveWithResult(completedResult, {
+      ...welcome,
+      destination: { ...welcome.destination, channelId: 'C_CREATION_GROUP_DM' },
+      deliveryRef: welcome.deliveryRef!.replace(welcome.destination.channelId, 'C_CREATION_GROUP_DM'),
+    }, 'C_CREATION_GROUP_DM');
+    assert.equal(
+      await f.config.getAgentThreadRoute(welcome.destination.workspaceId, 'C_CREATION_GROUP_DM', threadTs),
+      undefined,
+      'approving a creation from a group DM leaves the thread with Chickpea',
     );
 
     await approveWithResult(completedResult);
