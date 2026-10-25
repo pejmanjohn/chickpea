@@ -6,6 +6,7 @@ import {
   CONFIG_CHICKPEA_EXTENSION_MIGRATION,
   CONFIG_CHICKPEA_ROUTING_MIGRATION,
   CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+  CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION,
   CONFIG_MODEL_ROLE_MIGRATION,
   CONFIG_SCHEMA_MARKER,
   CONFIG_SCHEMA_VERSION,
@@ -500,6 +501,108 @@ test('credential migration preserves connection-account OAuth keys when an Agent
       db.get('SELECT 1 AS present FROM app_settings WHERE key = ?', retiredKey),
       undefined,
     );
+  } finally {
+    db.close();
+  }
+});
+
+const CURRENT_MCP_REF = 'connection_cccccccccccccccccccccccccccccccc';
+const CURRENT_API_REF = 'connection_dddddddddddddddddddddddddddddddd';
+// Legacy Agent-level secrets of a live Agent and of one deleted before the update.
+const LEGACY_AGENT_SECRET_KEYS = [
+  'mcp.agent_default.docs.bearer',
+  'mcp.agent_default.docs.header.X-Api-Key',
+  'mcp.agent_default.docs.oauth.tokens',
+  'connector.agent_default.billing.credential',
+  'connector.agent_default.billing.oauth.refresh-lease',
+  'mcp.agent_gone.m1.bearer',
+  'mcp.agent_gone.m1.header.x-team',
+  'mcp.agent_gone.m1.oauth.client',
+  'mcp.agent_gone.m1.oauth.registration-lease',
+  'connector.agent_gone.a1.credential',
+  'connector.agent_gone.a1.oauth.pending',
+  'connector.agent_gone.a1.oauth.tokens',
+  // Connection IDs and header names saved through the management API may contain dots.
+  'mcp.agent_default.team.docs.bearer',
+  'mcp.agent_default.docs.header.X.Trace',
+  'connector.agent_gone.v1.api.credential',
+];
+const NON_LEGACY_SECRET_KEYS = [
+  'mcp.connection_0f1e.account.oauth.tokens',
+  'connector.connection_0f1e.account.oauth.client',
+  'connection-account.secret_team.credential',
+  'connection-account.secret_member.credential',
+  `mcp.agent_default.credential.${CURRENT_MCP_REF}.bearer`,
+  `mcp.agent_default.credential.${CURRENT_MCP_REF}.header.x-api-key`,
+  `mcp.agent_default.credential.${CURRENT_MCP_REF}.oauth.tokens`,
+  `connector.agent_default.credential.${CURRENT_API_REF}.credential`,
+  `connector.agent_default.credential.${CURRENT_API_REF}.oauth.tokens`,
+  'mcp.oauth-client.meta-ads',
+  'mcp-secret-cleanup.agent_gone',
+  'provider.openai.apiKey',
+];
+
+function seedAppSettings(db: StateDb, keys: readonly string[]): void {
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)',
+  );
+  for (const key of keys) {
+    db.run('INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, 1)', key, 'synthetic-secret');
+  }
+}
+
+function settingKeys(db: StateDb): string[] {
+  return db.all('SELECT key FROM app_settings ORDER BY key').map((row) => String(row.key));
+}
+
+function appliedMigrations(db: StateDb): Array<Record<string, unknown>> {
+  return db.all('SELECT id, applied_at FROM config_migrations ORDER BY id');
+}
+
+test('the first start removes every legacy Agent secret, including those of deleted Agents', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    seedAppSettings(db, [...LEGACY_AGENT_SECRET_KEYS, ...NON_LEGACY_SECRET_KEYS]);
+
+    new ConfigStoreLogic(db, { agents: [] });
+    assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
+    const migrations = appliedMigrations(db).map(({ id }) => id);
+    assert.ok(migrations.includes(CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION));
+    assert.ok(migrations.includes(CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION));
+
+    const before = JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) });
+    new ConfigStoreLogic(db, { agents: [] });
+    assert.equal(JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) }), before);
+  } finally {
+    db.close();
+  }
+});
+
+test('an installation that already ran the credential-binding step gets the legacy secret sweep', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    new ConfigStoreLogic(db, { agents: [] });
+    // As the binding step alone left it: an Agent deleted before the update
+    // kept its secrets because its row was already gone.
+    db.run('DELETE FROM config_migrations WHERE id = ?', CONFIG_LEGACY_AGENT_SECRET_SWEEP_MIGRATION);
+    seedAppSettings(db, [...LEGACY_AGENT_SECRET_KEYS, ...NON_LEGACY_SECRET_KEYS]);
+    const bindingApplied = db.get(
+      'SELECT applied_at FROM config_migrations WHERE id = ?',
+      CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+    );
+
+    new ConfigStoreLogic(db, { agents: [] });
+    assert.deepEqual(settingKeys(db), [...NON_LEGACY_SECRET_KEYS].sort());
+    assert.deepEqual(db.get(
+      'SELECT applied_at FROM config_migrations WHERE id = ?',
+      CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
+    ), bindingApplied);
+
+    const before = JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) });
+    new ConfigStoreLogic(db, { agents: [] });
+    assert.equal(JSON.stringify({ keys: settingKeys(db), migrations: appliedMigrations(db) }), before);
   } finally {
     db.close();
   }
