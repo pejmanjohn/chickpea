@@ -144,6 +144,7 @@ import {
   type ManagementActorContext,
   type ImportSkillInput,
   type ImportSkillResult,
+  type ManageAgentSkillAction,
   type ManageAgentSkillInput,
   type ManageAgentSkillResult,
   type SkillActionReceiptMetadata,
@@ -565,8 +566,13 @@ export class WorkspaceManagementService {
     };
   }
 
-  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult> {
+  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult | ProposeSkillImportResult> {
     const actor = await this.requireLiveActor(input.context);
+    // No message of the person's asked for it, so the import waits for their approval.
+    if (startedByAgentAsk(actor)) {
+      const { replaceExisting: _replaceExisting, ...proposal } = input;
+      return await this.proposeSkillImport(proposal);
+    }
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
     const replay = await this.stores.management.getRequest(replayOperationId);
@@ -640,7 +646,9 @@ export class WorkspaceManagementService {
     };
   }
 
-  async manageAgentSkill(input: ManageAgentSkillInput): Promise<ManageAgentSkillResult> {
+  async manageAgentSkill(
+    input: ManageAgentSkillInput,
+  ): Promise<ManageAgentSkillResult | ProposeWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     const agentId = input.agentId ??
       (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
@@ -654,6 +662,19 @@ export class WorkspaceManagementService {
       target: { kind: 'agent', id: agentId },
     });
     const agent = await this.requireEditableAgent(actor, agentId);
+    if (startedByAgentAsk(actor)) {
+      // No message of the person's asked for it, so the change waits for their approval.
+      const change = skillActionChange(agent, input.action, input.skillName);
+      if (change.kind === 'change') {
+        return await this.proposeWorkspaceChanges({
+          context: input.context,
+          idempotencyKey: input.idempotencyKey,
+          guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+          authoringReason: 'agent_edit',
+          operations: [change.operation],
+        });
+      }
+    }
     if (actor.origin.kind === 'slack' && !await this.requesterAuthorizedSkillChange(actor, {
       kind: input.action,
       name: input.skillName,
@@ -704,45 +725,16 @@ export class WorkspaceManagementService {
       });
     }
 
-    const skillIndex = agent.skills.findIndex(({ name }) => name === input.skillName);
-    if (skillIndex < 0) {
-      return this.persistUnchangedManagedAgentSkill(
-        actor,
-        input,
-        agent,
-        operationId,
-        'missing',
-      );
+    const change = skillActionChange(agent, input.action, input.skillName);
+    if (change.kind !== 'change') {
+      return this.persistUnchangedManagedAgentSkill(actor, input, agent, operationId, change.kind);
     }
-    const currentSkill = agent.skills[skillIndex]!;
-    if (input.action !== 'remove' && currentSkill.enabled === (input.action === 'enable')) {
-      return this.persistUnchangedManagedAgentSkill(
-        actor,
-        input,
-        agent,
-        operationId,
-        'already_set',
-      );
-    }
-
-    const skills = input.action === 'remove'
-      ? agent.skills.filter((_, index) => index !== skillIndex)
-      : agent.skills.map((skill, index) => index === skillIndex
-        ? { ...skill, enabled: input.action === 'enable' }
-        : skill);
-    const metadata = {
+    return this.applyManagedAgentSkill(input, operationId, change.operation, {
       action: input.action,
       name: input.skillName,
       agentName: agent.name,
       outcome: 'updated',
-    } as const;
-    return this.applyManagedAgentSkill(input, operationId, {
-      itemId: `skill-${input.action}`,
-      kind: 'update_agent',
-      agentId,
-      expectedRevision: agent.revision,
-      patch: { skills },
-    }, metadata);
+    });
   }
 
   private async applyManagedAgentSkill(
@@ -1711,13 +1703,6 @@ export class WorkspaceManagementService {
   ): Promise<ApplyWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
-    if (!input.approvalBasis && startedByAgentAsk(actor) &&
-        requestedOperations.some(({ kind }) => PERSON_APPROVED_ON_ASK.has(kind))) {
-      throw new ManagementError(
-        'forbidden',
-        'Another Agent\'s ask started this turn, so scheduled work and memory change only through a proposal the person approves. Send every operation to propose_workspace_changes.',
-      );
-    }
     assertBaseAgentCreationContract(requestedOperations);
     assertStandaloneBaseAgentCreation(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
@@ -1845,26 +1830,41 @@ export class WorkspaceManagementService {
             disposition: 'failed',
             code: policy.reason,
           });
-        } else if (policy.posture === 'confirmation') {
-          const frozen = actor.origin.kind === 'slack'
-            ? await this.freezeSlackConfirmation(actor, request, index, progress)
-            : undefined;
-          // A typed "approve" resolves the newest pending change set before the
-          // Agent reads it, so an older card must not take this proposal's place.
-          if (actor.origin.kind === 'slack' && !frozen) await this.retirePendingChangeSet(actor);
-          const pending = frozen
-            ? { proposalId: frozen.changeSet.proposalId }
-            : await this.createProposal(actor, operation, policy.reason, request.operationId)
-              .then(({ proposalId, summary }) => ({ proposalId, warning: summary }));
+        } else if (actor.origin.kind === 'slack' && operation.kind === 'request_setup' &&
+            policy.posture === 'confirmation') {
+          progress = appendOutcome(progress, index, {
+            itemId: operation.itemId,
+            operationKind: operation.kind,
+            disposition: 'failed',
+            code: policy.reason,
+            instruction: SLACK_SETUP_APPROVAL_UNAVAILABLE,
+          });
+        } else if (actor.origin.kind === 'slack' && (policy.posture === 'confirmation' ||
+            (heldForPersonOnAsk(actor, input.approvalBasis) && operation.kind !== 'request_setup'))) {
+          const frozen = await this.freezeSlackConfirmation(actor, request, index, progress);
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'confirmation_required',
-            ...pending,
+            proposalId: frozen.changeSet.proposalId,
           });
-          for (const refused of frozen?.refused ?? []) {
+          for (const refused of frozen.refused) {
             progress = appendOutcome(progress, refused.index, refused.outcome);
           }
+        } else if (policy.posture === 'confirmation') {
+          const { proposalId, summary } = await this.createProposal(
+            actor,
+            operation,
+            policy.reason,
+            request.operationId,
+          );
+          progress = appendOutcome(progress, index, {
+            itemId: operation.itemId,
+            operationKind: operation.kind,
+            disposition: 'confirmation_required',
+            proposalId,
+            warning: summary,
+          });
         } else if (operation.kind === 'request_setup') {
           const setup = await this.issueSetup(actor, operation);
           progress = appendOutcome(progress, index, {
@@ -1964,13 +1964,14 @@ export class WorkspaceManagementService {
   }
 
   /**
-   * In Slack the Approve card and a typed "approve" find only change sets, so
-   * the operation that needs approval and the rest of the call become one.
-   * A later operation the requester can't make fails on its own, as it would
-   * have in the call. A change set can't hold a setup request, whose approval
-   * returns a one-time link only the Agent's reply can carry, or a second
-   * change to an object it already changes. Such a call keeps the single-write
-   * proposal.
+   * In Slack only the person approves, and the Approve card and a typed
+   * "approve" find only change sets, so the operation that waits and the rest
+   * of the call become one. A later operation the requester can't make fails
+   * on its own, as it would have in the call. A setup request waits for after
+   * the approval, because its one-time link reaches the person only in the
+   * Agent's reply. When a later change conflicts with the first one's target
+   * revisions, as a second change to the same object does, it waits for its
+   * own request after this approval.
    */
   private async freezeSlackConfirmation(
     actor: LiveManagementActor,
@@ -1980,34 +1981,42 @@ export class WorkspaceManagementService {
   ): Promise<{
     changeSet: ManagementChangeSetProposalRecord;
     refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
-  } | undefined> {
+  }> {
     const tail = confirmationTail(request.operations, index, progress.outcomes);
-    if (tail.some(({ kind }) => kind === 'request_setup')) return undefined;
     const proposalAgentIds = new Set(tail.flatMap((operation) =>
       operation.kind === 'create_agent' ? [operation.agent.id] : []
     ));
-    const held = [tail[0]!];
+    const held = [{ index, operation: tail[0]! }];
     const refused: Array<{ index: number; outcome: ManagementItemOutcome }> = [];
     for (const [offset, operation] of tail.entries()) {
       if (offset === 0) continue;
-      const outcome = await this.refusedLaterOperation(actor, operation, proposalAgentIds);
+      const outcome = operation.kind === 'request_setup'
+        ? waitingOutcome(operation, 'setup_after_approval', SETUP_AFTER_APPROVAL)
+        : await this.refusedLaterOperation(actor, operation, proposalAgentIds);
       if (outcome) refused.push({ index: index + offset, outcome });
-      else held.push(operation);
+      else held.push({ index: index + offset, operation });
     }
+    const freeze = (operations: ManagementOperation[]) => this.createChangeSet(actor, operations, {
+      idempotencyKey: `confirmation:${request.operationId}`,
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      authoringReason: 'agent_edit',
+      requestOperationId: request.operationId,
+    });
     try {
-      const changeSet = await this.createChangeSet(actor, held, {
-        idempotencyKey: `confirmation:${request.operationId}`,
-        guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
-        authoringReason: 'agent_edit',
-        requestOperationId: request.operationId,
-      });
-      return { changeSet, refused };
+      return { changeSet: await freeze(held.map(({ operation }) => operation)), refused };
     } catch (error) {
-      if (held.length > 1 && error instanceof ManagementError && error.code === 'revision_conflict') {
-        return undefined;
+      if (held.length === 1 || !(error instanceof ManagementError && error.code === 'revision_conflict')) {
+        throw error;
       }
-      throw error;
     }
+    const conflicting = held.slice(1).map(({ index: at, operation }) => ({
+      index: at,
+      outcome: waitingOutcome(operation, 'revision_conflict', CHANGE_AFTER_APPROVAL),
+    }));
+    return {
+      changeSet: await freeze([held[0]!.operation]),
+      refused: [...refused, ...conflicting].sort((left, right) => left.index - right.index),
+    };
   }
 
   /** The outcome the call would give a later operation the requester can't make, or none. */
@@ -2028,18 +2037,6 @@ export class WorkspaceManagementService {
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
       return { ...item, disposition: 'failed', code: mutationErrorCode(error) };
-    }
-  }
-
-  private async retirePendingChangeSet(actor: LiveManagementActor): Promise<void> {
-    const pending = await this.stores.management.getActiveChangeSetProposal({
-      organizationId: actor.organizationId,
-      actorUserId: actor.userId,
-      actorMembershipId: actor.membershipId,
-      approvalScopeKey: managementApprovalScopeKey(actor),
-    });
-    if (pending?.status === 'pending') {
-      await this.stores.management.markChangeSetProposalStale(pending.proposalId, this.now());
     }
   }
 
@@ -2116,10 +2113,7 @@ export class WorkspaceManagementService {
       );
     }
     if (requestedOperations.some(({ kind }) => kind === 'request_setup')) {
-      throw new ManagementError(
-        'invalid_request',
-        'Prepare connector or repository setup separately after the reviewed Agent change.',
-      );
+      throw new ManagementError('invalid_request', SETUP_AFTER_APPROVAL);
     }
     const operations = requestedOperations;
     const proposal = await this.createChangeSet(actor, operations, {
@@ -2256,10 +2250,10 @@ export class WorkspaceManagementService {
     input: ConfirmWorkspaceChangeInput,
   ): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
-    if (startedByAgentAsk(actor)) {
+    if (actor.origin.kind === 'slack' && actor.origin.approvedProposalId !== input.proposalId) {
       throw new ManagementError(
         'forbidden',
-        'Only the person\'s own message can approve this change. Ask them to approve it in a reply.',
+        'Only the person can approve this change, with the Approve button or by replying "approve".',
       );
     }
     const changeSet = await this.stores.management.getChangeSetProposal(input.proposalId);
@@ -6684,13 +6678,30 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 }
 
 /**
- * Writes a Slack turn another Agent's ask started applies only through a
- * proposal the person approves. Schedule actions admitted on the person's
- * message pass an approval basis, including on retries that no longer carry it.
+ * No message of the person's asked for a write on a turn another Agent's ask
+ * started, so every write waits in a change set the person approves. Schedule
+ * actions admitted on the person's own message pass an approval basis,
+ * including on retries that no longer carry it.
  */
-export const PERSON_APPROVED_ON_ASK: ReadonlySet<ManagementOperation['kind']> = new Set([
-  'save_routine', 'control_routine', 'run_routine', 'update_agent_memory',
-]);
+function heldForPersonOnAsk(
+  actor: LiveManagementActor,
+  approvalBasis: ApplyWorkspaceChangesInput['approvalBasis'],
+): boolean {
+  return startedByAgentAsk(actor) && approvalBasis === undefined;
+}
+
+const SETUP_AFTER_APPROVAL = 'Prepare connector or repository setup separately after the reviewed Agent change.';
+const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
+const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
+
+/** An operation a Slack change set leaves for after the person's approval. */
+function waitingOutcome(
+  operation: ManagementOperation,
+  code: string,
+  instruction: string,
+): ManagementItemOutcome {
+  return { itemId: operation.itemId, operationKind: operation.kind, disposition: 'skipped', code, instruction };
+}
 
 /**
  * A Slack turn another Agent's ask started: it carries no requester text,
@@ -6702,7 +6713,9 @@ export function startedByAgentAsk(actor: Pick<ManagementActorContext, 'origin'>)
   return actor.origin.kind === 'slack' && actor.origin.requestText === undefined;
 }
 
-export function slackManagementOrigin(signal: SlackManagementSignal): ManagementOrigin {
+export function slackManagementOrigin(
+  signal: SlackManagementSignal,
+): Extract<ManagementOrigin, { kind: 'slack' }> {
   return {
     kind: 'slack',
     workspaceId: signal.workspaceId,
@@ -6711,6 +6724,7 @@ export function slackManagementOrigin(signal: SlackManagementSignal): Management
     messageTs: signal.messageTs,
     eventId: signal.eventId,
     ...(signal.requesterText === undefined ? {} : { requestText: signal.requesterText }),
+    ...(signal.requesterTextSource ? { requestTextSource: signal.requesterTextSource } : {}),
     ...(signal.conversationKind ? { conversationKind: signal.conversationKind } : {}),
     agentId: signal.agentId,
   };
@@ -6928,6 +6942,33 @@ function reversibleLocalSkillChange(
   return undefined;
 }
 
+function skillActionChange(
+  agent: CustomAgentConfig,
+  action: ManageAgentSkillAction,
+  skillName: string,
+):
+  | { kind: 'change'; operation: Extract<ManagementOperation, { kind: 'update_agent' }> }
+  | { kind: 'missing' | 'already_set' } {
+  const skillIndex = agent.skills.findIndex(({ name }) => name === skillName);
+  if (skillIndex < 0) return { kind: 'missing' };
+  if (action !== 'remove' && agent.skills[skillIndex]!.enabled === (action === 'enable')) {
+    return { kind: 'already_set' };
+  }
+  const skills = action === 'remove'
+    ? agent.skills.filter((_, index) => index !== skillIndex)
+    : agent.skills.map((skill, index) => index === skillIndex ? { ...skill, enabled: action === 'enable' } : skill);
+  return {
+    kind: 'change',
+    operation: {
+      itemId: `skill-${action}`,
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { skills },
+    },
+  };
+}
+
 function explicitRequesterSkillChange(
   requestText: string | undefined,
   systemSlackRoute: boolean,
@@ -7029,11 +7070,14 @@ function slackCommandAddress(
 /**
  * The person's Slack message without the routed Agent's leading mention, when
  * the message is addressed to that Agent. A message that mentions anyone else
- * is addressed to them, so no explicit-command check reads it.
+ * is addressed to them, so no explicit-command check reads it, and a click's
+ * host-written text quotes the surface, not a command the person typed.
  */
 function requestAddressedHere(actor: LiveManagementActor): string | undefined {
   const { origin } = actor;
-  if (origin.kind !== 'slack' || !origin.requestText) return undefined;
+  if (origin.kind !== 'slack' || !origin.requestText || origin.requestTextSource === 'click') {
+    return undefined;
+  }
   const text = stripResolvedSlackCommandAddress(origin.requestText, actor.commandAddress);
   return /<[@!][^>]*>/.test(text) ? undefined : text;
 }
@@ -7049,11 +7093,11 @@ function assertExplicitSkillImportRequest(
   actor: LiveManagementActor,
   input: ImportSkillInput,
 ): void {
-  if (actor.origin.kind !== 'slack' || !actor.origin.requestText ||
-      !requesterTextContainsExactSource(actor.origin.requestText, input.source)) {
+  const requestText = requestAddressedHere(actor);
+  if (!requestText || !requesterTextContainsExactSource(requestText, input.source)) {
     throw new ManagementError(
       'invalid_request',
-      'Immediate skill import requires the exact GitHub source in the current requester message. No change was made.',
+      'Immediate skill import requires the exact GitHub source in a message the requester typed to this Agent. No change was made.',
     );
   }
 }

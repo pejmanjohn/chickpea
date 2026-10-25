@@ -305,7 +305,7 @@ test('replace and undo count only in a message addressed to this Agent', async (
       const refused = await replace(words);
       assert.equal(refused.ok, false, words);
       assert.match((refused as { ok: false; error: { message: string } }).error.message,
-        /Replacement needs a new requester message/, words);
+        /exact GitHub source in a message the requester typed to this Agent/, words);
       assert.deepEqual(await skills(), ORIGINAL_SKILLS, words);
     }
     assert.equal((await replace(command)).ok, true);

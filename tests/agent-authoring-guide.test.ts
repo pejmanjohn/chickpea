@@ -233,7 +233,8 @@ test('Slack tool selection routes destructive schedule deletion through confirma
   assert.match(selectionInstruction, /first call inspect_routines/i);
   assert.match(selectionInstruction, /delete_routine operation to propose_workspace_changes/i);
   assert.match(selectionInstruction, /show presentation\.slack/i);
-  assert.match(selectionInstruction, /wait for explicit requester approval before calling confirm_workspace_change/i);
+  assert.match(selectionInstruction, /the routine is deleted only when the person approves it/i);
+  assert.doesNotMatch(selectionInstruction, /confirm_workspace_change/, 'Slack has no confirm tool to call');
   assert.match(selectionInstruction, /Never use apply_workspace_changes for routine deletion/i);
   assert.match(scheduleActionDescription, /Do not use this tool to delete scheduled work/i);
   assert.match(scheduleActionDescription, /deleting a routine uses the existing proposal/i);

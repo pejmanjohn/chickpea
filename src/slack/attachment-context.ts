@@ -40,6 +40,7 @@ const CARRIED_SLACK_TURN_ATTRIBUTE_KEYS = [
   'turnJobId',
   'conversationKind',
   'requesterText',
+  'requesterTextSource',
   'requesterTimezone',
   // Every render of the turn must address the same `img:N` handles, so a
   // referenced image still resolves after the analysis.

@@ -49,6 +49,7 @@ import type {
 import { ManagementError } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
 import { appMention, channelThreadMessage } from './helpers/slack-fixtures.ts';
 
 const agentInput = {
@@ -349,11 +350,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       },
     });
 
-    const wrongThread = await invokeSlackWorkspaceManagementTool({
+    const wrongThread = await approveAsPerson({
       signal: { ...signal, threadTs: '100.9' },
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: result.proposalId },
     });
     assert.equal(wrongThread.ok, false);
@@ -378,11 +378,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
       reason: 'substantive_request',
     });
 
-    const confirmed = await invokeSlackWorkspaceManagementTool({
+    const confirmed = await approveAsPerson({
       signal,
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: result.proposalId },
     });
     assert.equal(confirmed.ok, true);
@@ -420,11 +419,10 @@ test('Slack and MCP share exact proposal semantics while preserving origin bindi
     assert.equal(oversizedResult.presentation.slack.includes(longInstruction), false);
     assert.equal((await f.config.getAgent(agent.id)).instructions, updated.instructions);
 
-    const oversizedConfirmed = await invokeSlackWorkspaceManagementTool({
+    const oversizedConfirmed = await approveAsPerson({
       signal,
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: oversizedResult.proposalId },
     });
     assert.equal(oversizedConfirmed.ok, true);
@@ -577,7 +575,7 @@ test('a top-level DM approval confirms the same pending proposal without model c
       management: f.management,
     }), undefined);
 
-    const confirmed = await invokeSlackWorkspaceManagementTool({
+    const confirmed = await approveAsPerson({
       signal: {
         ...proposalSignal,
         threadTs: '200.1',
@@ -587,7 +585,6 @@ test('a top-level DM approval confirms the same pending proposal without model c
       },
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId },
     });
 
@@ -1369,6 +1366,7 @@ test('a Channel-origin direct create atomically includes its trusted source-Chan
       threadTs: '1800000000.000001',
       conversationKind: 'channel',
       agentId: CHICKPEA_AGENT_ID,
+      requestText: 'Create a marketing Agent.',
     },
   };
   const service = new WorkspaceManagementService({
@@ -1539,7 +1537,7 @@ test('a Channel-origin create reports the Agent revision its source-Channel publ
       }],
     });
     const confirmed = await service.confirmWorkspaceChange({
-      context,
+      context: withPersonApproval(context, proposed.proposalId),
       proposalId: proposed.proposalId,
     });
     assert.equal(confirmed.status, 'completed');
@@ -3275,7 +3273,7 @@ test('a pending workspace proposal can be approved after the former expiration w
     now += 16 * 60_000 + 48_000;
 
     const applied = await service.confirmWorkspaceChange({
-      context,
+      context: withPersonApproval(context, proposed.proposalId),
       proposalId: proposed.proposalId,
     });
 
@@ -3866,9 +3864,10 @@ test('confirmed publication may import a live Slack Channel that is not in Chick
       }],
     });
     assert.equal(proposed.status, 'confirmation_required');
+    const proposalId = proposed.outcomes[0]!.proposalId!;
     const confirmed = await service.confirmWorkspaceChange({
-      context,
-      proposalId: proposed.outcomes[0]!.proposalId!,
+      context: withPersonApproval(context, proposalId),
+      proposalId,
     });
     assert.equal(confirmed.status, 'completed');
     assert.equal(

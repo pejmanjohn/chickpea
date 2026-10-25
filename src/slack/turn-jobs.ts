@@ -39,7 +39,7 @@ import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
-import { personRequestText } from './agent-asks.ts';
+import { personRequestText, personRequestTextSource } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
@@ -1546,6 +1546,7 @@ export class TurnJobStoreLogic {
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
       const requesterText = personRequestText(turn);
+      const requesterTextSource = personRequestTextSource(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -1566,6 +1567,7 @@ export class TurnJobStoreLogic {
             messageTs: turn.messageTs,
             turnJobId: id,
             ...(requesterText === undefined ? {} : { requesterText: requesterText.slice(0, 40_000) }),
+            ...(requesterTextSource ? { requesterTextSource } : {}),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
@@ -2721,6 +2723,7 @@ function parseSlackSignalMessage(
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
     'conversationKind',
     'requesterText',
+    'requesterTextSource',
     'requesterTimezone',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
@@ -2744,6 +2747,9 @@ function parseSlackSignalMessage(
     ...(attributes.requesterText === undefined
       ? {}
       : { requesterText: validateBoundedString(attributes.requesterText, 'Slack requester text', 40_000) }),
+    ...(attributes.requesterTextSource === undefined
+      ? {}
+      : { requesterTextSource: validateRequesterTextSource(attributes.requesterTextSource) }),
     ...(attributes.attachmentFileIds === undefined
       ? {}
       : {
@@ -2801,6 +2807,11 @@ function validateAdmittedListIds(value: unknown): string {
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
   if (value === 'channel' || value === 'im' || value === 'mpim') return value;
   throw new Error('Slack conversation kind is invalid.');
+}
+
+function validateRequesterTextSource(value: unknown): 'click' {
+  if (value === 'click') return value;
+  throw new Error('Slack requester text source is invalid.');
 }
 
 function validateAttachmentFileIds(value: unknown): string {

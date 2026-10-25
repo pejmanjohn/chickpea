@@ -32,6 +32,14 @@ export type ManagementOrigin =
       eventId?: string;
       /** Trusted current requester text from the Slack delivery, never model-authored. */
       requestText?: string;
+      /** The host wrote requestText to describe the person's click or form answer; they did not type it. */
+      requestTextSource?: 'click';
+      /**
+       * Set only by the Slack host when it resolved the person's typed
+       * "approve" or Approve click to this proposal for the current turn.
+       * Nothing the model sends, and nothing in the delivery, can carry it.
+       */
+      approvedProposalId?: string;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */

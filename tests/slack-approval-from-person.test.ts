@@ -7,7 +7,10 @@ import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type { ParsedSkillSource } from '../src/config/skill-import.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
-import { executeHostSlackManagementApproval } from '../src/management/slack-approval.ts';
+import {
+  executeHostSlackManagementApproval,
+  resolveSlackApprovalActor,
+} from '../src/management/slack-approval.ts';
 import {
   invokeSlackWorkspaceManagementTool,
   resolveSlackManagementActor,
@@ -158,6 +161,10 @@ test('an archive the model proposed in a person\'s turn applies only on the pers
       context: await resolveSlackManagementActor(later, f.identity),
       proposalId,
     }), forbidden, 'even on the person\'s "approve" turn, only the host applies it');
+    await assert.rejects(f.service.confirmWorkspaceChange({
+      context: await resolveSlackApprovalActor(later, f.identity, 'changeset_another'),
+      proposalId,
+    }), forbidden, 'the host\'s stamp covers only the proposal it resolved');
     assert.equal((await f.config.getAgent(desk.id)).lifecycle, 'active', 'nothing was archived');
 
     const approval = await hostApproves(chickpea, turn('approve'), proposalId);
@@ -205,6 +212,35 @@ test('on a turn another Agent\'s ask started, an instruction edit waits for the 
     assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
     assert.equal((await f.config.getAgent(desk.id)).instructions, EVIL_INSTRUCTIONS,
       'the person\'s approval applies exactly what the preview showed');
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup request behind a held change waits for after the approval instead of a proposal the Agent applies', async () => {
+  const { f, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-setup-tail');
+  try {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk, then set up our Anthropic key.')), 'apply_workspace_changes', {
+      idempotencyKey: 'compound-then-setup',
+      operations: [{
+        itemId: 'profile', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { description: 'Greets visitors.', instructions: 'Greet every visitor by name.' },
+      }, {
+        itemId: 'anthropic', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'anthropic' },
+      }],
+    });
+    const [held, setupItem] = outcomes(result);
+    assert.equal(held?.disposition, 'confirmation_required');
+    assert.match(held?.proposalId ?? '', /^changeset_/, 'the person approves a change set the host can resolve');
+    assert.equal(setupItem?.disposition, 'skipped');
+    assert.equal(setupItem?.code, 'setup_after_approval');
+    assert.equal(setupItem?.setupUrl, undefined, 'no setup link is issued before the approval');
+    assert.deepEqual((await f.management.getChangeSetProposal(held!.proposalId!))?.operations.map(({ itemId }) => itemId),
+      ['profile'], 'the change set holds only what the host can apply');
+
+    const approval = await hostApproves(chickpea, turn('approve'), held!.proposalId!);
+    assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
+    assert.equal((await f.config.getAgent(desk.id)).description, 'Greets visitors.');
   } finally {
     f.close();
   }

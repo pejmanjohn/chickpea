@@ -12,7 +12,7 @@ import { conversationThreadTs, slackConversationKind } from '../slack/thread-key
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
 import { agentWelcomeInGroupDm } from './receipts.ts';
-import { WorkspaceManagementService } from './service.ts';
+import { slackManagementOrigin, WorkspaceManagementService } from './service.ts';
 import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
@@ -110,6 +110,20 @@ export async function resolveHostSlackManagementProposal(input: {
   return proposal;
 }
 
+/**
+ * The person's approval of one proposal, which the host resolved from their
+ * typed "approve" or Approve click. A Slack confirmation applies only with
+ * this stamp, and no model tool path can produce it.
+ */
+export async function resolveSlackApprovalActor(
+  signal: SlackManagementSignal,
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>,
+  proposalId: string,
+): Promise<ManagementActorContext> {
+  const actor = await resolveSlackManagementActor(signal, identity);
+  return { ...actor, origin: { ...slackManagementOrigin(signal), approvedProposalId: proposalId } };
+}
+
 export async function executeHostSlackManagementApproval(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
@@ -121,7 +135,7 @@ export async function executeHostSlackManagementApproval(input: {
 }): Promise<HostSlackManagementApprovalResult> {
   const signal = slackManagementSignal(input.turn, input.assignment, input.turnJobId);
   try {
-    const actor = await resolveSlackManagementActor(signal, input.dependencies.identity);
+    const actor = await resolveSlackApprovalActor(signal, input.dependencies.identity, input.proposalId);
     const result = await input.dependencies.service.confirmWorkspaceChange({
       context: actor,
       proposalId: input.proposalId,

@@ -86,7 +86,6 @@ const FILE_REPAIR_TOOLS = new Set([
 const DRAFT_REPLACING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'update_agent_memory',
   'apply_workspace_changes',
-  'confirm_workspace_change',
   'undo_workspace_change',
 ]);
 

@@ -55,53 +55,6 @@ test('Cloudflare Slack management sends one complete requester-bound state RPC',
   }]);
 });
 
-test('Cloudflare Slack management keeps failed-confirmation turn guards local', async () => {
-  const calls: unknown[] = [];
-  const persisted: unknown[] = [];
-  const guard = createSlackManagementTurnGuard(
-    SIGNAL.turnJobId,
-    { turnJobId: SIGNAL.turnJobId },
-    (state) => persisted.push(state),
-  );
-  const stub = {
-    async workspaceManagementInvoke(request: unknown) {
-      calls.push(request);
-      return {
-        ok: false as const,
-        error: { code: 'proposal_stale', message: 'The proposal is stale.' },
-      };
-    },
-  };
-
-  const confirmation = await invokeCloudflareSlackWorkspaceManagementTool({
-    stub,
-    signal: SIGNAL,
-    name: 'confirm_workspace_change',
-    args: { proposalId: 'changeset_stale' },
-    turnGuard: guard,
-  });
-  assert.equal(confirmation.ok, false);
-  assert.deepEqual(persisted, [{
-    turnJobId: SIGNAL.turnJobId,
-    confirmationFailure: {
-      code: 'proposal_stale',
-      proposalId: 'changeset_stale',
-    },
-  }]);
-
-  const blocked = await invokeCloudflareSlackWorkspaceManagementTool({
-    stub,
-    signal: SIGNAL,
-    name: 'apply_workspace_changes',
-    args: { idempotencyKey: 'blocked-write', operations: [] },
-    turnGuard: guard,
-  });
-  assert.equal(blocked.ok, false);
-  if (blocked.ok) assert.fail('expected a guarded write failure');
-  assert.equal(blocked.error.code, 'fresh_approval_required');
-  assert.equal(calls.length, 1);
-});
-
 test('Cloudflare Slack management sanitizes an unavailable state RPC', async () => {
   const result = await invokeCloudflareSlackWorkspaceManagementTool({
     stub: {
