@@ -319,21 +319,37 @@ test('a Slack read of another conversation, which may be a Slack Connect one, ke
   ]);
   assert.equal(JSON.stringify(record).includes('partner notes'), false);
   for (const name of RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT) {
-    assert.ok(([...SLACK_READ_TOOL_NAMES, ...SLACK_LIST_TOOL_NAMES] as readonly string[]).includes(name), `${name} is a Slack tool`);
+    assert.ok((SLACK_READ_TOOL_NAMES as readonly string[]).includes(name), `${name} is a Slack reading tool`);
   }
 });
 
-test('a Slack List read, which says nothing of where the List is shared, keeps its call but not its result', () => {
+test('every Slack List tool, which says nothing of where its List is shared, keeps its call but not its output or error', () => {
   const list = JSON.stringify({ status: 'ok', list: { id: 'F0LIST1234', name: 'Partner launch' }, items: [{ task: 'partner notes' }] });
+  // A write's readback mismatch carries the item it read back.
+  const mismatch = JSON.stringify({ status: 'not_written', code: 'readback_mismatch', item: { task: 'partner notes' } });
+  const call = (name: string, result: { output?: string; error?: string }) => ({
+    kind: 'tool' as const, name, input: '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}', ...result,
+  });
   const record = buildRunReviewRecord(input({
     steps: [
-      { kind: 'tool', name: 'read_slack_list', input: '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}', output: list },
-      { kind: 'tool', name: 'read_slack_list_item', input: '{"itemId":"Rec1"}', output: list },
+      call('read_slack_list', { output: list }),
+      call('read_slack_list_item', { output: '{"status":"not_read"}' }),
+      call('create_slack_list_item', { output: mismatch }),
+      call('update_slack_list_item', { error: 'Slack readback differed: partner notes' }),
+      ...SLACK_LIST_TOOL_NAMES.map((name) => call(name, { output: list, error: 'partner notes' })),
     ],
   }), runReviewPseudonymizer(KEY));
-  assert.deepEqual(record.steps.map((step) => step.kind === 'tool' && [step.name, step.input, step.output]), [
-    ['read_slack_list', '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}', OTHER_CONVERSATION_OMITTED],
-    ['read_slack_list_item', '{"itemId":"Rec1"}', OTHER_CONVERSATION_OMITTED],
+  for (const step of record.steps) {
+    assert.ok(step.kind === 'tool' && (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(step.name));
+    assert.equal(step.input, '{"listUrl":"https://x.slack.com/lists/T1/F0LIST1234"}');
+    if (step.output !== undefined) assert.equal(step.output, OTHER_CONVERSATION_OMITTED, step.name);
+    if (step.error !== undefined) assert.equal(step.error, OTHER_CONVERSATION_OMITTED, step.name);
+  }
+  assert.deepEqual(record.steps.slice(0, 4).map((step) => step.kind === 'tool' && [step.name, 'output' in step, 'error' in step]), [
+    ['read_slack_list', true, false],
+    ['read_slack_list_item', true, false],
+    ['create_slack_list_item', true, false],
+    ['update_slack_list_item', false, true],
   ]);
   assert.equal(JSON.stringify(record).includes('partner notes'), false);
 });

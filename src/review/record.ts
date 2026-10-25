@@ -7,6 +7,7 @@
 import { createHmac } from 'node:crypto';
 
 import { redactCredentialLikeContent } from '../security/content-validation.ts';
+import { SLACK_LIST_TOOL_NAMES } from '../slack/lists/tools.ts';
 
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
 
@@ -88,17 +89,11 @@ export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
 export const RUN_REVIEW_RECORD_BYTES = 256 * 1024;
 
 /**
- * Reads whose results a copy omits unless they say they read the current
- * conversation. They can reach another Channel of this workspace, or a Slack
- * List linked from one, even when it is shared through Slack Connect, which
- * no copy keeps. A List read never says, so its result is always omitted.
+ * Slack reads whose results a copy omits unless they say they read the
+ * current conversation. They can read another Channel of this workspace even
+ * when it is shared through Slack Connect, which no copy keeps.
  */
-export const RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT: ReadonlySet<string> = new Set([
-  'read_slack_thread',
-  'read_slack_channel',
-  'read_slack_list',
-  'read_slack_list_item',
-]);
+export const RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT: ReadonlySet<string> = new Set(['read_slack_thread', 'read_slack_channel']);
 export const OTHER_CONVERSATION_OMITTED = '[other conversation omitted]';
 
 const PSEUDONYM_LABEL = 'chickpea-run-review-user-v1\0';
@@ -127,9 +122,10 @@ export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) =
 /**
  * The record a port stores. Every string loses recognizable credentials,
  * then every Slack user ID, then is cut to its cap; file notes keep only a
- * name and size, and a reading tool's result from another conversation is
- * omitted. The builder adds no Slack team, channel, thread or message IDs.
- * Past the record cap the oldest steps go first, then the oldest context.
+ * name and size; and a Slack List tool's output and error, and a Slack read's
+ * result from another conversation, are omitted. The builder adds no Slack
+ * team, channel, thread or message IDs. Past the record cap the oldest steps
+ * go first, then the oldest context.
  */
 export function buildRunReviewRecord(
   input: RunReviewInput,
@@ -167,8 +163,10 @@ export function buildRunReviewRecord(
           kind: 'tool',
           name: field(step.name),
           input: field(step.input),
-          ...(step.output === undefined ? {} : { output: field(keptReadOutput(step.name, step.output)) }),
-          ...(step.error === undefined ? {} : { error: field(step.error) }),
+          ...(step.output === undefined ? {} : { output: field(keptOutput(step.name, step.output)) }),
+          ...(step.error === undefined
+            ? {}
+            : { error: field(slackListTool(step.name) ? OTHER_CONVERSATION_OMITTED : step.error) }),
           ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
         }
       : { kind: step.kind, text: field(step.text) }),
@@ -182,8 +180,18 @@ export function buildRunReviewRecord(
   return fitRecord({ ...record, truncated });
 }
 
-/** A reading tool's result is kept only when it says it read the current conversation, or read nothing. */
-function keptReadOutput(toolName: string, output: string): string {
+/**
+ * A Slack List linked from an unshared Channel may be shared through Slack
+ * Connect, no List tool says where its List is shared, and a List write's
+ * result and error carry what it read back.
+ */
+function slackListTool(toolName: string): boolean {
+  return (SLACK_LIST_TOOL_NAMES as readonly string[]).includes(toolName);
+}
+
+/** None of a Slack List tool's; a Slack read's only when it says it read the current conversation, or read nothing. */
+function keptOutput(toolName: string, output: string): string {
+  if (slackListTool(toolName)) return OTHER_CONVERSATION_OMITTED;
   if (!RUN_REVIEW_READS_OMITTED_UNLESS_CURRENT.has(toolName)) return output;
   let result: { status?: unknown; conversation?: { current?: unknown } } | null;
   try {
