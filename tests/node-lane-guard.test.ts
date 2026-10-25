@@ -41,9 +41,16 @@ test('Flue 2 has one compatible Pi/Agents/MCP dependency graph', () => {
     Object.keys(packages).filter((entry) => entry.endsWith('node_modules/agents')).length,
     1,
   );
-  assert.equal(packages['node_modules/@modelcontextprotocol/sdk']?.version, '1.30.0');
+  // agents pins its MCP peers exactly, but its Worker entry imports only
+  // sdk/types.js from them, so sdk and server follow Chickpea's patched pins.
+  // The client stays on the exact version Flue's runtime pins.
+  assert.deepEqual(packageJson.overrides.agents, {
+    '@modelcontextprotocol/sdk': '$@modelcontextprotocol/sdk',
+    '@modelcontextprotocol/server': '$@modelcontextprotocol/server',
+  });
+  assert.equal(packages['node_modules/@modelcontextprotocol/sdk']?.version, '1.32.2');
   assert.equal(packages['node_modules/@modelcontextprotocol/client']?.version, '2.0.0');
-  assert.equal(packages['node_modules/@modelcontextprotocol/server']?.version, '2.0.0');
+  assert.equal(packages['node_modules/@modelcontextprotocol/server']?.version, '2.4.0');
   assert.equal(packages['packages/cli/node_modules/@modelcontextprotocol/client']?.version, '2.3.1');
 });
 
