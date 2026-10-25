@@ -9,7 +9,7 @@ import {
   executeHostSlackManagementApproval,
   resolveTypedSlackManagementApproval,
 } from '../src/management/slack-approval.ts';
-import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import { invokeSlackWorkspaceManagementTool, SLACK_MANAGEMENT_GUIDANCE } from '../src/management/slack-tools.ts';
 import type { ManagementApplyResult, ManagementOperation } from '../src/management/types.ts';
 import {
   classifySlackManagementApproval,
@@ -58,6 +58,15 @@ test('any other wording is one model call that reads only the message and the ho
   ], 'the leading mention is dropped and both values are quoted');
   assert.match(SLACK_MANAGEMENT_APPROVAL_INSTRUCTIONS, /untrusted data/);
   assert.match(SLACK_MANAGEMENT_APPROVAL_INSTRUCTIONS, /yes, but rename it first/);
+});
+
+test('a proposal ends with its approval request, and a reply to anything else is not an approval', () => {
+  // The host cannot see a question asked in the same message as the preview;
+  // the Agent is told not to ask one, and the judge to refuse a reply to one.
+  assert.match(SLACK_MANAGEMENT_GUIDANCE,
+    /End the message that shows a proposal with the request to approve it, and ask nothing else in it\. Until the person approves or declines, ask them no other question/);
+  assert.match(SLACK_MANAGEMENT_APPROVAL_INSTRUCTIONS,
+    /If the message also answers, agrees to, or asks for anything besides applying this change \("yes, and summarize it", "yes to the summary", "sure, do both"\), answer other\./);
 });
 
 test('anything but one exact approval field judges other', () => {
