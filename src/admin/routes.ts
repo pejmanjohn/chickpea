@@ -4875,7 +4875,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         for (const agent of await config.listAgents()) {
           for (const server of agent.mcpServers) {
-            if (server.url === META_ADS_MCP_SERVER_URL) await invalidateConfiguredMcpOAuthAuthorization({ agentId: agent.id, connectionId: server.id }, settings(c), previous.generation);
+            if (server.url === META_ADS_MCP_SERVER_URL && validConnectionCredentialRef(server.credentialRef)) {
+              await invalidateConfiguredMcpOAuthAuthorization(boundMcpCredentialRef(agent.id, server), settings(c), previous.generation);
+            }
           }
         }
       }
