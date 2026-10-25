@@ -2595,12 +2595,7 @@ export class WorkspaceManagementService {
     const preparedResult = await this.reconcilePrepared(actor, prepared, proposal.proposalId);
     if (preparedResult) return preparedResult;
     const changed = await this.reconcileChangeSetConfirmedOperation(actor, operation);
-    if (!changed) return undefined;
-    return {
-      changed,
-      resultingRevisions: Object.fromEntries(changed.map((ref) =>
-        [objectRevisionKey(ref), ref.revision ?? 0])),
-    };
+    return changed ? mutationForChanged(changed) : undefined;
   }
 
   private async assertPreparedAgentExists(
@@ -4284,9 +4279,8 @@ export class WorkspaceManagementService {
     progress: ManagementRequestProgress,
     readiness: RequestModelReadiness,
   ): Promise<ImmediateMutation> {
-    const prepared = progress.prepared?.itemId === operation.itemId
-      ? progress.prepared
-      : await this.prepareItem(actor, operation, undefined, readiness);
+    const resumed = progress.prepared?.itemId === operation.itemId ? progress.prepared : undefined;
+    const prepared = resumed ?? await this.prepareItem(actor, operation, undefined, readiness);
     if (!progress.prepared) {
       await this.stores.management.saveRequestProgress(
         requestId,
@@ -4303,16 +4297,10 @@ export class WorkspaceManagementService {
     }
     // A door without this operation's confirmation runs the confirmed
     // executor directly; a resumed call may have applied it already.
-    const changed = progress.prepared?.itemId === operation.itemId
+    const changed = resumed
       ? await this.reconcileChangeSetConfirmedOperation(actor, operation)
       : undefined;
-    if (changed) {
-      return {
-        changed,
-        resultingRevisions: Object.fromEntries(changed.map((ref) =>
-          [objectRevisionKey(ref), ref.revision ?? 0])),
-      };
-    }
+    if (changed) return mutationForChanged(changed);
     return this.executeConfirmed(actor, operation, requestId, prepared);
   }
 
@@ -5096,8 +5084,7 @@ export class WorkspaceManagementService {
         );
       }
       changed.push({ kind: 'agent', id: operation.agentId });
-      return { changed, resultingRevisions: Object.fromEntries(changed.map((ref) =>
-        [objectRevisionKey(ref), ref.revision ?? 0])) };
+      return mutationForChanged(changed);
     }
     if (operation.kind === 'update_member') {
       const result = await this.stores.identity.updateMembershipAuthority({
@@ -5110,32 +5097,22 @@ export class WorkspaceManagementService {
         reasonCode: 'workspace_management_confirmation',
         idempotencyKey: `management:${proposalId}`,
       });
-      const changed = [{
-        kind: 'membership' as const,
+      return mutationForChanged([{
+        kind: 'membership',
         id: result.membership.id,
         revision: membershipRevision(result.membership),
-      }];
-      return {
-        changed,
-        resultingRevisions: {
-          [`membership:${result.membership.id}`]: membershipRevision(result.membership),
-        },
-      };
+      }]);
     }
     if (operation.kind === 'remove_provider_credential') {
       if (!this.stores.removeProviderCredential) {
         throw new ManagementError('invalid_request', 'Provider credential removal is unavailable.');
       }
       const source = await this.stores.removeProviderCredential(operation.providerId);
-      const changed = [{
-        kind: 'provider' as const,
+      return mutationForChanged([{
+        kind: 'provider',
         id: operation.providerId,
         revision: providerRevision(source),
-      }];
-      return {
-        changed,
-        resultingRevisions: { [`provider:${operation.providerId}`]: providerRevision(source) },
-      };
+      }]);
     }
     if (operation.kind === 'delete_routine') {
       await this.requireRoutineMutation(actor, operation);
@@ -5224,11 +5201,7 @@ export class WorkspaceManagementService {
         operation.expectedRevision,
       );
       changed.push({ kind: 'agent', id: agent.id, revision: agent.revision });
-      return {
-        changed,
-        resultingRevisions: Object.fromEntries(changed.map((ref) =>
-          [objectRevisionKey(ref), ref.revision ?? 0])),
-      };
+      return mutationForChanged(changed);
     }
     const freshPrepared = await this.prepareItem(actor, operation, proposalId);
     assertPreparedAgentIdentity(prepared ?? freshPrepared, freshPrepared);
@@ -5848,6 +5821,14 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
     apiConnections: agent.apiConnections,
     repositories: agent.repositories,
     websiteLogins: agent.websiteLogins ?? [],
+  };
+}
+
+function mutationForChanged(changed: ManagementObjectRef[]): ImmediateMutation {
+  return {
+    changed,
+    resultingRevisions: Object.fromEntries(changed.map((ref) =>
+      [objectRevisionKey(ref), ref.revision ?? 0])),
   };
 }
 
