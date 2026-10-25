@@ -91,17 +91,18 @@ const CREDENTIAL_CLASSES = Object.freeze([
 // feature may keep its narrower grant, but no other manifest difference is
 // compatible with that existing installation.
 const OPTIONAL_EXISTING_INSTALL_BOT_SCOPES = Object.freeze([
-  'lists:read', 'lists:write',
+  'lists:read', 'lists:write', 'mpim:history',
 ]);
 const OPTIONAL_EXISTING_INSTALL_BOT_SCOPE_SET = new Set(
   OPTIONAL_EXISTING_INSTALL_BOT_SCOPES,
 );
-// Likewise an additive event: Slack draws its Stop button only for an app
-// subscribed to it, and a lane installed before it keeps working without it
-// (typed stops still work). Its baseline is re-recorded only after the shared
-// app subscribes.
+// Likewise additive events: Slack draws its Stop button only for an app
+// subscribed to `agent_session_stopped` (typed stops still work), and group
+// DMs deliver Agent handles and thread replies only with `message.mpim`. A
+// lane installed before either keeps working without it. Its baseline is
+// re-recorded only after the shared app subscribes.
 const OPTIONAL_EXISTING_INSTALL_BOT_EVENTS = Object.freeze([
-  'agent_session_stopped',
+  'agent_session_stopped', 'message.mpim',
 ]);
 const OPTIONAL_EXISTING_INSTALL_BOT_EVENT_SET = new Set(
   OPTIONAL_EXISTING_INSTALL_BOT_EVENTS,
@@ -1492,6 +1493,25 @@ export function readLocalEnvironmentContract(options = {}) {
       },
     },
   });
+  // A lane installed between two features holds the manifest less some of
+  // the optional scopes and events, not all of them.
+  const installedVariants = subsets(OPTIONAL_EXISTING_INSTALL_BOT_SCOPES).flatMap((lackingScopes) => {
+    const bot = manifestBotScopes.filter((scope) => !lackingScopes.includes(scope));
+    return subsets(OPTIONAL_EXISTING_INSTALL_BOT_EVENTS).map((lackingEvents) => ({
+      manifestDigest: digest({
+        ...manifest,
+        oauth_config: { ...manifest.oauth_config, scopes: { ...manifest.oauth_config.scopes, bot } },
+        settings: {
+          ...manifest.settings,
+          event_subscriptions: {
+            ...manifest.settings.event_subscriptions,
+            bot_events: manifestBotEvents.filter((event) => !lackingEvents.includes(event)),
+          },
+        },
+      }),
+      requiredScopes: [...new Set(bot)].sort(),
+    }));
+  });
   const installFiles = options.installContractFiles ?? [...INSTALL_CONTRACT_FILES];
   const setupFlowFiles = options.setupFlowFiles ?? [...SETUP_FLOW_FILES];
   const setupFiles = options.setupContractFiles ?? [...installFiles, ...setupFlowFiles];
@@ -1542,6 +1562,7 @@ export function readLocalEnvironmentContract(options = {}) {
       manifestDigest: digest(withoutOptionalEvents(manifest)),
       existingInstallManifestDigest: digest(withoutOptionalEvents(existingInstallManifest)),
     },
+    installedVariants,
     setupContractDigest: digest(setupSources),
     installContractDigest: digest(installSources),
     setupFlowDigest: digest(setupFlowSources),
@@ -2233,8 +2254,16 @@ function validateLocalContract(input) {
       'manifestDigest', 'requiredScopes', 'setupContractDigest', 'schemaGeneration', 'schemaHistory',
     ], [
       'existingInstallManifestDigest', 'existingInstallScopes', 'withoutOptionalEvents',
-      'installContractDigest', 'setupFlowDigest', 'installContractFiles',
+      'installedVariants', 'installContractDigest', 'setupFlowDigest', 'installContractFiles',
     ])
+    || !(input.installedVariants === undefined
+      || (Array.isArray(input.installedVariants)
+        && input.installedVariants.length > 0
+        && input.installedVariants.length <= 64
+        && input.installedVariants.every((variant) => isRecord(variant)
+          && exactKeys(variant, ['manifestDigest', 'requiredScopes'])
+          && DIGEST.test(variant.manifestDigest)
+          && validScopes(variant.requiredScopes))))
     // The same two manifests without the optional events: only beside them.
     || (eventless !== undefined
       && (!hasExistingInstallManifestDigest
@@ -2284,6 +2313,9 @@ function installedSlackContractMatchesBaseline(local, baseline) {
         [local.withoutOptionalEvents.existingInstallManifestDigest, local.existingInstallScopes],
       );
     }
+  }
+  for (const variant of local.installedVariants ?? []) {
+    installed.push([variant.manifestDigest, variant.requiredScopes]);
   }
   return installed.some(([manifestDigest, scopes]) => manifestDigest === baseline.manifestDigest
     && stableEnvironmentJson(scopes) === stableEnvironmentJson(baseline.requiredScopes));
@@ -2782,6 +2814,11 @@ function canonicalTimestamp(input) {
   }
   if (new Date(value).toISOString() !== value) throw fail('INVALID_TIMESTAMP');
   return value;
+}
+
+/** Every subset of `values`, the empty one included, each in the order of `values`. */
+function subsets(values) {
+  return values.reduce((all, value) => [...all, ...all.map((subset) => [...subset, value])], [[]]);
 }
 
 function digest(input) {

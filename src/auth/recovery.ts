@@ -178,10 +178,10 @@ export class SlackCredentialRecoveryService {
       throw new SlackCredentialRecoveryError('manifest_mismatch');
     }
     // The UI builds today's manifest. Accept only an exact stored fingerprint,
-    // including variants that predate the additive Lists permissions or the
-    // optional Stop event.
-    const matchesStored = [[], ['lists:read'], ['lists:write'], ['lists:read', 'lists:write']].some(scopes =>
-      [[], SLACK_OPTIONAL_BOT_EVENTS].some(events => slackManifestFingerprint(recoveryManifestScopes(
+    // including variants that predate any additive feature scope or optional
+    // event.
+    const matchesStored = subsets(SLACK_FEATURE_SCOPES).some(scopes =>
+      subsets(SLACK_OPTIONAL_BOT_EVENTS).some(events => slackManifestFingerprint(recoveryManifestScopes(
         slackManifestWithOptionalEvents(input.manifest, events),
         scopes,
       )) === session.manifestFingerprint));
@@ -576,6 +576,11 @@ function recoveryEnvelopeContext(
     purpose: 'app_credentials',
     revision,
   };
+}
+
+/** Every subset of `values`, the empty one included, each in the order of `values`. */
+function subsets(values: readonly string[]): string[][] {
+  return values.reduce<string[][]>((all, value) => [...all, ...all.map((subset) => [...subset, value])], [[]]);
 }
 
 function recoveryManifestScopes(manifest: SlackAppManifest, granted: readonly string[]): SlackAppManifest {

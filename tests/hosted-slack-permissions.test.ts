@@ -37,11 +37,11 @@ import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 const TOKEN = 'hosted-slack-permissions-token';
 const ORIGIN = 'https://hosted.example';
 const ENV = scopeInstallationEnv({ CHICKPEA_TENANCY: 'installation' }, { installationId: 'inst_permissions' });
-const WITHOUT_LISTS = REQUESTED_SLACK_BOT_SCOPES.filter((scope) => !SLACK_FEATURE_SCOPES.includes(scope));
+const WITHOUT_FEATURES = REQUESTED_SLACK_BOT_SCOPES.filter((scope) => !SLACK_FEATURE_SCOPES.includes(scope));
 
 function evidence(overrides: Partial<SlackPermissionsEvidence> = {}): SlackPermissionsEvidence {
   return {
-    installationId: 'inst_a', revision: 'rev_1', grantedScopes: WITHOUT_LISTS, validatedAt: 1, ...overrides,
+    installationId: 'inst_a', revision: 'rev_1', grantedScopes: WITHOUT_FEATURES, validatedAt: 1, ...overrides,
   };
 }
 
@@ -71,14 +71,14 @@ function liveSlack(answer: () => Partial<SlackAuthTestResult> | Error, now = () 
 
 test('the scope gap names the requested scopes a grant lacks, and retired scopes are tolerated', () => {
   assert.deepEqual(missingRequestedSlackBotScopes(REQUESTED_SLACK_BOT_SCOPES), []);
-  assert.deepEqual(missingRequestedSlackBotScopes(REQUIRED_SLACK_BOT_SCOPES), ['lists:read', 'lists:write']);
+  assert.deepEqual(missingRequestedSlackBotScopes(REQUIRED_SLACK_BOT_SCOPES), ['mpim:history', 'lists:read', 'lists:write']);
   const shuffled = [...REQUESTED_SLACK_BOT_SCOPES].reverse();
   assert.deepEqual(missingRequestedSlackBotScopes([...shuffled, ...shuffled]), [], 'order and duplicates do not matter');
   assert.deepEqual(missingRequestedSlackBotScopes(['chat:write'], ['chat:write', 'lists:read', 'lists:read']),
     ['lists:read']);
 
-  // Lists stay a feature: a grant without them is accepted for reinstall and recovery.
-  assert.deepEqual(SLACK_FEATURE_SCOPES, ['lists:read', 'lists:write']);
+  // Lists and group DM history stay features: a grant without them is accepted for reinstall and recovery.
+  assert.deepEqual(SLACK_FEATURE_SCOPES, ['lists:read', 'lists:write', 'mpim:history']);
   assert.ok(SLACK_FEATURE_SCOPES.every((scope) => !REQUIRED_SLACK_BOT_SCOPES.includes(scope)));
   assert.deepEqual(RETIRED_SLACK_BOT_SCOPES, []);
   assert.deepEqual(unexpectedSlackBotScopes([...REQUESTED_SLACK_BOT_SCOPES, 'old:scope']), ['old:scope']);
@@ -103,7 +103,7 @@ test('a revision without validated scope evidence is unknown and asks Slack noth
 test('a gap Slack confirms needs an update, asked once per revision for ten minutes', async (t) => {
   resetSlackPermissionsMemo();
   t.after(resetSlackPermissionsMemo);
-  let live: string[] = WITHOUT_LISTS;
+  let live: string[] = WITHOUT_FEATURES;
   const slack = liveSlack(() => ({ grantedScopes: live }));
   for (let i = 0; i < 5; i++) {
     assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
@@ -116,14 +116,14 @@ test('a gap Slack confirms needs an update, asked once per revision for ten minu
   assert.equal(slack.calls.length, 1);
 
   // A new revision, another installation, or a changed requested set is a new question.
-  live = WITHOUT_LISTS;
+  live = WITHOUT_FEATURES;
   assert.equal(await evaluateSlackPermissions(evidence({ revision: 'rev_2' }), slack.dependencies), 'update_needed');
   assert.equal(await evaluateSlackPermissions(evidence({ installationId: 'inst_b' }), slack.dependencies), 'update_needed');
   assert.equal(slack.calls.length, 3);
   assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies, [...REQUESTED_SLACK_BOT_SCOPES, 'future:scope']),
     'update_needed');
   assert.equal(slack.calls.length, 4);
-  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies, WITHOUT_LISTS), 'current',
+  assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies, WITHOUT_FEATURES), 'current',
     'a release that stops requesting the missing scope clears it without asking Slack');
   assert.equal(slack.calls.length, 4);
   assert.deepEqual(slack.warnings, []);
@@ -133,7 +133,7 @@ test('after ten minutes one live auth.test re-decides a gap, so a grant Cloud di
   resetSlackPermissionsMemo();
   t.after(resetSlackPermissionsMemo);
   let clock = 1_800_000_000_000;
-  let live: string[] = WITHOUT_LISTS;
+  let live: string[] = WITHOUT_FEATURES;
   const slack = liveSlack(() => ({ grantedScopes: live }), () => clock);
   assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'update_needed');
   clock += 10 * 60_000 - 1;
@@ -155,7 +155,7 @@ test('after ten minutes one live auth.test re-decides a gap, so a grant Cloud di
   assert.equal(slack.warnings.length, 1);
 
   // `current` stands for the revision.
-  live = WITHOUT_LISTS;
+  live = WITHOUT_FEATURES;
   clock += 60 * 60_000;
   assert.equal(await evaluateSlackPermissions(evidence(), slack.dependencies), 'current');
   assert.equal(slack.calls.length, 3);
@@ -172,7 +172,7 @@ test('a gap Slack does not confirm is current and logged for operators, without 
     event: 'chickpea.slack_permissions.stored_scopes_behind',
     installationId: 'inst_a',
     revision: 'rev_1',
-    storedMissing: ['lists:read', 'lists:write'],
+    storedMissing: ['mpim:history', 'lists:read', 'lists:write'],
   }]);
 });
 
@@ -214,7 +214,7 @@ test('a host that grants a user-group token needs an update until the active bun
 test('missing bot scopes need an update even when the bundle holds the user-group token', async (t) => {
   resetSlackPermissionsMemo();
   t.after(resetSlackPermissionsMemo);
-  const gap = liveSlack(() => ({ grantedScopes: WITHOUT_LISTS }));
+  const gap = liveSlack(() => ({ grantedScopes: WITHOUT_FEATURES }));
   assert.equal(await evaluateSlackPermissions(evidence(), withUserGroupToken(gap.dependencies, true)), 'update_needed');
 });
 
@@ -309,7 +309,7 @@ async function hostedInstallation(t: TestContext, grantedScopes: readonly string
 }
 
 test('hosted Slack status tells an Owner to update, an Admin to ask an Owner, and refuses a Member', async (t) => {
-  const tenant = await hostedInstallation(t, WITHOUT_LISTS);
+  const tenant = await hostedInstallation(t, WITHOUT_FEATURES);
   configureHostedSlackPermissionsUpdate({ path: '/start/reinstall' });
 
   const owner = await tenant.view('owner');
@@ -337,7 +337,7 @@ test('hosted Slack status tells an Owner to update, an Admin to ask an Owner, an
 });
 
 test('hosted Slack status is unknown for a revoked installation or one without scope evidence', async (t) => {
-  const tenant = await hostedInstallation(t, WITHOUT_LISTS);
+  const tenant = await hostedInstallation(t, WITHOUT_FEATURES);
   configureHostedSlackPermissionsUpdate({ path: '/start/reinstall' });
   await tenant.config.updateWorkspaceInstallation('TTEST', { health: 'revoked', healthDetail: 'app_uninstalled' });
   assert.deepEqual((await tenant.view('owner')).body.slackPermissions,
@@ -370,7 +370,7 @@ test('Admin shows the update bar while the host grants a user-group token the ac
 });
 
 test('standalone Slack status carries no permissions field', async (t) => {
-  const tenant = await hostedInstallation(t, WITHOUT_LISTS);
+  const tenant = await hostedInstallation(t, WITHOUT_FEATURES);
   configureHostedSlackPermissionsUpdate({ path: '/start/reinstall' });
   const standalone = await tenant.view('owner', {});
   assert.equal(standalone.status, 200);
