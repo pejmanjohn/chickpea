@@ -4,7 +4,7 @@ import { waitForHostChecks } from './lib/verification-host-wait.mjs';
 
 const args = process.argv.slice(2);
 if (!args.length || args[0] === '--help') {
-  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130.');
+  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130. A command that cannot start releases the slot and exits 2; an interrupted command keeps it for reconciliation.');
 } else {
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -25,6 +25,10 @@ if (!args.length || args[0] === '--help') {
     process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel);
     if (options.waitMs) console.error(JSON.stringify({ status: 'acquired', waitedMs: lease.waitedMs }));
     const result = spawnSync(args[0], args.slice(1), { stdio: 'inherit', env: { ...process.env, ...lease.env } });
+    if (!result.pid) {
+      lease.release();
+      throw new Error(`Command could not start: ${args[0]} (${result.error.code}). Host reservation released.`);
+    }
     if (!result.signal && !result.error) lease.release();
     else console.error('Interrupted command: host reservation retained. Reconcile its processes before removing the exact owner.json.');
     process.exitCode = result.status ?? 1;

@@ -28,7 +28,7 @@ test('a command that cannot start releases the host reservation and names the co
   for (const [command, code] of [['chickpea-no-such-command', 'ENOENT'], [notExecutable, 'EACCES']] as const) {
     const run = verifyHost(home, command);
     assert.equal(existsSync(file), false, `${code}: no child ran, so no reservation is left behind`);
-    assert.notEqual(run.status, 0);
+    assert.equal(run.status, 2);
     assert.ok(run.stderr.includes(`Command could not start: ${command} (${code}). Host reservation released.`), run.stderr);
   }
 });

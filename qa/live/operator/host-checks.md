@@ -76,6 +76,8 @@ holding the reservation. The slowest test in a full pass takes about 9 s.
 Treat a timed-out test as a failure to diagnose; do not raise the limit to get
 a pass.
 
+A command that cannot start, such as a misspelled name, never ran a child, so
+`verify:host` releases the reservation at once and exits 2.
 After interruption, the reservation stays in place. Inspect its PID, descendants,
 checkout and partial logs. Only after proving that its entire group has stopped
 may its owner remove that exact file. A dead parent alone is insufficient. Do not
