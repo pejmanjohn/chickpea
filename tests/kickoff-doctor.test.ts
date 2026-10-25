@@ -51,7 +51,7 @@ test('host problems block the run and say how to fix them', () => {
     node: { version: 'v26.7.0', baseline: '24.22.1', supported: false },
     dependencies: { drift: [{ name: 'fast-uri', installed: '3.1.7', locked: '3.1.8' }] },
     source: { status: 'behind', code: 'QA_SOURCE_BEHIND_MAIN' },
-    hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', alive: false },
+    hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'stopped' },
   }));
   assert.equal(report.ok, false);
   const levels = report.host.map((c: any) => c.level);
@@ -59,12 +59,12 @@ test('host problems block the run and say how to fix them', () => {
   assert.match(report.host[1].fix, /npm ci --strict-allow-scripts/);
   assert.match(report.host[3].fix, /env -- restamp/);
   assert.match(report.needs[0], /PID 42 .*no longer running; verify:host refuses it/);
-  const alive = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', alive: true } }));
+  const alive = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'live' } }));
   assert.equal(alive.host[2].level, 'info', 'a running reservation only means a deploy waits');
   assert.equal(alive.ok, true);
-  const stale = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', alive: false } }));
+  const stale = kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: 'then', liveness: 'stopped' } }));
   assert.equal(stale.ok, false, 'a stale reservation stops the guarded deploy, so the run is not ready');
-  assert.equal(kickoffReport(facts({ hostReservation: { pid: 1, cwd: '/x', startedAt: 'then', alive: 'unknown' } })).host[2].level, 'human');
+  assert.equal(kickoffReport(facts({ hostReservation: { pid: 1, cwd: '/x', startedAt: 'then', liveness: 'unknown' } })).host[2].level, 'human');
   const unreadable = kickoffReport(facts({ lanes: [], lanesError: 'TARGET_NOT_REGISTERED' }));
   assert.equal(unreadable.ok, false);
   assert.match(unreadable.host.at(-1).text, /Could not read the lane registry or capabilities: TARGET_NOT_REGISTERED/);
@@ -120,7 +120,7 @@ test('lane problems are sorted into blockers and things only a person can do', (
 
 test('a long host hold and a silent lane holder warn, block nothing new, and are never taken', () => {
   const at = (minutesBefore: number) => new Date(Date.parse('2026-10-01T00:00:00.000Z') - minutesBefore * 60_000).toISOString();
-  const held = (minutes: number) => kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: at(minutes), alive: true } }));
+  const held = (minutes: number) => kickoffReport(facts({ hostReservation: { pid: 42, cwd: '/other', startedAt: at(minutes), liveness: 'live' } }));
   assert.equal(held(14).host[2].level, 'info', 'under fifteen minutes a hold is ordinary');
   const long = held(16);
   assert.equal(long.host[2].level, 'warn');

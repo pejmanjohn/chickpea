@@ -38,7 +38,12 @@ npm run verify:host -- npm run build
 npm run verify:host -- npm run verify:cf-smoke
 npm run verify:host -- --wait-ms 300000 npm run build
 npm run verify:regression -- --area verification --wait-ms 300000
+npm run verify:host -- status
 ```
+
+`status` prints the owner's PID, checkout, start time and whether that PID is
+live, or that the reservation is free. It never reserves. To run a command
+that is itself named `status`, put `--` before it.
 
 For a deliberate multi-command group, pass a shell explicitly and set isolated
 database variables as in CONTRIBUTING. Nested commands inherit the owner's

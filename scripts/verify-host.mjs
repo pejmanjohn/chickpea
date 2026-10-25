@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
+import { HOST_CHECK_LOCK, hostChecksHeldMs, readHostChecksOwner } from './lib/verification-host.mjs';
 import { waitForHostChecks } from './lib/verification-host-wait.mjs';
 
 const args = process.argv.slice(2);
 if (!args.length || args[0] === '--help') {
-  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130. A command that cannot start releases the slot and exits 2; an interrupted command keeps it for reconciliation.');
+  console.log('Usage: npm run verify:host -- [--wait-ms MS] [--poll-ms MS] [--] COMMAND [ARG ...]\n       npm run verify:host -- status\nReserve one host slot for a serial build, workerd, boot, test-database or full-suite group. Typecheck, plain unit tests and mutation passes that start no server, port or test database run without it. Bounded waiting is opt-in; a hold over 15 minutes is reported to waiters once, never taken. No shell expansion, stealing or process killing. Timeout exits 3; cancellation exits 130. A command that cannot start releases the slot and exits 2; an interrupted command keeps it for reconciliation.\nstatus prints the owner (PID, checkout, start, whether the PID is live) or that the slot is free, as JSON, and never reserves. It wins over a command named status; to run one, put -- first: npm run verify:host -- -- status.');
+} else if (args[0] === 'status') {
+  try {
+    if (args.length > 1) throw new Error('status takes no arguments. Use --help.');
+    const owner = readHostChecksOwner();
+    console.log(JSON.stringify(owner ? { status: 'reserved', file: HOST_CHECK_LOCK, owner, heldMs: hostChecksHeldMs(owner) } : { status: 'free', file: HOST_CHECK_LOCK }));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 2;
+  }
 } else {
   const controller = new AbortController();
   const cancel = () => controller.abort();

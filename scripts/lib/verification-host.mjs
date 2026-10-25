@@ -20,6 +20,14 @@ export function hostChecksHoldWarning(owner, now = Date.now()) {
   return `Held for ${Math.floor(heldMs / 60_000)} min, over the ${HOST_CHECKS_HOLD_WARN_MS / 60_000}-minute warning: ask its owner whether a check is hung. Never steal, stop or remove it (host-checks.md).`;
 }
 
+export function readHostChecksOwner({ file = HOST_CHECK_LOCK } = {}) {
+  let owner;
+  try { owner = JSON.parse(readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  let liveness = 'live';
+  try { process.kill(owner.pid, 0); } catch (error) { liveness = error.code === 'EPERM' ? 'unknown' : 'stopped'; }
+  return { pid: owner.pid, cwd: owner.cwd, startedAt: owner.startedAt, liveness };
+}
+
 export class HostChecksBusyError extends Error {
   constructor(file, owner, now = Date.now()) {
     const warning = owner ? hostChecksHoldWarning(owner, now) : null;

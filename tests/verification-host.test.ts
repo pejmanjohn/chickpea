@@ -45,6 +45,44 @@ test('a child that exits releases the reservation; a child stopped by a signal k
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).pid, killed.pid, 'the interrupted owner keeps the slot for reconciliation');
 });
 
+test('status reports the owner or a free slot and never takes, shares or changes the reservation', (t) => {
+  const { home, file } = isolatedHome(t);
+  const free = verifyHost(home, 'status');
+  assert.equal(free.status, 0);
+  assert.deepEqual(JSON.parse(free.stdout), { status: 'free', file });
+  assert.equal(existsSync(file), false, 'status on a free slot does not take it');
+
+  const lease = acquireHostChecks({ file, env: {}, cwd: 'holder' });
+  const original = readFileSync(file, 'utf8');
+  const { startedAt, token } = JSON.parse(original);
+  const held = verifyHost(home, 'status');
+  assert.equal(held.status, 0);
+  const report = JSON.parse(held.stdout);
+  assert.equal(report.status, 'reserved');
+  assert.equal(report.file, file);
+  assert.deepEqual(report.owner, { pid: process.pid, cwd: 'holder', startedAt, liveness: 'live' });
+  assert.ok(report.heldMs >= 0);
+  assert.ok(!held.stdout.includes(token), 'the token that lets nested commands share the slot stays private');
+  assert.equal(readFileSync(file, 'utf8'), original);
+
+  const extra = verifyHost(home, 'status', 'extra');
+  assert.equal(extra.status, 2);
+  assert.match(extra.stderr, /status takes no arguments/);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  lease.release();
+
+  const stoppedPid = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
+  writeFileSync(file, JSON.stringify({ pid: stoppedPid, cwd: 'old', startedAt, token: 'stopped' }));
+  const stopped = readFileSync(file, 'utf8');
+  assert.deepEqual(JSON.parse(verifyHost(home, 'status').stdout).owner, { pid: stoppedPid, cwd: 'old', startedAt, liveness: 'stopped' });
+  assert.equal(readFileSync(file, 'utf8'), stopped);
+  rmSync(file);
+
+  const command = verifyHost(home, '--', 'status');
+  assert.ok(command.stderr.includes('Command could not start: status (ENOENT).'), 'after --, status is a command to run');
+  assert.equal(existsSync(file), false);
+});
+
 test('bounded host wait acquires only after release and reports contention once', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-host-wait-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
