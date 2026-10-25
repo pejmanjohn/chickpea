@@ -16,7 +16,7 @@ import {
 import { isProviderKeyId, type ProviderKeyId } from '../config/provider-keys.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import { formatPriceCents, formatUsageDollars, usagePercent, type UsageMicros } from '../usage/usage-display.ts';
-import { invalidRequest, readJson } from './api-support.ts';
+import { invalidRequest, noStore, readJson } from './api-support.ts';
 
 export const PLAN_PATH = '/admin/plan';
 
@@ -307,8 +307,3 @@ function namedUse(use: readonly UsageRow[], names: ReadonlyMap<string, string>):
 // UTC, so a date reads the same here as in Chickpea's Slack messages about the plan.
 const SHORT_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' });
 const LONG_DATE = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
-
-async function noStore(c: Context, next: () => Promise<void>): Promise<void> {
-  c.header('Cache-Control', 'no-store');
-  await next();
-}

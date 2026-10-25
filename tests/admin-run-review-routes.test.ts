@@ -85,6 +85,14 @@ test('a hosted installation whose host installed no port has no setting', async 
   assert.match(await (await request('/admin')).text(), /"helpImproveOffered":false/);
 });
 
+test('a hosted request that names no installation has no setting', async (t) => {
+  const { port, calls } = fakePort();
+  const { request } = admin(t, { port, env: { CHICKPEA_TENANCY: 'installation' } });
+  assert.equal((await request(PATH)).status, 404);
+  assert.equal((await request(PATH, put({ enabled: false }))).status, 404);
+  assert.deepEqual(calls, []);
+});
+
 test('an Owner reads the host\'s state, and the page offers the setting with its privacy link', async (t) => {
   const { port, calls } = fakePort();
   const { request } = admin(t, { port });

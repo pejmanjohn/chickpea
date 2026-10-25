@@ -76,7 +76,7 @@ export function adminUiConfig(input: {
     selfHosted: input.selfHosted !== false,
     billingOffered: input.billingOffered === true,
     helpImproveOffered: input.helpImprovePrivacyUrl !== undefined,
-    ...(input.helpImprovePrivacyUrl ? { helpImprovePrivacyUrl: input.helpImprovePrivacyUrl } : {}),
+    ...(input.helpImprovePrivacyUrl !== undefined ? { helpImprovePrivacyUrl: input.helpImprovePrivacyUrl } : {}),
     ...(input.targetChip ? { targetChip: input.targetChip } : {}),
     ...(input.onboarding ? { onboarding: input.onboarding } : {}),
     ...(input.firstRun ? { firstRun: input.firstRun } : {}),

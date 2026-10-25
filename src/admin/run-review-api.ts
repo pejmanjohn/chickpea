@@ -2,11 +2,11 @@ import { Hono, type Context } from 'hono';
 import * as v from 'valibot';
 
 import { requestPrincipal } from '../auth/service.ts';
-import { requireInstallationScope } from '../config/installation-scope.ts';
+import { installationScopeOf } from '../config/installation-scope.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { IdentityStore } from '../identity/types.ts';
 import { runReview, type RunReviewPort } from '../review/port.ts';
-import { invalidRequest, readJson } from './api-support.ts';
+import { invalidRequest, noStore, readJson } from './api-support.ts';
 
 /** The Settings and onboarding row text a change was made under; bump it with the copy in admin.js. */
 export const HELP_IMPROVE_TEXT_VERSION = 'help-improve-setting.2026-10-25';
@@ -69,18 +69,12 @@ async function withRunReview(
   handle: (port: RunReviewPort, installationId: string) => Promise<Response>,
 ): Promise<Response> {
   const port = runReview();
-  if (!port) return c.json({ error: 'not_found' }, 404);
+  const installationId = installationScopeOf(c.env as PlatformEnv | undefined)?.installationId;
+  if (!port || !installationId) return c.json({ error: 'not_found' }, 404);
   try {
-    const installationId = requireInstallationScope(c.env as PlatformEnv | undefined)?.installationId;
-    if (!installationId) return c.json({ error: 'not_found' }, 404);
     return await handle(port, installationId);
   } catch {
     console.warn(JSON.stringify({ component: 'run_review', event: 'setting_unavailable', method: c.req.method }));
     return c.json({ error: 'run_review_unavailable' }, 503);
   }
-}
-
-async function noStore(c: Context, next: () => Promise<void>): Promise<void> {
-  c.header('Cache-Control', 'no-store');
-  await next();
 }
