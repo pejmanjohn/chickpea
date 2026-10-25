@@ -5,7 +5,7 @@ import {
   revokeBetterAuthUserAccess,
   type BetterAuthAccessRevoker,
 } from '../auth/better-auth-backend.ts';
-import { canEditAgent } from '../auth/permissions.ts';
+import { canEditAgent, permissionForRole } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
@@ -80,6 +80,7 @@ import {
   type SlackScheduleCommand,
 } from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
+import { RoutineContentAccessResolver, routineContentReadable } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
@@ -3283,6 +3284,50 @@ export class WorkspaceManagementService {
       .catch(() => UNAVAILABLE_SLACK_FACTS);
   }
 
+  /**
+   * A member sees a public Channel, and a private one only while Slack shows
+   * them in it, as on the Admin Agent page. A Channel Slack cannot vouch for
+   * stays hidden.
+   */
+  private async channelsSlackShowsMember<TChannel extends { workspaceId: string; channelId: string }>(
+    actor: LiveManagementActor,
+    channels: TChannel[],
+  ): Promise<TChannel[]> {
+    if (channels.length === 0) return channels;
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) return [];
+    const facts = await this.slackFactsFor(user.slackTeamId);
+    const slack = await Promise.all(channels.map(({ workspaceId, channelId }) =>
+      workspaceId === user.slackTeamId
+        ? facts.lookupChannel(channelId).catch(() => undefined)
+        : undefined));
+    const memberChannels = slack.some((channel) => channel?.private)
+      ? await facts.listMemberChannels(user.slackUserId).catch(() => undefined)
+      : undefined;
+    return channels.filter((_, index) => {
+      const channel = slack[index];
+      return channel !== undefined && !channel.archived &&
+        (!channel.private || (channel.member && memberChannels?.has(channel.id) === true));
+    });
+  }
+
+  /** Whether the person may read a Channel routine, as Admin's schedules page decides. */
+  private async routineReadable(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+  ): Promise<boolean> {
+    const access = await new RoutineContentAccessResolver({
+      work: this.stores.work,
+      actor: async () => {
+        const user = await this.stores.identity.getUser(actor.userId);
+        if (!user) throw new Error('The routine reader has no Slack account.');
+        return { slackTeamId: user.slackTeamId, slackUserId: user.slackUserId };
+      },
+      transport: (workspaceId) => this.slackFactsFor(workspaceId),
+    }).resolve(routine);
+    return routineContentReadable(access);
+  }
+
   /** A DM routine needs the private use the person would need to DM its Agent. */
   private async requirePrivateAgentUse(
     actor: LiveManagementActor,
@@ -3572,12 +3617,15 @@ export class WorkspaceManagementService {
       });
       projectedChannelKeys.add(key);
     }
-    const visibleChannels = userAgentScoped || actor.role === 'member'
+    const grantedChannels = userAgentScoped || actor.role === 'member'
       ? projectedChannels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
         )))
       : projectedChannels;
+    const visibleChannels = actor.role === 'member'
+      ? await this.channelsSlackShowsMember(actor, grantedChannels)
+      : grantedChannels;
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
       ...visibleChannels.map((channel) => ({
@@ -3895,6 +3943,17 @@ export class WorkspaceManagementService {
       return;
     }
     await this.requireEditableAgent(actor, reference.agentId);
+    // Admin keeps disable on its audit route, which needs admin.configure, and
+    // its schedules page acts only on a routine the person can read.
+    if ((operation.kind === 'control_routine' || operation.kind === 'delete_routine') &&
+        !permissionForRole(actor.role).has('admin.configure')) {
+      if (operation.kind === 'control_routine' && operation.action === 'disable') {
+        throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
+      }
+      if (!await this.routineReadable(actor, routine)) {
+        throw new ManagementError('forbidden', 'The routine is in a private Channel this member is not in.');
+      }
+    }
   }
 
   private async isRoutineSchedulingAvailable(): Promise<boolean> {
@@ -4670,7 +4729,8 @@ export class WorkspaceManagementService {
       }
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
-        operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+        operation.kind === 'grant_agent_channel' ||
+        (operation.kind === 'revoke_agent_channel' && REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind])) {
       const workspaceId = operation.kind === 'put_channel'
         ? operation.channel.workspaceId
         : operation.workspaceId;
@@ -4799,11 +4859,13 @@ export class WorkspaceManagementService {
         if (!current || current.revision !== operation.expectedRevision) {
           throw new ManagementError('revision_conflict', 'The Channel grant changed.');
         }
-        await this.stores.assertAgentChannelMembership?.({
-          actor,
-          workspaceId: operation.workspaceId,
-          channelId: operation.channelId,
-        });
+        if (REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind]) {
+          await this.stores.assertAgentChannelMembership?.({
+            actor,
+            workspaceId: operation.workspaceId,
+            channelId: operation.channelId,
+          });
+        }
         await this.stores.config.deleteAgentChannelGrant(
           operation.workspaceId,
           operation.channelId,
@@ -7274,6 +7336,17 @@ function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
     ? `${key}@${actor.origin.eventId}`
     : key;
 }
+
+/**
+ * Slack revokes Channel reach from inside Slack, so it rechecks that the
+ * person is in the Channel. Admin's detach, and MCP with the same authority,
+ * need only editor rights.
+ */
+const REVOKE_NEEDS_CHANNEL_MEMBERSHIP = {
+  slack: true,
+  mcp: false,
+  admin: false,
+} as const satisfies Record<ManagementOrigin['kind'], boolean>;
 
 const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
   lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
