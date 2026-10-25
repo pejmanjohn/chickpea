@@ -677,6 +677,14 @@ export interface ClaimManagementIntroductionResult {
 
 export type ManagementOperationResult = ManagementApplyResult | ManagementSetupPublicStatus;
 
+/**
+ * A setup request a Slack call held until the person approved its change set:
+ * the one-time link issued once the set applied, or why none was issued.
+ */
+export type ManagementDeferredSetup =
+  | { itemId: string; label: string; setupUrl: string }
+  | { itemId: string; code: string };
+
 export interface ManagementApplyResult {
   operationId: string;
   idempotencyKey: string;
@@ -686,6 +694,8 @@ export interface ManagementApplyResult {
   links?: ManagementResultLinks;
   /** The preview of the change set a confirmation is waiting on; response-only. */
   presentation?: ManagementPresentation;
+  /** Setup the approved change set's call held until the approval; response-only. */
+  deferredSetup?: ManagementDeferredSetup[];
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';

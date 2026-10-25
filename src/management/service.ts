@@ -136,6 +136,7 @@ import {
   type ManagementChangeSetPreview,
   type ManagementChangeSetRecordPreview,
   type ManagementChangeSetProposalRecord,
+  type ManagementDeferredSetup,
   type ChickpeaManagementHandoff,
   type ManagementDuplicateIdentityResult,
   type ManagementItemOutcome,
@@ -1763,7 +1764,7 @@ export class WorkspaceManagementService {
     const clientRefs = agentClientRefs(request.operations);
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
       const settled = await this.settleChangeSetRequest(actor, request);
-      if (settled) return emitOperationOutcomes(actor.origin.kind, settled);
+      if (settled) return emitOperationOutcomes(actor.origin.kind, settled.result);
       const pending = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
       return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(pending));
     }
@@ -1971,11 +1972,11 @@ export class WorkspaceManagementService {
    * In Slack only the person approves, and the Approve card and a typed
    * "approve" find only change sets, so the operation that waits and the rest
    * of the call become one. A later operation the requester can't make fails
-   * on its own, as it would have in the call. A setup request waits for after
-   * the approval, because its one-time link reaches the person only in the
-   * Agent's reply. When a later change conflicts with the first one's target
-   * revisions, as a second change to the same object does, it waits for its
-   * own request after this approval.
+   * on its own, as it would have in the call. A setup request waits until the
+   * approval, which issues its one-time link with the receipt: its target may
+   * not exist until the set applies. When a later change conflicts with the
+   * first one's target revisions, as a second change to the same object does,
+   * it waits for its own request after this approval.
    */
   private async freezeSlackConfirmation(
     actor: LiveManagementActor,
@@ -1995,7 +1996,7 @@ export class WorkspaceManagementService {
     for (const [offset, operation] of tail.entries()) {
       if (offset === 0) continue;
       const outcome = operation.kind === 'request_setup'
-        ? waitingOutcome(operation, 'setup_after_approval', SETUP_AFTER_APPROVAL)
+        ? waitingOutcome(operation, 'setup_after_approval', SETUP_LINK_ON_APPROVAL)
         : await this.refusedLaterOperation(actor, operation, proposalAgentIds);
       if (outcome) refused.push({ index: index + offset, outcome });
       else held.push({ index: index + offset, operation });
@@ -2048,12 +2049,13 @@ export class WorkspaceManagementService {
    * Completes the call a Slack change set holds the rest of once the set is
    * settled, as resumeConfirmedRequest does for a single-write proposal: the
    * set's outcomes replace the confirmation, and a retired set's operations
-   * fail as stale.
+   * fail as stale. Once the set applied, the setup the call held until the
+   * approval is issued.
    */
   private async settleChangeSetRequest(
     actor: LiveManagementActor,
     request: ManagementRequestRecord,
-  ): Promise<ManagementApplyResult | undefined> {
+  ): Promise<{ result: ManagementApplyResult; deferredSetup: ManagementDeferredSetup[] } | undefined> {
     const outcomes = request.progress.outcomes;
     const at = outcomes.findIndex(({ disposition }) => disposition === 'confirmation_required');
     const proposalId = outcomes[at]?.proposalId;
@@ -2062,8 +2064,18 @@ export class WorkspaceManagementService {
       : undefined;
     if (changeSet?.requestOperationId !== request.operationId) return undefined;
     let settled: ManagementItemOutcome[];
+    const later = outcomes.slice(at + 1);
+    const deferredSetup: ManagementDeferredSetup[] = [];
     if (changeSet.status === 'completed' && changeSet.result) {
       settled = changeSet.result.outcomes;
+      const applied = new Set([...outcomes.slice(0, at), ...settled].flatMap(({ itemId, disposition }) =>
+        disposition === 'applied' ? [itemId] : []));
+      for (const [offset, outcome] of later.entries()) {
+        if (outcome.code !== 'setup_after_approval') continue;
+        const issued = await this.setupAfterApproval(actor, request, outcome.itemId, applied);
+        later[offset] = issued.outcome;
+        deferredSetup.push(issued.deferred);
+      }
     } else if (changeSet.status === 'stale') {
       settled = changeSet.operations.map((operation) => ({
         itemId: operation.itemId,
@@ -2077,14 +2089,68 @@ export class WorkspaceManagementService {
     const result = await this.resultFor(
       request.operationId,
       publicManagementIdempotencyKey(actor, request.idempotencyKey),
-      [...outcomes.slice(0, at), ...settled, ...outcomes.slice(at + 1)],
+      [...outcomes.slice(0, at), ...settled, ...later],
     );
     await this.stores.management.completeRequest(
       request.operationId,
       withoutSetupCapabilities(result),
       this.now(),
     );
-    return result;
+    return { result, deferredSetup };
+  }
+
+  /**
+   * One setup request a Slack call held until the person approved its change
+   * set, checked as the call would have checked it and issued for the person.
+   */
+  private async setupAfterApproval(
+    actor: LiveManagementActor,
+    request: ManagementRequestRecord,
+    itemId: string,
+    applied: ReadonlySet<string>,
+  ): Promise<{ outcome: ManagementItemOutcome; deferred: ManagementDeferredSetup }> {
+    const item = { itemId, operationKind: 'request_setup' as const };
+    const notIssued = (outcome: ManagementItemOutcome) => ({
+      outcome,
+      deferred: { itemId, code: outcome.code ?? outcome.disposition },
+    });
+    const stored = request.operations.find((operation) => operation.itemId === itemId);
+    if (stored?.kind !== 'request_setup') {
+      return notIssued({ ...item, disposition: 'failed', code: 'invalid_state' });
+    }
+    if ((stored.dependsOn ?? []).some((dependency) => !applied.has(dependency))) {
+      return notIssued({ ...item, disposition: 'skipped', code: 'dependency_not_applied' });
+    }
+    try {
+      const operation = resolveClientReferences(stored, agentClientRefs(request.operations)) as typeof stored;
+      const handoff = await this.actingAgentOperationHandoff(actor, operation);
+      if (handoff) return notIssued({ ...item, disposition: 'chickpea_handoff', handoff });
+      const policy = classifyManagementOperation(await this.policyFacts(actor, operation, {
+        operationCount: request.operations.length,
+      }));
+      if (!policy.allowed) return notIssued({ ...item, disposition: 'failed', code: policy.reason });
+      if (policy.posture === 'confirmation') {
+        return notIssued({
+          ...item,
+          disposition: 'failed',
+          code: policy.reason,
+          instruction: SLACK_SETUP_APPROVAL_UNAVAILABLE,
+        });
+      }
+      const setup = await this.issueSetup(actor, operation);
+      return {
+        outcome: {
+          ...item,
+          disposition: 'setup_required',
+          setupOperationId: setup.record.setupOperationId,
+          setupUrl: setup.url,
+        },
+        deferred: { itemId, label: setup.record.target.targetLabel, setupUrl: setup.url },
+      };
+    } catch (error) {
+      if (!isExpectedMutationError(error)) throw error;
+      return notIssued({ ...item, disposition: 'failed', code: mutationErrorCode(error) });
+    }
   }
 
   /** The preview of the pending change set a confirmation waits on, for the person to read. */
@@ -2536,17 +2602,32 @@ export class WorkspaceManagementService {
       this.now(),
       proposal.updatedAt,
     );
-    if (proposal.requestOperationId) {
-      // The approval has applied; settling the call it came from is bookkeeping.
-      await this.stores.management.getRequest(proposal.requestOperationId)
-        .then((request) => request?.status === 'applying'
-          ? this.settleChangeSetRequest(actor, request)
-          : undefined)
-        .catch(() => {
-          console.warn('[chickpea:management] the approved call will settle when it is next read');
-        });
+    const deferredSetup = proposal.requestOperationId
+      ? await this.settleApprovedRequest(actor, proposal.requestOperationId)
+      : [];
+    return emitOperationOutcomes(
+      actor.origin.kind,
+      deferredSetup.length > 0 ? { ...result, deferredSetup } : result,
+    );
+  }
+
+  /**
+   * Settles the call an applied change set came from and returns the setup
+   * it held until the approval. The approval has applied either way: a call
+   * that fails to settle here settles when it is next read.
+   */
+  private async settleApprovedRequest(
+    actor: LiveManagementActor,
+    requestOperationId: string,
+  ): Promise<ManagementDeferredSetup[]> {
+    try {
+      const request = await this.stores.management.getRequest(requestOperationId);
+      if (request?.status !== 'applying') return [];
+      return (await this.settleChangeSetRequest(actor, request))?.deferredSetup ?? [];
+    } catch {
+      console.warn('[chickpea:management] the approved call will settle when it is next read');
+      return [];
     }
-    return emitOperationOutcomes(actor.origin.kind, result);
   }
 
   private async executeChangeSetOperation(
@@ -6695,6 +6776,7 @@ function heldForPersonOnAsk(
 }
 
 const SETUP_AFTER_APPROVAL = 'Prepare connector or repository setup separately after the reviewed Agent change.';
+const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
 

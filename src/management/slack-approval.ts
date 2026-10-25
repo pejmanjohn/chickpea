@@ -8,7 +8,11 @@ import {
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
 import { personRequestTextSource } from '../slack/agent-asks.ts';
-import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import {
+  escapeSlackControlCharacters,
+  renderSlackMarkdownActionLink,
+  slackActionLink,
+} from '../slack/message-format.ts';
 import { conversationThreadTs, slackConversationKind } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
@@ -265,14 +269,25 @@ async function formatHostSlackManagementReceipt(input: {
   const attention = result.outcomes.filter(({ disposition }) => disposition !== 'applied');
   const warnings = result.outcomes.flatMap(({ warning }) => warning ? [warning] : []);
   const codes = attention.flatMap(({ code }) => code ? [code] : []);
+  // The setup the person asked for alongside the change reaches them only here.
+  const deferredSetup = result.deferredSetup ?? [];
+  const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
+    const lines = [
+      ...details,
+      ...deferredSetup.flatMap((setup) => 'code' in setup
+        ? [`Issue: ${escapeSlackControlCharacters(setup.code)}`]
+        : []),
+      ...deferredSetup.flatMap((setup) => 'setupUrl' in setup
+        ? [renderSlackMarkdownActionLink(slackActionLink(setup.setupUrl, `Connect ${setup.label}`))]
+        : []),
+    ];
+    return { kind: 'message', text: lines.length > 0 ? `${text}\n\n${lines.join('\n')}` : text };
+  };
   if (applied.length === 0) {
     const detail = codes.length > 0
       ? ` (${[...new Set(codes)].map(escapeSlackControlCharacters).join(', ')})`
       : '';
-    return {
-      kind: 'message',
-      text: `I couldn’t apply the approved changes${detail}. Nothing was changed.`,
-    };
+    return message(`I couldn’t apply the approved changes${detail}. Nothing was changed.`);
   }
   const creation = result.outcomes.find(({ operationKind }) => operationKind === 'create_agent');
   const originKind = slackConversationKind(input.turn);
@@ -285,6 +300,7 @@ async function formatHostSlackManagementReceipt(input: {
     attention.length === 0 &&
     warnings.length === 0 &&
     result.outcomes.every(({ disposition }) => disposition === 'applied') &&
+    deferredSetup.length === 0 &&
     (originKind !== 'channel' || sourceGrant?.disposition === 'applied')
   );
   if (cleanCreation && creation) {
@@ -342,21 +358,17 @@ async function formatHostSlackManagementReceipt(input: {
   }
   if (result.status === 'completed' && attention.length === 0 && warnings.length === 0) {
     const skillReceipt = await formatAppliedSkillReceipt(input);
-    if (skillReceipt) return { kind: 'message', text: skillReceipt };
+    if (skillReceipt) return message(skillReceipt);
   }
   const receipt = attention.length === 0
     ? 'Applied the approved changes.'
     : `Applied some approved changes, but ${attention.length} ${
       attention.length === 1 ? 'item needs' : 'items need'
     } attention.`;
-  const details = [
+  return message(receipt, [
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
-  ];
-  return {
-    kind: 'message',
-    text: details.length > 0 ? `${receipt}\n\n${details.join('\n')}` : receipt,
-  };
+  ]);
 }
 
 async function formatAppliedSkillReceipt(input: {

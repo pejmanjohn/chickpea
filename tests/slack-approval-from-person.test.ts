@@ -217,16 +217,23 @@ test('on a turn another Agent\'s ask started, an instruction edit waits for the 
   }
 });
 
-test('a setup request behind a held change waits for after the approval instead of a proposal the Agent applies', async () => {
+const ZENDESK: CustomAgentConfig['mcpServers'][number] = {
+  id: 'zendesk', displayName: 'Zendesk', url: 'https://mcp.zendesk.example/mcp', transport: 'streamable-http',
+  authMode: 'bearer', headerNames: ['Authorization'], enabled: true, lifecycleStatus: 'pending',
+  statusText: 'Setup required', discoveredTools: [], allowedTools: [], presetId: 'zendesk',
+};
+
+test('"rewrite Desk and connect Zendesk": the person\'s approval applies the rewrite and sends the Zendesk setup link', async () => {
   const { f, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-setup-tail');
   try {
-    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk, then set up our Anthropic key.')), 'apply_workspace_changes', {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk to greet visitors and connect Zendesk.')), 'apply_workspace_changes', {
       idempotencyKey: 'compound-then-setup',
       operations: [{
         itemId: 'profile', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
-        patch: { description: 'Greets visitors.', instructions: 'Greet every visitor by name.' },
+        patch: { instructions: 'Greet every visitor by name.', mcpServers: [ZENDESK] },
       }, {
-        itemId: 'anthropic', kind: 'request_setup', target: { kind: 'provider_credential', providerId: 'anthropic' },
+        itemId: 'zendesk-setup', kind: 'request_setup', dependsOn: ['profile'],
+        target: { kind: 'mcp_connection', agentId: desk.id, connectionId: 'zendesk' },
       }],
     });
     const [held, setupItem] = outcomes(result);
@@ -234,13 +241,53 @@ test('a setup request behind a held change waits for after the approval instead 
     assert.match(held?.proposalId ?? '', /^changeset_/, 'the person approves a change set the host can resolve');
     assert.equal(setupItem?.disposition, 'skipped');
     assert.equal(setupItem?.code, 'setup_after_approval');
+    assert.match(setupItem?.instruction ?? '', /follows their approval/, 'the Agent says the link comes with the approval');
     assert.equal(setupItem?.setupUrl, undefined, 'no setup link is issued before the approval');
     assert.deepEqual((await f.management.getChangeSetProposal(held!.proposalId!))?.operations.map(({ itemId }) => itemId),
       ['profile'], 'the change set holds only what the host can apply');
 
     const approval = await hostApproves(chickpea, turn('approve'), held!.proposalId!);
-    assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
-    assert.equal((await f.config.getAgent(desk.id)).description, 'Greets visitors.');
+    assert.equal(approval.kind, 'message');
+    assert.match(approval.kind === 'message' ? approval.text : '',
+      /^Applied the approved changes\.\n\n\[Connect Zendesk\]\(http:\/\/localhost\/setup\/setup_[^#)]+#setup=c{43}\)$/,
+      'the receipt carries the one-time Zendesk link');
+    assert.equal((await f.config.getAgent(desk.id)).instructions, 'Greet every visitor by name.');
+
+    const call = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk to greet visitors and connect Zendesk.')), 'apply_workspace_changes', {
+      idempotencyKey: 'compound-then-setup',
+      operations: [{
+        itemId: 'profile', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { instructions: 'Greet every visitor by name.', mcpServers: [ZENDESK] },
+      }, {
+        itemId: 'zendesk-setup', kind: 'request_setup', dependsOn: ['profile'],
+        target: { kind: 'mcp_connection', agentId: desk.id, connectionId: 'zendesk' },
+      }],
+    });
+    assert.deepEqual(outcomes(call).map(({ itemId, disposition }) => [itemId, disposition]),
+      [['profile', 'applied'], ['zendesk-setup', 'setup_required']], 'the call the change set held is settled');
+  } finally {
+    f.close();
+  }
+});
+
+test('a held setup the person cannot use after the approval is named in the receipt, not dropped', async () => {
+  const { f, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-setup-refused');
+  try {
+    const result = await tool(signal(CHICKPEA_AGENT_ID, turn('Rewrite Desk and connect Zendesk.')), 'apply_workspace_changes', {
+      idempotencyKey: 'compound-then-missing-setup',
+      operations: [{
+        itemId: 'profile', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { description: 'Greets visitors.', instructions: 'Greet every visitor by name.' },
+      }, {
+        itemId: 'zendesk-setup', kind: 'request_setup',
+        target: { kind: 'mcp_connection', agentId: desk.id, connectionId: 'zendesk' },
+      }],
+    });
+    const [held] = outcomes(result);
+    const approval = await hostApproves(chickpea, turn('approve'), held!.proposalId!);
+    assert.equal(approval.kind === 'message' ? approval.text : '',
+      'Applied the approved changes.\n\nIssue: invalid_request',
+      'the connection the setup names does not exist, and the person is told');
   } finally {
     f.close();
   }
