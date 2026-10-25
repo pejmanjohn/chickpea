@@ -4667,6 +4667,7 @@ async function resolveTurnConversation(
   if (turn.channelType ? turn.channelType !== 'mpim' : turn.channelId.startsWith('D')) return undefined;
   const conversation = await transport.lookupChannel(turn.channelId);
   if (conversation.mpim) turn.channelType = 'mpim';
+  if (conversation.shared) turn.sharedChannel = true;
   return conversation;
 }
 

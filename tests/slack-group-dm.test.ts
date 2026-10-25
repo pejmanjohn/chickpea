@@ -45,6 +45,10 @@ const CHANNELS: Record<string, Record<string, unknown>> = {
     id: CONNECT_DM, name: 'mpdm-owner--partner-1', is_mpim: true, is_private: true,
     is_member: true, is_archived: false, is_shared: true, is_ext_shared: true,
   },
+  CPARTNERS: {
+    id: 'CPARTNERS', name: 'partners', is_channel: true, is_private: false, is_member: true,
+    is_archived: false, is_shared: true, is_ext_shared: true,
+  },
 };
 
 interface Harness {
@@ -314,6 +318,17 @@ test('a group DM shared with another organization gets no Agent, Chickpea includ
     assert.deepEqual(harness.posts.map(({ operation, input }) => [operation, input.channel, input.text]), [
       ['chat.postEphemeral', CONNECT_DM, NOT_AVAILABLE],
       ['chat.postEphemeral', CONNECT_DM, NOT_AVAILABLE],
+    ]);
+  });
+});
+
+test('a Channel turn records only whether Slack says the Channel is shared beyond the workspace', async () => {
+  await withHarness(async (harness) => {
+    await harness.deliver({ channel: 'C1', ts: '1800001020.000100', text: '<@UBOT> help', appMention: true });
+    await harness.deliver({ channel: 'CPARTNERS', ts: '1800001030.000100', text: '<@UBOT> help', appMention: true });
+    assert.deepEqual(harness.jobs.map((job) => [job.turn.channelId, job.turn.sharedChannel]), [
+      ['C1', undefined],
+      ['CPARTNERS', true],
     ]);
   });
 });
