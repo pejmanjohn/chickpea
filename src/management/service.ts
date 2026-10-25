@@ -568,11 +568,7 @@ export class WorkspaceManagementService {
 
   async importSkill(input: ImportSkillInput): Promise<ImportSkillResult | ProposeSkillImportResult> {
     const actor = await this.requireLiveActor(input.context);
-    // No message of the person's asked for it, so the import waits for their approval.
-    if (startedByAgentAsk(actor)) {
-      const { replaceExisting: _replaceExisting, ...proposal } = input;
-      return await this.proposeSkillImport(proposal);
-    }
+    if (startedByAgentAsk(actor)) return await this.proposeSkillImport(input);
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
     const replay = await this.stores.management.getRequest(replayOperationId);
@@ -663,17 +659,23 @@ export class WorkspaceManagementService {
     });
     const agent = await this.requireEditableAgent(actor, agentId);
     if (startedByAgentAsk(actor)) {
-      // No message of the person's asked for it, so the change waits for their approval.
       const change = skillActionChange(agent, input.action, input.skillName);
-      if (change.kind === 'change') {
-        return await this.proposeWorkspaceChanges({
-          context: input.context,
-          idempotencyKey: input.idempotencyKey,
-          guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
-          authoringReason: 'agent_edit',
-          operations: [change.operation],
-        });
+      if (change.kind !== 'change') {
+        return this.persistUnchangedManagedAgentSkill(
+          actor,
+          input,
+          agent,
+          skillActionOperationId(actor, input, agentId),
+          change.kind,
+        );
       }
+      return await this.proposeWorkspaceChanges({
+        context: input.context,
+        idempotencyKey: input.idempotencyKey,
+        guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+        authoringReason: 'agent_edit',
+        operations: [change.operation],
+      });
     }
     if (actor.origin.kind === 'slack' && !await this.requesterAuthorizedSkillChange(actor, {
       kind: input.action,
@@ -1823,6 +1825,9 @@ export class WorkspaceManagementService {
           operationCount: request.operations.length,
         });
         const policy = classifyManagementOperation(facts);
+        const waitsForPerson = policy.allowed && actor.origin.kind === 'slack' &&
+          (policy.posture === 'confirmation' ||
+            (heldForPersonOnAsk(actor, input.approvalBasis) && operation.kind !== 'request_setup'));
         if (!policy.allowed) {
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
@@ -1839,8 +1844,7 @@ export class WorkspaceManagementService {
             code: policy.reason,
             instruction: SLACK_SETUP_APPROVAL_UNAVAILABLE,
           });
-        } else if (actor.origin.kind === 'slack' && (policy.posture === 'confirmation' ||
-            (heldForPersonOnAsk(actor, input.approvalBasis) && operation.kind !== 'request_setup'))) {
+        } else if (waitsForPerson) {
           const frozen = await this.freezeSlackConfirmation(actor, request, index, progress);
           progress = appendOutcome(progress, index, {
             itemId: operation.itemId,
@@ -2002,13 +2006,13 @@ export class WorkspaceManagementService {
       authoringReason: 'agent_edit',
       requestOperationId: request.operationId,
     });
-    try {
-      return { changeSet: await freeze(held.map(({ operation }) => operation)), refused };
-    } catch (error) {
-      if (held.length === 1 || !(error instanceof ManagementError && error.code === 'revision_conflict')) {
-        throw error;
+    const changeSet = await freeze(held.map(({ operation }) => operation)).catch((error: unknown) => {
+      if (held.length > 1 && error instanceof ManagementError && error.code === 'revision_conflict') {
+        return undefined;
       }
-    }
+      throw error;
+    });
+    if (changeSet) return { changeSet, refused };
     const conflicting = held.slice(1).map(({ index: at, operation }) => ({
       index: at,
       outcome: waitingOutcome(operation, 'revision_conflict', CHANGE_AFTER_APPROVAL),

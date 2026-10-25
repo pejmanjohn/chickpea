@@ -638,7 +638,7 @@
   },
   {
    "name": "import_skill",
-   "description": "Install one exact public GitHub-hosted SKILL.md on an editable Agent when its source appears in the message the requester typed to this Agent. Pass the exact supplied source unchanged. When the requester names a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source. File URLs, directory URLs and a named repository resolve in one operation. Ask for candidate selection only when the tool returns multiple matches. Preserve omission warnings in presentation.slack. The service pins the inspected commit, applies one bounded scriptless skill immediately, and returns a receipt plus undo. If the source has several skills, ask the requester to post the chosen candidate sourceUrl. For different same-name content, follow the exact replacement clarification returned by the tool before retrying with replaceExisting true. Do not add another approval step. On a turn another Agent's ask started, it returns a proposal for the person to approve instead of installing.",
+   "description": "Install one exact public GitHub-hosted SKILL.md on an editable Agent when its source appears in the message the requester typed to this Agent. Pass the exact supplied source unchanged. When the requester names a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source. File URLs, directory URLs and a named repository resolve in one operation. Ask for candidate selection only when the tool returns multiple matches. Preserve omission warnings in presentation.slack. The service pins the inspected commit, applies one bounded scriptless skill immediately, and returns a receipt plus undo. If the source has several skills, ask the requester to post the chosen candidate sourceUrl. For different same-name content, follow the exact replacement clarification returned by the tool before retrying with replaceExisting true. Do not add another approval step.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",
@@ -678,7 +678,7 @@
   },
   {
    "name": "manage_agent_skill",
-   "description": "Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority and the exact current command on Slack, preserves every other skill, and returns a receipt plus undo without a proposal. An authenticated MCP invocation is already the exact typed command. Use it instead of propose_workspace_changes or a model-authored skills array. On a Slack turn another Agent's ask started, it returns a proposal for the person to approve instead.",
+   "description": "Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority and the exact current command on Slack, preserves every other skill, and returns a receipt plus undo without a proposal. An authenticated MCP invocation is already the exact typed command. Use it instead of propose_workspace_changes or a model-authored skills array.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",

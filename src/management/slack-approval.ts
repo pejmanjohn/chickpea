@@ -7,6 +7,7 @@ import {
   type CreatedAgentHandoffConfig,
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
+import { personRequestTextSource } from '../slack/agent-asks.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
 import { conversationThreadTs, slackConversationKind } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
@@ -228,6 +229,7 @@ function slackManagementSignal(
   assignment: ResolvedAssignment,
   turnJobId: string,
 ): SlackManagementSignal {
+  const requesterTextSource = personRequestTextSource(turn);
   return {
     agentId: assignment.agent.id,
     workspaceId: turn.workspaceId,
@@ -240,6 +242,7 @@ function slackManagementSignal(
     turnJobId,
     // The host resolves an approval only from the person's own message or click.
     requesterText: turn.text,
+    ...(requesterTextSource ? { requesterTextSource } : {}),
   };
 }
 

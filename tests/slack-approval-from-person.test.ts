@@ -270,6 +270,12 @@ test('on an ask turn, undo, skill changes and skill imports wait for the person 
     }));
     assert.equal((await f.config.getAgent(desk.id)).skills.find(({ name }) => name === 'notes')?.enabled, true,
       'the skill stays enabled');
+    const missing = await tool(asked(), 'manage_agent_skill', {
+      agentId: desk.id, action: 'disable', skillName: 'drafts', idempotencyKey: 'ask-disable-missing',
+    });
+    assert.ok(missing.ok, JSON.stringify(missing));
+    assert.equal((missing.result as { status?: string }).status, 'unchanged',
+      'a skill change that changes nothing says so, as it does on the person\'s turn');
 
     pendingProposalId(await tool(asked(), 'import_skill', {
       agentId: desk.id, source: SKILL_SOURCE, idempotencyKey: 'ask-import', guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
@@ -298,6 +304,85 @@ test('a click whose host-written text quotes a skill URL installs nothing; the p
     });
     assert.ok(typed.ok, JSON.stringify(typed));
     assert.deepEqual((await f.config.getAgent(desk.id)).skills.map(({ name }) => name), ['notes', 'triage']);
+  } finally {
+    f.close();
+  }
+});
+
+test('an Agent creation another Agent\'s ask started is created and welcomed once the person approves', async () => {
+  const f = await createManagementAdapterFixture('approval-ask-create', {
+    publishAgentPresence: async ({ agentId }) => {
+      const current = await f.config.getAgent(agentId);
+      const agent = await f.config.updateAgent(agentId, {
+        slackPresence: {
+          ...current.slackPresence!,
+          kind: 'user_group',
+          desiredState: 'active',
+          health: 'healthy',
+          userGroupId: 'SSUPPORT',
+          observedAt: 1_800_000_000_000,
+        },
+      }, current.revision);
+      return { agent };
+    },
+  });
+  try {
+    const workspaceId = f.owner.binding.slackTeamId;
+    const conversation = { workspaceId, channelId: 'D_APPROVAL_CREATE', threadTs: '820.1' };
+    const chickpea = await f.config.materializeChickpeaAgent();
+    const dmTurn = (text: string, n: number, fields: Partial<NormalizedSlackTurn> = {}): NormalizedSlackTurn => ({
+      workspaceId, channelId: conversation.channelId, threadTs: conversation.threadTs, channelType: 'im',
+      eventId: `Ev_approval_create_${n}`, messageTs: `820.${n + 1}`, text,
+      userId: f.owner.binding.slackUserId, source: 'dm_message', contextMode: 'thread', ...fields,
+    });
+    const asked = slackTurnSignal({
+      turn: { ...dmTurn('@chickpea create a support Agent', 1), agentAsk: ask() },
+      agentId: CHICKPEA_AGENT_ID,
+      conversation,
+      conversationKind: 'im',
+      slackUserId: f.owner.binding.slackUserId,
+    });
+    const proposalId = heldProposalId(await invokeSlackWorkspaceManagementTool({
+      signal: asked,
+      identity: f.identity,
+      service: f.service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'ask-create-support',
+        operations: [{
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            id: 'agent_support_approved', name: 'Support', requestedHandle: 'support',
+            editPolicy: 'creator_and_admins', instructions: 'Draft customer replies.', enabled: true,
+            skills: [], mcpServers: [], apiConnections: [], repositories: [],
+          },
+        }],
+      },
+    }));
+    await assert.rejects(f.config.getAgent('agent_support_approved'), 'nothing is created on an Agent\'s words');
+
+    const approval = await executeHostSlackManagementApproval({
+      turn: dmTurn('approve', 2),
+      assignment: {
+        workspaceId, channelId: conversation.channelId, agentId: CHICKPEA_AGENT_ID,
+        runtimeContract: 'chickpea-v1', agent: chickpea,
+      },
+      turnJobId: 'turn_approval_create',
+      proposalId,
+      dependencies: {
+        identity: f.identity, config: f.config, management: f.management, service: f.service,
+        publicUrl: 'https://example.test',
+      },
+    });
+    assert.deepEqual(approval, { kind: 'agent_welcome_queued', outboxId: `agent_welcome_${proposalId}` },
+      'the new Agent introduces itself, as it does when the person asked for it');
+    assert.equal((await f.config.getAgent('agent_support_approved')).name, 'Support');
+    const welcome = await f.management.getOutboxForOperation(
+      (await f.management.getChangeSetProposal(proposalId))!.result!.operationId,
+    );
+    assert.equal(welcome?.receipt && 'kind' in welcome.receipt ? welcome.receipt.kind : undefined,
+      'agent_created_welcome');
   } finally {
     f.close();
   }

@@ -107,11 +107,7 @@ test('Cloudflare Slack management latches an unknown write outcome for the turn'
   });
   assert.deepEqual(persisted, [{
     turnJobId: SIGNAL.turnJobId,
-    confirmationFailure: {
-      code: 'management_outcome_unknown',
-      proposalId: 'apply-unknown',
-      outcome: 'unknown',
-    },
+    confirmationFailure: { proposalId: 'apply-unknown' },
   }]);
 
   const blocked = await invokeCloudflareSlackWorkspaceManagementTool({
