@@ -61,26 +61,27 @@ Providers (3)
   anthropic: not configured
   openrouter: not configured
 
-$ npx chickpea-cli call https://chickpea.example.com apply_workspace_changes --args-file archive.json
+$ npx chickpea-cli call https://chickpea.example.com apply_workspace_changes --args-file delete.json
 {
   "ok": true,
   "result": {
     "operationId": "op_9c2",
     "status": "confirmation_required",
     "outcomes": [
-      { "itemId": "archive", "operationKind": "archive_agent", "disposition": "confirmation_required", "proposalId": "prop_5e1" }
-    ]
+      { "itemId": "delete", "operationKind": "delete_agent", "disposition": "confirmation_required", "proposalId": "changeset_5e1" }
+    ],
+    "presentation": { "markdown": "..." }
   }
 }
-Proposal prop_5e1 is waiting for confirmation. Nothing has been applied.
-Review the preview in the result, then confirm it from this same CLI session with:
-  chickpea call https://chickpea.example.com confirm_workspace_change --args '{"proposalId":"prop_5e1"}'
+This change is destructive and waits for your confirmation (changeset_5e1). Nothing has been applied.
+Read the preview in result.presentation.markdown, then confirm it from this same CLI session with:
+  chickpea call https://chickpea.example.com confirm_workspace_change --args '{"proposalId":"changeset_5e1"}'
 
 $ npx chickpea-cli recipe export https://chickpea.example.com --agents agent_support > recipe.json
 $ npx chickpea-cli recipe preview https://chickpea.example.com recipe.json
 ```
 
-A recipe preview returns typed operations. Apply them with `chickpea call <url> apply_workspace_changes --args-file ops.json`, where the file wraps them as `{ "idempotencyKey": "...", "operations": [...] }`. The [workspace management runbook](https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/workspace-management-mcp.md) describes every tool, the proposal model, and what the setup links do.
+A recipe preview returns typed operations. Apply them with `chickpea call <url> apply_workspace_changes --args-file ops.json`, where the file wraps them as `{ "idempotencyKey": "...", "operations": [...] }`. The [workspace management runbook](https://github.com/pejmanjohn/chickpea/blob/main/docs/runbooks/workspace-management-mcp.md) describes every tool, which changes ask for confirmation, and what the setup links do.
 
 ## How sign-in works
 
@@ -99,7 +100,7 @@ The protocol pieces come from the official `@modelcontextprotocol/client` SDK. T
 ## Security notes
 
 - **The CLI never accepts a token.** There is no `--token` flag and no environment variable for a bearer token, provider key, or Slack credential. The deployment issues tokens during `login`; the CLI holds only what that flow returned. Flags that look like credentials are refused.
-- **Proposals are never auto-confirmed.** When a result carries `confirmation_required` or a proposal, the CLI prints the proposal id and the exact `confirm_workspace_change` command. You run it. The same client that proposed must confirm, so use the same machine and session.
+- **Destructive changes are never auto-confirmed.** Everything your Chickpea role allows applies when you call it, as in Admin. A destructive change, such as deleting an Agent or routine, removing a member or a model provider key, or removing an Agent's connection, returns `confirmation_required` instead. The CLI prints its proposal id and the exact `confirm_workspace_change` command. You run it. The same client must confirm, so use the same machine and session.
 - **Setup links are credentials.** When a result carries a setup link, the CLI prints it with a warning: anyone who holds it can complete its exact action without signing in, and it expires in 24 hours. Revoke a leaked link with the `revoke_setup_link` tool.
 - **Errors never print secrets.** Error output is one line on stderr with a stable code and a hint. Authorization codes, tokens, and setup capabilities are redacted from any message that passes through.
 - **No telemetry.** The CLI sends nothing anywhere except to the deployment you name. `DO_NOT_TRACK` is respected in the sense that there is nothing to turn off.
