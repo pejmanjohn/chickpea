@@ -5,6 +5,8 @@ import * as v from 'valibot';
 
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
+import { modelEffortChoiceError } from '../src/config/model-effort-capability.ts';
+import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -4553,5 +4555,67 @@ test('a confirmed Channel publication resumes an interrupted pending Slack recon
     ))[0]?.status, 'active');
   } finally {
     f.close();
+  }
+});
+
+test('management pins an effort only with a model that accepts it, and a model change clears it', async () => {
+  const settings = new SqliteSettingsStore(':memory:');
+  const f = await createManagementAdapterFixture('model-effort', {
+    modelEffortChoice: (model, effort) => modelEffortChoiceError(model, effort, { settings }),
+  });
+  const context: ManagementActorContext = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'model-effort-client' },
+  };
+  let requests = 0;
+  const apply = async (operation: ManagementOperation) => {
+    const result = await f.service.applyWorkspaceChanges({
+      context, idempotencyKey: `effort-${++requests}`, operations: [operation],
+    });
+    assert.ok('outcomes' in result, JSON.stringify(result));
+    return result;
+  };
+  try {
+    for (const operation of [
+      { itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'max' } },
+      { itemId: 'update', kind: 'update_agent', agentId: 'agent_support', expectedRevision: 1, patch: { modelEffort: null } },
+    ] as const) {
+      assert.equal(managementOperationZodSchema.safeParse(operation).success, true, operation.kind);
+      assert.equal(v.safeParse(managementOperationValibotSchema, operation).success, true, operation.kind);
+    }
+    const minimal = { itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'minimal' } };
+    assert.equal(managementOperationZodSchema.safeParse(minimal).success, false);
+    assert.equal(v.safeParse(managementOperationValibotSchema, minimal).success, false);
+
+    // Haiku 4.5 accepts low, medium, and high.
+    const refused = await apply({ itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'max' } });
+    assert.equal(refused.outcomes[0]?.code, 'effort_not_supported');
+    assert.match(refused.outcomes[0]?.warning ?? '', /does not support max effort/);
+    await assert.rejects(() => f.config.getAgent(agentInput.id), UnknownAgentError);
+
+    const created = await apply({ itemId: 'create', kind: 'create_agent', agent: { ...agentInput, modelEffort: 'high' } });
+    assert.equal(created.status, 'completed', JSON.stringify(created));
+    assert.equal((await f.config.getAgent(agentInput.id)).modelEffort, 'high');
+
+    const switched = await apply({
+      itemId: 'switch', kind: 'update_agent', agentId: agentInput.id, expectedRevision: 1,
+      patch: { model: 'anthropic/claude-opus-5-5' },
+    });
+    assert.equal(switched.status, 'completed', JSON.stringify(switched));
+    assert.equal((await f.config.getAgent(agentInput.id)).modelEffort, undefined, 'a new model clears the effort');
+
+    const unpinned = await apply({
+      itemId: 'unpin', kind: 'update_agent', agentId: agentInput.id, expectedRevision: 2, patch: { model: null },
+    });
+    assert.equal(unpinned.status, 'completed');
+    const modelless = await apply({
+      itemId: 'effort', kind: 'update_agent', agentId: agentInput.id, expectedRevision: 3, patch: { modelEffort: 'high' },
+    });
+    assert.equal(modelless.outcomes[0]?.code, 'effort_requires_model');
+  } finally {
+    f.close();
+    settings.close();
   }
 });

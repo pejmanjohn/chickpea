@@ -1,4 +1,5 @@
 import { ModelResolutionError } from './errors.ts';
+import type { ModelEffort } from './model-effort.ts';
 import { registeredPiProvider } from './pi-provider-registry.ts';
 import type {
   AgentModelAttribution,
@@ -32,6 +33,7 @@ import type { ModelRequestFundingSource } from '../usage/model-requests.ts';
 // (where null means "clear the pin") can be checked without re-shaping.
 export type ModelResolvableAgent = Pick<CustomAgentConfig, 'id'> & {
   model?: string | null;
+  modelEffort?: ModelEffort | null;
 };
 
 export function resolveAgentModel(
@@ -53,6 +55,8 @@ export function resolveAgentModel(
 
 interface ResolvedAgentModelPolicy {
   model: string;
+  /** The pin's effort, or the Workspace default's when the Agent follows it. */
+  effort?: ModelEffort;
   attribution: AgentModelAttribution;
 }
 
@@ -83,7 +87,13 @@ export async function resolveModelPolicyForAssignment(
     env,
     ...(platformEnv ? { platformEnv } : {}),
   });
-  return { ...assignment, model: resolved.model, modelAttribution: resolved.attribution };
+  const { effort: _previousEffort, ...unresolved } = assignment;
+  return {
+    ...unresolved,
+    model: resolved.model,
+    ...(resolved.effort ? { effort: resolved.effort } : {}),
+    modelAttribution: resolved.attribution,
+  };
 }
 
 /** Resolve the policy source once, before effective configuration is built. */
@@ -99,6 +109,7 @@ export function resolveAgentModelPolicy(input: {
     const model = resolveAgentModel(input.agent, input.env);
     return {
       model,
+      ...pinnedEffort(input.agent),
       attribution: {
         source: input.agent.model ? 'pinned' : 'legacy_environment',
         providerId: providerPrefix(model),
@@ -113,6 +124,7 @@ export function resolveAgentModelPolicy(input: {
     const model = noteResolvedModel(input.agent.model);
     return {
       model,
+      ...pinnedEffort(input.agent),
       attribution: activatedAttribution(model, 'pinned', input.platformEnv),
     };
   }
@@ -131,6 +143,7 @@ export function resolveAgentModelPolicy(input: {
   const model = noteResolvedModel(workspaceDefault.modelId);
   return {
     model,
+    ...(workspaceDefault.effort ? { effort: workspaceDefault.effort } : {}),
     attribution: {
       source: 'workspace_default',
       workspaceDefaultRevision: workspaceDefault.revision,
@@ -138,6 +151,10 @@ export function resolveAgentModelPolicy(input: {
       ...catalogRevisionForModel(model, input.platformEnv),
     },
   };
+}
+
+function pinnedEffort(agent: ModelResolvableAgent): Pick<ResolvedAgentModelPolicy, 'effort'> {
+  return agent.model && agent.modelEffort ? { effort: agent.modelEffort } : {};
 }
 
 // Warn only from registered model metadata. Curated binding models have a
@@ -202,7 +219,7 @@ function catalogRevisionForModel(
 export type ModelRoleUnsetReason = 'role_unset' | 'credential_missing' | 'funding_not_offered';
 
 export type ModelRoleResolution =
-  | { modelId: string; providerId: string; source: 'pinned' | 'workspace_default' }
+  | { modelId: string; providerId: string; source: 'pinned' | 'workspace_default'; effort?: ModelEffort }
   | { unset: true; reason: ModelRoleUnsetReason };
 
 export interface ModelRoleReader {
@@ -222,7 +239,7 @@ export interface ResolveAgentModelForRoleInput {
   /** The Agent's own override row, when one exists. */
   agentRole?: Pick<AgentModelRole, 'modelId'>;
   /** The Workspace default for this role, when one exists. */
-  workspaceRole?: Pick<WorkspaceModelRole, 'modelId'>;
+  workspaceRole?: Pick<WorkspaceModelRole, 'modelId' | 'effort'>;
   env?: PlatformEnv;
   settings?: SettingsStore;
   /** Seam for tests; production reads the same stored/env provider keys. */
@@ -241,13 +258,17 @@ export async function resolveAgentModelForRole(
   const resolved = input.agent.kind === 'user' && pinned
     ? { modelId: pinned, source: 'pinned' as const }
     : input.workspaceRole?.modelId
-      ? { modelId: input.workspaceRole.modelId, source: 'workspace_default' as const }
+      ? {
+          modelId: input.workspaceRole.modelId,
+          source: 'workspace_default' as const,
+          ...(input.workspaceRole.effort ? { effort: input.workspaceRole.effort } : {}),
+        }
       : undefined;
   if (!resolved) return { unset: true, reason: 'role_unset' };
   const providerId = providerPrefix(resolved.modelId);
   const unavailable = await roleProviderUnavailable(input, resolved.modelId);
   if (unavailable) return { unset: true, reason: unavailable };
-  return { modelId: resolved.modelId, providerId, source: resolved.source };
+  return { ...resolved, providerId };
 }
 
 async function roleProviderUnavailable(
@@ -330,6 +351,7 @@ export interface CodingModelAgentRoute {
   model: string;
   runtimeModel: string;
   runtimeModelRoute?: FrozenRuntimeModelRoute;
+  effort?: ModelEffort;
 }
 
 /** The coding role run on the Agent's own route; `fallback` when it stands in for a model that cannot be used. */
@@ -338,6 +360,7 @@ export function codingOnAgentModel(agentRoute: CodingModelAgentRoute, fallback: 
     model: agentRoute.model,
     runtimeModel: agentRoute.runtimeModel,
     ...(agentRoute.runtimeModelRoute ? { runtimeModelRoute: agentRoute.runtimeModelRoute } : {}),
+    ...(agentRoute.effort ? { effort: agentRoute.effort } : {}),
     attribution: {
       role: 'coding',
       source: 'agent_model',
@@ -389,8 +412,12 @@ export async function resolveCodingModelForPlan(input: {
     providerId: resolution.providerId,
     fallback: false,
   };
+  // The role picks its model and effort together; the Agent's effort never
+  // rides on the role's model.
+  const roleEffort = resolution.effort ? { effort: resolution.effort } : {};
   if (resolution.modelId === input.agentRoute.model) {
-    return { ...agentModel(false), attribution };
+    const { effort: _agentEffort, ...sameModel } = agentModel(false);
+    return { ...sameModel, ...roleEffort, attribution };
   }
   try {
     const route = await input.resolveRoute(resolution.modelId);
@@ -398,6 +425,7 @@ export async function resolveCodingModelForPlan(input: {
       model: resolution.modelId,
       runtimeModel: route.runtimeModel,
       ...(route.runtimeModelRoute ? { runtimeModelRoute: route.runtimeModelRoute } : {}),
+      ...roleEffort,
       attribution,
     };
   } catch {

@@ -578,6 +578,7 @@ async function prepareExecution(
             model: access.config.model,
             runtimeModel: runtimeModel.model,
             ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+            ...(access.config.effort ? { effort: access.config.effort } : {}),
           },
           settings: settingsStore,
           ...(input.env ? { env: input.env } : {}),
@@ -723,6 +724,7 @@ function createEnvelope(input: {
       agentId: input.access.config.agentId,
       agent: input.access.config.agent,
       model: input.canonicalModel,
+      ...(input.access.config.effort ? { effort: input.access.config.effort } : {}),
       modelAttribution: input.access.config.modelAttribution,
       ...(input.access.config.ownerIncarnation
         ? { ownerIncarnation: input.access.config.ownerIncarnation }

@@ -1325,6 +1325,64 @@ test('an Agent PATCH that fails on its role row leaves config_agents unchanged',
   }
 });
 
+test('effort columns install additively and an effort lives and dies with its model', () => {
+  const db = openStateDb(':memory:');
+  try {
+    installSchema12Fixture(db);
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    for (const [table, column] of [
+      ['config_agents', 'model_effort'],
+      ['config_workspace_model_defaults', 'effort'],
+      ['config_workspace_model_roles', 'effort'],
+    ]) {
+      assert.ok(db.all(`PRAGMA table_info(${table})`).some(({ name }) => name === column), `${table}.${column}`);
+    }
+    const legacy = store.getAgent('agent_default');
+    assert.equal(legacy.modelEffort, undefined, 'pre-column Agents read as unset');
+
+    const pinned = store.updateAgent(legacy.id, { model: 'anthropic/claude-opus-5-5', modelEffort: 'max' }, legacy.revision);
+    assert.equal(pinned.modelEffort, 'max');
+    const renamed = store.updateAgent(legacy.id, { name: 'Renamed' }, pinned.revision);
+    assert.equal(renamed.modelEffort, 'max', 'an unrelated edit keeps the effort');
+    const sameModel = store.updateAgent(legacy.id, { model: 'anthropic/claude-opus-5-5' }, renamed.revision);
+    assert.equal(sameModel.modelEffort, 'max', 'resending the same model keeps the effort');
+    const switched = store.updateAgent(legacy.id, { model: 'anthropic/claude-haiku-4-5' }, sameModel.revision);
+    assert.equal(switched.model, 'anthropic/claude-haiku-4-5');
+    assert.equal(switched.modelEffort, undefined, 'a new model without an effort clears it');
+    const medium = store.updateAgent(legacy.id, { modelEffort: 'medium' }, switched.revision);
+    assert.equal(medium.modelEffort, 'medium', 'medium is stored, not folded into unset');
+    const unpinned = store.updateAgent(legacy.id, { model: null }, medium.revision);
+    assert.equal(unpinned.modelEffort, undefined, 'an Agent without a model has no effort');
+    db.run(
+      "UPDATE config_agents SET model = 'anthropic/claude-opus-5-5', model_effort = 'ultra' WHERE id = ?",
+      legacy.id,
+    );
+    assert.equal(store.getAgent(legacy.id).modelEffort, undefined, 'an unknown stored effort reads as unset');
+
+    const chosen = store.putWorkspaceModelDefault({
+      workspaceId: 'TACME', modelId: 'openai/gpt-5.5', effort: 'xhigh', provenance: 'admin_selected',
+    });
+    assert.equal(chosen.effort, 'xhigh');
+    const replaced = store.putWorkspaceModelDefault({
+      workspaceId: 'TACME', modelId: 'openai/gpt-5.5', provenance: 'admin_selected',
+    }, chosen.revision);
+    assert.equal(replaced.effort, undefined, 'a default saved without an effort stores none');
+
+    const coding = store.putWorkspaceModelRole({
+      workspaceId: 'TACME', role: 'coding', modelId: 'openai/gpt-5.5', effort: 'high',
+    });
+    assert.equal(coding.effort, 'high');
+    const image = store.putWorkspaceModelRole({
+      workspaceId: 'TACME', role: 'image', modelId: 'openai/gpt-image-2.5-flare', effort: 'high',
+    });
+    assert.equal(image.effort, undefined, 'the image role carries no effort');
+    const cleared = store.putWorkspaceModelRole({ workspaceId: 'TACME', role: 'coding', effort: 'high' }, coding.revision);
+    assert.equal(cleared.effort, undefined, 'an unset coding role carries no effort');
+  } finally {
+    db.close();
+  }
+});
+
 test('website login grants install additively and pre-column Agents read as no grants', () => {
   const db = openStateDb(':memory:');
   try {

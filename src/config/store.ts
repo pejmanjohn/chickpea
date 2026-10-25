@@ -78,6 +78,7 @@ import { promisify } from '../state/async-facade.ts';
 import { openStateDb, resolveStateDbPath } from '../state/node-state-db.ts';
 import { schemaInstallRequired, type SqlParam, type StateDb } from '../state/state-db.ts';
 import { addColumnIfMissing, tableExists } from '../state/schema-links.ts';
+import { agentModelEffortAfterPatch, isModelEffort, type ModelEffort } from './model-effort.ts';
 import { MemoryStoreLogic } from '../memory/store.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { normalizeAgentAppPresence } from '../slack/agent-apps/index.ts';
@@ -180,6 +181,7 @@ interface AgentRow {
   instructions: string;
   enabled: number;
   model: string | null;
+  model_effort?: string | null;
   skills_json: string;
   mcp_servers_json: string;
   api_connections_json?: string | null;
@@ -241,6 +243,7 @@ interface AgentThreadRouteRow {
 interface WorkspaceModelDefaultRow {
   workspace_id: string;
   model_id: string | null;
+  effort?: string | null;
   revision: number;
   provenance: string;
   last_changed_by_membership_id: string | null;
@@ -252,6 +255,7 @@ interface WorkspaceModelRoleRow {
   workspace_id: string;
   role: string;
   model_id: string | null;
+  effort?: string | null;
   revision: number;
   last_changed_by_membership_id: string | null;
   created_at: number;
@@ -363,11 +367,15 @@ interface ChannelRow {
   lifecycle: string;
 }
 
-/** PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin. */
+/**
+ * PATCH shape: `model: null` clears a pinned model; omitting it keeps the pin.
+ * A changed model without `modelEffort` clears the effort.
+ */
 export type ConfigAgentPatch = Partial<
-  Omit<CustomAgentConfig, 'id' | 'revision' | 'model' | 'credentialIncarnation'>
+  Omit<CustomAgentConfig, 'id' | 'revision' | 'model' | 'modelEffort' | 'credentialIncarnation'>
 > & {
   model?: string | null;
+  modelEffort?: ModelEffort | null;
   /** Safe caller hint: force a new namespace after remove-and-readd in one PATCH. */
   credentialResets?: AgentConnectionCredentialResets;
   /** Internal CAS fence for a setup that was issued against one connection incarnation. */
@@ -859,10 +867,11 @@ export class ConfigStoreLogic {
     }
     const updated = this.db.run(
       `UPDATE config_workspace_model_defaults
-       SET model_id = ?, provenance = ?, last_changed_by_membership_id = ?,
+       SET model_id = ?, effort = ?, provenance = ?, last_changed_by_membership_id = ?,
            revision = revision + 1, updated_at = ?
        WHERE workspace_id = ? AND revision = ?`,
       input.modelId ?? null,
+      input.modelId ? input.effort ?? null : null,
       input.provenance,
       input.lastChangedByMembershipId ?? null,
       Date.now(),
@@ -913,12 +922,13 @@ export class ConfigStoreLogic {
       }
       this.db.run(
         `INSERT INTO config_workspace_model_roles (
-          workspace_id, role, model_id, revision,
+          workspace_id, role, model_id, effort, revision,
           last_changed_by_membership_id, created_at, updated_at
-        ) VALUES (?, ?, ?, 1, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
         input.workspaceId,
         input.role,
         input.modelId ?? null,
+        workspaceRoleEffort(input),
         input.lastChangedByMembershipId ?? null,
         at,
         at,
@@ -937,10 +947,11 @@ export class ConfigStoreLogic {
     }
     const updated = this.db.run(
       `UPDATE config_workspace_model_roles
-       SET model_id = ?, last_changed_by_membership_id = ?,
+       SET model_id = ?, effort = ?, last_changed_by_membership_id = ?,
            revision = revision + 1, updated_at = ?
        WHERE workspace_id = ? AND role = ? AND revision = ?`,
       input.modelId ?? null,
+      workspaceRoleEffort(input),
       input.lastChangedByMembershipId ?? null,
       at,
       input.workspaceId,
@@ -2312,6 +2323,7 @@ export class ConfigStoreLogic {
       throw new AgentRevisionConflictError(agentId, requiredRevision, actualRevision);
     }
     const model = patch.model === undefined ? (current.model ?? null) : patch.model;
+    const modelEffort = agentModelEffortAfterPatch(current, patch);
     const { credentialRequirements, credentialResets, ...persistedPatch } = patch;
     if (credentialRequirements?.agent !== undefined &&
         currentCredentialIncarnation !== credentialRequirements.agent) {
@@ -2374,6 +2386,7 @@ export class ConfigStoreLogic {
        SET name = ?, description = ?, instructions = ?, enabled = ?, lifecycle = ?,
            creator_membership_id = ?, edit_policy = ?,
            configuration_generation = ?, slack_presence_json = ?, archived_at = ?, model = ?,
+           model_effort = ?,
            skills_json = ?, mcp_servers_json = ?, api_connections_json = ?, repositories_json = ?,
            website_logins_json = ?, revision = revision + 1
        WHERE id = ? AND revision = ? AND credential_incarnation = ?`,
@@ -2388,6 +2401,7 @@ export class ConfigStoreLogic {
       JSON.stringify(next.slackPresence ?? defaultAgentSlackPresence(next.id, next.name)),
       next.archivedAt ?? null,
       model,
+      modelEffort ?? null,
       JSON.stringify(next.skills),
       JSON.stringify(next.mcpServers),
       JSON.stringify(next.apiConnections),
@@ -2873,11 +2887,12 @@ export class ConfigStoreLogic {
   ): void {
     this.db.run(
       `INSERT INTO config_workspace_model_defaults (
-        workspace_id, model_id, revision, provenance,
+        workspace_id, model_id, effort, revision, provenance,
         last_changed_by_membership_id, created_at, updated_at
-      ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
       input.workspaceId,
       input.modelId ?? null,
+      input.modelId ? input.effort ?? null : null,
       input.provenance,
       input.lastChangedByMembershipId ?? null,
       at,
@@ -2950,7 +2965,7 @@ export class ConfigStoreLogic {
     ) return false;
     const updated = this.db.run(
       `UPDATE config_agents
-       SET model = NULL, revision = revision + 1,
+       SET model = NULL, model_effort = NULL, revision = revision + 1,
            configuration_generation = configuration_generation + 1
        WHERE id = ? AND model = ? AND configuration_generation = ?`,
       agent.id,
@@ -3084,10 +3099,10 @@ export class ConfigStoreLogic {
         id, agent_kind, revision, credential_incarnation,
         name, description, instructions, enabled, lifecycle,
         creator_membership_id, edit_policy, configuration_generation,
-        slack_presence_json, archived_at, model,
+        slack_presence_json, archived_at, model, model_effort,
         skills_json, mcp_servers_json, api_connections_json, repositories_json,
         website_logins_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       agent.id,
       kind,
       1,
@@ -3105,6 +3120,7 @@ export class ConfigStoreLogic {
         : JSON.stringify(presence),
       agent.archivedAt ?? null,
       agent.model ?? null,
+      agent.model ? agent.modelEffort ?? null : null,
       JSON.stringify(agent.skills ?? []),
       JSON.stringify(mcpServers),
       JSON.stringify(apiConnections),
@@ -3344,6 +3360,7 @@ export class ConfigStoreLogic {
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
     )) {
       this.installChickpeaCutoverExtensions();
+      this.installModelEffortColumns();
       return;
     }
 
@@ -3443,6 +3460,18 @@ export class ConfigStoreLogic {
       Date.now(),
     );
     this.installChickpeaCutoverExtensions();
+    this.installModelEffortColumns();
+  }
+
+  /** Runs after every table it extends exists, on fresh and upgraded stores alike. */
+  private installModelEffortColumns(): void {
+    for (const [table, column] of [
+      ['config_agents', 'model_effort'],
+      ['config_workspace_model_defaults', 'effort'],
+      ['config_workspace_model_roles', 'effort'],
+    ] as const) {
+      if (tableExists(this.db, table)) addColumnIfMissing(this.db, table, column, 'TEXT');
+    }
   }
 
   private installConnectionCredentialBindingMigration(): void {
@@ -3808,6 +3837,8 @@ function rowToAgent(row: AgentRow): CustomAgentConfig {
       ? { archivedAt: Number(row.archived_at) }
       : {}),
     ...(row.model ? { model: row.model } : {}),
+    // An unknown stored effort (a newer release's level) reads as unset.
+    ...(row.model && isModelEffort(row.model_effort) ? { modelEffort: row.model_effort } : {}),
     skills: JSON.parse(row.skills_json) as CustomAgentConfig['skills'],
     mcpServers: JSON.parse(row.mcp_servers_json) as CustomAgentConfig['mcpServers'],
     apiConnections: parseJsonArray<CustomAgentConfig['apiConnections'][number]>(row.api_connections_json),
@@ -3953,6 +3984,7 @@ function rowToWorkspaceModelDefault(row: WorkspaceModelDefaultRow): WorkspaceMod
   return {
     workspaceId: row.workspace_id,
     ...(row.model_id ? { modelId: row.model_id } : {}),
+    ...(row.model_id && isModelEffort(row.effort) ? { effort: row.effort } : {}),
     revision: Number(row.revision),
     provenance,
     ...(row.last_changed_by_membership_id
@@ -3964,10 +3996,12 @@ function rowToWorkspaceModelDefault(row: WorkspaceModelDefaultRow): WorkspaceMod
 }
 
 function rowToWorkspaceModelRole(row: WorkspaceModelRoleRow): WorkspaceModelRole {
+  const role = requireNonChatModelRole(row.role);
   return {
     workspaceId: row.workspace_id,
-    role: requireNonChatModelRole(row.role),
+    role,
     ...(row.model_id ? { modelId: row.model_id } : {}),
+    ...(role === 'coding' && row.model_id && isModelEffort(row.effort) ? { effort: row.effort } : {}),
     revision: Number(row.revision),
     ...(row.last_changed_by_membership_id
       ? { lastChangedByMembershipId: row.last_changed_by_membership_id }
@@ -3986,6 +4020,10 @@ function rowToAgentModelRole(row: AgentModelRoleRow): AgentModelRole {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function workspaceRoleEffort(input: WorkspaceModelRoleInput): ModelEffort | null {
+  return input.role === 'coding' && input.modelId ? input.effort ?? null : null;
 }
 
 function requireNonChatModelRole(role: string): NonChatModelRole {

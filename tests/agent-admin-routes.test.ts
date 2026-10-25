@@ -2258,6 +2258,9 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(created.modelPolicy, {
       source: 'workspace_default',
       effectiveModel: 'local-stub/workspace',
+      effort: null,
+      efforts: [],
+      standardEffort: null,
       live: true,
       workspaceDefaultRevision: 2,
     });
@@ -2278,6 +2281,9 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(pinned.modelPolicy, {
       source: 'pinned',
       effectiveModel: 'local-stub/pinned',
+      effort: null,
+      efforts: [],
+      standardEffort: null,
       live: true,
       workspaceDefaultRevision: 2,
     });
@@ -2296,6 +2302,9 @@ test('activated Agents inherit the Workspace default and a pinned Agent can rese
     assert.deepEqual(reset.modelPolicy, {
       source: 'workspace_default',
       effectiveModel: 'local-stub/workspace',
+      effort: null,
+      efforts: [],
+      standardEffort: null,
       live: true,
       workspaceDefaultRevision: 2,
     });

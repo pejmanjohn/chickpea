@@ -2,6 +2,7 @@ import { installationCacheKey } from './installation-scope.ts';
 import { ModelCredentialUnavailableError } from './model-credential-refs.ts';
 import type { ProviderKeyId } from './provider-keys.ts';
 import { isProviderKeyId, resolveProviderApiKey } from './provider-keys.ts';
+import { MODEL_EFFORTS, type ModelEffort } from './model-effort.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 import { listActiveCatalogModels } from '../model-catalog/index.ts';
@@ -16,6 +17,8 @@ export interface ProviderModel {
   max_completion_tokens?: number;
   input_modalities?: string[];
   supported_parameters?: string[];
+  /** OpenRouter's `reasoning.supported_efforts`, narrowed to the efforts Chickpea offers. */
+  supported_efforts?: ModelEffort[];
   pricing?: Record<string, string>;
 }
 
@@ -334,6 +337,9 @@ async function fetchOpenRouterModels(timeoutMs?: number): Promise<ProviderModel[
       ? stringArrayField(architecture, 'input_modalities')
       : undefined;
     const supportedParameters = stringArrayField(model, 'supported_parameters');
+    const reasoning = recordField(model, 'reasoning');
+    const listedEfforts = reasoning ? stringArrayField(reasoning, 'supported_efforts') : undefined;
+    const supportedEfforts = listedEfforts && MODEL_EFFORTS.filter((effort) => listedEfforts.includes(effort));
     return {
       id: stringField(model, 'id'),
       ...(displayName ? { display_name: displayName } : {}),
@@ -343,6 +349,7 @@ async function fetchOpenRouterModels(timeoutMs?: number): Promise<ProviderModel[
         : {}),
       ...(inputModalities ? { input_modalities: inputModalities } : {}),
       ...(supportedParameters ? { supported_parameters: supportedParameters } : {}),
+      ...(supportedEfforts?.length ? { supported_efforts: supportedEfforts } : {}),
       ...(pricing ? { pricing } : {}),
     };
   });

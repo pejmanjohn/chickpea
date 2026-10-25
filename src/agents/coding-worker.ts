@@ -2,7 +2,6 @@
 
 import {
   useInitialData,
-  useModel,
   useSandbox,
   useSkill,
   type AgentProps,
@@ -13,7 +12,7 @@ import * as v from 'valibot';
 import { repositoriesSkillForGrants } from '../config/connector-skills.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
-import { registerFrozenRuntimeModelRoute, resolveRuntimeModel } from '../config/runtime-model.ts';
+import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import { resolveSandboxSettings } from '../config/sandbox-settings.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -23,7 +22,6 @@ import {
   getSlackStateStore,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import {
   codingWorkerInstanceId,
   codingWorkerRepositoryGrants,
@@ -42,6 +40,7 @@ import type { SandboxTurnContext } from '../sandbox/turn-context.ts';
 import { WORKSPACE_DIR } from '../sandbox/workspace-lifecycle.ts';
 import { admitHostedContainer, type WorkspaceSandboxStub } from '../sandbox/workspace-session.ts';
 import { useChickpeaResponseMetadata } from '../usage/response-metadata.ts';
+import { useFrozenModel } from './frozen-model.ts';
 import { TurnEnvelopeContext } from './turn-envelope.ts';
 import { codingWorkerCloudflareExtension } from './coding-worker-staging.ts';
 
@@ -61,10 +60,8 @@ export function CodingWorker({ id }: AgentProps) {
   if (codingWorkerInstanceId(binding) !== id) {
     throw new Error('Coding worker binding does not match its instance.');
   }
-  const { model, runtimeModel, runtimeModelRoute } = binding.codingModel;
-  registerFrozenRuntimeModelRoute(model, runtimeModel, runtimeModelRoute);
-  const thinkingLevel = thinkingLevelForModel(model);
-  useModel(runtimeModel, thinkingLevel ? { thinkingLevel } : {});
+  const { model, runtimeModel, runtimeModelRoute, effort } = binding.codingModel;
+  useFrozenModel(model, runtimeModel, runtimeModelRoute, effort);
   // The task's usage rides back on the reply; the coordinator's turn records it.
   useChickpeaResponseMetadata(model);
   useSandbox(codingWorkerSandbox(binding));

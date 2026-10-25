@@ -2744,6 +2744,7 @@ export async function freezeRuntimePlanForTurn(input: {
           model: canonicalModel,
           runtimeModel: runtimeModel.model,
           ...(runtimeModelRoute ? { runtimeModelRoute } : {}),
+          ...(input.assignment.effort ? { effort: input.assignment.effort } : {}),
         },
         settings: settingsStore,
         ...(input.platformEnv ? { env: input.platformEnv } : {}),

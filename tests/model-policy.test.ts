@@ -11,6 +11,7 @@ import {
   resolveAgentModelPolicy,
   resolveAgentModelRoleFromStore,
   resolveCodingModelForPlan,
+  resolveModelPolicyForAssignment,
 } from '../src/config/model-policy.ts';
 import { configurePlatformFunding, resetPlatformFundingForTests } from '../src/config/platform-funding.ts';
 import { invalidateProviderKeyCache, PROVIDER_KEY_SETTING_KEYS } from '../src/config/provider-keys.ts';
@@ -689,4 +690,71 @@ test('a coding model that cannot be used falls back silently to the Agent model'
   });
   assert.equal(system.model, AGENT_ROUTE.model);
   assert.equal(system.attribution.fallback, true);
+});
+
+test('the effective effort follows the model source: the pin, the Workspace default, or none', async () => {
+  const chickpeaV1 = { runtimeContract: 'chickpea-v1' as const, workspaceDefault: { ...workspaceDefault, effort: 'high' as const } };
+  assert.equal(resolveAgentModelPolicy({ ...chickpeaV1, agent: agent() }).effort, 'high');
+  assert.equal(resolveAgentModelPolicy({
+    ...chickpeaV1,
+    agent: agent({ kind: 'system' }),
+  }).effort, 'high', 'Chickpea follows the default effort with the default model');
+  // A pin pins model and effort together, even when the pin sets none.
+  assert.equal(resolveAgentModelPolicy({
+    ...chickpeaV1,
+    agent: agent({ model: 'anthropic/claude-opus-5-5', modelEffort: 'max' }),
+  }).effort, 'max');
+  assert.equal(resolveAgentModelPolicy({
+    ...chickpeaV1,
+    agent: agent({ model: 'anthropic/claude-opus-5-5' }),
+  }).effort, undefined);
+  assert.equal(resolveAgentModelPolicy({
+    runtimeContract: 'legacy',
+    agent: agent(),
+    env: { SLACK_TAG_MODEL: 'anthropic/claude-opus-5-5' },
+  }).effort, undefined, 'the legacy environment model has no effort');
+
+  const assignment = await resolveModelPolicyForAssignment(
+    { workspaceId: 'TACME', channelId: 'C1', agentId: 'agent_support', agent: agent(), effort: 'low' },
+    {
+      getWorkspaceInstallation: async () => ({ runtimeContract: 'chickpea-v1' }) as never,
+      getWorkspaceModelDefault: async () => workspaceDefault,
+    },
+  );
+  assert.equal(assignment.effort, undefined, 'a re-resolved assignment drops a stale effort');
+});
+
+test('the coding role carries its own effort, and the Agent\'s only on the Agent model', async () => {
+  const reader = (modelId: string, effort?: 'high' | 'max') => ({
+    getWorkspaceModelRole: async (workspaceId: string, role: 'image' | 'coding') => role === 'coding'
+      ? { workspaceId, role, modelId, ...(effort ? { effort } : {}), revision: 1, createdAt: 1, updatedAt: 1 }
+      : undefined,
+    getAgentModelRole: async () => undefined,
+  });
+  const agentRoute = { ...AGENT_ROUTE, effort: 'low' as const };
+  const resolveRoute = async (model: string) => ({ runtimeModel: `route:${model}` });
+  const own = await resolveCodingModelForPlan({
+    workspaceId: 'T1', agent: agent(), reader: reader('anthropic/claude-opus-5-5', 'max'), agentRoute, resolveRoute,
+  });
+  assert.equal(own.effort, 'max');
+  const standard = await resolveCodingModelForPlan({
+    workspaceId: 'T1', agent: agent(), reader: reader('anthropic/claude-opus-5-5'), agentRoute, resolveRoute,
+  });
+  assert.equal(standard.effort, undefined, 'the Agent\'s effort never rides on the role\'s model');
+  const sameModel = await resolveCodingModelForPlan({
+    workspaceId: 'T1', agent: agent(), reader: reader(AGENT_ROUTE.model), agentRoute, resolveRoute,
+  });
+  assert.equal(sameModel.effort, undefined, 'a role naming the Agent model still picks its own effort');
+  const unset = await resolveCodingModelForPlan({
+    workspaceId: 'T1', agent: agent(), reader: codingReader(), agentRoute, resolveRoute,
+  });
+  assert.equal(unset.effort, 'low', 'coding on the Agent model keeps the Agent effort');
+  const fallback = await resolveCodingModelForPlan({
+    workspaceId: 'T1',
+    agent: agent(),
+    reader: reader('anthropic/claude-opus-5-5', 'max'),
+    agentRoute,
+    resolveRoute: async () => { throw new ModelResolutionError('No anthropic key.'); },
+  });
+  assert.equal(fallback.effort, 'low');
 });

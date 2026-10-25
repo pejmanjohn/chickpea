@@ -1,8 +1,14 @@
-import type { Api, Model } from '@earendil-works/pi-ai';
+import type { Api, Model, ThinkingLevelMap } from '@earendil-works/pi-ai';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
+import { MODEL_EFFORTS, modelEffortsFor, type ModelEffort } from './model-effort.ts';
 import { addBuiltinProviderModelOverlay, builtinProviderModelOverlay } from './pi-provider.ts';
-import { listProviderModels, type ProviderModel } from './provider-models.ts';
+import {
+  listProviderModels,
+  ProviderModelsUnavailableError,
+  ProviderUnreachableError,
+  type ProviderModel,
+} from './provider-models.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
 
@@ -24,6 +30,8 @@ export interface FrozenOpenRouterLiveModelRoute {
   reasoning: boolean;
   input: Array<'text' | 'image'>;
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** OpenRouter's listed efforts; absent when it lists none. */
+  efforts?: ModelEffort[];
 }
 
 /**
@@ -75,6 +83,8 @@ export function freezeOpenRouterRuntimeModelRoute(
   if (isOpenRouterBaselineModel(modelId)) return undefined;
   const overlay = builtinProviderModelOverlay('openrouter', modelId);
   if (!overlay) return undefined;
+  const efforts = overlay.thinkingLevelMap &&
+    MODEL_EFFORTS.filter((effort) => typeof overlay.thinkingLevelMap?.[effort] === 'string');
   return {
     source: 'openrouter_live_catalog',
     // The plan parser bounds displayName to 1-160 characters; OpenRouter's
@@ -85,6 +95,7 @@ export function freezeOpenRouterRuntimeModelRoute(
     reasoning: overlay.reasoning,
     input: [...overlay.input],
     cost: { ...overlay.cost },
+    ...(efforts ? { efforts } : {}),
   };
 }
 
@@ -122,7 +133,46 @@ export function frozenOpenRouterRuntimeModel(
     reasoning: route.reasoning,
     input: [...route.input],
     cost: { ...route.cost },
+    ...(route.efforts ? { thinkingLevelMap: openRouterThinkingLevelMap(route.efforts) } : {}),
     ...openRouterLimits(route.contextWindow, route.maxTokens),
+  };
+}
+
+/**
+ * The efforts an OpenRouter model accepts: Pi's reviewed entry when Pi knows
+ * it, else the overlay the runtime would build from OpenRouter's live list.
+ */
+export async function openRouterModelEfforts(
+  canonicalModel: string,
+  env: PlatformEnv | undefined,
+  settings: SettingsStore,
+): Promise<ModelEffort[]> {
+  const modelId = canonicalModel.slice(OPENROUTER_PREFIX.length);
+  const baseline = openrouterProvider().getModels().find((model) => model.id === modelId);
+  if (baseline) return modelEffortsFor(baseline);
+  let models: ProviderModel[];
+  try {
+    ({ models } = await listProviderModels('openrouter', { ...(env ? { env } : {}), store: settings }));
+  } catch (error) {
+    // Admin pages project efforts for every Agent; an OpenRouter outage shows
+    // no setting instead of failing the page.
+    if (!(error instanceof ProviderModelsUnavailableError || error instanceof ProviderUnreachableError)) throw error;
+    const overlay = builtinProviderModelOverlay('openrouter', modelId);
+    return overlay ? modelEffortsFor(overlay) : [];
+  }
+  const discovered = models.find((model) => model.id === modelId);
+  const template = openRouterTemplate();
+  return discovered && template ? modelEffortsFor(liveOpenRouterModel(discovered, template)) : [];
+}
+
+/**
+ * Pi counts an effort only when the map names it, and treats `null` as
+ * unsupported; without this a chosen Max would clamp down to High.
+ */
+function openRouterThinkingLevelMap(efforts: readonly ModelEffort[]): ThinkingLevelMap {
+  return {
+    minimal: null,
+    ...Object.fromEntries(MODEL_EFFORTS.map((effort) => [effort, efforts.includes(effort) ? effort : null])),
   };
 }
 
@@ -162,6 +212,9 @@ function liveOpenRouterModel(
       supported.has('include_reasoning') ||
       supported.has('reasoning_effort'),
     input: modalities.has('image') ? ['text', 'image'] : ['text'],
+    ...(discovered.supported_efforts
+      ? { thinkingLevelMap: openRouterThinkingLevelMap(discovered.supported_efforts) }
+      : {}),
     cost: {
       input: pricePerMillion(discovered.pricing?.prompt, template.cost.input),
       output: pricePerMillion(discovered.pricing?.completion, template.cost.output),

@@ -335,6 +335,12 @@ import {
 import { discoverMcpTools, type McpConnectInput, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
 import {
+  modelEffortChoiceError,
+  resolveModelEfforts,
+  type ModelEffortRejection,
+} from '../config/model-effort-capability.ts';
+import { MODEL_EFFORTS, standardModelEffort, type ModelEffort } from '../config/model-effort.ts';
+import {
   modelProviderUnavailable,
   pricedModelRoute,
   resolveAgentModel,
@@ -1022,6 +1028,7 @@ const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
+const modelEffortSchema = v.picklist(MODEL_EFFORTS);
 const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const openAiSubscriptionAttemptSchema = v.object({
@@ -1036,6 +1043,7 @@ const workersAiEnabledSchema = v.object({
 });
 const workspaceModelDefaultSchema = v.strictObject({
   modelId: modelSpecifier,
+  effort: v.optional(v.nullable(modelEffortSchema)),
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 // Role model ids are checked against the image catalog server-side:
@@ -1045,6 +1053,7 @@ const workspaceModelDefaultSchema = v.strictObject({
 // mirroring how an Agent clears its own override with `imageModel: null`.
 const workspaceModelRoleSchema = v.strictObject({
   modelId: v.nullable(modelSpecifier),
+  effort: v.optional(v.nullable(modelEffortSchema)),
   expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });
 const chickpeaCutoverPrepareSchema = v.strictObject({
@@ -1428,6 +1437,7 @@ const agentSchema = v.object({
   instructions: nonEmptyString,
   enabled: v.boolean(),
   model: v.optional(modelSpecifier),
+  modelEffort: v.optional(v.nullable(modelEffortSchema)),
   imageModel: v.optional(modelSpecifier),
   skills: v.optional(skillsSchema, []),
   mcpServers: v.optional(mcpServersSchema, []),
@@ -1448,6 +1458,7 @@ const agentPatchSchema = v.object({
   instructions: v.optional(nonEmptyString),
   enabled: v.optional(v.boolean()),
   model: v.optional(v.nullable(modelSpecifier)),
+  modelEffort: v.optional(v.nullable(modelEffortSchema)),
   imageModel: v.optional(v.nullable(modelSpecifier)),
   skills: v.optional(skillsSchema),
   mcpServers: v.optional(mcpServersSchema),
@@ -2721,6 +2732,18 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       management: { queueOwedAgentWelcome: (input) => management(c).queueOwedAgentWelcome(input) },
     });
   };
+  // Agents in one listing mostly share a model; resolve each model once.
+  const modelEffortsForRequest = (c: Context) => {
+    const resolved = new Map<string, Promise<ModelEffort[]>>();
+    return (model: string): Promise<ModelEffort[]> => {
+      let efforts = resolved.get(model);
+      if (!efforts) {
+        efforts = resolveModelEfforts(model, { settings: settings(c), env: c.env as PlatformEnv | undefined });
+        resolved.set(model, efforts);
+      }
+      return efforts;
+    };
+  };
   const agentAdminProjectionForRequest = async (
     c: Context,
     agent: CustomAgentConfig,
@@ -2734,7 +2757,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         ? await memberVisibleAgentChannels(c, agentGrants)
         : new Map<string, SlackChannel>()
       : undefined;
-    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), undefined, {
+    return agentAdminProjection(agent, store(c), snapshots(c), agentAvatarOrigin(c), modelEffortsForRequest(c), undefined, {
       canEdit: principal ? canEditAgent(principal, agent) : true,
       ...extraAccess,
       ...(visibleMemberChannels ? { visibleMemberChannels } : {}),
@@ -6848,12 +6871,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         [workspaceId, await configStore.getWorkspaceModelRole(workspaceId, 'image')] as const),
     ));
     const avatarOrigin = agentAvatarOrigin(c);
+    const modelEfforts = modelEffortsForRequest(c);
     return c.json({
       // The connected workspace, when unambiguous. Admin loads Agent
       // connections against it without first waiting for Slack status.
       workspaceId: installations.length === 1 ? installations[0]!.workspaceId : null,
       agents: await Promise.all(agents.map((agent, index) =>
-        agentAdminProjection(agent, configStore, snapshots(c), avatarOrigin, {
+        agentAdminProjection(agent, configStore, snapshots(c), avatarOrigin, modelEfforts, {
           references: {
             agentId: agent.id,
             channelGrants: [...new Map(
@@ -6996,6 +7020,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
 
   app.get('/admin/api/models', async (c) => c.json({ providers: await chatPickerProviders(c) }));
 
+  app.get('/admin/api/model-efforts', async (c) => {
+    const parsed = v.safeParse(modelSpecifier, c.req.query('model'));
+    if (!parsed.success) return invalidRequest(c);
+    const efforts = await resolveModelEfforts(parsed.output, {
+      settings: settings(c),
+      env: c.env as PlatformEnv | undefined,
+    });
+    return c.json({ model: parsed.output, efforts, standard: standardModelEffort(efforts) ?? null });
+  });
+
   const chatModelReadiness = (c: Context, funding?: ModelRequestFundingSource) => resolveModelReadiness({
     settings: settings(c),
     env: c.env as PlatformEnv | undefined,
@@ -7070,10 +7104,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settings(c), c.env as PlatformEnv | undefined,
     );
     if (compatibilityError) return invalidRequest(c, compatibilityError);
+    const effort = parsed.output.effort ?? undefined;
+    const effortRejection = effort && await modelEffortChoiceError(parsed.output.modelId, effort, {
+      settings: settings(c),
+      env: c.env as PlatformEnv | undefined,
+    });
+    if (effortRejection) return modelEffortRejected(c, effortRejection);
     try {
       await configStore.putWorkspaceModelDefault({
         workspaceId: installation.workspaceId,
         modelId: parsed.output.modelId,
+        ...(effort ? { effort } : {}),
         provenance: 'admin_selected',
         lastChangedByMembershipId: principal.membershipId,
       }, parsed.output.expectedRevision);
@@ -7130,6 +7171,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!isNonChatModelRole(role)) return c.json({ error: 'not_found' }, 404);
     const parsed = v.safeParse(workspaceModelRoleSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
+    if (role === 'image' && parsed.output.effort !== undefined) {
+      return invalidRequest(c, 'The image model has no effort setting.');
+    }
     const configStore = store(c);
     const installation = await modelDefaultInstallation(configStore);
     if (!installation) {
@@ -7164,6 +7208,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           });
       if (rejection) return invalidRequest(c, rejection);
     }
+    const effort = parsed.output.effort ?? undefined;
+    const effortRejection = effort && await modelEffortChoiceError(parsed.output.modelId ?? undefined, effort, {
+      settings: settings(c),
+      env: c.env as PlatformEnv | undefined,
+    });
+    if (effortRejection) return modelEffortRejected(c, effortRejection);
     try {
       await configStore.putWorkspaceModelRole({
         workspaceId: installation.workspaceId,
@@ -7171,6 +7221,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         // Omitting the key is the store's clear; the row stays and its
         // revision still climbs, so the next write is guarded from here.
         ...(parsed.output.modelId === null ? {} : { modelId: parsed.output.modelId }),
+        ...(effort ? { effort } : {}),
         lastChangedByMembershipId: principal.membershipId,
       }, parsed.output.expectedRevision);
       return c.json({
@@ -8195,6 +8246,11 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (modelError) {
       return modelNotResolvable(c, modelError);
     }
+    const effortRejection = agent.modelEffort && await modelEffortChoiceError(agent.model, agent.modelEffort, {
+      settings: settings(c),
+      env: c.env as PlatformEnv | undefined,
+    });
+    if (effortRejection) return modelEffortRejected(c, effortRejection);
     if (parsed.output.imageModel !== undefined) {
       const rejection = await modelRoleChoiceError({
         settingsStore: settings(c),
@@ -9841,6 +9897,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (modelError) {
         return modelNotResolvable(c, modelError);
       }
+      // Chickpea can pin no model, so it can pin no effort either.
+      const effortRejection = patch.modelEffort && await modelEffortChoiceError(
+        current.kind === 'system' ? undefined : next.model ?? undefined,
+        patch.modelEffort,
+        { settings: settings(c), env: c.env as PlatformEnv | undefined },
+      );
+      if (effortRejection) return modelEffortRejected(c, effortRejection);
       // The system Agent follows the Workspace role default and can pin
       // nothing, exactly as it cannot pin a chat model.
       if (parsed.output.imageModel && current.kind === 'system') {
@@ -12556,6 +12619,7 @@ function permissionForAdminRequest(c: Context, _principal: AuthPrincipal): Permi
     (c.req.method === 'GET' && [
       '/admin/api/models',
       '/admin/api/models/readiness',
+      '/admin/api/model-efforts',
       // The per-Agent image field reads its options here, so an Agent editor
       // needs the same access it has to the chat model list.
       '/admin/api/image-models',
@@ -12678,6 +12742,7 @@ function toAgentConfig(input: v.InferOutput<typeof agentSchema>): AgentCreateInp
     instructions: input.instructions,
     enabled: input.enabled,
     ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.modelEffort ? { modelEffort: input.modelEffort } : {}),
     skills: toSkills(input.skills),
     mcpServers: toMcpServers(input.mcpServers),
     apiConnections: toApiConnections(input.apiConnections),
@@ -12982,6 +13047,7 @@ function toAgentPatch(input: v.InferOutput<typeof agentPatchSchema>): AgentPatch
   if (input.instructions !== undefined) patch.instructions = input.instructions;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.model !== undefined) patch.model = input.model;
+  if (input.modelEffort !== undefined) patch.modelEffort = input.modelEffort;
   if (input.skills !== undefined) patch.skills = toSkills(input.skills);
   if (input.mcpServers !== undefined) patch.mcpServers = toMcpServers(input.mcpServers);
   if (input.apiConnections !== undefined) {
@@ -13058,6 +13124,30 @@ function modelNotResolvable(
   return c.json({ error: 'model_not_resolvable', message: err.message }, 422);
 }
 
+function modelEffortRejected(
+  c: { json(body: { error: ModelEffortRejection; message: string }, status: 422): Response },
+  rejection: { code: ModelEffortRejection; message: string },
+): Response {
+  return c.json({ error: rejection.code, message: rejection.message }, 422);
+}
+
+interface ModelEffortProjection {
+  /** The stored effort; null runs the model's standard level. */
+  effort: ModelEffort | null;
+  /** Levels the model accepts, in order; empty when it has no effort setting. */
+  efforts: ModelEffort[];
+  standardEffort: ModelEffort | null;
+}
+
+async function modelEffortProjection(
+  model: string | null,
+  effort: ModelEffort | undefined,
+  modelEfforts: (model: string) => Promise<ModelEffort[]>,
+): Promise<ModelEffortProjection> {
+  const efforts = model ? await modelEfforts(model) : [];
+  return { effort: effort ?? null, efforts, standardEffort: standardModelEffort(efforts) ?? null };
+}
+
 /**
  * Owner-facing view of one non-chat model role: the stored choice, its
  * revision, and the models an Owner may pick from right now (the role's
@@ -13086,6 +13176,10 @@ async function workspaceModelRoleProjection(input: {
       workspaceId: input.installation.workspaceId,
       role: input.role,
       modelId,
+      ...await modelEffortProjection(modelId, stored?.effort, (model) => resolveModelEfforts(model, {
+        settings: input.settingsStore,
+        env: input.platformEnv,
+      })),
       revision: stored?.revision ?? 0,
       ready: modelId === null ? null : await codingModelChoiceError({
         modelId,
@@ -13196,7 +13290,7 @@ function cutoverEnvironmentModel(platformEnv: PlatformEnv | undefined): string |
   return model && /^[^/]+\/.+$/.test(model) ? model : undefined;
 }
 
-interface WorkspaceModelDefaultProjection {
+interface WorkspaceModelDefaultProjection extends ModelEffortProjection {
   workspaceId: string;
   modelId: string | null;
   revision: number;
@@ -13315,6 +13409,10 @@ async function workspaceModelDefaultProjection(input: {
   return {
     workspaceId: input.installation.workspaceId,
     modelId,
+    ...await modelEffortProjection(modelId, workspaceDefault?.effort, (model) => resolveModelEfforts(model, {
+      settings: input.settingsStore,
+      env: input.platformEnv,
+    })),
     revision: workspaceDefault?.revision ?? 0,
     provenance: workspaceDefault?.provenance ?? 'migration_pending',
     runtimeContract: input.installation.runtimeContract,
@@ -13676,6 +13774,7 @@ async function agentAdminProjection(
   configStore: ConfigStore,
   snapshotStore: AgentSnapshotStore,
   avatarOrigin: { publicOrigin: string; installationId: string | undefined },
+  modelEfforts: (model: string) => Promise<ModelEffort[]>,
   preloaded?: {
     references: AgentReferenceSummary;
     grants: AgentChannelGrant[];
@@ -13753,6 +13852,7 @@ async function agentAdminProjection(
     ({ defaultAgentId, runtimeContract }) =>
       runtimeContract === 'legacy' && defaultAgentId === agent.id,
   );
+  const effectiveModel = agent.model ?? workspaceDefault?.modelId ?? null;
   const avatarUrl = agentAvatarUrlForPresentation(
     agent, avatarOrigin.publicOrigin, avatarOrigin.installationId,
   );
@@ -13809,9 +13909,15 @@ async function agentAdminProjection(
         }
       : {}),
     canEdit: access.canEdit,
+    modelEffort: agent.modelEffort ?? null,
     modelPolicy: {
       source: agent.model ? 'pinned' : 'workspace_default',
-      effectiveModel: agent.model ?? workspaceDefault?.modelId ?? null,
+      effectiveModel,
+      ...await modelEffortProjection(
+        effectiveModel,
+        agent.model ? agent.modelEffort : workspaceDefault?.effort,
+        modelEfforts,
+      ),
       live: installation?.runtimeContract === 'chickpea-v1',
       ...(workspaceDefault ? { workspaceDefaultRevision: workspaceDefault.revision } : {}),
     },

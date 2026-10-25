@@ -22,7 +22,6 @@ import {
   useInitialData,
   useInstruction,
   useMcpConnection,
-  useModel,
   usePersistentState,
   useSandbox,
   useSkill,
@@ -82,12 +81,8 @@ import {
 } from '../config/mcp-policy-instructions.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { resolveProfileSkills } from '../config/profile-skills.ts';
-import {
-  registerFrozenRuntimeModelRoute,
-  resolveRuntimeModel,
-} from '../config/runtime-model.ts';
+import { resolveRuntimeModel } from '../config/runtime-model.ts';
 import { resolveSandboxSettings, type SandboxContainerLimits } from '../config/sandbox-settings.ts';
-import { thinkingLevelForModel } from '../config/workers-ai-models.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import {
   getConfigStore,
@@ -105,6 +100,7 @@ import {
   type SkillConfig,
 } from '../config/types.ts';
 import { SLACK_ACTION_LINK_INSTRUCTION } from '../slack/message-format.ts';
+import { useFrozenModel } from './frozen-model.ts';
 import {
   RUNTIME_PLAN_INSTRUCTIONS,
   UNIVERSAL_ARTIFACT_TOOL_NAMES,
@@ -1318,13 +1314,7 @@ export function useRuntimePlanAgent(
       ? {}
       : { additionalToolDescriptors: options.additionalActivityToolDescriptors }),
   }));
-  registerFrozenRuntimeModelRoute(
-    plan.model,
-    plan.runtimeModel ?? plan.model,
-    plan.runtimeModelRoute,
-  );
-  const thinkingLevel = thinkingLevelForModel(plan.model);
-  useModel(plan.runtimeModel ?? plan.model, thinkingLevel ? { thinkingLevel } : {});
+  useFrozenModel(plan.model, plan.runtimeModel ?? plan.model, plan.runtimeModelRoute, plan.effort);
   if (options.responseMetadataModel) {
     useChickpeaResponseMetadata(options.responseMetadataModel);
   }

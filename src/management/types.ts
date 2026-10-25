@@ -1,4 +1,5 @@
 import type { ConfigAgentPatch } from '../config/store.ts';
+import type { ModelEffortRejection } from '../config/model-effort-capability.ts';
 import type {
   AgentEditPolicy,
   AgentChannelGrantStatus,
@@ -771,6 +772,7 @@ export interface ManagementWorkspaceSnapshot {
       avatar: NonNullable<AgentCreateInput['slackPresence']>['avatar'];
     };
     model?: string;
+    modelEffort?: AgentCreateInput['modelEffort'];
     skills: AgentCreateInput['skills'];
     mcpServers: AgentCreateInput['mcpServers'];
     apiConnections: AgentCreateInput['apiConnections'];
@@ -1186,6 +1188,7 @@ export class ManagementError extends Error {
       | 'proposal_stale'
       | 'base_agent_capabilities_require_setup'
       | 'model_provider_unavailable'
+      | ModelEffortRejection
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'

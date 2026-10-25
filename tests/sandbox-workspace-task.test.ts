@@ -151,6 +151,20 @@ test('a changed coding model or grant list addresses a new worker on the same wo
   assert.equal(codingWorkerInstanceId(reordered), id, 'grant order is not identity');
 });
 
+test('a chosen effort rides the worker binding and addresses its own worker', () => {
+  const base = codingWorkerBindingForPlan(plan(CODING_MODEL), WORKSPACE_ID);
+  // Workers addressed before efforts existed keep their ids.
+  assert.equal(codingWorkerInstanceId(base), 'codingworker_9bb1f03444c9b78ad6e0ee81e218b1a6729461fd');
+  const high = codingWorkerBindingForPlan(plan({ ...CODING_MODEL, effort: 'high' }), WORKSPACE_ID);
+  assert.deepEqual(high.codingModel, { model: 'openai/gpt-6', runtimeModel: 'openai/gpt-6', effort: 'high' });
+  assert.deepEqual(parseCodingWorkerBinding(JSON.parse(JSON.stringify(high))), high);
+  assert.notEqual(codingWorkerInstanceId(high), codingWorkerInstanceId(base));
+  assert.throws(() => parseCodingWorkerBinding({ ...high, codingModel: { ...high.codingModel, effort: 'turbo' } }));
+  // Coding on the Agent's own route keeps the Agent's effort.
+  const fallback = codingWorkerBindingForPlan({ ...plan(), effort: 'low' }, WORKSPACE_ID);
+  assert.equal(fallback.codingModel.effort, 'low');
+});
+
 test('the worker derives policy-only repository grants', () => {
   const grants = codingWorkerRepositoryGrants(codingWorkerBindingForPlan(plan(), WORKSPACE_ID));
   assert.deepEqual(grants, [
