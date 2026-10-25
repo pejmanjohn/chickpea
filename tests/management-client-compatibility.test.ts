@@ -426,6 +426,18 @@ test('workspace management MCP publishes the version 3 server contract', () => {
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });
 
+test('the deployed MCP verifier pins this server version and tool inventory', async () => {
+  const verifier = await readFile(new URL('../scripts/verify-management-mcp.mjs', import.meta.url), 'utf8');
+  assert.ok(verifier.includes(
+    `const MANAGEMENT_MCP_SERVER_VERSION = '${WORKSPACE_MANAGEMENT_SERVER_INFO.version}';`,
+  ));
+  const inventory = verifier.slice(
+    verifier.indexOf('const MANAGEMENT_MCP_TOOL_NAMES = ['),
+    verifier.indexOf('];', verifier.indexOf('const MANAGEMENT_MCP_TOOL_NAMES = [')),
+  );
+  assert.deepEqual([...inventory.matchAll(/'([a-z_]+)'/g)].map(([, name]) => name), WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES);
+});
+
 test('management and evaluation runbooks track the additive authoring contract', async () => {
   const [management, evaluation, readme] = await Promise.all([
     readFile(new URL('../docs/runbooks/workspace-management-mcp.md', import.meta.url), 'utf8'),

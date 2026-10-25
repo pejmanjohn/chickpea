@@ -17,16 +17,14 @@ import {
 } from '../src/management/agent-authoring/mcp-guide.ts';
 import { adminSettingsLinks } from '../src/management/admin-links.ts';
 import { workspaceManagementInstructions } from '../src/management/instructions.ts';
-import {
-  WORKSPACE_MANAGEMENT_TOOL_NAMES,
-  workspaceManagementToolDescription,
-} from '../src/management/tool-adapter.ts';
+import { WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES } from '../src/management/mcp.ts';
+import { workspaceManagementToolDescription } from '../src/management/tool-adapter.ts';
 
 /** Wording a coding agent must never be told; it has no Slack thread, DM, or Slack preview. */
 const SLACK_ONLY_WORDING = /presentation\.slack|\bDMs?\b|Slack turn|Slack Lists|Slack conversation|requester message|current command on Slack|progress UI/;
 
 test('MCP tool descriptions carry no Slack-conversation instructions while Slack text is untouched', () => {
-  for (const name of WORKSPACE_MANAGEMENT_TOOL_NAMES) {
+  for (const name of WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES) {
     const slack = workspaceManagementToolDescription(name);
     const mcp = workspaceManagementToolDescription(name, 'mcp');
     assert.equal(slack, workspaceManagementToolDescription(name, 'slack'), `${name}: Slack is the default surface`);
@@ -43,21 +41,23 @@ test('MCP tool descriptions carry no Slack-conversation instructions while Slack
   assert.match(workspaceManagementToolDescription('inspect_routines'), /In a DM, omit channelId/);
   assert.match(workspaceManagementToolDescription('prepare_connector_setup'), /agentId may be omitted/);
 
-  // The MCP door gets the coding-agent equivalents and the same mutation rules.
-  const proposal = workspaceManagementToolDescription('propose_workspace_changes', 'mcp');
-  assert.match(proposal, /Show presentation\.markdown to the person/);
-  assert.match(proposal, /Agent creation is not valid here/i);
-  assert.match(proposal, /typed Chickpea workspace configuration operation/i);
-  assert.match(proposal, /Approval cannot make an unsupported operation available/i);
-  assert.match(proposal, new RegExp(`"guideVersion":"${AGENT_AUTHORING_GUIDE_VERSION.replace(/\./g, '\\.')}"`));
+  // The MCP door acts with Admin authority and asks only before a destructive change.
+  for (const name of WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES) {
+    assert.doesNotMatch(workspaceManagementToolDescription(name, 'mcp'), /propose_/, `${name} (mcp)`);
+  }
   const apply = workspaceManagementToolDescription('apply_workspace_changes', 'mcp');
-  assert.match(apply, /created immediately as a standalone create_agent operation/i);
+  assert.match(apply, /Admin authority/);
+  assert.match(apply, /standalone create_agent operation/i);
+  assert.match(apply, /confirmation_required with presentation\.markdown/);
   assert.match(apply, /links\.admin/);
   assert.match(apply, /links\.slack/);
-  assert.match(workspaceManagementToolDescription('confirm_workspace_change', 'mcp'), /links\.admin and links\.slack/);
-  assert.match(workspaceManagementToolDescription('prepare_connector_setup', 'mcp'), /agentId is required/);
-  assert.match(workspaceManagementToolDescription('import_skill', 'mcp'), /use propose_skill_import instead/);
-  assert.match(workspaceManagementToolDescription('propose_skill_import', 'mcp'), /presentation\.markdown/);
+  const confirm = workspaceManagementToolDescription('confirm_workspace_change', 'mcp');
+  assert.match(confirm, /"Are you sure\?" step/);
+  assert.match(confirm, /links\.admin and links\.slack/);
+  const connector = workspaceManagementToolDescription('prepare_connector_setup', 'mcp');
+  assert.match(connector, /agentId is required/);
+  assert.doesNotMatch(connector, /24 hours|anyone holding/, 'MCP returns an Admin page, not a bearer setup link');
+  assert.match(workspaceManagementToolDescription('import_skill', 'mcp'), /installs immediately/);
 });
 
 test('the coding-agent guide keeps the canonical version and rules and drops Slack-only mechanics', () => {
@@ -88,19 +88,22 @@ test('the coding-agent guide keeps the canonical version and rules and drops Sla
     '## Start with posture',
     '## Inspect before recommending',
     '## Choose the configuration primitive',
-    '## Propose, review, and commit',
+    '## Apply, confirm, and commit',
     '## Acting scope',
     '## Final check',
     'Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs',
     'call `apply_workspace_changes` in that same turn with exactly one standalone base `create_agent` operation',
-    'An external MCP client acts with the authenticated requester\'s permissions',
+    'An external MCP client acts with the signed-in person\'s Admin authority',
     'presentation.markdown',
     'links.admin',
     'links.slack',
-    'propose_skill_import',
+    'import_skill',
+    'confirm_workspace_change',
   ]) assert.ok(body.includes(kept), `coding-agent guide must keep ${kept}`);
+  assert.ok(!body.includes('propose_'), 'the coding-agent guide names no propose tool');
   assert.ok(!AGENT_SKILL_CREATION_GUIDE_MCP.includes('presentation.slack'));
-  assert.ok(AGENT_SKILL_CREATION_GUIDE_MCP.includes('propose_skill_import'));
+  assert.ok(!AGENT_SKILL_CREATION_GUIDE_MCP.includes('propose_'));
+  assert.ok(AGENT_SKILL_CREATION_GUIDE_MCP.includes('import_skill'));
 
   // Every substitution still matches the canonical text exactly once, so a guide edit cannot silently strand the variant.
   for (const [guide, substitutions] of [
