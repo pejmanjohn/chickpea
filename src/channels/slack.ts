@@ -153,6 +153,7 @@ import {
   slackConversationKind,
   slackGuestThreadKey,
   slackThreadKey,
+  slackTurnSurface,
 } from '../slack/thread-key.ts';
 import { normalizeSlackTurn } from '../slack/turn-normalization.ts';
 import {
@@ -2728,7 +2729,7 @@ async function processSlackEvent(
     };
   }
   const state = stores.slackState;
-  const preliminarySurface = turnSurface(turn);
+  const preliminarySurface = slackTurnSurface(turn);
   const liveChannelConfig = liveChannelConfigurationEnabled(platformEnv);
   let candidateTurn = turn.source === 'reaction_added';
   let threadKey = slackThreadKey(turn);
@@ -2738,7 +2739,7 @@ async function processSlackEvent(
   //    (S13). With the file-backed state store the registry survives
   //    restarts; `:memory:` keeps the old process-local semantics. Checked
   //    before any claim so a dropped reply stays fully silent.
-  const surface = turnSurface(turn);
+  const surface = slackTurnSurface(turn);
   if (surface !== preliminarySurface) return;
 
   // d. Claim BOTH the event id and the (channel, message-ts) so the
@@ -4747,18 +4748,3 @@ function slackEventTimestampMs(value: string): number | null {
   return Number.isSafeInteger(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
-// The turn's surface, from the normalizer's authoritative source/channel_type
-// (not a channel-id prefix): a DM message ('dm_message'), and any im/mpim
-// thread, is 'direct'; everything else is a channel. A group-DM
-// app_mention carries no channel_type and falls through to 'channel' — the
-// fail-closed default (see surfaceForChannelId for the id ambiguity).
-function turnSurface(turn: NormalizedSlackTurn): AssignmentSurface {
-  if (turn.source === 'dm_message') {
-    return 'direct';
-  }
-  const channelType = turn.channelType;
-  if (channelType === 'im' || channelType === 'mpim') {
-    return 'direct';
-  }
-  return 'channel';
-}

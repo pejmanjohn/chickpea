@@ -32,7 +32,7 @@ import {
 } from '../connections/request-tool.ts';
 import { WORKSPACE_TOOL_NAMES } from '../sandbox/workspace-tools.ts';
 import { ownerBoundSandboxKey, runtimePlanGuestSandboxKey } from '../sandbox/thread-key.ts';
-import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey } from '../slack/thread-key.ts';
+import { conversationThreadTs, slackAgentContinuityKey, slackConversationKey, slackTurnSurface } from '../slack/thread-key.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
   MAX_SLACK_PUBLIC_HANDOFF_CHARS,
@@ -1372,14 +1372,7 @@ export function compileWebsiteLogins(
 }
 
 function surfaceForTurn(turn: NormalizedSlackTurn): RuntimePlanSurface {
-  if (
-    turn.source === 'dm_message' ||
-    turn.channelType === 'im' ||
-    turn.channelType === 'mpim'
-  ) {
-    return 'direct_message';
-  }
-  return 'channel_thread';
+  return slackTurnSurface(turn) === 'direct' ? 'direct_message' : 'channel_thread';
 }
 
 /** A plan shape whose harness revision can be computed, admitted or current. */

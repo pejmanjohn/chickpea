@@ -13,6 +13,7 @@ import {
   type SlackUserFacts,
 } from './credentials.ts';
 import type { NormalizedSlackTurn } from './types.ts';
+import { slackTurnSurface } from './thread-key.ts';
 import { isLaterCoAddressedTurn } from './agent-asks.ts';
 import { classifySlackUserForAdmission } from './user-classification.ts';
 
@@ -49,7 +50,7 @@ export async function resolveSlackAdmissionTruth(
   reader: SlackAdmissionTruthReader,
   provision?: (user: SlackUserFacts) => Promise<boolean>,
 ): Promise<SlackAdmissionTruth> {
-  const direct = isDirectSlackTurn(turn);
+  const direct = slackTurnSurface(turn) === 'direct';
   const [actor, conversation] = await Promise.all([
     reader.user(turn.userId),
     direct ? Promise.resolve(undefined) : reader.conversation(turn.channelId),
@@ -122,7 +123,7 @@ export function prepareSlackShadowAdmission(input: {
   executionAuthority?: RunExecutionAuthority;
 }): AdmitShadowRunInput {
   const { turn, assignment, sourceVisibility, admittedAt } = input;
-  const direct = isDirectSlackTurn(turn);
+  const direct = slackTurnSurface(turn) === 'direct';
   const conversationIdentity = direct
     ? `dm:${turn.channelId}`
     : `thread:${turn.channelId}:${turn.threadTs}`;
@@ -188,12 +189,4 @@ function denied(
   reason: Exclude<SlackAdmissionTruthReason, 'eligible'>,
 ): SlackAdmissionTruth {
   return { eligible: false, reason };
-}
-
-export function isDirectSlackTurn(turn: NormalizedSlackTurn): boolean {
-  return (
-    turn.source === 'dm_message' ||
-    turn.channelType === 'im' ||
-    turn.channelType === 'mpim'
-  );
 }

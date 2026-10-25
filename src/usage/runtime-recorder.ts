@@ -1,5 +1,6 @@
 import type { AgentDispatchResult } from '../slack/flue-dispatch.ts';
 import type { CodingWorkerUsageRecord } from '../slack/coding-worker-run.ts';
+import { slackTurnSurface } from '../slack/thread-key.ts';
 import { slackTimestampMs } from '../slack/timestamp.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -65,7 +66,7 @@ export class InteractiveUsageRecorder {
     this.budgetMs = boundedBudget(options.writeBudgetMs);
     this.runExecutionId = options.runExecutionId;
     const requested = splitModelSpecifier(options.requestedModel);
-    const direct = options.turn.source === 'dm_message' || options.turn.channelType === 'im';
+    const direct = slackTurnSurface(options.turn) === 'direct';
     this.admission = {
       operationId: options.operationId,
       operationKind: 'interactive_turn',
