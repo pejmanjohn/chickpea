@@ -10,6 +10,7 @@ import { mcpOAuthSettingKeys, resolveMcpOAuthAccessToken } from '../config/mcp-o
 import {
   boundApiCredentialRef,
   boundMcpCredentialRef,
+  validConnectionCredentialRef,
 } from '../config/connection-credential-binding.ts';
 import type { McpSecretRef } from '../config/mcp-secrets.ts';
 import { validateMcpUrl } from '../config/mcp-url.ts';
@@ -176,10 +177,12 @@ async function listOAuthCredentials(config: ConfigStore): Promise<KeepAliveCrede
       }
     }
   }
-  // Per-Agent connections that predate connection accounts.
+  // Per-Agent connections that predate connection accounts. One without a
+  // credential reference has no sign-in to renew.
   for (const agent of await config.listAgents()) {
     for (const server of agent.mcpServers) {
-      if (!server.enabled || server.authMode !== 'oauth' || server.lifecycleStatus !== 'ready') continue;
+      if (!server.enabled || server.authMode !== 'oauth' || server.lifecycleStatus !== 'ready' ||
+          !validConnectionCredentialRef(server.credentialRef)) continue;
       const validated = validateMcpUrl(server.url);
       if (validated.ok) {
         credentials.push({
@@ -191,7 +194,8 @@ async function listOAuthCredentials(config: ConfigStore): Promise<KeepAliveCrede
     }
     for (const connection of agent.apiConnections) {
       if (!connection.enabled || connection.authMode !== 'oauth' || !connection.oauthProvider ||
-          (connection.lifecycleStatus !== undefined && connection.lifecycleStatus !== 'ready')) continue;
+          (connection.lifecycleStatus !== undefined && connection.lifecycleStatus !== 'ready') ||
+          !validConnectionCredentialRef(connection.credentialRef)) continue;
       credentials.push({
         lane: 'api',
         ref: boundApiCredentialRef(agent.id, connection),
