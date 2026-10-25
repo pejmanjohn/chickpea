@@ -19,6 +19,7 @@ import {
 } from './installation-credentials.ts';
 import { slackInstallationCredentialId } from './hosted-slack-app.ts';
 import { parseSlackGrantedScopes } from './scopes.ts';
+import { slackPendingExternalShare } from './transport/shared.ts';
 import { nonEmpty } from '../security/content-validation.ts';
 
 /**
@@ -469,7 +470,7 @@ function toConversationFacts(raw: unknown): SlackConversationFacts | null {
     shared: channel.is_shared === true,
     externallyShared: channel.is_ext_shared === true,
     organizationShared: channel.is_org_shared === true,
-    pendingShared: Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0,
+    pendingShared: slackPendingExternalShare(channel),
     member: channel.is_member === true,
     teamId:
       typeof channel.context_team_id === 'string'

@@ -23,6 +23,7 @@ import {
   slackWebClientUserFacts,
 } from '../slack/user-classification.ts';
 import { createSlackWebClient } from '../slack/web-client.ts';
+import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
@@ -382,8 +383,7 @@ async function conversationFromClient(client: WebClient, channelId: string) {
         shared: channel.is_shared === true,
         externallyShared: channel.is_ext_shared === true,
         organizationShared: channel.is_org_shared === true,
-        pendingShared: channel.is_pending_ext_shared === true ||
-          (Array.isArray(channel.pending_shared) && channel.pending_shared.length > 0),
+        pendingShared: slackPendingExternalShare(channel),
         member: channel.is_member === true,
         ...(typeof channel.team_id === 'string' ? { teamId: channel.team_id } : {}),
         im: channel.is_im === true,

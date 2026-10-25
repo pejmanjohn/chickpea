@@ -13,6 +13,7 @@ import {
   RoutineRuntimeError,
 } from '../src/routines/runtime.ts';
 import type { RoutineDefinition, RoutineRun } from '../src/routines/types.ts';
+import { slackConversationsInfo } from '../src/slack/credentials.ts';
 import { SlackInstallationUnavailableError } from '../src/slack/installation-execution.ts';
 
 const config: EffectiveSlackConfig = {
@@ -172,6 +173,24 @@ test('runtime access carries whether the routine Channel is shared beyond the wo
   }));
   assert.equal(pending.channelShared, true, 'a pending Slack Connect share counts');
   assert.equal(pending.accessHash, plain.accessHash, 'and leaves the access fence as it was');
+});
+
+test('bot-token routine access counts either pending Slack Connect signal as shared', async (t) => {
+  let raw: Record<string, unknown> = {};
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    ok: true,
+    channel: {
+      id: 'C_TEST', name: 'test', context_team_id: 'T_TEST', is_member: true, is_private: false,
+      is_archived: false, is_frozen: false, is_shared: false, is_ext_shared: false, is_org_shared: false, ...raw,
+    },
+  }));
+  const access = async (fields: Record<string, unknown>) => {
+    raw = fields;
+    return resolveRoutineRuntimeAccess(run, routine, undefined, dependencies({ conversation: slackConversationsInfo }));
+  };
+  assert.equal((await access({})).channelShared, undefined);
+  assert.equal((await access({ is_pending_ext_shared: true })).channelShared, true);
+  assert.equal((await access({ pending_shared: ['T_PARTNER'] })).channelShared, true);
 });
 
 test('gateway routine access counts either pending Slack Connect signal as shared', async () => {
