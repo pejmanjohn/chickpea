@@ -859,7 +859,7 @@ test('saving the default coding model sends the revision and re-renders the read
   click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
   await flushAsync();
 
-  assert.deepEqual(harness.codingRolePuts, [{ modelId: CHAT_MODEL, expectedRevision: 0 }]);
+  assert.deepEqual(harness.codingRolePuts, [{ modelId: CHAT_MODEL, effort: null, expectedRevision: 0 }]);
   const html = harness.app.innerHTML;
   const section = html.slice(html.indexOf('workspace-coding-model-heading'));
   assert.match(section, new RegExp(`<option value="${CHAT_MODEL.replace('/', '\\/')}" selected>`));
@@ -872,7 +872,7 @@ test('saving the default coding model sends the revision and re-renders the read
   await flushAsync();
   click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
   await flushAsync();
-  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, expectedRevision: 1 });
+  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, effort: null, expectedRevision: 1 });
   assert.match(harness.app.innerHTML, /Default coding model cleared/);
 });
 
@@ -1118,4 +1118,85 @@ test('the Agents list names an effort after the model only when one applies', as
   const html = harness.app.innerHTML;
   assert.match(html, new RegExp(`<span class="mono">${OPUS.replace('/', '\\/')}</span> &middot; Extra high &middot; Image`));
   assert.match(html, new RegExp(`<span class="mono">${HAIKU.replace('/', '\\/')}</span> &middot; Image`));
+});
+
+test('the Default model card saves an effort change on its own', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: OPUS, effort: null, revision: 2 },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  let html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').map(([level, checked]) => [level, checked]), [
+    ['low', false], ['medium', true], ['high', false], ['xhigh', false], ['max', false],
+  ]);
+  assert.match(html, /data-action="workspace-default-save" disabled/);
+  // The image model has no effort setting.
+  const imageSection = html.slice(html.indexOf('workspace-image-model-heading'), html.indexOf('workspace-coding-model-heading'));
+  assert.doesNotMatch(imageSection, /role="radiogroup"|Effort/);
+
+  click({ target: chooseEffortTarget('workspace-default-effort', 'high') });
+  await flushAsync();
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="workspace-default-save" disabled/);
+  // Back at the stored level, nothing is left to save.
+  click({ target: chooseEffortTarget('workspace-default-effort', 'medium') });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /data-action="workspace-default-save" disabled/);
+
+  click({ target: chooseEffortTarget('workspace-default-effort', 'high') });
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts, [{ modelId: OPUS, effort: 'high', expectedRevision: 2 }]);
+  html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').find(([, checked]) => checked)?.[0], 'high');
+  assert.match(html, /data-action="workspace-default-save" disabled/);
+});
+
+test('the Default model card drops an effort the newly selected model lacks', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    workspaceDefault: { modelId: OPUS, effort: 'max', revision: 3 },
+  });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-default-model' }, HAIKU) });
+  await flushAsync();
+  const html = harness.app.innerHTML;
+  assert.deepEqual(effortRadios(html, 'workspace-default-effort').map(([level, checked]) => [level, checked]), [
+    ['low', false], ['medium', true], ['high', false],
+  ]);
+  click({ target: actionTarget({ 'data-action': 'workspace-default-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.workspaceDefaultPuts, [{ modelId: HAIKU, effort: null, expectedRevision: 3 }]);
+});
+
+test('the Default coding model card offers an effort for a chosen model and saves it', async () => {
+  const harness = runHarness({ initialPath: '/admin/settings/providers' });
+  await flushAsync();
+  const change = harness.listeners.change;
+  const click = harness.listeners.click;
+  assert.ok(change && click);
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'workspace-coding-effort'), [], 'Not set has no effort');
+
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, OPUS) });
+  await flushAsync();
+  assert.deepEqual(effortRadios(harness.app.innerHTML, 'workspace-coding-effort').find(([, checked]) => checked)?.[0], 'medium');
+  click({ target: chooseEffortTarget('workspace-coding-effort', 'xhigh') });
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.codingRolePuts, [{ modelId: OPUS, effort: 'xhigh', expectedRevision: 0 }]);
+  const section = harness.app.innerHTML.slice(harness.app.innerHTML.indexOf('workspace-coding-model-heading'));
+  assert.deepEqual(effortRadios(section, 'workspace-coding-effort').find(([, checked]) => checked)?.[0], 'xhigh');
+  assert.match(section, /data-action="workspace-coding-model-save" disabled/);
+
+  change({ target: valueTarget({ 'data-action': 'workspace-coding-model' }, '') });
+  click({ target: actionTarget({ 'data-action': 'workspace-coding-model-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.codingRolePuts[1], { modelId: null, effort: null, expectedRevision: 1 });
 });

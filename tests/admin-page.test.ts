@@ -736,7 +736,7 @@ function runAdminPageHarness(
   scheduledTimerCount(): number;
   favoritesPuts: Array<{ id: string; favorites: string[] }>;
   workersAiEnabledPuts: boolean[];
-  workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }>;
+  workspaceDefaultPuts: Array<{ modelId: string; effort?: string | null; expectedRevision: number }>;
   sandboxPuts: Array<{
     enabled: boolean;
     readinessConfirmed?: boolean;
@@ -1028,7 +1028,7 @@ function runAdminPageHarness(
   let openAiSubscriptionStartResolver: ((response: FakeResponse) => void) | undefined;
   const favoritesPuts: Array<{ id: string; favorites: string[] }> = [];
   const workersAiEnabledPuts: boolean[] = [];
-  const workspaceDefaultPuts: Array<{ modelId: string; expectedRevision: number }> = [];
+  const workspaceDefaultPuts: Array<{ modelId: string; effort?: string | null; expectedRevision: number }> = [];
   const sandboxPuts: Array<{
     enabled: boolean;
     readinessConfirmed?: boolean;
@@ -2764,7 +2764,7 @@ function runAdminPageHarness(
     }
     if (path === '/admin/api/workspace-model-default') {
       if (method === 'PUT') {
-        const body = JSON.parse(options?.body ?? '{}') as { modelId: string; expectedRevision: number };
+        const body = JSON.parse(options?.body ?? '{}') as { modelId: string; effort?: string | null; expectedRevision: number };
         workspaceDefaultPuts.push(body);
         if (harnessOptions.workspaceDefaultPutError) {
           const current = harnessOptions.workspaceDefaultPutError.current ?? workspaceDefault;
@@ -14305,6 +14305,7 @@ test('Settings saves the Workspace default optimistically and restores selector 
 
   assert.deepEqual(harness.workspaceDefaultPuts, [{
     modelId: 'anthropic/claude-sonnet-5',
+    effort: null,
     expectedRevision: 2,
   }]);
   assert.match(harness.app.innerHTML, /Workspace default saved\. New messages use it when their turn is admitted/);
@@ -14350,6 +14351,7 @@ test('a Workspace default conflict preserves the selected model and current revi
 
   assert.deepEqual(harness.workspaceDefaultPuts, [{
     modelId: 'anthropic/claude-sonnet-5',
+    effort: null,
     expectedRevision: 2,
   }]);
   assert.match(harness.app.innerHTML, /changed in another session\. Your selection is preserved/);
@@ -14360,6 +14362,7 @@ test('a Workspace default conflict preserves the selected model and current revi
   await flushAsync();
   assert.deepEqual(harness.workspaceDefaultPuts[1], {
     modelId: 'anthropic/claude-sonnet-5',
+    effort: null,
     expectedRevision: 3,
   });
 });

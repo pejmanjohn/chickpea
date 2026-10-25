@@ -272,6 +272,7 @@
     workspaceDefault: null,
     workspaceDefaultLoaded: false,
     workspaceDefaultDraft: "",
+    workspaceDefaultEffortDraft: "",
     workspaceDefaultBusy: false,
     workspaceDefaultError: "",
     workspaceDefaultNotice: "",
@@ -293,6 +294,7 @@
     workspaceCodingRole: null,
     workspaceCodingRoleLoaded: false,
     workspaceCodingRoleDraft: "",
+    workspaceCodingRoleEffortDraft: "",
     workspaceCodingRoleBusy: false,
     workspaceCodingRoleError: "",
     workspaceCodingRoleNotice: "",
@@ -5054,6 +5056,8 @@
   }
 
   var EFFORT_LABELS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+  // The Settings sections whose model carries an effort, by the action of their Effort radios.
+  var EFFORT_SECTIONS = { "workspace-default-effort": "workspaceDefault", "workspace-coding-effort": "workspaceCodingRole" };
 
   // The levels a model accepts, cached per model: undefined until asked, null
   // while the request runs, false after it failed. A projection that already
@@ -5089,6 +5093,10 @@
     }
     var draft = state.profileDraft;
     if (draft && !fits(draft.model, draft.modelEffort)) draft.modelEffort = "";
+    Object.keys(EFFORT_SECTIONS).forEach(function (action) {
+      var key = EFFORT_SECTIONS[action];
+      if (!fits(state[key + "Draft"], state[key + "EffortDraft"])) state[key + "EffortDraft"] = "";
+    });
   }
 
   // A click or arrow key on an Effort radio. The checked radio already shows
@@ -5097,9 +5105,17 @@
     if (radio.getAttribute("aria-checked") === "true") return;
     var action = radio.getAttribute("data-action");
     var level = radio.getAttribute("data-effort");
-    if (!state.profileDraft) return;
-    state.profileDraft.modelEffort = level;
-    markProfileDirty();
+    var key = EFFORT_SECTIONS[action];
+    if (key) {
+      if (state[key + "Busy"]) return;
+      state[key + "EffortDraft"] = level;
+      state[key + "Error"] = "";
+      state[key + "Notice"] = "";
+    } else {
+      if (!state.profileDraft) return;
+      state.profileDraft.modelEffort = level;
+      markProfileDirty();
+    }
     renderPreservingPagePosition();
     var next = document.querySelector('[data-action="' + action + '"][data-effort="' + level + '"]');
     if (next && next.focus) next.focus();
@@ -10528,7 +10544,7 @@
       : health.code === "funding_not_offered"
         ? NOT_OFFERED_HINT_HTML
         : '<a class="link-btn" href="/admin/settings/providers">Review ' + esc(health.providerId || "model") + ' provider settings</a>';
-    var changed = String(state.workspaceDefaultDraft || "") !== String(current.modelId || "");
+    var changed = workspaceModelDraftChanged("workspaceDefault");
     var disabled = state.workspaceDefaultBusy ? " disabled" : "";
     var status = state.workspaceDefaultError
       ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceDefaultError) + '</p>'
@@ -10537,7 +10553,36 @@
         : '<span class="sr-only" role="status" aria-live="polite"></span>';
     return head + '<div class="workspace-default-card workspace-default-shelf"><div class="workspace-default-summary"><div class="workspace-default-title-row">' + title + healthBadge + (current.live ? '<span class="badge-src">Live</span>' : '<span class="badge-src">Pending activation</span>') + '</div><div class="workspace-default-copy"><p class="hint">The shared model for Chickpea and every Agent that is not pinned.</p><p class="hint">' + esc(inheritors) + '</p></div>' + repair + '</div>' +
       '<div><div class="workspace-default-control"><label class="field" for="workspace-default-model"><span class="sr-only">Model</span><span class="select-wrap"><select class="input mono" id="workspace-default-model" data-action="workspace-default-model"' + disabled + '>' + optionHtml + '</select>' + icon("chevron-down", "select-caret") + '</span></label><button type="button" class="btn btn-primary" data-action="workspace-default-save"' + (!changed || state.workspaceDefaultBusy || !state.workspaceDefaultDraft ? " disabled" : "") + '>' + (state.workspaceDefaultBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save default") + '</button></div>' +
+      workspaceEffortRowHtml("workspace-default-effort") +
       '<p class="hint workspace-default-timing">' + esc(timing) + '</p>' + status + '</div></div></section>';
+  }
+
+  function workspaceEffortRowHtml(action) {
+    var key = EFFORT_SECTIONS[action];
+    var model = state[key + "Draft"];
+    if (!model) return "";
+    var stored = state[key];
+    var levels = modelEffortLevels(model, stored && stored.modelId === model ? stored : null);
+    if (!levels) return "";
+    return '<div class="workspace-default-effort"><span class="field-label" id="' + action + '-label">Effort</span>' + effortRowHtml({
+      levels: levels,
+      effort: state[key + "EffortDraft"],
+      action: action,
+      labelId: action + "-label",
+      disabled: state[key + "Busy"]
+    }) + '</div>';
+  }
+
+  // A Workspace model draft differs from what is stored when its model does,
+  // or when its Effort radios show a different level.
+  function workspaceModelDraftChanged(key) {
+    var stored = state[key] || {};
+    var model = String(state[key + "Draft"] || "");
+    if (model !== String(stored.modelId || "")) return true;
+    var draftEffort = state[key + "EffortDraft"] || "";
+    var storedEffort = stored.effort || "";
+    var levels = state.modelEfforts[model];
+    return levels ? selectedEffort(levels, draftEffort) !== selectedEffort(levels, storedEffort) : draftEffort !== storedEffort;
   }
 
   function imageModelCatalog() {
@@ -10672,7 +10717,7 @@
       values.map(function (modelId) {
         return '<option value="' + esc(modelId) + '"' + (modelId === draft ? ' selected' : '') + '>' + esc(modelId) + '</option>';
       }).join("");
-    var changed = draft !== chosen;
+    var changed = workspaceModelDraftChanged("workspaceCodingRole");
     var disabled = state.workspaceCodingRoleBusy ? " disabled" : "";
     var status = state.workspaceCodingRoleError
       ? '<p class="field-error" role="alert" aria-live="assertive">' + esc(state.workspaceCodingRoleError) + '</p>'
@@ -10685,7 +10730,7 @@
       '<button type="button" class="btn btn-primary" data-action="workspace-coding-model-save"' +
       (!changed || state.workspaceCodingRoleBusy ? " disabled" : "") + '>' +
       (state.workspaceCodingRoleBusy ? '<span class="spinner"></span>Saving&hellip;' : "Save coding model") + '</button></div>' +
-      status + '</div>';
+      workspaceEffortRowHtml("workspace-coding-effort") + status + '</div>';
     return shelf(summary, control);
   }
 
@@ -11805,12 +11850,15 @@
     var errorKey = stateKey + "Error";
     var noticeKey = stateKey + "Notice";
     var requestIdKey = stateKey + "RequestId";
+    var effortDraftKey = stateKey + "EffortDraft";
     var responseKey = options.responseKey;
 
     function apply(value, preserveDraft) {
       state[stateKey] = value || null;
       state[loadedKey] = true;
-      if (!preserveDraft) state[draftKey] = (value && value.modelId) || "";
+      if (preserveDraft) return;
+      state[draftKey] = (value && value.modelId) || "";
+      if (options.withEffort) state[effortDraftKey] = (value && value.effort) || "";
     }
 
     function load(generation, preserveDraft) {
@@ -11846,12 +11894,14 @@
       state[errorKey] = "";
       state[noticeKey] = "";
       render();
-      postJson(options.endpoint, "PUT", {
+      var request = {
         // A section that can be cleared sends an explicit null for the empty
         // draft; the chat default never gets here empty (its validate refuses).
         modelId: modelId || (options.clearable ? null : modelId),
         expectedRevision: current.revision
-      }).then(function (body) {
+      };
+      if (options.withEffort) request.effort = (modelId && state[effortDraftKey]) || null;
+      postJson(options.endpoint, "PUT", request).then(function (body) {
         apply(body[responseKey], false);
         state[busyKey] = false;
         state[noticeKey] = options.savedNotice(body[responseKey]);
@@ -11880,6 +11930,7 @@
     responseKey: "workspaceDefault",
     conflictCode: "workspace_model_default_revision_conflict",
     actionId: "workspace-default-model",
+    withEffort: true,
     // The chat default is free text, so the provider/model shape is checked here
     // before the request; the image field only offers catalog entries and leans
     // on the server's catalog check instead.
@@ -11924,6 +11975,7 @@
     responseKey: "workspaceModelRole",
     conflictCode: "model_role_revision_conflict",
     actionId: "workspace-coding-model",
+    withEffort: true,
     // Options are the configured chat models and the empty option is the
     // clear; the server checks the catalog and provider before saving.
     clearable: true,
@@ -14545,7 +14597,7 @@
     // the filter in the input listener below.
     if (action === "profile-model") { openModelPicker(); }
     if (action === "pick-model") { var modelInput = document.getElementById("p-model"); if (modelInput) modelInput.value = target.getAttribute("data-model") || ""; collectProfileDraft(); dropUnsupportedEfforts(); markProfileDirty(); closeModelPicker(); }
-    if (action === "profile-effort") { chooseEffort(target); }
+    if (action === "profile-effort" || EFFORT_SECTIONS[action]) { chooseEffort(target); }
     if (action === "profile-image-model") { openImageModelPicker(); }
     if (action === "pick-image-model") {
       var imagePickInput = document.getElementById("p-image-model");
@@ -15183,6 +15235,7 @@
     if (action === "workers-ai-enabled") setWorkersAiEnabled(!!target.checked);
     if (action === "workspace-default-model" && !state.workspaceDefaultBusy) {
       state.workspaceDefaultDraft = target.value;
+      dropUnsupportedEfforts();
       state.workspaceDefaultError = "";
       state.workspaceDefaultNotice = "";
       render();
@@ -15190,6 +15243,7 @@
     }
     if (action === "workspace-coding-model" && !state.workspaceCodingRoleBusy) {
       state.workspaceCodingRoleDraft = target.value;
+      dropUnsupportedEfforts();
       state.workspaceCodingRoleError = "";
       state.workspaceCodingRoleNotice = "";
       render();
