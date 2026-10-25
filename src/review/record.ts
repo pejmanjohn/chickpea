@@ -4,6 +4,10 @@
  * every string before the record exists; a port never sees one unscrubbed.
  */
 
+import { createHmac } from 'node:crypto';
+
+import { redactCredentialLikeContent } from '../security/content-validation.ts';
+
 export const RUN_REVIEW_RECORD_FORMAT = 'chickpea.run-review.v1';
 
 /** A Slack user's stand-in: an HMAC of their ID under the installation's own review key. */
@@ -53,4 +57,143 @@ export interface RunReviewRecordV1 {
   truncated: boolean;
   /** Which trace produced `steps`: the observed stream, or the settled history read afterwards. */
   source: 'stream' | 'history';
+}
+
+/** What the builder scrubs into a record; people are named by their raw Slack user IDs. */
+export interface RunReviewInput {
+  runId: string;
+  recordedAt: string;
+  surface: RunReviewSurface;
+  agentId: string;
+  model?: string;
+  trigger: { author: string; text: string; files: readonly RunReviewFileNote[] };
+  context: readonly {
+    /** A person's Slack user ID, or an app's or Agent's label. */
+    author: string;
+    role: RunReviewContextMessage['role'];
+    text: string;
+    files: readonly RunReviewFileNote[];
+  }[];
+  steps: readonly RunReviewStep[];
+  answer?: string;
+  outcome: RunReviewOutcome;
+  error?: { class: string; message: string };
+  timings: RunReviewRecordV1['timings'];
+  /** The trace was already cut while it was collected. */
+  truncated: boolean;
+  source: RunReviewRecordV1['source'];
+}
+
+export const RUN_REVIEW_FIELD_BYTES = 16 * 1024;
+export const RUN_REVIEW_RECORD_BYTES = 256 * 1024;
+
+const PSEUDONYM_LABEL = 'chickpea-run-review-user-v1\0';
+const PSEUDONYM_HEX_CHARS = 20;
+// A mention's ID, or a bare token shaped like a Slack user ID. The digit
+// lookahead keeps words such as UNDERSTAND intact.
+const SLACK_USER_ID = /(?<=<@)[UW][A-Z0-9]{2,}(?=[|>])|\b[UW](?=[A-Z0-9]*\d)[A-Z0-9]{8,10}\b/g;
+
+/**
+ * Pseudonyms under one installation's review key, apart from the product
+ * telemetry key and label. Lowercase hex never reads as a Slack user ID.
+ */
+export function runReviewPseudonymizer(key: Uint8Array): (slackUserId: string) => RunReviewPseudonym {
+  const known = new Map<string, RunReviewPseudonym>();
+  return (slackUserId) => {
+    let pseudonym = known.get(slackUserId);
+    if (!pseudonym) {
+      const digest = createHmac('sha256', key).update(PSEUDONYM_LABEL).update(slackUserId).digest('hex');
+      pseudonym = `u_${digest.slice(0, PSEUDONYM_HEX_CHARS)}`;
+      known.set(slackUserId, pseudonym);
+    }
+    return pseudonym;
+  };
+}
+
+/**
+ * The record a port stores. Every string loses recognizable credentials,
+ * then every Slack user ID, then is cut to its cap; file notes keep only a
+ * name and size. The builder adds no Slack team, channel, thread or message
+ * IDs. Past the record cap the oldest steps go first, then the oldest
+ * context.
+ */
+export function buildRunReviewRecord(
+  input: RunReviewInput,
+  pseudonymOf: (slackUserId: string) => RunReviewPseudonym,
+): RunReviewRecordV1 {
+  let truncated = input.truncated;
+  const field = (text: string): string => {
+    const scrubbed = redactCredentialLikeContent(text).replace(SLACK_USER_ID, (id) => pseudonymOf(id));
+    const capped = capUtf8(scrubbed, RUN_REVIEW_FIELD_BYTES);
+    if (capped.length < scrubbed.length) truncated = true;
+    return capped;
+  };
+  const files = (notes: readonly RunReviewFileNote[]): RunReviewFileNote[] =>
+    notes.map((note) => ({ name: field(note.name), ...(note.size === undefined ? {} : { size: note.size }) }));
+  const record: RunReviewRecordV1 = {
+    format: RUN_REVIEW_RECORD_FORMAT,
+    runId: field(input.runId),
+    recordedAt: input.recordedAt,
+    surface: input.surface,
+    agentId: field(input.agentId),
+    ...(input.model === undefined ? {} : { model: field(input.model) }),
+    trigger: {
+      author: input.trigger.author === 'routine' ? 'routine' : pseudonymOf(input.trigger.author),
+      text: field(input.trigger.text),
+      files: files(input.trigger.files),
+    },
+    context: input.context.map((message) => ({
+      author: message.role === 'human' ? pseudonymOf(message.author) : field(message.author),
+      role: message.role,
+      text: field(message.text),
+      files: files(message.files),
+    })),
+    steps: input.steps.map((step): RunReviewStep => step.kind === 'tool'
+      ? {
+          kind: 'tool',
+          name: field(step.name),
+          input: field(step.input),
+          ...(step.output === undefined ? {} : { output: field(step.output) }),
+          ...(step.error === undefined ? {} : { error: field(step.error) }),
+          ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
+        }
+      : { kind: step.kind, text: field(step.text) }),
+    ...(input.answer === undefined ? {} : { answer: field(input.answer) }),
+    outcome: input.outcome,
+    ...(input.error ? { error: { class: field(input.error.class), message: field(input.error.message) } } : {}),
+    timings: input.timings,
+    truncated: false,
+    source: input.source,
+  };
+  return fitRecord({ ...record, truncated });
+}
+
+function fitRecord(record: RunReviewRecordV1): RunReviewRecordV1 {
+  let size = jsonBytes(record);
+  if (size <= RUN_REVIEW_RECORD_BYTES) return record;
+  // A dropped element takes its separating comma with it.
+  const drop = <T>(items: readonly T[]): T[] => {
+    let index = 0;
+    while (size > RUN_REVIEW_RECORD_BYTES && index < items.length) {
+      size -= jsonBytes(items[index]) + 1;
+      index += 1;
+    }
+    return items.slice(index);
+  };
+  const steps = drop(record.steps);
+  const context = drop(record.context);
+  return { ...record, steps, context, truncated: true };
+}
+
+const encoder = new TextEncoder();
+
+function jsonBytes(value: unknown): number {
+  return encoder.encode(JSON.stringify(value)).byteLength;
+}
+
+/** The longest prefix of `text` within `maxBytes` of UTF-8, never splitting a character. */
+function capUtf8(text: string, maxBytes: number): string {
+  if (text.length * 3 <= maxBytes) return text;
+  const { read } = encoder.encodeInto(text, new Uint8Array(maxBytes));
+  return text.slice(0, read);
 }

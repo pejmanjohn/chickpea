@@ -232,7 +232,7 @@ import {
 } from './slack/runner-stops.ts';
 import { abortSlackThreadAgent } from './slack/flue-dispatch.ts';
 import {
-  RUNNER_PREFETCHED_SETTINGS,
+  runnerPrefetchedSettings,
   threadRunnerStub,
   type RunnerTurnBegin,
   type SlackThreadRunnerRpc,
@@ -2915,7 +2915,8 @@ function applyThreadRunnerTurnOp(
       const installation = view.job
         ? stores.config.getWorkspaceInstallation(view.job.turn.workspaceId)
         : undefined;
-      const values = stores.settings.getSettings(RUNNER_PREFETCHED_SETTINGS);
+      const keys = runnerPrefetchedSettings();
+      const values = stores.settings.getSettings(keys);
       const presentation = view.job?.runId ? stores.presentations.get(view.job.runId) : undefined;
       return {
         view,
@@ -2927,7 +2928,7 @@ function applyThreadRunnerTurnOp(
             }
           : {}),
         settings: Object.fromEntries(
-          RUNNER_PREFETCHED_SETTINGS.map((key, index) => [key, values[index] ?? null]),
+          keys.map((key, index) => [key, values[index] ?? null]),
         ),
       };
     }
