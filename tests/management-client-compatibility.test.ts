@@ -10,6 +10,7 @@ import {
   createWorkspaceManagementMcpServer,
   WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
   WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI,
+  WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
   WORKSPACE_MANAGEMENT_SERVER_INFO,
 } from '../src/management/mcp.ts';
 import {
@@ -34,7 +35,6 @@ import {
   type WorkspaceManagementPromptArguments,
   type WorkspaceManagementPromptName,
 } from '../src/management/prompts.ts';
-import { WORKSPACE_MANAGEMENT_TOOL_NAMES } from '../src/management/tool-adapter.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 const DEPLOYMENT_BASE_URL = 'https://chickpea-team.example.test/';
@@ -59,6 +59,29 @@ const PROMPT_INVOCATIONS: {
     { url: 'https://github.com/owner/repo/tree/main/skills/changelog', handle: '@brief' },
   ],
   status: [{}],
+};
+
+const READ = { readOnlyHint: true };
+const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true };
+
+/** Only confirm_workspace_change can carry out a change the person must approve first. */
+const MCP_TOOL_ANNOTATIONS = {
+  inspect_workspace: READ,
+  prepare_connector_setup: READ,
+  prepare_provider_setup: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+  discover_slack_channels: READ,
+  test_mcp_connection: READ,
+  inspect_memory: READ,
+  inspect_routines: READ,
+  export_workspace_recipe: READ,
+  preview_workspace_recipe: READ,
+  import_skill: WRITE,
+  manage_agent_skill: WRITE,
+  apply_workspace_changes: WRITE,
+  confirm_workspace_change: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+  undo_workspace_change: WRITE,
+  get_operation: READ,
+  revoke_setup_link: WRITE,
 };
 
 const CLIENTS = [
@@ -146,7 +169,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       }).tools;
       assert.deepEqual(
         listedTools.map(({ name }) => name),
-        WORKSPACE_MANAGEMENT_TOOL_NAMES,
+        WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES,
         client.name,
       );
       assert.ok(
@@ -154,31 +177,10 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           ?.inputSchema?.required?.includes('agentId'),
         `${client.name} must require an explicit Agent for connector setup`,
       );
-      const proposalRequired = listedTools.find(
-        ({ name }) => name === 'propose_workspace_changes',
-      )?.inputSchema?.required;
-      for (const field of ['operations', 'idempotencyKey', 'guideVersion', 'authoringReason']) {
-        assert.ok(
-          proposalRequired?.includes(field),
-          `${client.name} must require proposal ${field}`,
-        );
-      }
       assert.deepEqual(
-        listedTools.find(({ name }) => name === 'propose_workspace_changes')?.annotations,
-        { readOnlyHint: false, idempotentHint: false },
-        `${client.name} must disclose that proposals persist reviewed state`,
-      );
-      const skillImport = listedTools.find(({ name }) => name === 'propose_skill_import');
-      for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
-        assert.ok(
-          skillImport?.inputSchema?.required?.includes(field),
-          `${client.name} must require skill import ${field}`,
-        );
-      }
-      assert.deepEqual(
-        skillImport?.annotations,
-        { readOnlyHint: false, idempotentHint: false },
-        `${client.name} must disclose that skill import proposals persist reviewed state`,
+        Object.fromEntries(listedTools.map(({ name, annotations }) => [name, annotations])),
+        MCP_TOOL_ANNOTATIONS,
+        `${client.name} must disclose which tools write and which can destroy`,
       );
       const immediateSkillImport = listedTools.find(({ name }) => name === 'import_skill');
       for (const field of ['agentId', 'source', 'idempotencyKey', 'guideVersion']) {
@@ -187,11 +189,6 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           `${client.name} must require immediate skill import ${field}`,
         );
       }
-      assert.deepEqual(
-        immediateSkillImport?.annotations,
-        { readOnlyHint: false, idempotentHint: true },
-        `${client.name} must disclose that exact skill imports are idempotent writes`,
-      );
       const managedSkill = listedTools.find(({ name }) => name === 'manage_agent_skill');
       for (const field of ['agentId', 'action', 'skillName', 'idempotencyKey']) {
         assert.ok(
@@ -199,11 +196,6 @@ test('supported coding clients share public PKCE registration and stateless MCP 
           `${client.name} must require managed skill ${field}`,
         );
       }
-      assert.deepEqual(
-        managedSkill?.annotations,
-        { readOnlyHint: false, idempotentHint: true },
-        `${client.name} must disclose that exact skill state changes are idempotent writes`,
-      );
       assert.ok(
         listedTools.find(({ name }) => name === 'prepare_connector_setup')
           ?.inputSchema?.required?.includes('ownerKind'),
@@ -251,10 +243,12 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       assert.equal(resource.uri, WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI);
       const contract = JSON.parse(resource.text) as {
         schemaVersion: number;
+        tools: string[];
         operationKinds: string[];
         prompts: string[];
       };
       assert.equal(contract.schemaVersion, 2);
+      assert.deepEqual(contract.tools, WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES, client.name);
       assert.deepEqual(contract.operationKinds, MANAGEMENT_OPERATION_KINDS);
       assert.deepEqual(contract.prompts, WORKSPACE_MANAGEMENT_PROMPT_NAMES, client.name);
 
@@ -359,35 +353,26 @@ test('supported coding clients share public PKCE registration and stateless MCP 
         assert.doesNotMatch(line, /presentation\.slack|\bDM\b|Slack turn|Slack Lists|Slack conversation|requester message/, `${client.name} ${line.slice(0, 40)}`);
       }
 
-      const proposed = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
-        name: 'propose_workspace_changes',
+      const before = await f.config.getAgent(agent.id);
+      const applied = await mcpCall(handler.fetch, client.protocol, 'tools/call', {
+        name: 'apply_workspace_changes',
         arguments: {
           idempotencyKey: `client-${client.name}`,
-          guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
-          authoringReason: 'agent_edit',
           operations: [{
             itemId: 'description',
             kind: 'update_agent',
             agentId: agent.id,
-            expectedRevision: 1,
-            patch: { description: `Reviewed by ${client.name}.` },
+            expectedRevision: before.revision,
+            patch: { description: `Edited by ${client.name}.` },
           }],
         },
       });
-      const proposedResult = JSON.parse((proposed.result as {
+      const appliedResult = JSON.parse((applied.result as {
         content: Array<{ text: string }>;
-      }).content[0]!.text) as {
-        ok: boolean;
-        result: { proposalId: string; guide: { version: string; uri: string; digest: string } };
-      };
-      assert.equal(proposedResult.ok, true);
-      assert.deepEqual(proposedResult.result.guide, {
-        version: AGENT_AUTHORING_GUIDE_VERSION,
-        uri: WORKSPACE_MANAGEMENT_AGENT_AUTHORING_GUIDE_URI,
-        digest: AGENT_AUTHORING_GUIDE_DIGEST,
-      });
-      assert.match(proposedResult.result.proposalId, /^changeset_/);
-      assert.equal((await f.config.getAgent(agent.id)).revision, 1);
+      }).content[0]!.text) as { ok: boolean; result: { status: string } };
+      assert.equal(appliedResult.ok, true, client.name);
+      assert.equal(appliedResult.result.status, 'completed', client.name);
+      assert.equal((await f.config.getAgent(agent.id)).description, `Edited by ${client.name}.`);
     }
   } finally {
     f.close();
@@ -433,10 +418,10 @@ test('server instructions stay under the client cap and link the deployment Admi
   assert.ok(withoutOrigin.includes('/admin'));
 });
 
-test('workspace management MCP publishes the version 2 server contract', () => {
+test('workspace management MCP publishes the version 3 server contract', () => {
   assert.deepEqual(WORKSPACE_MANAGEMENT_SERVER_INFO, {
     name: 'chickpea-workspace',
-    version: '2.9.0',
+    version: '3.0.0',
   });
   assert.match(WORKSPACE_MANAGEMENT_OPERATION_SCHEMA_URI, /\/v2$/);
 });

@@ -1,0 +1,486 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import type { ParsedSkillSource } from '../src/config/skill-import.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
+import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
+import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
+import {
+  invokeWorkspaceManagementTool,
+  type WorkspaceManagementToolArguments,
+  type WorkspaceManagementToolName,
+} from '../src/management/tool-adapter.ts';
+import type {
+  ManagementActorContext,
+  ManagementApplyResult,
+  ManagementOperation,
+} from '../src/management/types.ts';
+import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+
+type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
+type Person = Fixture['owner'] | Fixture['admin'];
+
+const knowledgeServer = {
+  id: 'knowledge',
+  displayName: 'Knowledge',
+  url: 'https://mcp.example.test/mcp',
+  transport: 'streamable-http' as const,
+  authMode: 'none' as const,
+  headerNames: [],
+  enabled: true,
+  lifecycleStatus: 'ready' as const,
+  statusText: 'Ready',
+  discoveredTools: [],
+  allowedTools: [],
+};
+
+const billingApi = {
+  id: 'billing',
+  displayName: 'Billing',
+  allowedHosts: ['billing.example.test'],
+  pathPrefixes: ['/v1/'],
+  headerName: 'Authorization',
+  allowedMethods: ['GET'],
+  enabled: true,
+};
+
+const docsRepository = {
+  id: 'docs',
+  installationId: 7,
+  accountLogin: 'acme',
+  fullName: 'acme/docs',
+  enabled: true,
+};
+
+function mcpContext(person: Pick<Person, 'user' | 'membership'>): ManagementActorContext {
+  return {
+    userId: person.user.id,
+    membershipId: person.membership.id,
+    organizationId: person.membership.organizationId,
+    origin: { kind: 'mcp', clientId: 'authority-test' },
+  };
+}
+
+async function call<TName extends WorkspaceManagementToolName>(
+  f: Fixture,
+  person: Pick<Person, 'user' | 'membership'>,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }> {
+  return invokeWorkspaceManagementTool({
+    service: f.service,
+    resolveContext: async () => mcpContext(person),
+  }, name, args);
+}
+
+async function apply(
+  f: Fixture,
+  person: Pick<Person, 'user' | 'membership'>,
+  key: string,
+  operations: ManagementOperation[],
+): Promise<ManagementApplyResult> {
+  const response = await call(f, person, 'apply_workspace_changes', { idempotencyKey: key, operations });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
+}
+
+async function confirm(
+  f: Fixture,
+  person: Pick<Person, 'user' | 'membership'>,
+  proposalId: string,
+): Promise<ManagementApplyResult> {
+  const response = await call(f, person, 'confirm_workspace_change', { proposalId });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
+}
+
+function assertApplied(result: ManagementApplyResult, label: string): void {
+  assert.equal(result.status, 'completed', `${label}: ${JSON.stringify(result.outcomes)}`);
+  assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], label);
+  assert.equal(result.presentation, undefined, `${label} must not carry a confirmation preview`);
+}
+
+function pendingConfirmation(result: ManagementApplyResult, label: string): string {
+  assert.equal(result.status, 'confirmation_required', `${label}: ${JSON.stringify(result.outcomes)}`);
+  const proposalId = result.outcomes[0]?.proposalId;
+  assert.match(proposalId ?? '', /^changeset_/, label);
+  assert.ok((result.presentation?.markdown ?? '').trim().length > 0, `${label} needs a readable preview`);
+  return proposalId!;
+}
+
+async function createAgent(
+  f: Fixture,
+  creator: Pick<Person, 'membership'>,
+  id: string,
+  extra: Partial<CustomAgentConfig> = {},
+): Promise<CustomAgentConfig> {
+  return f.config.createAgent({
+    id,
+    name: id.replace(/^agent_/, '').replace(/_/g, ' '),
+    instructions: 'Help the team.',
+    enabled: true,
+    lifecycle: 'active',
+    creatorMembershipId: creator.membership.id,
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+    ...extra,
+  });
+}
+
+async function withFixture(
+  suffix: string,
+  run: (f: Fixture) => Promise<void>,
+  overrides: Partial<WorkspaceManagementServiceInput> = {},
+): Promise<void> {
+  const f = await createManagementAdapterFixture(suffix, overrides);
+  try {
+    await run(f);
+  } finally {
+    f.close();
+  }
+}
+
+test('MCP applies every allowed non-destructive change in one call', () => withFixture('mcp-direct', async (f) => {
+  const workspaceId = f.owner.binding.slackTeamId;
+  await f.config.putChannel({
+    workspaceId,
+    channelId: 'C_DIRECT',
+    label: 'direct',
+    lifecycle: 'active',
+  });
+
+  const created = await apply(f, f.owner, 'create-shared', [{
+    itemId: 'create',
+    kind: 'create_agent',
+    agent: {
+      id: 'agent_shared',
+      name: 'Shared',
+      instructions: 'Accept edits from the whole team.',
+      editPolicy: 'all_workspace_members',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    },
+  }]);
+  assertApplied(created, 'create with workspace-wide edit authority');
+  assert.equal((await f.config.getAgent('agent_shared')).editPolicy, 'all_workspace_members');
+
+  let agent = await createAgent(f, f.owner, 'agent_direct');
+  assertApplied(await apply(f, f.owner, 'edit-policy', [{
+    itemId: 'edit-policy',
+    kind: 'update_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+    patch: { editPolicy: 'all_workspace_members' },
+  }]), 'editPolicy change');
+  agent = await f.config.getAgent(agent.id);
+  assert.equal(agent.editPolicy, 'all_workspace_members');
+
+  assertApplied(await apply(f, f.owner, 'add-mcp', [{
+    itemId: 'add-mcp',
+    kind: 'update_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+    patch: { mcpServers: [knowledgeServer] },
+  }]), 'mcpServers addition');
+  agent = await f.config.getAgent(agent.id);
+  assert.deepEqual(agent.mcpServers.map(({ id }) => id), ['knowledge']);
+
+  assertApplied(await apply(f, f.owner, 'grant', [{
+    itemId: 'grant',
+    kind: 'grant_agent_channel',
+    workspaceId,
+    channelId: 'C_DIRECT',
+    agentId: agent.id,
+    expectedRevision: 0,
+  }]), 'Channel grant');
+  const [grant] = await f.config.listAgentChannelGrants(workspaceId, 'C_DIRECT');
+  assert.equal(grant?.status, 'active');
+
+  assertApplied(await apply(f, f.owner, 'revoke', [{
+    itemId: 'revoke',
+    kind: 'revoke_agent_channel',
+    workspaceId,
+    channelId: 'C_DIRECT',
+    agentId: agent.id,
+    expectedRevision: grant!.revision,
+  }]), 'Channel revoke');
+  assert.deepEqual(await f.config.listAgentChannelGrants(workspaceId, 'C_DIRECT'), []);
+
+  agent = await f.config.getAgent(agent.id);
+  assertApplied(await apply(f, f.owner, 'archive', [{
+    itemId: 'archive',
+    kind: 'archive_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+  }]), 'archive');
+  agent = await f.config.getAgent(agent.id);
+  assert.equal(agent.lifecycle, 'archived');
+
+  assertApplied(await apply(f, f.owner, 'restore', [{
+    itemId: 'restore',
+    kind: 'restore_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+  }]), 'restore');
+  assert.notEqual((await f.config.getAgent(agent.id)).lifecycle, 'archived');
+}));
+
+test('MCP keeps revision protection on a direct archive', () => withFixture('mcp-direct-stale', async (f) => {
+  const agent = await createAgent(f, f.owner, 'agent_stale');
+  const stale = await apply(f, f.owner, 'archive-stale', [{
+    itemId: 'archive',
+    kind: 'archive_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision + 1,
+  }]);
+  assert.deepEqual(stale.outcomes.map(({ disposition, code }) => [disposition, code]), [
+    ['failed', 'revision_conflict'],
+  ]);
+  assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'active');
+}));
+
+test('MCP asks before each destructive change and applies it on confirmation', () => {
+  let storedKey = true;
+  return withFixture('mcp-destructive', async (f) => {
+    const workspaceId = f.owner.binding.slackTeamId;
+    const member = (await f.identity.provisionSlackMember({
+      slackTeamId: workspaceId,
+      slackUserId: 'UDESTRUCTIVE1',
+      displayName: 'Destructive Member',
+    })).resolution!;
+
+    const doomed = await createAgent(f, f.owner, 'agent_doomed');
+    const deleteProposal = pendingConfirmation(await apply(f, f.owner, 'delete-agent', [{
+      itemId: 'delete',
+      kind: 'delete_agent',
+      agentId: doomed.id,
+      expectedRevision: doomed.revision,
+    }]), 'delete_agent');
+    assert.equal((await f.config.getAgent(doomed.id)).id, doomed.id);
+    assert.equal((await confirm(f, f.owner, deleteProposal)).status, 'completed');
+    assert.equal((await f.config.listUserAgents()).some(({ id }) => id === doomed.id), false);
+
+    const memberProposal = pendingConfirmation(await apply(f, f.owner, 'suspend-member', [{
+      itemId: 'suspend',
+      kind: 'update_member',
+      membershipId: member.membership.id,
+      status: 'suspended',
+    }]), 'update_member');
+    assert.equal((await f.identity.getMembership(member.membership.id))?.status, 'active');
+    assert.equal((await confirm(f, f.owner, memberProposal)).status, 'completed');
+    assert.equal((await f.identity.getMembership(member.membership.id))?.status, 'suspended');
+
+    const keyProposal = pendingConfirmation(await apply(f, f.owner, 'remove-key', [{
+      itemId: 'remove-key',
+      kind: 'remove_provider_credential',
+      providerId: 'openai',
+    }]), 'remove_provider_credential');
+    assert.equal(storedKey, true);
+    assert.equal((await confirm(f, f.owner, keyProposal)).status, 'completed');
+    assert.equal(storedKey, false);
+
+    for (const [field, entry] of [
+      ['mcpServers', knowledgeServer],
+      ['apiConnections', billingApi],
+      ['repositories', docsRepository],
+    ] as const) {
+      const connected = await createAgent(f, f.owner, `agent_remove_${field.toLowerCase()}`, {
+        [field]: [entry],
+      });
+      const removal = pendingConfirmation(await apply(f, f.owner, `remove-${field}`, [{
+        itemId: `remove-${field}`,
+        kind: 'update_agent',
+        agentId: connected.id,
+        expectedRevision: connected.revision,
+        patch: { [field]: [] },
+      }]), `${field} removal`);
+      assert.equal((await f.config.getAgent(connected.id))[field].length, 1);
+      assert.equal((await confirm(f, f.owner, removal)).status, 'completed');
+      assert.equal((await f.config.getAgent(connected.id))[field].length, 0);
+    }
+
+    const scheduled = await createAgent(f, f.owner, 'agent_scheduled');
+    await f.config.putAgentChannelGrant({
+      workspaceId,
+      channelId: 'C_ROUTINE',
+      agentId: scheduled.id,
+      status: 'active',
+      createdByMembershipId: f.owner.membership.id,
+      channelLabel: 'routine',
+    });
+    assertApplied(await apply(f, f.owner, 'save-routine', [{
+      itemId: 'routine',
+      kind: 'save_routine',
+      requiredConnectionAccountIds: [],
+      agentId: scheduled.id,
+      workspaceId,
+      channelId: 'C_ROUTINE',
+      name: 'Morning triage',
+      description: 'Triage the overnight queue.',
+      taskText: 'Summarize urgent requests.',
+      schedule: { kind: 'cron', expression: '0 9 * * 1-5' },
+      timezone: 'UTC',
+      outputPolicy: 'post',
+    }]), 'save_routine');
+    const [routine] = await f.routines.listRoutines(workspaceId, 'C_ROUTINE');
+    assert.ok(routine);
+    const routineProposal = pendingConfirmation(await apply(f, f.owner, 'delete-routine', [{
+      itemId: 'delete-routine',
+      kind: 'delete_routine',
+      workspaceId,
+      channelId: 'C_ROUTINE',
+      routineId: routine.id,
+      expectedVersion: routine.version,
+    }]), 'delete_routine');
+    assert.equal((await f.routines.getRoutine(routine.id))?.deletedAt, null);
+    assert.equal((await confirm(f, f.owner, routineProposal)).status, 'completed');
+    assert.notEqual((await f.routines.getRoutine(routine.id))?.deletedAt, null);
+  }, {
+    providerCredentialSource: async () => storedKey ? 'stored' : 'missing',
+    removeProviderCredential: async () => {
+      storedKey = false;
+      return 'missing';
+    },
+  });
+});
+
+test('MCP grants a member exactly the Admin UI authority', () => withFixture('mcp-member', async (f) => {
+  const member = (await f.identity.provisionSlackMember({
+    slackTeamId: f.owner.binding.slackTeamId,
+    slackUserId: 'UAUTHORITY1',
+    displayName: 'Authority Member',
+  })).resolution!;
+  const theirs = await createAgent(f, member, 'agent_theirs');
+  const shared = await createAgent(f, f.owner, 'agent_open', { editPolicy: 'all_workspace_members' });
+  const locked = await createAgent(f, f.owner, 'agent_locked');
+
+  assertApplied(await apply(f, member, 'member-archive-own', [{
+    itemId: 'archive',
+    kind: 'archive_agent',
+    agentId: theirs.id,
+    expectedRevision: theirs.revision,
+  }]), 'member archives their own Agent');
+  assertApplied(await apply(f, member, 'member-edit-shared', [{
+    itemId: 'instructions',
+    kind: 'update_agent',
+    agentId: shared.id,
+    expectedRevision: shared.revision,
+    patch: { instructions: 'Edited by any member.' },
+  }]), 'member edits a workspace-editable Agent');
+
+  const denied = await apply(f, member, 'member-archive-locked', [{
+    itemId: 'archive',
+    kind: 'archive_agent',
+    agentId: locked.id,
+    expectedRevision: locked.revision,
+  }]);
+  assert.equal(denied.outcomes[0]?.disposition, 'failed');
+  assert.equal((await f.config.getAgent(locked.id)).lifecycle, 'active');
+
+  const memberChange = await apply(f, member, 'member-promote', [{
+    itemId: 'promote',
+    kind: 'update_member',
+    membershipId: member.membership.id,
+    role: 'admin',
+  }]);
+  assert.deepEqual(memberChange.outcomes.map(({ disposition, code }) => [disposition, code]), [
+    ['failed', 'owner_required'],
+  ]);
+
+  const adminMemberChange = await apply(f, f.admin, 'admin-suspend', [{
+    itemId: 'suspend',
+    kind: 'update_member',
+    membershipId: member.membership.id,
+    status: 'suspended',
+  }]);
+  assert.deepEqual(adminMemberChange.outcomes.map(({ disposition, code }) => [disposition, code]), [
+    ['failed', 'owner_required'],
+  ]);
+  assert.equal((await f.identity.getMembership(member.membership.id))?.status, 'active');
+}));
+
+test('MCP undo applies directly unless the inverse removes a connection', () => withFixture('mcp-undo', async (f) => {
+  let agent = await createAgent(f, f.owner, 'agent_undo');
+  const edited = await apply(f, f.owner, 'edit-instructions', [{
+    itemId: 'instructions',
+    kind: 'update_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+    patch: { instructions: 'A newer role.' },
+  }]);
+  assertApplied(edited, 'instruction edit');
+  const undone = await call(f, f.owner, 'undo_workspace_change', {
+    operationId: edited.operationId,
+    idempotencyKey: 'undo-instructions',
+  });
+  assert.equal(undone.ok, true, JSON.stringify(undone));
+  assertApplied((undone as { result: ManagementApplyResult }).result, 'undo of an instruction edit');
+  agent = await f.config.getAgent(agent.id);
+  assert.equal(agent.instructions, 'Help the team.');
+
+  const added = await apply(f, f.owner, 'add-connection', [{
+    itemId: 'add-mcp',
+    kind: 'update_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+    patch: { mcpServers: [knowledgeServer] },
+  }]);
+  assertApplied(added, 'connection addition');
+  const undoAddition = await call(f, f.owner, 'undo_workspace_change', {
+    operationId: added.operationId,
+    idempotencyKey: 'undo-connection',
+  });
+  assert.equal(undoAddition.ok, true, JSON.stringify(undoAddition));
+  const proposalId = pendingConfirmation(
+    (undoAddition as { result: ManagementApplyResult }).result,
+    'undo that removes a connection',
+  );
+  assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 1);
+  assert.equal((await confirm(f, f.owner, proposalId)).status, 'completed');
+  assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 0);
+}));
+
+test('MCP import_skill installs from the authenticated call itself', () => {
+  const resolved: ParsedSkillSource[] = [];
+  return withFixture('mcp-import-skill', async (f) => {
+    const agent = await createAgent(f, f.owner, 'agent_importer');
+    const response = await call(f, f.owner, 'import_skill', {
+      agentId: agent.id,
+      source: 'https://github.com/acme/skills/tree/main/changelog',
+      idempotencyKey: 'import-changelog',
+      guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+    });
+    assert.equal(response.ok, true, JSON.stringify(response));
+    assert.equal((response as { result: { status: string } }).result.status, 'installed');
+    assert.equal(resolved.length, 1);
+    assert.deepEqual((await f.config.getAgent(agent.id)).skills.map(({ name }) => name), ['changelog']);
+  }, {
+    resolveSkillImport: async (source) => {
+      resolved.push(source);
+      return {
+        owner: source.owner,
+        repo: source.repo,
+        ref: '2222222222222222222222222222222222222222',
+        source: { visibility: 'public', access: 'anonymous' },
+        skills: [{
+          name: 'changelog',
+          description: 'Write a changelog entry.',
+          instructions: 'Summarize merged changes for people.',
+          hasScripts: false,
+          path: 'changelog',
+          sourceUrl: 'https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/changelog',
+        }],
+        total: 1,
+        capped: false,
+        skipped: 0,
+      };
+    },
+  });
+});
