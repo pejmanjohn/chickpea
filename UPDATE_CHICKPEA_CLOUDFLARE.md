@@ -45,7 +45,7 @@ For releases with the reviewed `allowScripts` policy, use:
 npm ci --strict-allow-scripts
 ```
 
-v0.1.34 needs Node 24.22.1 or a later Node 24 on the machine that runs the
+v0.1.34 and later need Node 24.22.1 or a later Node 24 on the machine that runs the
 update. Its dependency install refuses older Node, including 24.20.0,
 the previous pin. Cloudflare Workers Builds, which the Deploy to Cloudflare
 button also uses, reads `.nvmrc`. If the installation sets a `NODE_VERSION`
@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.34 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.35 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -144,6 +144,13 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.35 adds an effort level to each chat-model choice. Updating changes no
+Agent's behavior: every model keeps running at its standard level until
+someone picks another in Admin. One exception is an OpenRouter model that
+Chickpea's built-in model tables do not list and that does not offer Medium:
+with no level chosen, it now runs at the nearest level it offers. A rollback
+to v0.1.34 was not tested.
 
 v0.1.34 is a security update for the eMudhra certificate authority compromise.
 Its Node requirement is in step 2. Before you deploy it:
