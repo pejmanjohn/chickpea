@@ -849,6 +849,17 @@
              "pattern": "^[^/]+\\/.+$",
              "description": "Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin."
             },
+            "modelEffort": {
+             "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+             ],
+             "type": "string",
+             "description": "Set only when the requester chose a reasoning effort for this model."
+            },
             "skills": {
              "type": "array",
              "items": {
@@ -1365,6 +1376,24 @@
                "type": "null"
               }
              ]
+            },
+            "modelEffort": {
+             "anyOf": [
+              {
+               "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+               ],
+               "type": "string"
+              },
+              {
+               "type": "null"
+              }
+             ],
+             "description": "Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it."
             },
             "skills": {
              "type": "array",
@@ -2836,6 +2865,17 @@
              "pattern": "^[^/]+\\/.+$",
              "description": "Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin."
             },
+            "modelEffort": {
+             "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+             ],
+             "type": "string",
+             "description": "Set only when the requester chose a reasoning effort for this model."
+            },
             "skills": {
              "type": "array",
              "items": {
@@ -3352,6 +3392,24 @@
                "type": "null"
               }
              ]
+            },
+            "modelEffort": {
+             "anyOf": [
+              {
+               "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+               ],
+               "type": "string"
+              },
+              {
+               "type": "null"
+              }
+             ],
+             "description": "Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it."
             },
             "skills": {
              "type": "array",

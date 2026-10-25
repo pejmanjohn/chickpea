@@ -20,6 +20,8 @@ import {
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
+import type { modelEffortChoiceError } from '../config/model-effort-capability.ts';
+import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
 import {
   resolveProviderRuntimeImpact,
   resolveProviderRuntimeImpacts,
@@ -256,6 +258,11 @@ export interface WorkspaceManagementServiceInput {
     providerId: ManagedProviderId,
   ) => Promise<ManagedProviderSource>;
   modelReadiness?: () => Promise<ModelReadiness>;
+  /** The Admin's effort check; alternate runtimes without one accept any level. */
+  modelEffortChoice?: (
+    model: string | undefined,
+    effort: ModelEffort,
+  ) => ReturnType<typeof modelEffortChoiceError>;
   providerCredentialRevision?: (
     providerId: ManagedProviderId,
   ) => Promise<number>;
@@ -1905,7 +1912,8 @@ export class WorkspaceManagementService {
           disposition: 'failed',
           code: mutationErrorCode(error),
           ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
-          ...(error instanceof ManagementError && error.code === 'model_provider_unavailable'
+          ...(error instanceof ManagementError && (error.code === 'model_provider_unavailable' ||
+              error.code === 'effort_not_supported' || error.code === 'effort_requires_model')
             ? { warning: error.message }
             : {}),
           ...(error instanceof MetaAdsCatalogSetupRequiredError
@@ -3578,6 +3586,7 @@ export class WorkspaceManagementService {
         configurationGeneration,
         slackPresence,
         model,
+        modelEffort,
         skills,
         mcpServers,
         apiConnections,
@@ -3606,6 +3615,7 @@ export class WorkspaceManagementService {
             }
           : {}),
         ...(model ? { model } : {}),
+        ...(modelEffort ? { modelEffort } : {}),
         skills,
         mcpServers,
         apiConnections,
@@ -4301,6 +4311,15 @@ export class WorkspaceManagementService {
     );
   }
 
+  private async assertModelEffortChoice(model: string | undefined, effort: ModelEffort): Promise<void> {
+    const rejection = await this.stores.modelEffortChoice?.(model, effort);
+    if (!rejection) return;
+    throw new ManagementError(
+      rejection.code,
+      `${rejection.message} Omit modelEffort unless the requester chose a level this model supports; do not substitute another level.`,
+    );
+  }
+
   private async prepareItem(
     actor: LiveManagementActor,
     operation: ManagementOperation,
@@ -4310,6 +4329,9 @@ export class WorkspaceManagementService {
     switch (operation.kind) {
       case 'create_agent': {
         if (operation.agent.model) await this.assertModelReady(readiness, operation.agent.model, 'create');
+        if (operation.agent.modelEffort) {
+          await this.assertModelEffortChoice(operation.agent.model, operation.agent.modelEffort);
+        }
         const existingGeneratedSeeds = (await this.stores.config.listUserAgents()).flatMap((agent) => {
           const avatar = agent.slackPresence?.avatar;
           return avatar?.kind === 'generated' ? [avatar.seed ?? agent.id] : [];
@@ -4343,6 +4365,11 @@ export class WorkspaceManagementService {
         assertValidRepositoryGrants(operation.patch.repositories);
         if (operation.patch.model && operation.patch.model !== before.model) {
           await this.assertModelReady(readiness, operation.patch.model, 'update');
+        }
+        if (operation.patch.modelEffort) {
+          const model = operation.patch.model === undefined ? before.model : operation.patch.model ?? undefined;
+          // Chickpea can pin no model, so it can pin no effort either.
+          await this.assertModelEffortChoice(before.kind === 'system' ? undefined : model, operation.patch.modelEffort);
         }
         const patch = projectManagementAgentPatch(before, operation.patch);
         return {
@@ -5697,8 +5724,11 @@ function applyAgentPatch(agent: CustomAgentConfig, patch: ConfigAgentPatch): Cus
     ...agent,
     ...patch,
     revision: agent.revision + 1,
-  } as CustomAgentConfig & { model?: string | null };
+  } as CustomAgentConfig & { model?: string | null; modelEffort?: ModelEffort | null };
   if (patch.model === null) delete next.model;
+  const modelEffort = agentModelEffortAfterPatch(agent, patch);
+  if (modelEffort) next.modelEffort = modelEffort;
+  else delete next.modelEffort;
   return next as CustomAgentConfig;
 }
 
@@ -5775,6 +5805,7 @@ function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
     ...(agent.slackPresence ? { slackPresence: { ...agent.slackPresence } } : {}),
     ...(agent.archivedAt !== undefined ? { archivedAt: agent.archivedAt } : {}),
     model: agent.model ?? null,
+    modelEffort: agent.modelEffort ?? null,
     skills: agent.skills,
     mcpServers: agent.mcpServers,
     apiConnections: agent.apiConnections,
@@ -5839,7 +5870,13 @@ function refusedUpdatePutBack(
   for (const key of Object.keys(patch) as (keyof ConfigAgentPatch)[]) {
     if (key === 'credentialRequirements' || key === 'credentialResets') continue;
     if (key === 'slackPresence' || canonicalJson(latest[key]) !== canonicalJson(written[key])) continue;
-    putBack[key] = key === 'model' ? previous.model ?? null : previous[key];
+    putBack[key] = key === 'model'
+      ? previous.model ?? null
+      : key === 'modelEffort' ? previous.modelEffort ?? null : previous[key];
+  }
+  // Restoring the model alone would leave the store clearing its effort.
+  if ('model' in putBack && latest.modelEffort === written.modelEffort) {
+    putBack.modelEffort = previous.modelEffort ?? null;
   }
   const presence = latest.slackPresence;
   if (presence && presence.kind !== 'agent_app' &&

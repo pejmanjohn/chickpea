@@ -20,6 +20,7 @@ import {
 import type { SettingsStore } from '../config/settings-store.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
+import { modelEffortChoiceError } from '../config/model-effort-capability.ts';
 import { getProviderFavorites } from '../config/provider-models.ts';
 import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
@@ -140,6 +141,7 @@ export function createLiveWorkspaceManagementService(
     providerCredentialSource: async (providerId) =>
       (await describeProviderKeySources(env, settings))[providerId],
     modelReadiness: () => resolveModelReadiness({ env, settings }),
+    modelEffortChoice: (model, effort) => modelEffortChoiceError(model, effort, { env, settings }),
     providerCredentialRevision: async (providerId) =>
       installationModelCredentialVersion(providerId, env, settings),
     removeProviderCredential: async (providerId) =>

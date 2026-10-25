@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
+import { MODEL_EFFORTS } from '../config/model-effort.ts';
 import {
   isValidRepositoryGrantShape,
   REPOSITORY_GRANT_SHAPE_MESSAGE,
@@ -42,6 +43,9 @@ const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
 const repositoryFullNameDescription = 'One repository as "owner/repo", or "" when allRepos is true.';
 const repositoryAllReposDescription = 'true grants every repository of accountLogin\'s installation; then fullName must be "" and installationId kept.';
 const creationModelDescription = 'Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin.';
+const creationModelEffortDescription = 'Set only when the requester chose a reasoning effort for this model.';
+const modelEffortDescription = 'Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it.';
+const zModelEffort = z.enum(MODEL_EFFORTS);
 
 const zSkill = z.strictObject({
   name: zText(64),
@@ -124,6 +128,7 @@ const zAgentFields = {
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
   model: zModelSpecifier.optional().describe(creationModelDescription),
+  modelEffort: zModelEffort.optional().describe(creationModelEffortDescription),
   skills: z.array(zSkill).max(100),
   mcpServers: z.array(zMcpConnection).max(50),
   apiConnections: z.array(zApiConnection).max(50),
@@ -141,6 +146,7 @@ const zAgentPatch = z.strictObject({
   instructions: zAgentFields.instructions.optional(),
   enabled: zAgentFields.enabled.optional(),
   model: zModelSpecifier.nullable().optional(),
+  modelEffort: zModelEffort.nullable().optional().describe(modelEffortDescription),
   skills: zAgentFields.skills.optional(),
   mcpServers: zAgentFields.mcpServers.optional(),
   apiConnections: zAgentFields.apiConnections.optional(),
@@ -401,6 +407,7 @@ const vSkillName = v.pipe(
   v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
 );
 const vr = v.pipe(v.number(), v.integer(), v.minValue(0));
+const vModelEffort = v.picklist(MODEL_EFFORTS);
 const vModelSpecifier = v.pipe(
   v.string(),
   v.minLength(1),
@@ -484,6 +491,7 @@ const vAgentFields = {
   instructions: vot(100_000),
   enabled: v.boolean(),
   model: v.pipe(v.optional(vModelSpecifier), v.description(creationModelDescription)),
+  modelEffort: v.pipe(v.optional(vModelEffort), v.description(creationModelEffortDescription)),
   skills: va(vSkill, 100),
   mcpServers: va(vMcpConnection, 50),
   apiConnections: va(vApiConnection, 50),
@@ -498,6 +506,7 @@ const vAgentPatch = v.strictObject({
   instructions: v.optional(vAgentFields.instructions),
   enabled: v.optional(vAgentFields.enabled),
   model: v.optional(v.nullable(vModelSpecifier)),
+  modelEffort: v.pipe(v.optional(v.nullable(vModelEffort)), v.description(modelEffortDescription)),
   skills: v.optional(vAgentFields.skills),
   mcpServers: v.optional(vAgentFields.mcpServers),
   apiConnections: v.optional(vAgentFields.apiConnections),
