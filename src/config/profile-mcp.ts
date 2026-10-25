@@ -647,7 +647,7 @@ async function requireCurrentProfileMcpServer(
   return current;
 }
 
-async function resolveConnectionAccountMcpSecrets(
+export async function resolveConnectionAccountMcpSecrets(
   server: McpConnectionConfig,
   resolveCredential: (connectionId: string) => Promise<string>,
 ): Promise<{ bearer?: string; headers: Record<string, string> }> {

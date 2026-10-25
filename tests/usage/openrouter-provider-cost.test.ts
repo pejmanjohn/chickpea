@@ -195,7 +195,8 @@ test('the library returns the same message through the proxy as it does called d
   }).result();
 
   assert.equal(proxied.responseId, 'gen-fixture-stream');
-  assert.deepEqual({ ...proxied, timestamp: 0 }, { ...direct, timestamp: 0 });
+  // Pi stamps each message with when it started and how long it took; neither is the cost under test.
+  assert.deepEqual({ ...proxied, timestamp: 0, durationMs: 0 }, { ...direct, timestamp: 0, durationMs: 0 });
 });
 
 async function reportedCost(reader: ProviderReportReader): Promise<number | null> {

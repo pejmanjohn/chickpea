@@ -93,9 +93,11 @@ import {
   type AgentConnectionCredentialRequirements,
   type AgentConnectionCredentialResets,
   newAgentCredentialIncarnation,
+  newConnectionCredentialRef,
   reconcileApiCredentialRefs,
   reconcileMcpCredentialRefs,
   validAgentCredentialIncarnation,
+  validConnectionCredentialRef,
 } from './connection-credential-binding.ts';
 
 export interface ConfigSeed {
@@ -126,6 +128,24 @@ export const CONFIG_CHICKPEA_CUTOVER_MIGRATION = '2026-08-24-chickpea-cutover-v1
 export const CONFIG_MODEL_ROLE_MIGRATION = '2026-09-11-model-roles-v1';
 export const CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION =
   '2026-10-11-agent-connection-credential-binding-v1';
+
+/**
+ * Secrets that releases before v0.1.34 kept under an Agent's ID, which a later
+ * Agent reusing that ID would inherit there:
+ * `mcp.<agent>.<connection>.{bearer,header.<name>,oauth.<record>}` and
+ * `connector.<agent>.<connection>.{credential,oauth.<record>}`. Agent IDs never
+ * contain a dot; connection IDs and header names saved through the management
+ * API may.
+ */
+const LEGACY_AGENT_SECRET_KEY =
+  /^(?:mcp\.[^.]+\..+\.(?:bearer|header\..+|oauth\.[^.]+)|connector\.[^.]+\..+\.(?:credential|oauth\.[^.]+))$/;
+/**
+ * Keys of the same shape that this release still reads: current Agent secrets
+ * (`<lane>.<agent>.credential.<ref>.*`) and connection-account OAuth records.
+ */
+const CURRENT_SECRET_KEY =
+  /^(?:mcp|connector)\.(?:[^.]+\.credential\.connection_[0-9a-f]{32}\.|connection_[^.]*\.account\.oauth\.)/;
+
 /**
  * A stored JSON array column; a missing, malformed, or non-array value reads
  * as empty. `isItem`, when given, drops entries that do not fit.
@@ -3175,12 +3195,15 @@ export class ConfigStoreLogic {
           value TEXT NOT NULL
         )`,
       );
+      // `credential_incarnation DEFAULT ''` here and on deletion receipts: after
+      // a rollback, an earlier release inserts both without the column. The
+      // next start gives such an Agent a real incarnation.
       this.db.exec(
         `CREATE TABLE config_agents (
         id TEXT PRIMARY KEY,
         agent_kind TEXT NOT NULL DEFAULT 'user' CHECK (agent_kind IN ('user', 'system')),
         revision INTEGER NOT NULL,
-        credential_incarnation TEXT NOT NULL,
+        credential_incarnation TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL,
         description TEXT,
         instructions TEXT NOT NULL,
@@ -3213,7 +3236,7 @@ export class ConfigStoreLogic {
         idempotency_key TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
-        credential_incarnation TEXT NOT NULL,
+        credential_incarnation TEXT NOT NULL DEFAULT '',
         deleted_at INTEGER NOT NULL
         )`,
       );
@@ -3314,6 +3337,8 @@ export class ConfigStoreLogic {
     this.installChickpeaRoutingExtensions();
     this.installModelRoleExtensions();
     this.installConnectionCredentialBindingMigration();
+    this.removeLegacyAgentSecrets();
+    this.refillMissingConnectionCredentialRefs();
     if (this.db.get(
       'SELECT 1 AS present FROM config_migrations WHERE id = ?',
       CONFIG_CHICKPEA_EXTENSION_MIGRATION,
@@ -3467,53 +3492,6 @@ export class ConfigStoreLogic {
           String(row.id),
           'API',
         );
-        if (tableExists(this.db, 'app_settings')) {
-          const escapedAgentId = String(row.id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const legacySecretKey = new RegExp(
-            `^(?:mcp\\.${escapedAgentId}\\.[^.]+\\.(?:bearer|header\\.[^.]+|oauth\\.` +
-            `(?:client|pending|tokens|registration-lease|refresh-lease))|` +
-            `connector\\.${escapedAgentId}\\.[^.]+\\.(?:credential|oauth\\.` +
-            `(?:client|pending|tokens|refresh-lease)))$`,
-          );
-          for (const setting of this.db.all('SELECT key FROM app_settings ORDER BY key')) {
-            const key = String(setting.key);
-            if (key.startsWith(`mcp.${String(row.id)}.account.oauth.`) ||
-                key.startsWith(`connector.${String(row.id)}.account.oauth.`)) {
-              continue;
-            }
-            if (legacySecretKey.test(key)) {
-              this.db.run('DELETE FROM app_settings WHERE key = ?', key);
-            }
-          }
-          for (const connection of mcpServers) {
-            this.db.run(
-              'DELETE FROM app_settings WHERE key = ?',
-              `mcp.${String(row.id)}.${connection.id}.bearer`,
-            );
-            for (const name of connection.headerNames) {
-              this.db.run(
-                'DELETE FROM app_settings WHERE key = ?',
-                `mcp.${String(row.id)}.${connection.id}.header.${name}`,
-              );
-            }
-          }
-          for (const connection of apiConnections) {
-            this.db.run(
-              'DELETE FROM app_settings WHERE key = ?',
-              `connector.${String(row.id)}.${connection.id}.credential`,
-            );
-            const connectionAccountSentinel = String(row.id).startsWith('connection_') &&
-              connection.id === 'account';
-            if (!connectionAccountSentinel) {
-              for (const suffix of ['client', 'pending', 'tokens', 'refresh-lease']) {
-                this.db.run(
-                  'DELETE FROM app_settings WHERE key = ?',
-                  `connector.${String(row.id)}.${connection.id}.oauth.${suffix}`,
-                );
-              }
-            }
-          }
-        }
         const boundMcp = reconcileMcpCredentialRefs([], mcpServers);
         const boundApi = reconcileApiCredentialRefs([], apiConnections);
         this.db.run(
@@ -3529,6 +3507,54 @@ export class ConfigStoreLogic {
       CONFIG_CONNECTION_CREDENTIAL_BINDING_MIGRATION,
       Date.now(),
     );
+  }
+
+  /**
+   * Deletes every legacy Agent secret, on every start: this release never
+   * reads them, and after a rollback an earlier release writes them again and
+   * keeps them when it deletes the Agent. Matching keys rather than Agents
+   * covers Agents that no longer exist.
+   */
+  private removeLegacyAgentSecrets(): void {
+    if (!tableExists(this.db, 'app_settings')) return;
+    for (const setting of this.db.all(
+      "SELECT key FROM app_settings WHERE key GLOB 'mcp.*' OR key GLOB 'connector.*' ORDER BY key",
+    )) {
+      const key = String(setting.key);
+      if (LEGACY_AGENT_SECRET_KEY.test(key) && !CURRENT_SECRET_KEY.test(key)) {
+        this.db.run('DELETE FROM app_settings WHERE key = ?', key);
+      }
+    }
+  }
+
+  /**
+   * An earlier release's Admin saves an Agent's connections without their
+   * credential references. Like the incarnation refill, this runs on every
+   * start: each such connection gets a new reference and reads as having no
+   * secret until one is entered again.
+   */
+  private refillMissingConnectionCredentialRefs(): void {
+    if (!tableExists(this.db, 'config_agents')) return;
+    const lacksRef = (connection: unknown): connection is object =>
+      typeof connection === 'object' && connection !== null &&
+      !validConnectionCredentialRef((connection as { credentialRef?: string }).credentialRef);
+    for (const row of this.db.all(
+      `SELECT id, mcp_servers_json, api_connections_json FROM config_agents
+       WHERE mcp_servers_json <> '[]' OR api_connections_json <> '[]'
+       ORDER BY id`,
+    )) {
+      for (const column of ['mcp_servers_json', 'api_connections_json'] as const) {
+        const connections = parseJsonArray<unknown>(row[column] as string | null);
+        if (!connections.some(lacksRef)) continue;
+        this.db.run(
+          `UPDATE config_agents SET ${column} = ? WHERE id = ?`,
+          JSON.stringify(connections.map((connection) => lacksRef(connection)
+            ? { ...connection, credentialRef: newConnectionCredentialRef() }
+            : connection)),
+          String(row.id),
+        );
+      }
+    }
   }
 
   private installChickpeaRoutingExtensions(): void {

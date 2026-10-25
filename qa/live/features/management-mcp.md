@@ -27,7 +27,7 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - Case shape: `case-add --area agents --proof mcp --proof admin`. Add `--proof slack` once the created Agent is published and mentioned.
 - Requests: create one run-marked Agent with a caller-chosen `agent.id`; propose an instruction edit and confirm it; propose a channel grant and confirm it; `prepare_connector_setup` for a catalog connector.
 - Denial variants: `confirm_workspace_change` after an edit moved the revision returns stale; `prepare_provider_setup` for an environment-managed provider returns `invalid_request`; Member-role checks need a registered Member actor, which lanes may lack.
-- Cleanup: archive created Agents (`--cleanup-preset archived-agent`), revoke unused setup links, and run `chickpea-cli logout <lane origin>` to revoke the client's token.
+- Cleanup: archive created Agents (`--cleanup-preset archived-agent`), revoke unused setup links, and run `chickpea-cli logout <lane origin>` to revoke the client's refresh token. Its last access token keeps working against `/mcp` for up to 15 minutes, so a revocation readback waits for that token's expiry before expecting a 401.
 
 ## Proof and gotchas
 
