@@ -45,6 +45,7 @@ import type { AgentAppBot } from './agent-app-bots.ts';
 import type { NormalizedSlackTurn, SlackCoAddressed } from './types.ts';
 import { boundedSlackPublicHandoff, type SlackPublicHandoffMessage } from './public-context.ts';
 import { isSlackContentMessageSubtype } from './message-subtypes.ts';
+import { slackFileSummaries } from './message-text.ts';
 import { AGENT_ASK_SILENT_REPLY } from './agent-asks.ts';
 
 export const SLACK_SELF_MENTION_PLACEHOLDER = '[[CHICKPEA_SELF_MENTION]]';
@@ -304,11 +305,13 @@ async function fetchHistory(
     source: 'prefetch', method: 'conversations.history', gated: input.gate.gated, outcome: 'ok',
     limit, rows: rawMessages, anchorTs: turn.messageTs, hasCursor,
   });
-  const triggerRows = rawMessages.filter((row) => row.ts === turn.messageTs);
+  const triggerRows = paced
+    ? rawMessages.filter((row) => row.ts === turn.messageTs)
+    : await fetchTriggerRow(client, turn);
   const windowRows = rawMessages.filter((row) => row.ts !== turn.messageTs).slice(0, input.maxMessages);
   const images = mergeThreadImages(
     collectThreadImages(windowRows, turn),
-    paced ? collectThreadImages(triggerRows, turn) : await fetchTriggerImages(client, turn),
+    collectThreadImages(triggerRows, turn),
   );
   const messages = ensureTriggerMessage(
     orderMessages(
@@ -317,6 +320,7 @@ async function fetchHistory(
       ),
     ),
     turn,
+    slackFileSummaries(triggerRows[0]?.files),
   );
   if (hasCursor) degradations.push(`slack_context.${turn.contextMode}:truncated`);
 
@@ -447,14 +451,14 @@ async function fetchThread(
  * The history window is read with `inclusive: false`, so the triggering row is
  * never in it: a member who uploads a logo and asks for the ad in the SAME
  * message would otherwise have no handle for that logo. One bounded extra read
- * adds that row's own images. It runs only when the trigger actually carried
- * files, and a failure yields no images rather than degrading the whole turn
- * to current-message-only context.
+ * returns that row, for its own images and file names. It runs only when the
+ * trigger actually carried files, and a failure yields no row rather than
+ * degrading the whole turn to current-message-only context.
  */
-async function fetchTriggerImages(
+async function fetchTriggerRow(
   client: WebClient,
   turn: NormalizedSlackTurn,
-): Promise<ThreadImageRecord[]> {
+): Promise<SlackWebApiMessage[]> {
   if (!(turn.attachments?.length || turn.attachmentIntake)) return [];
   let response;
   try {
@@ -467,9 +471,8 @@ async function fetchTriggerImages(
   } catch {
     return [];
   }
-  const rows = ((response.messages ?? []) as unknown as SlackWebApiMessage[])
+  return ((response.messages ?? []) as unknown as SlackWebApiMessage[])
     .filter((row) => row.ts === turn.messageTs);
-  return collectThreadImages(rows, turn);
 }
 
 /** The trigger's own records win the duplicate; the list stays bounded. */

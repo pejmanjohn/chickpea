@@ -342,7 +342,14 @@ export async function assembleRetainedSlackContext(
   bounded.reverse();
   if (root && (rootText || root.files?.length)) bounded.unshift({ ...root, text: rootText });
   const { threadRecord: _listed, ...assembled } = context;
-  return { ...assembled, messages: ensureTriggerMessage(bounded, turn), degradations: [...new Set(degradations)] };
+  // A thread read from the record alone has the trigger's files only on its record row.
+  const triggerFiles = context.messages.find((message) => message.isTrigger)?.files ??
+    rows.get(turn.messageTs)?.files;
+  return {
+    ...assembled,
+    messages: ensureTriggerMessage(bounded, turn, triggerFiles),
+    degradations: [...new Set(degradations)],
+  };
 }
 
 /** Share of the context character budget kept for a thread's first message. */

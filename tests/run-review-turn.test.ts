@@ -335,6 +335,53 @@ test('a group DM is copied only once admission read it unshared, like a Channel'
   assert.equal(port.asked(), 1, 'an unshared group DM is eligible');
 });
 
+test('a Channel mention copies the name and size of the file it carried, never its URL or ID', async (t) => {
+  await turnState(t);
+  const port = reviewPort();
+  const channelId = 'CREVIEW2';
+  const config = new SqliteConfigStore(process.env.TAG_DB_PATH!, { agents: [] });
+  await config.putAgentChannelGrant({
+    workspaceId: TEAM, channelId, agentId: ASSIGNMENT.agentId, status: 'active',
+    createdByMembershipId: 'membership_owner', channelLabel: 'team', channelIsPrivate: false,
+  });
+  config.close();
+  const turn = dmTurn({
+    channelId, channelType: 'channel', source: 'app_mention', contextMode: 'channel_history',
+    text: '<@UCHICKPEA> what does this report say?', sharedChannel: false,
+    attachments: [{ fileId: 'F0REPORT1' }], attachmentIntake: { status: 'ok', count: 1 },
+  });
+  const file = {
+    id: 'F0REPORT1', name: 'q3-report.pdf', filetype: 'pdf', size: 48_213,
+    url_private: 'https://files.slack.com/files-pri/TREVIEW1-F0REPORT1/q3-report.pdf',
+  };
+  const triggerRow = { type: 'message', user: 'UMEMBER12', ts: turn.messageTs, text: turn.text, files: [file] };
+  const base = slackClient([]);
+  const client = {
+    ...base,
+    auth: { test: async () => ({ ok: true, user_id: 'UCHICKPEA' }) },
+    users: { info: async ({ user }: { user: string }) => ({ ok: true, user: { id: user, team_id: TEAM, deleted: false, is_bot: false } }) },
+    conversations: {
+      ...base.conversations,
+      info: async () => ({ ok: true, channel: { id: channelId, context_team_id: TEAM, name: 'team', is_channel: true, is_member: true } }),
+      members: async () => ({ ok: true, members: ['UMEMBER12', 'UCHICKPEA'], response_metadata: { next_cursor: '' } }),
+      // Slack returns the trigger row only to a read that includes `latest`.
+      history: async ({ inclusive }: { inclusive?: boolean }) => ({ ok: true, messages: inclusive ? [triggerRow] : [] }),
+    },
+  } as unknown as WebClient;
+  const { delivered } = await reviewedTurn(HOSTED_ENV, {
+    turn, client, assignment: { ...ASSIGNMENT, channelId },
+  });
+  assert.deepEqual(delivered, ['succeeded']);
+  assert.equal(port.records.length, 1);
+  const [{ record }] = port.records as [typeof port.records[number]];
+  assert.equal(record.surface, 'channel');
+  assert.deepEqual(record.trigger.files, [{ name: 'q3-report.pdf', size: 48_213 }]);
+  const serialized = JSON.stringify(record);
+  for (const value of ['F0REPORT1', 'files.slack.com', channelId]) {
+    assert.equal(serialized.includes(value), false, `${value} is not in the copy`);
+  }
+});
+
 test('a settlement replayed from its checkpoint is copied from one bounded history read', async (t) => {
   await turnState(t);
   const port = reviewPort();
