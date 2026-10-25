@@ -37,7 +37,7 @@ if (!args.length || args[0] === '--help') {
     const result = spawnSync(args[0], args.slice(1), { stdio: 'inherit', env: { ...process.env, ...lease.env } });
     if (!result.pid) {
       lease.release();
-      throw new Error(`Command could not start: ${args[0]} (${result.error.code}). Host reservation released.`);
+      throw new Error(`Command could not start: ${args[0]} (${result.error.code}). It holds no host reservation.`);
     }
     if (!result.signal && !result.error) lease.release();
     else console.error('Interrupted command: host reservation retained. Reconcile its processes before removing the exact owner.json.');

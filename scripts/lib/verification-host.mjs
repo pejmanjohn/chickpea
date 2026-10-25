@@ -24,7 +24,9 @@ export function readHostChecksOwner({ file = HOST_CHECK_LOCK } = {}) {
   let owner;
   try { owner = JSON.parse(readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   let liveness = 'live';
-  try { process.kill(owner.pid, 0); } catch (error) { liveness = error.code === 'EPERM' ? 'unknown' : 'stopped'; }
+  // kill(0) and kill(-1) probe our own process group, so only a real PID can read as live or stopped.
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid < 1) liveness = 'unknown';
+  else try { process.kill(owner.pid, 0); } catch (error) { liveness = error.code === 'EPERM' ? 'unknown' : 'stopped'; }
   return { pid: owner.pid, cwd: owner.cwd, startedAt: owner.startedAt, liveness };
 }
 

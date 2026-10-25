@@ -29,7 +29,7 @@ test('a command that cannot start releases the host reservation and names the co
     const run = verifyHost(home, command);
     assert.equal(existsSync(file), false, `${code}: no child ran, so no reservation is left behind`);
     assert.equal(run.status, 2);
-    assert.ok(run.stderr.includes(`Command could not start: ${command} (${code}). Host reservation released.`), run.stderr);
+    assert.ok(run.stderr.includes(`Command could not start: ${command} (${code}). It holds no host reservation.`), run.stderr);
   }
 });
 
@@ -76,6 +76,11 @@ test('status reports the owner or a free slot and never takes, shares or changes
   const stopped = readFileSync(file, 'utf8');
   assert.deepEqual(JSON.parse(verifyHost(home, 'status').stdout).owner, { pid: stoppedPid, cwd: 'old', startedAt, liveness: 'stopped' });
   assert.equal(readFileSync(file, 'utf8'), stopped);
+  // PID 1 is another user's process, so probing it is EPERM; 0, -1 and non-numbers are not PIDs.
+  for (const pid of [...(process.getuid?.() === 0 ? [] : [1]), 0, -1, 'not-a-pid']) {
+    writeFileSync(file, JSON.stringify({ pid, cwd: 'unclear', startedAt, token: 'unclear' }));
+    assert.equal(JSON.parse(verifyHost(home, 'status').stdout).owner.liveness, 'unknown', `owner PID ${pid}`);
+  }
   rmSync(file);
 
   const command = verifyHost(home, '--', 'status');
