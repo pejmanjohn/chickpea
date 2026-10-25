@@ -93,14 +93,17 @@ test('permalinks, channel links, and web client links parse; other hosts do not'
   assert.throws(() => resolveSlackReadTarget({ link: 'https://acme.slack.com/archives/C0OTHER', channel: 'C0OTHER' }));
 });
 
-test('the current conversation is readable, including a DM or a shared channel', async () => {
-  for (const current of [
-    facts({ id: CURRENT.channelId }),
-    facts({ id: CURRENT.channelId, shared: true }),
-    facts({ id: CURRENT.channelId, im: true }),
-  ]) {
+test('the current conversation is readable, including a DM, a group DM or a shared channel', async () => {
+  for (const [current, kind] of [
+    [facts({ id: CURRENT.channelId }), 'channel'],
+    [facts({ id: CURRENT.channelId, shared: true }), 'channel'],
+    [facts({ id: CURRENT.channelId, im: true }), 'dm'],
+    // A group DM is private in Slack's facts, but no private channel.
+    [facts({ id: CURRENT.channelId, mpim: true, private: true }), 'group_dm'],
+  ] as const) {
     const conversation = await authorizeSlackRead(ports({ conversations: { [CURRENT.channelId]: current } }), CURRENT.channelId);
     assert.equal(conversation.current, true);
+    assert.equal(conversation.kind, kind);
   }
 });
 

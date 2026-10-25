@@ -48,7 +48,7 @@ export interface SlackReadAuthorityPorts {
 export interface AuthorizedSlackConversation {
   id: string;
   name?: string;
-  kind: 'channel' | 'private_channel' | 'dm';
+  kind: 'channel' | 'private_channel' | 'dm' | 'group_dm';
   current: boolean;
 }
 
@@ -137,6 +137,7 @@ export function slackReadConversationFacts(raw: unknown): SlackReadConversationF
 
 function conversationKind(facts: SlackReadConversationFacts): AuthorizedSlackConversation['kind'] {
   if (facts.im) return 'dm';
+  if (facts.mpim) return 'group_dm';
   return facts.private ? 'private_channel' : 'channel';
 }
 

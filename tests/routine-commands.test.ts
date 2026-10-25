@@ -416,8 +416,9 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
       directTurn(`!routines show ${routine.id}`, '200.1', 'D_OTHER'), supportAssignment,
     ), 'That routine or channel was not found or is unavailable.');
     assert.equal(await handle(
-      directTurn('!routines', '200.1', 'D_TEST', 'mpim'), supportAssignment,
-    ), undefined);
+      { ...directTurn('<@UBOT> !routines', '200.1', 'C_GROUP_DM', 'mpim'), source: 'app_mention' },
+      supportAssignment,
+    ), undefined, 'no routine command runs in a group DM');
 
     assert.match(await handle(
       directTurn(`!routines run ${routine.id}`, '210.1'), chickpeaAssignment,
