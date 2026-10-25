@@ -243,6 +243,7 @@ import {
   agentCredentialConfigurationBinding,
   boundApiCredentialRef,
   boundMcpCredentialRef,
+  validConnectionCredentialRef,
 } from '../config/connection-credential-binding.ts';
 import {
   computeSnapshotHash,
@@ -4874,7 +4875,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         }
         for (const agent of await config.listAgents()) {
           for (const server of agent.mcpServers) {
-            if (server.url === META_ADS_MCP_SERVER_URL) await invalidateConfiguredMcpOAuthAuthorization({ agentId: agent.id, connectionId: server.id }, settings(c), previous.generation);
+            if (server.url === META_ADS_MCP_SERVER_URL && validConnectionCredentialRef(server.credentialRef)) {
+              await invalidateConfiguredMcpOAuthAuthorization(boundMcpCredentialRef(agent.id, server), settings(c), previous.generation);
+            }
           }
         }
       }
@@ -12761,11 +12764,11 @@ async function withApiConnectionSources(
   if (agent.apiConnections.length === 0) return agent;
   const apiConnections = await Promise.all(
     agent.apiConnections.map(async (connection) => {
+      const bound = validConnectionCredentialRef(connection.credentialRef);
       if (connection.authMode === 'oauth') {
-        const sources = await describeApiOAuthSources(
-          boundApiCredentialRef(agent.id, connection),
-          settingsStore,
-        );
+        const sources = bound
+          ? await describeApiOAuthSources(boundApiCredentialRef(agent.id, connection), settingsStore)
+          : { client: 'missing' as const, tokens: 'missing' as const };
         return {
           ...connection,
           credentialSource: 'missing' as const,
@@ -12775,11 +12778,13 @@ async function withApiConnectionSources(
       }
       return {
         ...connection,
-        credentialSource: await describeConnectorCredentialSource(
-          boundApiCredentialRef(agent.id, connection),
-          platformEnv,
-          settingsStore,
-        ),
+        credentialSource: bound
+          ? await describeConnectorCredentialSource(
+              boundApiCredentialRef(agent.id, connection),
+              platformEnv,
+              settingsStore,
+            )
+          : 'missing' as const,
       };
     }),
   );
@@ -13751,46 +13756,43 @@ async function agentAdminProjection(
   const avatarUrl = agentAvatarUrlForPresentation(
     agent, avatarOrigin.publicOrigin, avatarOrigin.installationId,
   );
+  // A connection an earlier release saved without a credential reference gets
+  // one on the next start. Until then it has no binding, which the editor
+  // treats as a secret to enter again.
   const mcpServers = agent.mcpServers.map((storedConnection) => {
+    const { credentialRef, ...connection } = storedConnection;
+    if (!access.canEdit || !validConnectionCredentialRef(credentialRef)) return connection;
     const ref = boundMcpCredentialRef(agent.id, storedConnection);
-    const { credentialRef: _credentialRef, ...connection } = storedConnection;
     return {
       ...connection,
-      ...(access.canEdit
-        ? {
-            credentialBinding: ref.credentialBinding,
-            credentialEnvironment: {
-              bindingVariable: mcpCredentialBindingEnvVar(ref),
-              ...(connection.authMode === 'bearer'
-                ? { bearerVariable: mcpBearerEnvVar(ref) }
-                : {}),
-              headerVariables: connection.headerNames.map((name) => ({
-                name,
-                variable: mcpHeaderEnvVar(ref, name),
-              })),
-            },
-          }
-        : {}),
+      credentialBinding: ref.credentialBinding,
+      credentialEnvironment: {
+        bindingVariable: mcpCredentialBindingEnvVar(ref),
+        ...(connection.authMode === 'bearer'
+          ? { bearerVariable: mcpBearerEnvVar(ref) }
+          : {}),
+        headerVariables: connection.headerNames.map((name) => ({
+          name,
+          variable: mcpHeaderEnvVar(ref, name),
+        })),
+      },
     };
   });
   const apiConnections = agent.apiConnections.map((storedConnection) => {
+    const { credentialRef, ...connection } = storedConnection;
+    if (!access.canEdit || !validConnectionCredentialRef(credentialRef)) return connection;
     const ref = boundApiCredentialRef(agent.id, storedConnection);
-    const { credentialRef: _credentialRef, ...connection } = storedConnection;
     return {
       ...connection,
-      ...(access.canEdit
-        ? {
-            credentialBinding: ref.credentialBinding,
-            ...(connection.authMode === 'oauth'
-              ? {}
-              : {
-                  credentialEnvironment: {
-                    bindingVariable: connectorCredentialBindingEnvVar(ref),
-                    credentialVariable: connectorCredentialEnvVar(ref),
-                  },
-                }),
-          }
-        : {}),
+      credentialBinding: ref.credentialBinding,
+      ...(connection.authMode === 'oauth'
+        ? {}
+        : {
+            credentialEnvironment: {
+              bindingVariable: connectorCredentialBindingEnvVar(ref),
+              credentialVariable: connectorCredentialEnvVar(ref),
+            },
+          }),
     };
   });
   return {

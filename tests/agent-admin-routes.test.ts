@@ -27,10 +27,13 @@ import {
 import {
   McpOAuthError,
   mcpOAuthSettingKeys,
+  resolveMcpOAuthAccessToken,
   type StartMcpOAuthInput,
 } from '../src/config/mcp-oauth.ts';
 import {
+  META_ADS_MCP_SERVER_URL,
   META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_ISSUER,
   META_ADS_OAUTH_MANAGEMENT_SCOPE,
 } from '../src/config/mcp-oauth-clients.ts';
 import {
@@ -6879,6 +6882,102 @@ test('Meta App ID rotation does not pause a schedule after a concurrent reconnec
     const schedule = (await fixture.store.listAgentScheduleReferences('agent_support'))[0];
     assert.equal(schedule?.state, 'active');
     assert.equal(schedule?.connectionPauseAccountIds, undefined);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
+test('changing the Meta App ID clears an Agent-level Meta Ads authorization under its credential ref', async () => {
+  const linearIssuer = 'https://auth.example.test';
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    const issuer = new URL(request.url).hostname === 'www.facebook.com' ? META_ADS_OAUTH_ISSUER : linearIssuer;
+    switch (request.url) {
+      case 'https://mcp.facebook.com/.well-known/oauth-protected-resource/ads':
+        return Response.json({ resource: META_ADS_MCP_SERVER_URL, authorization_servers: [META_ADS_OAUTH_ISSUER] });
+      case 'https://mcp.linear.app/.well-known/oauth-protected-resource/mcp':
+        return Response.json({ resource: 'https://mcp.linear.app/mcp', authorization_servers: [linearIssuer] });
+      case 'https://www.facebook.com/.well-known/oauth-authorization-server/ads':
+      case `${linearIssuer}/.well-known/oauth-authorization-server`:
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          registration_endpoint: `${issuer}/register`,
+          response_types_supported: ['code'],
+          grant_types_supported: ['authorization_code', 'refresh_token'],
+          code_challenge_methods_supported: ['S256'],
+          token_endpoint_auth_methods_supported: ['none'],
+        });
+      case `${linearIssuer}/register`:
+        return Response.json({ ...await request.json() as Record<string, unknown>, client_id: 'registered-client' });
+      case `${META_ADS_OAUTH_ISSUER}/token`:
+      case `${linearIssuer}/token`:
+        return Response.json({
+          access_token: issuer === linearIssuer ? 'linear-access' : 'meta-access',
+          refresh_token: 'refresh', token_type: 'Bearer', expires_in: 3_600,
+        });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  const fixture = harness(new FakeTransport(), {
+    oauthFetch,
+    discoverMcp: async () => ({ tools: [{ name: 'search' }] }),
+    identifyMcp: async () => undefined,
+  });
+  const oauthServer = (id: string, displayName: string, url: string) => ({
+    id, displayName, url, transport: 'streamable-http' as const, authMode: 'oauth' as const,
+    headerNames: [], enabled: true, lifecycleStatus: 'pending' as const, statusText: '',
+    discoveredTools: [], allowedTools: [],
+  });
+  try {
+    assert.equal((await fixture.app.request('http://localhost/admin/api/settings/connectors/meta-ads', {
+      method: 'PUT', headers: auth(), body: JSON.stringify({ clientId: '123456' }),
+    })).status, 200);
+    const agent = await fixture.store.createAgent({
+      id: 'agent_meta_legacy', name: 'Meta legacy', instructions: 'Report on ads.', enabled: true,
+      model: 'local-stub/security', skills: [], apiConnections: [], repositories: [],
+      mcpServers: [
+        oauthServer('meta-ads', 'Meta Ads', META_ADS_MCP_SERVER_URL),
+        oauthServer('linear', 'Linear', 'https://mcp.linear.app/mcp'),
+      ],
+    });
+    for (const connectionId of ['meta-ads', 'linear']) {
+      const started = await fixture.app.request(
+        `http://localhost/admin/api/agents/${agent.id}/mcp/oauth/${connectionId}/start`,
+        { method: 'POST', headers: auth(), body: '{}' },
+      );
+      assert.equal(started.status, 200, await started.clone().text());
+      const state = new URL((await started.json() as { authorizationUrl: string }).authorizationUrl)
+        .searchParams.get('state')!;
+      const callback = await fixture.app.request(
+        `http://localhost/oauth/callback?state=${encodeURIComponent(state)}&code=accepted`,
+      );
+      assert.equal(callback.headers.get('location'),
+        `/admin/agents/${agent.id}?oauth=connected&connection=${connectionId}`);
+    }
+    const [metaServer, linearServer] = agent.mcpServers;
+    const metaRef = boundMcpCredentialRef(agent.id, metaServer!);
+    const linearRef = boundMcpCredentialRef(agent.id, linearServer!);
+    const metaKeys = mcpOAuthSettingKeys(metaRef).slice(0, 3);
+    const linearKeys = mcpOAuthSettingKeys(linearRef);
+    const metaTokens = await fixture.settings.getSetting(metaKeys[2]!);
+    assert.match(metaTokens ?? '', /"configurationGeneration":/);
+    assert.match(metaTokens ?? '', /meta-access/);
+    const linearBefore = await fixture.settings.getSettings(linearKeys);
+    assert.match(linearBefore[2] ?? '', /linear-access/);
+
+    const changed = await fixture.app.request('http://localhost/admin/api/settings/connectors/meta-ads', {
+      method: 'PUT', headers: auth(), body: JSON.stringify({ clientId: '789012' }),
+    });
+    assert.equal(changed.status, 200, await changed.clone().text());
+
+    assert.deepEqual(await fixture.settings.getSettings(metaKeys), [undefined, undefined, undefined]);
+    assert.deepEqual(await fixture.settings.getSettings(linearKeys), linearBefore);
+    const resolve = (ref: typeof metaRef, serverUrl: string) => resolveMcpOAuthAccessToken(
+      { ref, serverUrl }, { settings: fixture.settings, fetchFn: oauthFetch },
+    );
+    await assert.rejects(resolve(metaRef, META_ADS_MCP_SERVER_URL),
+      (error: unknown) => error instanceof McpOAuthError && error.code === 'reauthorization_required');
+    assert.equal(await resolve(linearRef, 'https://mcp.linear.app/mcp'), 'linear-access');
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
