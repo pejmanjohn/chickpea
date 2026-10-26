@@ -138,13 +138,23 @@ export function apiConnectionsAfterWrite(
   const storedById = new Map(stored.map((connection) => [connection.id, connection]));
   return written.map((input) => {
     const policy = managementApiConnection(input);
-    const previous = storedById.get(policy.id);
-    if (previous) {
-      const carried: ApiConnectionConfig = { ...pickDefined(previous, API_OBSERVED_FIELDS), ...policy };
-      if (sameApiCredentialPolicy(previous, carried)) return carried;
-    }
-    return { ...policy, lifecycleStatus: 'pending', statusText: 'Setup required' };
+    const kept = apiConnectionStateKept(storedById.get(policy.id), policy);
+    return kept ? { ...kept, ...policy } : { ...policy, lifecycleStatus: 'pending', statusText: 'Setup required' };
   });
+}
+
+/**
+ * The server-owned state a written API connection keeps from its stored
+ * entry: all of it while the credential policy is unchanged, none otherwise.
+ * Admin and management writes both take it from storage, never from input.
+ */
+export function apiConnectionStateKept(
+  previous: ApiConnectionConfig | undefined,
+  next: ManagementApiConnection,
+): Pick<ApiConnectionConfig, typeof API_OBSERVED_FIELDS[number]> | undefined {
+  return previous && sameApiCredentialPolicy(previous, next)
+    ? pickDefined(previous, API_OBSERVED_FIELDS)
+    : undefined;
 }
 
 export function managementConnectionStatus(

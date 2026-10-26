@@ -50,6 +50,7 @@ import {
   boundApiCredentialRef,
   boundMcpCredentialRef,
 } from '../src/config/connection-credential-binding.ts';
+import { apiConnectionsAfterWrite } from '../src/management/agent-connections.ts';
 import type {
   SlackAppHomeReference,
   SlackChannel,
@@ -2868,6 +2869,57 @@ test('an Agent credential reset invalidates same-policy API OAuth authorization'
     );
     assert.equal(reset.apiConnections[0]?.lifecycleStatus, 'pending');
     assert.deepEqual(await fixture.settings.getSettings(oauthKeys), oauthKeys.map(() => undefined));
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin saves an Agent with a pending credential API connection and keeps the status the server set', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_pending_api',
+      name: 'Pending API',
+      instructions: 'Read invoices.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [],
+      apiConnections: apiConnectionsAfterWrite([], [{
+        id: 'billing', displayName: 'Billing', allowedHosts: ['billing.example.test'],
+        pathPrefixes: ['/v1/'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'], enabled: true, authMode: 'credential',
+      }]),
+      repositories: [],
+    });
+    assert.equal(created.apiConnections[0]?.lifecycleStatus, 'pending', 'a management write stores a status');
+    const detail = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, { headers: auth() });
+    const served = (await detail.json() as { agent: { apiConnections: Array<Record<string, unknown>> } }).agent;
+    assert.equal(served.apiConnections[0]?.lifecycleStatus, 'pending', 'Admin serves the stored status');
+
+    const save = (expectedRevision: number, apiConnections: unknown[], instructions: string) =>
+      fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          instructions,
+          apiConnections,
+        }),
+      });
+    const echoed = await save(created.revision, served.apiConnections, 'Read and summarize invoices.');
+    assert.equal(echoed.status, 200, await echoed.clone().text());
+    const saved = await fixture.store.getAgent(created.id);
+    assert.equal(saved.instructions, 'Read and summarize invoices.');
+    assert.deepEqual(saved.apiConnections, created.apiConnections);
+
+    const forged = await save(saved.revision, [{
+      ...served.apiConnections[0], lifecycleStatus: 'ready', statusText: 'Connected',
+    }], 'Read invoices.');
+    assert.equal(forged.status, 200, await forged.clone().text());
+    assert.deepEqual((await fixture.store.getAgent(created.id)).apiConnections, created.apiConnections,
+      'Admin input cannot set a connection status');
   } finally {
     fixture.store.close();
     fixture.settings.close();

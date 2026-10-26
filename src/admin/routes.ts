@@ -58,6 +58,7 @@ import {
   connectOrigin,
   firstAgentPrompt,
 } from '../management/connect.ts';
+import { apiConnectionStateKept } from '../management/agent-connections.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
@@ -1240,27 +1241,17 @@ const apiConnectionSchema = v.pipe(
       v.pipe(v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(256))), v.maxLength(12)),
     ),
     oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
-    lifecycleStatus: v.optional(v.picklist(['pending', 'ready', 'failed'])),
-    statusText: v.optional(v.pipe(v.string(), v.maxLength(300))),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
   v.check((connection) => connection.allowedHosts.length > 0, 'allowed hosts must not be empty'),
   v.check(
-    (connection) => {
-      if (connection.authMode === 'oauth') {
-        return isValidApiOAuthConnectionPolicy(connection) &&
-          connection.oauthAppType !== undefined &&
-          connection.lifecycleStatus !== undefined &&
-          connection.statusText !== undefined;
-      }
-      return connection.oauthProvider === undefined &&
+    (connection) => connection.authMode === 'oauth'
+      ? isValidApiOAuthConnectionPolicy(connection) && connection.oauthAppType !== undefined
+      : connection.oauthProvider === undefined &&
         connection.oauthScopes === undefined &&
         connection.oauthAppType === undefined &&
-        connection.lifecycleStatus === undefined &&
-        connection.statusText === undefined &&
-        connection.identity === undefined;
-    },
+        connection.identity === undefined,
     'OAuth connection policy is invalid',
   ),
 );
@@ -9872,12 +9863,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return invalidRequest(c, 'Add this connector from the Agent’s Connections tab so you can review its tool access.');
       }
       if (patch.apiConnections) {
+        const resets = new Set(parsed.output.credentialResets?.api ?? []);
+        const stored = new Map(current.apiConnections.map((connection) => [connection.id, connection]));
         patch.apiConnections = await normalizeApiOAuthPatch(
           agentId,
           current.apiConnections,
-          patch.apiConnections,
+          patch.apiConnections.map((connection) => ({
+            ...connection,
+            ...(resets.has(connection.id) ? {} : apiConnectionStateKept(stored.get(connection.id), connection)),
+          })),
           settings(c),
-          new Set(parsed.output.credentialResets?.api ?? []),
+          resets,
         );
       }
       const next: ModelResolvableAgent = {
@@ -12876,20 +12872,6 @@ function toApiConnections(
     ...(connection.oauthProvider !== undefined ? { oauthProvider: connection.oauthProvider } : {}),
     ...(connection.oauthScopes !== undefined ? { oauthScopes: connection.oauthScopes } : {}),
     ...(connection.oauthAppType !== undefined ? { oauthAppType: connection.oauthAppType } : {}),
-    ...(connection.lifecycleStatus !== undefined ? { lifecycleStatus: connection.lifecycleStatus } : {}),
-    ...(connection.statusText !== undefined ? { statusText: connection.statusText } : {}),
-    ...(connection.identity !== undefined
-      ? {
-          identity: {
-            ...(connection.identity.workspaceName !== undefined
-              ? { workspaceName: connection.identity.workspaceName }
-              : {}),
-            ...(connection.identity.accountName !== undefined
-              ? { accountName: connection.identity.accountName }
-              : {}),
-          },
-        }
-      : {}),
     ...(connection.presetId !== undefined ? { presetId: connection.presetId } : {}),
   }));
 }
