@@ -950,7 +950,7 @@ function handleDirectSlackInteractions(): NonNullable<SlackChannelOptions['inter
       detach(c, processDirectCreditsAsk(
         creditsAsk, payload.api_app_id ?? '', c.env as PlatformEnv | undefined,
       ).catch((error) => {
-        console.error('[chickpea] Ask an admin click failed:', sanitizeError(error));
+        console.error('[chickpea] Ask an Owner click failed:', sanitizeError(error));
       }));
       return;
     }
