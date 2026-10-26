@@ -2,13 +2,24 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
+import type { Hono } from 'hono';
+
 import {
-  resolveConnectorCredential,
-  saveConnectorCredential,
+  connectionAccountSecretSettingKey,
+  saveConnectionAccountSecret,
 } from '../src/config/connector-secrets.ts';
-import { boundApiCredentialRef } from '../src/config/connection-credential-binding.ts';
 import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
+import { GOOGLE_WORKSPACE_SCOPE_OPTIONS, googleWorkspaceApiPolicy } from '../src/config/api-oauth-policy.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
+import type {
+  ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
+  ConnectionAccountPolicy,
+} from '../src/config/types.ts';
+import { resolveEffectiveConnectionAccounts } from '../src/connections/runtime.ts';
+import { ConnectionAccountService } from '../src/connections/store.ts';
+import type { IdentityResolution } from '../src/identity/types.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import {
   META_ADS_OAUTH_DEFAULT_SCOPE,
@@ -39,8 +50,10 @@ import {
   ManagementError,
   type ApplyWorkspaceChangesResult,
   type ManagementApplyResult,
+  type ManagementSetupRecord,
 } from '../src/management/types.ts';
 import { SqliteUsageStore } from '../src/usage/store.ts';
+import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { unstyledClasses } from './helpers/unstyled-classes.ts';
 
@@ -69,6 +82,100 @@ function browserPrincipal(actor: {
   };
 }
 
+const TASKS_POLICY: ConnectionAccountApiPolicy = {
+  kind: 'api',
+  allowedHosts: ['api.example.com'],
+  pathPrefixes: ['/v1'],
+  headerName: 'Authorization',
+  headerValuePrefix: 'Bearer ',
+  allowedMethods: ['GET'],
+  authMode: 'credential',
+};
+
+const LINEAR_POLICY: ConnectionAccountMcpPolicy = {
+  kind: 'mcp',
+  url: 'https://mcp.linear.app/mcp',
+  transport: 'streamable-http',
+  authMode: 'oauth',
+  headerNames: [],
+  discoveredTools: [],
+  allowedTools: [],
+  oauthScope: 'read',
+};
+
+/** A team connection on the Agent that waits for its setup link, as a management edit leaves it. */
+async function seedConnection(
+  stores: { config: SqliteConfigStore; settings: SqliteSettingsStore },
+  owner: IdentityResolution,
+  agentId: string,
+  input: { providerId: string; label: string; policy: ConnectionAccountPolicy },
+): Promise<ConnectionAccount> {
+  const { account } = await new ConnectionAccountService(stores).createForAgent({
+    principal: browserPrincipal(owner),
+    agentId,
+    workspaceId: owner.user.slackTeamId,
+    ownerKind: 'team',
+    ...input,
+    pendingSetup: true,
+    allowedCapabilities: [],
+  });
+  assert.equal(account.lifecycle, 'pending');
+  return account;
+}
+
+async function currentAccount(config: SqliteConfigStore, account: ConnectionAccount): Promise<ConnectionAccount> {
+  const current = (await config.listConnectionAccounts(account.workspaceId)).find(({ id }) => id === account.id);
+  assert.ok(current, `${account.id} still exists`);
+  return current;
+}
+
+async function storedSecret(settings: SqliteSettingsStore, account: ConnectionAccount): Promise<string | undefined> {
+  return settings.getSetting(connectionAccountSecretSettingKey(account.secretRefId));
+}
+
+function receiptAccountLabel(setup: ManagementSetupRecord | undefined): string | undefined {
+  const receipt = setup?.receipt;
+  return receipt && 'accountLabel' in receipt ? receipt.accountLabel : undefined;
+}
+
+async function requestConnectionSetup(
+  service: WorkspaceManagementService,
+  owner: IdentityResolution,
+  target: { kind: 'api_connection' | 'mcp_connection'; agentId: string; connectionId: string },
+): Promise<string> {
+  const result = await service.applyWorkspaceChanges({
+    context: {
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'codex' },
+    },
+    idempotencyKey: `setup-${target.agentId}-${target.connectionId}`,
+    operations: [{ itemId: 'setup', kind: 'request_setup', target }],
+  });
+  requireMutationResult(result);
+  assert.equal(result.outcomes[0]?.disposition, 'setup_required', JSON.stringify(result));
+  return result.outcomes[0]!.setupOperationId!;
+}
+
+async function claimSetup(app: Hono, setupId: string): Promise<string> {
+  const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
+    method: 'POST',
+    headers: { origin: 'http://localhost', 'content-type': 'application/json' },
+    body: JSON.stringify({ capability: CAPABILITY }),
+  });
+  assert.equal(exchange.status, 200, await exchange.clone().text());
+  return exchange.headers.get('set-cookie')!;
+}
+
+function postSetupForm(app: Hono, setupId: string, action: string, cookie: string, fields: Record<string, string>) {
+  return app.request(`http://localhost/setup/${setupId}/${action}`, {
+    method: 'POST',
+    headers: { origin: 'http://localhost', cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams(fields).toString(),
+  });
+}
+
 test('the initiating member claims one authenticated browser and completes an exact connector setup', async () => {
   let now = START;
   let sequence = 0;
@@ -85,20 +192,21 @@ test('the initiating member claims one authenticated browser and completes an ex
       enabled: true,
       skills: [],
       mcpServers: [],
-      apiConnections: [{
-        id: 'gmail',
-        displayName: 'Gmail',
+      apiConnections: [],
+      repositories: [],
+    });
+    const gmail = await seedConnection({ config, settings }, owner, 'agent_research', {
+      providerId: 'gmail',
+      label: 'Gmail',
+      policy: {
+        kind: 'api',
         allowedHosts: ['gmail.googleapis.com'],
         pathPrefixes: ['/gmail/v1'],
         headerName: 'Authorization',
         allowedMethods: ['GET'],
-        enabled: true,
         authMode: 'credential',
-        lifecycleStatus: 'pending',
-        statusText: 'Not connected',
         presetId: 'gmail',
-      }],
-      repositories: [],
+      },
     });
     const service = new WorkspaceManagementService({
       identity,
@@ -246,18 +354,13 @@ test('the initiating member claims one authenticated browser and completes an ex
       303,
       `${completedBody}\n${JSON.stringify({
         setup: await management.getSetup(setupId),
-        agent: await config.getAgent('agent_research'),
+        account: await currentAccount(config, gmail),
         outbox: await management.getOutboxForOperation(setupId),
       })}`,
     );
-    const agent = await config.getAgent('agent_research');
-    assert.equal(await resolveConnectorCredential(
-      boundApiCredentialRef('agent_research', agent.apiConnections[0]!),
-      undefined,
-      settings,
-    ), credential);
-    assert.equal(agent.revision, 2);
-    assert.equal(agent.apiConnections[0]?.lifecycleStatus, 'ready');
+    assert.equal(await storedSecret(settings, gmail), credential);
+    assert.equal((await currentAccount(config, gmail)).lifecycle, 'ready');
+    assert.deepEqual((await config.getAgent('agent_research')).apiConnections, []);
     const setup = await management.getSetup(setupId);
     assert.equal(setup?.status, 'completed');
     assert.equal(setup?.browserSessionDigest, undefined);
@@ -806,22 +909,14 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
       instructions: 'Use the authorized connection.',
       enabled: true,
       skills: [],
-      mcpServers: [{
-        id: 'linear',
-        displayName: 'Linear',
-        url: 'https://mcp.linear.app/mcp',
-        transport: 'streamable-http',
-        authMode: 'oauth',
-        headerNames: [],
-        enabled: true,
-        lifecycleStatus: 'pending',
-        statusText: 'Not connected',
-        discoveredTools: [],
-        allowedTools: [],
-        oauthScope: 'read',
-      }],
+      mcpServers: [],
       apiConnections: [],
       repositories: [],
+    });
+    const linear = await seedConnection({ config, settings }, owner, 'agent_private_oauth', {
+      providerId: 'linear',
+      label: 'Linear',
+      policy: LINEAR_POLICY,
     });
     const service = new WorkspaceManagementService({
       identity,
@@ -865,7 +960,7 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
       completeMcpOAuth: async () => {
         completeCalls += 1;
         return {
-          ref: { agentId: 'agent_private_oauth', connectionId: 'linear' },
+          ref: connectionAccountOAuthRef(linear.id),
           returnAgentId: 'agent_private_oauth',
         };
       },
@@ -890,6 +985,7 @@ test('legacy Agent OAuth setup rechecks current edit authority before start and 
     });
     assert.equal(deniedStart.status, 403);
     assert.equal((await management.getSetup(setupId))?.status, 'claimed');
+    assert.equal((await currentAccount(config, linear)).revision, linear.revision, 'no sign-in attempt started');
 
     await management.authorizeSetup({
       setupOperationId: setupId,
@@ -1371,56 +1467,38 @@ test('an API setup cannot cross an Agent delete-recreate race before the ready t
     enabled: true,
     skills: [],
     mcpServers: [],
-    apiConnections: [{
-      id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
-      pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
-      allowedMethods: ['GET' as const], enabled: true, authMode: 'credential' as const,
-      lifecycleStatus: 'pending' as const, statusText: 'Not connected',
-    }],
+    apiConnections: [],
     repositories: [],
   };
-  const originalUpdateAgent = config.updateAgent.bind(config);
+  const connection = { providerId: 'tasks', label: 'Tasks', policy: TASKS_POLICY };
   try {
-    const issuedAgent = await config.createAgent(agentInput);
-    const issuedRef = boundApiCredentialRef(issuedAgent.id, issuedAgent.apiConnections[0]!);
-    const setupId = 'setup_api_incarnation_race';
-    await management.putSetup({
-      record: {
-        setupOperationId: setupId,
-        organizationId: owner.membership.organizationId,
-        actorUserId: owner.user.id,
-        actorMembershipId: owner.membership.id,
-        origin: { kind: 'mcp', clientId: 'codex' },
-        action: 'api_credential',
-        target: {
-          kind: 'api_connection', provider: 'tasks',
-          targetId: `agent:${issuedAgent.id}:api:tasks`, targetLabel: 'Tasks',
-          expectedRevision: issuedAgent.revision,
-          credentialBinding: issuedRef.credentialBinding,
-          agentId: issuedAgent.id, agentName: issuedAgent.name, connectionId: 'tasks',
-          replacement: false, formFields: ['credential'],
-        },
-        scopes: ['header:Authorization'],
-        tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'),
-        status: 'pending',
-        expiresAt: START + 60_000,
-        createdAt: START,
-        updatedAt: START,
-      },
+    await config.createAgent(agentInput);
+    const issued = await seedConnection({ config, settings }, owner, agentInput.id, connection);
+    const issuedAgent = await config.getAgent(agentInput.id);
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'api_incarnation_race', randomCapability: () => CAPABILITY,
     });
-    let replacementRef: ReturnType<typeof boundApiCredentialRef> | undefined;
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'api_connection', agentId: agentInput.id, connectionId: 'tasks',
+    });
+    let replacement: ConnectionAccount | undefined;
     const racingConfig = new Proxy(config, {
       get(target, property, receiver) {
-        if (property !== 'updateAgent') return Reflect.get(target, property, receiver);
-        return async (...args: Parameters<typeof config.updateAgent>) => {
-          if (!replacementRef) {
+        if (property !== 'putConnectionAccount') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof config.putConnectionAccount>) => {
+          if (!replacement) {
+            // Disconnecting tombstones the slot before it marks the account revoked;
+            // the setup's credential lands in between.
+            const current = await currentAccount(config, issued);
+            await config.putConnectionAccount({ ...current, lifecycle: 'revoked' }, current.revision);
             assert.equal(await config.deleteAgent(issuedAgent.id, issuedAgent.revision), true);
-            const replacement = await config.createAgent(agentInput);
-            replacementRef = boundApiCredentialRef(replacement.id, replacement.apiConnections[0]!);
-            assert.equal(replacement.revision, issuedAgent.revision);
-            assert.notEqual(replacementRef.credentialRef, issuedRef.credentialRef);
+            const recreated = await config.createAgent(agentInput);
+            assert.equal(recreated.revision, issuedAgent.revision);
+            replacement = await seedConnection({ config, settings }, owner, recreated.id, connection);
+            assert.notEqual(replacement.secretRefId, issued.secretRefId);
           }
-          return originalUpdateAgent(...args);
+          return config.putConnectionAccount(...args);
         };
       },
     });
@@ -1434,27 +1512,16 @@ test('an API setup cannot cross an Agent delete-recreate race before the ready t
       authenticatePrincipal: async () => browserPrincipal(owner),
       deliverReceipt: async () => { throw new Error('must not deliver'); },
     });
-    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
-      method: 'POST',
-      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
-      body: JSON.stringify({ capability: CAPABILITY }),
-    });
-    assert.equal(exchange.status, 200, await exchange.clone().text());
+    const cookie = await claimSetup(app, setupId);
 
-    const response = await app.request(`http://localhost/setup/${setupId}/complete`, {
-      method: 'POST',
-      headers: {
-        origin: 'http://localhost',
-        cookie: exchange.headers.get('set-cookie')!,
-        'content-type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ credential: 'must-not-cross-incarnations' }).toString(),
+    const response = await postSetupForm(app, setupId, 'complete', cookie, {
+      credential: 'must-not-cross-incarnations',
     });
     assert.equal(response.status, 422, await response.clone().text());
-    assert.ok(replacementRef);
-    assert.equal(await resolveConnectorCredential(issuedRef, undefined, settings), undefined);
-    assert.equal(await resolveConnectorCredential(replacementRef, undefined, settings), undefined);
-    assert.equal((await config.getAgent(issuedAgent.id)).apiConnections[0]?.lifecycleStatus, 'pending');
+    assert.ok(replacement);
+    assert.equal(await storedSecret(settings, issued), undefined, 'the revoked account keeps no credential');
+    assert.equal(await storedSecret(settings, replacement), undefined);
+    assert.equal((await currentAccount(config, replacement)).lifecycle, 'pending');
     assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
     assert.equal(await management.getOutboxForOperation(setupId), undefined);
   } finally {
@@ -1471,7 +1538,6 @@ test('a failed older API setup cannot erase a newer same-incarnation credential'
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
-  const originalUpdateAgent = config.updateAgent.bind(config);
   try {
     const agent = await config.createAgent({
       id: 'agent_api_same_ref_race',
@@ -1482,57 +1548,31 @@ test('a failed older API setup cannot erase a newer same-incarnation credential'
       enabled: true,
       skills: [],
       mcpServers: [],
-      apiConnections: [{
-        id: 'tasks', displayName: 'Tasks', allowedHosts: ['api.example.com'],
-        pathPrefixes: ['/v1'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
-        allowedMethods: ['GET'], enabled: true, authMode: 'credential',
-        lifecycleStatus: 'pending', statusText: 'Not connected',
-      }],
+      apiConnections: [],
       repositories: [],
     });
-    const ref = boundApiCredentialRef(agent.id, agent.apiConnections[0]!);
-    const setupId = 'setup_api_same_ref_race';
-    await management.putSetup({
-      record: {
-        setupOperationId: setupId,
-        organizationId: owner.membership.organizationId,
-        actorUserId: owner.user.id,
-        actorMembershipId: owner.membership.id,
-        origin: { kind: 'mcp', clientId: 'codex' },
-        action: 'api_credential',
-        target: {
-          kind: 'api_connection', provider: 'tasks',
-          targetId: `agent:${agent.id}:api:tasks`, targetLabel: 'Tasks',
-          expectedRevision: agent.revision,
-          credentialBinding: ref.credentialBinding,
-          agentId: agent.id, agentName: agent.name, connectionId: 'tasks',
-          replacement: false, formFields: ['credential'],
-        },
-        scopes: ['header:Authorization'],
-        tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'),
-        status: 'pending',
-        expiresAt: START + 60_000,
-        createdAt: START,
-        updatedAt: START,
-      },
+    const tasks = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'tasks', label: 'Tasks', policy: TASKS_POLICY,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'api_same_ref_race', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'api_connection', agentId: agent.id, connectionId: 'tasks',
     });
     let raced = false;
     const racingConfig = new Proxy(config, {
       get(target, property, receiver) {
-        if (property !== 'updateAgent') return Reflect.get(target, property, receiver);
-        return async (...args: Parameters<typeof config.updateAgent>) => {
+        if (property !== 'putConnectionAccount') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof config.putConnectionAccount>) => {
           if (!raced) {
             raced = true;
-            const current = await config.getAgent(agent.id);
-            const renamed = await originalUpdateAgent(
-              current.id,
-              { name: 'API same-ref race renamed' },
-              current.revision,
-            );
-            assert.equal(renamed.apiConnections[0]?.credentialRef, ref.credentialRef);
-            await saveConnectorCredential(ref, 'newer-credential', undefined, settings);
+            const current = await currentAccount(config, tasks);
+            await config.putConnectionAccount({ ...current, label: 'Tasks renamed' }, current.revision);
+            await saveConnectionAccountSecret(tasks.secretRefId, 'newer-credential', undefined, settings);
           }
-          return originalUpdateAgent(...args);
+          return config.putConnectionAccount(...args);
         };
       },
     });
@@ -1545,30 +1585,432 @@ test('a failed older API setup cannot erase a newer same-incarnation credential'
       authenticatePrincipal: async () => browserPrincipal(owner),
       deliverReceipt: async () => { throw new Error('must not deliver'); },
     });
-    const exchange = await app.request(`http://localhost/setup/${setupId}/exchange`, {
-      method: 'POST',
-      headers: { origin: 'http://localhost', 'content-type': 'application/json' },
-      body: JSON.stringify({ capability: CAPABILITY }),
-    });
-    assert.equal(exchange.status, 200, await exchange.clone().text());
+    const cookie = await claimSetup(app, setupId);
 
-    const response = await app.request(`http://localhost/setup/${setupId}/complete`, {
-      method: 'POST',
-      headers: {
-        origin: 'http://localhost',
-        cookie: exchange.headers.get('set-cookie')!,
-        'content-type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ credential: 'older-credential' }).toString(),
-    });
+    const response = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'older-credential' });
     assert.equal(response.status, 422, await response.clone().text());
-    assert.equal(await resolveConnectorCredential(ref, undefined, settings), 'newer-credential');
-    const current = await config.getAgent(agent.id);
-    assert.equal(current.name, 'API same-ref race renamed');
-    assert.equal(current.apiConnections[0]?.credentialRef, ref.credentialRef);
-    assert.equal(current.apiConnections[0]?.lifecycleStatus, 'pending');
+    assert.equal(await storedSecret(settings, tasks), 'newer-credential');
+    const current = await currentAccount(config, tasks);
+    assert.equal(current.label, 'Tasks renamed');
+    assert.equal(current.lifecycle, 'pending');
     assert.equal((await management.getSetup(setupId))?.failureCode, 'target_changed');
   } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('a credential API connection added over MCP is ready to run once its setup link completes', async () => {
+  const f = await createManagementAdapterFixture('setup-link-api', {}, { teamId: 'T_SETUP' });
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_billing',
+      name: 'Billing',
+      instructions: 'Check invoices.',
+      enabled: true,
+      creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const context = {
+      userId: f.owner.user.id,
+      membershipId: f.owner.membership.id,
+      organizationId: f.owner.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'codex' },
+    };
+    const added = await f.service.applyWorkspaceChanges({
+      context,
+      idempotencyKey: 'add-billing',
+      operations: [{
+        itemId: 'add',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: {
+          apiConnections: [{
+            id: 'billing',
+            displayName: 'Billing API',
+            allowedHosts: ['billing.example.test'],
+            pathPrefixes: ['/v1'],
+            headerName: 'Authorization',
+            headerValuePrefix: 'Bearer ',
+            allowedMethods: ['GET'],
+            enabled: true,
+            authMode: 'credential',
+          }],
+        },
+      }],
+    });
+    requireMutationResult(added);
+    assert.deepEqual(added.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(added));
+    const setupId = await requestConnectionSetup(f.service, f.owner, {
+      kind: 'api_connection', agentId: agent.id, connectionId: 'billing',
+    });
+    const app = createManagementSetupRoutes({
+      management: f.management,
+      config: f.config,
+      settings: f.settings,
+      identity: f.identity,
+      authenticatePrincipal: async () => browserPrincipal(f.owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+    });
+    const cookie = await claimSetup(app, setupId);
+    const completed = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-billing' });
+    assert.equal(completed.status, 303, await completed.clone().text());
+
+    const [account] = await f.config.listConnectionAccounts('T_SETUP');
+    assert.ok(account);
+    assert.equal(account.lifecycle, 'ready');
+    assert.equal(await storedSecret(f.settings, account), 'sk-billing');
+    const effective = await resolveEffectiveConnectionAccounts({
+      config: f.config,
+      workspaceId: 'T_SETUP',
+      agentId: agent.id,
+      actorMembershipId: f.owner.membership.id,
+    });
+    assert.deepEqual(effective.map((entry) => [entry.account.id, entry.policy.kind]), [[account.id, 'api']]);
+    assert.equal((await f.management.getSetup(setupId))?.status, 'completed');
+  } finally {
+    f.close();
+  }
+});
+
+test('a setup link needs authority over its connection account, not only the Agent', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'account-authority' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_account_authority',
+      name: 'Account authority',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Use the team connection.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const tasks = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'tasks', label: 'Tasks', policy: TASKS_POLICY,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'account_authority', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'api_connection', agentId: agent.id, connectionId: 'tasks',
+    });
+    let principal = browserPrincipal(owner);
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      authenticatePrincipal: async () => principal,
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+    });
+    const cookie = await claimSetup(app, setupId);
+
+    // As the Agent's creator, a member still edits the Agent but cannot manage a team connection.
+    principal = { ...principal, role: 'member' };
+    const denied = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-denied' });
+    assert.equal(denied.status, 403);
+    assert.equal(await storedSecret(settings, tasks), undefined);
+    assert.equal((await currentAccount(config, tasks)).lifecycle, 'pending');
+    assert.equal((await management.getSetup(setupId))?.status, 'claimed');
+
+    principal = browserPrincipal(owner);
+    const completed = await postSetupForm(app, setupId, 'complete', cookie, { credential: 'sk-tasks' });
+    assert.equal(completed.status, 303, await completed.clone().text());
+    assert.equal(await storedSecret(settings, tasks), 'sk-tasks');
+    assert.equal((await currentAccount(config, tasks)).lifecycle, 'ready');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an MCP header setup stores one credential and records the tools the server offers', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-header-setup' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_tracker',
+      name: 'Tracker',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Search the tracker.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const tracker = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'tracker',
+      label: 'Tracker',
+      policy: {
+        kind: 'mcp',
+        url: 'https://mcp.tracker.example/mcp',
+        transport: 'streamable-http',
+        authMode: 'none',
+        headerNames: ['X-Api-Key'],
+        credentialHeaderName: 'X-Api-Key',
+        credentialValuePrefix: 'Token ',
+        discoveredTools: [{ name: 'search' }],
+        allowedTools: ['search'],
+      },
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_header_setup', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'tracker',
+    });
+    assert.deepEqual((await management.getSetup(setupId))?.target.formFields, ['header:X-Api-Key']);
+    const requestHeaders: Array<Record<string, string>> = [];
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      discoverMcp: async (input) => {
+        requestHeaders.push(input.headers ?? {});
+        return { tools: [{ name: 'search' }, { name: 'delete_everything' }] };
+      },
+      identifyMcp: async () => ({ workspaceName: 'Tracker team' }),
+    });
+    const cookie = await claimSetup(app, setupId);
+    const completed = await postSetupForm(app, setupId, 'complete', cookie, { 'header:X-Api-Key': 'abc123' });
+    assert.equal(completed.status, 303, await completed.clone().text());
+
+    assert.deepEqual(requestHeaders, [{ 'X-Api-Key': 'Token abc123' }]);
+    assert.equal(await storedSecret(settings, tracker), 'abc123');
+    const ready = await currentAccount(config, tracker);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.equal(ready.identity?.workspaceName, 'Tracker team');
+    assert.ok(ready.policy.kind === 'mcp');
+    assert.deepEqual(ready.policy.discoveredTools.map(({ name }) => name), ['search', 'delete_everything']);
+    assert.deepEqual(ready.policy.allowedTools, ['search'], 'discovery never widens the granted tools');
+    assert.equal(receiptAccountLabel(await management.getSetup(setupId)), 'Tracker team');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an MCP OAuth setup signs in to its connection account and marks it ready', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'mcp-oauth-setup' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId,
+      teamId: owner.user.slackTeamId,
+      transportMode: 'gateway',
+      appId: 'A_SETUP',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_setup',
+    });
+    const agent = await config.createAgent({
+      id: 'agent_linear',
+      name: 'Linear helper',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Triage issues.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const linear = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'linear', label: 'Linear', policy: LINEAR_POLICY,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'mcp_oauth_setup', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'mcp_connection', agentId: agent.id, connectionId: 'linear',
+    });
+    const starts: StartMcpOAuthInput[] = [];
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      now: () => START,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+      startMcpOAuth: async (input) => {
+        starts.push(input);
+        return { authorizationUrl: new URL('https://linear.app/oauth/authorize'), state: 'state' };
+      },
+      completeMcpOAuth: async () => {
+        const [start] = starts;
+        assert.ok(start);
+        return {
+          ref: start.ref,
+          ...(start.accountRevision !== undefined ? { accountRevision: start.accountRevision } : {}),
+          ...(start.oauthAttemptId ? { oauthAttemptId: start.oauthAttemptId } : {}),
+          ...(start.authorizationAuthority ? { authorizationAuthority: start.authorizationAuthority } : {}),
+        };
+      },
+      resolveMcpOAuthToken: async () => 'linear-access-token',
+      discoverMcp: async (input) => {
+        assert.equal(input.headers?.Authorization, 'Bearer linear-access-token');
+        return { tools: [{ name: 'list_issues' }] };
+      },
+      identifyMcp: async () => ({ workspaceName: 'Acme' }),
+    });
+    const cookie = await claimSetup(app, setupId);
+    const started = await postSetupForm(app, setupId, 'authorize', cookie, {});
+    assert.equal(started.status, 303, await started.clone().text());
+    assert.equal(started.headers.get('location'), 'https://linear.app/oauth/authorize');
+    const pending = await currentAccount(config, linear);
+    assert.ok(pending.policy.kind === 'mcp' && pending.policy.oauthAttemptId);
+    assert.deepEqual(starts.map(({ ref, accountRevision, oauthAttemptId, callbackUrl }) => ({
+      ref, accountRevision, oauthAttemptId, callbackUrl,
+    })), [{
+      ref: connectionAccountOAuthRef(linear.id),
+      accountRevision: pending.revision,
+      oauthAttemptId: pending.policy.oauthAttemptId,
+      callbackUrl: `http://localhost/setup/${setupId}/oauth/mcp/callback`,
+    }]);
+
+    const state = Buffer.from(JSON.stringify({ a: linear.id, c: 'account', n: 'nonce' })).toString('base64url');
+    const callback = await app.request(
+      `http://localhost/setup/${setupId}/oauth/mcp/callback?state=${state}&code=accepted`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(callback.headers.get('location'), `/setup/${setupId}`);
+    const ready = await currentAccount(config, linear);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.equal(ready.identity?.workspaceName, 'Acme');
+    assert.ok(ready.policy.kind === 'mcp');
+    assert.deepEqual(ready.policy.allowedTools, ['list_issues']);
+    assert.equal((await management.getSetup(setupId))?.status, 'completed');
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('an API OAuth setup stores its client on the connection account and marks it ready', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => START });
+  const owner = await createSlackOwner(identity, { now: START, suffix: 'api-oauth-setup' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const originalFetch = globalThis.fetch;
+  try {
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId,
+      teamId: owner.user.slackTeamId,
+      transportMode: 'gateway',
+      appId: 'A_SETUP',
+      botUserId: 'U_BOT',
+      gatewayBindingId: 'binding_setup',
+    });
+    const agent = await config.createAgent({
+      id: 'agent_inbox',
+      name: 'Inbox',
+      creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      instructions: 'Read mail.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [],
+      repositories: [],
+    });
+    const scope = GOOGLE_WORKSPACE_SCOPE_OPTIONS.gmail.read;
+    const gmail = await seedConnection({ config, settings }, owner, agent.id, {
+      providerId: 'gmail',
+      label: 'Gmail',
+      policy: {
+        kind: 'api',
+        ...googleWorkspaceApiPolicy([scope]),
+        authMode: 'oauth',
+        oauthProvider: 'google',
+        oauthScopes: [scope],
+      },
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => START,
+      randomId: () => 'api_oauth_setup', randomCapability: () => CAPABILITY,
+    });
+    const setupId = await requestConnectionSetup(service, owner, {
+      kind: 'api_connection', agentId: agent.id, connectionId: 'gmail',
+    });
+    assert.equal((await management.getSetup(setupId))?.action, 'api_oauth');
+    const app = createManagementSetupRoutes({
+      management,
+      config,
+      settings,
+      identity,
+      authenticatePrincipal: async () => browserPrincipal(owner),
+      deliverReceipt: async () => ({ deliveryRef: 'mcp:receipt' }),
+    });
+    const cookie = await claimSetup(app, setupId);
+    const started = await postSetupForm(app, setupId, 'authorize', cookie, {
+      clientId: 'client-id.apps.googleusercontent.com',
+      clientSecret: 'client-secret',
+    });
+    assert.equal(started.status, 303, await started.clone().text());
+    const authorization = new URL(started.headers.get('location')!);
+    assert.equal(authorization.origin, 'https://accounts.google.com');
+    assert.equal(authorization.searchParams.get('client_id'), 'client-id.apps.googleusercontent.com');
+
+    globalThis.fetch = async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return Response.json({ access_token: 'google-access', refresh_token: 'google-refresh', token_type: 'Bearer', expires_in: 3600 });
+      }
+      if (url === 'https://openidconnect.googleapis.com/v1/userinfo') {
+        return Response.json({ email: 'ops@example.com' });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const callback = await app.request(
+      `http://localhost/setup/${setupId}/oauth/api/callback?state=${encodeURIComponent(authorization.searchParams.get('state')!)}&code=accepted`,
+      { headers: { cookie } },
+    );
+    assert.equal(callback.status, 303, await callback.clone().text());
+    assert.equal(callback.headers.get('location'), `/setup/${setupId}`);
+    const ready = await currentAccount(config, gmail);
+    assert.equal(ready.lifecycle, 'ready');
+    assert.equal(ready.identity?.accountName, 'ops@example.com');
+    assert.equal(receiptAccountLabel(await management.getSetup(setupId)), 'ops@example.com');
+  } finally {
+    globalThis.fetch = originalFetch;
     identity.close();
     config.close();
     management.close();
