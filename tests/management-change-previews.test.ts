@@ -584,3 +584,30 @@ test('a recipe overwrite shows the access it changes on an existing connection',
     }
     await assertNoCredentialReference(f, agent.id, shown);
   }));
+
+test('a proposal whose widened access cannot fit in one preview is refused, not truncated', () =>
+  withFixture('preview-access-overflow', async (f) => {
+    const agent = await createAgent(f, 'agent_access_overflow');
+    const servers = Array.from({ length: 30 }, (_, index) => ({
+      ...knowledgeServer,
+      id: `mcp_overflow_${index}`,
+      displayName: `Overflow ${index}`,
+      url: `https://mcp${index}.example.test/${'a'.repeat(1_900)}`,
+    }));
+    const response = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => mcpContext(f),
+    }, 'propose_workspace_changes', {
+      ...authoringProposalMetadata('access-overflow'),
+      operations: [{
+        itemId: 'overflow',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { mcpServers: servers },
+      }],
+    });
+
+    assert.equal(response.ok, false, JSON.stringify(response).slice(0, 500));
+    assert.match(JSON.stringify(response), /too long to show in one preview\. Split it into smaller proposals\./);
+  }));
