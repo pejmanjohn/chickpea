@@ -77,23 +77,39 @@ import type {
   MemoryStateStore,
 } from '../memory/types.ts';
 import { RoutineService } from '../routines/service.ts';
-import { formatRoutineLocalDateTime, routineNextRunTime } from '../routines/message-format.ts';
+import {
+  formatRoutineLocalDateTime,
+  routineNextRunTime,
+  routineUpcomingRunAt,
+} from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
-import { isActiveUserAgent, reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
+import {
+  AUTHORITY_PAUSE_REASONS,
+  isActiveUserAgent,
+  reassignDirectRoutineAgent,
+  reassignRoutineAgentAuthority,
+  RoutineAuthorityError,
+} from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
   type SlackScheduleCommand,
 } from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
-import { RoutineContentAccessResolver, routineContentReadable } from '../routines/content-access.ts';
+import {
+  RoutineContentAccessResolver,
+  routineContentReadable,
+  type RoutineContentAccess,
+} from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
+  listPrivatelyUsableAgents,
   logUnavailableFacts,
   memberChannelViews,
   resolvePrivateAgentAccess,
+  type PrivateAgentAccessResult,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
@@ -202,6 +218,7 @@ import {
   type ManagementRequestRecord,
   type ManagementRequestProgress,
   type ManagementRoutineInspectionInput,
+  type ManagementRoutineOperation,
   type ManagementRoutineSnapshot,
   type ManagementSetupPublicStatus,
   type ManagementSetupRecord,
@@ -221,6 +238,7 @@ import {
   type ProposeWorkspaceChangesInput,
   type ProposeWorkspaceChangesResult,
   type UndoWorkspaceChangeInput,
+  isRoutineOperation,
 } from './types.ts';
 import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 
@@ -233,6 +251,8 @@ const META_ADS_CATALOG_SETUP_MESSAGE =
 const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
 const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
+const DM_ROUTINE_RUNS_AS_OWNER = 'A DM routine always runs as the person whose DM it is, so it cannot be taken over.';
+const MCP_DM_ROUTINE_KEEPS_AGENT = "A DM routine keeps its Agent over MCP. To change the Agent, ask Chickpea in that DM.";
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
 
 /**
@@ -1725,17 +1745,24 @@ export class WorkspaceManagementService {
     const visibleRoutines = visible.filter((entry): entry is NonNullable<typeof entry> =>
       entry !== undefined);
     const routineStore = this.stores.routines;
+    const contentAccess = this.routineContentAccess(actor);
     return {
       routines: await Promise.all(visibleRoutines.map(async ({ routine, reference }) => {
-        const contentAccess = routine.destination.kind === 'direct_thread'
-          ? 'private' as const
-          : await routineContentAccess(this.stores.work, routine);
-        const readable = contentAccess === 'public' || routine.destination.kind === 'direct_thread';
-        const [lastRun] = await routineStore.listRuns({ routineId: routine.id, limit: 1 });
+        const direct = routine.destination.kind === 'direct_thread';
+        const [access, [lastRun], agent] = await Promise.all([
+          direct ? 'private' as const : contentAccess.resolve(routine),
+          routineStore.listRuns({ routineId: routine.id, limit: 1 }),
+          direct ? optionalAgent(this.stores.config, reference.agentId) : undefined,
+        ]);
+        const readable = access === 'private' || this.routineContentShownHere(actor, routine, access);
+        const nextRunAt = routineUpcomingRunAt(routine);
         return {
           id: routine.id,
           workspaceId: routine.workspaceId,
-          channelId: routine.channelId,
+          channelId: direct ? null : routine.channelId,
+          destination: direct
+            ? { kind: 'direct_message' as const, label: agent ? `your DM with ${agent.name}` : 'your DM' }
+            : { kind: 'channel' as const, channelId: routine.channelId },
           creatorUserId: routine.creatorUserId,
           state: routine.deletedAt === null ? routine.state : 'deleted',
           version: routine.version,
@@ -1747,9 +1774,11 @@ export class WorkspaceManagementService {
           scheduleJson: routine.scheduleJson,
           timezone: routine.timezone,
           outputPolicy: routine.outputPolicy,
-          nextRunAt: routine.nextRunAt,
-          nextRunTime: routineNextRunTime(routine.nextRunAt, routine.timezone),
-          contentAccess,
+          nextRunAt,
+          nextRunTime: routineNextRunTime(nextRunAt, routine.timezone),
+          pausedReason: routine.pausedReason,
+          disabledReason: routine.disabledReason,
+          contentAccess: access,
           owningAgentId: reference.agentId,
           requiredConnectionAccountIds: reference.requiredConnectionAccountIds,
           lastRun: lastRun
@@ -3307,7 +3336,7 @@ export class WorkspaceManagementService {
         ),
       });
     }
-    if (operation.kind === 'reassign_routine_agent') {
+    if (operation.kind === 'reassign_routine_agent' || operation.kind === 'take_over_routine') {
       return operationAuthorityScopeTarget(operation);
     }
     if (operation.kind === 'control_routine' || operation.kind === 'run_routine' ||
@@ -3382,12 +3411,9 @@ export class WorkspaceManagementService {
     if (view !== 'shown') throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
   }
 
-  /** Whether the person may read a Channel routine, as Admin's schedules page decides. */
-  private async routineReadable(
-    actor: LiveManagementActor,
-    routine: RoutineDefinition,
-  ): Promise<boolean> {
-    const access = await new RoutineContentAccessResolver({
+  /** Who may read a Channel routine's content, as Admin's schedules page decides. */
+  private routineContentAccess(actor: LiveManagementActor): RoutineContentAccessResolver {
+    return new RoutineContentAccessResolver({
       work: this.stores.work,
       actor: async () => {
         const user = await this.stores.identity.getUser(actor.userId);
@@ -3395,8 +3421,50 @@ export class WorkspaceManagementService {
         return { slackTeamId: user.slackTeamId, slackUserId: user.slackUserId };
       },
       transport: (workspaceId) => this.slackFactsFor(workspaceId),
-    }).resolve(routine);
-    return routineContentReadable(access);
+    });
+  }
+
+  private async routineReadable(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+  ): Promise<boolean> {
+    return routineContentReadable(await this.routineContentAccess(actor).resolve(routine));
+  }
+
+  /**
+   * A Slack Channel answer reaches everyone in that Channel, so there a
+   * private routine's content shows only for a routine of that Channel.
+   */
+  private routineContentShownHere(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+    access: RoutineContentAccess,
+  ): boolean {
+    if (access === 'public') return true;
+    return access === 'private_member' &&
+      (actor.origin.kind !== 'slack' || actor.origin.channelId === routine.channelId);
+  }
+
+  /** Whether the person may DM this Agent, which a DM routine needs too. */
+  private async privateAgentUse(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    workspaceId: string,
+  ): Promise<PrivateAgentAccessResult['status']> {
+    const [user, grants, facts] = await Promise.all([
+      this.stores.identity.getUser(actor.userId),
+      this.stores.config.listAgentChannelGrants(workspaceId),
+      this.slackFactsFor(workspaceId, agent),
+    ]);
+    if (!user) return 'denied';
+    return (await resolvePrivateAgentAccess({
+      agent,
+      workspaceId,
+      grants,
+      // Only full Slack members are provisioned, and every run asks Slack again.
+      actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
+      transport: facts,
+    })).status;
   }
 
   /** A DM routine needs the private use the person would need to DM its Agent. */
@@ -3405,26 +3473,45 @@ export class WorkspaceManagementService {
     agent: CustomAgentConfig,
     workspaceId: string,
   ): Promise<void> {
+    const access = await this.privateAgentUse(actor, agent, workspaceId);
+    if (access === 'unavailable') {
+      throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    }
+    if (access === 'denied') {
+      throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
+    }
+  }
+
+  /**
+   * The Agents a member may DM, and so schedule DM work with, editable or
+   * shared: the App Home directory's set, from one snapshot of Slack's facts.
+   */
+  private async usableAgents(
+    actor: LiveManagementActor,
+    agents: readonly CustomAgentConfig[],
+    workspaceId: string,
+  ): Promise<NonNullable<ManagementWorkspaceSnapshot['usableAgents']>> {
     const [user, grants, facts] = await Promise.all([
       this.stores.identity.getUser(actor.userId),
       this.stores.config.listAgentChannelGrants(workspaceId),
-      this.slackFactsFor(workspaceId, agent),
+      this.slackFactsFor(workspaceId),
     ]);
-    if (!user) throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
-    const access = await resolvePrivateAgentAccess({
-      agent,
+    if (!user) return [];
+    const usable = await listPrivatelyUsableAgents({
+      agents,
       workspaceId,
       grants,
       // Only full Slack members are provisioned, and every run asks Slack again.
       actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
       transport: facts,
     });
-    if (access.status === 'unavailable') {
-      throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
-    }
-    if (access.status === 'denied') {
-      throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
-    }
+    return usable
+      .map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        ...(agent.slackPresence ? { handle: agent.slackPresence.normalizedHandle } : {}),
+        canEdit: this.actorCanEditAgent(actor, agent),
+      }));
   }
 
   private async requireEditableAgent(
@@ -3883,6 +3970,9 @@ export class WorkspaceManagementService {
       ...(workspaceDefault?.modelId ? [{ id: workspaceDefault.modelId }] : []),
     ]);
     const selfAgent = userAgentScoped ? agents[0] : undefined;
+    const usableAgents = actor.role === 'member' && !userAgentScoped && organization?.slackTeamId
+      ? await this.usableAgents(actor, allAgents, organization.slackTeamId)
+      : undefined;
     return {
       organizationId: actor.organizationId,
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
@@ -3903,6 +3993,7 @@ export class WorkspaceManagementService {
             },
           }
         : {}),
+      ...(usableAgents ? { usableAgents } : {}),
       agents: agents.map(({
         id,
         revision,
@@ -4050,24 +4141,33 @@ export class WorkspaceManagementService {
     }
   }
 
+  /** Authorize one routine change, as Admin would; returns the routine's conversation. */
   private async requireRoutineMutation(
     actor: LiveManagementActor,
-    operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine' | 'run_routine' | 'delete_routine' |
-        'reassign_routine_agent';
-    }>,
+    operation: ManagementRoutineOperation,
     options: { allowIdempotentSaveReplay?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<string> {
     if (!this.stores.routines) {
       throw new ManagementError('invalid_request', 'Routine management is unavailable.');
     }
     await this.requireWorkspaceScope(actor, operation.workspaceId);
-    const channelId = this.routineMutationChannelId(actor, operation);
-    const directRequest = operation.kind === 'save_routine' &&
-      operation.destination?.kind === 'current_dm_thread';
     const existingRoutine = operation.routineId
       ? await this.stores.routines.getRoutine(operation.routineId)
       : undefined;
+    // An ID that names no routine, or another person's DM routine, gets this one answer
+    // whatever version or Channel is sent, so no error shows that the routine exists.
+    if (operation.routineId && !(existingRoutine && (
+      existingRoutine.destination.kind !== 'direct_thread' || this.directRoutineIsVisible(
+        actor,
+        existingRoutine,
+        await this.stores.config.getAgentScheduleReference(existingRoutine.id),
+      )
+    ))) {
+      throw new ManagementError('invalid_request', 'The routine was not found.');
+    }
+    const channelId = this.routineMutationChannelId(actor, operation, existingRoutine);
+    const directRequest = operation.kind === 'save_routine' &&
+      operation.destination?.kind === 'current_dm_thread';
     const directRoutine = directRequest || existingRoutine?.destination.kind === 'direct_thread';
     if (!directRoutine) {
       const channel = await this.stores.config.getChannel(operation.workspaceId, channelId);
@@ -4124,7 +4224,7 @@ export class WorkspaceManagementService {
       if (!directRoutine && !readsEveryRoutine) {
         await this.requireMemberInChannel(actor, operation.workspaceId, channelId);
       }
-      return;
+      return channelId;
     }
     const routineId = operation.routineId;
     if (!routineId) throw new ManagementError('invalid_request', 'The routine was not found.');
@@ -4144,13 +4244,15 @@ export class WorkspaceManagementService {
       if ('channelId' in operation && operation.channelId !== undefined) {
         throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
       }
-      if (!this.directRoutineIsVisible(actor, routine, reference)) {
-        throw new ManagementError('invalid_request', 'The routine was not found.');
+      if (operation.kind === 'take_over_routine') {
+        throw new ManagementError('invalid_request', DM_ROUTINE_RUNS_AS_OWNER);
       }
       if (operation.kind === 'save_routine' && operation.agentId !== reference.agentId) {
         throw new ManagementError(
           'invalid_request',
-          'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
+          actor.origin.kind === 'mcp'
+            ? MCP_DM_ROUTINE_KEEPS_AGENT
+            : 'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
         );
       }
       if (operation.kind === 'reassign_routine_agent') {
@@ -4163,16 +4265,17 @@ export class WorkspaceManagementService {
         }
         await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       }
-      return;
+      return channelId;
     }
     await this.requireEditableAgent(actor, reference.agentId);
-    if (readsEveryRoutine) return;
+    if (readsEveryRoutine) return channelId;
     if (operation.kind === 'control_routine' && operation.action === 'disable') {
       throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
     }
     if (!await this.routineReadable(actor, routine)) {
       throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
     }
+    return channelId;
   }
 
   private async isRoutineSchedulingAvailable(): Promise<boolean> {
@@ -4181,12 +4284,11 @@ export class WorkspaceManagementService {
       : this.stores.routineSchedulingAvailable ?? true;
   }
 
+  /** An MCP caller names a routine by ID; its stored conversation is the destination. */
   private routineMutationChannelId(
     actor: LiveManagementActor,
-    operation: Extract<ManagementOperation, {
-      kind: 'save_routine' | 'control_routine' | 'run_routine' | 'delete_routine' |
-        'reassign_routine_agent';
-    }>,
+    operation: ManagementRoutineOperation,
+    existing: RoutineDefinition | undefined,
   ): string {
     const directOrigin = slackDirectOrigin(actor);
     if (operation.kind === 'save_routine' && operation.destination?.kind === 'current_channel_thread') {
@@ -4208,23 +4310,31 @@ export class WorkspaceManagementService {
     if (directOrigin && operation.workspaceId === directOrigin.workspaceId) {
       return directOrigin.channelId;
     }
+    if (actor.origin.kind === 'mcp' && existing) return existing.channelId;
     throw new ManagementError('invalid_request', 'The routine destination is required.');
   }
 
+  /**
+   * A DM routine belongs to the person whose DM it is: they see it in that DM,
+   * or signed in over MCP. Nobody else does, an Owner included.
+   */
   private directRoutineIsVisible(
     actor: LiveManagementActor,
     routine: RoutineDefinition,
     reference: AgentScheduleReference | undefined,
   ): boolean {
+    if (!reference || routine.destination.kind !== 'direct_thread' ||
+        reference.destinationKind !== 'direct_thread' ||
+        routine.destination.ownerMembershipId !== actor.membershipId ||
+        reference.createdByMembershipId !== actor.membershipId) {
+      return false;
+    }
+    if (actor.origin.kind === 'mcp') return true;
     const origin = slackDirectOrigin(actor);
     return Boolean(
-      origin && reference &&
-      routine.destination.kind === 'direct_thread' &&
-      reference.destinationKind === 'direct_thread' &&
+      origin &&
       routine.workspaceId === origin.workspaceId &&
       routine.destination.conversationId === origin.channelId &&
-      routine.destination.ownerMembershipId === actor.membershipId &&
-      reference.createdByMembershipId === actor.membershipId &&
       (!isUserAgentScoped(actor) || reference.agentId === actor.actingAgentId)
     );
   }
@@ -4299,9 +4409,7 @@ export class WorkspaceManagementService {
       }
       return { actor, operation, currentAgent: agent, agentEditable: true };
     }
-    if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'run_routine' ||
-        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+    if (isRoutineOperation(operation)) {
       await this.requireRoutineMutation(actor, operation, {
         ...(operation.kind === 'save_routine' &&
             options.allowIdempotentRoutineSaveReplay
@@ -4443,11 +4551,11 @@ export class WorkspaceManagementService {
     // authority compensation settled. The store's save idempotency record is
     // the proof that permits replay past the caller's now-stale version; an
     // unrelated stale edit still fails inside RoutineStore.save.
-    await this.requireRoutineMutation(actor, operation, {
+    const channelId = await this.requireRoutineMutation(actor, operation, {
       allowIdempotentSaveReplay: operation.kind === 'save_routine',
     });
     try {
-      const command = this.scheduleCommand(actor, mutationId, operation);
+      const command = this.scheduleCommand(actor, mutationId, operation, channelId);
       const result = await executeSlackScheduleCommand(command, {
         routines: this.stores.routines!,
         config: this.stores.config as ConfigStore,
@@ -4502,6 +4610,7 @@ export class WorkspaceManagementService {
     operation: Extract<ManagementOperation, {
       kind: 'save_routine' | 'control_routine' | 'run_routine';
     }>,
+    channelId: string,
   ): SlackScheduleCommand {
     if (operation.kind === 'control_routine') {
       return {
@@ -4523,7 +4632,6 @@ export class WorkspaceManagementService {
         routineId: operation.routineId,
       };
     }
-    const channelId = this.routineMutationChannelId(actor, operation);
     const directOrigin = slackDirectOrigin(actor);
     return {
       kind: 'save',
@@ -5003,6 +5111,7 @@ export class WorkspaceManagementService {
       case 'update_agent':
       case 'put_channel':
       case 'save_routine':
+      case 'take_over_routine':
         return undefined;
     }
   }
@@ -5530,8 +5639,7 @@ export class WorkspaceManagementService {
       }]);
     }
     if (operation.kind === 'delete_routine') {
-      await this.requireRoutineMutation(actor, operation);
-      const channelId = this.routineMutationChannelId(actor, operation);
+      const channelId = await this.requireRoutineMutation(actor, operation);
       const seed = createHash('sha256').update(proposalId).digest('hex');
       const service = new RoutineService(this.stores.routines!, {
         now: this.now,
@@ -5588,6 +5696,47 @@ export class WorkspaceManagementService {
         throw new ManagementError('invalid_request', 'The schedule Agent could not be reassigned.');
       }
     }
+    if (operation.kind === 'take_over_routine') {
+      await this.requireRoutineMutation(actor, operation);
+      const routine = await this.stores.routines!.getRoutine(operation.routineId);
+      if (!routine || routine.version !== operation.expectedVersion) {
+        throw new ManagementError('revision_conflict', 'The routine changed.');
+      }
+      let reference: AgentScheduleReference;
+      try {
+        reference = await reassignRoutineAgentAuthority({
+          scheduleId: routine.id,
+          runsAsMembershipId: actor.membershipId,
+          ...(operation.requiredConnectionAccountIds !== undefined
+            ? { requiredConnectionAccountIds: operation.requiredConnectionAccountIds }
+            : {}),
+          receiptId: `schedule_authority_${createHash('sha256')
+            .update(`${proposalId}:${operation.itemId}:${actor.membershipId}`)
+            .digest('hex')
+            .slice(0, 32)}`,
+          config: this.stores.config as ConfigStore,
+          identity: this.stores.identity as IdentityStore,
+        });
+      } catch (error) {
+        if (error instanceof RoutineAuthorityError) {
+          throw new ManagementError('invalid_request', error.message);
+        }
+        throw error;
+      }
+      const resumes = reference.state === 'active' && routine.state === 'paused' &&
+        AUTHORITY_PAUSE_REASONS.has(routine.pausedReason ?? '');
+      return routineMutation(resumes
+        ? await new RoutineService(this.stores.routines!, { now: this.now }).control({
+            routineId: routine.id,
+            expectedVersion: routine.version,
+            action: 'resume',
+            actorId: actor.userId,
+            actorClass: 'operator',
+            reasonCode: 'authority_reassigned',
+            idempotencyKey: `management:schedule-take-over:${reference.authorityReceiptId}`,
+          })
+        : routine);
+    }
     const freshPrepared = await this.prepareItem(actor, operation, proposalId);
     assertPreparedAgentIdentity(prepared ?? freshPrepared, freshPrepared);
     const immediatePrepared = prepared?.agentCredentialIncarnation
@@ -5605,9 +5754,7 @@ export class WorkspaceManagementService {
       return { [`memory:${operation.agentId}`]: memory?.revision ?? 0 };
     }
     if (operation.kind === 'save_routine' && !operation.routineId) return {};
-    if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-        operation.kind === 'run_routine' ||
-        operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+    if (isRoutineOperation(operation)) {
       const routineId = operation.routineId!;
       const routine = await this.stores.routines?.getRoutine(routineId);
       return { [`routine:${routineId}`]: routine?.version ?? 0 };
@@ -6549,9 +6696,7 @@ function handoffTargetForOperation(
       id: operation.providerId,
     };
   }
-  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'run_routine' ||
-      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+  if (isRoutineOperation(operation)) {
     return {
       kind: 'routine',
       id: operation.routineId ?? channelKey(
@@ -6858,9 +7003,7 @@ function managementPreviewTarget(operation: ManagementOperation): string {
   }
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
-  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'run_routine' ||
-      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+  if (isRoutineOperation(operation)) {
     return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
   return operation.target.kind === 'provider_credential'
@@ -7174,29 +7317,6 @@ async function queueAppliedPrivateDmRoutineAcknowledgement(
     // The schedule is already durably saved. Keep that result truthful while
     // leaving a safe operational signal for the acknowledgement failure.
     console.error('[chickpea] Failed to queue private schedule acknowledgement');
-  }
-}
-
-async function routineContentAccess(
-  store: Pick<WorkStore, 'getWork' | 'getBinding'> | undefined,
-  routine: RoutineDefinition,
-): Promise<'public' | 'private' | 'authorization_unknown'> {
-  if (!store || !routine.workId || !routine.bindingId) return 'authorization_unknown';
-  try {
-    const [work, binding] = await Promise.all([
-      store.getWork(routine.workId as Parameters<WorkStore['getWork']>[0]),
-      store.getBinding(routine.bindingId as Parameters<WorkStore['getBinding']>[0]),
-    ]);
-    if (!work || !binding || binding.workId !== work.id ||
-        work.id !== routine.workId || binding.id !== routine.bindingId) {
-      return 'authorization_unknown';
-    }
-    if (work.maximumSensitivity === 'public' && binding.sourceVisibility === 'public') {
-      return 'public';
-    }
-    return binding.sourceVisibility === 'private' ? 'private' : 'authorization_unknown';
-  } catch {
-    return 'authorization_unknown';
   }
 }
 

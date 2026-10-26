@@ -4,7 +4,14 @@ import type {
   RoutineRequestProvenance,
   RoutineRun,
 } from './types.ts';
-import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { escapeSlackControlCharacters, SLACK_MENTION_BREAK } from '../slack/message-format.ts';
+
+/** A routine that is not active has no next run, whatever instant it last projected. */
+export function routineUpcomingRunAt(
+  routine: Pick<RoutineDefinition, 'state' | 'nextRunAt' | 'deletedAt'>,
+): number | null {
+  return routine.state === 'active' && routine.deletedAt === null ? routine.nextRunAt : null;
+}
 
 /** Host-formatted instants for tools: models must not calculate dates from epoch milliseconds. */
 export function routineNextRunTime(nextRunAt: number | null, timezone: string) {
@@ -57,7 +64,7 @@ export function renderRoutineList(
     ...visible.flatMap((routine) => [
       `- **${escapeSlackControlCharacters(routine.name)}** · ${stateLabel(routine.state)}`,
       `  **Schedule:** ${scheduleLabel(routine)}`,
-      `  **Next:** ${routine.nextRunAt === null ? 'None' : formatInstant(routine.nextRunAt, routine.timezone)}`,
+      `  **Next:** ${nextLabel(routine, 'None')}`,
       `  **ID:** \`${routine.id}\``,
     ]),
     '',
@@ -69,8 +76,9 @@ export function renderRoutineDetail(
   routine: RoutineDefinition,
   runs: readonly RoutineRun[],
   provenance: RoutineRequestProvenance | null = null,
+  userGroupHandles: ReadonlyMap<string, string> = new Map(),
 ): string {
-  const next = routine.nextRunAt === null ? 'none' : formatInstant(routine.nextRunAt, routine.timezone);
+  const next = nextLabel(routine, 'none');
   const recent = runs.slice(0, 5);
   return [
     '**Routine details**',
@@ -84,7 +92,7 @@ export function renderRoutineDetail(
     `**ID:** \`${routine.id}\``,
     '',
     provenance?.requestText
-      ? `**Source request:** ${escapeSlackControlCharacters(provenance.requestText)}`
+      ? `**Source request:** ${escapeSlackControlCharacters(nameUserGroups(provenance.requestText, userGroupHandles))}`
       : '**Source request:** Not retained for this legacy revision.',
     '**Authority:** Current Channel access, connections, Agent, repositories, and credentials are resolved again for every run.',
     '',
@@ -148,6 +156,19 @@ export function renderRoutineHelp(): string {
     '**How routines run**',
     'The saved task can request the same actions as a live tag in its Channel. Current membership, Agent, connections, repositories, credentials, policy, and resource limits are rechecked for each run.',
   ].join('\n');
+}
+
+function nextLabel(routine: RoutineDefinition, none: string): string {
+  const nextRunAt = routineUpcomingRunAt(routine);
+  return nextRunAt === null ? none : formatInstant(nextRunAt, routine.timezone);
+}
+
+const USER_GROUP_MENTION = /<!subteam\^([^<>|\n]+)(?:\|([^<>\n]*))?>/g;
+
+/** A user-group mention reads as its inert @name, as in Agent replies: an Agent's handle, else the token's label. */
+function nameUserGroups(text: string, userGroupHandles: ReadonlyMap<string, string>): string {
+  return text.replace(USER_GROUP_MENTION, (_token, id: string, label: string | undefined) =>
+    `@${SLACK_MENTION_BREAK}${userGroupHandles.get(id) ?? (label?.replace(/^@+/, '').trim() || 'user-group')}`);
 }
 
 function scheduleLabel(routine: RoutineDefinition): string {

@@ -18,6 +18,7 @@ import type { RoutineCapability } from '../src/routines/scheduler-adapter.ts';
 import { RoutineService } from '../src/routines/service.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineStore } from '../src/routines/types.ts';
+import { SLACK_MENTION_BREAK } from '../src/slack/message-format.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { withEnv } from './helpers/env.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
@@ -576,5 +577,71 @@ test('a clone whose required connection the member no longer holds writes nothin
     config.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a disabled routine shows no next run in the exact list and detail', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const routine = await seedRoutine(store);
+    assert.match(
+      await handleRoutineSlackRequest(turn(`!routines disable ${routine.id}`, 'Ev_disable'), store) ?? '',
+      /Routine disabled/,
+    );
+    assert.match(await handleRoutineSlackRequest(turn('!routines'), store) ?? '', /\*\*Next:\*\* None/);
+    assert.match(
+      await handleRoutineSlackRequest(turn(`!routines show ${routine.id}`), store) ?? '',
+      /\*\*Next occurrence:\*\* none/,
+    );
+  } finally {
+    store.close();
+  }
+});
+
+test('a saved request reads a user-group mention as the group\'s name', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  try {
+    await config.createAgent({
+      id: 'agent_support', name: 'Support', instructions: 'Help.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: 'membership_test', editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      slackPresence: {
+        requestedHandle: 'support', normalizedHandle: 'support', desiredState: 'active', health: 'healthy',
+        userGroupId: 'S0SUPPORT', avatar: { kind: 'generated', seed: 'support', revision: 1 },
+      },
+    });
+    const projection = normalizeRoutineSchedule('0 9 * * 1-5', 'UTC', NOW);
+    const routine = await new RoutineService(store, { now: () => NOW }).save({
+      action: 'create',
+      actorId: 'U_MEMBER',
+      workspaceId: 'T_TEST',
+      channelId: 'C_TEST',
+      definition: {
+        name: 'Support digest', description: 'Posts the digest.', taskText: 'Post the digest.',
+        triggerKind: 'schedule', scheduleInput: '0 9 * * 1-5', scheduleJson: projection.scheduleJson,
+        timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_channel_v1',
+      },
+      nextRunAt: projection.nextRunAt,
+      projectedDailyStarts: projection.projectedDailyStarts,
+      reservations: projection.reservations,
+      provenance: {
+        sourceKind: 'slack_request',
+        requestText: '<!subteam^S0SUPPORT>  every weekday post the digest and ask <!subteam^S0OPS|@ops> or <!subteam^S0GONE>',
+        eventId: 'Ev_source',
+        messageTs: '1785000000.000100',
+        threadTs: '1785000000.000100',
+        authoritySource: 'current_request',
+      },
+    }, 'routine:test:seed:support-digest');
+    const detail = await handleRoutineSlackRequest(turn(`!routines show ${routine.id}`), store, { config }) ?? '';
+    const name = (handle: string) => `@${SLACK_MENTION_BREAK}${handle}`;
+    assert.ok(detail.includes(
+      `**Source request:** ${name('support')}  every weekday post the digest and ask ${name('ops')} or ${name('user-group')}\n`,
+    ), detail);
+    assert.doesNotMatch(detail, /subteam/);
+  } finally {
+    config.close();
+    store.close();
   }
 });
