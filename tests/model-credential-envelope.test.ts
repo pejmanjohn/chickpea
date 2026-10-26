@@ -41,8 +41,10 @@ test('a model provider key opens only under the installation, provider, referenc
     );
   }
   await assert.rejects(decryptModelProviderKeyEnvelope(generateCredentialKeyring('key_model'), CONTEXT, envelope));
+  const tampered = Buffer.from(envelope.ciphertext, 'base64url');
+  tampered[0] = tampered[0]! ^ 0xff;
   await assert.rejects(
-    decryptModelProviderKeyEnvelope(keyring, CONTEXT, { ...envelope, ciphertext: `${envelope.ciphertext.slice(0, -2)}AA` }),
+    decryptModelProviderKeyEnvelope(keyring, CONTEXT, { ...envelope, ciphertext: tampered.toString('base64url') }),
   );
   await assert.rejects(encryptModelProviderKeyEnvelope(keyring, { ...CONTEXT, credentialVersion: 0 }, KEY),
     /context is invalid/);
