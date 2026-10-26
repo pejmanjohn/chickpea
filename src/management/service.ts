@@ -30,6 +30,13 @@ import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
 import { resolveProviderRuntimeImpacts } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
+import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import {
+  apiConnectionsWriteProblem,
+  mcpConnectionsWriteProblem,
+  REVIEWED_CONNECTOR_SETUP_MESSAGE,
+  skillsWriteProblem,
+} from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
   type AgentReferenceSummary,
@@ -42,6 +49,7 @@ import {
   type ConnectionAccountPolicy,
   agentAppIsLive,
   type CustomAgentConfig,
+  type RepositoryGrant,
   type SkillConfig,
   type WorkspaceInstallation,
 } from '../config/types.ts';
@@ -79,6 +87,7 @@ import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
+import { THREAD_TTL_MS } from '../slack/state-limits.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -143,6 +152,7 @@ import {
 import { selectAgentCreationConnectors } from './agent-creation-welcome.ts';
 import {
   ChickpeaHandoffRequired,
+  AgentWriteRuleError,
   ManagementError,
   type ApplyWorkspaceChangesResult,
   type ApplyWorkspaceChangesInput,
@@ -202,6 +212,7 @@ import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
+const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
@@ -217,9 +228,9 @@ const keyLaneUnconfigured: ModelReadiness = async (modelId) =>
 /** One request's model readiness, resolved on first use; undefined when the runtime has none. */
 type RequestModelReadiness = () => Promise<ModelReadiness | undefined>;
 
-class MetaAdsCatalogSetupRequiredError extends ManagementError {
+class MetaAdsCatalogSetupRequiredError extends AgentWriteRuleError {
   constructor() {
-    super('invalid_request', META_ADS_CATALOG_SETUP_MESSAGE);
+    super(META_ADS_CATALOG_SETUP_MESSAGE);
   }
 }
 
@@ -357,6 +368,13 @@ export interface WorkspaceManagementServiceInput {
   }) => Promise<boolean>;
   /** Admin's connection account service; management connection writes go through it. */
   connectionAccounts?: ConnectionAccountService;
+  /** Threads whose frozen runtime still names the Agent; Admin refuses to delete it while any remain. */
+  agentLiveThreadCount?: (agentId: string) => Promise<number>;
+  /** Admin's hosted repository-grant mapping (platformRepositoryGrants). */
+  repositoryGrants?: (
+    grants: RepositoryGrant[],
+    stored: RepositoryGrant[],
+  ) => Promise<RepositoryGrant[] | 'github_account_not_connected'>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -1737,6 +1755,7 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
+    assertAgentWriteRules(requestedOperations);
     assertCreationCallScope(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
       actor,
@@ -1835,9 +1854,6 @@ export class WorkspaceManagementService {
             this.now(),
           );
           continue;
-        }
-        if (operation.kind === 'update_agent') {
-          assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
         }
         const facts = await this.policyFacts(actor, operation, {
           ...(operation.kind === 'save_routine' &&
@@ -1949,9 +1965,7 @@ export class WorkspaceManagementService {
               error.code === 'effort_not_supported' || error.code === 'effort_requires_model')
             ? { warning: error.message }
             : {}),
-          ...(error instanceof MetaAdsCatalogSetupRequiredError
-            ? { warning: error.message }
-            : {}),
+          ...(error instanceof AgentWriteRuleError ? { warning: error.message } : {}),
           ...(error instanceof ManagementError && error.changed
             ? { changed: error.changed }
             : {}),
@@ -2248,6 +2262,7 @@ export class WorkspaceManagementService {
     }
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
+    assertAgentWriteRules(requestedOperations);
     if (requestedOperations.some(({ kind }) => kind === 'create_agent')) {
       throw new ManagementError(
         'invalid_request',
@@ -3412,6 +3427,16 @@ export class WorkspaceManagementService {
     return agent;
   }
 
+  /** Admin's delete preconditions: the Agent has left Slack and no recent thread still uses it. */
+  private async assertAgentDeletable(agent: CustomAgentConfig): Promise<void> {
+    assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(agent.id));
+    if ((await this.stores.agentLiveThreadCount?.(agent.id) ?? 0) > 0) {
+      throw new AgentWriteRuleError(
+        `${agent.name} was used in a Slack thread in the last ${THREAD_TTL_DAYS} days, so it cannot be deleted yet. Keep it archived, then delete it once its threads have been quiet for ${THREAD_TTL_DAYS} days.`,
+      );
+    }
+  }
+
   /** The Agent with the MCP servers and API connections this member manages on it. */
   private async agentWithConnections(
     actor: LiveManagementActor,
@@ -3440,7 +3465,21 @@ export class WorkspaceManagementService {
       actor,
       await this.stores.config.getAgent(agentId),
     );
-    return { agent, connections, patch: agentPatchWithConnectionIds(connections, patch) };
+    const edit = agentPatchWithConnectionIds(connections, patch);
+    for (const connection of edit.mcpServers ?? []) {
+      const stored = connections.mcpServers.find(({ id }) => id === connection.id);
+      if ((isMcpToolReviewRequired(connection) || (stored && isMcpToolReviewRequired(stored))) &&
+          (!stored || canonicalJson(managementMcpConnection(connection)) !==
+            canonicalJson(managementMcpConnection(stored)))) {
+        throw reviewedConnectorError(stored ?? connection);
+      }
+    }
+    if (!edit.repositories || !this.stores.repositoryGrants) return { agent, connections, patch: edit };
+    const repositories = await this.stores.repositoryGrants(edit.repositories, agent.repositories);
+    if (repositories === 'github_account_not_connected') {
+      throw new AgentWriteRuleError('Connect GitHub in Admin Settings before granting these repositories.');
+    }
+    return { agent, connections, patch: { ...edit, repositories } };
   }
 
   /** The Agent when it already shows this edit, connections included. */
@@ -4633,7 +4672,6 @@ export class WorkspaceManagementService {
           operation.patch,
         );
         requireExpectedRevision(operation.expectedRevision, before.revision);
-        assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
         // Also guards proposals stored before submission-time validation existed.
         assertValidRepositoryGrants(operation.patch.repositories);
         if (operation.patch.model && operation.patch.model !== before.model) {
@@ -4840,10 +4878,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     const prepared = await this.prepareItem(actor, operation, proposalId, readiness);
     if (operation.kind === 'delete_agent') {
-      assertAgentLeftSlack(
-        await this.stores.config.getAgent(operation.agentId),
-        await this.stores.config.getAgentReferences(operation.agentId),
-      );
+      await this.assertAgentDeletable(await this.stores.config.getAgent(operation.agentId));
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
         operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -5272,7 +5307,7 @@ export class WorkspaceManagementService {
           agent.credentialIncarnation !== expectedCredentialIncarnation) {
         throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
       }
-      assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(operation.agentId));
+      await this.assertAgentDeletable(agent);
       if (this.stores.deleteAgent) {
         await this.stores.deleteAgent({
           actor,
@@ -6657,7 +6692,8 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
       );
     }
     if (operation.kind !== 'create_agent') continue;
-    assertNoLegacyMetaAdsConnections(operation.agent.mcpServers);
+    const reviewed = operation.agent.mcpServers.find(isMcpToolReviewRequired);
+    if (reviewed) throw reviewedConnectorError(reviewed);
     if (operation.agent.mcpServers.length || operation.agent.apiConnections.length ||
         operation.agent.repositories.length) {
       throw new ManagementError(
@@ -6668,12 +6704,43 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
   }
 }
 
-function assertNoLegacyMetaAdsConnections(
-  connections: readonly Pick<CustomAgentConfig['mcpServers'][number], 'presetId' | 'url'>[] | undefined,
-): void {
-  if (connections?.some(isMetaAdsMcpConnection)) {
-    throw new MetaAdsCatalogSetupRequiredError();
+/** Reviewed connectors are added in Admin, where a person reviews their tool access. */
+function reviewedConnectorError(
+  connection: Pick<CustomAgentConfig['mcpServers'][number], 'presetId' | 'url'>,
+): AgentWriteRuleError {
+  return isMetaAdsMcpConnection(connection)
+    ? new MetaAdsCatalogSetupRequiredError()
+    : new AgentWriteRuleError(REVIEWED_CONNECTOR_SETUP_MESSAGE);
+}
+
+/** The Agent write rules Admin enforces, plus the shape a connection account can hold. */
+function assertAgentWriteRules(operations: readonly ManagementOperation[]): void {
+  for (const operation of operations) {
+    const fields = operation.kind === 'create_agent'
+      ? operation.agent
+      : operation.kind === 'update_agent' ? operation.patch : undefined;
+    if (!fields) continue;
+    const problem = (fields.skills && skillsWriteProblem(fields.skills)) ??
+      (fields.mcpServers && (mcpConnectionsWriteProblem(fields.mcpServers) ??
+        fields.mcpServers.map(connectionAccountShapeProblem).find(Boolean))) ??
+      (fields.apiConnections && (apiConnectionsWriteProblem(fields.apiConnections) ??
+        fields.apiConnections.map(connectionAccountShapeProblem).find(Boolean)));
+    if (problem) throw new AgentWriteRuleError(problem);
   }
+}
+
+function connectionAccountShapeProblem(
+  connection: ManagementMcpConnection | ManagementApiConnection,
+): string | undefined {
+  if (!connection.enabled) {
+    return `Connection ${connection.id} cannot be turned off. Remove it to stop the Agent using it.`;
+  }
+  if ('url' in connection && (connection.authMode === 'none'
+    ? connection.headerNames.length > 1
+    : connection.headerNames.length > 0)) {
+    return `Connection ${connection.id} holds one credential: a bearer token, an OAuth sign-in, or with authMode none the value of one header.`;
+  }
+  return undefined;
 }
 
 const CREATION_CALL_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([

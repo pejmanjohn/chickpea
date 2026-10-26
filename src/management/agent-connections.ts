@@ -15,7 +15,7 @@ import type {
   McpConnectionToolInfo,
 } from '../config/types.ts';
 import { canonicalJson } from './contracts.ts';
-import { ManagementError } from './types.ts';
+import { AgentWriteRuleError } from './types.ts';
 
 /**
  * The connection fields a management client reads from inspect_workspace and
@@ -152,9 +152,15 @@ export function apiConnectionsAfterWrite(
   return written.map((input) => {
     const policy = managementApiConnection(input);
     const kept = apiConnectionStateKept(storedById.get(policy.id), policy);
-    return kept ? { ...kept, ...policy } : { ...policy, lifecycleStatus: 'pending', statusText: 'Setup required' };
+    return { ...(kept ?? API_CONNECTION_AWAITING_CREDENTIAL), ...policy };
   });
 }
+
+/** A new API connection, or one whose credential policy changed, waits for its credential. */
+export const API_CONNECTION_AWAITING_CREDENTIAL = {
+  lifecycleStatus: 'pending',
+  statusText: 'Setup required',
+} as const satisfies Pick<ApiConnectionConfig, 'lifecycleStatus' | 'statusText'>;
 
 /**
  * The server-owned state a written API connection keeps from its stored
@@ -284,14 +290,12 @@ export function withAgentConnectionIds<T extends { id: string }>(
     const id = resolveAgentConnectionId(connections, lane, connection.id);
     if (id !== undefined) return { ...connection, id };
     if (shared.has(connection.id)) {
-      throw new ManagementError(
-        'invalid_request',
+      throw new AgentWriteRuleError(
         `More than one connection uses ${connection.id}. Name the one to change by its id from inspect_workspace.`,
       );
     }
     if (!NEW_CONNECTION_ID_PATTERN.test(connection.id)) {
-      throw new ManagementError(
-        'invalid_request',
+      throw new AgentWriteRuleError(
         `Connection ${connection.id} is not on this Agent. A new connection needs a short id of lowercase letters, digits, "-" or "_".`,
       );
     }

@@ -3007,6 +3007,32 @@ test('a key pasted in Admin makes a pending API connection added over MCP ready'
   }
 });
 
+test('an Admin edit of a pending API connection\'s policy keeps it pending until a key is saved', async () => {
+  const fixture = harness();
+  try {
+    const created = await createAgentWithPendingApiConnections(fixture.store, ['billing']);
+    const edited = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, {
+      method: 'PATCH', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: created.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+        apiConnections: [{
+          id: 'billing', displayName: 'billing', allowedHosts: ['invoices.example.test'], pathPrefixes: ['/v1/'],
+          headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'],
+          enabled: true, authMode: 'credential',
+        }],
+      }),
+    });
+    assert.equal(edited.status, 200, await edited.clone().text());
+    const [connection] = (await fixture.store.getAgent(created.id)).apiConnections;
+    assert.deepEqual([connection?.allowedHosts, connection?.lifecycleStatus, connection?.statusText],
+      [['invoices.example.test'], 'pending', 'Setup required']);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('one Admin save stores keys for several pending connections at one revision', async () => {
   const fixture = harness();
   try {

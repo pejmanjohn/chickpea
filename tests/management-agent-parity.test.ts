@@ -3137,7 +3137,7 @@ test('an unexpected preflight outage leaves the reviewed change set pending for 
   }
 });
 
-test('change-set confirmation preserves the cascading disable behavior for an Agent with Channel reach', async () => {
+test('a confirmed disable of an Agent with Channel reach keeps its Channel grants, as Admin does', async () => {
   const f = await createManagementAdapterFixture('proposal-disable-agent');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -3179,10 +3179,12 @@ test('change-set confirmation preserves the cascading disable behavior for an Ag
     assert.equal(confirmed.status, 'completed');
     assert.equal((await f.config.getAgent(agent.id)).enabled, false);
     assert.deepEqual(
-      await f.config.listAgentChannelGrants(f.admin.binding.slackTeamId, 'C_DISABLE'),
-      [],
+      (await f.config.listAgentChannelGrants(f.admin.binding.slackTeamId, 'C_DISABLE'))
+        .map(({ agentId, status }) => [agentId, status]),
+      [[agent.id, 'active']],
+      'the disabled Agent keeps its Channels and answers again once enabled',
     );
-    assert.ok(confirmed.outcomes[0]?.changed?.some(({ kind }) => kind === 'channel_grant'));
+    assert.deepEqual(confirmed.outcomes[0]?.changed?.map(({ kind }) => kind), ['agent']);
   } finally {
     f.close();
   }

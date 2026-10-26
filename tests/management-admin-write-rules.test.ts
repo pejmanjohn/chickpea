@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
+import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
+import { agentCredentialConfigurationBinding } from '../src/config/connection-credential-binding.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
@@ -19,10 +21,11 @@ import {
   type WorkspaceManagementToolArguments,
   type WorkspaceManagementToolName,
 } from '../src/management/tool-adapter.ts';
-import type {
-  ManagementApplyResult,
-  ManagementOperation,
-  ManagementWorkspaceSnapshot,
+import {
+  AgentWriteRuleError,
+  type ManagementApplyResult,
+  type ManagementOperation,
+  type ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
 import { testAdminAuthority, testAdminHeaders } from './helpers/admin-auth.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -55,8 +58,12 @@ const tracker: ManagementMcpConnection = {
   allowedTools: ['search'],
 };
 
-async function withFixture(suffix: string, run: (f: Fixture) => Promise<void>): Promise<void> {
-  const f = await createManagementAdapterFixture(suffix, {}, { teamId: TEAM });
+async function withFixture(
+  suffix: string,
+  run: (f: Fixture) => Promise<void>,
+  overrides: Parameters<typeof createManagementAdapterFixture>[1] = {},
+): Promise<void> {
+  const f = await createManagementAdapterFixture(suffix, overrides, { teamId: TEAM });
   try {
     await run(f);
   } finally {
@@ -310,3 +317,88 @@ test('a management edit that changes or removes a connection retires its credent
     assert.equal(revoked?.lifecycle, 'revoked');
     assert.deepEqual((await inspectAgent(f, agent.id)).apiConnections, []);
   }));
+
+const skill = { name: 'triage', description: 'Triage new issues.', instructions: 'Sort by severity.', enabled: true };
+const adminMcp = { lifecycleStatus: 'pending', statusText: '', discoveredTools: [] };
+
+/** One bad input, written the way each door takes it. */
+const REFUSED_WRITES: Array<{ name: string; admin: Record<string, unknown>; management: Record<string, unknown> }> = [
+  { name: 'a skill name Flue rejects', admin: { skills: [{ ...skill, name: 'Bad Name' }] },
+    management: { skills: [{ ...skill, name: 'Bad Name' }] } },
+  { name: 'two skills with one name', admin: { skills: [skill, skill] }, management: { skills: [skill, skill] } },
+  { name: 'a skill without instructions', admin: { skills: [{ ...skill, instructions: '   ' }] },
+    management: { skills: [{ ...skill, instructions: '   ' }] } },
+  { name: 'an MCP server on a private address', admin: {
+    mcpServers: [{ ...tracker, ...adminMcp, url: 'https://10.0.0.1/mcp' }],
+  }, management: { mcpServers: [{ ...tracker, url: 'https://10.0.0.1/mcp' }] } },
+  { name: 'an MCP connector whose tools need review', admin: {
+    mcpServers: [{ ...tracker, ...adminMcp, url: BUGSNAG_MCP_SERVER_URL, authMode: 'oauth' }],
+  }, management: { mcpServers: [{ ...tracker, url: BUGSNAG_MCP_SERVER_URL, authMode: 'oauth' }] } },
+  { name: 'an API host on a private address', admin: { apiConnections: [{ ...billing, allowedHosts: ['10.0.0.1'] }] },
+    management: { apiConnections: [{ ...billing, allowedHosts: ['10.0.0.1'] }] } },
+  { name: 'the GitHub API host', admin: { apiConnections: [{ ...billing, allowedHosts: ['api.github.com'] }] },
+    management: { apiConnections: [{ ...billing, allowedHosts: ['api.github.com'] }] } },
+  { name: 'a path prefix with a query', admin: { apiConnections: [{ ...billing, pathPrefixes: ['/v1?all=1'] }] },
+    management: { apiConnections: [{ ...billing, pathPrefixes: ['/v1?all=1'] }] } },
+  { name: 'two API connections with one id', admin: {
+    apiConnections: [billing, { ...billing, allowedHosts: ['other.example.test'] }],
+  }, management: { apiConnections: [billing, { ...billing, allowedHosts: ['other.example.test'] }] } },
+  { name: 'API connections that overlap', admin: {
+    apiConnections: [billing, { ...billing, id: 'billing-admin', pathPrefixes: ['/v1/admin'] }],
+  }, management: { apiConnections: [billing, { ...billing, id: 'billing-admin', pathPrefixes: ['/v1/admin'] }] } },
+];
+
+test('management refuses every Agent write Admin refuses', () =>
+  withFixture('write-rules', async (f) => {
+    const agent = await seedAgent(f);
+    const app = adminApp(f);
+    for (const write of REFUSED_WRITES) {
+      const adminResponse = await app.request(`http://localhost/admin/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          expectedRevision: agent.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+          ...write.admin,
+        }),
+      });
+      assert.equal(adminResponse.status, 400, `Admin refuses ${write.name}: ${await adminResponse.text()}`);
+      const refusal = await f.service.applyWorkspaceChanges({
+        context: {
+          userId: f.owner.user.id,
+          membershipId: f.owner.membership.id,
+          organizationId: f.owner.membership.organizationId,
+          origin: { kind: 'mcp', clientId: 'write-rules-test' },
+        },
+        idempotencyKey: `refused-${write.name}`,
+        operations: [{
+          itemId: 'edit',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: agent.revision,
+          patch: write.management,
+        } as ManagementOperation],
+      }).then(
+        (result) => 'outcomes' in result && result.outcomes[0]?.disposition === 'failed'
+          ? result.outcomes[0].warning
+          : undefined,
+        (error: unknown) => error instanceof AgentWriteRuleError ? error.message : undefined,
+      );
+      assert.ok(refusal, `management refuses ${write.name} and says why`);
+    }
+    assert.equal((await f.config.getAgent(agent.id)).revision, agent.revision, 'nothing was written');
+  }));
+
+test('management will not delete an Agent a recent Slack thread still uses', () =>
+  withFixture('write-rules-delete', async (f) => {
+    const agent = await seedAgent(f);
+    const pending = await apply(f, 'delete-ops', [{
+      itemId: 'delete',
+      kind: 'delete_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    }]);
+    assert.equal(pending.outcomes[0]?.disposition, 'failed', JSON.stringify(pending.outcomes));
+    assert.match(pending.outcomes[0]?.warning ?? '', /used in a Slack thread in the last 30 days/);
+    assert.equal((await f.config.getAgent(agent.id)).id, agent.id, 'the Agent is still there');
+  }, { agentLiveThreadCount: async () => 1 }));
