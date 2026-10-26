@@ -7,6 +7,9 @@ import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import { modelEffortChoiceError } from '../src/config/model-effort-capability.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
+import type { CustomAgentConfig } from '../src/config/types.ts';
+import { ConnectionAccountService } from '../src/connections/store.ts';
+import type { ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import {
   AGENT_AUTHORING_GUIDE_DIGEST,
   AGENT_AUTHORING_GUIDE_URI,
@@ -2733,6 +2736,66 @@ test('an abandoned applying change set resumes by reconciling the frozen mutatio
   }
 });
 
+const knowledgeConnection: ManagementMcpConnection = {
+  id: 'knowledge',
+  displayName: 'Knowledge',
+  url: 'https://mcp.example.test/mcp',
+  transport: 'streamable-http',
+  authMode: 'none',
+  headerNames: [],
+  enabled: true,
+  allowedTools: [],
+};
+
+/** Everything the connection update writes before it records completion: the Agent row, then its account. */
+async function writeKnowledgeConnection(
+  f: Awaited<ReturnType<typeof createManagementAdapterFixture>>,
+  agent: CustomAgentConfig,
+) {
+  const committed = await f.config.updateAgent(agent.id, {}, agent.revision);
+  const { account } = await new ConnectionAccountService({ config: f.config, settings: f.settings }).createForAgent({
+    principal: {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      role: 'admin',
+      authenticatorKind: 'mcp',
+      credentialId: `management:${f.admin.membership.id}`,
+      correlationId: 'connection-crash-recovery',
+      machine: false,
+    },
+    agentId: agent.id,
+    workspaceId: f.admin.binding.slackTeamId,
+    ownerKind: 'team',
+    providerId: knowledgeConnection.id,
+    label: knowledgeConnection.displayName,
+    policy: {
+      kind: 'mcp',
+      url: knowledgeConnection.url,
+      transport: knowledgeConnection.transport,
+      authMode: knowledgeConnection.authMode,
+      headerNames: [],
+      discoveredTools: [],
+      allowedTools: [],
+    },
+    pendingSetup: true,
+    allowedCapabilities: [],
+  });
+  return { committed, account };
+}
+
+async function boundAccountIds(
+  f: Awaited<ReturnType<typeof createManagementAdapterFixture>>,
+  agentId: string,
+): Promise<Array<[string, string]>> {
+  const accounts = await f.config.listConnectionAccounts(f.admin.binding.slackTeamId);
+  return (await f.config.listAgentConnectionBindings(agentId)).map(({ connectionAccountId }) => {
+    const account = accounts.find(({ id }) => id === connectionAccountId);
+    assert.ok(account);
+    return [account.id, account.secretRefId];
+  });
+}
+
 test('an abandoned connection update reconciles the store-owned credential reference', async () => {
   const f = await createManagementAdapterFixture('proposal-connection-crash-recovery');
   let now = 1_800_000_000_000;
@@ -2745,6 +2808,7 @@ test('an abandoned connection update reconciles the store-owned credential refer
   const service = new WorkspaceManagementService({
     identity: f.identity,
     config: f.config,
+    connectionAccounts: new ConnectionAccountService({ config: f.config, settings: f.settings }),
     management: f.management,
     now: () => now,
   });
@@ -2755,22 +2819,9 @@ test('an abandoned connection update reconciles the store-owned credential refer
       lifecycle: 'active', creatorMembershipId: f.admin.membership.id,
       configurationGeneration: 1, skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
-    const mcpServers = [{
-      id: 'knowledge',
-      displayName: 'Knowledge',
-      url: 'https://mcp.example.test/mcp',
-      transport: 'streamable-http' as const,
-      authMode: 'none' as const,
-      headerNames: [],
-      enabled: true,
-      lifecycleStatus: 'ready' as const,
-      statusText: 'Ready',
-      discoveredTools: [],
-      allowedTools: [],
-    }];
     const operation: ManagementOperation = {
       itemId: 'connection', kind: 'update_agent', agentId: agent.id,
-      expectedRevision: agent.revision, patch: { mcpServers },
+      expectedRevision: agent.revision, patch: { mcpServers: [knowledgeConnection] },
     };
     const proposed = await service.proposeWorkspaceChanges({
       context,
@@ -2785,24 +2836,18 @@ test('an abandoned connection update reconciles the store-owned credential refer
       originKey: 'mcp:connection-crash-recovery-client',
       at: now,
     });
-    const committed = await f.config.updateAgent(
-      agent.id,
-      { mcpServers },
-      agent.revision,
-    );
-    const credentialRef = committed.mcpServers[0]?.credentialRef;
-    assert.ok(credentialRef);
+    const { committed, account } = await writeKnowledgeConnection(f, agent);
 
     now += 30_001;
     const recovered = await service.confirmWorkspaceChange({
       context,
       proposalId: proposed.proposalId,
     });
-    assert.equal(recovered.status, 'completed');
+    assert.equal(recovered.status, 'completed', JSON.stringify(recovered.outcomes));
     assert.equal(recovered.outcomes[0]?.disposition, 'applied');
-    const current = await f.config.getAgent(agent.id);
-    assert.equal(current.revision, committed.revision);
-    assert.equal(current.mcpServers[0]?.credentialRef, credentialRef);
+    assert.equal((await f.config.getAgent(agent.id)).revision, committed.revision);
+    assert.deepEqual(await boundAccountIds(f, agent.id), [[account.id, account.secretRefId]],
+      'recovery adopts the written account and its secret slot instead of connecting a second one');
     assert.equal(
       (await f.management.getChangeSetProposal(proposed.proposalId))?.status,
       'completed',
@@ -2824,6 +2869,7 @@ test('an abandoned connection update does not adopt a replacement Agent incarnat
   const service = new WorkspaceManagementService({
     identity: f.identity,
     config: f.config,
+    connectionAccounts: new ConnectionAccountService({ config: f.config, settings: f.settings }),
     management: f.management,
     now: () => now,
   });
@@ -2840,24 +2886,11 @@ test('an abandoned connection update does not adopt a replacement Agent incarnat
     apiConnections: [],
     repositories: [],
   };
-  const mcpServers = [{
-    id: 'knowledge',
-    displayName: 'Knowledge',
-    url: 'https://mcp.example.test/mcp',
-    transport: 'streamable-http' as const,
-    authMode: 'none' as const,
-    headerNames: [],
-    enabled: true,
-    lifecycleStatus: 'ready' as const,
-    statusText: 'Ready',
-    discoveredTools: [],
-    allowedTools: [],
-  }];
   try {
     const original = await f.config.createAgent(createInput);
     const operation: ManagementOperation = {
       itemId: 'connection', kind: 'update_agent', agentId: original.id,
-      expectedRevision: original.revision, patch: { mcpServers },
+      expectedRevision: original.revision, patch: { mcpServers: [knowledgeConnection] },
     };
     const proposed = await service.proposeWorkspaceChanges({
       context,
@@ -2875,11 +2908,7 @@ test('an abandoned connection update does not adopt a replacement Agent incarnat
     await f.config.deleteAgent(original.id, original.revision);
     const replacement = await f.config.createAgent(createInput);
     assert.notEqual(replacement.credentialIncarnation, original.credentialIncarnation);
-    const changedReplacement = await f.config.updateAgent(
-      replacement.id,
-      { mcpServers },
-      replacement.revision,
-    );
+    const { committed: changedReplacement, account } = await writeKnowledgeConnection(f, replacement);
 
     now += 30_001;
     const recovered = await service.confirmWorkspaceChange({
@@ -2892,6 +2921,7 @@ test('an abandoned connection update does not adopt a replacement Agent incarnat
     const current = await f.config.getAgent(original.id);
     assert.equal(current.credentialIncarnation, replacement.credentialIncarnation);
     assert.equal(current.revision, changedReplacement.revision);
+    assert.deepEqual(await boundAccountIds(f, original.id), [[account.id, account.secretRefId]]);
   } finally {
     f.close();
   }
