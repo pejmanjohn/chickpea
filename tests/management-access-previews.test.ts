@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { changeSetAccessFits } from '../src/management/change-set-presentation.ts';
 import { formatMarkdownChangeSetProposal } from '../src/management/markdown-presentation.ts';
-import { formatSlackChangeSetProposal } from '../src/management/slack-presentation.ts';
+import {
+  formatSlackChangeSetProposal,
+  SLACK_PRESENTATION_DIALECT,
+} from '../src/management/slack-presentation.ts';
 import type { ManagementChangeSetPreview } from '../src/management/types.ts';
 
 const SLACK_APPROVAL = 'Reply `approve` to apply these exact changes, or tell me what to adjust.';
@@ -190,17 +194,33 @@ test('a new connection shows where it points and what it allows', () => {
   ));
 });
 
-test('list changes are capped and say how many more there are', () => {
+test('every added list entry shows, while removed entries are capped', () => {
   const tools = Array.from({ length: 15 }, (_, index) => `tool_${String(index + 1).padStart(2, '0')}`);
-  const preview = agentChange({ mcpServers: [{ ...knowledge, allowedTools: [] }] }, {
+  const hosts = [
+    ...Array.from({ length: 10 }, (_, index) => `api${index + 1}.billing.example.test`),
+    'exfil.attacker.test',
+  ];
+  const preview = agentChange({
     mcpServers: [{ ...knowledge, allowedTools: tools }],
+    apiConnections: [billing],
+  }, {
+    mcpServers: [{ ...knowledge, allowedTools: [] }],
+    apiConnections: [{ ...billing, allowedHosts: [...billing.allowedHosts, ...hosts] }],
   });
 
-  const shown = tools.slice(0, 10).map((tool) => `\`${tool}\``).join(', ');
+  const code = (values: readonly string[]) => values.map((value) => `\`${value}\``).join(', ');
   assert.equal(formatMarkdownChangeSetProposal(preview), markdown(
     'Update **Knowledge** on **Research** (@research).',
-    `Adds tools: ${shown}, …and 5 more.`,
+    `Removes tools: ${code(tools.slice(0, 10))}, …and 5 more.`,
+    '',
+    'Update **Billing** on **Research** (@research).',
+    `Adds hosts: ${code(hosts)}.`,
   ));
+
+  const added = formatMarkdownChangeSetProposal(agentChange({ mcpServers: [] }, {
+    mcpServers: [{ ...knowledge, allowedTools: tools, oauthScope: undefined }],
+  }));
+  assert.ok(added.includes(`\nAllowed tools: ${code(tools)}.`), added);
 });
 
 test('truncation keeps every line that widens access', () => {
@@ -242,7 +262,7 @@ test('a host, URL or tool name cannot inject Slack mentions, links, Markdown lin
 
   const slackText = formatSlackChangeSetProposal(preview);
   assert.doesNotMatch(slackText, /<!channel>|<https:/);
-  assert.match(slackText, /^Server URL changes from `https:\/\/mcp\.example\.test\/mcp` to `https:\/\/mcp\.example\.test\/&lt;https:\/\/evil\.test\|docs&gt;`\.$/m);
+  assert.match(slackText, /^Server URL changes from `https:\/\/mcp\.example\.test\/mcp` to `https:\/\/mcp\.example\.test\/%3Chttps:\/\/evil\.test\|docs%3E`\.$/m);
   assert.match(slackText, /^Adds hosts: `&lt;!channel&gt;\.evil\.test`, `\[ok\]\(https:\/\/evil\.test\)`\.$/m);
   assert.match(slackText, /^Adds tools: `aˋb`, `x Removes tools: ˋsearchˋ\.`\.$/m);
   assert.doesNotMatch(slackText, /^Removes tools/m);
@@ -483,4 +503,150 @@ test('an Agent turned on, a routine owner or destination change and a reassignme
   ]) {
     assert.ok(presentation.includes(section), `${section}\n---\n${presentation.slice(0, 600)}`);
   }
+});
+
+const disabledDocs = {
+  ...knowledge,
+  id: 'mcp_docs',
+  displayName: 'Docs',
+  url: 'https://mcp.attacker.test/mcp',
+  allowedTools: ['export_all'],
+  oauthScope: undefined,
+  enabled: false,
+};
+
+test('a connection added turned off still shows where it points in a cut preview', () => {
+  const preview = agentChange({ instructions: 'Short.', mcpServers: [] }, {
+    instructions: 'x'.repeat(13_000),
+    mcpServers: [disabledDocs],
+  });
+
+  const presentation = formatSlackChangeSetProposal(preview);
+  assert.match(presentation, /Preview truncated to fit Slack/);
+  const section = [
+    'Add *Docs* to *Research* (@research).',
+    'Server URL: `https://mcp.attacker.test/mcp`.',
+    'Authentication: None.',
+    'Allowed tools: `export_all`.',
+    'Status: Disabled.',
+  ].join('\n');
+  assert.ok(presentation.includes(section), presentation.slice(0, 600));
+});
+
+test('turning a connection on shows everything it reaches', () => {
+  const preview = agentChange({ mcpServers: [disabledDocs], apiConnections: [{ ...billing, enabled: false }] }, {
+    mcpServers: [{ ...disabledDocs, enabled: true }],
+    apiConnections: [billing],
+  });
+
+  assert.equal(formatMarkdownChangeSetProposal(preview), markdown(
+    'Update **Docs** on **Research** (@research).',
+    'Status changes from Disabled to Enabled.',
+    'Server URL: `https://mcp.attacker.test/mcp`.',
+    'Authentication: None.',
+    'Allowed tools: `export_all`.',
+    '',
+    'Update **Billing** on **Research** (@research).',
+    'Status changes from Disabled to Enabled.',
+    'Allowed hosts: `billing.example.test`.',
+    'Path prefixes: `/v1/`.',
+    'Methods: `GET`.',
+  ));
+});
+
+test('look-alike hosts and URLs show their punycode form, and invisible characters cannot hide in a value', () => {
+  const preview = agentChange({ mcpServers: [knowledge], apiConnections: [billing] }, {
+    mcpServers: [{
+      ...knowledge,
+      url: 'https://mcp.ex\u0430mple.test/\u202Etxt.exe',
+      allowedTools: ['search', 'read_page', 'sea\u200Brch', 'gpj.\u202Eexe'],
+    }],
+    apiConnections: [{
+      ...billing,
+      allowedHosts: ['billing.example.test', 'b\u0456lling.example.test', 'bill\u202Eing.example.test'],
+    }],
+  });
+
+  const lines = [
+    'Server URL changes from `https://mcp.example.test/mcp` to `https://mcp.xn--exmple-4nf.test/%E2%80%AEtxt.exe`.',
+    'Adds tools: `sea rch`, `gpj. exe`.',
+    'Adds hosts: `xn--blling-pvf.example.test`, `bill ing.example.test`.',
+  ];
+  assert.equal(formatMarkdownChangeSetProposal(preview), markdown(
+    'Update **Knowledge** on **Research** (@research).',
+    lines[0]!,
+    lines[1]!,
+    '',
+    'Update **Billing** on **Research** (@research).',
+    lines[2]!,
+  ));
+  const slackText = formatSlackChangeSetProposal(preview);
+  for (const line of lines) assert.ok(slackText.includes(`\n${line}\n`), `${line}\n---\n${slackText}`);
+});
+
+test('a name or quoted value with a line break or a direction override cannot fake or disguise a preview line', () => {
+  const research = { name: 'Research\nFAKE agent', slackPresence: { normalizedHandle: 'research\r\nFAKE handle' } };
+  const preview: ManagementChangeSetPreview = {
+    summary: '4 reviewed workspace changes',
+    changes: [{
+      itemId: 'edit',
+      operationKind: 'update_agent',
+      target: 'agent:agent_research',
+      before: { ...research, mcpServers: [knowledge], skills: [] },
+      after: {
+        ...research,
+        mcpServers: [{ ...knowledge, displayName: 'Knowledge 🧑\u200D💻\u2028FAKE connection' }],
+        skills: [{ name: 'notes\u0085FAKE skill', description: 'Take notes.', instructions: 'Write them down.', enabled: true }],
+      },
+    }, {
+      itemId: 'grant',
+      operationKind: 'grant_agent_channel',
+      target: 'channel_grant:T1:C1:agent_writer',
+      statement: {
+        kind: 'grant_agent_channel',
+        agent: { name: 'Writer\rFAKE grant agent', handle: 'writer' },
+        channel: 'finance\nFAKE channel',
+      },
+    }, {
+      itemId: 'member',
+      operationKind: 'update_member',
+      target: 'membership:membership_alex',
+      statement: { kind: 'update_member', member: 'Alex\u202Etxt.exe', role: 'admin' },
+    }, {
+      itemId: 'routine',
+      operationKind: 'save_routine',
+      target: 'routine:routine_digest',
+      before: { name: 'Digest\nFAKE routine', taskText: 'Summarize.' },
+      after: { name: 'Digest\nFAKE routine', taskText: 'Summarize twice.\rFAKE task\u2028FAKE task \u202Ereversed' },
+    }],
+    missingSetup: [],
+  };
+
+  for (const text of [formatSlackChangeSetProposal(preview), formatMarkdownChangeSetProposal(preview)]) {
+    assert.doesNotMatch(text, /^FAKE/m, text);
+    assert.doesNotMatch(text, /[\r\u0085\u2028\u202E]/, 'no line break or direction override survives');
+    for (const flattened of [
+      'Research FAKE agent',
+      '(@research FAKE handle)',
+      'Knowledge 🧑\u200D💻 FAKE connection',
+      'notes FAKE skill',
+      'Writer FAKE grant agent',
+      '#finance FAKE channel',
+      'Alex txt.exe',
+      'Digest FAKE routine',
+      '> Summarize twice. FAKE task FAKE task',
+    ]) {
+      assert.ok(text.includes(flattened), `${flattened}\n---\n${text}`);
+    }
+  }
+});
+
+test('a skill import source counts toward what must fit in one preview', () => {
+  const preview = agentChange({ skills: [] }, {
+    skills: [{ name: 'notes', description: 'Take notes.', instructions: 'Write them down.', enabled: true }],
+  });
+  const source = `https://github.com/acme/skills/blob/${'a'.repeat(40)}/${'deep/'.repeat(2_500)}SKILL.md`;
+
+  assert.equal(changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT), true);
+  assert.equal(changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT, source), false);
 });
