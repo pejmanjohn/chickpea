@@ -443,3 +443,144 @@ test('a connection removal preview names the connection and the Agent', () =>
       ), field);
     }
   }));
+
+const reviewedKnowledge = {
+  ...knowledgeServer,
+  lifecycleStatus: 'ready' as const,
+  discoveredTools: [{ name: 'search' }],
+  allowedTools: ['search'],
+  oauthScope: 'read',
+};
+
+const repointedKnowledge = {
+  ...reviewedKnowledge,
+  url: 'https://mcp.attacker.test/mcp',
+  allowedTools: ['search', 'export_all'],
+  oauthScope: 'read admin',
+};
+
+const REPOINT_LINES = [
+  'Server URL changes from `https://mcp.example.test/mcp` to `https://mcp.attacker.test/mcp`.',
+  'Adds tools: `export_all`.',
+  'Adds scopes: `admin`.',
+];
+
+/** A connection's stored credential reference must never reach the person. */
+async function assertNoCredentialReference(f: Fixture, agentId: string, presentation: ManagementPresentation) {
+  const stored = await f.config.getAgent(agentId);
+  const references = [...stored.mcpServers, ...stored.apiConnections].flatMap(({ credentialRef }) =>
+    credentialRef ? [credentialRef] : []);
+  assert.ok(references.length > 0, 'the fixture stores a credential reference');
+  for (const text of [presentation.slack, presentation.markdown]) {
+    for (const reference of references) assert.ok(!text.includes(reference), `preview leaks ${reference}`);
+  }
+}
+
+test('a Slack change set that re-points an MCP connection shows both URLs and the widened access', () =>
+  withFixture('preview-repoint-slack', async (f) => {
+    const agent = await createAgent(f, 'agent_repoint_slack', { mcpServers: [reviewedKnowledge] });
+    const shown = await preview(f, slackContext(f), 'repoint-slack', [{
+      itemId: 'repoint',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { mcpServers: [repointedKnowledge] },
+    }]);
+
+    assert.equal(shown.slack, slackPreview('Update *Knowledge* on *Research* (@research).', ...REPOINT_LINES));
+    assert.equal(shown.markdown, markdownPreview('Update **Knowledge** on **Research** (@research).', ...REPOINT_LINES));
+    await assertNoCredentialReference(f, agent.id, shown);
+  }));
+
+test('the MCP confirmation for a removal also shows a connection the same patch re-points', () =>
+  withFixture('preview-repoint-mcp', async (f) => {
+    const other = { ...knowledgeServer, id: 'mcp_other', displayName: 'Other' };
+    const agent = await createAgent(f, 'agent_repoint_mcp', { mcpServers: [reviewedKnowledge, other] });
+    const shown = await preview(f, mcpContext(f), 'repoint-mcp', [{
+      itemId: 'repoint',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { mcpServers: [repointedKnowledge] },
+    }]);
+
+    assert.equal(shown.markdown, markdownPreview(
+      'Remove **Other** from **Research** (@research).',
+      '',
+      'Update **Knowledge** on **Research** (@research).',
+      ...REPOINT_LINES,
+    ));
+    assert.equal(shown.slack, slackPreview(
+      'Remove *Other* from *Research* (@research).',
+      '',
+      'Update *Knowledge* on *Research* (@research).',
+      ...REPOINT_LINES,
+    ));
+    await assertNoCredentialReference(f, agent.id, shown);
+  }));
+
+test('a proposed API connection edit shows an added host with Slack control text neutralized', () =>
+  withFixture('preview-api-host', async (f) => {
+    const agent = await createAgent(f, 'agent_api_host', { apiConnections: [billingApi] });
+    const shown = await propose(f, 'api-host', [{
+      itemId: 'widen',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: {
+        apiConnections: [{
+          ...billingApi,
+          allowedHosts: [...billingApi.allowedHosts, '<!channel>.evil.test'],
+          allowedMethods: ['GET', 'DELETE'],
+        }],
+      },
+    }]);
+
+    assert.equal(shown.slack, slackPreview(
+      'Update *Billing* on *Research* (@research).',
+      'Adds hosts: `&lt;!channel&gt;.evil.test`.',
+      'Adds methods: `DELETE`.',
+    ));
+    assert.equal(shown.markdown, markdownPreview(
+      'Update **Billing** on **Research** (@research).',
+      'Adds hosts: `<!channel>.evil.test`.',
+      'Adds methods: `DELETE`.',
+    ));
+    await assertNoCredentialReference(f, agent.id, shown);
+  }));
+
+test('a recipe overwrite shows the access it changes on an existing connection', () =>
+  withFixture('preview-recipe-overwrite', async (f) => {
+    const agent = await createAgent(f, 'agent_recipe_overwrite', { mcpServers: [reviewedKnowledge] });
+    const call = async <T>(tool: string, args: Record<string, unknown>): Promise<T> => {
+      const response = await invokeWorkspaceManagementTool({
+        service: f.service,
+        resolveContext: async () => mcpContext(f),
+      }, tool as never, args as never);
+      assert.equal(response.ok, true, JSON.stringify(response));
+      return (response as { result: T }).result;
+    };
+    const recipe = await call<{ agents: Array<{ mcpRequirements: Array<Record<string, unknown>> }> }>(
+      'export_workspace_recipe',
+      { agentIds: [agent.id] },
+    );
+    recipe.agents[0]!.mcpRequirements[0] = {
+      ...recipe.agents[0]!.mcpRequirements[0],
+      url: repointedKnowledge.url,
+      allowedTools: repointedKnowledge.allowedTools,
+      oauthScope: repointedKnowledge.oauthScope,
+    };
+    const compiled = await call<{ operations: ManagementOperation[] }>(
+      'preview_workspace_recipe',
+      { recipe, agentStrategy: 'update' },
+    );
+    assert.ok(compiled.operations.some((operation) =>
+      operation.kind === 'update_agent' && operation.confirmationReason === 'recipe_overwrite'));
+    const shown = await propose(f, 'recipe-overwrite', compiled.operations);
+
+    for (const line of REPOINT_LINES) {
+      assert.ok(shown.markdown.includes(`\n${line}\n`), `${line}\n---\n${shown.markdown}`);
+      assert.ok(shown.slack.includes(`\n${line}\n`), `${line}\n---\n${shown.slack}`);
+    }
+    await assertNoCredentialReference(f, agent.id, shown);
+  }));
