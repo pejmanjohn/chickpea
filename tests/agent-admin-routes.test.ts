@@ -10,6 +10,7 @@ import * as v from 'valibot';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import type { AgentSnapshotStore } from '../src/config/snapshot-store.ts';
 import { SqliteSettingsStore, type SettingsStore } from '../src/config/settings-store.ts';
+import { UnknownAgentError } from '../src/config/errors.ts';
 import { SqliteConfigStore } from '../src/config/store.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
@@ -6377,6 +6378,51 @@ test('Archive disables the same Slack handle and restore re-enables it', async (
     assert.equal(restoredBody.agent.lifecycle, 'active');
     assert.equal(restoredBody.agent.slackPresence.userGroupId, groupId);
     assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, false);
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin deletes an Agent only after archive has turned its Slack handle off', async () => {
+  const fixture = harness();
+  try {
+    await createAgent(fixture.app);
+    const published = await supportAgentRequest(fixture.app, 'POST', '/channels', {
+      workspaceId: 'T_TEST', channelId: 'C_SUPPORT',
+    });
+    assert.equal(published.status, 201);
+    const groupId = published.body.agent.slackPresence.userGroupId as string;
+    await fixture.store.deleteAgentChannelGrant('T_TEST', 'C_SUPPORT', 'agent_support');
+    const remove = async () => {
+      const agent = await fixture.store.getAgent('agent_support');
+      return fixture.app.request('http://localhost/admin/api/agents/agent_support', {
+        method: 'DELETE', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision: agent.revision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+        }),
+      });
+    };
+
+    const early = await remove();
+    assert.equal(early.status, 409, await early.clone().text());
+    assert.deepEqual(await early.json(), {
+      error: 'agent_still_in_slack',
+      message: 'Archive Support Triage first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.',
+    });
+    assert.equal((await fixture.store.getAgent('agent_support')).lifecycle, 'active', 'the Agent is kept');
+
+    const agent = await fixture.store.getAgent('agent_support');
+    const archived = await supportAgentRequest(fixture.app, 'POST', '/archive', { expectedRevision: agent.revision });
+    assert.equal(archived.status, 200);
+    assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, true);
+
+    const deleted = await remove();
+    assert.equal(deleted.status, 204, await deleted.clone().text());
+    await assert.rejects(fixture.store.getAgent('agent_support'), UnknownAgentError);
+    assert.equal(fixture.transport.groups.find(({ id }) => id === groupId)?.disabled, true,
+      'the handle stays off in Slack');
   } finally {
     fixture.store.close();
     fixture.settings.close();

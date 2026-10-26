@@ -13,7 +13,7 @@ import type {
   ManagementApplyResult,
   ManagementOperation,
 } from '../src/management/types.ts';
-import { AgentPresenceReconciler } from '../src/slack/agent-presence/reconciler.ts';
+import { AgentPresenceReconciler, type AgentAppPresenceHooks } from '../src/slack/agent-presence/reconciler.ts';
 import type { SlackTransport, SlackUserGroup } from '../src/slack/transport/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
@@ -59,6 +59,7 @@ class UserGroupDirectory implements SlackTransport {
 async function withPublishingWorkspace(
   suffix: string,
   run: (f: Fixture, slack: UserGroupDirectory, presence: AgentPresenceReconciler) => Promise<void>,
+  agentApps?: (f: Fixture) => AgentAppPresenceHooks,
 ): Promise<void> {
   const slack = new UserGroupDirectory();
   let presence: AgentPresenceReconciler | undefined;
@@ -77,7 +78,12 @@ async function withPublishingWorkspace(
       expectedCredentialIncarnation ? { expectedCredentialIncarnation } : {},
     ),
   });
-  presence = new AgentPresenceReconciler({ config: f.config, transport: slack, announce: null });
+  presence = new AgentPresenceReconciler({
+    config: f.config,
+    transport: slack,
+    announce: null,
+    ...(agentApps ? { agentApps: agentApps(f) } : {}),
+  });
   try {
     await run(f, slack, presence);
   } finally {
@@ -283,7 +289,41 @@ test('an Agent with its own Slack app is not deleted until archive retires the a
     }]);
     assert.deepEqual(dispositions(refused), [['failed', 'invalid_request']]);
     assert.equal((await f.config.getAgent(app.id)).slackPresence?.kind, 'agent_app', 'the app Agent is kept');
-  }));
+
+    const archived = await apply(f, 'archive-app', [{
+      itemId: 'archive',
+      kind: 'archive_agent',
+      agentId: app.id,
+      expectedRevision: app.revision,
+    }]);
+    assert.equal(archived.status, 'completed', JSON.stringify(archived.outcomes));
+    const retired = await f.config.getAgent(app.id);
+    assert.equal(retired.lifecycle, 'archived');
+    assert.equal(retired.slackPresence?.kind, undefined, 'archive retired the Agent\'s own app');
+
+    const held = await apply(f, 'delete-retired', [{
+      itemId: 'delete',
+      kind: 'delete_agent',
+      agentId: retired.id,
+      expectedRevision: retired.revision,
+    }]);
+    assert.equal(held.status, 'confirmation_required', JSON.stringify(held.outcomes));
+    const confirmed = await succeed(f, 'confirm_workspace_change', { proposalId: held.outcomes[0]!.proposalId! });
+    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
+    await assert.rejects(f.config.getAgent(retired.id), UnknownAgentError);
+  }, (f) => ({
+    // The live hook uninstalls the app from Slack; the Agent keeps no app afterwards.
+    retire: async (agent) => f.config.updateAgent(agent.id, {
+      slackPresence: {
+        requestedHandle: agent.slackPresence!.requestedHandle,
+        normalizedHandle: agent.slackPresence!.normalizedHandle,
+        desiredState: 'active',
+        health: 'healthy',
+        avatar: agent.slackPresence!.avatar,
+      },
+    }, agent.revision),
+    bringBotIn: async () => undefined,
+  })));
 
 test('an archive that never turned the user group off leaves the Agent undeletable', async () => {
   const f = await createManagementAdapterFixture('delete-group-still-on');

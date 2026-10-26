@@ -362,6 +362,47 @@ test('the person\'s typed undo of a one-field edit applies at once, as the edit 
   }
 });
 
+test('the person\'s typed undo of a model change applies at once when the Agent had a pinned effort', async () => {
+  const { f, desk, turn, signal, tool } = await setup('approval-person-undo-model');
+  try {
+    const pinned = await f.config.updateAgent(
+      desk.id, { model: 'anthropic/claude-haiku-4-5', modelEffort: 'high' }, desk.revision,
+    );
+    const edit = await tool(signal(desk.id, turn('Switch to Opus 5.5.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-model',
+      operations: [{
+        itemId: 'model', kind: 'update_agent', agentId: desk.id, expectedRevision: pinned.revision,
+        patch: { model: 'anthropic/claude-opus-5-5' },
+      }],
+    });
+    assert.deepEqual(outcomes(edit).map(({ disposition }) => disposition), ['applied'], JSON.stringify(edit));
+    const switched = await f.config.getAgent(desk.id);
+    assert.equal(switched.model, 'anthropic/claude-opus-5-5');
+    assert.equal(switched.modelEffort, undefined, 'a new model drops the pinned effort');
+
+    const undone = await tool(signal(desk.id, turn('Undo that.')), 'undo_workspace_change', {
+      operationId: (edit.ok ? edit.result as ManagementApplyResult : undefined)!.operationId,
+      idempotencyKey: 'person-undo-model',
+    });
+    assert.deepEqual(outcomes(undone).map(({ disposition }) => disposition), ['applied'], JSON.stringify(undone));
+    const restored = await f.config.getAgent(desk.id);
+    assert.equal(restored.model, 'anthropic/claude-haiku-4-5');
+    assert.equal(restored.modelEffort, 'high', 'the undo puts the pinned effort back with its model');
+
+    const compound = await tool(signal(desk.id, turn('Use Opus and answer in French.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-model-and-instructions',
+      operations: [{
+        itemId: 'both', kind: 'update_agent', agentId: desk.id, expectedRevision: restored.revision,
+        patch: { model: 'anthropic/claude-opus-5-5', instructions: 'Answer in French.' },
+      }],
+    });
+    assert.deepEqual(outcomes(compound).map(({ disposition }) => disposition), ['confirmation_required'],
+      'a model change with another field is still a compound change');
+  } finally {
+    f.close();
+  }
+});
+
 test('the person\'s typed undo that would remove a connection waits for their approval', async () => {
   const { f, desk, turn, signal, tool, hostApproves } = await setup('approval-person-undo-connection');
   try {
