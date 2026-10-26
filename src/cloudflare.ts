@@ -94,6 +94,7 @@ import {
   type AgentModelRolePatch,
   type ConfigAgentPatch,
   type OAuthReauthorizationTarget,
+  type ApiCredentialTarget,
 } from './config/store.ts';
 import type {
   ActivateChickpeaCutoverInput,
@@ -1206,6 +1207,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>> {
     return this.call((stores) => stores.config.markOAuthReauthorizationRequired(target));
+  }
+
+  async configMarkApiCredentialReady(target: ApiCredentialTarget): Promise<StateRpcResult<boolean>> {
+    return this.call((stores) => stores.config.markApiCredentialReady(target));
   }
 
   async configDeleteAgent(

@@ -16,7 +16,7 @@ import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
-import { ManagementError, type ManagementApplyResult } from '../src/management/types.ts';
+import { ManagementError, type ManagementApplyResult, type ManagementOperation } from '../src/management/types.ts';
 import type { NormalizedSlackTurn, SlackAgentAsk } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
@@ -338,6 +338,101 @@ test('on an ask turn, undo, skill changes and skill imports wait for the person 
   }
 });
 
+test('the person\'s typed undo of a one-field edit applies at once, as the edit did', async () => {
+  const { f, desk, turn, signal, tool } = await setup('approval-person-undo');
+  try {
+    const edit = await tool(signal(desk.id, turn('Set your instructions to: Answer in French.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-instructions',
+      operations: [{
+        itemId: 'instructions', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { instructions: 'Answer in French.' },
+      }],
+    });
+    const operationId = (edit.ok ? edit.result as ManagementApplyResult : undefined)!.operationId;
+
+    const undone = await tool(signal(desk.id, turn('Undo that instructions change.')), 'undo_workspace_change', {
+      operationId, idempotencyKey: 'person-undo',
+    });
+    assert.deepEqual(outcomes(undone).map(({ disposition }) => disposition), ['applied'], JSON.stringify(undone));
+    const restored = await f.config.getAgent(desk.id);
+    assert.equal(restored.instructions, desk.instructions);
+    assert.deepEqual(restored.skills, desk.skills, 'the undo puts back only the field the edit changed');
+  } finally {
+    f.close();
+  }
+});
+
+test('the person\'s typed undo of a model change applies at once when the Agent had a pinned effort', async () => {
+  const { f, desk, turn, signal, tool } = await setup('approval-person-undo-model');
+  try {
+    const pinned = await f.config.updateAgent(
+      desk.id, { model: 'anthropic/claude-haiku-4-5', modelEffort: 'high' }, desk.revision,
+    );
+    const edit = await tool(signal(desk.id, turn('Switch to Opus 5.5.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-model',
+      operations: [{
+        itemId: 'model', kind: 'update_agent', agentId: desk.id, expectedRevision: pinned.revision,
+        patch: { model: 'anthropic/claude-opus-5-5' },
+      }],
+    });
+    assert.deepEqual(outcomes(edit).map(({ disposition }) => disposition), ['applied'], JSON.stringify(edit));
+    const switched = await f.config.getAgent(desk.id);
+    assert.equal(switched.model, 'anthropic/claude-opus-5-5');
+    assert.equal(switched.modelEffort, undefined, 'a new model drops the pinned effort');
+
+    const undone = await tool(signal(desk.id, turn('Undo that.')), 'undo_workspace_change', {
+      operationId: (edit.ok ? edit.result as ManagementApplyResult : undefined)!.operationId,
+      idempotencyKey: 'person-undo-model',
+    });
+    assert.deepEqual(outcomes(undone).map(({ disposition }) => disposition), ['applied'], JSON.stringify(undone));
+    const restored = await f.config.getAgent(desk.id);
+    assert.equal(restored.model, 'anthropic/claude-haiku-4-5');
+    assert.equal(restored.modelEffort, 'high', 'the undo puts the pinned effort back with its model');
+
+    const compound = await tool(signal(desk.id, turn('Use Opus and answer in French.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-model-and-instructions',
+      operations: [{
+        itemId: 'both', kind: 'update_agent', agentId: desk.id, expectedRevision: restored.revision,
+        patch: { model: 'anthropic/claude-opus-5-5', instructions: 'Answer in French.' },
+      }],
+    });
+    assert.deepEqual(outcomes(compound).map(({ disposition }) => disposition), ['confirmation_required'],
+      'a model change with another field is still a compound change');
+  } finally {
+    f.close();
+  }
+});
+
+test('the person\'s typed undo that would remove a connection waits for their approval', async () => {
+  const { f, desk, turn, signal, tool, hostApproves } = await setup('approval-person-undo-connection');
+  try {
+    const added = await f.service.applyWorkspaceChanges({
+      context: {
+        userId: f.owner.user.id, membershipId: f.owner.membership.id,
+        organizationId: f.owner.membership.organizationId, origin: { kind: 'mcp', clientId: 'person-undo-connection' },
+      },
+      idempotencyKey: 'add-zendesk',
+      operations: [{
+        itemId: 'zendesk', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { mcpServers: [ZENDESK] },
+      }],
+    });
+    assert.equal(added.status, 'completed', JSON.stringify(added));
+
+    const proposalId = heldProposalId(await tool(signal(desk.id, turn('Undo that.')), 'undo_workspace_change', {
+      operationId: added.operationId, idempotencyKey: 'person-undo-connection',
+    }));
+    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers.map(({ id }) => id), ['zendesk'],
+      'the connection stays until the person approves');
+
+    const approval = await hostApproves(desk, turn('approve'), proposalId);
+    assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
+    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers, []);
+  } finally {
+    f.close();
+  }
+});
+
 test('a click whose host-written text quotes a skill URL installs nothing; the person\'s typed message does', async () => {
   const { f, desk, turn, signal, tool } = await setup('approval-click-import');
   try {
@@ -434,6 +529,83 @@ test('an Agent creation another Agent\'s ask started is created and welcomed onc
     );
     assert.equal(welcome?.receipt && 'kind' in welcome.receipt ? welcome.receipt.kind : undefined,
       'agent_created_welcome');
+  } finally {
+    f.close();
+  }
+});
+
+function recipeAgent(symbol: string, name: string, server: string) {
+  return {
+    symbol, name, instructions: `Operate as ${name}.`, enabled: true, skills: [],
+    mcpRequirements: [{
+      id: server, displayName: server, url: `https://mcp.${server}.example/mcp`, transport: 'streamable-http' as const,
+      authMode: 'bearer' as const, headerNames: [], enabled: true, allowedTools: ['search'],
+    }],
+    apiRequirements: [], repositoryRequirements: [],
+  };
+}
+
+async function importRecipe(
+  context: Awaited<ReturnType<typeof setup>>,
+  idempotencyKey: string,
+  agents: ReturnType<typeof recipeAgent>[],
+): Promise<ManagementApplyResult['outcomes']> {
+  const asked = context.signal(CHICKPEA_AGENT_ID, context.turn('Import this recipe.'));
+  const preview = await context.tool(asked, 'preview_workspace_recipe', { recipe: { schemaVersion: 2, name: 'Team', agents } });
+  assert.ok(preview.ok, JSON.stringify(preview));
+  const { operations } = preview.result as { operations: ManagementOperation[] };
+  return outcomes(await context.tool(asked, 'apply_workspace_changes', { idempotencyKey, operations }));
+}
+
+test('a recipe imported in Slack creates the bare Agent and its capabilities wait for the person\'s approval', async () => {
+  const context = await setup('approval-recipe');
+  const { f, chickpea, turn, hostApproves } = context;
+  try {
+    const result = await importRecipe(context, 'import-scout', [recipeAgent('a', 'Scout', 'tracker')]);
+    assert.deepEqual(result.map(({ itemId, disposition, code }) => [itemId, disposition, code]), [
+      ['create_a', 'applied', undefined],
+      ['configure_a', 'confirmation_required', undefined],
+      ['setup_a_mcp_tracker', 'skipped', 'setup_after_approval'],
+    ]);
+    assert.ok(result.every(({ setupUrl }) => setupUrl === undefined), 'no setup link is issued in the import call');
+    const scout = (await f.config.listUserAgents()).find(({ name }) => name === 'Scout')!;
+    assert.deepEqual(scout.mcpServers, [], 'the Agent exists without its capabilities');
+
+    const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
+    assert.match(approval.kind === 'message' ? approval.text : '',
+      /^Applied the approved changes\.\n\n\[Connect tracker\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
+      'the approval receipt carries the setup link');
+    assert.deepEqual((await f.config.getAgent(scout.id)).mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]),
+      [['tracker', 'pending']]);
+  } finally {
+    f.close();
+  }
+});
+
+test('in Slack, a later new Agent in the same recipe is created by the approval and configured in a new request', async () => {
+  const context = await setup('approval-recipe-two');
+  const { f, chickpea, turn, hostApproves } = context;
+  try {
+    const result = await importRecipe(context, 'import-two', [
+      recipeAgent('b', 'Pilot', 'wiki'),
+      recipeAgent('c', 'Ranger', 'notes'),
+    ]);
+    assert.deepEqual(result.map(({ itemId, disposition, code }) => [itemId, disposition, code]), [
+      ['create_b', 'applied', undefined],
+      ['configure_b', 'confirmation_required', undefined],
+      ['setup_b_mcp_wiki', 'skipped', 'setup_after_approval'],
+      ['configure_c', 'skipped', 'revision_conflict'],
+      ['setup_c_mcp_notes', 'skipped', 'dependency_not_applied'],
+    ], 'an edit of an Agent the change set creates waits, and so does not promise the setup that depends on it');
+    assert.deepEqual((await f.management.getChangeSetProposal(result[1]!.proposalId!))?.operations.map(({ itemId }) => itemId),
+      ['configure_b', 'create_c']);
+
+    const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
+    assert.match(approval.kind === 'message' ? approval.text : '',
+      /^Applied the approved changes\.\n\n\[Connect wiki\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
+      'the receipt carries the one setup link the approval issues and no setup issue');
+    const imported = new Map((await f.config.listUserAgents()).map((agent) => [agent.name, agent.mcpServers.map(({ id }) => id)]));
+    assert.deepEqual([imported.get('Pilot'), imported.get('Ranger')], [['wiki'], []]);
   } finally {
     f.close();
   }

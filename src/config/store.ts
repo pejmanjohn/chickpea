@@ -411,6 +411,13 @@ export type OAuthReauthorizationTarget =
       expectedRevision?: number;
     };
 
+/** One API connection's credential incarnation, as an Admin credential save bound it. */
+export interface ApiCredentialTarget {
+  agentId: string;
+  connectionId: string;
+  credentialRef: string;
+}
+
 /**
  * Public async config store — the interface every consumer (routes, channel,
  * agent) is written against. The Node backend answers from local SQLite (the
@@ -430,6 +437,13 @@ export interface ConfigStore {
   ): Promise<CustomAgentConfig>;
   updateAgent(agentId: string, patch: ConfigAgentPatch, expectedRevision?: number): Promise<CustomAgentConfig>;
   markOAuthReauthorizationRequired(target: OAuthReauthorizationTarget): Promise<boolean>;
+  /**
+   * Marks a pending credential API connection ready once Admin stored its
+   * credential. It compares the connection's credential and status, not a
+   * caller's revision, so the parallel credential writes of one Admin save
+   * never conflict with each other's marks.
+   */
+  markApiCredentialReady(target: ApiCredentialTarget): Promise<boolean>;
   deleteAgent(
     agentId: string,
     expectedRevision?: number,
@@ -2468,6 +2482,31 @@ export class ConfigStoreLogic {
       ...connection,
       lifecycleStatus: 'pending',
       statusText: 'Reconnect required',
+    };
+    return this.db.run(
+      'UPDATE config_agents SET api_connections_json = ?, revision = revision + 1 WHERE id = ? AND revision = ?',
+      JSON.stringify(apiConnections),
+      target.agentId,
+      agent.revision,
+    ).changes === 1;
+  }
+
+  markApiCredentialReady(target: ApiCredentialTarget): boolean {
+    const agent = this.getAgent(target.agentId);
+    const index = agent.apiConnections.findIndex(
+      (connection) =>
+        connection.id === target.connectionId &&
+        connection.credentialRef === target.credentialRef &&
+        connection.authMode !== 'oauth' &&
+        connection.lifecycleStatus === 'pending',
+    );
+    if (index < 0) return false;
+    const apiConnections = agent.apiConnections.slice();
+    apiConnections[index] = {
+      ...apiConnections[index]!,
+      lifecycleStatus: 'ready',
+      statusText: 'Connected',
+      readyRevision: agent.revision + 1,
     };
     return this.db.run(
       'UPDATE config_agents SET api_connections_json = ?, revision = revision + 1 WHERE id = ? AND revision = ?',

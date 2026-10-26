@@ -157,6 +157,13 @@ test('authority failure leaves a durable safe routine state', async () => {
       editPolicy: 'creator_and_admins',
       skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_SCHEDULE_AUTHORITY',
+      channelId: 'C_SCHEDULE_AUTHORITY',
+      agentId: agent.id,
+      status: 'active',
+      createdByMembershipId: owner.membership.id,
+    });
     await assert.rejects(
       executeSlackScheduleCommand({
         kind: 'save', requiredConnectionAccountIds: [],

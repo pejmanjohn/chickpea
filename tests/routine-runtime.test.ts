@@ -740,3 +740,98 @@ test('the editor identity is part of the routine access hash', async () => {
   // decision cached against the previous hash.
   assert.notEqual(byCreator.accessHash, byEditor.accessHash);
 });
+
+const slackSdkOutages = {
+  rateLimited: { code: 'slack_webapi_rate_limited_error', retryAfter: 30 },
+  unreachable: { code: 'slack_webapi_request_error' },
+  serverError: { code: 'slack_webapi_http_error', statusCode: 503 },
+  slackInternalError: { code: 'slack_webapi_platform_error', data: { ok: false, error: 'internal_error' } },
+};
+const slackSdkRefusal = (error: string) => Object.assign(new Error(`Slack refused: ${error}`), {
+  code: 'slack_webapi_platform_error', data: { ok: false, error },
+});
+
+async function runtimeFailure(access: () => Promise<unknown>): Promise<string | undefined> {
+  try {
+    await access();
+  } catch (error) {
+    return error instanceof RoutineRuntimeError ? error.failureClass : undefined;
+  }
+  return undefined;
+}
+
+test('a direct run Slack cannot answer counts toward the pause; Slack refusing the person still disables', async () => {
+  const user = {
+    id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false, is_app_user: false,
+    is_restricted: false, is_ultra_restricted: false, is_stranger: false,
+  };
+  const directRun = (lookup: { user?: () => unknown; open?: () => unknown }) => runtimeFailure(() =>
+    resolveRoutineRuntimeAccess(
+      { ...run, routineId: directRoutine.id, revision: { ...run.revision!, authorityMode: 'live_direct_member_v1' } },
+      directRoutine,
+      undefined,
+      dependencies({
+        authority: async () => directAuthority,
+        installationExecution: async () => ({
+          workspaceId: 'T_TEST', transportMode: 'gateway', botUserId: 'UBOT',
+          client: {
+            users: { info: async () => lookup.user ? lookup.user() : { ok: true, user } },
+            conversations: {
+              open: async () => lookup.open ? lookup.open() : { ok: true, channel: { id: 'D_TEST', is_im: true } },
+            },
+          } as unknown as WebClient,
+        }),
+      }),
+    ));
+  for (const [label, outage] of Object.entries(slackSdkOutages)) {
+    const thrown = () => { throw Object.assign(new Error(label), outage); };
+    assert.equal(await directRun({ user: thrown }), 'slack_rate_limited', `users.info ${label}`);
+    assert.equal(await directRun({ open: thrown }), 'slack_rate_limited', `conversations.open ${label}`);
+  }
+  assert.equal(await directRun({ user: () => { throw slackSdkRefusal('user_not_found'); } }), 'access_denied');
+  assert.equal(await directRun({ open: () => { throw slackSdkRefusal('cannot_dm_bot'); } }), 'access_denied');
+});
+
+test('a Channel run Slack cannot answer counts toward the pause; Slack refusing access still disables', async () => {
+  const channelRun = (overrides: Record<string, unknown>) => runtimeFailure(() =>
+    resolveRoutineRuntimeAccess(run, routine, undefined, dependencies(overrides)));
+  const conversationError = (error: string) => ({
+    conversation: async () => ({ ok: false, error, channel: undefined, facts: undefined, retryAfterMs: undefined }),
+  });
+  const membersError = (error: string) => ({
+    members: async () => ({ ok: false, error, memberIds: [], nextCursor: undefined, retryAfterMs: undefined }),
+  });
+  for (const outage of ['ratelimited', 'slack_network_error', 'slack_request_timeout', 'slack_http_503', 'internal_error']) {
+    assert.equal(await channelRun(conversationError(outage)), 'slack_rate_limited', `conversations.info ${outage}`);
+    assert.equal(await channelRun(membersError(outage)), 'slack_rate_limited', `conversations.members ${outage}`);
+  }
+  assert.equal(await channelRun(conversationError('missing_scope')), 'access_denied');
+  assert.equal(await channelRun(conversationError('channel_not_found')), 'channel_ineligible');
+  assert.equal(await channelRun(membersError('not_in_channel')), 'access_denied');
+
+  const channel = {
+    id: 'C_TEST', name: 'test', team_id: 'T_TEST', is_member: true, is_private: false, is_archived: false,
+    is_frozen: false, is_shared: false, is_ext_shared: false, is_org_shared: false, is_im: false, is_mpim: false,
+  };
+  const gateway = (lookup: { info?: () => unknown; members?: () => unknown }) => ({
+    installationExecution: async (workspaceId: string) => ({
+      workspaceId, transportMode: 'gateway', botUserId: 'UBOT',
+      client: {
+        conversations: {
+          info: async () => lookup.info ? lookup.info() : { ok: true, channel },
+          members: async () => lookup.members
+            ? lookup.members()
+            : { ok: true, members: ['U_CREATOR', 'UBOT'], response_metadata: { next_cursor: '' } },
+        },
+      } as unknown as WebClient,
+    }),
+  });
+  for (const [label, outage] of Object.entries(slackSdkOutages)) {
+    const thrown = () => { throw Object.assign(new Error(label), outage); };
+    assert.equal(await channelRun(gateway({ info: thrown })), 'slack_rate_limited', `gateway conversations.info ${label}`);
+    assert.equal(await channelRun(gateway({ members: thrown })), 'slack_rate_limited', `gateway conversations.members ${label}`);
+  }
+  assert.equal(await channelRun(gateway({ info: () => { throw slackSdkRefusal('missing_scope'); } })), 'access_denied');
+  assert.equal(await channelRun(gateway({ info: () => { throw slackSdkRefusal('channel_not_found'); } })), 'channel_ineligible');
+  assert.equal(await channelRun(gateway({ members: () => { throw slackSdkRefusal('not_in_channel'); } })), 'access_denied');
+});

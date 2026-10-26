@@ -4,6 +4,7 @@ import type { IdentityStore } from '../identity/types.ts';
 import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
 import {
   bindRoutineAgentAuthority,
+  checkRoutineAgentAuthority,
   resolveRoutineAgentAuthority,
   selectScheduleConnectionAccounts,
   RoutineAuthorityError,
@@ -253,17 +254,36 @@ export async function executeSlackScheduleCommand(
           definition,
         }
       : { action: 'create' as const, definition };
+    const destination = !existing && command.directDestination
+      ? { kind: 'direct_thread' as const, ...command.directDestination }
+      : command.channelThreadTs
+        ? { kind: 'channel' as const, channelId: command.channelId, threadTs: command.channelThreadTs }
+        : undefined;
+    const agent = await dependencies.config.getAgent(command.agentId);
+    const assignment: ResolvedAssignment = {
+      workspaceId: command.workspaceId,
+      channelId: command.channelId,
+      agentId: agent.id,
+      agent,
+    };
+    await checkRoutineAgentAuthority({
+      routine: existing ?? priorCreate ?? {
+        id: deterministicRoutineId(command.actionKey, command.itemId),
+        workspaceId: command.workspaceId,
+        channelId: command.channelId,
+        destination: destination ?? { kind: 'channel', channelId: command.channelId },
+      },
+      assignment,
+      actorMembershipId: command.actorMembershipId,
+      env: undefined,
+    }, { config: dependencies.config, identity: dependencies.identity });
     const routine = await service.save({
       ...request,
       actorId: command.actorUserId,
       actorClass: 'operator',
       workspaceId: command.workspaceId,
       channelId: command.channelId,
-      ...(!existing && command.directDestination
-        ? { destination: { kind: 'direct_thread' as const, ...command.directDestination } }
-        : command.channelThreadTs
-          ? { destination: { kind: 'channel' as const, channelId: command.channelId, threadTs: command.channelThreadTs } }
-          : {}),
+      ...(destination ? { destination } : {}),
       nextRunAt: projection.nextRunAt,
       projectedDailyStarts: projection.projectedDailyStarts,
       reservations: projection.reservations,
@@ -286,13 +306,6 @@ export async function executeSlackScheduleCommand(
       return { effect: 'saved', routine, created: false };
     }
     try {
-      const agent = await dependencies.config.getAgent(command.agentId);
-      const assignment: ResolvedAssignment = {
-        workspaceId: command.workspaceId,
-        channelId: command.channelId,
-        agentId: agent.id,
-        agent,
-      };
       const bindAuthority = dependencies.bindAuthority ?? ((input) =>
         bindRoutineAgentAuthority(input, {
           config: dependencies.config,
@@ -350,7 +363,12 @@ export async function executeSlackScheduleCommand(
     return { effect: 'saved', routine, created };
   } catch (error) {
     if (error instanceof SlackScheduleCommandError || error instanceof RoutineStateError) throw error;
-    if (error instanceof RoutineAuthorityError) throw new RoutineStateError('routine_connections_invalid', error.message);
+    if (error instanceof RoutineAuthorityError) {
+      throw new RoutineStateError(
+        error.reason === 'connection_unavailable' ? 'routine_connections_invalid' : 'routine_access_denied',
+        error.message,
+      );
+    }
     console.warn('[chickpea:routines] schedule command failed', JSON.stringify({
       errorName: error instanceof Error ? error.name : 'unknown',
     }));

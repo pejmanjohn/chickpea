@@ -52,6 +52,7 @@ import type {
   ConfigAgentPatch,
   ConfigStore,
   OAuthReauthorizationTarget,
+  ApiCredentialTarget,
 } from './store.ts';
 import type {
   ActivateChickpeaCutoverInput,
@@ -1475,6 +1476,13 @@ export class CfConfigStore implements ConfigStore {
     return rpcVia(this.stub,
       'configMarkOAuthReauthorizationRequired',
       (stub) => stub.configMarkOAuthReauthorizationRequired(target),
+    );
+  }
+
+  async markApiCredentialReady(target: ApiCredentialTarget): Promise<boolean> {
+    return rpcVia(this.stub,
+      'configMarkApiCredentialReady',
+      (stub) => stub.configMarkApiCredentialReady(target),
     );
   }
 

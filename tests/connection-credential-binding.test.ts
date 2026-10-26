@@ -504,6 +504,50 @@ test('stale OAuth refresh failures cannot demote replacement credential generati
   }
 });
 
+test('a stored key marks only its own pending credential incarnation ready', () => {
+  const db = openStateDb(':memory:');
+  try {
+    const store = new ConfigStoreLogic(db, { agents: [] });
+    const created = store.createAgent({
+      id: 'agent_key_ready_fence',
+      name: 'Key ready fence',
+      instructions: 'Mark a connection ready only for the key that was stored.',
+      enabled: true,
+      skills: [],
+      mcpServers: [],
+      apiConnections: [
+        api({ lifecycleStatus: 'pending', statusText: 'Setup required' }),
+        api({
+          id: 'calendar', displayName: 'Calendar', authMode: 'oauth', oauthProvider: 'google',
+          oauthScopes: ['https://www.googleapis.com/auth/calendar.readonly'], oauthAppType: 'external',
+          lifecycleStatus: 'pending', statusText: 'Not connected',
+        }),
+      ],
+      repositories: [],
+    });
+    const [stale, oauth] = created.apiConnections.map((connection) => boundApiCredentialRef(created.id, connection));
+    assert.equal(store.markApiCredentialReady(oauth!), false, 'an OAuth connection is ready only after sign-in');
+    const repointed = store.updateAgent(created.id, {
+      apiConnections: [{ ...created.apiConnections[0]!, allowedHosts: ['api.other.example'] }, created.apiConnections[1]!],
+    }, created.revision);
+    assert.equal(store.markApiCredentialReady(stale!), false, 'a key stored before a re-point readies nothing');
+    assert.deepEqual(store.getAgent(created.id), repointed);
+
+    const current = boundApiCredentialRef(created.id, repointed.apiConnections[0]!);
+    assert.equal(store.markApiCredentialReady(current), true);
+    const ready = store.getAgent(created.id);
+    assert.equal(ready.revision, repointed.revision + 1);
+    assert.deepEqual(
+      [ready.apiConnections[0]?.lifecycleStatus, ready.apiConnections[0]?.statusText, ready.apiConnections[0]?.readyRevision],
+      ['ready', 'Connected', ready.revision],
+    );
+    assert.equal(store.markApiCredentialReady(current), false, 'a ready connection is not marked again');
+    assert.equal(store.getAgent(created.id).revision, ready.revision);
+  } finally {
+    db.close();
+  }
+});
+
 test('same-policy replacement cannot revive an environment credential from the prior incarnation', async () => {
   const oldMcp = mcp({ credentialRef: 'connection_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' });
   const newMcp = mcp({ credentialRef: 'connection_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' });

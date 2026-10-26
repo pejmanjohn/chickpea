@@ -10,9 +10,14 @@ import {
   resolveAgentRoutingActor,
 } from '../src/channels/slack.ts';
 import type { AppStores } from '../src/config/state-backend.ts';
-import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { IdentityStoreLogic, SqliteIdentityStore } from '../src/identity/store.ts';
+import type { IdentityStore } from '../src/identity/types.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
+import type { SlackUserFacts } from '../src/slack/credentials.ts';
 import type { SlackTransport } from '../src/slack/transport/types.ts';
+import { promisify } from '../src/state/async-facade.ts';
+import { openStateDb } from '../src/state/node-state-db.ts';
+import type { StateDb } from '../src/state/state-db.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = 1_787_000_000_000;
@@ -200,6 +205,83 @@ test('first eligible Slack interaction provisions one exact active member and re
     });
     assert.equal(withoutEmailScope.resolution?.user.contactEmail, 'changed@example.com');
     assert.equal((await identity.listMemberships()).length, 2);
+  } finally {
+    identity.close();
+  }
+});
+
+test('a Slack event with an unchanged profile writes nothing; a changed name or email still writes', async () => {
+  let clock = NOW;
+  const db = openStateDb(':memory:');
+  let writes = 0;
+  const counted: StateDb = {
+    run: (sql, ...params) => {
+      writes += 1;
+      return db.run(sql, ...params);
+    },
+    get: (sql, ...params) => db.get(sql, ...params),
+    all: (sql, ...params) => db.all(sql, ...params),
+    exec: (sql) => db.exec(sql),
+    transaction: (fn) => db.transaction(fn),
+  };
+  const identity = promisify(new IdentityStoreLogic(counted, { now: () => clock }), {
+    close: () => db.close(),
+  }) as unknown as IdentityStore & { close(): void };
+  const owner = await createSlackOwner(identity, { now: NOW });
+  const member: SlackUserFacts = {
+    id: 'UPROFILE', teamId: owner.binding.slackTeamId,
+    displayName: 'Profile Member', email: ' Profile.Member@Example.com ',
+    deleted: false, bot: false, appUser: false, restricted: false,
+    ultraRestricted: false, stranger: false,
+  };
+  const event = async (user: SlackUserFacts) => {
+    clock += 60_000;
+    const before = writes;
+    const result = await provisionSlackInteractionMember({
+      identity, slackTeamId: owner.binding.slackTeamId, botUserId: 'UBOT', user,
+    });
+    return { result, writes: writes - before };
+  };
+  try {
+    const first = await event(member);
+    assert.equal(first.result.outcome, 'provisioned');
+    assert.ok(first.writes > 0);
+    const stored = first.result.resolution!;
+    assert.equal(stored.user.contactEmail, 'profile.member@example.com');
+
+    // The same Slack profile, and one whose email scope is missing, are no change.
+    for (const user of [member, { ...member, email: undefined }]) {
+      const unchanged = await event(user);
+      assert.equal(unchanged.result.outcome, 'active');
+      assert.equal(unchanged.writes, 0);
+      assert.deepEqual(unchanged.result.resolution, stored);
+    }
+
+    const renamed = await event({ ...member, displayName: 'Renamed Member' });
+    assert.equal(renamed.result.outcome, 'active');
+    assert.equal(renamed.writes, 1);
+    assert.equal(renamed.result.resolution?.user.displayName, 'Renamed Member');
+    assert.equal(renamed.result.resolution?.user.updatedAt, clock);
+
+    const reEmailed = await event({ ...member, displayName: 'Renamed Member', email: 'new@example.com' });
+    assert.equal(reEmailed.writes, 1);
+    assert.equal(reEmailed.result.resolution?.user.contactEmail, 'new@example.com');
+    assert.equal(reEmailed.result.resolution?.user.updatedAt, clock);
+
+    // Guest, stranger, and deleted are read from Slack on every event, not
+    // from the stored profile, so each change still decides that event.
+    const current = { ...member, displayName: 'Renamed Member', email: 'new@example.com' };
+    for (const [flags, outcome] of [
+      [{ restricted: true }, 'conversational_only'],
+      [{ ultraRestricted: true }, 'conversational_only'],
+      [{ stranger: true }, 'conversational_only'],
+      [{ deleted: true }, 'denied'],
+      [{}, 'active'],
+    ] as const) {
+      const flagged = await event({ ...current, ...flags });
+      assert.equal(flagged.result.outcome, outcome);
+      assert.equal(flagged.writes, 0);
+    }
   } finally {
     identity.close();
   }

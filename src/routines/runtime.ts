@@ -8,12 +8,14 @@ import {
 } from '../config/effective-config.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import {
+  isTransientSlackApiError,
   resolveSlackCredentials,
   resolveSlackPublicUrl,
   slackAuthTest,
   slackConversationsInfo,
   slackConversationsMembers,
 } from '../slack/credentials.ts';
+import { isRetryableDependencyFailure } from '../slack/transport/types.ts';
 import {
   resolveSlackInstallationExecutionContext,
   type SlackInstallationExecutionResolver,
@@ -43,6 +45,7 @@ import type {
 
 const MEMBERS_PAGE_LIMIT = 200;
 const MEMBERS_MAX_PAGES = 5;
+const MEMBERSHIP_UNVERIFIED = 'Current channel membership could not be verified.';
 
 export interface RoutineRuntimeAccess {
   config: EffectiveSlackConfig;
@@ -187,9 +190,9 @@ export async function resolveRoutineRuntimeAccess(
       if (openResponse.ok === true && openResponse.channel && typeof openResponse.channel === 'object') {
         directConversation = openResponse.channel as Record<string, unknown>;
       }
-    } catch {
-      throw new RoutineRuntimeError(
-        'access_denied',
+    } catch (error) {
+      throw unverifiedAccess(
+        isRetryableDependencyFailure(error),
         'Current direct-message access could not be verified.',
       );
     }
@@ -239,10 +242,7 @@ export async function resolveRoutineRuntimeAccess(
     // Slack could not answer. Like a rate limit, this counts toward the
     // three failures that pause the routine; one outage never disables it.
     if (privateUse.status === 'unavailable') {
-      throw new RoutineRuntimeError(
-        'slack_rate_limited',
-        'Current direct-message access could not be verified.',
-      );
+      throw unverifiedAccess(true, 'Current direct-message access could not be verified.');
     }
     const directAccessHash = (configHash: string) => hashRoutineValue(JSON.stringify({
       config: configHash,
@@ -290,13 +290,14 @@ export async function resolveRoutineRuntimeAccess(
     const channelIsKnownIneligible = !!facts && (
       facts.archived || facts.frozen || facts.im || facts.mpim || !facts.member
     );
-    throw new RoutineRuntimeError(
-      terminalChannelError(conversation.error) || channelIsKnownIneligible
-        ? 'channel_ineligible'
-        : 'access_denied',
-      terminalChannelError(conversation.error) || channelIsKnownIneligible
-        ? 'The routine channel is no longer eligible.'
-        : 'Current Slack channel access could not be verified.',
+    if (terminalChannelError(conversation.error) || channelIsKnownIneligible) {
+      throw new RoutineRuntimeError('channel_ineligible', 'The routine channel is no longer eligible.');
+    }
+    throw unverifiedAccess(
+      'slackDidNotAnswer' in conversation
+        ? conversation.slackDidNotAnswer
+        : isTransientSlackApiError(conversation.error),
+      'Current Slack channel access could not be verified.',
     );
   }
   const actorSlackUserId = authority?.actorSlackUserId ?? routine.creatorUserId;
@@ -306,11 +307,8 @@ export async function resolveRoutineRuntimeAccess(
   const creatorIsMember = botToken
     ? await hasChannelMember(botToken, routine.channelId, actorSlackUserId, getMembers)
     : await hasChannelMemberViaClient(client!, routine.channelId, actorSlackUserId);
-  if (creatorIsMember === false) {
+  if (!creatorIsMember) {
     throw new RoutineRuntimeError('creator_ineligible', 'The routine Runs as member left this channel.');
-  }
-  if (creatorIsMember === undefined) {
-    throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
   }
 
   // Legacy injected access had no canonical Runs as actor, so preserve its
@@ -325,11 +323,8 @@ export async function resolveRoutineRuntimeAccess(
     const editorIsMember = botToken
       ? await hasChannelMember(botToken, routine.channelId, editorUserId, getMembers)
       : await hasChannelMemberViaClient(client!, routine.channelId, editorUserId);
-    if (editorIsMember === false) {
+    if (!editorIsMember) {
       throw new RoutineRuntimeError('creator_ineligible', 'The routine editor left this channel.');
-    }
-    if (editorIsMember === undefined) {
-      throw new RoutineRuntimeError('access_denied', 'Current channel membership could not be verified.');
     }
   }
 
@@ -424,33 +419,47 @@ async function conversationFromClient(client: WebClient, channelId: string) {
         mpim: channel.is_mpim === true,
       } : undefined,
     };
-  } catch {
-    return { ok: false as const, error: 'conversation_unavailable', retryAfterMs: undefined };
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: slackPlatformErrorName(error) ?? 'conversation_unavailable',
+      retryAfterMs: undefined,
+      slackDidNotAnswer: isRetryableDependencyFailure(error),
+    };
   }
+}
+
+/** The error name in Slack's own refusal, as the SDK throws it; undefined for any other failure. */
+function slackPlatformErrorName(error: unknown): string | undefined {
+  const { code, data } = (error ?? {}) as { code?: unknown; data?: { error?: unknown } };
+  return code === 'slack_webapi_platform_error' && typeof data?.error === 'string' ? data.error : undefined;
 }
 
 async function hasChannelMemberViaClient(
   client: WebClient,
   channelId: string,
   userId: string,
-): Promise<boolean | undefined> {
+): Promise<boolean> {
   let cursor: string | undefined;
   for (let page = 0; page < MEMBERS_MAX_PAGES; page += 1) {
+    let response: Awaited<ReturnType<WebClient['conversations']['members']>>;
     try {
-      const response = await client.conversations.members({
+      response = await client.conversations.members({
         channel: channelId,
         limit: MEMBERS_PAGE_LIMIT,
         ...(cursor ? { cursor } : {}),
       });
-      if (!response.ok || !Array.isArray(response.members)) return undefined;
-      if (response.members.includes(userId)) return true;
-      cursor = response.response_metadata?.next_cursor || undefined;
-      if (!cursor) return false;
-    } catch {
-      return undefined;
+    } catch (error) {
+      throw unverifiedAccess(isRetryableDependencyFailure(error), MEMBERSHIP_UNVERIFIED);
     }
+    if (!response.ok || !Array.isArray(response.members)) {
+      throw unverifiedAccess(false, MEMBERSHIP_UNVERIFIED);
+    }
+    if (response.members.includes(userId)) return true;
+    cursor = response.response_metadata?.next_cursor || undefined;
+    if (!cursor) return false;
   }
-  return undefined;
+  throw unverifiedAccess(false, MEMBERSHIP_UNVERIFIED);
 }
 
 async function hasChannelMember(
@@ -458,19 +467,23 @@ async function hasChannelMember(
   channelId: string,
   userId: string,
   members: typeof slackConversationsMembers,
-): Promise<boolean | undefined> {
+): Promise<boolean> {
   let cursor: string | undefined;
   for (let page = 0; page < MEMBERS_MAX_PAGES; page += 1) {
     const result = await members(botToken, channelId, {
       limit: MEMBERS_PAGE_LIMIT,
       ...(cursor ? { cursor } : {}),
     });
-    if (!result.ok) return undefined;
+    if (!result.ok) throw unverifiedAccess(isTransientSlackApiError(result.error), MEMBERSHIP_UNVERIFIED);
     if (result.memberIds.includes(userId)) return true;
     cursor = result.nextCursor;
     if (!cursor) return false;
   }
-  return undefined;
+  throw unverifiedAccess(false, MEMBERSHIP_UNVERIFIED);
+}
+
+function unverifiedAccess(slackDidNotAnswer: boolean, publicError: string): RoutineRuntimeError {
+  return new RoutineRuntimeError(slackDidNotAnswer ? 'slack_rate_limited' : 'access_denied', publicError);
 }
 
 function terminalChannelError(error: string | undefined): boolean {

@@ -161,16 +161,23 @@ test('MCP and Admin confirm only what the Admin UI asks "Are you sure?" about', 
     ['remove a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { mcpServers: [] } }, { agentEditable: true, connectionRemoved: true }, 'confirmation'],
     ['disable an Agent in Channels', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { enabled: false } }, { ...reached, currentAgent: enabledAgent }, 'confirmation'],
     ['add a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, patch: { mcpServers: [removable] } }, { agentEditable: true, capabilityScopeExpanded: true }, 'immediate'],
+    ['overwrite from a recipe', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, confirmationReason: 'recipe_overwrite', patch: { instructions: 'Answer.' } }, { agentEditable: true }, 'immediate'],
+    ['overwrite from a recipe that drops a connection', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, confirmationReason: 'recipe_overwrite', patch: { mcpServers: [] } }, { agentEditable: true, connectionRemoved: true }, 'confirmation'],
+    ['overwrite from a recipe that disables an Agent in Channels', { itemId: 'u', kind: 'update_agent', agentId: 'agent_policy', expectedRevision: 1, confirmationReason: 'recipe_overwrite', patch: { enabled: false } }, { ...reached, currentAgent: enabledAgent }, 'confirmation'],
     ['archive an Agent', { itemId: 'a', kind: 'archive_agent', agentId: 'agent_policy', expectedRevision: 1 }, { agentEditable: true }, 'immediate'],
     ['grant Channel reach', { itemId: 'g', kind: 'grant_agent_channel', workspaceId: 'T', channelId: 'C', agentId: 'agent_policy', expectedRevision: 0 }, { agentEditable: true }, 'immediate'],
     ['rewrite a skill', skillUpdate, { agentEditable: true }, 'immediate'],
   ];
   for (const [label, operation, facts, mcpPosture] of cases) {
-    const decide = (origin: LiveManagementActor['origin']) =>
-      posture(classifyManagementOperation({ actor: { ...owner, origin }, operation, ...facts }));
-    assert.equal(decide({ kind: 'mcp', clientId: 'policy-test' }), mcpPosture, `${label} over MCP`);
+    const mcp = { kind: 'mcp', clientId: 'policy-test' } as const;
+    const decide = (origin: LiveManagementActor['origin'], candidate = operation) =>
+      posture(classifyManagementOperation({ actor: { ...owner, origin }, operation: candidate, ...facts }));
+    assert.equal(decide(mcp), mcpPosture, `${label} over MCP`);
     assert.equal(decide({ kind: 'admin', sessionId: 'session_policy' }), 'immediate', `${label} from Admin, which asks in the browser`);
     assert.equal(decide(actor.origin), 'confirmation', `${label} in Slack`);
+    if (operation.kind !== 'update_agent') continue;
+    assert.equal(decide(mcp, { ...operation, confirmationReason: 'recipe_overwrite' }), mcpPosture,
+      `${label} over MCP keeps its posture when a recipe overwrite carries it`);
   }
 });
 

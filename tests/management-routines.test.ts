@@ -168,6 +168,94 @@ test('management-created schedules accept active grant-only destinations and bin
   }
 });
 
+test('an edit the schedule\'s Runs as authority refuses leaves the routine as it was', async () => {
+  // A member's new Channel routine needs Slack to show them the Channel.
+  const f = await createManagementAdapterFixture('routine-edit-atomic', {
+    slackFacts: async () => ({
+      async lookupChannel(channelId) {
+        return { id: channelId, name: 'digest', private: false, member: true, archived: false };
+      },
+      async listMemberChannels() {
+        return new Set<string>();
+      },
+    }),
+  });
+  try {
+    const workspaceId = f.owner.binding.slackTeamId;
+    const member = (await f.identity.provisionSlackMember({
+      slackTeamId: workspaceId,
+      slackUserId: 'UROUTINEMEMBER',
+      displayName: 'Routine Member',
+    })).resolution!;
+    await f.config.createAgent({
+      id: 'agent_digest',
+      name: 'Digest',
+      instructions: 'Summarize the day.',
+      enabled: true,
+      creatorMembershipId: member.membership.id,
+      editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await f.config.putAgentChannelGrant({
+      workspaceId,
+      channelId: 'C_DIGEST',
+      agentId: 'agent_digest',
+      status: 'active',
+      createdByMembershipId: member.membership.id,
+      channelLabel: 'digest',
+    });
+    const context = (person: { user: { id: string }; membership: { id: string; organizationId: string } }) => ({
+      userId: person.user.id,
+      membershipId: person.membership.id,
+      organizationId: person.membership.organizationId,
+      origin: { kind: 'mcp' as const, clientId: 'routine-edit-atomic' },
+    });
+    const save = {
+      itemId: 'routine',
+      kind: 'save_routine' as const,
+      requiredConnectionAccountIds: [],
+      agentId: 'agent_digest',
+      workspaceId,
+      channelId: 'C_DIGEST',
+      name: 'Daily digest',
+      description: 'Summarize the day.',
+      taskText: 'Summarize today in Channel.',
+      schedule: { kind: 'cron' as const, expression: '0 17 * * 1-5' },
+      timezone: 'UTC',
+      outputPolicy: 'post' as const,
+    };
+    const created = await f.service.applyWorkspaceChanges({
+      context: context(member),
+      idempotencyKey: 'member-creates-digest',
+      operations: [save],
+    });
+    assert.equal(created.status, 'completed', JSON.stringify(created));
+    const [routine] = await f.routines.listRoutines(workspaceId, 'C_DIGEST');
+    assert.ok(routine);
+    assert.equal((await f.config.getAgentScheduleReference(routine.id))?.runsAsMembershipId, member.membership.id);
+
+    const edited = await f.service.applyWorkspaceChanges({
+      context: context(f.admin),
+      idempotencyKey: 'admin-rewrites-digest',
+      operations: [{
+        ...save,
+        routineId: routine.id,
+        expectedVersion: routine.version,
+        taskText: 'Summarize today and send it to the Admin.',
+      }],
+    });
+    assert.ok('outcomes' in edited, JSON.stringify(edited));
+    assert.deepEqual(edited.outcomes.map(({ disposition }) => disposition), ['failed'], JSON.stringify(edited.outcomes));
+    const after = await f.routines.getRoutine(routine.id);
+    assert.equal(after?.taskText, routine.taskText, 'the refused edit wrote nothing');
+    assert.equal(after?.version, routine.version);
+    assert.equal(after?.state, 'active', 'the routine keeps running as before');
+    assert.equal((await f.routines.listRevisions(routine.id)).length, 1);
+  } finally {
+    f.close();
+  }
+});
+
 test('a routed Agent manages and inspects only its own routines', async () => {
   const f = await createManagementAdapterFixture('self-routines');
   const workspaceId = f.admin.binding.slackTeamId;
