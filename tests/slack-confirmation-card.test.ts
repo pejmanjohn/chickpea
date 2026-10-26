@@ -325,6 +325,7 @@ test('a typed "approve" from the requester finds the confirmation, and Cancel le
       operationKind: 'update_agent',
       disposition: 'failed',
       code: 'proposal_stale',
+      instruction: 'This reviewed change went out of date, so nothing in it applied. Inspect again and send a new change.',
     }]);
     assert.equal((await f.management.getRequest(retried.operationId as string))?.status, 'completed');
 

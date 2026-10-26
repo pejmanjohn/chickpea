@@ -1794,7 +1794,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'skipped',
-          code: 'dependency_not_applied',
+          ...unappliedReason('dependency_not_applied'),
         });
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
@@ -1845,7 +1845,7 @@ export class WorkspaceManagementService {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'failed',
-            code: policy.reason,
+            ...unappliedReason(policy.reason),
           });
         } else if (policy.posture === 'confirmation') {
           const frozen = await this.freezeConfirmation(actor, request, index, progress);
@@ -1930,8 +1930,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'failed',
-          code: mutationErrorCode(error),
-          ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
+          ...mutationFailure(error),
           ...(error instanceof ManagementError && (error.code === 'model_provider_unavailable' ||
               error.code === 'effort_not_supported' || error.code === 'effort_requires_model')
             ? { warning: error.message }
@@ -2044,10 +2043,12 @@ export class WorkspaceManagementService {
         agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
           proposalAgentIds.has(operation.agentId!),
       }));
-      return policy.allowed ? undefined : { ...item, disposition: 'failed', code: policy.reason };
+      return policy.allowed
+        ? undefined
+        : { ...item, disposition: 'failed', ...unappliedReason(policy.reason) };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
-      return { ...item, disposition: 'failed', code: mutationErrorCode(error) };
+      return { ...item, disposition: 'failed', ...mutationFailure(error) };
     }
   }
 
@@ -2088,7 +2089,7 @@ export class WorkspaceManagementService {
         itemId: operation.itemId,
         operationKind: operation.kind,
         disposition: 'failed',
-        code: 'proposal_stale',
+        ...unappliedReason('proposal_stale'),
       }));
     } else {
       return undefined;
@@ -2478,7 +2479,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'skipped',
-          code: 'dependency_not_applied',
+          ...unappliedReason('dependency_not_applied'),
         });
       } else {
         let mutation = recovered
@@ -2507,7 +2508,7 @@ export class WorkspaceManagementService {
               itemId: operation.itemId,
               operationKind: operation.kind,
               disposition: 'failed',
-              code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
+              ...mutationFailure(error),
             });
             recoveryDenied = true;
           }
@@ -2528,8 +2529,7 @@ export class WorkspaceManagementService {
                   itemId: operation.itemId,
                   operationKind: operation.kind,
                   disposition: 'failed',
-                  code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
-                  ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
+                  ...mutationFailure(error),
                 });
           }
         }
@@ -5918,9 +5918,6 @@ function refusedUpdatePutBack(
   return Object.keys(putBack).length > 0 ? putBack as ConfigAgentPatch : undefined;
 }
 
-/** Slack refused an Agent's new handle or name; the message tells the model why. */
-class AgentUpdateRefused extends AgentPresenceError {}
-
 function refusedAgentUpdate(
   error: unknown,
   kept: CustomAgentConfig | undefined,
@@ -5933,7 +5930,7 @@ function refusedAgentUpdate(
     const next = error.suggestions.length > 0
       ? `Free handles: ${error.suggestions.map((suggestion) => `@${suggestion}`).join(', ')}. Offer these, or ask for another handle.`
       : 'Ask for another handle.';
-    return new AgentUpdateRefused(
+    return new AgentPresenceError(
       error.code,
       kept
         ? `@${handle} is already taken in this Slack workspace, so nothing changed and the Agent keeps @${kept.slackPresence?.normalizedHandle}. ${next}`
@@ -5942,7 +5939,7 @@ function refusedAgentUpdate(
     );
   }
   if (error.slackCode === 'name_too_long') {
-    return new AgentUpdateRefused(
+    return new AgentPresenceError(
       error.code,
       kept
         ? 'Slack refused this name because it is too long for a Slack user group, so nothing changed and the Agent keeps its name. Ask for a shorter name.'
@@ -7337,14 +7334,37 @@ function isExpectedMutationError(error: unknown): boolean {
     error instanceof AgentStillReferencedError;
 }
 
-function mutationErrorCode(error: unknown): string {
-  if (error instanceof ManagementError) return error.code;
-  if (error instanceof AgentPresenceError) return error.code;
-  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
-    return 'revision_conflict';
+type UnappliedReason = Pick<ManagementItemOutcome, 'code' | 'instruction'>;
+
+/** The code clients branch on and, for the model, why the item did not apply. */
+function mutationFailure(error: unknown): UnappliedReason {
+  // These messages are written for people and carry no internal identifiers;
+  // the config errors below name Agent IDs, so they get a fixed explanation.
+  if (error instanceof ManagementError || error instanceof AgentPresenceError) {
+    return { code: error.code, instruction: error.message };
   }
-  if (error instanceof UnknownAgentError) return 'not_found';
-  if (error instanceof AgentExistsError) return 'already_exists';
-  if (error instanceof AgentStillReferencedError) return 'still_referenced';
-  return 'mutation_failed';
+  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
+    return unappliedReason('revision_conflict');
+  }
+  if (error instanceof UnknownAgentError) return unappliedReason('not_found');
+  if (error instanceof AgentExistsError) return unappliedReason('already_exists');
+  if (error instanceof AgentStillReferencedError) return unappliedReason('still_referenced');
+  return unappliedReason('operation_failed');
+}
+
+const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
+  dependency_not_applied: 'A change in this call that this one depends on did not apply, so this one was not attempted.',
+  proposal_stale: 'This reviewed change went out of date, so nothing in it applied. Inspect again and send a new change.',
+  owner_required: 'Only a workspace Owner can make this change.',
+  operational_access_required: 'The person’s Chickpea role or this Agent’s edit policy does not allow this change.',
+  revision_conflict: 'This changed after it was inspected. Inspect again and resend the change.',
+  not_found: 'The Agent no longer exists. Inspect the workspace again.',
+  already_exists: 'An Agent with this ID already exists. Inspect the workspace before choosing another ID.',
+  still_referenced: 'The Agent is still in use, so it was not deleted. Archive it and remove its Slack reach first.',
+  operation_failed: 'The change did not apply. Inspect again before retrying.',
+};
+
+function unappliedReason(code: string): UnappliedReason {
+  const instruction = UNAPPLIED_INSTRUCTIONS[code];
+  return instruction ? { code, instruction } : { code };
 }

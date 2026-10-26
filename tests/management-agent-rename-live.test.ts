@@ -364,7 +364,11 @@ test('a rename whose Slack update never starts is put back too', async (t) => {
     const outcome = await update('change Desk to @frontdesk', { requestedHandle: 'frontdesk' });
     assert.deepEqual(
       { disposition: outcome.disposition, code: outcome.code, instruction: outcome.instruction },
-      { disposition: 'failed', code: 'channel_membership_required', instruction: undefined },
+      {
+        disposition: 'failed',
+        code: 'channel_membership_required',
+        instruction: 'The acting Slack member is not bound to this workspace.',
+      },
     );
     assert.deepEqual(await desk(), DESK);
     assert.equal(slack.groups.find(({ id }) => id === 'S0DESK')?.handle, 'desk');
