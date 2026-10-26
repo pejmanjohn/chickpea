@@ -8479,8 +8479,9 @@
           ? "Restoring re-enables the same Slack handle, Channel access, and schedules paused by the archive."
           : "Archiving disables the Slack handle, removes Channel access, and pauses schedules. It can be restored later.") + '</p>') + '</div>'
       : "";
+    var status = archived ? "Archived" : draft.enabled === false ? "Disabled" : "Active";
     return '<div class="agent-profile-header-actions">' +
-      '<span class="agent-status-chip ' + (archived ? "disabled" : "enabled") + '"><span aria-hidden="true"></span>' + (archived ? "Archived" : "Active") + '</span>' +
+      '<span class="agent-status-chip ' + (status === "Active" ? "enabled" : "disabled") + '"><span aria-hidden="true"></span>' + status + '</span>' +
       '<div class="agent-overflow"><button type="button" class="agent-overflow-trigger" data-action="agent-overflow-toggle" aria-label="Actions for ' + esc(draft.name || "Agent") + '" aria-haspopup="menu" aria-expanded="' + (open ? "true" : "false") + '">' + icon("ellipsis") + '</button>' + menu + '</div></div>';
   }
 

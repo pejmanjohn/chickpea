@@ -4077,6 +4077,24 @@ test('the profile editor presents reversible archive semantics for an assigned A
   assert.equal(harness.focusedAction(), 'archive-profile');
 });
 
+test('the Agent page badge says Disabled for a disabled Agent, as its Agents card does', async () => {
+  const harness = runAdminPageHarness({
+    agents: [{ ...releaseAgent, enabled: false, lifecycle: 'active' }, { ...opsAgent, lifecycle: 'archived' }],
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+  click({ target: actionTarget({ 'data-action': 'open-profiles' }) });
+  assert.match(harness.app.innerHTML, /Release Profile[\s\S]*badge-off"><span class="dot"><\/span>Disabled/);
+
+  const chip = () => /class="agent-status-chip (\w+)"><span aria-hidden="true"><\/span>(\w+)</.exec(harness.app.innerHTML)?.slice(1);
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_release' }) });
+  assert.deepEqual(chip(), ['disabled', 'Disabled']);
+  click({ target: actionTarget({ 'data-action': 'profiles-back' }) });
+  click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_ops' }) });
+  assert.deepEqual(chip(), ['disabled', 'Archived'], 'an archived Agent still reads Archived');
+});
+
 test('Agent deletion explains how to replace a workspace Default Agent', async () => {
   const dmAgent = {
     ...releaseAgent,
