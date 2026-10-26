@@ -2216,17 +2216,24 @@ export class IdentityStoreLogic {
         ) {
           return { outcome: 'deactivated', resolution: existing };
         }
-        const at = input.at ?? this.now();
+        const displayName = input.displayName === undefined
+          ? existing.user.displayName
+          : cleanDisplayName(input.displayName);
+        const contactEmail = input.contactEmail === undefined
+          ? existing.user.contactEmail
+          : cleanContactEmail(input.contactEmail);
+        // Every Slack event re-provisions its author. Skipping the write when
+        // nothing changed keeps that read-only turn off the Durable Object's
+        // output gate, which holds the response until a write is durable.
+        if (displayName === existing.user.displayName && contactEmail === existing.user.contactEmail) {
+          return { outcome: 'active', resolution: existing };
+        }
         this.db.run(
           `UPDATE identity_users SET display_name = ?, contact_email = ?, updated_at = ?
            WHERE user_id = ?`,
-          input.displayName === undefined
-            ? existing.user.displayName
-            : cleanDisplayName(input.displayName),
-          input.contactEmail === undefined
-            ? existing.user.contactEmail
-            : cleanContactEmail(input.contactEmail),
-          at,
+          displayName,
+          contactEmail,
+          input.at ?? this.now(),
           existing.user.id,
         );
         return {
