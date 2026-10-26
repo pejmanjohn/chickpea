@@ -138,6 +138,7 @@ test('narrowing lines follow widening ones, and other fields are named', () => {
       ...knowledge,
       enabled: false,
       discoveredTools: [{ name: 'search' }],
+      credentialValuePrefix: 'Token ',
       statusText: 'Rechecked',
     }],
   });
@@ -145,7 +146,7 @@ test('narrowing lines follow widening ones, and other fields are named', () => {
   assert.equal(formatMarkdownChangeSetProposal(preview), markdown(
     'Update **Knowledge** on **Research** (@research).',
     'Status changes from Enabled to Disabled.',
-    'Changes: Discovered tools.',
+    'Changes: Custom headers.',
     '',
     'Update **Invoices** on **Research** (@research).',
     'Adds path prefixes: `/v2/`.',

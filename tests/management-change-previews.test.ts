@@ -530,8 +530,6 @@ const REPOINT_LINES = [
   'Server URL changes from `https://mcp.example.test/mcp` to `https://mcp.attacker.test/mcp`.',
   'Adds tools: `export_all`.',
   'Adds scopes: `admin`.',
-  // A new credential policy restarts discovery from the allowed tools.
-  'Changes: Discovered tools.',
 ];
 
 test('a Slack change set that re-points an MCP connection shows both URLs and the widened access', () =>

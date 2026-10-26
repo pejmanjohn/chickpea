@@ -70,10 +70,11 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   operation: new Set([
     'create_agent', 'update_agent', 'delete_agent', 'archive_agent', 'restore_agent', 'put_channel',
-    'grant_agent_channel', 'revoke_agent_channel',
-    'update_member', 'remove_provider_credential',
+    'grant_agent_channel', 'revoke_agent_channel', 'disconnect_connection', 'remove_website_login',
+    'update_member', 'remove_provider_credential', 'set_workspace_model', 'set_agent_image_model',
     'update_agent_memory', 'save_routine', 'control_routine', 'run_routine', 'delete_routine',
     'reassign_routine_agent',
+    'take_over_routine',
     'request_setup',
   ]),
   artifactClass: new Set([
@@ -198,11 +199,16 @@ export function agentAuthoringArtifactClass(
       case 'update_agent_memory':
         classes.add('memory');
         break;
+      case 'set_workspace_model':
+      case 'set_agent_image_model':
+        classes.add('model');
+        break;
       case 'save_routine':
       case 'control_routine':
       case 'run_routine':
       case 'delete_routine':
       case 'reassign_routine_agent':
+      case 'take_over_routine':
         classes.add('schedule');
         break;
       case 'grant_agent_channel':
@@ -221,6 +227,8 @@ export function agentAuthoringArtifactClass(
         classes.add('edit_authority');
         break;
       case 'remove_provider_credential':
+      case 'disconnect_connection':
+      case 'remove_website_login':
         classes.add('connection');
         break;
       default:

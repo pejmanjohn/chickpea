@@ -63,6 +63,14 @@ const PRESENTATION_FIELDS = {
   routine: ['name', 'ownerAgent', 'description', 'taskText', 'schedule', 'timezone', 'destination', 'delivery'],
   channel: ['label', 'lifecycle'],
   memory: ['body'],
+  agentImageModel: ['imageModel'],
+  workspaceModel: [
+    'defaultModel',
+    'defaultModelEffort',
+    'defaultImageModel',
+    'defaultCodingModel',
+    'defaultCodingModelEffort',
+  ],
 } as const;
 
 type PresentationField =
@@ -91,6 +99,12 @@ const FIELD_LABELS: Readonly<Record<PresentationField, string>> = {
   label: 'Name',
   lifecycle: 'Status',
   body: 'Memory',
+  imageModel: 'Image model',
+  defaultModel: 'Default model',
+  defaultModelEffort: 'Default model effort',
+  defaultImageModel: 'Default image model',
+  defaultCodingModel: 'Default coding model',
+  defaultCodingModelEffort: 'Default coding model effort',
   availableIn: 'Available in',
 };
 
@@ -113,17 +127,22 @@ const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
   delete_agent: 'Delete Agent',
   archive_agent: 'Archive Agent',
   restore_agent: 'Restore Agent',
+  disconnect_connection: 'Disconnect Connection',
+  remove_website_login: 'Remove Website Login',
   put_channel: 'Update Channel',
   grant_agent_channel: 'Add to Channel',
   revoke_agent_channel: 'Remove from Channel',
   update_member: 'Update Member',
   remove_provider_credential: 'Remove Provider Key',
+  set_workspace_model: 'Change Workspace Model',
+  set_agent_image_model: 'Change Image Model',
   update_agent_memory: 'Update Memory',
   save_routine: 'Save Schedule',
   control_routine: 'Control Schedule',
   run_routine: 'Run Schedule',
   delete_routine: 'Delete Schedule',
   reassign_routine_agent: 'Change Schedule Agent',
+  take_over_routine: 'Take Over Schedule',
   request_setup: 'Request Setup',
 };
 
@@ -259,6 +278,10 @@ function formatChangeSections(
       );
     case 'update_agent_memory':
       return sections(PRESENTATION_FIELDS.memory, 'Agent');
+    case 'set_agent_image_model':
+      return sections(PRESENTATION_FIELDS.agentImageModel, recordName(before, after) ?? 'Agent');
+    case 'set_workspace_model':
+      return sections(PRESENTATION_FIELDS.workspaceModel, 'Workspace');
     default:
       return [headerPart(change.operationKind, operationHeader(change.operationKind, recordName(before, after), dialect))];
   }
@@ -277,6 +300,8 @@ const SAFE_CHANGES: Partial<Record<PresentationField, true | readonly string[]>>
   description: true,
   instructions: true,
   modelEffort: true,
+  defaultModelEffort: true,
+  defaultCodingModelEffort: true,
   skills: true,
   editPolicy: ['creator_and_admins'],
   enabled: ['false'],
@@ -370,6 +395,10 @@ function formatStatement(
       return `Restore ${agent(statement.agent)}. It gets back the Channels and schedules it had before the archive.`;
     case 'delete_agent':
       return `Delete ${agent(statement.agent)} permanently. This cannot be undone.`;
+    case 'disconnect_connection':
+      return `Disconnect ${named(statement.connection, 'this connection')} from ${agent(statement.agent)}. The Agent loses access to it, and schedules that use it pause.`;
+    case 'remove_website_login':
+      return `Remove the ${named(statement.site, 'website')} login from ${agent(statement.agent)}. If no other Agent uses it, the saved sign-in is deleted too.`;
     case 'update_member':
       return formatMemberStatement(statement, dialect);
     case 'remove_provider_credential':
@@ -550,7 +579,7 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
   credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
   credentialOptional: { show: 'named', label: 'Authentication', widens: true },
-  discoveredTools: { show: 'named', label: 'Discovered tools', widens: false },
+  discoveredTools: BOOKKEEPING,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
   credentialRef: CREDENTIAL_REFERENCE,

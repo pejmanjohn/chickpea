@@ -27,7 +27,7 @@ import {
   AGENT_AUTHORING_GUIDE_MCP_DIGEST,
   AGENT_SKILL_CREATION_GUIDE_MCP,
 } from '../src/management/agent-authoring/mcp-guide.ts';
-import { MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
+import { MCP_MANAGEMENT_OPERATION_KINDS } from '../src/management/schemas.ts';
 import {
   WORKSPACE_MANAGEMENT_PROMPT_NAMES,
   WORKSPACE_MANAGEMENT_PROMPTS,
@@ -251,7 +251,7 @@ test('supported coding clients share public PKCE registration and stateless MCP 
       };
       assert.equal(contract.schemaVersion, 2);
       assert.deepEqual(contract.tools, WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES, client.name);
-      assert.deepEqual(contract.operationKinds, MANAGEMENT_OPERATION_KINDS);
+      assert.deepEqual(contract.operationKinds, MCP_MANAGEMENT_OPERATION_KINDS);
       assert.deepEqual(contract.prompts, WORKSPACE_MANAGEMENT_PROMPT_NAMES, client.name);
 
       const promptList = await mcpCall(handler.fetch, client.protocol, 'prompts/list', {});

@@ -23,11 +23,6 @@ export interface PrivateAgentActor {
   slackUserId?: string;
 }
 
-type AgentAccessTransport = Pick<
-  SlackTransport,
-  'lookupChannel' | 'listChannels' | 'listMemberChannels'
->;
-
 /** The Slack facts one Agent's access is decided from: its placed Channels, and the person's. */
 export type PrivateAgentPlacementFacts = Pick<SlackTransport, 'lookupChannel' | 'listMemberChannels'>;
 
@@ -57,7 +52,8 @@ interface PrivateAgentDirectoryInput {
   workspaceId: string;
   grants: readonly AgentChannelGrant[];
   actor: PrivateAgentActor;
-  transport: AgentAccessTransport;
+  /** Without a Channel directory, every placed Channel is read with its own lookup. */
+  transport: PrivateAgentPlacementFacts & Partial<Pick<SlackTransport, 'listChannels'>>;
 }
 
 interface PlacementState {
@@ -228,10 +224,10 @@ async function collectTargetedFacts(
 
 async function collectDirectoryFacts(
   grants: readonly AgentChannelGrant[],
-  transport: AgentAccessTransport,
+  transport: PrivateAgentDirectoryInput['transport'],
 ): Promise<ReadonlyMap<string, SlackChannel | undefined>> {
   const channelIds = [...new Set(grants.map(({ channelId }) => channelId))];
-  if (channelIds.length < DIRECTORY_CROSSOVER) {
+  if (channelIds.length < DIRECTORY_CROSSOVER || !transport.listChannels) {
     return collectTargetedFacts(channelIds, transport);
   }
 

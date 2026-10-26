@@ -686,6 +686,8 @@ test('management provider impact includes the Workspace default and inheriting A
     const anthropic = snapshot.providers.find(({ id }) => id === 'anthropic');
     assert.deepEqual(anthropic, {
       id: 'anthropic',
+      // This service has no model sources, so it cannot say the key's models run.
+      available: false,
       source: 'stored',
       mutable: true,
       workspaceDefaultAffected: true,

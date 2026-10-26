@@ -691,12 +691,11 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     const snapshot = (scoped as { ok: true; result: {
       currentAgentId: string;
       currentAgent: { id: string; name: string; effectiveConnections: unknown[] };
-      agents: Array<{ id: string }>;
+      agents: Array<{ id: string; effectiveModels: { model: string | null } }>;
       connectors: Array<{ id: string; kind: string }>;
       channels: unknown[];
       providers: unknown[];
       selfManagement: {
-        availableModels: Array<{ id: string }>;
         routineSchedulingAvailable: boolean;
         capabilityHealth: {
           mcpConnections: { ready: number; pending: number; failed: number };
@@ -716,9 +715,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
       id === 'zendesk' && kind === 'setup_catalog_entry'));
     assert.deepEqual(snapshot.channels, []);
     assert.deepEqual(snapshot.providers, []);
-    assert.ok(snapshot.selfManagement.availableModels.some(
-      ({ id }) => id === 'openai/gpt-5.6-terra',
-    ));
+    assert.equal(snapshot.agents[0]?.effectiveModels.model, 'openai/gpt-5.6-terra');
     assert.equal(snapshot.selfManagement.routineSchedulingAvailable, true);
     assert.deepEqual(snapshot.selfManagement.capabilityHealth.mcpConnections, {
       ready: 0,

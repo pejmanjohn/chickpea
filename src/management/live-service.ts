@@ -23,8 +23,6 @@ import type { SettingsStore } from '../config/settings-store.ts';
 import { installationModelCredentialVersion } from '../config/model-credential-refs.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
 import { modelEffortChoiceError } from '../config/model-effort-capability.ts';
-import { getProviderFavorites } from '../config/provider-models.ts';
-import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
 import { ConnectionAccountService } from '../connections/store.ts';
@@ -59,8 +57,10 @@ import {
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
 } from './service.ts';
+import { createManagementModelSources } from './model-sources.ts';
 import { ManagementError } from './types.ts';
 import {
+  discoverOpenMcpServer,
   testManagedMcpConnection,
 } from './discovery.ts';
 
@@ -211,6 +211,7 @@ export function createLiveWorkspaceManagementService(
         throw new ManagementError('invalid_request', 'The connected Slack directory is unavailable.');
       }
     },
+    discoverMcpServer: (server) => discoverOpenMcpServer({ server }),
     testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,
@@ -229,22 +230,7 @@ export function createLiveWorkspaceManagementService(
       return Boolean(provider?.authorize) &&
         managedProviderAvailability(provider, { toolkit, accessLane }).status === 'ready';
     },
-    listAvailableModels: async () => {
-      const [unavailable, favorites] = await Promise.all([
-        resolveModelReadiness({ env, settings }),
-        getProviderFavorites('openrouter', settings),
-      ]);
-      const candidates: Array<{ id: string; name?: string }> = [
-        ...activeModelCatalogSnapshot(env).entries.flatMap((entry) =>
-          (entry.id.startsWith('anthropic/') && entry.lanes.anthropic_api_key) ||
-          (entry.id.startsWith('openai/') && entry.lanes.openai_api_key)
-            ? [{ id: entry.id, ...(entry.displayName ? { name: entry.displayName } : {}) }]
-            : []),
-        ...favorites.map((id) => ({ id: `openrouter/${id}` })),
-      ];
-      const ready = await Promise.all(candidates.map(async ({ id }) => !(await unavailable(id))));
-      return candidates.filter((_, index) => ready[index]);
-    },
+    models: createManagementModelSources({ env, settings }),
     publishAgentPresence: async ({ actor, agentId }) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {
