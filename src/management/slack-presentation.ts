@@ -19,6 +19,8 @@ export const SLACK_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   textLimit: slackMarkdownBlockTextLimit,
   bold: (text) => `*${text}*`,
   escape: escapeSlackControlCharacters,
+  // Slack code spans cannot hold a backtick; a look-alike keeps the value inside one.
+  code: (text) => `\`${escapeSlackControlCharacters(text.replaceAll('`', '\u02cb'))}\``,
 };
 
 export function formatSlackChangeSetProposal(preview: ManagementChangeSetPreview): string {

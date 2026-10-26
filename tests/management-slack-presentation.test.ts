@@ -237,7 +237,7 @@ test('blank Agent fields and internal Slack presence state do not create proposa
   ].join('\n'));
 });
 
-test('new Agent internals stay hidden even when explicitly configured', () => {
+test('new Agent internals stay hidden, while its skills and an all-member edit policy show', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
@@ -263,8 +263,10 @@ test('new Agent internals stay hidden even when explicitly configured', () => {
 
   assert.doesNotMatch(
     presentation,
-    /Model|Editing Authority|Skills|anthropic\/claude-opus-5|budget-review|copy-review|private detail|\"instructions\"/,
+    /Model|Editing Authority|anthropic\/claude-opus-5|private detail|\"instructions\"/,
   );
+  assert.match(presentation, /^\*Who can edit\*\n> Any workspace member$/m);
+  assert.match(presentation, /^\*Paid Marketing — Skills\*\n> budget-review, copy-review$/m);
 });
 
 test('a preview frozen before statements names the action, never the record or target', () => {
@@ -649,6 +651,7 @@ test('connection changes name each connection and the Agent', () => {
     'Remove **DeepWiki** from **Research** (@research).',
     '',
     'Update **Billing** on **Research** (@research).',
+    'Status changes from Enabled to Disabled.',
     '',
     'Add **All repositories for acme** to **Research** (@research).',
     '',

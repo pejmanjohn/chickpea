@@ -110,13 +110,16 @@ import {
 } from './recipes.ts';
 import type { McpConnectionTestActor } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
+import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,
   formatMarkdownSkillImportProposal,
+  MARKDOWN_PRESENTATION_DIALECT,
 } from './markdown-presentation.ts';
 import {
   formatSlackChangeSetProposal,
   formatSlackSkillImportProposal,
+  SLACK_PRESENTATION_DIALECT,
 } from './slack-presentation.ts';
 import type { SlackManagementSignal } from './slack-tools.ts';
 import {
@@ -6742,6 +6745,13 @@ function boundedChangeSetPreview(
     throw new ManagementError(
       'invalid_request',
       'The reviewed change diff is too large. Split it into smaller proposals.',
+    );
+  }
+  if (!changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT) ||
+      !changeSetAccessFits(preview, MARKDOWN_PRESENTATION_DIALECT)) {
+    throw new ManagementError(
+      'invalid_request',
+      'The access this proposal grants is too long to show in one preview. Split it into smaller proposals.',
     );
   }
   return preview;

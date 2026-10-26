@@ -1,4 +1,9 @@
-import type { NonChatModelRole } from '../config/types.ts';
+import type {
+  ApiConnectionConfig,
+  McpConnectionConfig,
+  NonChatModelRole,
+  RepositoryGrant,
+} from '../config/types.ts';
 import type { MembershipStatus } from '../identity/types.ts';
 import type {
   ManagementAgentLabel,
@@ -18,10 +23,18 @@ export interface ChangeSetPresentationDialect {
   textLimit: number;
   bold: (text: string) => string;
   escape: (text: string) => string;
+  /** A technical value (URL, host, tool, scope) shown inert: no mention, link or formatting. */
+  code: (text: string) => string;
 }
 
 type PreviewChange = ManagementChangeSetPreview['changes'][number];
 type OperationKind = PreviewChange['operationKind'];
+
+/** A section or line of a preview. Whatever widens access leads a preview that must be cut. */
+interface PreviewPart {
+  text: string;
+  widens: boolean;
+}
 
 /**
  * The only record fields a preview renders, in order. Every other field (IDs,
@@ -78,18 +91,17 @@ const FIELD_LABELS: Readonly<Record<PresentationField, string>> = {
   availableIn: 'Available in',
 };
 
+const STATUS_LABELS = { true: 'Enabled', false: 'Disabled' } as const;
+
 /** Admin's words for stored values a person would otherwise read as machine tokens. */
 const VALUE_LABELS: Partial<Record<PresentationField, Readonly<Record<string, string>>>> = {
   editPolicy: {
     creator_and_admins: 'Creator and workspace admins',
     all_workspace_members: 'Any workspace member',
   },
-  enabled: { true: 'Enabled', false: 'Disabled' },
+  enabled: STATUS_LABELS,
   lifecycle: { active: 'Active', archived: 'Archived' },
 };
-
-/** Agent connection lists, rendered entry by entry under the name people see in Admin. */
-const CONNECTION_FIELDS = new Set<PresentationField>(['mcpServers', 'apiConnections', 'repositories']);
 
 /** For a change with nothing else to show: frozen before statements existed, or internal-only. */
 const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
@@ -131,43 +143,86 @@ export function formatSkillImportProposal(
   ]);
 }
 
+/**
+ * Whether everything a change set widens fits in one preview. When it does,
+ * truncation only ever cuts sections that grant nothing.
+ */
+export function changeSetAccessFits(
+  preview: ManagementChangeSetPreview,
+  dialect: ChangeSetPresentationDialect,
+): boolean {
+  const widening = joinParts(proposalParts(preview, dialect).filter(({ widens }) => widens));
+  return widening.length <= truncatedBodyLimit(dialect);
+}
+
 function formatProposal(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
   leadingSections: readonly string[],
 ): string {
-  const creation = creationPreview(preview);
-  const header = dialect.header;
-  const approvalInstruction = dialect.approvalInstruction;
-  const truncatedApprovalInstruction = dialect.truncatedApprovalInstruction;
-  const sections = preview.changes.flatMap((change) => {
-    if (creation?.originGrant === change) return [];
-    if (change.operationKind === 'create_agent') {
-      const after = presentationRecord(change.operationKind, change.after);
-      return [formatNewAgentSection(after, dialect, creation?.originGrant !== undefined)];
-    }
-    return formatChangeSections(change, dialect);
-  });
-  const body = [...leadingSections, ...sections].join('\n\n');
+  const parts = [
+    ...leadingSections.map((text) => ({ text, widens: true })),
+    ...proposalParts(preview, dialect),
+  ];
+  const body = joinParts(parts);
   const fullPresentation = [
-    header,
+    dialect.header,
     ...(body ? [body, ''] : []),
-    approvalInstruction,
+    dialect.approvalInstruction,
   ].join('\n');
   if (fullPresentation.length <= dialect.textLimit) {
     return fullPresentation;
   }
 
-  const prefix = `${header}\n`;
-  const suffix = `\n\n${dialect.truncationNotice}\n\n${truncatedApprovalInstruction}`;
-  const availableBodyLength = dialect.textLimit - prefix.length - suffix.length;
-  return `${prefix}${body.slice(0, availableBodyLength).trimEnd()}${suffix}`;
+  const ordered = joinParts([
+    ...parts.filter(({ widens }) => widens),
+    ...parts.filter(({ widens }) => !widens),
+  ]);
+  return `${dialect.header}\n${ordered.slice(0, truncatedBodyLimit(dialect)).trimEnd()}${truncationSuffix(dialect)}`;
+}
+
+function proposalParts(
+  preview: ManagementChangeSetPreview,
+  dialect: ChangeSetPresentationDialect,
+): PreviewPart[] {
+  const creation = creationPreview(preview);
+  return preview.changes.flatMap((change) => {
+    if (creation?.originGrant === change) return [];
+    if (change.operationKind === 'create_agent') {
+      const after = presentationRecord(change.operationKind, change.after);
+      return [
+        {
+          text: formatNewAgentSection(after, dialect, creation?.originGrant !== undefined),
+          widens: newAgentWidensEditing(after),
+        },
+        ...formatSkillChangeSections(recordName(undefined, after) ?? 'New Agent', undefined, after?.skills, false, dialect)
+          .map(plainPart),
+      ];
+    }
+    return formatChangeSections(change, dialect);
+  });
+}
+
+function truncationSuffix(dialect: ChangeSetPresentationDialect): string {
+  return `\n\n${dialect.truncationNotice}\n\n${dialect.truncatedApprovalInstruction}`;
+}
+
+function truncatedBodyLimit(dialect: ChangeSetPresentationDialect): number {
+  return dialect.textLimit - `${dialect.header}\n`.length - truncationSuffix(dialect).length;
+}
+
+function joinParts(parts: readonly PreviewPart[]): string {
+  return parts.map(({ text }) => text).join('\n\n');
+}
+
+function plainPart(text: string): PreviewPart {
+  return { text, widens: false };
 }
 
 function formatChangeSections(
   change: PreviewChange,
   dialect: ChangeSetPresentationDialect,
-): string[] {
+): PreviewPart[] {
   const before = presentationRecord(change.operationKind, change.before);
   const after = presentationRecord(change.operationKind, change.after);
   const sections = (fields: readonly PresentationField[], targetName: string) =>
@@ -176,7 +231,7 @@ function formatChangeSections(
   if (statement?.kind === 'update_agent_memory') {
     return sections(PRESENTATION_FIELDS.memory, statement.agent.name);
   }
-  if (statement) return [formatStatement(statement, dialect)];
+  if (statement) return [{ text: formatStatement(statement, dialect), widens: statementWidens(statement) }];
   switch (change.operationKind) {
     case 'update_agent':
       return sections(PRESENTATION_FIELDS.agent, recordName(before, after) ?? 'Agent');
@@ -190,7 +245,20 @@ function formatChangeSections(
     case 'update_agent_memory':
       return sections(PRESENTATION_FIELDS.memory, 'Agent');
     default:
-      return [operationHeader(change.operationKind, recordName(before, after), dialect)];
+      return [plainPart(operationHeader(change.operationKind, recordName(before, after), dialect))];
+  }
+}
+
+/** Statements that can give an Agent or a member reach or authority. A role change counts either way. */
+function statementWidens(statement: SpokenStatement): boolean {
+  switch (statement.kind) {
+    case 'grant_agent_channel':
+    case 'restore_agent':
+      return true;
+    case 'update_member':
+      return statement.role === 'owner' || statement.role === 'admin' || statement.status === 'active';
+    default:
+      return false;
   }
 }
 
@@ -211,31 +279,49 @@ function formatRecordSections(
   fields: readonly PresentationField[],
   targetName: string,
   dialect: ChangeSetPresentationDialect,
-): string[] {
+): PreviewPart[] {
   const compare = change.before !== undefined;
   const changed = fields.filter((field) => !presentationValuesEqual(before?.[field], after?.[field]));
-  if (changed.length === 0) return [operationHeader(change.operationKind, targetName, dialect)];
-  return changed.flatMap((field) => {
+  const sections = changed.flatMap((field): PreviewPart[] => {
     if (field === 'skills') {
-      return formatSkillChangeSections(targetName, before?.[field], after?.[field], compare, dialect);
+      return formatSkillChangeSections(targetName, before?.[field], after?.[field], compare, dialect)
+        .map(plainPart);
     }
-    if (CONNECTION_FIELDS.has(field)) {
+    const connectionFields = CONNECTION_FIELDS[field];
+    if (connectionFields) {
       return formatConnectionChangeSections(
+        connectionFields,
         agentRecordLabel(before ?? after, targetName),
         before?.[field],
         after?.[field],
         dialect,
       );
     }
-    return [formatChangeSection(
-      targetName,
-      FIELD_LABELS[field],
-      presentationValue(field, before?.[field]),
-      presentationValue(field, after?.[field]),
-      compare,
-      dialect,
-    )];
+    return [{
+      text: formatChangeSection(
+        targetName,
+        FIELD_LABELS[field],
+        presentationValue(field, before?.[field]),
+        presentationValue(field, after?.[field]),
+        compare,
+        dialect,
+      ),
+      widens: WIDENING_VALUES[field] !== undefined && WIDENING_VALUES[field] === after?.[field],
+    }];
   });
+  return sections.length > 0
+    ? sections
+    : [plainPart(operationHeader(change.operationKind, targetName, dialect))];
+}
+
+/** Agent field values that widen who has authority over the Agent. */
+const WIDENING_VALUES: Partial<Record<PresentationField, string>> = {
+  editPolicy: 'all_workspace_members',
+};
+
+/** A new Agent names its edit policy only when it lets every member edit. */
+function newAgentWidensEditing(after: Record<string, unknown> | undefined): boolean {
+  return after?.editPolicy === WIDENING_VALUES.editPolicy;
 }
 
 /** A memory change shows its body diff instead; its statement only names the Agent. */
@@ -359,29 +445,296 @@ interface ConnectionEntry {
   record: Record<string, unknown>;
 }
 
+/** How a stored value reads: as inert code, as a bold name, or in Admin's words. */
+type ValueFormat = 'code' | 'name' | Readonly<Record<string, string>>;
+
+/**
+ * How one stored connection field reaches the person approving a change.
+ * `widens` names the changes that widen access: any change (`true`), none
+ * (`false`), or a change to one value, such as turning a connection on.
+ */
+type ConnectionField =
+  | {
+      show: 'value';
+      label: string;
+      format: ValueFormat;
+      widens: boolean | string;
+      /** Left out of a new connection's lines: always, or when it holds this default. */
+      unlessNew?: true | string;
+      read?: (value: unknown) => string | undefined;
+    }
+  | {
+      show: 'list';
+      label: string;
+      noun: string;
+      read?: (value: unknown) => string[];
+      /** Said when the list empties: an empty list allows everything. */
+      emptyAllows?: string;
+    }
+  /** Named among the other changes, without its value. */
+  | { show: 'named'; label: string; widens: boolean }
+  /** Part of the entry's name: a change removes the old entry and adds the new one. */
+  | { show: 'identity' }
+  /** Keys, credential references and status bookkeeping. */
+  | { show: 'hidden' };
+
+/** Every stored field is classified, so a new one fails typecheck until it is. */
+type ConnectionFields<T> = Readonly<Record<keyof T, ConnectionField>>;
+
+const HIDDEN: ConnectionField = { show: 'hidden' };
+const IDENTITY: ConnectionField = { show: 'identity' };
+const CONNECTION_NAME: ConnectionField = {
+  show: 'value', label: 'Name', format: 'name', widens: false, unlessNew: true,
+};
+const CONNECTION_STATUS: ConnectionField = {
+  show: 'value', label: 'Status', format: STATUS_LABELS, widens: 'true', unlessNew: 'true',
+};
+
+/** In display order. Admin's labels: the MCP editor and the connection account form. */
+const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
+  displayName: CONNECTION_NAME,
+  url: { show: 'value', label: 'Server URL', format: 'code', widens: true },
+  transport: {
+    show: 'value',
+    label: 'Transport',
+    format: { 'streamable-http': 'Streamable HTTP', sse: 'SSE' },
+    widens: true,
+    unlessNew: 'streamable-http',
+  },
+  authMode: {
+    show: 'value',
+    label: 'Authentication',
+    format: { none: 'None', bearer: 'Bearer token', oauth: 'OAuth' },
+    widens: true,
+  },
+  headerNames: { show: 'list', label: 'Custom headers', noun: 'custom headers' },
+  allowedTools: { show: 'list', label: 'Allowed tools', noun: 'tools' },
+  oauthScope: { show: 'list', label: 'Scope', noun: 'scopes', read: scopeTokens },
+  enabled: CONNECTION_STATUS,
+  toolAccessMode: { show: 'named', label: 'Allowed tools', widens: true },
+  toolPolicies: { show: 'named', label: 'Tool restrictions', widens: true },
+  credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
+  credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
+  credentialOptional: { show: 'named', label: 'Authentication', widens: true },
+  discoveredTools: { show: 'named', label: 'Discovered tools', widens: false },
+  id: HIDDEN,
+  credentialRef: HIDDEN,
+  oauthAttemptId: HIDDEN,
+  lifecycleStatus: HIDDEN,
+  statusText: HIDDEN,
+  lastCheckedAt: HIDDEN,
+  identity: HIDDEN,
+  presetId: HIDDEN,
+};
+
+/** In display order. Admin's labels: the API connection editor. */
+const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
+  displayName: CONNECTION_NAME,
+  allowedHosts: { show: 'list', label: 'Allowed hosts', noun: 'hosts' },
+  pathPrefixes: {
+    show: 'list',
+    label: 'Path prefixes',
+    noun: 'path prefixes',
+    emptyAllows: 'This allows the whole host.',
+  },
+  allowedMethods: { show: 'list', label: 'Methods', noun: 'methods' },
+  authMode: {
+    show: 'value',
+    label: 'Authentication',
+    format: { credential: 'API token', oauth: 'Google OAuth' },
+    widens: true,
+    unlessNew: 'credential',
+    read: (value) => stringValue(value) ?? 'credential',
+  },
+  oauthScopes: { show: 'list', label: 'Scope', noun: 'scopes' },
+  headerName: { show: 'value', label: 'Header name', format: 'code', widens: false, unlessNew: 'Authorization' },
+  headerValuePrefix: { show: 'value', label: 'Value prefix', format: 'code', widens: false, unlessNew: 'Bearer ' },
+  enabled: CONNECTION_STATUS,
+  id: HIDDEN,
+  credentialRef: HIDDEN,
+  oauthProvider: HIDDEN,
+  oauthAppType: HIDDEN,
+  lifecycleStatus: HIDDEN,
+  statusText: HIDDEN,
+  identity: HIDDEN,
+  presetId: HIDDEN,
+};
+
+/** A grant's account, repository and all-repositories choice are its name. */
+const REPOSITORY_FIELDS: ConnectionFields<RepositoryGrant> = {
+  accountLogin: IDENTITY,
+  fullName: IDENTITY,
+  allRepos: IDENTITY,
+  enabled: CONNECTION_STATUS,
+  id: HIDDEN,
+  installationId: HIDDEN,
+};
+
+/** Agent connection lists, rendered entry by entry under the name people see in Admin. */
+const CONNECTION_FIELDS: Partial<Record<PresentationField, Readonly<Record<string, ConnectionField>>>> = {
+  mcpServers: MCP_FIELDS,
+  apiConnections: API_FIELDS,
+  repositories: REPOSITORY_FIELDS,
+};
+
+/** List entries shown before "…and N more". */
+const LIST_VALUE_LIMIT = 10;
+
 function formatConnectionChangeSections(
+  fields: Readonly<Record<string, ConnectionField>>,
   agent: ManagementAgentLabel,
   before: unknown,
   after: unknown,
   dialect: ChangeSetPresentationDialect,
-): string[] {
+): PreviewPart[] {
   const beforeEntries = connectionEntries(before);
   const afterEntries = connectionEntries(after);
   const beforeById = new Map(beforeEntries.map((entry) => [entry.id, entry]));
   const afterById = new Map(afterEntries.map((entry) => [entry.id, entry]));
   const target = formatAgentLabel(agent, dialect);
   const name = (entry: ConnectionEntry) => dialect.bold(dialect.escape(entry.name));
+  const renamed = (previous: ConnectionEntry, entry: ConnectionEntry) =>
+    Object.entries(fields).some(([key, field]) =>
+      field.show === 'identity' && !presentationValuesEqual(previous.record[key], entry.record[key]));
   return [
-    ...beforeEntries.flatMap((entry) =>
-      afterById.has(entry.id) ? [] : [`Remove ${name(entry)} from ${target}.`]),
+    ...beforeEntries.flatMap((entry) => {
+      const next = afterById.get(entry.id);
+      return next && !renamed(entry, next) ? [] : [plainPart(`Remove ${name(entry)} from ${target}.`)];
+    }),
     ...afterEntries.flatMap((entry) => {
       const previous = beforeById.get(entry.id);
-      if (!previous) return [`Add ${name(entry)} to ${target}.`];
-      return presentationValuesEqual(previous.record, entry.record)
-        ? []
-        : [`Update ${name(entry)} on ${target}.`];
+      if (!previous || renamed(previous, entry)) {
+        return [{
+          text: [`Add ${name(entry)} to ${target}.`, ...newConnectionLines(fields, entry.record, dialect)]
+            .join('\n'),
+          widens: entry.record.enabled !== false,
+        }];
+      }
+      const lines = changedConnectionLines(fields, previous.record, entry.record, dialect);
+      if (lines.length === 0) return [];
+      return [{
+        text: [`Update ${name(entry)} on ${target}.`, ...lines.map(({ text }) => text)].join('\n'),
+        widens: lines.some(({ widens }) => widens),
+      }];
     }),
   ];
+}
+
+/** What a new connection reaches and allows, leaving out defaults. */
+function newConnectionLines(
+  fields: Readonly<Record<string, ConnectionField>>,
+  record: Record<string, unknown>,
+  dialect: ChangeSetPresentationDialect,
+): string[] {
+  return Object.entries(fields).flatMap(([key, field]) => {
+    if (field.show === 'value') {
+      const value = (field.read ?? scalarValue)(record[key]);
+      if (value === undefined || field.unlessNew === true || field.unlessNew === value) return [];
+      return [`${field.label}: ${formatConnectionValue(field.format, value, dialect)}.`];
+    }
+    if (field.show === 'list') {
+      const values = (field.read ?? stringList)(record[key]);
+      return values.length > 0 ? [`${field.label}: ${formatValueList(values, dialect)}.`] : [];
+    }
+    return [];
+  });
+}
+
+/** One line per changed field, widening lines first; other changed fields by label. */
+function changedConnectionLines(
+  fields: Readonly<Record<string, ConnectionField>>,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  dialect: ChangeSetPresentationDialect,
+): PreviewPart[] {
+  const lines: PreviewPart[] = [];
+  const named = new Map<string, boolean>();
+  for (const [key, field] of Object.entries(fields)) {
+    if (field.show === 'value') {
+      const read = field.read ?? scalarValue;
+      const was = read(before[key]);
+      const now = read(after[key]);
+      if (was === now) continue;
+      lines.push({
+        text: `${field.label} changes from ${formatConnectionValue(field.format, was, dialect)} to ${
+          formatConnectionValue(field.format, now, dialect)
+        }.`,
+        widens: field.widens === true || field.widens === now,
+      });
+    } else if (field.show === 'list') {
+      lines.push(...listChangeLines(field, before[key], after[key], dialect));
+    } else if (field.show === 'named' && !presentationValuesEqual(before[key], after[key])) {
+      named.set(field.label, named.get(field.label) === true || field.widens);
+    }
+  }
+  if (named.size > 0) {
+    lines.push({ text: `Changes: ${[...named.keys()].join(', ')}.`, widens: [...named.values()].includes(true) });
+  }
+  return [...lines.filter(({ widens }) => widens), ...lines.filter(({ widens }) => !widens)];
+}
+
+function listChangeLines(
+  field: Extract<ConnectionField, { show: 'list' }>,
+  before: unknown,
+  after: unknown,
+  dialect: ChangeSetPresentationDialect,
+): PreviewPart[] {
+  const read = field.read ?? stringList;
+  const was = read(before);
+  const now = read(after);
+  const wasSet = new Set(was);
+  const nowSet = new Set(now);
+  const added = now.filter((value) => !wasSet.has(value));
+  const removed = was.filter((value) => !nowSet.has(value));
+  const allowsAll = (values: readonly string[]) => field.emptyAllows !== undefined && values.length === 0;
+  return [
+    ...(added.length > 0
+      ? [{ text: `Adds ${field.noun}: ${formatValueList(added, dialect)}.`, widens: !allowsAll(was) }]
+      : []),
+    ...(removed.length > 0
+      ? [{
+          text: [
+            `Removes ${field.noun}: ${formatValueList(removed, dialect)}.`,
+            ...(allowsAll(now) ? [field.emptyAllows] : []),
+          ].join(' '),
+          widens: allowsAll(now),
+        }]
+      : []),
+  ];
+}
+
+function formatConnectionValue(
+  format: ValueFormat,
+  value: string | undefined,
+  dialect: ChangeSetPresentationDialect,
+): string {
+  if (value === undefined) return 'none';
+  if (format === 'name') return dialect.bold(dialect.escape(value));
+  if (format !== 'code' && format[value] !== undefined) return dialect.escape(format[value]);
+  return formatCode(value, dialect);
+}
+
+function formatValueList(values: readonly string[], dialect: ChangeSetPresentationDialect): string {
+  const shown = values.slice(0, LIST_VALUE_LIMIT).map((value) => formatCode(value, dialect)).join(', ');
+  const hidden = values.length - LIST_VALUE_LIMIT;
+  return hidden > 0 ? `${shown}, …and ${hidden} more` : shown;
+}
+
+/** A value on one line, so it cannot start a line of its own in the preview. */
+function formatCode(value: string, dialect: ChangeSetPresentationDialect): string {
+  return dialect.code(value.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' '));
+}
+
+function scalarValue(value: unknown): string | undefined {
+  return typeof value === 'boolean' ? String(value) : stringValue(value);
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.flatMap((entry) => stringValue(entry) ?? []) : [];
+}
+
+function scopeTokens(value: unknown): string[] {
+  return stringValue(value)?.trim().split(/\s+/) ?? [];
 }
 
 function connectionEntries(value: unknown): ConnectionEntry[] {
@@ -451,9 +804,11 @@ function formatSkillChangeSection(
   if (before && !after) {
     return [heading, dialect.bold('Remove'), formatSkillDetails(before, dialect)].join('\n');
   }
+  const changedParts = SKILL_PARTS.flatMap(([part, label]) => before![part] === after![part] ? [] : [label]);
   return [
     heading,
     dialect.bold('Replace'),
+    ...(changedParts.length > 0 ? [`Changes: ${changedParts.join(', ')}.`] : []),
     dialect.bold('Before'),
     formatSkillDetails(before!, dialect),
     dialect.bold('After'),
@@ -467,6 +822,13 @@ interface SkillPresentationRecord {
   instructions: string;
   enabled?: boolean;
 }
+
+/** A replaced skill names the parts that differ, since an excerpt can hide a change. */
+const SKILL_PARTS = [
+  ['enabled', 'Status'],
+  ['description', 'Description'],
+  ['instructions', 'Instructions'],
+] as const satisfies ReadonlyArray<readonly [keyof SkillPresentationRecord, string]>;
 
 function skillPresentationRecords(value: unknown): SkillPresentationRecord[] | undefined {
   if (isEmptyPresentationValue(value)) return [];
@@ -557,9 +919,11 @@ function formatNewAgentSection(
     const value = presentationValue(field, after?.[field]);
     return value === undefined ? [] : [[field, value] as const];
   });
-  const optionalFields: ReadonlyArray<readonly [PresentationField, string]> = availableInOriginChannel
-    ? [['availableIn', 'This Channel'] as const]
-    : [];
+  const editing = newAgentWidensEditing(after) ? presentationValue('editPolicy', after?.editPolicy) : undefined;
+  const optionalFields: ReadonlyArray<readonly [PresentationField, string]> = [
+    ...(editing ? [['editPolicy', editing] as const] : []),
+    ...(availableInOriginChannel ? [['availableIn', 'This Channel'] as const] : []),
+  ];
   const fields = [...identityFields, ...optionalFields];
   return [
     dialect.bold('New Agent'),
