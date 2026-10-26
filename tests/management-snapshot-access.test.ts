@@ -219,6 +219,40 @@ test('a confirmed connection removal carries its undo too', () =>
     assert.deepEqual(snapshot.agents.find(({ id }) => id === agent.id)?.mcpServers.map(({ id }) => id), ['knowledge']);
   }));
 
+test('a call that changed more than the confirmed item offers no undo, as an immediate call does not', () =>
+  withFixture('confirmed-multi-undo', async (f) => {
+    const agent = await createAgent(f, 'agent_multi');
+    await grant(f, agent.id, 'C_MULTI');
+    const requested = await apply(f, mcp(f.owner), 'edit-and-disable', [{
+      itemId: 'edit',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { instructions: 'Answer in French.' },
+    }, {
+      itemId: 'disable',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision + 1,
+      patch: { enabled: false },
+    }]);
+    assert.deepEqual(requested.outcomes.map(({ disposition }) => disposition), ['applied', 'confirmation_required']);
+    assert.equal(requested.outcomes[0]?.undoAvailable, undefined, 'the edit alone is not undone either');
+
+    const confirmed = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'confirm_workspace_change', {
+      proposalId: requested.outcomes[1]!.proposalId!,
+    });
+    assert.equal(confirmed.status, 'completed');
+    assert.equal(confirmed.outcomes[0]?.undoAvailable, undefined, 'an undo of the disable alone would leave the edit');
+    for (const operationId of [confirmed.operationId, requested.operationId]) {
+      const undo = await call(f, mcp(f.owner), 'undo_workspace_change', { operationId, idempotencyKey: `undo-${operationId}` });
+      assert.ok(!undo.ok && undo.error.code === 'undo_unavailable', JSON.stringify(undo));
+    }
+    const after = await f.config.getAgent(agent.id);
+    assert.equal(after.enabled, false);
+    assert.equal(after.instructions, 'Answer in French.');
+  }));
+
 test('inspection names the Slack team, the caller, and the team list only for people Admin shows the Team page', () =>
   withFixture('snapshot-caller', async (f) => {
     const member = (await f.identity.provisionSlackMember({

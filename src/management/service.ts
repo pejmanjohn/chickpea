@@ -2659,6 +2659,11 @@ export class WorkspaceManagementService {
       await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
       throw new ManagementError('proposal_stale', 'The saved confirmation progress is invalid.');
     }
+    // The one-change rule covers the whole call, so an undo of the held item alone is not offered
+    // when the call also changed something else.
+    const callOperations = proposal.requestOperationId
+      ? (await this.stores.management.getRequest(proposal.requestOperationId))?.operations ?? []
+      : proposal.operations;
     const progressEffectiveRevision = proposal.result?.effectiveRevision ?? await this.effectiveRevision();
     for (let index = outcomes.length; index < proposal.operations.length; index += 1) {
       const operation = proposal.operations[index]!;
@@ -2715,7 +2720,7 @@ export class WorkspaceManagementService {
             if (await this.offerUndo(
               actor,
               proposal.requestOperationId ?? proposal.proposalId,
-              proposal.operations,
+              callOperations,
               mutation,
             )) {
               applied.undoAvailable = true;
