@@ -162,6 +162,7 @@ import {
   type ManagementSetupPublicStatus,
   type ManagementSetupRecord,
   type ManagementSetupTarget,
+  type ManagementUndoRecord,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
@@ -345,6 +346,7 @@ interface ImmediateMutation {
   changed: ManagementObjectRef[];
   inverse?: ManagementOperation;
   resultingRevisions: Record<string, number>;
+  agentConfiguration?: string;
   handoffUrl?: string;
   warning?: string;
   handleChange?: ManagementItemOutcome['handleChange'];
@@ -1892,6 +1894,7 @@ export class WorkspaceManagementService {
               actorUserId: actor.userId,
               inverse: mutation.inverse,
               resultingRevisions: mutation.resultingRevisions,
+              ...(mutation.agentConfiguration ? { agentConfiguration: mutation.agentConfiguration } : {}),
               status: 'available',
               createdAt: this.now(),
               updatedAt: this.now(),
@@ -2882,15 +2885,15 @@ export class WorkspaceManagementService {
         undo.actorUserId !== actor.userId) {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
-    await this.assertRevisionMap(undo.resultingRevisions);
+    const inverse = await this.currentUndoInverse(undo);
     const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
-      operations: [undo.inverse],
+      operations: [inverse],
       ...(requesterExplicitlyRequestsUndo(requestAddressedHere(actor))
         ? {
             approvalBasis: 'explicit_requester_command' as const,
-            trustedReversibleOperationIds: [undo.inverse.itemId],
+            trustedReversibleOperationIds: [inverse.itemId],
           }
         : {}),
     }));
@@ -2898,6 +2901,25 @@ export class WorkspaceManagementService {
       await this.stores.management.consumeUndo(input.operationId, this.now());
     }
     return result.links ? result : await this.withAgentLinks(input.context, result);
+  }
+
+  /**
+   * The undo's inverse while its target still holds what the change left.
+   * Slack presence sync advances an Agent's revision after an edit without
+   * changing what people configure, so an Agent undo compares configuration
+   * and targets the current revision; anything else compares revisions.
+   */
+  private async currentUndoInverse(undo: ManagementUndoRecord): Promise<ManagementOperation> {
+    const { inverse } = undo;
+    if (inverse.kind !== 'update_agent' || undo.agentConfiguration === undefined) {
+      await this.assertRevisionMap(undo.resultingRevisions);
+      return inverse;
+    }
+    const agent = await optionalAgent(this.stores.config, inverse.agentId);
+    if (!agent || agentConfigurationDigest(agent) !== undo.agentConfiguration) {
+      throw new ManagementError('proposal_stale', 'The proposed target changed.');
+    }
+    return { ...inverse, expectedRevision: agent.revision };
   }
 
   async getOperation(
@@ -4456,9 +4478,7 @@ export class WorkspaceManagementService {
             kind: 'update_agent',
             agentId: before.id,
             expectedRevision: before.revision + 1,
-            patch: Object.keys(operation.patch).length === 1 && operation.patch.skills
-              ? { skills: before.skills }
-              : fullAgentPatch(before),
+            patch: agentPatchInverse(before, operation.patch),
           },
         };
       }
@@ -4709,7 +4729,7 @@ export class WorkspaceManagementService {
           ),
           operation.expectedRevision,
         );
-        return mutationForAgent(agent, prepared.inverse);
+        return mutationForAgentEdit(agent, prepared.inverse);
       }
       case 'put_channel': {
         if (operation.channel.lifecycle === 'active') {
@@ -4819,7 +4839,7 @@ export class WorkspaceManagementService {
           current.credentialIncarnation === before.credentialIncarnation &&
           current.revision >= operation.expectedRevision + 1 &&
           agentPatchMatches(current, operation.patch)) {
-        return mutationForAgent(current, prepared.inverse);
+        return mutationForAgentEdit(current, prepared.inverse);
       }
       return undefined;
     }
@@ -5858,27 +5878,67 @@ function projectManagementAgentPatch(
   };
 }
 
-function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
+/**
+ * Puts back exactly the fields `patch` sets, as they were before it, so the
+ * undo's policy sees what the undo changes. Presence and lifecycle state
+ * stay as they are now.
+ */
+function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatch): ManagementAgentPatch {
+  // A new model drops the effort chosen for the old one.
+  const effortChanged = patch.modelEffort !== undefined ||
+    agentModelEffortAfterPatch(before, patch) !== before.modelEffort;
   return {
-    name: agent.name,
-    ...(agent.description !== undefined ? { description: agent.description } : {}),
-    instructions: agent.instructions,
-    enabled: agent.enabled,
-    ...(agent.lifecycle ? { lifecycle: agent.lifecycle } : {}),
-    ...(agent.creatorMembershipId ? { creatorMembershipId: agent.creatorMembershipId } : {}),
-    ...(agent.editPolicy ? { editPolicy: agent.editPolicy } : {}),
-    ...(agent.configurationGeneration !== undefined
-      ? { configurationGeneration: agent.configurationGeneration }
+    ...(patch.name !== undefined ? { name: before.name } : {}),
+    ...(patch.description !== undefined ? { description: before.description ?? '' } : {}),
+    ...(patch.requestedHandle !== undefined
+      ? {
+          requestedHandle: before.slackPresence?.requestedHandle ??
+            normalizeAgentHandle(before.name || before.id),
+        }
       : {}),
-    ...(agent.slackPresence ? { slackPresence: { ...agent.slackPresence } } : {}),
-    ...(agent.archivedAt !== undefined ? { archivedAt: agent.archivedAt } : {}),
-    model: agent.model ?? null,
-    modelEffort: agent.modelEffort ?? null,
-    skills: agent.skills,
-    mcpServers: agent.mcpServers,
-    apiConnections: agent.apiConnections,
-    repositories: agent.repositories,
-    websiteLogins: agent.websiteLogins ?? [],
+    ...(patch.editPolicy !== undefined
+      ? { editPolicy: before.editPolicy ?? 'creator_and_admins' }
+      : {}),
+    ...(patch.instructions !== undefined ? { instructions: before.instructions } : {}),
+    ...(patch.enabled !== undefined ? { enabled: before.enabled } : {}),
+    ...(patch.model !== undefined ? { model: before.model ?? null } : {}),
+    ...(effortChanged ? { modelEffort: before.modelEffort ?? null } : {}),
+    ...(patch.skills ? { skills: before.skills } : {}),
+    ...(patch.mcpServers ? { mcpServers: before.mcpServers } : {}),
+    ...(patch.apiConnections ? { apiConnections: before.apiConnections } : {}),
+    ...(patch.repositories ? { repositories: before.repositories } : {}),
+  };
+}
+
+/**
+ * What people configure on an Agent. Every write advances `revision` and
+ * `configurationGeneration`; Slack presence sync also rewrites
+ * `slackPresence` and moves `lifecycle` between active and needs_attention.
+ * A change to anything else is someone's edit.
+ */
+function agentConfigurationDigest(agent: CustomAgentConfig): string {
+  const {
+    revision: _revision,
+    configurationGeneration: _configurationGeneration,
+    lifecycle: _lifecycle,
+    slackPresence,
+    ...configured
+  } = agent;
+  return createHash('sha256')
+    .update(canonicalJson({ ...configured, requestedHandle: slackPresence?.requestedHandle }))
+    .digest('hex');
+}
+
+/** An Agent edit; its undo targets the revision presence sync left, not the edit's own. */
+function mutationForAgentEdit(
+  agent: CustomAgentConfig,
+  inverse: ManagementOperation | undefined,
+): ImmediateMutation {
+  return {
+    ...mutationForAgent(agent, inverse?.kind === 'update_agent'
+      ? { ...inverse, expectedRevision: agent.revision }
+      : inverse),
+    agentConfiguration: agentConfigurationDigest(agent),
   };
 }
 
