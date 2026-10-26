@@ -550,7 +550,7 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
   credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
   credentialOptional: { show: 'named', label: 'Authentication', widens: true },
-  discoveredTools: { show: 'named', label: 'Discovered tools', widens: false },
+  discoveredTools: BOOKKEEPING,
   presetId: CONNECTOR_PRESET,
   id: BOOKKEEPING,
   credentialRef: CREDENTIAL_REFERENCE,

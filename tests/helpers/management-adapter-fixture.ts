@@ -22,6 +22,9 @@ import { SqliteMemoryStateStore } from '../../src/memory/store.ts';
 import { SqliteRoutineStore } from '../../src/routines/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
 
+/** The tools every open MCP server offers in this fixture unless a test supplies its own discovery. */
+export const FIXTURE_MCP_TOOLS = ['search', 'read_page', 'delete_page', 'export_all', 'list_errors', 'delete_project'];
+
 export async function createManagementAdapterFixture(
   suffix: string,
   overrides: Partial<WorkspaceManagementServiceInput> = {},
@@ -64,6 +67,8 @@ export async function createManagementAdapterFixture(
     identity,
     config,
     connectionAccounts: new ConnectionAccountService({ config, settings }),
+    websiteLogins: { store: settings },
+    discoverMcpServer: async () => ({ ok: true, tools: FIXTURE_MCP_TOOLS.map((name) => ({ name })) }),
     management,
     memory,
     routines,

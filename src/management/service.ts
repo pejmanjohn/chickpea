@@ -38,7 +38,7 @@ import {
   resolveProviderRuntimeImpacts,
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
-import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
 import { REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
@@ -121,6 +121,7 @@ import {
   resolveAgentConnectionId,
   withAgentConnectionIds,
   type AgentConnections,
+  type AgentConnectionWrite,
   type ManagementApiConnection,
   type ManagementMcpConnection,
 } from './agent-connections.ts';
@@ -144,7 +145,7 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
-import type { McpConnectionTestActor } from './discovery.ts';
+import type { McpConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
@@ -351,6 +352,8 @@ export interface WorkspaceManagementServiceInput {
     connectionId: string,
     actor: McpConnectionTestActor,
   ) => Promise<unknown>;
+  /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
+  discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
   managedConnectorAvailable?: (input: {
     toolkit: string;
     accessLane: 'read' | 'write';
@@ -3521,10 +3524,10 @@ export class WorkspaceManagementService {
   ): Promise<CustomAgentConfig> {
     const edit = await this.agentEdit(actor, operation.agentId, operation.patch);
     const { mcpServers, apiConnections, ...agentPatch } = projectManagementAgentPatch(edit.agent, edit.patch);
-    const writes = agentConnectionWrites(edit.connections, {
+    const writes = await this.checkedMcpWrites(agentConnectionWrites(edit.connections, {
       ...(mcpServers ? { mcpServers } : {}),
       ...(apiConnections ? { apiConnections } : {}),
-    });
+    }));
     const accounts = this.stores.connectionAccounts;
     const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
     if (writes.length > 0 && (!accounts || !workspaceId)) {
@@ -3592,6 +3595,53 @@ export class WorkspaceManagementService {
       throw error;
     }
     return agent;
+  }
+
+  /**
+   * Admin's checks on the MCP servers an edit writes. A new or re-pointed
+   * server that needs no credential is discovered first and saves the tools
+   * it offers; a tool choice names only tools the server offers.
+   */
+  private async checkedMcpWrites(writes: AgentConnectionWrite[]): Promise<AgentConnectionWrite[]> {
+    return Promise.all(writes.map(async (write) => {
+      if (write.kind === 'revoke' || write.policy.kind !== 'mcp') return write;
+      const { policy } = write;
+      if (write.kind === 'create' || write.resetCredential) {
+        if (nativeCredentialRequired(policy) || isMcpToolReviewRequired(policy)) return write;
+        const tools = await this.openMcpServerTools(write.label, {
+          id: write.kind === 'create' ? write.providerId : write.entry.account.id,
+          url: policy.url,
+          transport: policy.transport,
+        });
+        requireOfferedTools(write.label, policy.allowedTools, tools.map(({ name }) => name));
+        return {
+          ...write,
+          policy: { ...policy, discoveredTools: tools, allowedTools: allowedToolsAfterMcpDiscovery(policy, tools) },
+        };
+      }
+      const { account, binding } = write.entry;
+      if (account.lifecycle !== 'ready' || account.policy.kind !== 'mcp' ||
+          canonicalJson(account.policy.allowedTools) === canonicalJson(policy.allowedTools)) return write;
+      const ceiling = binding.allowedCapabilities;
+      requireOfferedTools(write.label, policy.allowedTools, account.policy.discoveredTools
+        .map(({ name }) => name)
+        .filter((name) => ceiling.length === 0 || ceiling.includes(name)));
+      return write;
+    }));
+  }
+
+  private async openMcpServerTools(
+    label: string,
+    server: OpenMcpServer,
+  ): Promise<Extract<McpConnectionTestResult, { ok: true }>['tools']> {
+    if (!this.stores.discoverMcpServer) {
+      throw new ManagementError('invalid_request', 'MCP server checks are unavailable in this workspace.');
+    }
+    const result = await this.stores.discoverMcpServer(server);
+    if (!result.ok) {
+      throw new AgentWriteRuleError(`${label} was not saved: Chickpea could not connect to it. ${result.message}`);
+    }
+    return result.tools;
   }
 
   private async editableAgentsWithConnections(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
@@ -6376,6 +6426,15 @@ async function optionalAgent(
     if (error instanceof UnknownAgentError) return undefined;
     throw error;
   }
+}
+
+/** Refuses a tool choice naming a tool the server does not offer, and names the ones it does. */
+function requireOfferedTools(label: string, chosen: readonly string[], offered: readonly string[]): void {
+  const missing = chosen.filter((name) => !offered.includes(name));
+  if (missing.length === 0) return;
+  throw new AgentWriteRuleError(offered.length > 0
+    ? `${label} does not offer ${missing.join(', ')}. Its tools are: ${offered.join(', ')}.`
+    : `${label} does not offer ${missing.join(', ')}. It offers no tools.`);
 }
 
 function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {

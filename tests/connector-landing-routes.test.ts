@@ -15,6 +15,7 @@ import {
   createManagedConnectionProviderRegistry,
   type ManagedConnectionProvider,
 } from '../src/connections/managed.ts';
+import { managedPrincipalRef } from '../src/connections/managed-authorization-flow.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { WorkspaceManagementService } from '../src/management/service.ts';
 import { createManagementSetupRoutes } from '../src/management/setup-routes.ts';
@@ -1170,6 +1171,120 @@ test('the managed connector link is reusable and completes from the dedicated pa
     assert.match(successHtml, /HubSpot is now connected to Sprout/);
     assert.match(successHtml, /Your team connection is ready/);
     assert.match(successHtml, /You can close this tab now/);
+  } finally {
+    identity.close();
+    config.close();
+    management.close();
+    settings.close();
+  }
+});
+
+test('a Slack reconnect link re-authorizes a managed connection that needs attention in place', async () => {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix: 'managed-reconnect' });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const authorized: string[][] = [];
+  const provider: ManagedConnectionProvider = {
+    id: 'composio',
+    availability: () => ({ status: 'ready', missingConfiguration: [] }),
+    async authorize(input) {
+      authorized.push([...input.allowedCapabilities]);
+      return {
+        authorizationUrl: new URL('https://backend.composio.dev/link/reconnect'),
+        authorizationRef: 'authorization_hubspot_reconnect',
+      };
+    },
+    async pollAuthorization(input) {
+      return { status: 'active', accountRef: input.authorizationRef, toolkit: 'hubspot' };
+    },
+    async validate() {},
+    async execute() { return { data: {} }; },
+    async revoke() {},
+  };
+  const principal: AuthPrincipal = {
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    role: owner.membership.role,
+    authenticatorKind: 'better_auth',
+    credentialId: 'session_owner',
+    correlationId: 'managed_reconnect',
+    machine: false,
+  };
+  try {
+    const agent = await config.createAgent({
+      id: 'agent_sales', name: 'Sales', creatorMembershipId: owner.membership.id,
+      editPolicy: 'creator_and_admins', lifecycle: 'active', configurationGeneration: 1,
+      instructions: 'Help sales.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.ensureWorkspaceInstallation({
+      workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: agent.id,
+    });
+    const account = await config.putConnectionAccount({
+      id: 'connection_hubspot_team',
+      workspaceId: owner.user.slackTeamId,
+      ownerKind: 'team',
+      createdByMembershipId: owner.membership.id,
+      providerId: 'hubspot',
+      label: 'HubSpot · Team',
+      policy: {
+        kind: 'managed',
+        adapterId: 'composio',
+        toolkit: 'hubspot',
+        principalRef: managedPrincipalRef(principal, 'team', undefined)!,
+        accountRef: 'account_hubspot_expired',
+        allowedCapabilities: ['hubspot.contacts.search'],
+      },
+      secretRefId: 'secret_hubspot_team',
+      lifecycle: 'needs_attention',
+    });
+    const binding = await config.putAgentConnectionBinding({
+      agentId: agent.id,
+      connectionAccountId: account.id,
+      providerId: account.providerId,
+      allowedCapabilities: ['hubspot.contacts.search'],
+      enabled: true,
+    });
+    const service = new WorkspaceManagementService({
+      identity, config, management, setupBaseUrl: 'http://localhost', now: () => NOW,
+      randomId: () => 'managed_reconnect', randomCapability: () => CAPABILITY,
+    });
+    const prepared = await service.prepareConnectorSetup({
+      userId: owner.user.id,
+      membershipId: owner.membership.id,
+      organizationId: owner.membership.organizationId,
+      origin: {
+        kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_SALES',
+        threadTs: '1800200000.000200', agentId: agent.id,
+      },
+    }, { agentId: agent.id, connector: 'HubSpot', ownerKind: 'team' });
+    const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+    const app = createManagementSetupRoutes({
+      identity, config, management, settings, now: () => NOW,
+      managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+      authenticatePrincipal: async () => principal,
+      deliverReceipt: async () => ({ deliveryRef: 'slack:D_SALES:receipt.1' }),
+    });
+    const cookie = (await exchange(app, setupId)).headers.get('set-cookie')!.split(';')[0]!;
+    const started = await authorize(app, setupId, cookie, { ownerKind: 'team', access: 'read' });
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.deepEqual(authorized, [['hubspot.contacts.search']], 'the reconnect keeps the account\'s capabilities');
+    const poll = await app.request(`http://localhost/setup/${setupId}/managed/poll`, {
+      method: 'POST',
+      headers: { origin: 'http://localhost', cookie, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(poll.status, 200, await poll.clone().text());
+
+    const accounts = await config.listConnectionAccounts(owner.user.slackTeamId);
+    assert.deepEqual(accounts.map(({ id, lifecycle }) => ({ id, lifecycle })),
+      [{ id: account.id, lifecycle: 'ready' }], 'the same account is ready again; none was minted');
+    assert.equal(accounts[0]!.policy.kind === 'managed' ? accounts[0]!.policy.accountRef : undefined,
+      'authorization_hubspot_reconnect');
+    assert.deepEqual(await config.listAgentConnectionBindings(agent.id), [binding], 'the Agent binding is unchanged');
+    assert.equal((await management.getSetup(setupId))?.connectionAccountId, account.id);
   } finally {
     identity.close();
     config.close();
