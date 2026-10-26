@@ -77,6 +77,7 @@ import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '..
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -6418,16 +6419,8 @@ function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
 }
 
 function assertAgentLeftSlack(agent: CustomAgentConfig, references: AgentReferenceSummary): void {
-  const presence = agent.slackPresence;
-  // Slack cannot delete a user group, so an archived Agent still holds one, turned off.
-  const userGroupOff = presence?.desiredState === 'disabled' && presence.health === 'healthy';
-  if (references.channelGrants.length > 0 || presence?.kind === 'agent_app' ||
-      (presence?.userGroupId !== undefined && !userGroupOff)) {
-    throw new ManagementError(
-      'invalid_request',
-      `Archive ${agent.name} first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.`,
-    );
-  }
+  const refusal = agentStillInSlackRefusal(agent, references);
+  if (refusal) throw new ManagementError('invalid_request', refusal);
 }
 
 function withAgentCredentialRequirement(

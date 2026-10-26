@@ -606,6 +606,7 @@ import {
   classifyAgentPresenceError,
 } from '../slack/agent-presence/errors.ts';
 import { normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
+import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { reservedAgentIdentityField } from '../config/agent-id.ts';
 import {
   agentPresenceAnnouncements,
@@ -10222,6 +10223,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (agentReferenceCount(references) > 0) {
       return c.json({ error: 'agent_still_referenced', references }, 409);
     }
+    const stillInSlack = agentStillInSlackRefusal(agent, references);
+    if (stillInSlack) return c.json({ error: 'agent_still_in_slack', message: stillInSlack }, 409);
     const liveSnapshotRoots = projectLiveSnapshotRoots(
       await snapshots(c).listLiveRootsByAgent(agentId),
     );
