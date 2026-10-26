@@ -60,6 +60,7 @@ import {
 import { createManagementModelSources } from './model-sources.ts';
 import { ManagementError } from './types.ts';
 import {
+  discoverOpenMcpServer,
   testManagedMcpConnection,
 } from './discovery.ts';
 
@@ -210,6 +211,7 @@ export function createLiveWorkspaceManagementService(
         throw new ManagementError('invalid_request', 'The connected Slack directory is unavailable.');
       }
     },
+    discoverMcpServer: (server) => discoverOpenMcpServer({ server }),
     testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,

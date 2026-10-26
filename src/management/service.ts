@@ -41,7 +41,7 @@ import {
   resolveProviderRuntimeImpacts,
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
-import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import { allowedToolsAfterMcpDiscovery, isMcpToolReviewRequired } from '../config/mcp-access.ts';
 import { REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
@@ -52,6 +52,7 @@ import {
   type AgentSlackPresence,
   type ChannelConfig,
   type ConnectionAccount,
+  type ConnectionAccountOwnerKind,
   type ConnectionAccountPolicy,
   agentAppIsLive,
   type CustomAgentConfig,
@@ -77,7 +78,19 @@ import {
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from '../connections/runtime.ts';
-import { nativeCredentialRequired, type ConnectionAccountService } from '../connections/store.ts';
+import {
+  ConnectionScheduleConflictError,
+  ManagedConnectionProviderUnavailableError,
+  nativeCredentialRequired,
+  type ConnectionAccountService,
+} from '../connections/store.ts';
+import {
+  projectAgentWebsiteLogins,
+  removableAgentWebsiteLogin,
+  removeAgentWebsiteLogin,
+  WebsiteLoginGrantNotFoundError,
+} from '../browser/agent-website-logins.ts';
+import { listWebsiteLogins, type WebsiteLogin, type WebsiteLoginDependencies } from '../browser/logins.ts';
 import type { IdentityStore, Membership, Organization } from '../identity/types.ts';
 import type {
   AgentMemory,
@@ -144,6 +157,7 @@ import {
   resolveAgentConnectionId,
   withAgentConnectionIds,
   type AgentConnections,
+  type AgentConnectionWrite,
   type ManagementApiConnection,
   type ManagementMcpConnection,
 } from './agent-connections.ts';
@@ -167,7 +181,7 @@ import {
   type WorkspaceRecipe,
   type WorkspaceRecipePreview,
 } from './recipes.ts';
-import type { McpConnectionTestActor } from './discovery.ts';
+import type { McpConnectionTestActor, McpConnectionTestResult, OpenMcpServer } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
 import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
@@ -200,6 +214,7 @@ import {
   type ManagementChangeSetPreview,
   type ManagementChangeSetRecordPreview,
   type ManagementChangeStatement,
+  type ManagementConnectionReconnect,
   type ManagementChangeSetProposalRecord,
   type ManagementDeferredSetup,
   type ChickpeaManagementHandoff,
@@ -260,6 +275,7 @@ const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
 const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
+const WEBSITE_LOGIN_SETUP = 'Website logins are added in Admin: open the Agent, choose Websites, and save the sign-in there. Workspace management can list and remove them, but not add one.';
 const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
 const DM_ROUTINE_RUNS_AS_OWNER = 'A DM routine always runs as the person whose DM it is, so it cannot be taken over.';
@@ -314,6 +330,7 @@ export interface WorkspaceManagementServiceInput {
   >;
   config: Pick<
     ConfigStore,
+    | 'listAgents'
     | 'listUserAgents'
     | 'getAgent'
     | 'createAgent'
@@ -385,6 +402,10 @@ export interface WorkspaceManagementServiceInput {
     connectionId: string,
     actor: McpConnectionTestActor,
   ) => Promise<unknown>;
+  /** Lists an open MCP server's tools before a write saves it, as Admin's Test connection does. */
+  discoverMcpServer?: (server: OpenMcpServer) => Promise<McpConnectionTestResult>;
+  /** The website-login realm Admin reads and deletes from. */
+  websiteLogins?: Pick<WebsiteLoginDependencies, 'store'>;
   managedConnectorAvailable?: (input: {
     toolkit: string;
     accessLane: 'read' | 'write';
@@ -1295,29 +1316,12 @@ export class WorkspaceManagementService {
       );
     }
     const baseUrl = await this.resolveSetupBaseUrl();
+    const reconnecting = await this.connectionNeedingReconnect(actor, agent, connector, input.ownerKind);
+    if (reconnecting) {
+      return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
+    }
     if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
-      const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
-        connector.managedToolkit,
-        // Freeze the complete connector ceiling. The browser uses the full set
-        // when configured, otherwise only the available read tools.
-        'write',
-      ).map(({ id }) => id);
-      if (scopes.length === 0) {
-        throw new ManagementError(
-          'invalid_request',
-          `${connector.name} is not available for managed connection setup.`,
-        );
-      }
-      if (this.stores.managedConnectorAvailable &&
-          !(await this.stores.managedConnectorAvailable({
-            toolkit: connector.managedToolkit,
-            accessLane: 'read',
-          }))) {
-        throw new ManagementError(
-          'setup_unavailable',
-          `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
-        );
-      }
+      const scopes = await this.managedConnectionCeiling(connector);
       const issued = await this.issueSetupRecord(actor, {
         action: 'managed_connection',
         target: {
@@ -1545,6 +1549,117 @@ export class WorkspaceManagementService {
       publicationStatus: receipt.publication?.status ?? 'partial',
     });
     return claimed;
+  }
+
+  /**
+   * The complete capability ceiling a managed connection link freezes (the
+   * browser uses the full set when configured, otherwise only the available
+   * read tools), once the deployment offers the connector.
+   */
+  private async managedConnectionCeiling(
+    connector: Extract<ConnectorCatalogPreset, { managedToolkit: string }>,
+  ): Promise<string[]> {
+    const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(connector.managedToolkit, 'write')
+      .map(({ id }) => id);
+    if (scopes.length === 0) {
+      throw new ManagementError(
+        'invalid_request',
+        `${connector.name} is not available for managed connection setup.`,
+      );
+    }
+    if (this.stores.managedConnectorAvailable &&
+        !(await this.stores.managedConnectorAvailable({
+          toolkit: connector.managedToolkit,
+          accessLane: 'read',
+        }))) {
+      throw new ManagementError(
+        'setup_unavailable',
+        `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
+      );
+    }
+    return scopes;
+  }
+
+  /** The Agent's connection from this connector, in this owner's lane, that needs attention. */
+  private async connectionNeedingReconnect(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    connector: ConnectorCatalogPreset,
+    ownerKind: ConnectionAccountOwnerKind,
+  ): Promise<ConnectionAccount | undefined> {
+    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    const [accounts, bindings] = await Promise.all([
+      Promise.all(workspaceIds.map((workspaceId) =>
+        this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
+      this.stores.config.listAgentConnectionBindings(agent.id),
+    ]);
+    const bound = new Set(bindings.filter(({ enabled }) => enabled).map(({ connectionAccountId }) => connectionAccountId));
+    const account = accounts.find(({ id, lifecycle, ownerKind: owner, ownerMembershipId, providerId, policy }) =>
+      bound.has(id) && lifecycle === 'needs_attention' && owner === ownerKind &&
+      (owner === 'team' || ownerMembershipId === actor.membershipId) &&
+      ('managedToolkit' in connector
+        ? policy.kind === 'managed' && policy.toolkit === connector.managedToolkit
+        : policy.kind !== 'managed' && (providerId === connector.id || policy.presetId === connector.id)));
+    if (account && !canManageOwnedResource(managementActorPrincipal(actor), account)) {
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+    }
+    return account;
+  }
+
+  /**
+   * Reconnects an existing connection as Admin's Reconnect does: the same
+   * account signs in again and keeps its bindings and Agent grants. Slack gets
+   * a setup link fenced to that account; any other door gets the Agent's
+   * Admin page, where the connection's Reconnect button does the same.
+   */
+  private async prepareConnectorReconnect(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    connector: ConnectorCatalogPreset,
+    account: ConnectionAccount,
+    baseUrl: string,
+  ): Promise<PrepareConnectorSetupResult> {
+    const result = {
+      agent: { id: agent.id, name: agent.name },
+      connector: { id: connector.id, name: connector.name },
+      ownerKind: account.ownerKind,
+      reconnect: { connectionId: account.id, label: account.label },
+    };
+    const linked = actor.origin.kind === 'slack' && ('managedToolkit' in connector ||
+      await this.agentCreationConnectorEligible(connector, baseUrl));
+    if (!linked) {
+      return { ...result, handoffUrl: new URL(`/admin/agents/${encodeURIComponent(agent.id)}`, baseUrl).href };
+    }
+    const issued = 'managedToolkit' in connector
+      ? await this.issueSetupRecord(actor, {
+          action: 'managed_connection',
+          target: {
+            kind: 'managed_connection',
+            provider: connector.managedToolkit,
+            targetId: `agent:${agent.id}:managed:${connector.managedToolkit}:${account.ownerKind}`,
+            targetLabel: connector.name,
+            expectedRevision: agent.revision,
+            agentId: agent.id,
+            agentName: agent.name,
+            connectionId: account.id,
+            replacement: true,
+            ownerKind: account.ownerKind,
+            accessLane: 'read',
+            presetId: connector.id,
+          },
+          // As a new connection does, refuse before issuing when the connector is unavailable.
+          scopes: await this.managedConnectionCeiling(connector),
+        })
+      : await this.issueSetupRecord(actor, {
+          action: 'catalog_connection',
+          target: {
+            ...this.catalogConnectionSetupTarget(agent, connector, account.ownerKind),
+            connectionId: account.id,
+            replacement: true,
+          },
+          scopes: catalogConnectionScopes(connector),
+        });
+    return { ...result, handoffUrl: issued.url, setupOperationId: issued.record.setupOperationId };
   }
 
   private async agentCreationConnectorEligible(
@@ -2846,6 +2961,20 @@ export class WorkspaceManagementService {
         ? [{ kind: 'membership', id: membership.id, revision: membershipRevision(membership) }]
         : undefined;
     }
+    if (operation.kind === 'disconnect_connection') {
+      // The proposal named a connection on this Agent, so one no longer there was disconnected.
+      const gone = await this.agentConnectionTarget(actor, operation).then(() => false, (error: unknown) => {
+        if (error instanceof ManagementError && error.code === 'invalid_request') return true;
+        throw error;
+      });
+      return gone ? [{ kind: 'agent', id: operation.agentId }] : undefined;
+    }
+    if (operation.kind === 'remove_website_login') {
+      const agent = await optionalAgent(this.stores.config, operation.agentId);
+      return agent?.websiteLogins?.some(({ loginId }) => loginId === operation.loginId) !== false
+        ? undefined
+        : [{ kind: 'agent', id: agent.id, revision: agent.revision }];
+    }
     if (operation.kind === 'remove_provider_credential') {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
       return source === 'missing'
@@ -2883,7 +3012,8 @@ export class WorkspaceManagementService {
     let agentId: string | undefined;
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-        operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
+        operation.kind === 'update_agent_memory' || operation.kind === 'disconnect_connection' ||
+        operation.kind === 'remove_website_login' || operation.kind === 'set_agent_image_model') {
       agentId = operation.agentId;
     } else if (operation.kind === 'grant_agent_channel' ||
         operation.kind === 'revoke_agent_channel' || operation.kind === 'save_routine') {
@@ -3066,7 +3196,7 @@ export class WorkspaceManagementService {
     }
     const at = this.now();
     const setupOperationId = `setup_${this.randomId()}`;
-    const target = input.action === 'catalog_connection'
+    const target = input.action === 'catalog_connection' && !input.target.connectionId
       ? {
           ...input.target,
           connectionId: `connection_${createHash('sha256')
@@ -3340,7 +3470,8 @@ export class WorkspaceManagementService {
   ): Promise<ActingAgentScopeTarget> {
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-        operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
+        operation.kind === 'update_agent_memory' || operation.kind === 'disconnect_connection' ||
+        operation.kind === 'remove_website_login' || operation.kind === 'set_agent_image_model') {
       return operationAgentScopeTarget(operation.kind, operation.agentId);
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -3632,10 +3763,10 @@ export class WorkspaceManagementService {
   ): Promise<CustomAgentConfig> {
     const edit = await this.agentEdit(actor, operation.agentId, operation.patch);
     const { mcpServers, apiConnections, ...agentPatch } = projectManagementAgentPatch(edit.agent, edit.patch);
-    const writes = agentConnectionWrites(edit.connections, {
+    const writes = await this.checkedMcpWrites(agentConnectionWrites(edit.connections, {
       ...(mcpServers ? { mcpServers } : {}),
       ...(apiConnections ? { apiConnections } : {}),
-    });
+    }));
     const accounts = this.stores.connectionAccounts;
     const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
     if (writes.length > 0 && (!accounts || !workspaceId)) {
@@ -3703,6 +3834,172 @@ export class WorkspaceManagementService {
       throw error;
     }
     return agent;
+  }
+
+  /**
+   * Admin's checks on the MCP servers an edit writes. A new or re-pointed
+   * server that needs no credential is discovered first and saves the tools
+   * it offers; a tool choice names only tools the server offers.
+   */
+  private async checkedMcpWrites(writes: AgentConnectionWrite[]): Promise<AgentConnectionWrite[]> {
+    return Promise.all(writes.map(async (write) => {
+      if (write.kind === 'revoke' || write.policy.kind !== 'mcp') return write;
+      const { policy } = write;
+      if (write.kind === 'create' || write.resetCredential) {
+        if (nativeCredentialRequired(policy) || isMcpToolReviewRequired(policy)) return write;
+        const tools = await this.openMcpServerTools(write.label, {
+          id: write.kind === 'create' ? write.providerId : write.entry.account.id,
+          url: policy.url,
+          transport: policy.transport,
+        });
+        requireOfferedTools(write.label, policy.allowedTools, tools.map(({ name }) => name));
+        return {
+          ...write,
+          policy: { ...policy, discoveredTools: tools, allowedTools: allowedToolsAfterMcpDiscovery(policy, tools) },
+        };
+      }
+      const { account, binding } = write.entry;
+      if (account.lifecycle !== 'ready' || account.policy.kind !== 'mcp' ||
+          canonicalJson(account.policy.allowedTools) === canonicalJson(policy.allowedTools)) return write;
+      const ceiling = binding.allowedCapabilities;
+      requireOfferedTools(write.label, policy.allowedTools, account.policy.discoveredTools
+        .map(({ name }) => name)
+        .filter((name) => ceiling.length === 0 || ceiling.includes(name)));
+      return write;
+    }));
+  }
+
+  private async openMcpServerTools(
+    label: string,
+    server: OpenMcpServer,
+  ): Promise<Extract<McpConnectionTestResult, { ok: true }>['tools']> {
+    if (!this.stores.discoverMcpServer) {
+      throw new ManagementError('invalid_request', 'MCP server checks are unavailable in this workspace.');
+    }
+    const result = await this.stores.discoverMcpServer(server);
+    if (!result.ok) {
+      throw new AgentWriteRuleError(`${label} was not saved: Chickpea could not connect to it. ${result.message}`);
+    }
+    return result.tools;
+  }
+
+  /**
+   * The connection a disconnect names on its Agent, after the checks Admin's
+   * Agent-page Disconnect makes: the right to edit the Agent, then an Admin, an
+   * Owner or the account's owner. Settings' Disconnect has no Agent check, so
+   * it also reaches a Member's own connection on an Agent they cannot edit;
+   * this operation does not.
+   */
+  private async agentConnectionTarget(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'disconnect_connection' }>,
+  ): Promise<{ agent: CustomAgentConfig; account: ConnectionAccount }> {
+    const agent = await this.requireEditableAgent(actor, operation.agentId);
+    const { connections } = await this.agentWithConnections(actor, agent);
+    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    const [accounts, bindings] = await Promise.all([
+      Promise.all(workspaceIds.map((workspaceId) =>
+        this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
+      this.stores.config.listAgentConnectionBindings(agent.id),
+    ]);
+    const laneAccountId = (['mcp', 'api'] as const).flatMap((lane) => {
+      const id = resolveAgentConnectionId(connections, lane, operation.connectionId);
+      return id === undefined ? [] : [connections[lane].get(id)!.account.id];
+    })[0];
+    const accountId = laneAccountId ?? operation.connectionId;
+    const account = accounts.find(({ id }) => id === accountId);
+    const notFound = () => new ManagementError('invalid_request', `The connection was not found on ${agent.name}.`);
+    if (!account || account.lifecycle === 'revoked' ||
+        !bindings.some(({ connectionAccountId }) => connectionAccountId === account.id)) {
+      throw notFound();
+    }
+    if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+      // Another member's personal account stays private from a Member, as in Admin.
+      if (account.ownerKind === 'member') throw notFound();
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+    }
+    return { agent, account };
+  }
+
+  /** Admin's Disconnect: the account is revoked, its credential retired, and its schedules paused. */
+  private async executeConnectionDisconnect(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'disconnect_connection' }>,
+  ): Promise<ImmediateMutation> {
+    const { agent, account } = await this.agentConnectionTarget(actor, operation);
+    const service = this.stores.connectionAccounts;
+    if (!service) throw new ManagementError('invalid_request', 'Connection changes are unavailable in this workspace.');
+    const principal = managementActorPrincipal(actor);
+    const disconnect = () => service.disconnectForAgent({
+      principal,
+      agentId: agent.id,
+      connectionAccountId: account.id,
+    });
+    try {
+      requirePermission(principal, account.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal');
+      // Admin retries once when dependent schedules changed mid-disconnect.
+      const revoked = await disconnect().catch((error: unknown) => {
+        if (error instanceof ConnectionScheduleConflictError) return disconnect();
+        throw error;
+      });
+      return mutationForChanged([{ kind: 'connection', id: `${agent.id}:${revoked.id}:account`, revision: revoked.revision }]);
+    } catch (error) {
+      if (error instanceof AuthorizationError) throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+      if (error instanceof ConnectionScheduleConflictError) throw new ManagementError('revision_conflict', error.message);
+      if (error instanceof ManagedConnectionProviderUnavailableError) {
+        throw new ManagementError(
+          'invalid_request',
+          `Restore the ${error.adapterId} provider credentials before disconnecting this managed account so its remote account can also be removed.`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** The website login a removal names on its Agent, after the checks Admin's Remove makes. */
+  private async agentWebsiteLoginTarget(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'remove_website_login' }>,
+  ): Promise<{ agent: CustomAgentConfig; login?: WebsiteLogin }> {
+    const agent = await this.requireEditableAgent(actor, operation.agentId);
+    if (!this.stores.websiteLogins) {
+      throw new ManagementError('invalid_request', 'Website logins are unavailable in this workspace.');
+    }
+    try {
+      const login = await removableAgentWebsiteLogin({
+        principal: managementActorPrincipal(actor),
+        agent,
+        loginId: operation.loginId,
+        logins: this.stores.websiteLogins.store,
+      });
+      return { agent, ...(login ? { login } : {}) };
+    } catch (error) {
+      if (error instanceof WebsiteLoginGrantNotFoundError) {
+        throw new ManagementError('invalid_request', `The website login was not found on ${agent.name}.`);
+      }
+      if (error instanceof AuthorizationError) {
+        throw new ManagementError('forbidden', 'Only a Chickpea Admin or its owner can remove this website login.');
+      }
+      throw error;
+    }
+  }
+
+  private async executeWebsiteLoginRemoval(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'remove_website_login' }>,
+  ): Promise<ImmediateMutation> {
+    await this.agentWebsiteLoginTarget(actor, operation);
+    const logins = this.stores.websiteLogins!;
+    await removeAgentWebsiteLogin({
+      principal: managementActorPrincipal(actor),
+      agentId: operation.agentId,
+      loginId: operation.loginId,
+      config: this.stores.config,
+      logins: logins.store,
+      deletion: () => logins,
+    });
+    const agent = await this.stores.config.getAgent(operation.agentId);
+    return mutationForChanged([{ kind: 'agent', id: agent.id, revision: agent.revision }]);
   }
 
   private async editableAgentsWithConnections(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
@@ -3851,14 +4148,16 @@ export class WorkspaceManagementService {
     const connectionAgents = currentAgent && !agents.some(({ id }) => id === currentAgent.id)
       ? [...agents, currentAgent]
       : agents;
-    const [allConnectionAccounts, agentBindingEntries] = await Promise.all([
+    const [allConnectionAccounts, agentBindingEntries, websiteLogins] = await Promise.all([
       Promise.all(workspaceIds.map((workspaceId) =>
         this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
       Promise.all(connectionAgents.map(async (agent) => [
         agent.id,
         await this.stores.config.listAgentConnectionBindings(agent.id),
       ] as const)),
+      this.stores.websiteLogins ? listWebsiteLogins(this.stores.websiteLogins.store) : Promise.resolve([]),
     ]);
+    const principal = managementActorPrincipal(actor);
     const visibleConnectionAccounts = new Map(allConnectionAccounts
       .filter((account): account is ConnectionAccount & {
         lifecycle: Exclude<ConnectionAccount['lifecycle'], 'revoked'>;
@@ -3889,6 +4188,11 @@ export class WorkspaceManagementService {
           binding,
           applyConnectionCapabilityCeiling(account.policy, binding),
         ));
+      }
+      for (const [accountId, connection] of projected) {
+        const account = visibleConnectionAccounts.get(accountId);
+        const reconnect = account && connectionReconnect(principal, agentId, account);
+        if (reconnect) projected.set(accountId, { ...connection, reconnect });
       }
       return [agentId, [...projected.values()].sort((left, right) =>
         left.id.localeCompare(right.id))] as const;
@@ -4042,6 +4346,7 @@ export class WorkspaceManagementService {
         modelEffort,
         skills,
         repositories,
+        websiteLogins: grants,
       }) => ({
         id,
         revision,
@@ -4082,6 +4387,9 @@ export class WorkspaceManagementService {
             }) => connection) }
           : {}),
         repositories,
+        ...(grants?.length
+          ? { websiteLogins: projectAgentWebsiteLogins(grants, websiteLogins, principal) }
+          : {}),
       })),
       channels: visibleChannels.map((channel) => ({
         workspaceId: channel.workspaceId,
@@ -4135,6 +4443,7 @@ export class WorkspaceManagementService {
           }
         : {}),
       ...(team ? { team } : {}),
+      websiteLoginSetup: WEBSITE_LOGIN_SETUP,
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
   }
@@ -4573,6 +4882,14 @@ export class WorkspaceManagementService {
           ? { reversibleLocalChange: true }
           : {}),
       };
+    }
+    if (operation.kind === 'disconnect_connection') {
+      await this.agentConnectionTarget(actor, operation);
+      return { actor, operation, agentEditable: true };
+    }
+    if (operation.kind === 'remove_website_login') {
+      await this.agentWebsiteLoginTarget(actor, operation);
+      return { actor, operation, agentEditable: true };
     }
     if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
         operation.kind === 'restore_agent') {
@@ -5209,6 +5526,14 @@ export class WorkspaceManagementService {
           kind: operation.kind,
           agent: agentLabel(await this.stores.config.getAgent(operation.agentId)),
         };
+      case 'disconnect_connection': {
+        const { agent, account } = await this.agentConnectionTarget(actor, operation);
+        return { kind: operation.kind, agent: agentLabel(agent), connection: account.label };
+      }
+      case 'remove_website_login': {
+        const { agent, login } = await this.agentWebsiteLoginTarget(actor, operation);
+        return { kind: operation.kind, agent: agentLabel(agent), ...(login ? { site: login.host } : {}) };
+      }
       case 'update_member': {
         const membership = await this.stores.identity.getMembership(operation.membershipId);
         const member = membership
@@ -5850,6 +6175,12 @@ export class WorkspaceManagementService {
         revision: membershipRevision(result.membership),
       }]);
     }
+    if (operation.kind === 'disconnect_connection') {
+      return this.executeConnectionDisconnect(actor, operation);
+    }
+    if (operation.kind === 'remove_website_login') {
+      return this.executeWebsiteLoginRemoval(actor, operation);
+    }
     if (operation.kind === 'remove_provider_credential') {
       if (!this.stores.removeProviderCredential) {
         throw new ManagementError('invalid_request', 'Provider credential removal is unavailable.');
@@ -5985,6 +6316,13 @@ export class WorkspaceManagementService {
     if (operation.kind === 'remove_provider_credential') {
       return { [`provider:${operation.providerId}`]: await this.providerRevision(operation.providerId) };
     }
+    if (operation.kind === 'disconnect_connection') {
+      return { [`agent_connections:${operation.agentId}`]: await this.agentConnectionsRevision(operation.agentId) };
+    }
+    if (operation.kind === 'remove_website_login') {
+      const key = `website_login:${operation.agentId}:${operation.loginId}`;
+      return { [key]: await this.currentRevision(key) };
+    }
     if (operation.kind === 'set_workspace_model') {
       return { [`workspace_model:${operation.role}`]: operation.expectedRevision };
     }
@@ -6105,6 +6443,12 @@ export class WorkspaceManagementService {
     }
     if (key.startsWith('routine:')) {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
+    }
+    if (key.startsWith('website_login:')) {
+      // A grant has no revision of its own, so the target is whether it exists.
+      const [agentId = '', loginId] = key.slice('website_login:'.length).split(':');
+      const agent = await optionalAgent(this.stores.config, agentId);
+      return agent?.websiteLogins?.some((grant) => grant.loginId === loginId) ? 1 : 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
   }
@@ -6771,6 +7115,40 @@ async function optionalAgent(
   }
 }
 
+/** How a person reconnects a connection that needs attention in place, when they may manage it. */
+function connectionReconnect(
+  principal: AuthPrincipal,
+  agentId: string,
+  account: ConnectionAccount,
+): ManagementConnectionReconnect | undefined {
+  if (account.lifecycle !== 'needs_attention' || !canManageOwnedResource(principal, account)) return undefined;
+  const { policy } = account;
+  if (policy.kind === 'managed') {
+    const connector = CONNECTION_CATALOG_PRESETS.find((preset) =>
+      'managedToolkit' in preset && preset.managedToolkit === policy.toolkit);
+    return connector
+      ? { tool: 'prepare_connector_setup', connector: connector.id, ownerKind: account.ownerKind }
+      : undefined;
+  }
+  if (!nativeCredentialRequired(policy)) return undefined;
+  return {
+    tool: 'apply_workspace_changes',
+    operation: {
+      kind: 'request_setup',
+      target: { kind: policy.kind === 'mcp' ? 'mcp_connection' : 'api_connection', agentId, connectionId: account.id },
+    },
+  };
+}
+
+/** Refuses a tool choice naming a tool the server does not offer, and names the ones it does. */
+function requireOfferedTools(label: string, chosen: readonly string[], offered: readonly string[]): void {
+  const missing = chosen.filter((name) => !offered.includes(name));
+  if (missing.length === 0) return;
+  throw new AgentWriteRuleError(offered.length > 0
+    ? `${label} does not offer ${missing.join(', ')}. Its tools are: ${offered.join(', ')}.`
+    : `${label} does not offer ${missing.join(', ')}. It offers no tools.`);
+}
+
 function capabilityScopeExpanded(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
   if (patch.repositories && containsExpandedRepositories(agent.repositories, patch.repositories)) return true;
   if (patch.mcpServers && containsExpandedMcp(agent.mcpServers, patch.mcpServers)) return true;
@@ -6969,7 +7347,8 @@ function handoffTargetForOperation(
   }
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-      operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
+      operation.kind === 'update_agent_memory' || operation.kind === 'disconnect_connection' ||
+      operation.kind === 'remove_website_login' || operation.kind === 'set_agent_image_model') {
     return { kind: 'agent', id: operation.agentId };
   }
   if (operation.kind === 'set_workspace_model') {
@@ -7288,6 +7667,8 @@ function isTrustedSlackOriginGrant(
 
 function managementPreviewTarget(operation: ManagementOperation): string {
   if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
+  if (operation.kind === 'disconnect_connection') return `connection:${operation.agentId}:${operation.connectionId}`;
+  if (operation.kind === 'remove_website_login') return `website_login:${operation.agentId}:${operation.loginId}`;
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
       operation.kind === 'update_agent_memory' ||

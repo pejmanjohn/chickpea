@@ -27,6 +27,9 @@ const creationModelEffortDescription = 'Set only when the requester chose a reas
 const modelEffortDescription = 'Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it.';
 const updateRevisionDescription = 'The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn.';
 const zModelEffort = z.enum(MODEL_EFFORTS);
+const disconnectConnectionIdDescription = 'The connection to disconnect: its id from the Agent\'s connections, mcpServers or apiConnections in inspect_workspace.';
+const websiteLoginIdDescription = 'The loginId from the Agent\'s websiteLogins in inspect_workspace.';
+const WEBSITE_LOGIN_ID_PATTERN = /^wl_[a-f0-9]{32}$/;
 const workspaceModelRoleDescription = 'chat is the Workspace default model; image and coding are the Workspace image and coding models.';
 const workspaceModelDescription = 'A model from inspect_workspace modelCatalog: chat models for chat and coding, image models for image. null clears the image or coding model; the chat default cannot be cleared.';
 const workspaceModelEffortDescription = 'Chat and coding only, one of the model\'s efforts in modelCatalog. Omit to run the model\'s standard effort.';
@@ -200,6 +203,18 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     kind: z.literal('restore_agent'),
     agentId: zAgentId,
     expectedRevision: zRevision,
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('disconnect_connection'),
+    agentId: zAgentId,
+    connectionId: zId.describe(disconnectConnectionIdDescription),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('remove_website_login'),
+    agentId: zAgentId,
+    loginId: z.string().regex(WEBSITE_LOGIN_ID_PATTERN).describe(websiteLoginIdDescription),
   }),
   z.strictObject({
     ...zOperationBase,
@@ -556,6 +571,18 @@ export const managementOperationValibotSchema = v.variant('kind', [
     kind: v.literal('restore_agent'),
     agentId: vAgentId,
     expectedRevision: vr,
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('disconnect_connection'),
+    agentId: vAgentId,
+    connectionId: v.pipe(vid, v.description(disconnectConnectionIdDescription)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('remove_website_login'),
+    agentId: vAgentId,
+    loginId: v.pipe(v.string(), v.regex(WEBSITE_LOGIN_ID_PATTERN), v.description(websiteLoginIdDescription)),
   }),
   v.strictObject({
     ...vOperationBase,

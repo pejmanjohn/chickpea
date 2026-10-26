@@ -59,6 +59,8 @@ In a one-to-one Chickpea DM, call \`inspect_routines\` with the workspace and le
 
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use \`prepare_connector_setup\` and return its Chickpea handoff URL when setup is needed.
 
+A connection whose \`lifecycle\` is \`needs_attention\` must be reconnected. Use the \`reconnect\` call inspection gives it: it signs the same account in again, so the connection keeps its Agent and its tools. Without a \`reconnect\` call, ask a Chickpea Admin to reconnect it. To remove a connection, use \`disconnect_connection\`; the person confirms, and schedules that use the connection pause. A connection cannot be turned off, only disconnected. To change which tools an Agent may use, send its MCP server with a new \`allowedTools\` naming only tools its \`connectionStatus\` lists. An MCP server that needs no credential is checked when it is added or its URL changes, and the call fails if the server cannot be reached or lacks a named tool. Each Agent's \`websiteLogins\` lists the website logins it may use; remove one with \`remove_website_login\`, which the person confirms. A new website login is added only in Admin, as \`websiteLoginSetup\` says.
+
 ## Choose the configuration primitive
 
 Place each part of the request according to its lifetime and execution semantics:

@@ -48,6 +48,7 @@ const POSTURE = {
   membership_authority_change: DESTRUCTIVE,
   provider_credential_removal: DESTRUCTIVE,
   connection_removal: DESTRUCTIVE,
+  website_login_removal: DESTRUCTIVE,
   disable_active_agent: DESTRUCTIVE,
   membership_role_change: REVIEWED_IN_SLACK,
   archive_agent_reach: REVIEWED_IN_SLACK,
@@ -117,6 +118,12 @@ function managementPolicyReason(
   }
   if (operation.kind === 'delete_routine') {
     return { allowed: true, reason: 'irreversible_routine_delete' };
+  }
+  if (operation.kind === 'disconnect_connection') {
+    return { allowed: true, reason: 'connection_removal' };
+  }
+  if (operation.kind === 'remove_website_login') {
+    return { allowed: true, reason: 'website_login_removal' };
   }
   if (operation.kind === 'set_workspace_model') {
     return { allowed: true, reason: 'workspace_model_change' };

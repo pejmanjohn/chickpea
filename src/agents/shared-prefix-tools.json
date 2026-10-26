@@ -1790,6 +1790,83 @@
            "maxItems": 25
           },
           "kind": {
+           "const": "disconnect_connection"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "connectionId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128,
+           "description": "The connection to disconnect: its id from the Agent's connections, mcpServers or apiConnections in inspect_workspace."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "connectionId"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "remove_website_login"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "loginId": {
+           "type": "string",
+           "pattern": "^wl_[a-f0-9]{32}$",
+           "description": "The loginId from the Agent's websiteLogins in inspect_workspace."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "loginId"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
            "const": "put_channel"
           },
           "channel": {
@@ -3738,6 +3815,83 @@
           "kind",
           "agentId",
           "expectedRevision"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "disconnect_connection"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "connectionId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128,
+           "description": "The connection to disconnect: its id from the Agent's connections, mcpServers or apiConnections in inspect_workspace."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "connectionId"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "remove_website_login"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "loginId": {
+           "type": "string",
+           "pattern": "^wl_[a-f0-9]{32}$",
+           "description": "The loginId from the Agent's websiteLogins in inspect_workspace."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "loginId"
          ],
          "additionalProperties": false
         },

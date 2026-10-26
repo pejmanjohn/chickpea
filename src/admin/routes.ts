@@ -468,6 +468,14 @@ import {
   type WorkspaceModelDefault,
 } from '../config/types.ts';
 import {
+  projectAgentWebsiteLogins,
+  removeAgentWebsiteLogin,
+  updateAgentWebsiteLogins,
+  websiteLoginView,
+  WebsiteLoginGrantNotFoundError,
+  WebsiteLoginsUnavailableError,
+} from '../browser/agent-website-logins.ts';
+import {
   createWebsiteLogin,
   deleteWebsiteLogin,
   listWebsiteLogins,
@@ -9125,26 +9133,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // implicitly; only an explicit realm or production state may.
     (options.settings ? undefined : websiteLoginDependencies(c.env as PlatformEnv | undefined));
 
-  /** Apply a grant-list change through the ordinary Agent update path. */
-  const updateAgentWebsiteLogins = async (
-    c: Context,
-    agentId: string,
-    change: (grants: WebsiteLoginGrant[]) => WebsiteLoginGrant[] | undefined,
-  ): Promise<CustomAgentConfig | undefined> => {
-    const configStore = store(c);
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const current = await configStore.getAgent(agentId);
-      const next = change([...(current.websiteLogins ?? [])]);
-      if (!next) return current;
-      try {
-        return await configStore.updateAgent(agentId, { websiteLogins: next }, current.revision);
-      } catch (error) {
-        if (!(error instanceof AgentRevisionConflictError) || attempt === 2) throw error;
-      }
-    }
-    return undefined;
-  };
-
   app.get('/admin/api/agents/:id/website-logins', async (c) => {
     try {
       const principal = principalByContext.get(c);
@@ -9207,7 +9195,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const loginId = created.id;
       const grant: WebsiteLoginGrant = { loginId, level: input.level, enabled: true };
       let full = false;
-      const updated = await updateAgentWebsiteLogins(c, agentId, (grants) => {
+      const updated = await updateAgentWebsiteLogins(store(c), agentId, (grants) => {
         if (grants.length >= 50) {
           full = true;
           return undefined;
@@ -9261,7 +9249,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       const login = logins.find((candidate) => candidate.id === loginId);
       if (!login) return c.json({ error: 'not_found' }, 404);
       let changed: WebsiteLoginGrant | undefined;
-      const updated = await updateAgentWebsiteLogins(c, agentId, (grants) => {
+      const updated = await updateAgentWebsiteLogins(store(c), agentId, (grants) => {
         const index = grants.findIndex((grant) => grant.loginId === loginId);
         if (index < 0) return undefined;
         const next = [...grants];
@@ -9292,33 +9280,21 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     try {
       const principal = principalByContext.get(c);
       if (!principal) throw new AuthorizationError('principal_required');
-      const agent = await store(c).getAgent(agentId);
-      requireAgentEdit(principal, agent);
-      if (!(agent.websiteLogins ?? []).some((grant) => grant.loginId === loginId)) {
-        return c.json({ error: 'not_found' }, 404);
-      }
-      const login = (await listWebsiteLogins(websiteLoginSettings(c)))
-        .find((candidate) => candidate.id === loginId);
-      // A grant whose login is already gone is removable by any editor.
-      if (login && !canManageOwnedResource(principal, login)) throw new AuthorizationError();
-      await updateAgentWebsiteLogins(c, agentId, (grants) => {
-        const next = grants.filter((grant) => grant.loginId !== loginId);
-        return next.length === grants.length ? undefined : next;
+      const { loginDeleted } = await removeAgentWebsiteLogin({
+        principal,
+        agentId,
+        loginId,
+        config: store(c),
+        logins: websiteLoginSettings(c),
+        deletion: () => websiteLoginWriteDependencies(c),
       });
-      let loginDeleted = false;
-      if (login) {
-        const stillGranted = (await store(c).listAgents()).some((candidate) =>
-          (candidate.websiteLogins ?? []).some((grant) => grant.loginId === loginId));
-        if (!stillGranted) {
-          const deps = websiteLoginWriteDependencies(c);
-          if (!deps) return c.json({ error: 'website_logins_unavailable' }, 503);
-          loginDeleted = await deleteWebsiteLogin(deps, loginId);
-        }
-      }
       return c.json({ removed: true, loginDeleted });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
-      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      if (error instanceof UnknownAgentError || error instanceof WebsiteLoginGrantNotFoundError) {
+        return c.json({ error: 'not_found' }, 404);
+      }
+      if (error instanceof WebsiteLoginsUnavailableError) return c.json({ error: 'website_logins_unavailable' }, 503);
       if (error instanceof WebsiteLoginStateError || error instanceof AgentRevisionConflictError) {
         return c.json({ error: 'website_login_conflict' }, 409);
       }
@@ -12778,38 +12754,6 @@ function websiteLoginGrantWidensWithoutAuthority(
     const login = byId.get(grant.loginId);
     return !login || !principal || !canManageOwnedResource(principal, login);
   });
-}
-
-function projectAgentWebsiteLogins(
-  grants: readonly WebsiteLoginGrant[] | undefined,
-  logins: readonly WebsiteLogin[],
-  principal: AuthPrincipal,
-) {
-  const byId = new Map(logins.map((login) => [login.id, login]));
-  return (grants ?? []).flatMap((grant) => {
-    const login = byId.get(grant.loginId);
-    if (!login) return [];
-    // Mirror connection accounts: another member's personal login stays
-    // private to that member (and to Owners/Admins, who can manage it).
-    if (login.ownerKind === 'member' && !canManageOwnedResource(principal, login)) return [];
-    return [websiteLoginView(login, grant)];
-  });
-}
-
-/** The only website-login shape Admin returns. Never a password or TOTP seed. */
-function websiteLoginView(login: WebsiteLogin, grant: WebsiteLoginGrant) {
-  return {
-    loginId: login.id,
-    host: login.host,
-    label: login.label,
-    ownerKind: login.ownerKind,
-    ...(login.ownerMembershipId ? { ownerMembershipId: login.ownerMembershipId } : {}),
-    method: login.method,
-    ...(login.username ? { username: login.username } : {}),
-    ...(login.lastUsedAt !== undefined ? { lastUsedAt: login.lastUsedAt } : {}),
-    level: grant.level,
-    enabled: grant.enabled,
-  };
 }
 
 type AgentPatch = ConfigAgentPatch;

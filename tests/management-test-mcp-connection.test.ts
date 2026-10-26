@@ -9,8 +9,13 @@ import { SqliteSettingsStore } from '../src/config/settings-store.ts';
 import type { ConnectionAccountPolicy } from '../src/config/types.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
-import { testManagedMcpConnection } from '../src/management/discovery.ts';
-import { ManagementError } from '../src/management/types.ts';
+import { discoverOpenMcpServer, testManagedMcpConnection } from '../src/management/discovery.ts';
+import type { ManagementMcpConnection } from '../src/management/agent-connections.ts';
+import {
+  ManagementError,
+  type ManagementApplyResult,
+  type ManagementWorkspaceSnapshot,
+} from '../src/management/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 
 interface FakeServer {
@@ -71,6 +76,7 @@ async function fixture() {
       settings,
       createGuardedFetch: remote.createGuardedFetch,
     }),
+    discoverMcpServer: (server) => discoverOpenMcpServer({ server, createGuardedFetch: remote.createGuardedFetch }),
   });
   const workspaceId = f.owner.user.slackTeamId;
   const member = await addMember(f, 'U11223344');
@@ -368,3 +374,99 @@ test('test_mcp_connection keeps personal connections personal and Agent bindings
     await assert.rejects(f.testAs(f.admin, elsewhere.id), notFound);
   } finally { f.close(); }
 });
+
+async function withFixture(run: (f: Fixture) => Promise<void>): Promise<void> {
+  const f = await fixture();
+  try {
+    await f.config.ensureWorkspaceInstallation({
+      workspaceId: f.workspaceId, transportMode: 'direct', defaultAgentId: f.agent.id,
+    });
+    await run(f);
+  } finally { f.close(); }
+}
+
+async function applyAsAdmin(f: Fixture, key: string, connection: ManagementMcpConnection): Promise<ManagementApplyResult> {
+  const context = {
+    userId: f.admin.user.id,
+    membershipId: f.admin.membership.id,
+    organizationId: f.admin.membership.organizationId,
+    origin: { kind: 'mcp' as const, clientId: 'test-mcp-connection' },
+  };
+  const snapshot = await f.service.inspectWorkspace(context) as ManagementWorkspaceSnapshot;
+  const agent = snapshot.agents.find(({ id }) => id === f.agent.id)!;
+  return await f.service.applyWorkspaceChanges({
+    context,
+    idempotencyKey: key,
+    operations: [{
+      itemId: 'server',
+      kind: 'update_agent',
+      agentId: f.agent.id,
+      expectedRevision: agent.revision,
+      patch: { mcpServers: [connection] },
+    }],
+  }) as ManagementApplyResult;
+}
+
+const wiki: ManagementMcpConnection = {
+  id: 'wiki',
+  displayName: 'Wiki',
+  url: 'https://open-wiki.example.com/mcp',
+  transport: 'streamable-http',
+  authMode: 'none',
+  headerNames: [],
+  enabled: true,
+  allowedTools: ['read_wiki_structure'],
+};
+
+test('a no-auth MCP server added through management is checked, and saves the tools it offers', () => withFixture(async (f) => {
+  f.remote.servers.set('https://open-wiki.example.com', { tools: ['ask_wiki_question', 'read_wiki_structure'] });
+  const result = await applyAsAdmin(f, 'add-wiki', wiki);
+  assert.equal(result.status, 'completed', JSON.stringify(result.outcomes));
+  assert.equal(f.remote.requestsTo('https://open-wiki.example.com').length > 0, true, 'discovery ran');
+  const account = (await f.config.listConnectionAccounts(f.workspaceId)).find(({ providerId }) => providerId === 'wiki')!;
+  assert.equal(account.lifecycle, 'ready');
+  assert.equal(account.policy.kind, 'mcp');
+  if (account.policy.kind !== 'mcp') return;
+  assert.deepEqual(account.policy.discoveredTools.map(({ name }) => name), ['ask_wiki_question', 'read_wiki_structure']);
+  assert.deepEqual(account.policy.allowedTools, ['read_wiki_structure']);
+}));
+
+test('an empty allowedTools on a checked no-auth server allows every tool it offers', () => withFixture(async (f) => {
+  f.remote.servers.set('https://open-wiki.example.com', { tools: ['ask_wiki_question', 'read_wiki_structure'] });
+  const result = await applyAsAdmin(f, 'add-wiki-all', { ...wiki, allowedTools: [] });
+  assert.equal(result.status, 'completed', JSON.stringify(result.outcomes));
+  const account = (await f.config.listConnectionAccounts(f.workspaceId)).find(({ providerId }) => providerId === 'wiki')!;
+  assert.deepEqual(account.policy.kind === 'mcp' ? account.policy.allowedTools : [], ['ask_wiki_question', 'read_wiki_structure']);
+}));
+
+test('an allowed tool the no-auth server lacks is refused, naming the tools it has', () => withFixture(async (f) => {
+  f.remote.servers.set('https://open-wiki.example.com', { tools: ['ask_wiki_question', 'read_wiki_structure'] });
+  const result = await applyAsAdmin(f, 'add-wiki-stale', { ...wiki, allowedTools: ['ask_question', 'read_wiki_structure'] });
+  assert.equal(result.outcomes[0]?.disposition, 'failed', JSON.stringify(result.outcomes));
+  assert.equal(result.outcomes[0]?.warning,
+    'Wiki does not offer ask_question. Its tools are: ask_wiki_question, read_wiki_structure.');
+  assert.equal((await f.config.listConnectionAccounts(f.workspaceId)).some(({ providerId }) => providerId === 'wiki'), false,
+    'nothing was saved');
+}));
+
+test('a no-auth server that cannot be reached is not saved or marked ready', () => withFixture(async (f) => {
+  const result = await applyAsAdmin(f, 'add-wiki-down', { ...wiki, url: 'https://down-wiki.example.com/mcp' });
+  assert.equal(result.outcomes[0]?.disposition, 'failed', JSON.stringify(result.outcomes));
+  assert.match(result.outcomes[0]?.warning ?? '', /^Wiki was not saved: Chickpea could not connect to it\./);
+  assert.equal((await f.config.listConnectionAccounts(f.workspaceId)).some(({ providerId }) => providerId === 'wiki'), false);
+}));
+
+test('re-pointing a no-auth server checks the new server', () => withFixture(async (f) => {
+  f.remote.servers.set('https://open-wiki.example.com', { tools: ['ask_wiki_question', 'read_wiki_structure'] });
+  f.remote.servers.set('https://next-wiki.example.com', { tools: ['search_pages'] });
+  assert.equal((await applyAsAdmin(f, 'add-wiki-first', wiki)).status, 'completed');
+  const moved = await applyAsAdmin(f, 'move-wiki', { ...wiki, url: 'https://next-wiki.example.com/mcp' });
+  assert.equal(moved.outcomes[0]?.disposition, 'failed', JSON.stringify(moved.outcomes));
+  assert.equal(moved.outcomes[0]?.warning, 'Wiki does not offer read_wiki_structure. Its tools are: search_pages.');
+  const repointed = await applyAsAdmin(f, 'move-wiki-tools', {
+    ...wiki, url: 'https://next-wiki.example.com/mcp', allowedTools: ['search_pages'],
+  });
+  assert.equal(repointed.status, 'completed', JSON.stringify(repointed.outcomes));
+  const account = (await f.config.listConnectionAccounts(f.workspaceId)).find(({ providerId }) => providerId === 'wiki')!;
+  assert.deepEqual(account.policy.kind === 'mcp' ? account.policy.discoveredTools.map(({ name }) => name) : [], ['search_pages']);
+}));

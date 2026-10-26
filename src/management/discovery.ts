@@ -1,9 +1,14 @@
 import { connectionAccountOAuthRef } from '../config/api-oauth.ts';
-import { classifyMcpError, safeMcpFailureText, type McpErrorCode } from '../config/mcp-errors.ts';
+import {
+  classifyMcpError,
+  McpBlockedUrlError,
+  safeMcpFailureText,
+  type McpErrorCode,
+} from '../config/mcp-errors.ts';
 import { McpOAuthError, resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
 import { buildMcpRequestHeaders } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpDiscoveryResult } from '../config/mcp-test.ts';
-import type { createMcpGuardedFetch } from '../config/mcp-url.ts';
+import { validateMcpUrl, type createMcpGuardedFetch } from '../config/mcp-url.ts';
 import { resolveConnectionAccountMcpSecrets } from '../config/profile-mcp.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
@@ -40,9 +45,16 @@ interface TestManagedMcpConnectionInput {
   createGuardedFetch?: typeof createMcpGuardedFetch;
 }
 
-type McpConnectionTestResult =
+export type McpConnectionTestResult =
   | { ok: true; tools: McpDiscoveryResult['tools'] }
   | { ok: false; code: McpErrorCode; message: string };
+
+/** An MCP server that needs no credential, before Chickpea saves it. */
+export interface OpenMcpServer {
+  id: string;
+  url: string;
+  transport: 'streamable-http' | 'sse';
+}
 
 const NOT_FOUND = 'The MCP connection was not found.';
 
@@ -115,6 +127,27 @@ export async function testManagedMcpConnection(
       transport: server.transport,
       headers: buildMcpRequestHeaders(server.authMode, secrets),
       authorizeRequest,
+    }, undefined, input.createGuardedFetch);
+    return { ok: true, tools: result.tools };
+  } catch (error) {
+    return testFailure(error);
+  }
+}
+
+/** Lists an open server's tools exactly as Admin's Test connection does before it saves one. */
+export async function discoverOpenMcpServer(input: {
+  server: OpenMcpServer;
+  /** Test seam; production uses the SSRF-guarded fetch implementation. */
+  createGuardedFetch?: typeof createMcpGuardedFetch;
+}): Promise<McpConnectionTestResult> {
+  const validated = validateMcpUrl(input.server.url);
+  if (!validated.ok) return testFailure(new McpBlockedUrlError(validated.reason));
+  try {
+    const result = await discoverMcpTools({
+      id: input.server.id,
+      url: validated.url,
+      transport: input.server.transport,
+      headers: {},
     }, undefined, input.createGuardedFetch);
     return { ok: true, tools: result.tools };
   } catch (error) {
