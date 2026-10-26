@@ -13,26 +13,6 @@ import {
   AGENT_AUTHORING_REASONS,
 } from './agent-authoring/index.ts';
 
-export const MANAGEMENT_OPERATION_KINDS = [
-  'create_agent',
-  'update_agent',
-  'delete_agent',
-  'archive_agent',
-  'restore_agent',
-  'put_channel',
-  'grant_agent_channel',
-  'revoke_agent_channel',
-  'update_member',
-  'remove_provider_credential',
-  'update_agent_memory',
-  'save_routine',
-  'control_routine',
-  'run_routine',
-  'delete_routine',
-  'reassign_routine_agent',
-  'request_setup',
-] as const;
-
 const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
@@ -300,12 +280,12 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('reassign_routine_agent'),
+    kind: z.literal('take_over_routine'),
     requiredConnectionAccountIds: z.array(zId).max(100).optional(),
     workspaceId: zId,
+    channelId: zId.optional(),
     routineId: zId,
     expectedVersion: z.number().int().positive(),
-    agentId: zAgentId,
   }),
   z.strictObject({
     ...zOperationBase,
@@ -313,6 +293,14 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     target: zSetupTarget,
   }),
 ]);
+
+/**
+ * The MCP door's operations. Changing a DM routine's Agent needs Chickpea in
+ * that DM, so only Slack has reassign_routine_agent; take_over_routine is the
+ * Admin Runs as repair, which Slack does not offer.
+ */
+export const MCP_MANAGEMENT_OPERATION_KINDS = managementOperationZodSchema.options
+  .map((option) => option.shape.kind.value);
 
 export const applyWorkspaceChangesZodSchema = z.strictObject({
   idempotencyKey: zText(256),

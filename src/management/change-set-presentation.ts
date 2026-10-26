@@ -124,6 +124,7 @@ const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
   run_routine: 'Run Schedule',
   delete_routine: 'Delete Schedule',
   reassign_routine_agent: 'Change Schedule Agent',
+  take_over_routine: 'Take Over Schedule',
   request_setup: 'Request Setup',
 };
 

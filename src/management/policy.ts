@@ -57,6 +57,7 @@ const POSTURE = {
   revoke_channel_reach: REVIEWED_IN_SLACK,
   workspace_wide_agent_edit_authority: REVIEWED_IN_SLACK,
   schedule_agent_reassignment: REVIEWED_IN_SLACK,
+  schedule_runs_as_takeover: REVIEWED_IN_SLACK,
   credential_replacement: REVIEWED_IN_SLACK,
   recipe_overwrite: REVIEWED_IN_SLACK,
   capability_scope_expansion: REVIEWED_IN_SLACK,
@@ -127,6 +128,9 @@ function managementPolicyReason(
   }
   if (operation.kind === 'reassign_routine_agent') {
     return { allowed: true, reason: 'schedule_agent_reassignment' };
+  }
+  if (operation.kind === 'take_over_routine') {
+    return { allowed: true, reason: 'schedule_runs_as_takeover' };
   }
   if (operation.kind === 'delete_agent') {
     return { allowed: true, reason: 'agent_deletion' };

@@ -195,6 +195,7 @@ const APPROVAL_OPERATION_LABELS: Readonly<Record<ManagementOperation['kind'], st
   run_routine: 'Run a routine now',
   delete_routine: 'Delete a routine',
   reassign_routine_agent: 'Move a routine to another Agent',
+  take_over_routine: 'Run a routine as you',
   request_setup: 'Prepare a setup link',
 };
 

@@ -496,6 +496,7 @@ import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
 import { routineUpcomingRunAt } from '../routines/message-format.ts';
 import {
+  AUTHORITY_PAUSE_REASONS,
   reassignRoutineAgentAuthority,
   RoutineAuthorityError,
 } from '../routines/agent-authority.ts';
@@ -9656,12 +9657,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identity: identity(c),
       });
       const routine = await routines(c).getRoutine(current.scheduleId);
-      const repairedAuthorityPause = routine?.pausedReason === 'schedule_authority_missing' ||
-        routine?.pausedReason === 'assignment_missing' ||
-        routine?.pausedReason === 'creator_ineligible' ||
-        routine?.pausedReason === 'credential_unavailable';
       const resumed = reference.state === 'active' && routine?.state === 'paused' &&
-          repairedAuthorityPause
+          AUTHORITY_PAUSE_REASONS.has(routine.pausedReason ?? '')
         ? await new RoutineService(routines(c)).control({
             routineId: routine.id,
             expectedVersion: routine.version,

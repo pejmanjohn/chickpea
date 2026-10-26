@@ -74,6 +74,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'update_member', 'remove_provider_credential',
     'update_agent_memory', 'save_routine', 'control_routine', 'run_routine', 'delete_routine',
     'reassign_routine_agent',
+    'take_over_routine',
     'request_setup',
   ]),
   artifactClass: new Set([
@@ -202,6 +203,7 @@ export function agentAuthoringArtifactClass(
       case 'run_routine':
       case 'delete_routine':
       case 'reassign_routine_agent':
+      case 'take_over_routine':
         classes.add('schedule');
         break;
       case 'grant_agent_channel':
