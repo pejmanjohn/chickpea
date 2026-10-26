@@ -30,10 +30,13 @@ export interface ChangeSetPresentationDialect {
 type PreviewChange = ManagementChangeSetPreview['changes'][number];
 type OperationKind = PreviewChange['operationKind'];
 
-/** A section or line of a preview. Whatever widens access leads a preview that must be cut. */
+/**
+ * A section or line of a preview. A pinned part widens access, or could: it
+ * leads a preview that must be cut and counts toward `changeSetAccessFits`.
+ */
 interface PreviewPart {
   text: string;
-  widens: boolean;
+  pinned: boolean;
 }
 
 /**
@@ -151,8 +154,8 @@ export function changeSetAccessFits(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
 ): boolean {
-  const widening = joinParts(proposalParts(preview, dialect).filter(({ widens }) => widens));
-  return widening.length <= truncatedBodyLimit(dialect);
+  const pinned = joinParts(proposalParts(preview, dialect).filter(({ pinned }) => pinned));
+  return pinned.length <= truncatedBodyLimit(dialect);
 }
 
 function formatProposal(
@@ -161,7 +164,7 @@ function formatProposal(
   leadingSections: readonly string[],
 ): string {
   const parts = [
-    ...leadingSections.map((text) => ({ text, widens: true })),
+    ...leadingSections.map((text) => ({ text, pinned: true })),
     ...proposalParts(preview, dialect),
   ];
   const body = joinParts(parts);
@@ -175,8 +178,8 @@ function formatProposal(
   }
 
   const ordered = joinParts([
-    ...parts.filter(({ widens }) => widens),
-    ...parts.filter(({ widens }) => !widens),
+    ...parts.filter(({ pinned }) => pinned),
+    ...parts.filter(({ pinned }) => !pinned),
   ]);
   return `${dialect.header}\n${ordered.slice(0, truncatedBodyLimit(dialect)).trimEnd()}${truncationSuffix(dialect)}`;
 }
@@ -191,12 +194,9 @@ function proposalParts(
     if (change.operationKind === 'create_agent') {
       const after = presentationRecord(change.operationKind, change.after);
       return [
-        {
-          text: formatNewAgentSection(after, dialect, creation?.originGrant !== undefined),
-          widens: newAgentWidensEditing(after),
-        },
+        ...formatNewAgentParts(after, dialect, creation?.originGrant !== undefined),
         ...formatSkillChangeSections(recordName(undefined, after) ?? 'New Agent', undefined, after?.skills, false, dialect)
-          .map(plainPart),
+          .map((text) => fieldPart('skills', after?.skills, text)),
       ];
     }
     return formatChangeSections(change, dialect);
@@ -215,8 +215,18 @@ function joinParts(parts: readonly PreviewPart[]): string {
   return parts.map(({ text }) => text).join('\n\n');
 }
 
-function plainPart(text: string): PreviewPart {
-  return { text, widens: false };
+/** Pinned unless `SAFE_CHANGES` lists this change to the field as safe. */
+function fieldPart(field: PresentationField, after: unknown, text: string): PreviewPart {
+  return { text, pinned: !safeFieldChange(field, after) };
+}
+
+function safeFieldChange(field: PresentationField, after: unknown): boolean {
+  const rule = SAFE_CHANGES[field];
+  return rule === true || rule?.includes(String(after)) === true;
+}
+
+function headerPart(operationKind: OperationKind, text: string): PreviewPart {
+  return { text, pinned: SAFE_CHANGES[operationKind] !== true };
 }
 
 function formatChangeSections(
@@ -231,7 +241,11 @@ function formatChangeSections(
   if (statement?.kind === 'update_agent_memory') {
     return sections(PRESENTATION_FIELDS.memory, statement.agent.name);
   }
-  if (statement) return [{ text: formatStatement(statement, dialect), widens: statementWidens(statement) }];
+  if (statement) {
+    const rule = SAFE_CHANGES[statement.kind];
+    const safe = rule === true || (typeof rule === 'function' && rule(statement));
+    return [{ text: formatStatement(statement, dialect), pinned: !safe }];
+  }
   switch (change.operationKind) {
     case 'update_agent':
       return sections(PRESENTATION_FIELDS.agent, recordName(before, after) ?? 'Agent');
@@ -245,22 +259,42 @@ function formatChangeSections(
     case 'update_agent_memory':
       return sections(PRESENTATION_FIELDS.memory, 'Agent');
     default:
-      return [plainPart(operationHeader(change.operationKind, recordName(before, after), dialect))];
+      return [headerPart(change.operationKind, operationHeader(change.operationKind, recordName(before, after), dialect))];
   }
 }
 
-/** Statements that can give an Agent or a member reach or authority. A role change counts either way. */
-function statementWidens(statement: SpokenStatement): boolean {
-  switch (statement.kind) {
-    case 'grant_agent_channel':
-    case 'restore_agent':
-      return true;
-    case 'update_member':
-      return statement.role === 'owner' || statement.role === 'admin' || statement.status === 'active';
-    default:
-      return false;
-  }
-}
+/**
+ * The only changes that cannot widen access. Every other part is pinned,
+ * including a field or statement added later. `true` is always safe; a list
+ * names the values a field may safely change to; a function judges a
+ * statement. Connection lines follow their own field tables below.
+ */
+const SAFE_CHANGES: Partial<Record<PresentationField, true | readonly string[]>> &
+  Partial<Record<OperationKind, true | ((statement: SpokenStatement) => boolean)>> = {
+  name: true,
+  requestedHandle: true,
+  description: true,
+  instructions: true,
+  modelEffort: true,
+  skills: true,
+  editPolicy: ['creator_and_admins'],
+  enabled: ['false'],
+  taskText: true,
+  schedule: true,
+  timezone: true,
+  delivery: true,
+  label: true,
+  lifecycle: ['archived'],
+  body: true,
+  archive_agent: true,
+  delete_agent: true,
+  revoke_agent_channel: true,
+  remove_provider_credential: true,
+  delete_routine: true,
+  control_routine: (statement) => statement.kind === 'control_routine' && statement.action !== 'resume',
+  update_member: (statement) => statement.kind === 'update_member' &&
+    (statement.role === undefined || statement.role === 'member') && statement.status !== 'active',
+};
 
 /** The bold "Name — Operation" heading for a change with nothing more specific to say. */
 function operationHeader(
@@ -285,7 +319,7 @@ function formatRecordSections(
   const sections = changed.flatMap((field): PreviewPart[] => {
     if (field === 'skills') {
       return formatSkillChangeSections(targetName, before?.[field], after?.[field], compare, dialect)
-        .map(plainPart);
+        .map((text) => fieldPart(field, after?.[field], text));
     }
     const connectionFields = CONNECTION_FIELDS[field];
     if (connectionFields) {
@@ -297,31 +331,18 @@ function formatRecordSections(
         dialect,
       );
     }
-    return [{
-      text: formatChangeSection(
-        targetName,
-        FIELD_LABELS[field],
-        presentationValue(field, before?.[field]),
-        presentationValue(field, after?.[field]),
-        compare,
-        dialect,
-      ),
-      widens: WIDENING_VALUES[field] !== undefined && WIDENING_VALUES[field] === after?.[field],
-    }];
+    return [fieldPart(field, after?.[field], formatChangeSection(
+      targetName,
+      FIELD_LABELS[field],
+      presentationValue(field, before?.[field]),
+      presentationValue(field, after?.[field]),
+      compare,
+      dialect,
+    ))];
   });
   return sections.length > 0
     ? sections
-    : [plainPart(operationHeader(change.operationKind, targetName, dialect))];
-}
-
-/** Agent field values that widen who has authority over the Agent. */
-const WIDENING_VALUES: Partial<Record<PresentationField, string>> = {
-  editPolicy: 'all_workspace_members',
-};
-
-/** A new Agent names its edit policy only when it lets every member edit. */
-function newAgentWidensEditing(after: Record<string, unknown> | undefined): boolean {
-  return after?.editPolicy === WIDENING_VALUES.editPolicy;
+    : [headerPart(change.operationKind, operationHeader(change.operationKind, targetName, dialect))];
 }
 
 /** A memory change shows its body diff instead; its statement only names the Agent. */
@@ -475,13 +496,13 @@ type ConnectionField =
   | { show: 'named'; label: string; widens: boolean }
   /** Part of the entry's name: a change removes the old entry and adds the new one. */
   | { show: 'identity' }
-  /** Keys, credential references and status bookkeeping. */
-  | { show: 'hidden' };
+  /** Server bookkeeping: never shown, and a change to it alone is not a change. */
+  | { show: 'bookkeeping' };
 
 /** Every stored field is classified, so a new one fails typecheck until it is. */
 type ConnectionFields<T> = Readonly<Record<keyof T, ConnectionField>>;
 
-const HIDDEN: ConnectionField = { show: 'hidden' };
+const BOOKKEEPING: ConnectionField = { show: 'bookkeeping' };
 const IDENTITY: ConnectionField = { show: 'identity' };
 const CONNECTION_NAME: ConnectionField = {
   show: 'value', label: 'Name', format: 'name', widens: false, unlessNew: true,
@@ -489,6 +510,17 @@ const CONNECTION_NAME: ConnectionField = {
 const CONNECTION_STATUS: ConnectionField = {
   show: 'value', label: 'Status', format: STATUS_LABELS, widens: 'true', unlessNew: 'true',
 };
+/** The account a provider probe reported; Admin shows it as "Connected as". */
+const CONNECTED_ACCOUNT: ConnectionField = {
+  show: 'value', label: 'Connected account', format: 'code', widens: true, read: accountLabel,
+};
+/** A preset decides whether new tools need review. */
+const CONNECTOR_PRESET: ConnectionField = { show: 'named', label: 'Connector', widens: true };
+/**
+ * The store derives the credential reference on every write, so a patch
+ * cannot choose one and the preview's record drops it.
+ */
+const CREDENTIAL_REFERENCE = BOOKKEEPING;
 
 /** In display order. Admin's labels: the MCP editor and the connection account form. */
 const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
@@ -511,23 +543,23 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   allowedTools: { show: 'list', label: 'Allowed tools', noun: 'tools' },
   oauthScope: { show: 'list', label: 'Scope', noun: 'scopes', read: scopeTokens },
   enabled: CONNECTION_STATUS,
+  identity: CONNECTED_ACCOUNT,
   toolAccessMode: { show: 'named', label: 'Allowed tools', widens: true },
   toolPolicies: { show: 'named', label: 'Tool restrictions', widens: true },
   credentialHeaderName: { show: 'named', label: 'Custom headers', widens: true },
   credentialValuePrefix: { show: 'named', label: 'Custom headers', widens: false },
   credentialOptional: { show: 'named', label: 'Authentication', widens: true },
   discoveredTools: { show: 'named', label: 'Discovered tools', widens: false },
-  id: HIDDEN,
-  credentialRef: HIDDEN,
-  oauthAttemptId: HIDDEN,
-  lifecycleStatus: HIDDEN,
-  statusText: HIDDEN,
-  lastCheckedAt: HIDDEN,
-  identity: HIDDEN,
-  presetId: HIDDEN,
+  presetId: CONNECTOR_PRESET,
+  id: BOOKKEEPING,
+  credentialRef: CREDENTIAL_REFERENCE,
+  oauthAttemptId: BOOKKEEPING,
+  lifecycleStatus: BOOKKEEPING,
+  statusText: BOOKKEEPING,
+  lastCheckedAt: BOOKKEEPING,
 };
 
-/** In display order. Admin's labels: the API connection editor. */
+/** In display order. Admin's labels: the API connection editor and its Google form. */
 const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
   displayName: CONNECTION_NAME,
   allowedHosts: { show: 'list', label: 'Allowed hosts', noun: 'hosts' },
@@ -546,18 +578,25 @@ const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
     unlessNew: 'credential',
     read: (value) => stringValue(value) ?? 'credential',
   },
+  oauthProvider: {
+    show: 'value', label: 'OAuth provider', format: { google: 'Google' }, widens: true, unlessNew: true,
+  },
+  oauthAppType: {
+    show: 'value',
+    label: 'Google app audience',
+    format: { 'workspace-internal': 'Workspace internal', external: 'Personal / external' },
+    widens: true,
+  },
   oauthScopes: { show: 'list', label: 'Scope', noun: 'scopes' },
   headerName: { show: 'value', label: 'Header name', format: 'code', widens: false, unlessNew: 'Authorization' },
   headerValuePrefix: { show: 'value', label: 'Value prefix', format: 'code', widens: false, unlessNew: 'Bearer ' },
   enabled: CONNECTION_STATUS,
-  id: HIDDEN,
-  credentialRef: HIDDEN,
-  oauthProvider: HIDDEN,
-  oauthAppType: HIDDEN,
-  lifecycleStatus: HIDDEN,
-  statusText: HIDDEN,
-  identity: HIDDEN,
-  presetId: HIDDEN,
+  identity: CONNECTED_ACCOUNT,
+  presetId: CONNECTOR_PRESET,
+  id: BOOKKEEPING,
+  credentialRef: CREDENTIAL_REFERENCE,
+  lifecycleStatus: BOOKKEEPING,
+  statusText: BOOKKEEPING,
 };
 
 /** A grant's account, repository and all-repositories choice are its name. */
@@ -566,8 +605,8 @@ const REPOSITORY_FIELDS: ConnectionFields<RepositoryGrant> = {
   fullName: IDENTITY,
   allRepos: IDENTITY,
   enabled: CONNECTION_STATUS,
-  id: HIDDEN,
-  installationId: HIDDEN,
+  installationId: { show: 'named', label: 'GitHub installation', widens: true },
+  id: BOOKKEEPING,
 };
 
 /** Agent connection lists, rendered entry by entry under the name people see in Admin. */
@@ -599,7 +638,9 @@ function formatConnectionChangeSections(
   return [
     ...beforeEntries.flatMap((entry) => {
       const next = afterById.get(entry.id);
-      return next && !renamed(entry, next) ? [] : [plainPart(`Remove ${name(entry)} from ${target}.`)];
+      return next && !renamed(entry, next)
+        ? []
+        : [{ text: `Remove ${name(entry)} from ${target}.`, pinned: false }];
     }),
     ...afterEntries.flatMap((entry) => {
       const previous = beforeById.get(entry.id);
@@ -607,14 +648,14 @@ function formatConnectionChangeSections(
         return [{
           text: [`Add ${name(entry)} to ${target}.`, ...newConnectionLines(fields, entry.record, dialect)]
             .join('\n'),
-          widens: entry.record.enabled !== false,
+          pinned: entry.record.enabled !== false,
         }];
       }
       const lines = changedConnectionLines(fields, previous.record, entry.record, dialect);
       if (lines.length === 0) return [];
       return [{
         text: [`Update ${name(entry)} on ${target}.`, ...lines.map(({ text }) => text)].join('\n'),
-        widens: lines.some(({ widens }) => widens),
+        pinned: lines.some(({ pinned }) => pinned),
       }];
     }),
   ];
@@ -640,7 +681,13 @@ function newConnectionLines(
   });
 }
 
-/** One line per changed field, widening lines first; other changed fields by label. */
+/**
+ * One line per changed field, widening lines first, then other changed
+ * fields by label. A change no line explains reads as "Changes other
+ * settings." and widens: a key the table does not know, or a value whose
+ * plain reading hides the difference. A field with its own `read` defines
+ * what counts as a change.
+ */
 function changedConnectionLines(
   fields: Readonly<Record<string, ConnectionField>>,
   before: Record<string, unknown>,
@@ -649,28 +696,37 @@ function changedConnectionLines(
 ): PreviewPart[] {
   const lines: PreviewPart[] = [];
   const named = new Map<string, boolean>();
+  let unexplained = [...new Set([...Object.keys(before), ...Object.keys(after)])].some((key) =>
+    !Object.hasOwn(fields, key) && !presentationValuesEqual(before[key], after[key]));
   for (const [key, field] of Object.entries(fields)) {
+    if (presentationValuesEqual(before[key], after[key])) continue;
     if (field.show === 'value') {
       const read = field.read ?? scalarValue;
       const was = read(before[key]);
       const now = read(after[key]);
-      if (was === now) continue;
+      if (was === now) {
+        unexplained ||= field.read === undefined;
+        continue;
+      }
       lines.push({
         text: `${field.label} changes from ${formatConnectionValue(field.format, was, dialect)} to ${
           formatConnectionValue(field.format, now, dialect)
         }.`,
-        widens: field.widens === true || field.widens === now,
+        pinned: field.widens === true || field.widens === now,
       });
     } else if (field.show === 'list') {
-      lines.push(...listChangeLines(field, before[key], after[key], dialect));
-    } else if (field.show === 'named' && !presentationValuesEqual(before[key], after[key])) {
+      const listed = listChangeLines(field, before[key], after[key], dialect);
+      unexplained ||= listed.length === 0 && field.read === undefined;
+      lines.push(...listed);
+    } else if (field.show === 'named') {
       named.set(field.label, named.get(field.label) === true || field.widens);
     }
   }
   if (named.size > 0) {
-    lines.push({ text: `Changes: ${[...named.keys()].join(', ')}.`, widens: [...named.values()].includes(true) });
+    lines.push({ text: `Changes: ${[...named.keys()].join(', ')}.`, pinned: [...named.values()].includes(true) });
   }
-  return [...lines.filter(({ widens }) => widens), ...lines.filter(({ widens }) => !widens)];
+  if (unexplained) lines.push({ text: 'Changes other settings.', pinned: true });
+  return [...lines.filter(({ pinned }) => pinned), ...lines.filter(({ pinned }) => !pinned)];
 }
 
 function listChangeLines(
@@ -689,7 +745,7 @@ function listChangeLines(
   const allowsAll = (values: readonly string[]) => field.emptyAllows !== undefined && values.length === 0;
   return [
     ...(added.length > 0
-      ? [{ text: `Adds ${field.noun}: ${formatValueList(added, dialect)}.`, widens: !allowsAll(was) }]
+      ? [{ text: `Adds ${field.noun}: ${formatValueList(added, dialect)}.`, pinned: !allowsAll(was) }]
       : []),
     ...(removed.length > 0
       ? [{
@@ -697,7 +753,7 @@ function listChangeLines(
             `Removes ${field.noun}: ${formatValueList(removed, dialect)}.`,
             ...(allowsAll(now) ? [field.emptyAllows] : []),
           ].join(' '),
-          widens: allowsAll(now),
+          pinned: allowsAll(now),
         }]
       : []),
   ];
@@ -731,6 +787,13 @@ function scalarValue(value: unknown): string | undefined {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.flatMap((entry) => stringValue(entry) ?? []) : [];
+}
+
+function accountLabel(value: unknown): string | undefined {
+  const identity = recordValue(value);
+  const workspace = stringValue(identity?.workspaceName);
+  const account = stringValue(identity?.accountName);
+  return workspace && account ? `${workspace} (${account})` : workspace ?? account;
 }
 
 function scopeTokens(value: unknown): string[] {
@@ -910,28 +973,37 @@ function formatChangeSection(
   ].join('\n');
 }
 
-function formatNewAgentSection(
+/**
+ * The New Agent section, one part per field so a long field can be cut while
+ * a pinned one leads. The heading rides with the first field, so pinned
+ * fields still say what they belong to. Its edit policy shows only when it
+ * is not the safe default.
+ */
+function formatNewAgentParts(
   after: Record<string, unknown> | undefined,
   dialect: ChangeSetPresentationDialect,
   availableInOriginChannel = false,
-): string {
+): PreviewPart[] {
   const identityFields = PRESENTATION_FIELDS.newAgent.flatMap((field) => {
     const value = presentationValue(field, after?.[field]);
     return value === undefined ? [] : [[field, value] as const];
   });
-  const editing = newAgentWidensEditing(after) ? presentationValue('editPolicy', after?.editPolicy) : undefined;
-  const optionalFields: ReadonlyArray<readonly [PresentationField, string]> = [
+  const editing = after?.editPolicy !== undefined && !safeFieldChange('editPolicy', after.editPolicy)
+    ? presentationValue('editPolicy', after.editPolicy)
+    : undefined;
+  const fields: ReadonlyArray<readonly [PresentationField, string]> = [
+    ...identityFields,
     ...(editing ? [['editPolicy', editing] as const] : []),
     ...(availableInOriginChannel ? [['availableIn', 'This Channel'] as const] : []),
   ];
-  const fields = [...identityFields, ...optionalFields];
-  return [
-    dialect.bold('New Agent'),
-    fields.map(([field, value]) => [
-      dialect.bold(FIELD_LABELS[field]),
-      quoteValue(value, dialect),
-    ].join('\n')).join('\n\n'),
-  ].join('\n');
+  const heading = dialect.bold('New Agent');
+  if (fields.length === 0) return [{ text: heading, pinned: true }];
+  return fields.map(([field, value], index) => {
+    const text = [dialect.bold(FIELD_LABELS[field]), quoteValue(value, dialect)].join('\n');
+    return index === 0
+      ? { text: `${heading}\n${text}`, pinned: true }
+      : fieldPart(field, after?.[field], text);
+  });
 }
 
 function creationPreview(preview: ManagementChangeSetPreview): {

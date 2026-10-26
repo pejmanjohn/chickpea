@@ -262,15 +262,11 @@ test('no secret, credential reference or header value reaches a connection previ
       headerValues: { 'X-Api-Key': 'sk-live-mcp-secret' },
       oauthAttemptId: 'oauth_attempt_secret',
     }],
-    apiConnections: [{
-      ...billing,
-      credentialRef: 'cref_billing_new',
-      credential: 'sk-live-api-secret',
-    }],
+    apiConnections: [{ ...billing, credentialRef: 'cref_billing_new' }],
   });
 
   for (const text of [formatSlackChangeSetProposal(preview), formatMarkdownChangeSetProposal(preview)]) {
-    assert.match(text, /Adds custom headers: `X-Api-Key`\./);
+    assert.match(text, /\nAdds custom headers: `X-Api-Key`\.\nChanges other settings\.\n/, 'an unknown key shows, its value does not');
     assert.doesNotMatch(text, /cref_|sk-live|oauth_attempt|credentialRef|headerValues|Credential/, text);
     assert.doesNotMatch(text, /Update \S+Billing/, 'a credential reference alone is not a visible change');
   }
