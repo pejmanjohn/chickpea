@@ -26,7 +26,7 @@ const PREAMBLE = [
   '',
 ].join('\n');
 
-const DESTRUCTIVE_CHANGES = 'deleting an Agent or routine, suspending or removing a member or changing an Owner, removing a model provider key, removing an Agent\'s MCP server or API connection, or disabling an Agent that answers in Channels';
+const DESTRUCTIVE_CHANGES = 'deleting an Agent or routine, suspending or removing a member or changing an Owner, removing a model provider key, removing or disconnecting an Agent\'s connection, removing a website login, or disabling an Agent that answers in Channels';
 
 /**
  * Exact paragraph or sentence replacements. Each `from` must occur exactly
