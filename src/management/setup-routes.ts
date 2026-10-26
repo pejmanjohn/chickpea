@@ -565,6 +565,9 @@ export function createManagementSetupRoutes(
             access: selection.accessLane,
             capabilities: selection.scopes,
             existingBrowserSecret: browserSecret,
+            ...(setup.target.replacement && setup.target.connectionId
+              ? { connectionAccountId: setup.target.connectionId }
+              : {}),
             attemptScopeId: setupId,
             returnUrl: `${requestOrigin(c)}/setup/${encodeURIComponent(setupId)}?poll=1`,
             randomSecret: () => browserSecret,

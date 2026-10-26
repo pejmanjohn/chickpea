@@ -245,24 +245,24 @@ test('inspect says which connections need reconnecting and how', () =>
 test('disconnect_connection confirms on MCP, then revokes the account as Admin does', () =>
   withFixture('disconnect', async (f) => {
     const agent = await seedAgent(f);
-    const hubspot = await bindAccount(f, agent.id, hubspotAccount('ready'));
+    const linear = await bindAccount(f, agent.id, linearAccount('ready'));
 
-    const pending = await apply(f, mcpContext(f.owner), 'disconnect-hubspot', [{
+    const pending = await apply(f, mcpContext(f.owner), 'disconnect-linear', [{
       itemId: 'disconnect',
       kind: 'disconnect_connection',
       agentId: agent.id,
-      connectionId: hubspot.id,
+      connectionId: 'linear',
     }]);
     assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
     assert.match(pending.presentation?.markdown ?? '',
-      /Disconnect \*\*HubSpot · Team\*\* from \*\*Ops\*\*\. Ops loses access, and schedules that use it pause\./);
+      /^\*\*Proposed changes\*\*\nDisconnect \*\*Linear\*\* from \*\*Ops\*\* \(@ops\)\. The Agent loses access to it, and schedules that use it pause\.\n/);
     assert.equal((await f.config.listConnectionAccounts(TEAM))[0]?.lifecycle, 'ready', 'nothing applies before confirm');
 
     const confirmed = await call(f, mcpContext(f.owner), 'confirm_workspace_change', {
       proposalId: pending.outcomes[0]!.proposalId!,
     }) as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
-    const account = (await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === hubspot.id);
+    const account = (await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === linear.id);
     assert.equal(account?.lifecycle, 'revoked');
     const { agent: after } = await inspectAgent(f, mcpContext(f.owner), agent.id);
     assert.equal((after.connections ?? []).length, 0);
@@ -368,8 +368,8 @@ test('inspect lists website logins without secrets, and removal confirms as in A
       loginId: team.id,
     }]);
     assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
-    assert.equal(pending.presentation?.markdown,
-      'Remove the **portal.example.com** login from **Ops**. If no other Agent uses it, the saved sign-in is deleted too.');
+    assert.match(pending.presentation?.markdown ?? '',
+      /^\*\*Proposed changes\*\*\nRemove the \*\*portal\.example\.com\*\* login from \*\*Ops\*\* \(@ops\)\. If no other Agent uses it, the saved sign-in is deleted too\.\n/);
     assert.equal((await listWebsiteLogins(store)).length, 1, 'nothing applies before confirm');
 
     const confirmed = await call(f, mcpContext(f.owner), 'confirm_workspace_change', {

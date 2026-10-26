@@ -18,6 +18,7 @@ import type {
   RoutineRun,
   RoutineState,
 } from '../routines/types.ts';
+import type { WebsiteLoginView } from '../browser/agent-website-logins.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
 import type {
   ManagementApiConnection,
@@ -143,6 +144,17 @@ export type ManagementOperation =
       kind: 'restore_agent';
       agentId: string;
       expectedRevision: number;
+    })
+  | (ManagementOperationBase & {
+      kind: 'disconnect_connection';
+      agentId: string;
+      /** The connection's id from inspect_workspace: a `connections` entry, MCP server or API connection. */
+      connectionId: string;
+    })
+  | (ManagementOperationBase & {
+      kind: 'remove_website_login';
+      agentId: string;
+      loginId: string;
     })
   | (ManagementOperationBase & {
       kind: 'put_channel';
@@ -770,7 +782,19 @@ export interface ManagementConnectionSnapshot {
   lifecycle: 'pending' | 'ready' | 'needs_attention';
   enabled: boolean;
   allowedCapabilities: string[];
+  /** The call that reconnects a connection needing attention in place, when the requester may. */
+  reconnect?: ManagementConnectionReconnect;
 }
+
+export type ManagementConnectionReconnect =
+  | { tool: 'prepare_connector_setup'; connector: string; ownerKind: ConnectionAccountOwnerKind }
+  | {
+      tool: 'apply_workspace_changes';
+      operation: {
+        kind: 'request_setup';
+        target: { kind: 'mcp_connection' | 'api_connection'; agentId: string; connectionId: string };
+      };
+    };
 
 export interface ManagementWorkspaceSnapshot {
   organizationId: string;
@@ -819,6 +843,8 @@ export interface ManagementWorkspaceSnapshot {
     connectionStatus: ManagementConnectionStatus[];
     /** Secret-free accounts owned by this Agent and visible to the requester. */
     connections?: ManagementConnectionSnapshot[];
+    /** Website logins granted to this Agent and visible to the requester; never a password or TOTP seed. */
+    websiteLogins?: WebsiteLoginView[];
     repositories: AgentCreateInput['repositories'];
   }>;
   channels: Array<{
@@ -867,6 +893,8 @@ export interface ManagementWorkspaceSnapshot {
       revision: number;
     }>;
   };
+  /** Where a person adds a website login, which only Admin's browser flow can capture. */
+  websiteLoginSetup: string;
   /** Revision of this actor-visible snapshot, including its visible Agent-owned connections. */
   effectiveRevision: string;
 }
@@ -883,6 +911,8 @@ export interface PrepareConnectorSetupResult {
   ownerKind: ConnectionAccountOwnerKind;
   handoffUrl: string;
   setupOperationId?: string;
+  /** The existing connection this handoff reconnects in place, keeping its bindings and Agent grants. */
+  reconnect?: { connectionId: string; label: string };
 }
 
 export type ManagedProviderKeyId = 'anthropic' | 'openai' | 'openrouter';
@@ -1153,6 +1183,8 @@ export interface ManagementAgentLabel {
 export type ManagementChangeStatement =
   | { kind: 'archive_agent'; agent: ManagementAgentLabel; channelCount: number }
   | { kind: 'restore_agent' | 'delete_agent'; agent: ManagementAgentLabel }
+  | { kind: 'disconnect_connection'; agent: ManagementAgentLabel; connection: string }
+  | { kind: 'remove_website_login'; agent: ManagementAgentLabel; site: string }
   /** Names the Agent whose memory body the preview compares. */
   | { kind: 'update_agent_memory'; agent: ManagementAgentLabel }
   | { kind: 'update_member'; member?: string; role?: OrganizationRole; status?: MembershipStatus }

@@ -113,6 +113,8 @@ const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
   delete_agent: 'Delete Agent',
   archive_agent: 'Archive Agent',
   restore_agent: 'Restore Agent',
+  disconnect_connection: 'Disconnect Connection',
+  remove_website_login: 'Remove Website Login',
   put_channel: 'Update Channel',
   grant_agent_channel: 'Add to Channel',
   revoke_agent_channel: 'Remove from Channel',
@@ -370,6 +372,10 @@ function formatStatement(
       return `Restore ${agent(statement.agent)}. It gets back the Channels and schedules it had before the archive.`;
     case 'delete_agent':
       return `Delete ${agent(statement.agent)} permanently. This cannot be undone.`;
+    case 'disconnect_connection':
+      return `Disconnect ${named(statement.connection, 'this connection')} from ${agent(statement.agent)}. The Agent loses access to it, and schedules that use it pause.`;
+    case 'remove_website_login':
+      return `Remove the ${named(statement.site, 'website')} login from ${agent(statement.agent)}. If no other Agent uses it, the saved sign-in is deleted too.`;
     case 'update_member':
       return formatMemberStatement(statement, dialect);
     case 'remove_provider_credential':

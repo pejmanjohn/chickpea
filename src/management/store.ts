@@ -53,7 +53,8 @@ function managementAuditTarget(operation: ManagementOperation): string {
   if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-      operation.kind === 'update_agent_memory') return `agent:${operation.agentId}`;
+      operation.kind === 'update_agent_memory' || operation.kind === 'disconnect_connection' ||
+      operation.kind === 'remove_website_login') return `agent:${operation.agentId}`;
   if (operation.kind === 'put_channel') {
     return `channel:${operation.channel.workspaceId}:${operation.channel.channelId}`;
   }

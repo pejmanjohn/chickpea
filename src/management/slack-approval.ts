@@ -184,6 +184,8 @@ const APPROVAL_OPERATION_LABELS: Readonly<Record<ManagementOperation['kind'], st
   delete_agent: 'Delete an Agent',
   archive_agent: 'Archive an Agent',
   restore_agent: 'Restore an Agent',
+  disconnect_connection: 'Disconnect a connection',
+  remove_website_login: 'Remove a website login',
   put_channel: 'Change Channel settings',
   grant_agent_channel: 'Add an Agent to a Channel',
   revoke_agent_channel: 'Remove an Agent from a Channel',
