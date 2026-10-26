@@ -22,7 +22,6 @@ import {
   type ManagementChangeSetProposalRecord,
   type ManagementOperation,
   type ManagementOrigin,
-  type ManagementProposalRecord,
   type ManagementReceiptOutboxRecord,
   type ManagementIntroductionClaim,
   type GetActiveManagementChangeSetProposalInput,
@@ -37,7 +36,6 @@ import {
   type ManagementUndoRecord,
   type PutManagementSetupInput,
   type PutPrivateChannelSetupIntentInput,
-  type PutManagementProposalInput,
   type PutManagementChangeSetProposalInput,
   type ReclaimManagementChangeSetProposalInput,
   type RevokeManagementSetupInput,
@@ -86,24 +84,6 @@ interface ManagementRequestRow {
   status: ManagementRequestRecord['status'];
   progress_json: string;
   result_json: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface ManagementProposalRow {
-  proposal_id: string;
-  organization_id: string;
-  actor_user_id: string;
-  actor_membership_id: string;
-  origin_key: string;
-  operation_json: string;
-  agent_credential_incarnation: string | null;
-  summary: string;
-  target_revisions_json: string;
-  request_operation_id: string | null;
-  status: ManagementProposalRecord['status'];
-  result_json: string | null;
-  expires_at: number;
   created_at: number;
   updated_at: number;
 }
@@ -225,15 +205,6 @@ export interface ManagementStore {
     result: ManagementApplyResult,
     at: number,
   ): Promise<ManagementRequestRecord>;
-  putProposal(input: PutManagementProposalInput): Promise<ManagementProposalRecord>;
-  getProposal(proposalId: string): Promise<ManagementProposalRecord | undefined>;
-  claimProposal(input: ClaimManagementProposalInput): Promise<ManagementProposalRecord>;
-  completeProposal(
-    proposalId: string,
-    result: ManagementApplyResult,
-    at: number,
-  ): Promise<ManagementProposalRecord>;
-  markProposalStale(proposalId: string, at: number): Promise<ManagementProposalRecord>;
   /**
    * Freezes a change set and supersedes the requester's older pending one in
    * the scope. A put that resolves to a pending set instead, by its ID, its
@@ -360,22 +331,6 @@ export class ManagementStoreLogic {
         return {
           kind: 'request',
           request: this.completeRequest(request.operationId, request.result, request.at),
-        };
-      case 'put_proposal':
-        return { kind: 'proposal', proposal: this.putProposal(request.input) };
-      case 'get_proposal':
-        return { kind: 'proposal', proposal: this.getProposal(request.proposalId) ?? null };
-      case 'claim_proposal':
-        return { kind: 'proposal', proposal: this.claimProposal(request.input) };
-      case 'complete_proposal':
-        return {
-          kind: 'proposal',
-          proposal: this.completeProposal(request.proposalId, request.result, request.at),
-        };
-      case 'mark_proposal_stale':
-        return {
-          kind: 'proposal',
-          proposal: this.markProposalStale(request.proposalId, request.at),
         };
       case 'put_change_set_proposal':
         return {
@@ -698,119 +653,6 @@ export class ManagementStoreLogic {
       });
       return this.requireRequest(operationId);
     });
-  }
-
-  putProposal(input: PutManagementProposalInput): ManagementProposalRecord {
-    const existing = this.getProposal(input.proposalId);
-    if (existing) return existing;
-    this.db.run(
-      `INSERT INTO management_proposals (
-        proposal_id, organization_id, actor_user_id, actor_membership_id,
-        origin_key, operation_json, agent_credential_incarnation, summary, target_revisions_json,
-        request_operation_id, status, result_json, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, ?, ?)`,
-      input.proposalId,
-      input.organizationId,
-      input.actorUserId,
-      input.actorMembershipId,
-      input.originKey,
-      JSON.stringify(input.operation),
-      input.agentCredentialIncarnation ?? null,
-      input.summary,
-      JSON.stringify(input.targetRevisions),
-      input.requestOperationId ?? null,
-      input.at,
-      input.at,
-    );
-    return this.requireProposal(input.proposalId);
-  }
-
-  getProposal(proposalId: string): ManagementProposalRecord | undefined {
-    const row = this.db.get(
-      'SELECT * FROM management_proposals WHERE proposal_id = ?',
-      proposalId,
-    ) as unknown as ManagementProposalRow | undefined;
-    return row ? proposalFromRow(row) : undefined;
-  }
-
-  claimProposal(input: ClaimManagementProposalInput): ManagementProposalRecord {
-    const proposal = this.requireProposal(input.proposalId);
-    if (proposal.organizationId !== input.organizationId ||
-        proposal.actorUserId !== input.actorUserId ||
-        proposal.actorMembershipId !== input.actorMembershipId ||
-        proposal.originKey !== input.originKey) {
-      throw new ManagementError(
-        'proposal_binding_mismatch',
-        'The confirmation does not match its initiating user and origin.',
-      );
-    }
-    if (proposal.status === 'completed') return proposal;
-    if (proposal.status === 'applying') {
-      throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
-    }
-    if (proposal.status !== 'pending') {
-      throw new ManagementError('proposal_stale', 'The confirmation is no longer available.');
-    }
-    this.db.run(
-      `UPDATE management_proposals SET status = 'applying', updated_at = ?
-       WHERE proposal_id = ? AND status = 'pending'`,
-      input.at,
-      input.proposalId,
-    );
-    return this.requireProposal(input.proposalId);
-  }
-
-  completeProposal(
-    proposalId: string,
-    result: ManagementApplyResult,
-    at: number,
-  ): ManagementProposalRecord {
-    return this.db.transaction(() => {
-      const proposal = this.requireProposal(proposalId);
-      if (proposal.status === 'completed') return proposal;
-      const updated = this.db.run(
-        `UPDATE management_proposals SET status = 'completed', result_json = ?, updated_at = ?
-         WHERE proposal_id = ? AND status = 'applying'`,
-        JSON.stringify(result),
-        at,
-        proposalId,
-      );
-      if (updated.changes !== 1) {
-        throw new ManagementError('proposal_stale', 'The confirmation is no longer applicable.');
-      }
-      this.audit.appendIdempotent({
-        eventId: `management-confirmation:${proposalId}`,
-        domain: 'management',
-        eventType: 'management.proposal.completed',
-        outcome: 'success',
-        actorClass: 'chickpea_user',
-        actorId: proposal.actorUserId,
-        workspaceId: proposal.organizationId,
-        subjectId: proposalId,
-        createdAt: at,
-        metadataJson: JSON.stringify({
-          actingAgentId: actingAgentIdFromOriginKey(proposal.originKey) ?? 'human',
-          authorization: 'live_membership_and_acting_agent',
-          operationKind: proposal.operation.kind,
-          proposalId,
-          status: result.status,
-          target: managementAuditTarget(proposal.operation),
-        }),
-        idempotencyKey: `management-confirmation:${proposalId}`,
-      });
-      return this.requireProposal(proposalId);
-    });
-  }
-
-  markProposalStale(proposalId: string, at: number): ManagementProposalRecord {
-    this.requireProposal(proposalId);
-    this.db.run(
-      `UPDATE management_proposals SET status = 'stale', updated_at = ?
-       WHERE proposal_id = ? AND status IN ('pending', 'applying')`,
-      at,
-      proposalId,
-    );
-    return this.requireProposal(proposalId);
   }
 
   putChangeSetProposal(
@@ -1806,15 +1648,6 @@ export class ManagementStoreLogic {
         boundedLimit,
       );
       remove(
-        `DELETE FROM management_proposals WHERE proposal_id IN (
-           SELECT proposal_id FROM management_proposals
-           WHERE status IN ('completed', 'stale') AND updated_at < ?
-           ORDER BY updated_at LIMIT ?
-         )`,
-        cutoff,
-        boundedLimit,
-      );
-      remove(
         `DELETE FROM management_undo WHERE operation_id IN (
            SELECT operation_id FROM management_undo
            WHERE status = 'consumed' AND updated_at < ?
@@ -1879,34 +1712,7 @@ export class ManagementStoreLogic {
       `CREATE INDEX IF NOT EXISTS management_requests_status_idx
        ON management_requests (status, updated_at)`,
     );
-    this.db.exec(
-      `CREATE TABLE IF NOT EXISTS management_proposals (
-        proposal_id TEXT PRIMARY KEY,
-        organization_id TEXT NOT NULL,
-        actor_user_id TEXT NOT NULL,
-        actor_membership_id TEXT NOT NULL,
-        origin_key TEXT NOT NULL,
-        operation_json TEXT NOT NULL,
-        agent_credential_incarnation TEXT,
-        summary TEXT NOT NULL,
-        target_revisions_json TEXT NOT NULL,
-        request_operation_id TEXT,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'applying', 'completed', 'stale')),
-        result_json TEXT,
-        expires_at INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`,
-    );
-    this.ensureProposalColumns();
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS management_proposals_state_idx
-       ON management_proposals (organization_id, actor_user_id, status, expires_at)`,
-    );
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS management_proposals_retention_idx
-       ON management_proposals (status, updated_at)`,
-    );
+    this.db.exec('DROP TABLE IF EXISTS management_proposals');
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS management_change_set_proposals (
         proposal_id TEXT PRIMARY KEY,
@@ -2085,11 +1891,6 @@ export class ManagementStoreLogic {
     }
   }
 
-  private ensureProposalColumns(): void {
-    addColumnIfMissing(this.db, 'management_proposals', 'request_operation_id', 'TEXT');
-    addColumnIfMissing(this.db, 'management_proposals', 'agent_credential_incarnation', 'TEXT');
-  }
-
   private ensureChangeSetProposalColumns(): void {
     const additions: Array<[string, string]> = [
       ['idempotency_key', 'TEXT'],
@@ -2121,10 +1922,8 @@ export class ManagementStoreLogic {
   }
 
   private reactivateExpiredProposals(): void {
-    // Keep the legacy storage column and status readable for in-place upgrades,
-    // but proposal lifetime is now governed only by binding, revision, policy,
-    // and single-use state checks.
-    this.db.run("UPDATE management_proposals SET status = 'pending' WHERE status = 'expired'");
+    // Proposal lifetime is governed only by binding, revision, policy and
+    // single-use state checks.
     this.db.run(
       "UPDATE management_change_set_proposals SET status = 'pending' WHERE status = 'expired'",
     );
@@ -2134,14 +1933,6 @@ export class ManagementStoreLogic {
     const request = this.getRequest(operationId);
     if (!request) throw this.missingOperation(operationId);
     return request;
-  }
-
-  private requireProposal(proposalId: string): ManagementProposalRecord {
-    const proposal = this.getProposal(proposalId);
-    if (!proposal) {
-      throw new ManagementError('proposal_not_found', 'The confirmation was not found.');
-    }
-    return proposal;
   }
 
   private requireChangeSetProposal(proposalId: string): ManagementChangeSetProposalRecord {
@@ -2228,29 +2019,6 @@ function requestFromRow(row: ManagementRequestRow): ManagementRequestRecord {
     operations: JSON.parse(row.operations_json) as ManagementRequestRecord['operations'],
     status: row.status,
     progress: JSON.parse(row.progress_json) as ManagementRequestProgress,
-    ...(row.result_json
-      ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
-      : {}),
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
-  };
-}
-
-function proposalFromRow(row: ManagementProposalRow): ManagementProposalRecord {
-  return {
-    proposalId: row.proposal_id,
-    organizationId: row.organization_id,
-    actorUserId: row.actor_user_id,
-    actorMembershipId: row.actor_membership_id,
-    originKey: row.origin_key,
-    operation: JSON.parse(row.operation_json) as ManagementProposalRecord['operation'],
-    ...(row.agent_credential_incarnation
-      ? { agentCredentialIncarnation: row.agent_credential_incarnation }
-      : {}),
-    summary: row.summary,
-    targetRevisions: JSON.parse(row.target_revisions_json) as Record<string, number>,
-    ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
-    status: row.status,
     ...(row.result_json
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
       : {}),
