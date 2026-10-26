@@ -63,6 +63,14 @@ const PRESENTATION_FIELDS = {
   routine: ['name', 'ownerAgent', 'description', 'taskText', 'schedule', 'timezone', 'destination', 'delivery'],
   channel: ['label', 'lifecycle'],
   memory: ['body'],
+  agentImageModel: ['imageModel'],
+  workspaceModel: [
+    'defaultModel',
+    'defaultModelEffort',
+    'defaultImageModel',
+    'defaultCodingModel',
+    'defaultCodingModelEffort',
+  ],
 } as const;
 
 type PresentationField =
@@ -91,6 +99,12 @@ const FIELD_LABELS: Readonly<Record<PresentationField, string>> = {
   label: 'Name',
   lifecycle: 'Status',
   body: 'Memory',
+  imageModel: 'Image model',
+  defaultModel: 'Default model',
+  defaultModelEffort: 'Default model effort',
+  defaultImageModel: 'Default image model',
+  defaultCodingModel: 'Default coding model',
+  defaultCodingModelEffort: 'Default coding model effort',
   availableIn: 'Available in',
 };
 
@@ -118,6 +132,8 @@ const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
   revoke_agent_channel: 'Remove from Channel',
   update_member: 'Update Member',
   remove_provider_credential: 'Remove Provider Key',
+  set_workspace_model: 'Change Workspace Model',
+  set_agent_image_model: 'Change Image Model',
   update_agent_memory: 'Update Memory',
   save_routine: 'Save Schedule',
   control_routine: 'Control Schedule',
@@ -260,6 +276,10 @@ function formatChangeSections(
       );
     case 'update_agent_memory':
       return sections(PRESENTATION_FIELDS.memory, 'Agent');
+    case 'set_agent_image_model':
+      return sections(PRESENTATION_FIELDS.agentImageModel, recordName(before, after) ?? 'Agent');
+    case 'set_workspace_model':
+      return sections(PRESENTATION_FIELDS.workspaceModel, 'Workspace');
     default:
       return [headerPart(change.operationKind, operationHeader(change.operationKind, recordName(before, after), dialect))];
   }
@@ -278,6 +298,8 @@ const SAFE_CHANGES: Partial<Record<PresentationField, true | readonly string[]>>
   description: true,
   instructions: true,
   modelEffort: true,
+  defaultModelEffort: true,
+  defaultCodingModelEffort: true,
   skills: true,
   editPolicy: ['creator_and_admins'],
   enabled: ['false'],

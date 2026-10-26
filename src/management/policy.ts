@@ -56,6 +56,7 @@ const POSTURE = {
   expand_channel_reach: REVIEWED_IN_SLACK,
   revoke_channel_reach: REVIEWED_IN_SLACK,
   workspace_wide_agent_edit_authority: REVIEWED_IN_SLACK,
+  workspace_model_change: REVIEWED_IN_SLACK,
   schedule_agent_reassignment: REVIEWED_IN_SLACK,
   schedule_runs_as_takeover: REVIEWED_IN_SLACK,
   credential_replacement: REVIEWED_IN_SLACK,
@@ -116,6 +117,9 @@ function managementPolicyReason(
   }
   if (operation.kind === 'delete_routine') {
     return { allowed: true, reason: 'irreversible_routine_delete' };
+  }
+  if (operation.kind === 'set_workspace_model') {
+    return { allowed: true, reason: 'workspace_model_change' };
   }
   if (operation.kind === 'create_agent') {
     if (operation.agent.editPolicy === 'all_workspace_members') {

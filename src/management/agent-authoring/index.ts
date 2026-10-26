@@ -69,7 +69,7 @@ Place each part of the request according to its lifetime and execution semantics
 - **Memory**: durable facts, decisions, preferences, and context, plus requester-supplied scoped standing notes or preferences whose scope, exceptions, and precedence stay in the requester's words. Memory is not a repeatable procedure that belongs in a skill or a substitute for broad Agent instructions.
 - **Connections and repositories**: grants to tools and information sources. They describe access, not desired behavior. A repository grant names one repository (\`fullName\` "owner/repo") or, with \`allRepos: true\`, every repository of one account: set \`fullName\` to "" and keep its \`installationId\` and \`accountLogin\`.
 - **Schedules**: recurring or one-time future work with a cadence, timezone, destination, and empty-result behavior. Mentioning a cadence does not by itself authorize a schedule.
-- **Model choice**: a supported live model selected for the workload; do not invent model availability.
+- **Model choice**: a model from \`modelCatalog\` in \`inspect_workspace\`, selected for the workload; set \`modelEffort\` only to a level the requester chose from that model's \`efforts\`. Do not invent model availability. \`effectiveModels\` says what each Agent runs and whether it follows the Workspace. An Agent's image model is \`set_agent_image_model\`. The Workspace default, image and coding models (\`workspaceModels\`) are Owner and Admin settings, changed with \`set_workspace_model\`; do not change them when the request is about one Agent.
 - **Slack presence and Channel reach**: where the Agent can appear and act. They do not teach the Agent what to do.
 - **Editing authority**: who may edit the Agent. It is authority, not personality or knowledge.
 

@@ -2046,6 +2046,128 @@
            "maxItems": 25
           },
           "kind": {
+           "const": "set_workspace_model"
+          },
+          "role": {
+           "enum": [
+            "chat",
+            "image",
+            "coding"
+           ],
+           "type": "string",
+           "description": "chat is the Workspace default model; image and coding are the Workspace image and coding models."
+          },
+          "model": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500,
+             "pattern": "^[^/]+\\/.+$"
+            },
+            {
+             "type": "null"
+            }
+           ],
+           "description": "A model from inspect_workspace modelCatalog: chat models for chat and coding, image models for image. null clears the image or coding model; the chat default cannot be cleared."
+          },
+          "modelEffort": {
+           "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+           ],
+           "type": "string",
+           "description": "Chat and coding only, one of the model's efforts in modelCatalog. Omit to run the model's standard effort."
+          },
+          "expectedRevision": {
+           "type": "integer",
+           "minimum": 0,
+           "description": "The role's revision from inspect_workspace workspaceModels; 0 when it was never set."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "role",
+          "model",
+          "expectedRevision"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "set_agent_image_model"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "expectedRevision": {
+           "type": "integer",
+           "minimum": 0,
+           "description": "The Agent revision from inspection."
+          },
+          "model": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500,
+             "pattern": "^[^/]+\\/.+$"
+            },
+            {
+             "type": "null"
+            }
+           ],
+           "description": "An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "expectedRevision",
+          "model"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
            "const": "update_agent_memory"
           },
           "agentId": {
@@ -3872,6 +3994,128 @@
           "itemId",
           "kind",
           "providerId"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "set_workspace_model"
+          },
+          "role": {
+           "enum": [
+            "chat",
+            "image",
+            "coding"
+           ],
+           "type": "string",
+           "description": "chat is the Workspace default model; image and coding are the Workspace image and coding models."
+          },
+          "model": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500,
+             "pattern": "^[^/]+\\/.+$"
+            },
+            {
+             "type": "null"
+            }
+           ],
+           "description": "A model from inspect_workspace modelCatalog: chat models for chat and coding, image models for image. null clears the image or coding model; the chat default cannot be cleared."
+          },
+          "modelEffort": {
+           "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+           ],
+           "type": "string",
+           "description": "Chat and coding only, one of the model's efforts in modelCatalog. Omit to run the model's standard effort."
+          },
+          "expectedRevision": {
+           "type": "integer",
+           "minimum": 0,
+           "description": "The role's revision from inspect_workspace workspaceModels; 0 when it was never set."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "role",
+          "model",
+          "expectedRevision"
+         ],
+         "additionalProperties": false
+        },
+        {
+         "type": "object",
+         "properties": {
+          "itemId": {
+           "type": "string",
+           "minLength": 1,
+           "maxLength": 128
+          },
+          "dependsOn": {
+           "type": "array",
+           "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+           },
+           "maxItems": 25
+          },
+          "kind": {
+           "const": "set_agent_image_model"
+          },
+          "agentId": {
+           "type": "string",
+           "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$"
+          },
+          "expectedRevision": {
+           "type": "integer",
+           "minimum": 0,
+           "description": "The Agent revision from inspection."
+          },
+          "model": {
+           "anyOf": [
+            {
+             "type": "string",
+             "minLength": 1,
+             "maxLength": 500,
+             "pattern": "^[^/]+\\/.+$"
+            },
+            {
+             "type": "null"
+            }
+           ],
+           "description": "An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model."
+          }
+         },
+         "required": [
+          "itemId",
+          "kind",
+          "agentId",
+          "expectedRevision",
+          "model"
          ],
          "additionalProperties": false
         },
