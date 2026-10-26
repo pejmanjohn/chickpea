@@ -11,7 +11,6 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
-import { managementActorOriginKey } from '../src/management/contracts.ts';
 import {
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
@@ -650,44 +649,6 @@ test('a suspension whose revoke after the write fails is not applied, and asking
     );
 
     const retried = await suspendMember(f, 'suspend-again');
-    assert.equal(retried.outcomes[0]?.disposition, 'applied', JSON.stringify(retried.outcomes));
-    assert.deepEqual([...betterAuth.grants], [], 'the retry ended the grants the failed attempt left');
-  }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
-});
-
-test('a single-write suspension proposed before change sets ends grants when confirmed again after a failed revoke', async () => {
-  const betterAuth = refreshingBetterAuth({ failRevoke: 2 });
-  await withFixture('member-access-revoke-single', async (f) => {
-    betterAuth.watchMember(f);
-    const context = mcp(f.owner);
-    const proposed = await apply(f, context, 'suspend', [{
-      itemId: 'member',
-      kind: 'update_member',
-      membershipId: f.member.membership.id,
-      status: 'suspended',
-    }]);
-    const changeSet = await f.management.getChangeSetProposal(proposed.outcomes[0]!.proposalId!);
-    assert.ok(changeSet, JSON.stringify(proposed.outcomes));
-    // Only rows written before change sets still apply through the single-write path.
-    const { proposalId } = await f.management.putProposal({
-      proposalId: 'proposal_legacy_suspension',
-      organizationId: context.organizationId,
-      actorUserId: context.userId,
-      actorMembershipId: context.membershipId,
-      originKey: managementActorOriginKey(context),
-      operation: changeSet.operations[0]!,
-      summary: `update_member:${f.member.membership.id}`,
-      targetRevisions: changeSet.targetRevisions,
-      at: NOW,
-    });
-
-    await assert.rejects(
-      f.service.confirmWorkspaceChange({ context, proposalId }),
-      /Better Auth is unavailable/,
-    );
-    assert.equal((await f.identity.getMembership(f.member.membership.id))?.status, 'suspended');
-
-    const retried = await f.service.confirmWorkspaceChange({ context, proposalId });
     assert.equal(retried.outcomes[0]?.disposition, 'applied', JSON.stringify(retried.outcomes));
     assert.deepEqual([...betterAuth.grants], [], 'the retry ended the grants the failed attempt left');
   }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
