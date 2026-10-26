@@ -479,6 +479,20 @@ function credentialRevisionInput(overrides: {
   };
 }
 
+test('a Slack login attempt stores an MCP resume destination and never an off-site one', async () => {
+  const store = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const resume = `/auth/mcp/resume/${'r'.repeat(43)}`;
+  const login = (id: string, hash: string, destination: string) => store.createSlackOidcAttempt({
+    id, purpose: 'login', stateHash: hash.repeat(64), nonceHash: hash.repeat(64), browserHash: hash.repeat(64),
+    appId: 'A12345678', clientId: '123.456', credentialRevision: 'slack_rev_1',
+    redirectUri: 'https://chickpea.example/auth/slack/oidc/callback', destination,
+    expectedTeamId: TEAM, expiresAt: NOW + 60_000,
+  });
+
+  assert.equal((await login('slackoidc_resume', 'a', resume)).destination, resume);
+  assert.equal((await login('slackoidc_offsite', 'b', '//evil.example')).destination, '/admin');
+});
+
 async function claimFirstOwner(store: SqliteIdentityStore) {
   const operation = await store.createAuthOperation({
     id: 'first_owner',
