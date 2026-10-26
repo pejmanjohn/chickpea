@@ -13614,12 +13614,14 @@ async function providerRemovalImpact(
   pinnedAgentCount: number;
   workspaceDefaultAffected: boolean;
   inheritingAgentCount: number;
+  affectedWorkspaceRoles: NonChatModelRole[];
 }> {
   const impact = await resolveProviderRuntimeImpact(configStore, provider);
   return {
     pinnedAgentCount: impact.pinnedAgents.length,
     workspaceDefaultAffected: impact.workspaceDefaultAffected,
     inheritingAgentCount: impact.activeInheritingAgentCount,
+    affectedWorkspaceRoles: impact.affectedWorkspaceRoles,
   };
 }
 

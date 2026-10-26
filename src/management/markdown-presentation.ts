@@ -21,7 +21,16 @@ export const MARKDOWN_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   textLimit: MARKDOWN_PRESENTATION_TEXT_LIMIT,
   bold: (text) => `**${text}**`,
   escape: (text) => text,
+  code: markdownCodeSpan,
 };
+
+/** A CommonMark code span whose fence outlasts every backtick run in the value. */
+function markdownCodeSpan(text: string): string {
+  const longestRun = Math.max(0, ...Array.from(text.matchAll(/`+/g), ([run]) => run.length));
+  const fence = '`'.repeat(longestRun + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
+}
 
 export function formatMarkdownChangeSetProposal(preview: ManagementChangeSetPreview): string {
   return formatChangeSetProposal(preview, MARKDOWN_PRESENTATION_DIALECT);

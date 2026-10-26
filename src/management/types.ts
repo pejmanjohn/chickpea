@@ -6,6 +6,7 @@ import type {
   AgentCreateInput,
   ChannelConfig,
   ConnectionAccountOwnerKind,
+  NonChatModelRole,
 } from '../config/types.ts';
 import type {
   MembershipStatus,
@@ -476,6 +477,10 @@ export interface ManagementAgentCreatedWelcome {
     label: string;
     text: string;
   }>;
+  /**
+   * Slack mrkdwn the host already rendered: a follow-on tool result's
+   * presentation.slack or a fixed line. The welcome posts it as is.
+   */
   followOnNotices?: Array<{
     kind: 'proposal' | 'pending' | 'declined' | 'failure';
     text: string;
@@ -1151,6 +1156,43 @@ export interface ManagementProposalRecord {
   updatedAt: number;
 }
 
+/** An Agent the way people know it in Slack and Admin. */
+export interface ManagementAgentLabel {
+  name: string;
+  /** Slack handle without the leading @. */
+  handle?: string;
+}
+
+/**
+ * What one change does, in the names a person knows, resolved when the change
+ * set is frozen. A preview states it in place of the change's records, whose
+ * identifiers and internal state never reach a person.
+ */
+export type ManagementChangeStatement =
+  | { kind: 'archive_agent'; agent: ManagementAgentLabel; channelCount: number }
+  | { kind: 'restore_agent' | 'delete_agent'; agent: ManagementAgentLabel }
+  /** Names the Agent whose memory body the preview compares. */
+  | { kind: 'update_agent_memory'; agent: ManagementAgentLabel }
+  | { kind: 'update_member'; member?: string; role?: OrganizationRole; status?: MembershipStatus }
+  | {
+      kind: 'remove_provider_credential';
+      provider: string;
+      /** Active Agents that answer with this provider's models, pinned or by the Workspace default. */
+      affectedAgents: string[];
+      workspaceDefaultAffected: boolean;
+      /** Workspace image and coding defaults whose model needs this provider's key. */
+      affectedWorkspaceRoles: NonChatModelRole[];
+    }
+  | {
+      kind: 'grant_agent_channel' | 'revoke_agent_channel';
+      agent?: ManagementAgentLabel;
+      channel?: string;
+    }
+  | { kind: 'delete_routine' | 'run_routine'; routine?: string }
+  | { kind: 'control_routine'; routine?: string; action: 'pause' | 'resume' | 'disable' }
+  | { kind: 'reassign_routine_agent'; routine?: string; agent?: ManagementAgentLabel }
+  | { kind: 'request_setup'; setup: string };
+
 export interface ManagementChangeSetPreview {
   summary: string;
   changes: Array<{
@@ -1159,6 +1201,7 @@ export interface ManagementChangeSetPreview {
     target: string;
     before?: unknown;
     after?: unknown;
+    statement?: ManagementChangeStatement;
   }>;
   missingSetup: Array<{
     itemId: string;
