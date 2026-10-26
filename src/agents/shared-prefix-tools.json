@@ -595,7 +595,7 @@
   },
   {
    "name": "preview_workspace_recipe",
-   "description": "Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes.",
+   "description": "Preview a portable recipe against live workspace state and compile chosen outcomes into ordinary typed changes. Send the returned operations unchanged in one apply_workspace_changes call.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",

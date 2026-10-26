@@ -19,6 +19,7 @@ import {
   MCP_CLIENT_FIELDS,
   type ManagementMcpConnection,
 } from '../src/management/agent-connections.ts';
+import type { WorkspaceRecipe, WorkspaceRecipePreview } from '../src/management/recipes.ts';
 import {
   applyWorkspaceChangesValibotSchema,
   applyWorkspaceChangesZodSchema,
@@ -43,6 +44,10 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type SnapshotAgent = ManagementWorkspaceSnapshot['agents'][number];
+
+const readyModels: Partial<WorkspaceManagementServiceInput> = {
+  modelReadiness: async () => async () => undefined,
+};
 
 function schemaProjection(seed: string): McpToolInputSchemaProjection {
   return { propertyNames: ['query'], accountFields: [], ambiguous: false, fingerprint: seed.repeat(64) };
@@ -482,3 +487,182 @@ test('expectedRevision 0 names only an Agent the same call creates first', () =>
     assert.deepEqual((await f.config.getAgent(existing.id)).mcpServers, []);
     await assert.rejects(() => f.config.getAgent('agent_wiki'));
   }));
+
+async function seedRecipeSource(f: Fixture): Promise<{ researcher: CustomAgentConfig; scribe: CustomAgentConfig }> {
+  const researcher = await seedAgent(f, 'agent_researcher', {
+    name: 'Researcher',
+    description: 'Finds and cites sources.',
+    editPolicy: 'all_workspace_members',
+    instructions: 'Cite every source.',
+    model: 'openai/gpt-5.6-terra',
+    modelEffort: 'high',
+    skills,
+    mcpServers: [tracker, notion],
+    apiConnections: [billing],
+    repositories: [allAcme, docsRepository],
+  });
+  const scribe = await seedAgent(f, 'agent_scribe', {
+    name: 'Scribe',
+    instructions: 'Take notes.',
+    enabled: false,
+  });
+  return { researcher, scribe };
+}
+
+async function exportRecipe(f: Fixture, agentIds: string[]): Promise<WorkspaceRecipe> {
+  return await mcpTool(f, 'export_workspace_recipe', { agentIds }) as WorkspaceRecipe;
+}
+
+async function previewRecipe(
+  f: Fixture,
+  recipe: WorkspaceRecipe,
+  agentStrategy?: 'clone' | 'update' | 'skip',
+): Promise<WorkspaceRecipePreview> {
+  return await mcpTool(f, 'preview_workspace_recipe', {
+    recipe,
+    ...(agentStrategy ? { agentStrategy } : {}),
+  }) as WorkspaceRecipePreview;
+}
+
+test('a recipe exported over MCP previews and applies into another workspace in one call', async () => {
+  const source = await createManagementAdapterFixture('recipe-source', readyModels);
+  const target = await createManagementAdapterFixture('recipe-target', readyModels);
+  try {
+    const { researcher, scribe } = await seedRecipeSource(source);
+    const recipe = await exportRecipe(source, [researcher.id, scribe.id]);
+    const [exported] = recipe.agents;
+    assert.equal(exported!.description, 'Finds and cites sources.');
+    assert.equal(exported!.editPolicy, 'all_workspace_members');
+    assert.equal(exported!.modelEffort, 'high');
+    assert.deepEqual(exported!.skills, skills);
+    assert.deepEqual(exported!.repositoryRequirements, [
+      { id: 'all-acme', owner: 'acme', allRepos: true, enabled: true },
+      { id: 'docs', fullName: 'acme/docs', enabled: true },
+    ]);
+    assert.doesNotMatch(JSON.stringify(recipe), /installationId|accountLogin|credentialRef/);
+
+    const preview = await previewRecipe(target, recipe);
+    assert.deepEqual(preview.agents.map(({ status }) => status), ['create', 'create']);
+    assert.deepEqual(preview.agents[0]!.unavailable, []);
+    assert.deepEqual(preview.agents[0]!.setupRequired, [
+      'Tracker', 'Notion', 'Billing', 'All repositories of acme (grant in Admin)', 'acme/docs',
+    ]);
+    const creations = preview.operations.filter((operation) => operation.kind === 'create_agent');
+    for (const creation of creations) {
+      assert.deepEqual(
+        [creation.agent.mcpServers, creation.agent.apiConnections, creation.agent.repositories],
+        [[], [], []],
+        'each base creation carries no capability',
+      );
+    }
+
+    const applied = await mcpApply(target, { idempotencyKey: 'import-recipe', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    const dispositions = Object.fromEntries(applied.outcomes.map(({ itemId, disposition }) => [itemId, disposition]));
+    assert.ok(Object.values(dispositions).every((disposition) =>
+      disposition === 'applied' || disposition === 'setup_required'), JSON.stringify(dispositions));
+    const setupTargets = applied.outcomes
+      .filter(({ disposition, setupUrl }) => disposition === 'setup_required' && setupUrl)
+      .map(({ itemId }) => itemId);
+    assert.deepEqual(setupTargets, [
+      'setup_agent_1_mcp_tracker',
+      'setup_agent_1_mcp_notion',
+      'setup_agent_1_api_billing',
+      'setup_agent_1_repo_docs',
+    ]);
+
+    const imported = (await target.config.listUserAgents())
+      .filter(({ name }) => name === 'Researcher' || name === 'Scribe');
+    assert.equal(imported.length, 2);
+    const reexported = await exportRecipe(target, imported.map(({ id }) => id));
+    const withoutAllRepositories = recipe.agents.map((agent) => ({
+      ...agent,
+      repositoryRequirements: agent.repositoryRequirements.filter((requirement) => !('owner' in requirement)),
+    }));
+    assert.deepEqual(reexported.agents, withoutAllRepositories,
+      'the imported Agents match every exported field except the grant Admin must choose');
+    const importedResearcher = imported.find(({ name }) => name === 'Researcher')!;
+    assert.deepEqual(importedResearcher.repositories, [
+      { id: 'docs', installationId: null, accountLogin: 'unconnected', fullName: 'acme/docs', enabled: true },
+    ]);
+    assert.deepEqual(
+      importedResearcher.mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]),
+      [['tracker', 'pending'], ['notion', 'pending']],
+    );
+  } finally {
+    source.close();
+    target.close();
+  }
+});
+
+test('a recipe never binds a GitHub installation the workspace already has', async () => {
+  const source = await createManagementAdapterFixture('recipe-source-installed', readyModels);
+  const target = await createManagementAdapterFixture('recipe-target-installed', readyModels);
+  try {
+    const { researcher } = await seedRecipeSource(source);
+    const recipe = await exportRecipe(source, [researcher.id]);
+    const builderRepositories: RepositoryGrant[] = [
+      { id: 'all-acme', installationId: 7, accountLogin: 'acme', fullName: '', allRepos: true, enabled: true },
+      { id: 'docs', installationId: 7, accountLogin: 'acme', fullName: 'acme/docs', enabled: true },
+    ];
+    const builder = await seedAgent(target, 'agent_builder', { name: 'Builder', repositories: builderRepositories });
+
+    const preview = await previewRecipe(target, recipe);
+    assert.deepEqual(preview.agents[0]!.setupRequired.filter((label) => /acme/.test(label)), [
+      'All repositories of acme (grant in Admin)',
+      'acme/docs',
+    ]);
+    const configure = preview.operations.find((operation) => operation.kind === 'update_agent');
+    assert.ok(configure?.kind === 'update_agent');
+    assert.deepEqual(configure.patch.repositories, [
+      { id: 'docs', installationId: null, accountLogin: 'unconnected', fullName: 'acme/docs', enabled: true },
+    ]);
+
+    const applied = await mcpApply(target, { idempotencyKey: 'import-installed', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    assert.equal(
+      applied.outcomes.find(({ itemId }) => itemId === 'setup_agent_1_repo_docs')?.disposition,
+      'setup_required',
+    );
+    const imported = (await target.config.listUserAgents()).find(({ name }) => name === 'Researcher')!;
+    assert.deepEqual(imported.repositories.map(({ id, installationId }) => [id, installationId]), [['docs', null]]);
+    assert.deepEqual((await target.config.getAgent(builder.id)).repositories, builderRepositories);
+  } finally {
+    source.close();
+    target.close();
+  }
+});
+
+test('a recipe overwrite keeps the existing connections\' secrets and status', () =>
+  withFixture('recipe-overwrite', async (f) => {
+    const { researcher } = await seedRecipeSource(f);
+    const recipe = await exportRecipe(f, [researcher.id]);
+    recipe.agents[0]!.instructions = 'Cite every source twice.';
+    const preview = await previewRecipe(f, recipe, 'update');
+    assert.deepEqual(preview.agents.map(({ status }) => status), ['update']);
+    const applied = await mcpApply(f, { idempotencyKey: 'overwrite', operations: preview.operations });
+    assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
+    const after = await f.config.getAgent(researcher.id);
+    assert.equal(after.instructions, 'Cite every source twice.');
+    assert.deepEqual(after.mcpServers, researcher.mcpServers);
+    assert.deepEqual(after.apiConnections, researcher.apiConnections);
+    assert.deepEqual(after.repositories, researcher.repositories);
+  }, readyModels));
+
+test('a recipe overwrite that drops a connection asks first over MCP, then keeps the rest on confirm', () =>
+  withFixture('recipe-overwrite-removal', async (f) => {
+    const { researcher } = await seedRecipeSource(f);
+    const recipe = await exportRecipe(f, [researcher.id]);
+    recipe.agents[0]!.mcpRequirements = recipe.agents[0]!.mcpRequirements.filter(({ id }) => id !== 'notion');
+    const preview = await previewRecipe(f, recipe, 'update');
+    const pending = await mcpApply(f, { idempotencyKey: 'overwrite-removal', operations: preview.operations });
+    assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
+    assert.ok((pending.presentation?.markdown ?? '').trim().length > 0, 'the removal has a readable preview');
+    assert.deepEqual((await f.config.getAgent(researcher.id)).mcpServers, researcher.mcpServers);
+
+    const confirmed = await mcpTool(f, 'confirm_workspace_change', {
+      proposalId: pending.outcomes[0]!.proposalId!,
+    }) as ManagementApplyResult;
+    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
+    assert.deepEqual((await f.config.getAgent(researcher.id)).mcpServers, [researcher.mcpServers[0]]);
+  }, readyModels));

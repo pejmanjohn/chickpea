@@ -224,18 +224,21 @@ Eligible full Slack members are provisioned automatically the first time they in
 
 ## Portable recipes
 
-`export_workspace_recipe` returns a schema-versioned, immutable result for selected Agents. It contains instructions, model choice, inline skills, connection requirements, and exact repository names. It deliberately excludes:
+`export_workspace_recipe` returns a schema-versioned, immutable result for selected Agents. Version 2 contains the name, description, edit policy, instructions, enabled state, model and reasoning effort, inline skills with their import or suggestion provenance, connection requirements, and repository requirements. A repository requirement names one repository (`fullName`) or every repository of one GitHub account (`owner` with `allRepos: true`). Preview also accepts version 1 recipes. The export deliberately excludes:
 
 - workspace and Channel IDs;
 - members and member mutations;
 - Slack identity and provider account identifiers;
 - credentials, OAuth codes/tokens, and secret-bearing URLs;
-- repository installation IDs and account logins; and
+- repository installation IDs;
+- connection status and tool policies; and
 - Agent memory and Channel publication grants.
 
-`preview_workspace_recipe` compares the recipe with current state. Name conflicts return `clone`, `update`, and `skip`; duplicate matches return `ambiguous`. Missing connectors, repositories, and model-provider credentials become setup-required operations. Unsupported versions, malformed requirements, duplicate symbols, unsafe URLs, unsupported model providers, and batches over 25 operations fail before any write.
+`preview_workspace_recipe` compares the recipe with current state. Name conflicts return `clone`, `update`, and `skip`; duplicate matches return `ambiguous`. Unsupported versions, malformed requirements, duplicate symbols, unsafe URLs, unsupported model providers, and batches over 25 operations fail before any write.
 
-Apply the returned `operations` with the ordinary `apply_workspace_changes` tool. There is no separate recipe authority or background reconciliation. Creates can proceed progressively; updates carry `recipe_overwrite` confirmation. Expected revisions ensure a live edit made after preview wins and forces a new preview.
+Each new or cloned Agent compiles to a base `create_agent` with no connections or repositories, then one `update_agent` with `expectedRevision: 0` that adds them and applies a disabled state, then one `request_setup` per connection, repository, or model provider that still needs a credential. An overwrite compiles to one `update_agent` with `recipe_overwrite`. Setup is decided by the same server-owned rules as the write, so an overwrite issues no link for a connection that keeps its working credential. A recipe never binds a GitHub installation, because recipe data is untrusted. A named repository becomes a grant with no installation plus a setup link. An all-repositories requirement creates no grant; preview lists it under `setupRequired`, and the person grants it in Admin. An overwrite keeps, unchanged, a grant the Agent already holds under the same id for the same repository or account.
+
+Apply the returned `operations` unchanged in one `apply_workspace_changes` call. There is no separate recipe authority or background reconciliation. Each item passes its own policy: over MCP every item applies directly unless an overwrite removes a connection, and in Slack capability changes and overwrites wait for approval. Expected revisions ensure a live edit made after preview wins and forces a new preview.
 
 ## Operation polling, receipts, and revocation
 
