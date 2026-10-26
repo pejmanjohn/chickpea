@@ -1,4 +1,6 @@
+import { SqliteSettingsStore } from '../../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../../src/config/store.ts';
+import { ConnectionAccountService } from '../../src/connections/store.ts';
 import { SqliteIdentityStore } from '../../src/identity/store.ts';
 import { SqliteManagementStore } from '../../src/management/store.ts';
 import {
@@ -12,11 +14,16 @@ import { createSlackOwner } from './slack-owner.ts';
 export async function createManagementAdapterFixture(
   suffix: string,
   overrides: Partial<WorkspaceManagementServiceInput> = {},
+  options: { teamId?: string } = {},
 ) {
   let sequence = 0;
   const now = 1_800_000_000_000;
   const identity = new SqliteIdentityStore(':memory:', { now: () => now });
-  const owner = await createSlackOwner(identity, { now, suffix });
+  const owner = await createSlackOwner(identity, {
+    now,
+    suffix,
+    ...(options.teamId ? { teamId: options.teamId } : {}),
+  });
   const locatorHash = createHash('sha256').update(`locator:${suffix}`).digest('hex');
   const invitation = await identity.createInvitation({
     organizationId: owner.membership.organizationId,
@@ -41,9 +48,11 @@ export async function createManagementAdapterFixture(
   const management = new SqliteManagementStore(':memory:');
   const memory = new SqliteMemoryStateStore(':memory:', () => now);
   const routines = new SqliteRoutineStore(':memory:', () => now);
+  const settings = new SqliteSettingsStore(':memory:', () => now);
   const service = new WorkspaceManagementService({
     identity,
     config,
+    connectionAccounts: new ConnectionAccountService({ config, settings }),
     management,
     memory,
     routines,
@@ -62,10 +71,12 @@ export async function createManagementAdapterFixture(
     management,
     memory,
     routines,
+    settings,
     service,
     close() {
       identity.close();
       config.close();
+      settings.close();
       management.close();
       memory.close();
       routines.close();

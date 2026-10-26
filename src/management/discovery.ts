@@ -1,15 +1,13 @@
 import { connectionAccountOAuthRef } from '../config/api-oauth.ts';
 import { classifyMcpError, safeMcpFailureText, type McpErrorCode } from '../config/mcp-errors.ts';
 import { McpOAuthError, resolveMcpOAuthAccessToken } from '../config/mcp-oauth.ts';
-import { boundMcpCredentialRef } from '../config/connection-credential-binding.ts';
-import { buildMcpRequestHeaders, resolveMcpSecrets } from '../config/mcp-secrets.ts';
+import { buildMcpRequestHeaders } from '../config/mcp-secrets.ts';
 import { discoverMcpTools, type McpDiscoveryResult } from '../config/mcp-test.ts';
 import type { createMcpGuardedFetch } from '../config/mcp-url.ts';
 import { resolveConnectionAccountMcpSecrets } from '../config/profile-mcp.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
 import type { PlatformEnv } from '../config/state-backend.ts';
 import type { ConfigStore } from '../config/store.ts';
-import type { McpConnectionConfig } from '../config/types.ts';
 import { mcpOAuthLifecycleDependencies } from '../connections/mcp-oauth-lifecycle.ts';
 import {
   isActiveConnectionActor,
@@ -30,8 +28,7 @@ export interface McpConnectionTestActor {
 interface TestManagedMcpConnectionInput {
   agentId: string;
   connectionId: string;
-  /** Without an actor, only the Agent's profile connections can be tested. */
-  actor?: McpConnectionTestActor;
+  actor: McpConnectionTestActor;
   env?: PlatformEnv;
   config: ConfigStore;
   identity: Pick<
@@ -49,61 +46,11 @@ type McpConnectionTestResult =
 
 const NOT_FOUND = 'The MCP connection was not found.';
 
+/** Tests team accounts and the actor's own personal accounts as the actor's turn would; never another member's. */
 export async function testManagedMcpConnection(
   input: TestManagedMcpConnectionInput,
 ): Promise<McpConnectionTestResult> {
-  const agent = await input.config.getAgent(input.agentId);
-  const connection = agent.mcpServers.find(({ id }) => id === input.connectionId);
-  if (connection) return testProfileMcpConnection(input, connection);
-  if (!input.actor) throw new ManagementError('invalid_request', NOT_FOUND);
-  return testConnectionAccountMcp(input, input.actor);
-}
-
-async function testProfileMcpConnection(
-  input: TestManagedMcpConnectionInput,
-  connection: McpConnectionConfig,
-): Promise<McpConnectionTestResult> {
-  try {
-    const credentialRef = boundMcpCredentialRef(input.agentId, connection);
-    const authorizeRequest = async () => {
-      const currentAgent = await input.config.getAgent(input.agentId);
-      const current = currentAgent.mcpServers.find(({ id }) => id === input.connectionId);
-      if (!current || boundMcpCredentialRef(currentAgent.id, current).credentialBinding !==
-          credentialRef.credentialBinding) {
-        throw new Error('connection_changed');
-      }
-    };
-    const resolved = await resolveMcpSecrets(
-      credentialRef,
-      connection.headerNames,
-      input.env,
-      input.settings,
-    );
-    if (connection.authMode === 'oauth') {
-      resolved.bearer = await resolveMcpOAuthAccessToken(
-        { ref: credentialRef, serverUrl: connection.url },
-        { settings: input.settings, refreshTelemetry: { trigger: 'admin' } },
-      );
-    }
-    await authorizeRequest();
-    const result = await discoverMcpTools({
-      id: connection.id,
-      url: connection.url,
-      transport: connection.transport,
-      headers: buildMcpRequestHeaders(connection.authMode, resolved),
-      authorizeRequest,
-    }, undefined, input.createGuardedFetch);
-    return { ok: true, tools: result.tools };
-  } catch (error) {
-    return testFailure(error);
-  }
-}
-
-/** Tests team accounts and the actor's own personal accounts as the actor's turn would; never another member's. */
-async function testConnectionAccountMcp(
-  input: TestManagedMcpConnectionInput,
-  actor: McpConnectionTestActor,
-): Promise<McpConnectionTestResult> {
+  const { actor } = input;
   const [accounts, bindings] = await Promise.all([
     input.config.listConnectionAccounts(actor.workspaceId),
     input.config.listAgentConnectionBindings(input.agentId),

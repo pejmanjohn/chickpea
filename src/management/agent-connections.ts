@@ -1,14 +1,21 @@
 import {
+  connectionAccountCredentialBinding,
   sameApiCredentialPolicy,
   sameMcpCredentialPolicy,
 } from '../config/connection-credential-binding.ts';
 import type {
+  AgentConnectionBinding,
   ApiConnectionConfig,
+  ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
   CustomAgentConfig,
   McpConnectionConfig,
   McpConnectionIdentity,
   McpConnectionToolInfo,
 } from '../config/types.ts';
+import { canonicalJson } from './contracts.ts';
+import { ManagementError } from './types.ts';
 
 /**
  * The connection fields a management client reads from inspect_workspace and
@@ -106,7 +113,7 @@ export function mcpConnectionsAfterWrite(
   return written.map((input) => {
     const policy = managementMcpConnection(input);
     const previous = storedById.get(policy.id);
-    const kept = {
+    const kept: Omit<McpConnectionConfig, 'lifecycleStatus' | 'statusText' | 'discoveredTools'> = {
       ...policy,
       ...(previous && headerPolicyStillApplies(previous, policy)
         ? pickDefined(previous, MCP_HEADER_POLICY_FIELDS)
@@ -116,6 +123,11 @@ export function mcpConnectionsAfterWrite(
     if (previous) {
       const carried: McpConnectionConfig = { ...pickDefined(previous, MCP_OBSERVED_FIELDS), ...kept };
       if (sameMcpCredentialPolicy(previous, carried)) return carried;
+    }
+    // A connection holds one credential: a bearer token, or the value of its one header.
+    const [onlyHeader] = kept.headerNames;
+    if (!kept.credentialHeaderName && kept.authMode === 'none' && onlyHeader !== undefined) {
+      kept.credentialHeaderName = onlyHeader;
     }
     const ready = kept.authMode === 'none' &&
       (!kept.credentialHeaderName || kept.credentialOptional === true);
@@ -180,6 +192,296 @@ export function managementConnectionStatus(
       ...(connection.identity ? { identity: connection.identity } : {}),
     })),
   ];
+}
+
+export type ConnectionLane = 'mcp' | 'api';
+
+export type NativeConnectionAccount = ConnectionAccount & {
+  policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy;
+};
+
+export interface AgentConnectionEntry {
+  account: NativeConnectionAccount;
+  binding: AgentConnectionBinding;
+}
+
+/**
+ * An Agent's MCP servers and API connections as one member manages them: the
+ * Agent's enabled bindings to native connection accounts, team-owned or the
+ * member's own, which are the accounts Admin lists under "In this Agent". A
+ * connection's id is its account's provider id, or the account id when two
+ * connections in the lane share a provider id.
+ */
+export interface AgentConnections {
+  mcpServers: McpConnectionConfig[];
+  apiConnections: ApiConnectionConfig[];
+  mcp: ReadonlyMap<string, AgentConnectionEntry>;
+  api: ReadonlyMap<string, AgentConnectionEntry>;
+}
+
+/** Ids a management write may give a new connection; it becomes the account's provider id. */
+export const NEW_CONNECTION_ID_PATTERN = /^(?!connection_)[a-z0-9][a-z0-9_-]{0,63}$/;
+
+const ACCOUNT_STATUS = {
+  ready: { lifecycleStatus: 'ready', statusText: 'Connected' },
+  pending: { lifecycleStatus: 'pending', statusText: 'Setup required' },
+  needs_attention: { lifecycleStatus: 'failed', statusText: 'Needs attention' },
+} as const satisfies Record<
+  Exclude<ConnectionAccount['lifecycle'], 'revoked'>,
+  { lifecycleStatus: McpConnectionConfig['lifecycleStatus']; statusText: string }
+>;
+
+export function agentConnections(
+  accounts: readonly ConnectionAccount[],
+  bindings: readonly AgentConnectionBinding[],
+  membershipId: string,
+): AgentConnections {
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  const entries = bindings.flatMap((binding): AgentConnectionEntry[] => {
+    const account = byId.get(binding.connectionAccountId);
+    return account && isNativeAccount(account) && binding.enabled &&
+        account.providerId === binding.providerId && account.lifecycle !== 'revoked' &&
+        (account.ownerKind === 'team' || account.ownerMembershipId === membershipId)
+      ? [{ account, binding }]
+      : [];
+  });
+  const mcp = laneEntries(entries, 'mcp');
+  const api = laneEntries(entries, 'api');
+  return {
+    mcp,
+    api,
+    mcpServers: [...mcp].map(([id, entry]) => mcpConnectionFromAccount(id, entry)),
+    apiConnections: [...api].map(([id, entry]) => apiConnectionFromAccount(id, entry)),
+  };
+}
+
+/** The connection id an existing connection has in the lane, given its connection or account id. */
+export function resolveAgentConnectionId(
+  connections: AgentConnections,
+  lane: ConnectionLane,
+  id: string,
+): string | undefined {
+  const entries = connections[lane];
+  if (entries.has(id)) return id;
+  for (const [connectionId, { account }] of entries) {
+    if (account.id === id) return connectionId;
+  }
+  return undefined;
+}
+
+/**
+ * The written connections with each existing one named by its connection id.
+ * Any other id names a new connection and must be a new provider id.
+ */
+export function withAgentConnectionIds<T extends { id: string }>(
+  connections: AgentConnections,
+  lane: ConnectionLane,
+  written: readonly T[],
+): T[] {
+  const providerIds = [...connections[lane].values()].map(({ account }) => account.providerId);
+  const shared = new Set(providerIds.filter((id, index) => providerIds.indexOf(id) !== index));
+  return written.map((connection) => {
+    const id = resolveAgentConnectionId(connections, lane, connection.id);
+    if (id !== undefined) return { ...connection, id };
+    if (shared.has(connection.id)) {
+      throw new ManagementError(
+        'invalid_request',
+        `More than one connection uses ${connection.id}. Name the one to change by its id from inspect_workspace.`,
+      );
+    }
+    if (!NEW_CONNECTION_ID_PATTERN.test(connection.id)) {
+      throw new ManagementError(
+        'invalid_request',
+        `Connection ${connection.id} is not on this Agent. A new connection needs a short id of lowercase letters, digits, "-" or "_".`,
+      );
+    }
+    return connection;
+  });
+}
+
+type NativeConnectionPolicy = ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy;
+
+export type AgentConnectionWrite =
+  | { kind: 'create'; providerId: string; label: string; policy: NativeConnectionPolicy }
+  | {
+      kind: 'update';
+      entry: AgentConnectionEntry;
+      label: string;
+      policy: NativeConnectionPolicy;
+      identity?: McpConnectionIdentity;
+      resetCredential: boolean;
+    }
+  | { kind: 'revoke'; entry: AgentConnectionEntry };
+
+/**
+ * The account writes that turn an Agent's current connections into the
+ * desired ones, which mcpConnectionsAfterWrite and apiConnectionsAfterWrite
+ * computed over the current connections. A lane the write leaves out stays.
+ */
+export function agentConnectionWrites(
+  current: AgentConnections,
+  desired: { mcpServers?: readonly McpConnectionConfig[]; apiConnections?: readonly ApiConnectionConfig[] },
+): AgentConnectionWrite[] {
+  return [
+    ...laneWrites(current, 'mcp', current.mcpServers, desired.mcpServers, mcpAccountPolicy, sameMcpCredentialPolicy),
+    ...laneWrites(current, 'api', current.apiConnections, desired.apiConnections, apiAccountPolicy, sameApiCredentialPolicy),
+  ];
+}
+
+function laneWrites<T extends McpConnectionConfig | ApiConnectionConfig>(
+  current: AgentConnections,
+  lane: ConnectionLane,
+  stored: readonly T[],
+  next: readonly T[] | undefined,
+  accountPolicy: (connection: T, kept?: AgentConnectionEntry) => NativeConnectionPolicy,
+  sameCredentialPolicy: (left: T, right: T) => boolean,
+): AgentConnectionWrite[] {
+  if (!next) return [];
+  const storedById = new Map(stored.map((connection) => [connection.id, connection]));
+  const writes: AgentConnectionWrite[] = next.flatMap((connection): AgentConnectionWrite[] => {
+    const entry = current[lane].get(connection.id);
+    const previous = storedById.get(connection.id);
+    if (!entry || !previous) {
+      return [{
+        kind: 'create',
+        providerId: connection.id,
+        label: connection.displayName,
+        policy: accountPolicy(connection),
+      }];
+    }
+    const resetCredential = !sameCredentialPolicy(previous, connection);
+    const policy = accountPolicy(connection, resetCredential ? undefined : entry);
+    if (!resetCredential && entry.account.label === connection.displayName &&
+        canonicalJson(entry.account.policy) === canonicalJson(policy)) return [];
+    return [{
+      kind: 'update',
+      entry,
+      label: connection.displayName,
+      policy,
+      ...(connection.identity ? { identity: connection.identity } : {}),
+      resetCredential,
+    }];
+  });
+  const kept = new Set(next.map(({ id }) => id));
+  for (const [id, entry] of current[lane]) {
+    if (!kept.has(id)) writes.push({ kind: 'revoke', entry });
+  }
+  return writes;
+}
+
+/** The fence a setup link holds on one connection: its account's secret slot and credential policy. */
+export function connectionSetupBinding(entry: AgentConnectionEntry): string {
+  const { account } = entry;
+  return connectionAccountCredentialBinding(account.secretRefId, account.policy.kind === 'mcp'
+    ? { lane: 'mcp', policy: mcpConnectionFromAccount(account.id, entry) }
+    : { lane: 'api', policy: apiConnectionFromAccount(account.id, entry) });
+}
+
+/** The one setup form field an MCP connection's credential goes in. */
+export function mcpCredentialField(policy: ConnectionAccountMcpPolicy): string {
+  return policy.credentialHeaderName ? `header:${policy.credentialHeaderName}` : 'bearerToken';
+}
+
+function isNativeAccount(account: ConnectionAccount): account is NativeConnectionAccount {
+  return account.policy.kind === 'mcp' || account.policy.kind === 'api';
+}
+
+function laneEntries(
+  entries: readonly AgentConnectionEntry[],
+  lane: ConnectionLane,
+): Map<string, AgentConnectionEntry> {
+  const inLane = entries.filter(({ account }) => account.policy.kind === lane);
+  const providerCounts = new Map<string, number>();
+  for (const { account } of inLane) {
+    providerCounts.set(account.providerId, (providerCounts.get(account.providerId) ?? 0) + 1);
+  }
+  return new Map(inLane.map((entry) => [
+    providerCounts.get(entry.account.providerId) === 1 ? entry.account.providerId : entry.account.id,
+    entry,
+  ]));
+}
+
+function mcpConnectionFromAccount(id: string, { account, binding }: AgentConnectionEntry): McpConnectionConfig {
+  const { policy, lifecycle } = account;
+  if (policy.kind !== 'mcp' || lifecycle === 'revoked') throw new Error('Not a connected MCP server.');
+  return {
+    id,
+    displayName: account.label,
+    url: policy.url,
+    transport: policy.transport,
+    authMode: policy.authMode,
+    headerNames: [...policy.headerNames],
+    ...pickDefined(policy, MCP_HEADER_POLICY_FIELDS),
+    enabled: binding.enabled,
+    ...ACCOUNT_STATUS[lifecycle],
+    discoveredTools: [...policy.discoveredTools],
+    ...(policy.toolAccessMode ? { toolAccessMode: policy.toolAccessMode } : {}),
+    ...(policy.toolPolicies ? { toolPolicies: policy.toolPolicies } : {}),
+    allowedTools: [...policy.allowedTools],
+    ...(policy.oauthScope ? { oauthScope: policy.oauthScope } : {}),
+    ...(policy.oauthAttemptId ? { oauthAttemptId: policy.oauthAttemptId } : {}),
+    ...(account.identity ? { identity: account.identity } : {}),
+    ...(policy.presetId ? { presetId: policy.presetId } : {}),
+  };
+}
+
+function apiConnectionFromAccount(id: string, { account, binding }: AgentConnectionEntry): ApiConnectionConfig {
+  const { policy, lifecycle } = account;
+  if (policy.kind !== 'api' || lifecycle === 'revoked') throw new Error('Not a connected API connection.');
+  return {
+    id,
+    displayName: account.label,
+    allowedHosts: [...policy.allowedHosts],
+    pathPrefixes: [...policy.pathPrefixes],
+    headerName: policy.headerName,
+    ...(policy.headerValuePrefix ? { headerValuePrefix: policy.headerValuePrefix } : {}),
+    allowedMethods: [...policy.allowedMethods],
+    enabled: binding.enabled,
+    authMode: policy.authMode,
+    ...(policy.oauthProvider ? { oauthProvider: policy.oauthProvider } : {}),
+    ...(policy.oauthScopes ? { oauthScopes: [...policy.oauthScopes] } : {}),
+    ...(policy.oauthAppType ? { oauthAppType: policy.oauthAppType } : {}),
+    ...ACCOUNT_STATUS[lifecycle],
+    ...(account.identity ? { identity: account.identity } : {}),
+    ...(policy.presetId ? { presetId: policy.presetId } : {}),
+  };
+}
+
+function mcpAccountPolicy(connection: McpConnectionConfig): ConnectionAccountMcpPolicy {
+  return {
+    kind: 'mcp',
+    url: connection.url,
+    transport: connection.transport,
+    authMode: connection.authMode,
+    headerNames: [...connection.headerNames],
+    ...pickDefined(connection, MCP_HEADER_POLICY_FIELDS),
+    discoveredTools: [...connection.discoveredTools],
+    ...(connection.toolAccessMode ? { toolAccessMode: connection.toolAccessMode } : {}),
+    ...(connection.toolPolicies ? { toolPolicies: connection.toolPolicies } : {}),
+    allowedTools: [...connection.allowedTools],
+    ...(connection.oauthScope ? { oauthScope: connection.oauthScope } : {}),
+    ...(connection.oauthAttemptId ? { oauthAttemptId: connection.oauthAttemptId } : {}),
+    ...(connection.presetId ? { presetId: connection.presetId } : {}),
+  };
+}
+
+/** API connections never expose their OAuth attempt, so an account that keeps its credential keeps it. */
+function apiAccountPolicy(connection: ApiConnectionConfig, kept?: AgentConnectionEntry): ConnectionAccountApiPolicy {
+  const attempt = kept?.account.policy.oauthAttemptId;
+  return {
+    kind: 'api',
+    allowedHosts: [...connection.allowedHosts],
+    pathPrefixes: [...connection.pathPrefixes],
+    headerName: connection.headerName,
+    ...(connection.headerValuePrefix ? { headerValuePrefix: connection.headerValuePrefix } : {}),
+    allowedMethods: [...connection.allowedMethods],
+    authMode: connection.authMode ?? 'credential',
+    ...(connection.oauthProvider ? { oauthProvider: connection.oauthProvider } : {}),
+    ...(connection.oauthScopes ? { oauthScopes: [...connection.oauthScopes] } : {}),
+    ...(connection.oauthAppType ? { oauthAppType: connection.oauthAppType } : {}),
+    ...(attempt ? { oauthAttemptId: attempt } : {}),
+    ...(connection.presetId ? { presetId: connection.presetId } : {}),
+  };
 }
 
 function headerPolicyStillApplies(

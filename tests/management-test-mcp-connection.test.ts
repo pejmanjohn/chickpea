@@ -6,7 +6,7 @@ import { connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { createMcpGuardedFetch } from '../src/config/mcp-url.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
-import type { ConnectionAccountPolicy, McpConnectionConfig } from '../src/config/types.ts';
+import type { ConnectionAccountPolicy } from '../src/config/types.ts';
 import { ConnectionAccountService } from '../src/connections/store.ts';
 import type { IdentityResolution } from '../src/identity/types.ts';
 import { testManagedMcpConnection } from '../src/management/discovery.ts';
@@ -65,7 +65,7 @@ async function fixture() {
     testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,
-      ...(actor ? { actor } : {}),
+      actor,
       config: f.config,
       identity: f.identity,
       settings,
@@ -326,20 +326,14 @@ test('a tester suspended during a test\'s OAuth refresh does not delete the team
   } finally { f.close(); }
 });
 
-test('test_mcp_connection still tests a legacy profile MCP connection', async () => {
+test('test_mcp_connection names a connection by the id inspect_workspace gives it', async () => {
   const f = await fixture();
   try {
-    const origin = 'https://legacy.example.com';
-    f.remote.servers.set(origin, { tools: ['legacy_search'] });
-    const legacy: McpConnectionConfig = {
-      id: 'legacy', credentialRef: 'connection_33333333333333333333333333333333',
-      displayName: 'Legacy', url: `${origin}/mcp`, transport: 'streamable-http', authMode: 'none',
-      headerNames: [], enabled: true, lifecycleStatus: 'ready', statusText: '',
-      discoveredTools: [{ name: 'legacy_search' }], allowedTools: ['legacy_search'],
-    };
-    await f.config.updateAgent(f.agent.id, { mcpServers: [legacy] }, f.agent.revision);
+    const origin = 'https://named.example.com';
+    f.remote.servers.set(origin, { tools: ['fixture_status'] });
+    await f.createConnection({ by: f.admin, ownerKind: 'team', policy: mcpPolicy(`${origin}/mcp`, { authMode: 'none' }) });
 
-    assert.deepEqual(toolNames(await f.testAs(f.member, 'legacy')), ['legacy_search']);
+    assert.deepEqual(toolNames(await f.testAs(f.member, 'fixture')), ['fixture_status']);
   } finally { f.close(); }
 });
 

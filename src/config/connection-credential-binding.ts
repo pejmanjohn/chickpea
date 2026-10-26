@@ -129,6 +129,20 @@ export function boundApiCredentialRef(agentId: string, connection: ApiConnection
   };
 }
 
+/** Fences a connection account's setup link to its secret slot and its credential policy. */
+export function connectionAccountCredentialBinding(
+  secretRefId: string,
+  connection: { lane: 'mcp'; policy: McpConnectionConfig } | { lane: 'api'; policy: ApiConnectionConfig },
+): string {
+  return credentialBinding(
+    connection.lane,
+    secretRefId,
+    connection.lane === 'mcp'
+      ? canonicalMcpCredentialPolicy(connection.policy)
+      : canonicalApiCredentialPolicy(connection.policy),
+  );
+}
+
 function canonicalMcpCredentialPolicy(connection: McpConnectionConfig): string {
   return JSON.stringify({
     presetId: connection.presetId ?? null,

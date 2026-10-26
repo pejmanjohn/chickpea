@@ -28,6 +28,8 @@ import type {
   AgentConnectionBinding,
   AgentScheduleReference,
   ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
   ConnectionAccountPolicy,
   ManagedAccountResourceConstraints,
   ManagedBindingResourceConstraints,
@@ -148,8 +150,54 @@ export async function deleteRevokedConnectionOAuthSettings(
   }
 }
 
+/** Whether a native account needs a stored credential or a sign-in before an Agent can use it. */
+export function nativeCredentialRequired(
+  policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy,
+): boolean {
+  return policy.kind === 'api' || policy.authMode !== 'none' ||
+    (policy.credentialHeaderName !== undefined && policy.credentialOptional !== true);
+}
+
 export class ConnectionAccountService {
   constructor(private readonly dependencies: ConnectionAccountServiceDependencies) {}
+
+  /**
+   * Replace a native account's label and policy for the Agent it belongs to.
+   * A policy whose credential no longer applies loses its stored credential
+   * and OAuth tokens and waits for setup again.
+   */
+  async updateForAgent(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    label: string;
+    policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy;
+    identity?: McpConnectionIdentity;
+    resetCredential: boolean;
+  }): Promise<ConnectionAccount> {
+    const { account } = await this.requireAgentOwnedAccount(input);
+    if (account.revision !== input.expectedRevision) {
+      throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, account.revision);
+    }
+    if (account.policy.kind !== input.policy.kind || account.lifecycle === 'revoked') {
+      throw new Error('Only a connected native account can change its policy');
+    }
+    if (input.resetCredential) {
+      await tombstoneConnectionAccountSecret(account.secretRefId, undefined, this.dependencies.settings);
+      await deleteRevokedConnectionOAuthSettings(account, undefined, this.dependencies.settings);
+    }
+    const { identity: _identity, ...withoutIdentity } = account;
+    return this.dependencies.config.putConnectionAccount({
+      ...withoutIdentity,
+      label: input.label,
+      policy: input.policy,
+      ...(input.identity ? { identity: input.identity } : {}),
+      lifecycle: !input.resetCredential
+        ? account.lifecycle
+        : nativeCredentialRequired(input.policy) ? 'pending' : 'ready',
+    }, account.revision);
+  }
 
   async createForAgent(input: {
     principal: AuthPrincipal;
@@ -162,6 +210,8 @@ export class ConnectionAccountService {
     identity?: McpConnectionIdentity;
     policy: ConnectionAccountPolicy;
     credential?: string;
+    /** A native account without its credential waits for a setup link (pending), not an Admin re-entry. */
+    pendingSetup?: boolean;
     allowedCapabilities?: string[];
     resourceConstraints?: ManagedBindingResourceConstraints;
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
@@ -789,6 +839,7 @@ export class ConnectionAccountService {
     identity?: McpConnectionIdentity;
     policy: ConnectionAccountPolicy;
     credential?: string;
+    pendingSetup?: boolean;
   }) {
     requirePermission(
       input.principal,
@@ -827,9 +878,9 @@ export class ConnectionAccountService {
       secretRefId,
       lifecycle: policy.kind === 'managed'
         ? requiresManagedResourceSelection ? 'pending' as const : 'ready' as const
-        : input.credential || input.policy.kind === 'mcp' && input.policy.authMode === 'none'
+        : input.credential || !nativeCredentialRequired(policy)
           ? 'ready' as const
-          : 'needs_attention' as const,
+          : input.pendingSetup ? 'pending' as const : 'needs_attention' as const,
     };
   }
 

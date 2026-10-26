@@ -130,6 +130,11 @@ export function createLiveWorkspaceManagementService(
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
+    connectionAccounts: new ConnectionAccountService({
+      config: config as ConfigStore,
+      settings,
+      productTelemetry,
+    }),
     management,
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
@@ -203,7 +208,7 @@ export function createLiveWorkspaceManagementService(
     testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,
-      ...(actor ? { actor } : {}),
+      actor,
       ...(env ? { env } : {}),
       config: config as ConfigStore,
       identity,
