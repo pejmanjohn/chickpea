@@ -1785,6 +1785,10 @@ export class TagStateStore extends DurableObject implements TagStateRpc, StateSt
     return this.call((stores) => stores.turnJobs.listProposalApprovalTurns(input));
   }
 
+  async slackLatestAgentTurn(input: Parameters<TagStateRpc['slackLatestAgentTurn']>[0]) {
+    return this.call((stores) => stores.turnJobs.latestAgentTurnMessageTs(input) ?? null);
+  }
+
   async slackPresentationLatestThreadGeneration(
     root: Parameters<TagStateRpc['slackPresentationLatestThreadGeneration']>[0],
   ) {

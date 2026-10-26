@@ -586,6 +586,58 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
   }
 });
 
+test('the same operations put again from a later Slack message keep the pending change set', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const scope = 'slack:T1:C1:1800000000.000100:agent:agent_chickpea';
+  const input = (
+    proposalId: string,
+    patch: Partial<PutManagementChangeSetProposalInput> = {},
+  ): PutManagementChangeSetProposalInput => ({
+      proposalId,
+      organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
+      originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId, guideVersion: '1.0.0',
+      authoringReason: 'agent_edit', operations: [operation], digest: 'a'.repeat(64),
+      preview: { summary: 'Change set', changes: [], missingSetup: [] },
+      targetRevisions: { 'agent:agent_test': 1 }, requestOperationId: `request_${proposalId}`,
+      proposedMessageTs: '1800000001.000100', at: NOW, ...patch,
+    });
+  const put = (proposalId: string, patch: Partial<PutManagementChangeSetProposalInput> = {}) =>
+    store.putChangeSetProposal(input(proposalId, patch));
+  /** An MCP client's put has no proposing message. */
+  const putMcp = (proposalId: string) => {
+    const { proposedMessageTs: _none, ...mcp } = input(proposalId, { originKey: 'mcp:client_1', approvalScopeKey: 'mcp:client_1' });
+    return store.putChangeSetProposal(mcp);
+  };
+  try {
+    const first = await put('changeset_first');
+    const again = await put('changeset_again', { proposedMessageTs: '1800000003.000100', at: NOW + 2_000 });
+    assert.equal(again.proposalId, first.proposalId);
+    assert.equal(again.status, 'pending');
+    assert.equal(again.proposedMessageTs, '1800000003.000100', 'it now waits on the later message');
+    assert.equal(again.requestOperationId, 'request_changeset_again', 'and settles the newest call');
+    assert.equal(again.createdAt, first.createdAt, 'so the host posts no second card');
+
+    const replayed = await put('changeset_replay', { idempotencyKey: 'changeset_first', proposedMessageTs: '1800000005.000100' });
+    assert.equal(replayed.proposalId, first.proposalId);
+    assert.equal(replayed.proposedMessageTs, '1800000005.000100', 'a replayed idempotency key re-anchors too');
+
+    const edited = await put('changeset_edited', { digest: 'b'.repeat(64), proposedMessageTs: '1800000007.000100' });
+    assert.notEqual(edited.proposalId, first.proposalId);
+    assert.equal((await store.getChangeSetProposal(first.proposalId))?.status, 'stale', 'different operations supersede');
+
+    const dm = 'slack:T1:D1:dm:agent:agent_chickpea';
+    const dmFirst = await put('changeset_dm_first', { originKey: `slack:T1:D1:1800000010.000100:im:agent:agent_chickpea`, approvalScopeKey: dm });
+    const dmOther = await put('changeset_dm_other', { originKey: `slack:T1:D1:1800000012.000100:im:agent:agent_chickpea`, approvalScopeKey: dm });
+    assert.notEqual(dmOther.proposalId, dmFirst.proposalId, 'another origin in the scope supersedes');
+
+    const mcpFirst = await putMcp('changeset_mcp_first');
+    const mcpAgain = await putMcp('changeset_mcp_again');
+    assert.notEqual(mcpAgain.proposalId, mcpFirst.proposalId, 'an MCP client still supersedes');
+  } finally {
+    store.close();
+  }
+});
+
 test('change-set idempotency is exact-origin scoped while a DM keeps one active proposal', async () => {
   const store = new SqliteManagementStore(':memory:');
   const approvalScopeKey = 'slack:T1:D1:dm:agent:agent_chickpea';

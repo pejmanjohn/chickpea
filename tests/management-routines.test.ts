@@ -14,6 +14,7 @@ import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tool
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createSlackOwner } from './helpers/slack-owner.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { approveAsPerson } from './helpers/slack-person-approval.ts';
 
 const NOW = Date.UTC(2026, 7, 21, 12);
 
@@ -256,11 +257,10 @@ test('a routed Agent manages and inspects only its own routines', async () => {
     });
     assert.equal(proposal.ok, true);
     assert.deepEqual(await f.routines.listRoutines(workspaceId, 'C_SELF_ROUTINE'), []);
-    await invokeSlackWorkspaceManagementTool({
+    await approveAsPerson({
       signal: { ...signal, eventId: `Ev_SELF_ROUTINE_${++sequence}` },
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: (proposal as { ok: true; result: { proposalId: string } }).result.proposalId },
     });
 
@@ -522,9 +522,9 @@ test('private DM routines need no deployment flag and use trusted thread managem
       ok: true; result: { proposalId: string };
     }).result.proposalId;
     const previousAuthority = await config.getAgentScheduleReference(routine.id);
-    await invokeSlackWorkspaceManagementTool({
+    await approveAsPerson({
       signal: { ...reassignSignal, eventId: `Ev_DIRECT_${++sequence}` },
-      identity, service, name: 'confirm_workspace_change',
+      identity, service,
       args: { proposalId: reassignProposalId },
     });
     const reassignedAuthority = await config.getAgentScheduleReference(routine.id);
@@ -611,9 +611,9 @@ test('private DM routines need no deployment flag and use trusted thread managem
       const editProposalId = (editProposal as {
         ok: true; result: { proposalId: string };
       }).result.proposalId;
-      const failedEdit = await invokeSlackWorkspaceManagementTool({
+      const failedEdit = await approveAsPerson({
         signal: { ...editSignal, eventId: `Ev_DIRECT_${++sequence}` },
-        identity, service, name: 'confirm_workspace_change',
+        identity, service,
         args: { proposalId: editProposalId },
       });
       assert.equal((failedEdit as { ok: true; result: {

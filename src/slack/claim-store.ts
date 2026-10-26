@@ -12,6 +12,7 @@ import {
   TurnJobStoreLogic,
   type PendingTurnJob,
   type RunnerTurnJobView,
+  type SlackLatestAgentTurnQuery,
   type SlackProposalApprovalQuery,
   type SlackProposalApprovalTurn,
 } from './turn-jobs.ts';
@@ -325,6 +326,7 @@ export interface SlackStateStore extends SlackClaimStore, SlackThreadRegistry {
   resolveTurnRecoveryRequired?(id: string): Promise<boolean>;
   getRunPresentation?(runId: string): Promise<SlackRunPresentation | undefined>;
   listProposalApprovalTurns?(input: SlackProposalApprovalQuery): Promise<SlackProposalApprovalTurn[]>;
+  latestAgentTurnMessageTs?(input: SlackLatestAgentTurnQuery): Promise<string | undefined>;
   getLatestThreadSessionGeneration?(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): Promise<number | undefined>;

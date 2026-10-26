@@ -437,7 +437,6 @@ test('final-answer mode refuses a declaration while another tool is running', as
 for (const toolName of [
   'update_agent_memory',
   'apply_workspace_changes',
-  'confirm_workspace_change',
   'undo_workspace_change',
 ]) {
   test(`a declaration after ${toolName} is refused, live and on resume`, async () => {

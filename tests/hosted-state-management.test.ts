@@ -14,6 +14,11 @@ import { SettingsStoreLogic, type SettingsStore } from '../src/config/settings-s
 import type { PlatformEnv } from '../src/config/state-backend.ts';
 import { createLiveWorkspaceManagementService } from '../src/management/live-service.ts';
 import {
+  executeHostSlackManagementApproval,
+  type HostSlackManagementApprovalResult,
+  type SlackManagementApprovalRpcRequest,
+} from '../src/management/slack-approval.ts';
+import {
   invokeSlackWorkspaceManagementTool,
   type SlackManagementSignal,
 } from '../src/management/slack-tools.ts';
@@ -22,6 +27,7 @@ import type {
   WorkspaceManagementToolName,
   WorkspaceManagementToolResult,
 } from '../src/management/tool-adapter.ts';
+import { agentAvatarInstallationField } from '../src/slack/agent-presence/avatar-assets.ts';
 import { loadCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { resolveSlackPublicUrl } from '../src/slack/credentials.ts';
 import { NodeStateDb } from '../src/state/node-state-db.ts';
@@ -50,6 +56,7 @@ interface StateProbe {
     name: TName;
     args: WorkspaceManagementToolArguments[TName];
   }): Promise<WorkspaceManagementToolResult>;
+  slackManagementApprovalInvoke(request: SlackManagementApprovalRpcRequest): Promise<HostSlackManagementApprovalResult>;
 }
 
 /**
@@ -78,14 +85,17 @@ function productionStateManagement(input: {
   const stateClass = source.statements.find((node): node is ts.ClassDeclaration =>
     ts.isClassDeclaration(node) && node.name?.text === 'TagStateStore');
   assert.ok(stateClass);
-  const method = stateClass.members.find((member) =>
-    ts.isMethodDeclaration(member) && member.name.getText(source) === 'workspaceManagementInvoke');
-  assert.ok(method, 'the state store exposes workspaceManagementInvoke');
+  const methodText = (name: string) => {
+    const method = stateClass.members.find((member) =>
+      ts.isMethodDeclaration(member) && member.name.getText(source) === name);
+    assert.ok(method, `the state store exposes ${name}`);
+    return method.getText(source);
+  };
   const compiled = ts.transpileModule([
     functionText('localSettingsStore'),
     functionText('localManagementRuntime'),
     functionText('workspaceManagementRpcFailure'),
-    `class Probe { ${method.getText(source)} }`,
+    `class Probe { ${methodText('workspaceManagementInvoke')} ${methodText('slackManagementApprovalInvoke')} }`,
   ].join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const { Probe, localSettingsStore } = new Function(
     'localGatewayAppStores',
@@ -93,6 +103,8 @@ function productionStateManagement(input: {
     'loadCredentialKeyring',
     'resolveSlackPublicUrl',
     'invokeSlackWorkspaceManagementTool',
+    'executeHostSlackManagementApproval',
+    'agentAvatarInstallationField',
     `${compiled}\nreturn { Probe, localSettingsStore };`,
   )(
     () => input.appStores,
@@ -100,6 +112,8 @@ function productionStateManagement(input: {
     loadCredentialKeyring,
     resolveSlackPublicUrl,
     invokeSlackWorkspaceManagementTool,
+    executeHostSlackManagementApproval,
+    agentAvatarInstallationField,
   ) as {
     Probe: new () => StateProbe;
     localSettingsStore: (stores: unknown) => SettingsStore;
@@ -216,13 +230,37 @@ test('on a deployment serving many, the state store lists the workspace Agents f
         operations: [{ itemId: 'remove_openai', kind: 'remove_provider_credential', providerId: 'openai' }],
       },
     })) as { proposalId: string };
-    const confirmed = succeeded(await probe.workspaceManagementInvoke({
-      signal: fromOwner('500.3', 'Approve.'),
+    const byModel = await probe.workspaceManagementInvoke({
+      signal: fromOwner('500.3', 'approve'),
       name: 'confirm_workspace_change',
       args: { proposalId: proposed.proposalId },
-    })) as { status: string; outcomes: Array<{ disposition: string }> };
-    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed));
-    assert.deepEqual(confirmed.outcomes.map(({ disposition }) => disposition), ['applied']);
+    });
+    assert.ok(!byModel.ok && byModel.error.code === 'forbidden', 'the Agent cannot apply it through the state store');
+    const chickpea = await f.config.materializeChickpeaAgent();
+    const approval = await probe.slackManagementApprovalInvoke({
+      turn: {
+        workspaceId: f.owner.user.slackTeamId,
+        channelId: 'D_HOSTED_STATE',
+        threadTs: '500.1',
+        messageTs: '500.3',
+        eventId: 'Ev_HOSTED_STATE_500.3',
+        text: 'approve',
+        userId: f.owner.binding.slackUserId,
+        source: 'dm_message',
+        contextMode: 'dm_history',
+      },
+      assignment: {
+        workspaceId: f.owner.user.slackTeamId,
+        channelId: 'D_HOSTED_STATE',
+        agentId: 'agent_chickpea',
+        runtimeContract: 'chickpea-v1',
+        agent: chickpea,
+      },
+      turnJobId: 'turn_HOSTED_STATE_500.3',
+      proposalId: proposed.proposalId,
+    });
+    assert.deepEqual(approval, { kind: 'message', text: 'Applied the approved changes.' },
+      'the person\'s approval applies through the state store\'s own runtime');
     // The removal reached the installation's saved key.
     assert.equal(providerSources(await inspect(fromOwner('500.4', 'List the providers.'))).openai, 'missing');
     assert.equal((await settings.readModelCredential('openai'))?.active, false);

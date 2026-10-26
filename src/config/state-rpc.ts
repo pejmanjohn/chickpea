@@ -66,7 +66,11 @@ import type {
   HostSlackManagementApprovalResult,
   SlackManagementApprovalRpcRequest,
 } from '../management/slack-approval.ts';
-import type { SlackProposalApprovalQuery, SlackProposalApprovalTurn } from '../slack/turn-jobs.ts';
+import type {
+  SlackLatestAgentTurnQuery,
+  SlackProposalApprovalQuery,
+  SlackProposalApprovalTurn,
+} from '../slack/turn-jobs.ts';
 import type {
   ThreadRunnerTurnKind,
   ThreadRunnerTurnOp,
@@ -583,6 +587,9 @@ export interface TagStateRpc {
   slackProposalApprovalTurns(
     input: SlackProposalApprovalQuery,
   ): Promise<StateRpcResult<SlackProposalApprovalTurn[]>>;
+  slackLatestAgentTurn(
+    input: SlackLatestAgentTurnQuery,
+  ): Promise<StateRpcResult<string | null>>;
   slackPresentationLatestThreadGeneration(
     root: Pick<SlackPresentationRoot, 'workspaceId' | 'channelId' | 'threadTs'>,
   ): Promise<StateRpcResult<number | null>>;

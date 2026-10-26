@@ -919,6 +919,7 @@ test('a creation answered on an Agent\'s ask hands the welcome no requester text
         modelAttribution: { source: 'pinned', providerId: 'local-stub' }, agent: chickpea,
       };
       const agentId = `agent_ask_creation_${name.toLowerCase()}`;
+      // Setup only: the Agent already exists, so the turn under test is just its welcome.
       const applied = await f.service.applyWorkspaceChanges({
         context: {
           userId: f.admin.user.id, membershipId: f.admin.membership.id,
@@ -926,6 +927,7 @@ test('a creation answered on an Agent\'s ask hands the welcome no requester text
           origin: {
             kind: 'slack', workspaceId: turn.workspaceId, channelId, threadTs: turn.threadTs,
             messageTs: turn.messageTs, conversationKind: 'im', agentId: CHICKPEA_AGENT_ID,
+            requestText: 'Create a Deck Agent.',
           },
         },
         idempotencyKey: `ask-creation-${name}`,
