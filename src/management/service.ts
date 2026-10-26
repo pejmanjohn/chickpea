@@ -132,9 +132,11 @@ import {
   type ApplyWorkspaceChangesInput,
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
+  type ManagementAgentLabel,
   type ManagementApplyResult,
   type ManagementChangeSetPreview,
   type ManagementChangeSetRecordPreview,
+  type ManagementChangeStatement,
   type ManagementChangeSetProposalRecord,
   type ChickpeaManagementHandoff,
   type ManagementDuplicateIdentityResult,
@@ -2219,6 +2221,12 @@ export class WorkspaceManagementService {
         targetRevisions[key] = revision;
       }
       const prepared = await this.preflightProposalItem(actor, operation, proposalId, readiness);
+      const setup = operation.kind === 'request_setup'
+        ? await this.resolveSetupTarget(operation.target)
+        : undefined;
+      const statement: ManagementChangeStatement | undefined = setup
+        ? { kind: 'request_setup', setup: setup.target.targetLabel }
+        : await this.changeStatement(operation, prepared);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -2228,9 +2236,9 @@ export class WorkspaceManagementService {
           : {}),
         ...(prepared.before === undefined ? {} : { before: prepared.before }),
         ...(prepared.intendedAfter === undefined ? {} : { after: prepared.intendedAfter }),
+        ...(statement ? { statement } : {}),
       });
-      if (operation.kind === 'request_setup') {
-        const setup = await this.resolveSetupTarget(operation.target);
+      if (operation.kind === 'request_setup' && setup) {
         missingSetup.push({
           itemId: operation.itemId,
           kind: operation.target.kind,
@@ -4617,6 +4625,90 @@ export class WorkspaceManagementService {
     return prepared;
   }
 
+  /** The names and counts a preview states for an operation whose records mean nothing to a person. */
+  private async changeStatement(
+    operation: ManagementOperation,
+    prepared: ManagementPreparedItem,
+  ): Promise<ManagementChangeStatement | undefined> {
+    switch (operation.kind) {
+      case 'archive_agent': {
+        const references = await this.stores.config.getAgentReferences(operation.agentId);
+        return {
+          kind: operation.kind,
+          agent: agentLabel(prepared.before as CustomAgentConfig),
+          channelCount: references.channelGrants.length,
+        };
+      }
+      case 'restore_agent':
+      case 'delete_agent':
+        return { kind: operation.kind, agent: agentLabel(prepared.before as CustomAgentConfig) };
+      case 'update_agent_memory':
+        return {
+          kind: operation.kind,
+          agent: agentLabel(await this.stores.config.getAgent(operation.agentId)),
+        };
+      case 'update_member': {
+        const membership = await this.stores.identity.getMembership(operation.membershipId);
+        const member = membership
+          ? (await this.stores.identity.getUser(membership.userId))?.displayName
+          : undefined;
+        return {
+          kind: operation.kind,
+          ...(member ? { member } : {}),
+          ...(operation.role ? { role: operation.role } : {}),
+          ...(operation.status ? { status: operation.status } : {}),
+        };
+      }
+      case 'remove_provider_credential': {
+        const impact = await resolveProviderRuntimeImpact(this.stores.config, operation.providerId);
+        const answering = new Map([...impact.pinnedAgents, ...impact.inheritingAgents]
+          .filter((agent) => agent.enabled && agent.lifecycle !== 'archived')
+          .map((agent) => [agent.id, agent.name]));
+        return {
+          kind: operation.kind,
+          provider: providerLabel(operation.providerId),
+          affectedAgents: [...answering.values()],
+          workspaceDefaultAffected: impact.workspaceDefaultAffected,
+        };
+      }
+      case 'grant_agent_channel':
+      case 'revoke_agent_channel': {
+        const [agent, channel, grants] = await Promise.all([
+          operation.agentId ? optionalAgent(this.stores.config, operation.agentId) : undefined,
+          this.stores.config.getChannel(operation.workspaceId, operation.channelId),
+          this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
+        ]);
+        const label = channel?.label ?? grants.find(({ channelLabel }) => channelLabel)?.channelLabel;
+        return {
+          kind: operation.kind,
+          ...(agent ? { agent: agentLabel(agent) } : {}),
+          ...(label ? { channel: label } : {}),
+        };
+      }
+      case 'delete_routine':
+      case 'run_routine':
+      case 'control_routine':
+      case 'reassign_routine_agent': {
+        const name = (await this.stores.routines?.getRoutine(operation.routineId))?.name;
+        const routine = name ? { routine: name } : {};
+        if (operation.kind === 'control_routine') {
+          return { kind: operation.kind, ...routine, action: operation.action };
+        }
+        if (operation.kind === 'reassign_routine_agent') {
+          const agent = await optionalAgent(this.stores.config, operation.agentId);
+          return { kind: operation.kind, ...routine, ...(agent ? { agent: agentLabel(agent) } : {}) };
+        }
+        return { kind: operation.kind, ...routine };
+      }
+      case 'create_agent':
+      case 'update_agent':
+      case 'put_channel':
+      case 'save_routine':
+      case 'request_setup':
+        return undefined;
+    }
+  }
+
   private async executeImmediate(
     actor: LiveManagementActor,
     mutationId: string,
@@ -6670,6 +6762,7 @@ function publicChangeSetPreview(
       target: change.target,
       ...('before' in change ? { before: scrubPrivatePreviewValue(change.before) } : {}),
       ...('after' in change ? { after: scrubPrivatePreviewValue(change.after) } : {}),
+      ...(change.statement ? { statement: change.statement } : {}),
     })),
     missingSetup: preview.missingSetup.map((setup) => ({ ...setup })),
   };
@@ -6686,6 +6779,11 @@ function scrubPrivatePreviewValue(value: unknown): unknown {
 
 function capabilityDigest(capability: string): string {
   return createHash('sha256').update(capability).digest('base64url');
+}
+
+function agentLabel(agent: Pick<CustomAgentConfig, 'name' | 'slackPresence'>): ManagementAgentLabel {
+  const handle = agent.slackPresence?.normalizedHandle || agent.slackPresence?.requestedHandle;
+  return handle ? { name: agent.name, handle } : { name: agent.name };
 }
 
 function providerLabel(providerId: 'anthropic' | 'openai' | 'openrouter'): string {
