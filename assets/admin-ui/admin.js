@@ -28,7 +28,7 @@
   var HELP_IMPROVE_OFFERED = CONFIG.helpImproveOffered === true;
   var HELP_IMPROVE_PRIVACY_URL = typeof CONFIG.helpImprovePrivacyUrl === "string" ? CONFIG.helpImprovePrivacyUrl : "";
   var HELP_IMPROVE_API = "/admin/api/settings/help-improve";
-  // One copy for the Settings row and the onboarding row (HELP_IMPROVE_TEXT_VERSION in run-review-api.ts).
+  // The Settings row's copy (HELP_IMPROVE_TEXT_VERSION in run-review-api.ts).
   var HELP_IMPROVE_COPY = {
     label: "Help improve Chickpea",
     help: "Chickpea keeps a copy of each Agent conversation for 30 days so the Chickpea team can find and fix bugs. Copies are encrypted, have credentials removed, and are never used to train AI models. Turning this off deletes the copies kept so far.",
@@ -2910,8 +2910,7 @@
         '<p class="onboarding-eyebrow">All set</p><h1 class="onboarding-title">Chickpea is ready!</h1>' +
         '<p class="onboarding-lede">Your setup works. Next, give your team its first Agent, in Slack or in the dashboard.</p>' +
         '<div class="onboarding-actions onboarding-completion-actions"><button type="button" class="btn btn-primary" data-action="onboarding-open-dashboard">Open dashboard</button>' +
-        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div>' +
-        onboardingHelpImproveHtml() + '</section>';
+        '<a class="btn btn-soft" href="' + esc(deepLink) + '" target="_blank" rel="noopener noreferrer">' + slackLogo + 'Back to Slack</a></div></section>';
     }
     return '<section class="onboarding-panel"><p class="onboarding-eyebrow">' + onboardingStepEyebrow() + '</p><h1 class="onboarding-title">Say hi to Chickpea in Slack</h1>' +
       '<p class="onboarding-lede">Chickpea is waiting for you in its direct messages.</p>' +
@@ -2923,15 +2922,7 @@
       '</div>' +
       '<p class="onboarding-status" role="status">This page moves on when Chickpea replies</p>' +
       (state.onboardingError ? '<div class="onboarding-actions"><span class="field-error" role="alert">' + esc(state.onboardingError) + '</span><button type="button" class="btn btn-soft" data-action="retry-onboarding">Check again</button></div>' : '') +
-      onboardingHelpImproveHtml() + '</section>';
-  }
-
-  // The setting's own read, once per visit, apart from the journey's poll.
-  function onboardingHelpImproveHtml() {
-    if (!HELP_IMPROVE_OFFERED) return "";
-    var ui = helpImproveState();
-    if (!ui.loaded && !ui.loading && !ui.loadFailed) loadHelpImprove();
-    return helpImproveRowHtml(true);
+      '</section>';
   }
 
   // Hosted onboarding offers Connect GitHub (optional) between the model and
@@ -10325,7 +10316,7 @@
     }
     if (state.settingsSection === "browser") return browserSettingsHtml();
     if (state.settingsSection === "help-improve") {
-      return '<div class="section-head"><div><h1 class="page-title">' + HELP_IMPROVE_COPY.label + '</h1></div></div>' + helpImproveRowHtml(false);
+      return '<div class="section-head"><div><h1 class="page-title">' + HELP_IMPROVE_COPY.label + '</h1></div></div>' + helpImproveRowHtml();
     }
     if (state.settingsSection === "connectors") {
       return '<div class="section-head"><div><h1 class="page-title">Connectors</h1><p class="hint">Configure managed integrations and review connected accounts for this Chickpea installation.</p></div></div>' + connectorsSettingsHtml();
@@ -12511,8 +12502,7 @@
     });
   }
 
-  // The same row in Settings and onboarding; `labelled` names it where no page title does.
-  function helpImproveRowHtml(labelled) {
+  function helpImproveRowHtml() {
     var ui = helpImproveState();
     var control = ui.loaded
       ? '<label class="toggle"><span class="thumb"></span><input type="checkbox" data-action="help-improve-enabled"' + (ui.enabled ? " checked" : "") + ' aria-label="' + HELP_IMPROVE_COPY.label + '"' + (ui.busy ? " disabled" : "") + '></label>'
@@ -12524,7 +12514,6 @@
       ? '<p class="field-error" role="alert">' + HELP_IMPROVE_COPY.loadError + '</p><div><button type="button" class="btn btn-soft btn-sm" data-action="help-improve-retry">Try again</button></div>'
       : ui.error ? '<p class="field-error" role="alert">' + esc(ui.error) + '</p>' : "";
     return '<div class="help-improve-row"><div class="help-improve-copy">' +
-      (labelled ? '<p class="help-improve-label">' + HELP_IMPROVE_COPY.label + '</p>' : "") +
       '<p class="hint">' + HELP_IMPROVE_COPY.help + learnMore + '</p>' + failure + '</div>' + control + '</div>';
   }
 

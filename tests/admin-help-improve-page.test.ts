@@ -216,21 +216,12 @@ test('where the host offers no setting, Settings has no section and nothing asks
 });
 
 for (const stage of ['try', 'complete'] as const) {
-  test(`onboarding's ${stage} step shows the same row with its own read, and its switch works there`, async (t) => {
+  test(`onboarding's ${stage} step leaves the setting to Settings, even where the host offers it`, async (t) => {
     const page = await harness(t, { path: '/admin/onboarding', offered: true, onboarding: { ...TRY, stage } });
     const html = decoded(page.html());
-    assert.ok(html.includes(LABEL));
-    assert.ok(html.includes(HELP));
-    assert.ok(html.includes(LEARN_MORE));
-    assert.equal(switchState(page.html()), 'on');
-    await page.toggle(false);
-    assert.equal(switchState(page.html()), 'off');
-    assert.deepEqual(settingRequests(page.requests), [['GET', undefined], ['PUT', { enabled: false }]]);
+    assert.ok(!html.includes(LABEL));
+    assert.ok(!html.includes(HELP));
+    assert.equal(switchState(page.html()), 'absent');
+    assert.deepEqual(settingRequests(page.requests), []);
   });
 }
-
-test('onboarding shows no row where the host offers no setting', async (t) => {
-  const page = await harness(t, { path: '/admin/onboarding', offered: false, onboarding: TRY });
-  assert.ok(!decoded(page.html()).includes(LABEL));
-  assert.deepEqual(settingRequests(page.requests), []);
-});
