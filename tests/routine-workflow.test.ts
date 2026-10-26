@@ -180,6 +180,49 @@ test('three exhausted Slack rate limits pause recurring work through the failure
   } finally { store.close(); }
 });
 
+test('a Slack outage while a run checks its Channel counts toward the pause; Slack refusing access disables', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => NOW);
+  try {
+    const fixture = await admittedFixture(store, 'channel_check_outage');
+    let conversationError = 'ratelimited';
+    const base = dependencies();
+    const deps = { ...base,
+      resolveAccess: (run: RoutineRun, routine: RoutineDefinition) => resolveRoutineRuntimeAccess(run, routine, undefined, {
+        credentials: async () => ({ botToken: 'xoxb-test', signingSecret: undefined, botUserId: 'UBOT' }),
+        authTest: async () => ({
+          ok: true, error: undefined, teamId: 'T_TEST', teamName: 'Test', botName: 'Chickpea', botUserId: 'UBOT',
+        }),
+        conversation: async () => ({
+          ok: false, error: conversationError, channel: undefined, facts: undefined, retryAfterMs: undefined,
+        }),
+        config: async () => config,
+      }),
+    };
+    assert.equal(await executeRoutineOccurrence(
+      { env: {}, store, occurrenceId: fixture.run.id, attempt: fixture.attempt.attempt }, deps,
+    ), 'completed');
+    assert.equal((await store.getRun(fixture.run.id))?.failureClass, 'slack_rate_limited');
+    const counted = await store.getRoutine(fixture.routine.id);
+    assert.equal(counted?.state, 'active', 'one outage never disables the routine');
+    assert.equal(counted?.consecutiveFailures, 1);
+
+    conversationError = 'missing_scope';
+    const run = await store.createOccurrence({
+      runId: 'rrun_channel_check_refused', idempotencyKey: 'channel-check:refused',
+      routineId: fixture.routine.id, routineVersion: fixture.routine.version,
+      scheduledFor: NOW + 1, triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+    });
+    const attempt = await store.startAdmissionAttempt({
+      occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+    });
+    assert.equal(await executeRoutineOccurrence({ env: {}, store, occurrenceId: run.id, attempt: attempt.attempt }, deps), 'completed');
+    assert.equal((await store.getRun(run.id))?.failureClass, 'access_denied');
+    const disabled = await store.getRoutine(fixture.routine.id);
+    assert.equal(disabled?.state, 'disabled');
+    assert.equal(disabled?.disabledReason, 'access_denied');
+  } finally { store.close(); }
+});
+
 for (const outcome of ['delivered', 'failed', 'unknown', 'leased'] as const) {
   test(`reentry uses durable ${outcome} delivery after a finalization interruption`, async () => {
     const store = new SqliteRoutineStore(':memory:', () => NOW);

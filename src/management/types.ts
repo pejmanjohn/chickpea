@@ -1191,6 +1191,7 @@ export interface ManagementUndoRecord {
   actorUserId: string;
   inverse: ManagementOperation;
   resultingRevisions: Record<string, number>;
+  agentConfigurationDigest?: string;
   status: 'available' | 'consumed';
   createdAt: number;
   updatedAt: number;

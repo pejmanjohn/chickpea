@@ -26,6 +26,7 @@ import { resolveProviderRuntimeImpacts } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import {
   type AgentChannelGrant,
+  type AgentReferenceSummary,
   type AgentScheduleReference,
   type AgentConnectionBinding,
   type AgentCreateInput,
@@ -76,6 +77,7 @@ import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '..
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -162,6 +164,7 @@ import {
   type ManagementSetupPublicStatus,
   type ManagementSetupRecord,
   type ManagementSetupTarget,
+  type ManagementUndoRecord,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
@@ -345,6 +348,7 @@ interface ImmediateMutation {
   changed: ManagementObjectRef[];
   inverse?: ManagementOperation;
   resultingRevisions: Record<string, number>;
+  agentConfigurationDigest?: string;
   handoffUrl?: string;
   warning?: string;
   handleChange?: ManagementItemOutcome['handleChange'];
@@ -438,9 +442,11 @@ export class WorkspaceManagementService {
     operations?: readonly ManagementOperation[],
   ): Promise<ManagementApplyResult> {
     try {
-      const targets = result.outcomes.map((outcome) => outcome.disposition === 'applied'
-        ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
-        : undefined);
+      // A deleted Agent has no page to link to.
+      const targets = result.outcomes.map((outcome) =>
+        outcome.disposition === 'applied' && outcome.operationKind !== 'delete_agent'
+          ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
+          : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
       const adminUrls = new Map<string, string>();
@@ -1892,6 +1898,7 @@ export class WorkspaceManagementService {
               actorUserId: actor.userId,
               inverse: mutation.inverse,
               resultingRevisions: mutation.resultingRevisions,
+              ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
               status: 'available',
               createdAt: this.now(),
               updatedAt: this.now(),
@@ -2882,15 +2889,15 @@ export class WorkspaceManagementService {
         undo.actorUserId !== actor.userId) {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
     }
-    await this.assertRevisionMap(undo.resultingRevisions);
+    const inverse = await this.currentUndoInverse(undo);
     const result = requireManagementApplyResult(await this.applyWorkspaceChanges({
       context: input.context,
       idempotencyKey: input.idempotencyKey,
-      operations: [undo.inverse],
+      operations: [inverse],
       ...(requesterExplicitlyRequestsUndo(requestAddressedHere(actor))
         ? {
             approvalBasis: 'explicit_requester_command' as const,
-            trustedReversibleOperationIds: [undo.inverse.itemId],
+            trustedReversibleOperationIds: [inverse.itemId],
           }
         : {}),
     }));
@@ -2898,6 +2905,19 @@ export class WorkspaceManagementService {
       await this.stores.management.consumeUndo(input.operationId, this.now());
     }
     return result.links ? result : await this.withAgentLinks(input.context, result);
+  }
+
+  private async currentUndoInverse(undo: ManagementUndoRecord): Promise<ManagementOperation> {
+    const { inverse } = undo;
+    if (inverse.kind !== 'update_agent' || undo.agentConfigurationDigest === undefined) {
+      await this.assertRevisionMap(undo.resultingRevisions);
+      return inverse;
+    }
+    const agent = await optionalAgent(this.stores.config, inverse.agentId);
+    if (!agent || agentConfigurationDigest(agent) !== undo.agentConfigurationDigest) {
+      throw new ManagementError('proposal_stale', 'The proposed target changed.');
+    }
+    return { ...inverse, expectedRevision: agent.revision };
   }
 
   async getOperation(
@@ -4456,9 +4476,7 @@ export class WorkspaceManagementService {
             kind: 'update_agent',
             agentId: before.id,
             expectedRevision: before.revision + 1,
-            patch: Object.keys(operation.patch).length === 1 && operation.patch.skills
-              ? { skills: before.skills }
-              : fullAgentPatch(before),
+            patch: agentPatchInverse(before, operation.patch),
           },
         };
       }
@@ -4643,14 +4661,10 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     const prepared = await this.prepareItem(actor, operation, proposalId, readiness);
     if (operation.kind === 'delete_agent') {
-      const agent = await this.stores.config.getAgent(operation.agentId);
-      const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
-        throw new ManagementError(
-          'invalid_request',
-          'Archive the Agent and remove its Slack reach before deleting it.',
-        );
-      }
+      assertAgentLeftSlack(
+        await this.stores.config.getAgent(operation.agentId),
+        await this.stores.config.getAgentReferences(operation.agentId),
+      );
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
         operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -4709,7 +4723,7 @@ export class WorkspaceManagementService {
           ),
           operation.expectedRevision,
         );
-        return mutationForAgent(agent, prepared.inverse);
+        return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
         if (operation.channel.lifecycle === 'active') {
@@ -4819,7 +4833,7 @@ export class WorkspaceManagementService {
           current.credentialIncarnation === before.credentialIncarnation &&
           current.revision >= operation.expectedRevision + 1 &&
           agentPatchMatches(current, operation.patch)) {
-        return mutationForAgent(current, prepared.inverse);
+        return mutationForAgentEdit(current, prepared.inverse as AgentEditInverse | undefined);
       }
       return undefined;
     }
@@ -5089,26 +5103,7 @@ export class WorkspaceManagementService {
           agent.credentialIncarnation !== expectedCredentialIncarnation) {
         throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
       }
-      const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
-        throw new ManagementError(
-          'invalid_request',
-          'Archive the Agent and remove its Slack reach before deleting it.',
-        );
-      }
-      const changed: ManagementObjectRef[] = [];
-      for (const grant of references.channelGrants) {
-        await this.stores.config.deleteAgentChannelGrant(
-          grant.workspaceId,
-          grant.channelId,
-          operation.agentId,
-        );
-        changed.push({
-          kind: 'channel_grant',
-          id: grantKey(grant.workspaceId, grant.channelId, operation.agentId),
-          revision: 0,
-        });
-      }
+      assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(operation.agentId));
       if (this.stores.deleteAgent) {
         await this.stores.deleteAgent({
           actor,
@@ -5132,8 +5127,7 @@ export class WorkspaceManagementService {
           expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
         );
       }
-      changed.push({ kind: 'agent', id: operation.agentId });
-      return mutationForChanged(changed);
+      return mutationForChanged([{ kind: 'agent', id: operation.agentId }]);
     }
     if (operation.kind === 'update_member') {
       const result = await this.stores.identity.updateMembershipAuthority({
@@ -5858,27 +5852,55 @@ function projectManagementAgentPatch(
   };
 }
 
-function fullAgentPatch(agent: CustomAgentConfig): ConfigAgentPatch {
+function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatch): ManagementAgentPatch {
+  const effortChanged = patch.modelEffort !== undefined ||
+    agentModelEffortAfterPatch(before, patch) !== before.modelEffort;
   return {
-    name: agent.name,
-    ...(agent.description !== undefined ? { description: agent.description } : {}),
-    instructions: agent.instructions,
-    enabled: agent.enabled,
-    ...(agent.lifecycle ? { lifecycle: agent.lifecycle } : {}),
-    ...(agent.creatorMembershipId ? { creatorMembershipId: agent.creatorMembershipId } : {}),
-    ...(agent.editPolicy ? { editPolicy: agent.editPolicy } : {}),
-    ...(agent.configurationGeneration !== undefined
-      ? { configurationGeneration: agent.configurationGeneration }
+    ...(patch.name !== undefined ? { name: before.name } : {}),
+    ...(patch.description !== undefined ? { description: before.description ?? '' } : {}),
+    ...(patch.requestedHandle !== undefined
+      ? {
+          requestedHandle: before.slackPresence?.requestedHandle ??
+            normalizeAgentHandle(before.name || before.id),
+        }
       : {}),
-    ...(agent.slackPresence ? { slackPresence: { ...agent.slackPresence } } : {}),
-    ...(agent.archivedAt !== undefined ? { archivedAt: agent.archivedAt } : {}),
-    model: agent.model ?? null,
-    modelEffort: agent.modelEffort ?? null,
-    skills: agent.skills,
-    mcpServers: agent.mcpServers,
-    apiConnections: agent.apiConnections,
-    repositories: agent.repositories,
-    websiteLogins: agent.websiteLogins ?? [],
+    ...(patch.editPolicy !== undefined
+      ? { editPolicy: before.editPolicy ?? 'creator_and_admins' }
+      : {}),
+    ...(patch.instructions !== undefined ? { instructions: before.instructions } : {}),
+    ...(patch.enabled !== undefined ? { enabled: before.enabled } : {}),
+    ...(patch.model !== undefined ? { model: before.model ?? null } : {}),
+    ...(effortChanged ? { modelEffort: before.modelEffort ?? null } : {}),
+    ...(patch.skills ? { skills: before.skills } : {}),
+    ...(patch.mcpServers ? { mcpServers: before.mcpServers } : {}),
+    ...(patch.apiConnections ? { apiConnections: before.apiConnections } : {}),
+    ...(patch.repositories ? { repositories: before.repositories } : {}),
+  };
+}
+
+function agentConfigurationDigest(agent: CustomAgentConfig): string {
+  const {
+    revision: _revision,
+    configurationGeneration: _configurationGeneration,
+    lifecycle: _lifecycle,
+    slackPresence,
+    ...configured
+  } = agent;
+  return createHash('sha256')
+    .update(canonicalJson({ ...configured, requestedHandle: slackPresence?.requestedHandle }))
+    .digest('hex');
+}
+
+/** What prepareItem stores as the inverse of an update_agent; the prepared item types it more widely. */
+type AgentEditInverse = Extract<ManagementOperation, { kind: 'update_agent' }>;
+
+function mutationForAgentEdit(
+  agent: CustomAgentConfig,
+  inverse: AgentEditInverse | undefined,
+): ImmediateMutation {
+  return {
+    ...mutationForAgent(agent, inverse && { ...inverse, expectedRevision: agent.revision }),
+    agentConfigurationDigest: agentConfigurationDigest(agent),
   };
 }
 
@@ -6393,6 +6415,11 @@ function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
     throw new ManagementError('invalid_state', 'The Agent identity is unavailable.');
   }
   return agent.credentialIncarnation;
+}
+
+function assertAgentLeftSlack(agent: CustomAgentConfig, references: AgentReferenceSummary): void {
+  const refusal = agentStillInSlackRefusal(agent, references);
+  if (refusal) throw new ManagementError('invalid_request', refusal);
 }
 
 function withAgentCredentialRequirement(

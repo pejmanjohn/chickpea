@@ -66,15 +66,71 @@ export function selectScheduleConnectionAccounts(
   return ids;
 }
 
-/** Bind a saved schedule to the Agent and canonical member that created it. */
-export async function bindRoutineAgentAuthority(input: {
-  routine: RoutineDefinition;
+interface RoutineAuthorityCheckInput {
+  routine: Pick<RoutineDefinition, 'id' | 'workspaceId' | 'channelId' | 'destination'>;
   assignment: ResolvedAssignment;
   actorMembershipId: string;
   env: PlatformEnv | undefined;
+}
+
+/** Bind a saved schedule to the Agent and canonical member that created it. */
+export async function bindRoutineAgentAuthority(input: RoutineAuthorityCheckInput & {
+  routine: RoutineDefinition;
   authorityReceiptId?: string;
   requiredConnectionAccountIds?: string[];
 }, dependencies: { config?: ConfigStore; identity?: IdentityStore } = {}): Promise<AgentScheduleReference> {
+  const config = dependencies.config ?? getConfigStore(input.env);
+  const { current, destinationBindingDigest } = await checkRoutineAgentAuthority(input, dependencies);
+  // A save retry must not replace a later save's requirements or re-resolve
+  // account choices after its own binding completed.
+  const bindingVersion = input.routine.authorityBindingVersion ?? input.routine.version;
+  if (current?.boundRoutineVersion !== undefined && current.boundRoutineVersion >= bindingVersion) return current;
+  const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
+  const [accounts, bindings] = await Promise.all([
+    config.listConnectionAccounts(input.routine.workspaceId),
+    config.listAgentConnectionBindings(input.assignment.agentId),
+  ]);
+  const effectiveConnections = projectEffectiveConnectionAccounts(
+    accounts,
+    bindings,
+    runsAsMembershipId,
+  );
+  const requiredConnectionAccountIds = selectScheduleConnectionAccounts(
+    input.requiredConnectionAccountIds, current?.requiredConnectionAccountIds, effectiveConnections,
+  );
+  const available = new Set(effectiveConnections.map(({ account }) => account.id));
+  const connectionPauseAccountIds = requiredConnectionAccountIds.filter((id) => !available.has(id));
+  return config.putAgentScheduleReference({
+    scheduleId: input.routine.id,
+    agentId: input.assignment.agentId,
+    workspaceId: input.routine.workspaceId,
+    channelId: input.routine.channelId,
+    destinationKind: input.routine.destination.kind,
+    destinationBindingDigest,
+    createdByMembershipId: current?.createdByMembershipId ?? input.actorMembershipId,
+    runsAsMembershipId,
+    authorityReceiptId: current?.authorityReceiptId ?? input.authorityReceiptId ?? authorityReceiptId(
+      input.routine.id,
+      input.actorMembershipId,
+    ),
+    requiredConnectionAccountIds,
+    boundRoutineVersion: bindingVersion,
+    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
+    ...(connectionPauseAccountIds.length > 0 && current?.connectionPausePreservesState
+      ? { connectionPausePreservesState: true }
+      : {}),
+    state: current?.state === 'archived'
+      ? 'archived'
+      : connectionPauseAccountIds.length > 0 || current?.connectionPausePreservesState ||
+        (current?.state === 'needs_attention' && !current.connectionPauseAccountIds?.length)
+        ? 'needs_attention' : 'active',
+  }, current?.revision ?? 0);
+}
+
+export async function checkRoutineAgentAuthority(
+  input: RoutineAuthorityCheckInput,
+  dependencies: { config?: ConfigStore; identity?: IdentityStore } = {},
+): Promise<{ current: AgentScheduleReference | undefined; destinationBindingDigest: string | null }> {
   if (
     input.routine.workspaceId !== input.assignment.workspaceId ||
     input.routine.channelId !== input.assignment.channelId
@@ -152,50 +208,7 @@ export async function bindRoutineAgentAuthority(input: {
       'The saved schedule authority no longer matches its destination.',
     );
   }
-  // A save retry must not replace a later save's requirements or re-resolve
-  // account choices after its own binding completed.
-  const bindingVersion = input.routine.authorityBindingVersion ?? input.routine.version;
-  if (current?.boundRoutineVersion !== undefined && current.boundRoutineVersion >= bindingVersion) return current;
-  const runsAsMembershipId = current?.runsAsMembershipId ?? input.actorMembershipId;
-  const [accounts, bindings] = await Promise.all([
-    config.listConnectionAccounts(input.routine.workspaceId),
-    config.listAgentConnectionBindings(input.assignment.agentId),
-  ]);
-  const effectiveConnections = projectEffectiveConnectionAccounts(
-    accounts,
-    bindings,
-    runsAsMembershipId,
-  );
-  const requiredConnectionAccountIds = selectScheduleConnectionAccounts(
-    input.requiredConnectionAccountIds, current?.requiredConnectionAccountIds, effectiveConnections,
-  );
-  const available = new Set(effectiveConnections.map(({ account }) => account.id));
-  const connectionPauseAccountIds = requiredConnectionAccountIds.filter((id) => !available.has(id));
-  return config.putAgentScheduleReference({
-    scheduleId: input.routine.id,
-    agentId: input.assignment.agentId,
-    workspaceId: input.routine.workspaceId,
-    channelId: input.routine.channelId,
-    destinationKind: input.routine.destination.kind,
-    destinationBindingDigest,
-    createdByMembershipId: current?.createdByMembershipId ?? input.actorMembershipId,
-    runsAsMembershipId,
-    authorityReceiptId: current?.authorityReceiptId ?? input.authorityReceiptId ?? authorityReceiptId(
-      input.routine.id,
-      input.actorMembershipId,
-    ),
-    requiredConnectionAccountIds,
-    boundRoutineVersion: bindingVersion,
-    ...(connectionPauseAccountIds.length > 0 ? { connectionPauseAccountIds } : {}),
-    ...(connectionPauseAccountIds.length > 0 && current?.connectionPausePreservesState
-      ? { connectionPausePreservesState: true }
-      : {}),
-    state: current?.state === 'archived'
-      ? 'archived'
-      : connectionPauseAccountIds.length > 0 || current?.connectionPausePreservesState ||
-        (current?.state === 'needs_attention' && !current.connectionPauseAccountIds?.length)
-        ? 'needs_attention' : 'active',
-  }, current?.revision ?? 0);
+  return { current, destinationBindingDigest };
 }
 
 /** Reassignment is the only operation allowed to change a schedule's Runs as actor. */
