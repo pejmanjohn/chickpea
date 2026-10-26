@@ -259,7 +259,7 @@ test('legacy Agent writes direct Meta Ads through the reviewed connection catalo
         patch: { mcpServers: [metaAdsConnection] },
       }],
     });
-    assert.equal(rejected.status, 'partial');
+    assert.equal(rejected.status, 'failed');
     assert.equal(rejected.outcomes[0]?.disposition, 'failed');
     assert.equal(rejected.outcomes[0]?.code, 'invalid_request');
     assert.equal(rejected.outcomes[0]?.warning, catalogMessage);
@@ -1725,7 +1725,7 @@ test('direct create recovery does not adopt a concurrently edited Agent with the
       idempotencyKey: 'create-recovery-conflict',
       operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
     });
-    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.status, 'failed');
     assert.equal(recovered.outcomes[0]?.disposition, 'failed');
     assert.equal((await f.config.getAgent(agentInput.id)).name, 'Concurrent replacement');
     assert.equal(publishCalls, 0);
@@ -1789,7 +1789,7 @@ test('direct create recovery does not adopt a deleted and recreated Agent with t
       idempotencyKey: 'create-recovery-incarnation-conflict',
       operations: [{ itemId: 'create', kind: 'create_agent', agent: agentInput }],
     });
-    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.status, 'failed');
     assert.equal(recovered.outcomes[0]?.disposition, 'failed');
     assert.equal(
       (await f.config.getAgent(agentInput.id)).credentialIncarnation,
@@ -1868,7 +1868,7 @@ test('base Agent creation inherits the default and rejects an unconfigured model
         ...agentInput, model: 'openai/gpt-4o-mini',
       } }],
     });
-    assert.equal(rejected.status, 'partial');
+    assert.equal(rejected.status, 'failed');
     assert.equal(rejected.outcomes[0]?.disposition, 'failed');
     assert.equal(rejected.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(rejected.outcomes[0]?.warning ?? '', /omit.*model.*inherit/i);
@@ -2914,7 +2914,7 @@ test('an abandoned connection update does not adopt a replacement Agent incarnat
       context,
       proposalId: proposed.proposalId,
     });
-    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.status, 'failed');
     assert.equal(recovered.outcomes[0]?.disposition, 'failed');
     assert.equal(recovered.outcomes[0]?.code, 'revision_conflict');
     const current = await f.config.getAgent(original.id);
@@ -3515,7 +3515,7 @@ test('recovery rechecks live Slack membership before applying a Channel grant', 
       proposalId: proposed.proposalId,
     });
     assert.equal(membershipChecks, 2);
-    assert.equal(recovered.status, 'partial');
+    assert.equal(recovered.status, 'failed');
     assert.equal(recovered.outcomes[0]?.disposition, 'failed');
     assert.equal(recovered.outcomes[0]?.code, 'forbidden');
     assert.deepEqual(
@@ -3953,7 +3953,7 @@ test('members inspect and mutate only Agents permitted by canEditAgent', async (
         patch: { description: 'Should not be visible.' },
       }],
     });
-    assert.equal(denied.status, 'partial');
+    assert.equal(denied.status, 'failed');
     assert.equal(denied.outcomes[0]?.disposition, 'failed');
     assert.equal(denied.outcomes[0]?.code, 'forbidden');
   } finally {

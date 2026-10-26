@@ -318,7 +318,7 @@ function validateManagementMetadata(
     throw new Error('Management audit metadata shape is invalid');
   }
   if (eventType !== 'management.setup.completed' &&
-      !['completed', 'partial', 'confirmation_required'].includes(String(metadata.status))) {
+      !['completed', 'partial', 'failed', 'confirmation_required'].includes(String(metadata.status))) {
     throw new Error('Management audit status is invalid');
   }
   for (const [key, value] of Object.entries(metadata)) {

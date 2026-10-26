@@ -632,7 +632,7 @@ export class ManagementStoreLogic {
         eventId: `management:${operationId}`,
         domain: 'management',
         eventType: 'management.request.completed',
-        outcome: result.status === 'completed' ? 'success' : 'requested',
+        outcome: result.status === 'completed' ? 'success' : result.status === 'failed' ? 'failure' : 'requested',
         actorClass: 'chickpea_user',
         actorId: request.actorUserId,
         workspaceId: request.organizationId,

@@ -4237,12 +4237,16 @@ export class WorkspaceManagementService {
   ): Promise<ManagementApplyResult> {
     const effectiveRevision = knownEffectiveRevision ?? await this.effectiveRevision();
     const hasConfirmation = outcomes.some(({ disposition }) => disposition === 'confirmation_required');
-    const hasFailure = outcomes.some(({ disposition }) =>
-      disposition === 'failed' || disposition === 'skipped' || disposition === 'chickpea_handoff');
+    const unapplied = ({ disposition }: ManagementItemOutcome) =>
+      disposition === 'failed' || disposition === 'skipped';
+    const hasFailure = outcomes.some((outcome) =>
+      unapplied(outcome) || outcome.disposition === 'chickpea_handoff');
     return {
       operationId,
       idempotencyKey,
-      status: hasFailure ? 'partial' : hasConfirmation ? 'confirmation_required' : 'completed',
+      status: outcomes.every(unapplied)
+        ? 'failed'
+        : hasFailure ? 'partial' : hasConfirmation ? 'confirmation_required' : 'completed',
       outcomes,
       effectiveRevision,
       activation: 'next_turn',

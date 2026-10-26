@@ -709,7 +709,8 @@ export type ManagementDeferredSetup =
 export interface ManagementApplyResult {
   operationId: string;
   idempotencyKey: string;
-  status: 'completed' | 'partial' | 'confirmation_required';
+  /** `failed` when no item applied; `partial` when some did and another failed or was skipped. */
+  status: 'completed' | 'partial' | 'failed' | 'confirmation_required';
   outcomes: ManagementItemOutcome[];
   /** Links of the first outcome that changed an Agent; response-only. */
   links?: ManagementResultLinks;
