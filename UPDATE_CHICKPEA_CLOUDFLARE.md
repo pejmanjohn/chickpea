@@ -67,7 +67,7 @@ data, and explain that problem rather than telling the user to wait indefinitely
 
 Some releases add Durable Object migrations; v0.1.27 adds two, on every
 installation: `v10` for coding workers and `v11` for per-thread Slack turn
-runners. v0.1.28 through v0.1.36 add none; an update from v0.1.26 or
+runners. v0.1.28 through v0.1.37 add none; an update from v0.1.26 or
 earlier straight to any of them still applies `v10` and `v11`. Once the deploy applies them,
 Cloudflare refuses `wrangler rollback` and dashboard rollbacks to any version
 from before that release. Recovery from a bad update then means deploying a newer or fixed
@@ -151,6 +151,14 @@ failed replies on v0.1.33 until you update again. Prefer deploying a fixed
 release forward to rolling back across v0.1.34.
 
 ## 3. Deploy to the same Worker
+
+v0.1.37 lets a coding agent connected to Chickpea's MCP server do what the
+signed-in person can do in Admin. It asks the person first only where Admin
+asks "Are you sure?", such as deleting an Agent or routine, suspending or
+removing a member, or disconnecting a connection. In Slack, a change an Agent proposes
+applies only after the person approves it. Disabling an Agent now keeps its
+Channels, and enabling it again brings it back to them. Updating needs no
+other step. A rollback to v0.1.36 was not tested.
 
 v0.1.36 lets people use Chickpea in Slack group DMs. There, `@Chickpea`
 and any Agent that everyone in the workspace can use answer in a thread.
