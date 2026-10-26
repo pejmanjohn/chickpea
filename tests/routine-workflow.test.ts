@@ -1617,6 +1617,138 @@ test('a definitive private-thread rejection pauses recurring work and posts one 
   }
 });
 
+test('a Slack outage during the private-use check leaves a DM routine on; leaving the Channel disables it', async () => {
+  const destination = {
+    kind: 'direct_thread' as const,
+    conversationId: 'D_PRIVATE_USE',
+    threadTs: '1787853827.722389',
+    ownerMembershipId: 'membership_direct',
+  };
+  const runOnce = async (
+    suffix: string,
+    slack: { channelInfo: (input: { channel: string }) => Promise<unknown>; memberChannels: string[] },
+  ) => {
+    const dir = mkdtempSync(join(tmpdir(), `chickpea-private-use-${suffix}-`));
+    const path = join(dir, 'state.db');
+    const store = new SqliteRoutineStore(path, () => NOW);
+    const configStore = new SqliteConfigStore(path, { agents: [] });
+    try {
+      const agent = await configStore.createAgent({
+        id: 'agent_room', name: 'Room Agent', instructions: 'Run private work.', enabled: true,
+        lifecycle: 'active', creatorMembershipId: 'membership_other',
+        editPolicy: 'creator_and_admins', model: config.model,
+        skills: [], mcpServers: [], apiConnections: [], repositories: [],
+      });
+      const pending = await store.save({
+        actorId: 'U_DIRECT', actorClass: 'member', workspaceId: 'T_TEST',
+        channelId: destination.conversationId, destination,
+        draft: {
+          action: 'create', routineId: `routine_private_use_${suffix}`,
+          definition: {
+            name: 'Private use fixture', description: '', taskText: 'Inspect current state.',
+            triggerKind: 'schedule', scheduleInput: '0 * * * *',
+            scheduleJson: JSON.stringify({ version: 1, kind: 'cron', expression: '0 * * * *' }),
+            timezone: 'UTC', outputPolicy: 'post', authorityMode: 'live_direct_member_v1',
+          },
+          nextRunAt: NOW, projectedDailyStarts: 1,
+          reservations: [{ windowStart: NOW, count: 1 }],
+        },
+        idempotencyKey: `create:private-use-${suffix}`, sourceVisibility: 'private',
+      });
+      const digest = routineDestinationBindingDigest(pending.id, pending.workspaceId, destination);
+      const reference = await configStore.putAgentScheduleReference({
+        boundRoutineVersion: pending.authorityBindingVersion ?? pending.version,
+        scheduleId: pending.id, agentId: agent.id, workspaceId: pending.workspaceId,
+        channelId: destination.conversationId, destinationKind: 'direct_thread',
+        destinationBindingDigest: digest, createdByMembershipId: destination.ownerMembershipId,
+        runsAsMembershipId: destination.ownerMembershipId,
+        authorityReceiptId: 'receipt_private_use', requiredConnectionAccountIds: [], state: 'active',
+      });
+      const routine = await store.activateDirectRoutine({
+        routineId: pending.id, expectedVersion: pending.version,
+        expectedReferenceRevision: reference.revision, destinationBindingDigest: digest,
+      });
+      const run = await store.createOccurrence({
+        runId: `rrun_private_use_${suffix}`, idempotencyKey: `run:private-use-${suffix}`,
+        routineId: routine.id, routineVersion: routine.version, scheduledFor: NOW,
+        triggerSource: 'schedule', queuedAt: NOW, deadlineAt: NOW + 60_000,
+      });
+      const attempt = await store.startAdmissionAttempt({
+        occurrenceId: run.id, owner: 'heartbeat', invokeStartedAt: NOW, leaseUntil: NOW + 30_000,
+      });
+      const client = {
+        users: {
+          info: async () => ({
+            ok: true,
+            user: {
+              id: 'U_DIRECT', team_id: 'T_TEST', deleted: false, is_bot: false, is_app_user: false,
+              is_restricted: false, is_ultra_restricted: false, is_stranger: false,
+            },
+          }),
+          conversations: async () => ({
+            ok: true,
+            channels: slack.memberChannels.map((id) => ({ id })),
+            response_metadata: { next_cursor: '' },
+          }),
+        },
+        conversations: {
+          open: async () => ({ ok: true, channel: { id: destination.conversationId, is_im: true } }),
+          info: slack.channelInfo,
+        },
+      } as unknown as WebClient;
+      const outcome = await executeRoutineOccurrence({
+        env: {}, store, occurrenceId: run.id, attempt: attempt.attempt,
+      }, {
+        ...dependencies(),
+        resolveAccess: (current, saved) => resolveRoutineRuntimeAccess(current, saved, undefined, {
+          authority: async () => ({
+            reference,
+            agent,
+            agentGrants: [{
+              workspaceId: 'T_TEST', channelId: 'G_ROOM', agentId: agent.id, revision: 1,
+              status: 'active', createdByMembershipId: 'membership_other', createdAt: 1, updatedAt: 1,
+            }],
+            assignment: {
+              workspaceId: 'T_TEST', channelId: destination.conversationId, agentId: agent.id,
+              agent, model: config.model, modelAttribution: config.modelAttribution,
+            },
+            actorSlackUserId: 'U_DIRECT',
+            effectiveConnections: [],
+          }),
+          installationExecution: async () => ({
+            workspaceId: 'T_TEST', transportMode: 'gateway', sharedAppReads: false, botUserId: 'UBOT', client,
+          }),
+        }),
+      });
+      assert.equal(outcome, 'completed');
+      return { run: await store.getRun(run.id), routine: await store.getRoutine(routine.id) };
+    } finally {
+      configStore.close();
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const outage = await runOnce('outage', {
+    channelInfo: async () => { throw new Error('slack_unreachable'); },
+    memberChannels: ['G_ROOM'],
+  });
+  assert.equal(outage.routine?.state, 'active');
+  assert.equal(outage.routine?.consecutiveFailures, 1);
+  assert.equal(outage.run?.status, 'failed');
+  assert.equal(outage.run?.publicError, 'Current direct-message access could not be verified.');
+
+  const left = await runOnce('left', {
+    channelInfo: async ({ channel }) => ({
+      ok: true, channel: { id: channel, is_private: true, is_member: true, is_archived: false },
+    }),
+    memberChannels: [],
+  });
+  assert.equal(left.run?.failureClass, 'access_denied');
+  assert.equal(left.routine?.state, 'disabled');
+  assert.equal(left.routine?.disabledReason, 'access_denied');
+});
+
 test('reattachment never combines a frozen Agent A envelope with current Agent B access', async () => {
   const store = new SqliteRoutineStore(':memory:', () => NOW);
   try {

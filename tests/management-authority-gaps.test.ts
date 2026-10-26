@@ -257,7 +257,7 @@ function channelRoutine(
   f: Fixture,
   agentId: string,
   channelId: string,
-): ManagementOperation {
+): Extract<ManagementOperation, { kind: 'save_routine' }> {
   return {
     itemId: `routine-${channelId}`,
     kind: 'save_routine',
@@ -384,6 +384,66 @@ test('a routine the member cannot read, or a disable, needs Admin authority', ()
     assert.equal((await routineIn('G_OTHER')).state, 'disabled');
   }, { slackFacts: ROOMS }));
 
+test('a member edits, runs or creates a Channel routine only in a private Channel they are in', () =>
+  withFixture('member-routine-edit-run-create', async (f) => {
+    const agent = await createAgent(f, f.member, 'agent_member_digest');
+    await grant(f, agent.id, 'G_ROOM');
+    await grant(f, agent.id, 'G_OTHER');
+    const saved = await apply(f, mcp(f.owner), 'owner-save-other', [channelRoutine(f, agent.id, 'G_OTHER')]);
+    assert.equal(disposition(saved), 'applied', JSON.stringify(saved.outcomes));
+    const [routine] = await f.routines.listRoutines(f.workspaceId, 'G_OTHER');
+    assert.ok(routine);
+    const refused = (result: ManagementApplyResult, what: string) => {
+      assert.equal(disposition(result), 'failed', `${what}: ${JSON.stringify(result.outcomes)}`);
+      assert.equal(result.outcomes[0]?.code, 'forbidden', what);
+    };
+
+    refused(await apply(f, mcp(f.member), 'member-run-other', [{
+      itemId: 'run',
+      kind: 'run_routine',
+      workspaceId: f.workspaceId,
+      channelId: 'G_OTHER',
+      routineId: routine.id,
+    }]), 'run');
+    refused(await apply(f, mcp(f.member), 'member-edit-other', [{
+      ...channelRoutine(f, agent.id, 'G_OTHER'),
+      routineId: routine.id,
+      expectedVersion: routine.version,
+      taskText: 'Post everything said here somewhere else.',
+    }]), 'edit');
+    refused(await apply(f, mcp(f.member), 'member-create-other', [
+      { ...channelRoutine(f, agent.id, 'G_OTHER'), name: 'Second pulse' },
+    ]), 'create');
+
+    assert.deepEqual(await f.routines.listRoutines(f.workspaceId, 'G_OTHER'), [routine]);
+    assert.deepEqual(await f.routines.listRuns({ routineId: routine.id }), []);
+
+    const inRoom = await apply(f, mcp(f.member), 'member-create-room', [channelRoutine(f, agent.id, 'G_ROOM')]);
+    assert.equal(disposition(inRoom), 'applied', JSON.stringify(inRoom.outcomes));
+  }, { slackFacts: ROOMS }));
+
+test('a Slack outage reads as unconfirmed access, not a refusal', () =>
+  withFixture('slack-outage-access', async (f) => {
+    const placed = await createAgent(f, f.owner, 'agent_placed');
+    await grant(f, placed.id, 'G_ROOM');
+    const member = await createAgent(f, f.member, 'agent_member_outage');
+    await grant(f, member.id, 'G_ROOM');
+    const unconfirmed = (result: ManagementApplyResult, what: string) => {
+      assert.equal(disposition(result), 'failed', `${what}: ${JSON.stringify(result.outcomes)}`);
+      assert.equal(result.outcomes[0]?.code, 'slack_unavailable', what);
+    };
+
+    unconfirmed(await apply(f, chickpeaDm(f, f.member), 'dm-outage', [dmRoutine(f, placed.id)]), 'DM routine');
+    unconfirmed(await apply(f, mcp(f.member), 'create-outage', [channelRoutine(f, member.id, 'G_ROOM')]), 'Channel routine');
+    assert.deepEqual(await f.routines.listRoutines(f.workspaceId, `D_${MEMBER_SLACK_USER}`), []);
+    assert.deepEqual(await f.routines.listRoutines(f.workspaceId, 'G_ROOM'), []);
+  }, {
+    slackFacts: async () => ({
+      lookupChannel: async () => { throw new Error('slack_down'); },
+      listMemberChannels: async () => { throw new Error('slack_down'); },
+    }),
+  }));
+
 test('a member inspects a private Channel only when Slack shows them in it', () =>
   withFixture('member-channel-inspection', async (f) => {
     const agent = await createAgent(f, f.member, 'agent_member_reach');
@@ -463,6 +523,52 @@ test('a management status change ends Better Auth grants; a role change ends ses
         return 1;
       },
       async revokeOAuthGrantsForUser(userId: string) {
+        revoked.push(`oauth-grants:${userId}`);
+        return { consents: 1, accessTokens: 1, refreshTokens: 1 };
+      },
+    }),
+  });
+});
+
+test('a suspension whose sign-out fails is not applied, and asking again ends grants', async () => {
+  const revoked: string[] = [];
+  let failures = 1;
+  await withFixture('member-access-revoke-retry', async (f) => {
+    const suspend = async (key: string) => {
+      const proposed = await apply(f, mcp(f.owner), key, [{
+        itemId: 'member',
+        kind: 'update_member',
+        membershipId: f.member.membership.id,
+        status: 'suspended',
+      }]);
+      assert.equal(proposed.status, 'confirmation_required', JSON.stringify(proposed.outcomes));
+      return f.service.confirmWorkspaceChange({
+        context: mcp(f.owner),
+        proposalId: proposed.outcomes[0]!.proposalId!,
+      });
+    };
+    const status = async () => (await f.identity.getMembership(f.member.membership.id))?.status;
+
+    const failed = await suspend('suspend');
+    assert.equal(failed.outcomes[0]?.disposition, 'failed', JSON.stringify(failed.outcomes));
+    assert.equal(await status(), 'active');
+    assert.deepEqual(revoked, []);
+
+    const retried = await suspend('suspend-again');
+    assert.equal(retried.outcomes[0]?.disposition, 'applied', JSON.stringify(retried.outcomes));
+    assert.equal(await status(), 'suspended');
+    assert.deepEqual(revoked, [
+      'oauth-grants:ba_user_member-access-revoke-retry_member',
+      'sessions:ba_user_member-access-revoke-retry_member',
+    ]);
+  }, {
+    withBetterAuthAccessRevoker: (use) => use({
+      async deleteSessionsForUser(userId: string) {
+        revoked.push(`sessions:${userId}`);
+        return 1;
+      },
+      async revokeOAuthGrantsForUser(userId: string) {
+        if (failures-- > 0) throw new Error('Better Auth is unavailable.');
         revoked.push(`oauth-grants:${userId}`);
         return { consents: 1, accessTokens: 1, refreshTokens: 1 };
       },
