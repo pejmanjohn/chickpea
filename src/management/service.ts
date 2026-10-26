@@ -679,6 +679,9 @@ export class WorkspaceManagementService {
       );
     }
     await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
+    // Refresh tokens rotate: a refresh that validated the old token before the delete can store
+    // its replacement after it, so the grants go once more, as on a member's suspension.
+    await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
     const current = clientId === currentClientId;
     const name = client.name ?? 'The client';
     return {

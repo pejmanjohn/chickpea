@@ -425,3 +425,37 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
     backend.close();
   }
 });
+
+test('revoking a client deletes its grants again, so a refresh that raced the first delete leaves no token', async () => {
+  const backend = new NodeBetterAuthBackend(':memory:');
+  try {
+    let deletes = 0;
+    await withFixture('mcp-revoke-race', async (f) => {
+      seedMcpClients(f, backend);
+      await succeed(f, mcp(f.owner), 'revoke_mcp_client', { clientId: 'client_code' });
+      assert.equal(deletes, 2);
+      const remaining = backend.database.prepare(
+        'SELECT count(*) AS n FROM oauthRefreshToken WHERE clientId = ?',
+      ).get('client_code') as { n: number };
+      assert.equal(Number(remaining.n), 0, 'the token the racing refresh stored is gone too');
+    }, {
+      mcpOAuthClients: async () => ({
+        listOAuthClientsForUser: (userId) => backend.listOAuthClientsForUser(userId),
+        async revokeOAuthClientForUser(userId, clientId) {
+          const revoked = await backend.revokeOAuthClientForUser(userId, clientId);
+          deletes += 1;
+          if (deletes === 1) {
+            // A refresh that validated the old token before the delete stores its replacement after it.
+            backend.database.prepare(
+              'INSERT INTO oauthRefreshToken (id, token, clientId, userId, expiresAt, createdAt, scopes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            ).run('refresh_rotated', 'token_rotated', clientId, userId,
+              '2026-11-30T00:00:00.000Z', '2026-10-26T00:00:00.000Z', '["chickpea:workspace","offline_access"]');
+          }
+          return revoked;
+        },
+      }),
+    });
+  } finally {
+    backend.close();
+  }
+});
