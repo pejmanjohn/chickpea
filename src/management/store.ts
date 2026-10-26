@@ -41,6 +41,7 @@ import {
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
   type SettlePrivateChannelSetupIntentInput,
+  isRoutineOperation,
 } from './types.ts';
 
 function actingAgentIdFromOriginKey(originKey: string): string | undefined {
@@ -64,9 +65,7 @@ function managementAuditTarget(operation: ManagementOperation): string {
   }
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
-  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'run_routine' ||
-      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+  if (isRoutineOperation(operation)) {
     return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
   return operation.target.kind === 'provider_credential'

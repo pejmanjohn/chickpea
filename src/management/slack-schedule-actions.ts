@@ -1,6 +1,6 @@
 import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from './agent-authoring/index.ts';
-import { routineNextRunTime } from '../routines/message-format.ts';
+import { routineNextRunTime, routineUpcomingRunAt } from '../routines/message-format.ts';
 import { scheduleActionId } from '../routines/ids.ts';
 import { normalizeAuthorityText } from '../routines/provenance.ts';
 import {
@@ -343,7 +343,7 @@ async function applyClaimedScheduleAction(input: {
               : 'controlled',
           routineId: routineRef.id,
           ...(routine ? {
-            nextRunTime: routineNextRunTime(routine.nextRunAt, routine.timezone),
+            nextRunTime: routineNextRunTime(routineUpcomingRunAt(routine), routine.timezone),
             deliveryDestination: routine.destination.kind === 'direct_thread'
               ? 'direct_thread' as const
               : routine.destination.threadTs ? 'channel_thread' as const : 'channel' as const,

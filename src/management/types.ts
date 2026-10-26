@@ -15,6 +15,7 @@ import type {
   MembershipStatus,
   OrganizationRole,
 } from '../identity/types.ts';
+import type { RoutineContentAccess } from '../routines/content-access.ts';
 import type {
   RoutineDefinition,
   RoutineOutputPolicy,
@@ -254,9 +255,36 @@ export type ManagementOperation =
       agentId: string;
     })
   | (ManagementOperationBase & {
+      /** The caller becomes a Channel routine's Runs as member, as Admin's repair route does. */
+      kind: 'take_over_routine';
+      requiredConnectionAccountIds?: string[];
+      workspaceId: string;
+      channelId?: string;
+      routineId: string;
+      expectedVersion: number;
+    })
+  | (ManagementOperationBase & {
       kind: 'request_setup';
       target: ManagementSetupRequestTarget;
     });
+
+const ROUTINE_OPERATION_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([
+  'save_routine',
+  'control_routine',
+  'run_routine',
+  'delete_routine',
+  'reassign_routine_agent',
+  'take_over_routine',
+] satisfies ManagementRoutineOperation['kind'][]);
+
+export type ManagementRoutineOperation = Extract<ManagementOperation, {
+  kind: 'save_routine' | 'control_routine' | 'run_routine' | 'delete_routine' |
+    'reassign_routine_agent' | 'take_over_routine';
+}>;
+
+export function isRoutineOperation(operation: ManagementOperation): operation is ManagementRoutineOperation {
+  return ROUTINE_OPERATION_KINDS.has(operation.kind);
+}
 
 type ManagementSetupRequestTarget =
   | {
@@ -813,6 +841,12 @@ export interface ManagementWorkspaceSnapshot {
     /** Empty means the current Agent has no ready eligible connected-service access. */
     effectiveConnections: ManagementConnectionSnapshot[];
   };
+  /**
+   * For a member: the Agents they may use privately, and so schedule DM work
+   * with, including shared ones they cannot edit. `agents` lists only the
+   * editable ones.
+   */
+  usableAgents?: Array<{ id: string; name: string; handle?: string; canEdit: boolean }>;
   agents: Array<{
     id: string;
     revision: number;
@@ -1018,7 +1052,11 @@ export interface ManagementRoutineSnapshot {
   routines: Array<{
     id: string;
     workspaceId: string;
-    channelId: string;
+    /** Null for a DM routine: its conversation comes from its owner, never from a caller. */
+    channelId: string | null;
+    destination:
+      | { kind: 'channel'; channelId: string }
+      | { kind: 'direct_message'; label: string };
     creatorUserId: string;
     state: RoutineState | 'deleted';
     version: number;
@@ -1032,7 +1070,10 @@ export interface ManagementRoutineSnapshot {
     outputPolicy: RoutineOutputPolicy;
     nextRunAt: number | null;
     nextRunTime?: { isoUtc: string; local: string; display: string; timezone: string } | null;
-    contentAccess: 'public' | 'private' | 'authorization_unknown';
+    pausedReason: string | null;
+    disabledReason: string | null;
+    /** `private` is the caller's own DM routine; the rest are Admin's Channel content rule. */
+    contentAccess: 'private' | RoutineContentAccess;
     owningAgentId: string;
     requiredConnectionAccountIds: string[];
     /** The latest occurrence's outcome; null before the first one. */
