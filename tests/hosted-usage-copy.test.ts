@@ -41,7 +41,7 @@ test('no customer string about plan usage names an internal of how usage is mete
   const askStrings = Object.entries(creditsAsk)
     .filter(([name, value]) => /_(TEXT|LABEL)$/.test(name) && typeof value === 'string')
     .map(([, value]) => value as string);
-  assert.ok(askStrings.length >= 4, 'every exported Ask an admin text and label is covered');
+  assert.ok(askStrings.length >= 4, 'every exported Ask an Owner text and label is covered');
   const strings = [
     CREDITS_EXHAUSTED_TEXT,
     ...askStrings,

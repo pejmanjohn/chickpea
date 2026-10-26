@@ -10,8 +10,8 @@ import type { RenderedSlackComponents } from './reply-continuations.ts';
 export const CREDITS_ASK_ADMIN_ACTION = 'chickpea.credits.v1.ask_admin';
 export const CREDITS_ASK_ADMIN_BLOCK = 'chickpea.credits.v1.ask_admin_block';
 
-export const CREDITS_ASK_ADMIN_LABEL = 'Ask an admin';
-export const CREDITS_OWNER_HINT_TEXT = "You're an Owner, so you can add extra usage or upgrade in Chickpea.";
+export const CREDITS_ASK_OWNER_LABEL = 'Ask an Owner';
+export const CREDITS_OWNER_HINT_TEXT = "You're an Owner, so you can add extra usage or change the plan in Chickpea.";
 export const CREDITS_ASK_CONFIRMATION_TEXT = "I asked this workspace's Owners to add usage.";
 export const CREDITS_ASK_UNREACHABLE_TEXT =
   "I couldn't reach this workspace's Owners. Try again in a few minutes.";
@@ -248,7 +248,7 @@ function askAdminBlock(workspaceId: string): SlackBlock {
     elements: [{
       type: 'button',
       action_id: CREDITS_ASK_ADMIN_ACTION,
-      text: { type: 'plain_text', text: CREDITS_ASK_ADMIN_LABEL, emoji: false },
+      text: { type: 'plain_text', text: CREDITS_ASK_OWNER_LABEL, emoji: false },
       value: workspaceId,
     }],
   };

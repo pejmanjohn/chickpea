@@ -46,7 +46,7 @@ import { createSlackOwner } from './helpers/slack-owner.ts';
 
 /**
  * A hosted turn that stops because the installation is out of credits offers
- * its requester an "Ask an admin" button. A click DMs each active Owner at
+ * its requester an "Ask an Owner" button. A click DMs each active Owner at
  * most once an hour and redraws the reply with a confirmation. Standalone
  * never shows any of it.
  */
@@ -224,7 +224,7 @@ function contextTexts(blocks: Block[]): string[] {
     .map((element) => String(element.text));
 }
 
-test('a hosted member\'s out-of-credits reply shows the text and one Ask an admin button', async (t) => {
+test('a hosted member\'s out-of-credits reply shows the text and one Ask an Owner button', async (t) => {
   const identity = await turnState(t);
   await createSlackOwner(identity, { teamId: TEAM, userId: 'UOWNER1' });
   await identity.provisionSlackMember({ slackTeamId: TEAM, slackUserId: 'UMEMBER1' });
@@ -238,7 +238,7 @@ test('a hosted member\'s out-of-credits reply shows the text and one Ask an admi
     assert.deepEqual(buttons(blocks), [{
       type: 'button',
       action_id: CREDITS_ASK_ADMIN_ACTION,
-      text: { type: 'plain_text', text: 'Ask an admin', emoji: false },
+      text: { type: 'plain_text', text: 'Ask an Owner', emoji: false },
       value: TEAM,
     }]);
     assert.equal(contextTexts(blocks).includes(CREDITS_OWNER_HINT_TEXT), false);
@@ -251,7 +251,7 @@ test('a hosted Owner\'s out-of-credits reply has no button, only the Owner hint'
   const blocks = writtenBlocks(await outOfCreditsTurn(t, HOSTED_ENV, 'UOWNER1'));
   assert.deepEqual(buttons(blocks), []);
   assert.ok(contextTexts(blocks).includes(
-    "You're an Owner, so you can add extra usage or upgrade in Chickpea.",
+    "You're an Owner, so you can add extra usage or change the plan in Chickpea.",
   ), JSON.stringify(blocks));
 });
 

@@ -620,7 +620,7 @@ test('a valid hosted modal Core answers after the host\'s deadline is admitted o
   });
 });
 
-test('a hosted Ask an admin click DMs the Owner through the installation\'s own bot', async (t) => {
+test('a hosted Ask an Owner click DMs the Owner through the installation\'s own bot', async (t) => {
   await withHostedInstallation(t, async (h) => {
     const components = await creditsExhaustedComponents({
       env: h.env, identity: h.stores.identity, workspaceId: TEAM, userId: 'U2',

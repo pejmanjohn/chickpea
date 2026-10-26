@@ -728,7 +728,7 @@ test('a Slack turn refused for credits ends with the credits reply, its own kind
   assert.equal(failure.retryable, false);
   assert.equal(agentFailureText(failure),
     "This workspace has used all of its plan's usage, so I can't continue. " +
-    'An admin can add extra usage or upgrade in Chickpea.');
+    'An Owner can add extra usage or change the plan in Chickpea.');
   assert.equal(agentFailureText(failure), CREDITS_EXHAUSTED_TEXT);
   assert.equal(sentModels.length, 0);
   assert.equal(calls.admit.length, 1, 'Flue did not retry the refused request');
