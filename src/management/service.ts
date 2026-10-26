@@ -8,6 +8,7 @@ import {
 import {
   AuthorizationError,
   canEditAgent,
+  canManageOwnedResource,
   permissionForRole,
   requirePermission,
 } from '../auth/permissions.ts';
@@ -3677,23 +3678,27 @@ export class WorkspaceManagementService {
   ): Promise<CustomAgentConfig> {
     const edit = await this.agentEdit(actor, operation.agentId, operation.patch);
     const { mcpServers, apiConnections, ...agentPatch } = projectManagementAgentPatch(edit.agent, edit.patch);
+    const writes = agentConnectionWrites(edit.connections, {
+      ...(mcpServers ? { mcpServers } : {}),
+      ...(apiConnections ? { apiConnections } : {}),
+    });
+    const accounts = this.stores.connectionAccounts;
+    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (writes.length > 0 && (!accounts || !workspaceId)) {
+      throw new ManagementError('invalid_request', 'Connection changes are unavailable in this workspace.');
+    }
+    const principal = managementActorPrincipal(actor);
+    // Refuse before the first write what Admin would refuse the member.
+    if (writes.some((write) => write.kind !== 'create' && !canManageOwnedResource(principal, write.entry.account))) {
+      throw new ManagementError('forbidden', 'Only a Chickpea Admin can change or remove a team connection.');
+    }
     const agent = await this.updateAgent(
       actor,
       operation.agentId,
       withAgentCredentialRequirement(agentPatch, credentialIncarnation),
       operation.expectedRevision,
     );
-    const writes = agentConnectionWrites(edit.connections, {
-      ...(mcpServers ? { mcpServers } : {}),
-      ...(apiConnections ? { apiConnections } : {}),
-    });
-    if (writes.length === 0) return agent;
-    const accounts = this.stores.connectionAccounts;
-    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
-    if (!accounts || !workspaceId) {
-      throw new ManagementError('invalid_request', 'Connection changes are unavailable in this workspace.');
-    }
-    const principal = managementActorPrincipal(actor);
+    if (writes.length === 0 || !accounts || !workspaceId) return agent;
     const ownerKind = permissionForRole(actor.role).has('connection.create_team') ? 'team' : 'member';
     try {
       // Removals go last, so a failed write never leaves the Agent with fewer working connections.

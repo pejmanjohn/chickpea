@@ -402,3 +402,48 @@ test('management will not delete an Agent a recent Slack thread still uses', () 
     assert.match(pending.outcomes[0]?.warning ?? '', /used in a Slack thread in the last 30 days/);
     assert.equal((await f.config.getAgent(agent.id)).id, agent.id, 'the Agent is still there');
   }, { agentLiveThreadCount: async () => 1 }));
+
+test('a Member adds a personal connection and cannot change a team one, as in Admin', () =>
+  withFixture('write-rules-member', async (f) => {
+    const seeded = await seedAgent(f);
+    const agent = await f.config.updateAgent(seeded.id, { editPolicy: 'all_workspace_members' }, seeded.revision);
+    await apply(f, 'team-billing', [{
+      itemId: 'add',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { apiConnections: [billing] },
+    }]);
+    const member = (await f.identity.provisionSlackMember({
+      slackTeamId: TEAM,
+      slackUserId: 'U11223344',
+      displayName: 'Member',
+    })).resolution;
+    const asMember = async (idempotencyKey: string, patch: Record<string, unknown>) =>
+      f.service.applyWorkspaceChanges({
+        context: {
+          userId: member.user.id,
+          membershipId: member.membership.id,
+          organizationId: member.membership.organizationId,
+          origin: { kind: 'mcp', clientId: 'write-rules-member' },
+        },
+        idempotencyKey,
+        operations: [{
+          itemId: 'edit',
+          kind: 'update_agent',
+          agentId: agent.id,
+          expectedRevision: (await f.config.getAgent(agent.id)).revision,
+          patch,
+        } as ManagementOperation],
+      });
+
+    const before = await f.config.getAgent(agent.id);
+    const refused = await asMember('member-rename', { apiConnections: [{ ...billing, displayName: 'Invoices' }] });
+    assert.equal('outcomes' in refused ? refused.outcomes[0]?.code : undefined, 'forbidden', JSON.stringify(refused));
+    assert.equal((await f.config.getAgent(agent.id)).revision, before.revision, 'nothing was written');
+
+    const added = await asMember('member-tracker', { apiConnections: [billing], mcpServers: [tracker] });
+    assert.equal('outcomes' in added ? added.outcomes[0]?.disposition : undefined, 'applied', JSON.stringify(added));
+    const personal = await accountFor(f, agent.id, 'tracker');
+    assert.deepEqual([personal.ownerKind, personal.ownerMembershipId], ['member', member.membership.id]);
+  }));
