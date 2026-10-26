@@ -119,7 +119,7 @@ async function workspace(t: TestContext, env: PlatformEnv | undefined) {
         itemId: `update_${index}`, kind: 'update_agent' as const, agentId, expectedRevision, patch: { model },
       })),
     });
-  // The model list an Agent managing itself grounds model questions in.
+  // The model catalog an Agent managing itself grounds model questions in.
   const selfManagedModels = async (model: string) => {
     const workspaceId = f.owner.user.slackTeamId;
     const agent = await f.config.createAgent({
@@ -145,8 +145,8 @@ async function workspace(t: TestContext, env: PlatformEnv | undefined) {
       args: {},
     });
     assert.equal(inspected.ok, true, JSON.stringify(inspected));
-    const { result } = inspected as { ok: true; result: { selfManagement: { availableModels: Array<{ id: string }> } } };
-    return result.selfManagement.availableModels.map(({ id }) => id);
+    const { result } = inspected as { ok: true; result: { modelCatalog: { chat: Array<{ id: string }> } } };
+    return result.modelCatalog.chat.map(({ id }) => id);
   };
   return { f, service, context, createPinned, previewPinned, changeModels, selfManagedModels };
 }
@@ -256,7 +256,7 @@ async function refusedForMissingKey(
       `a recipe pinned to ${model} asks for the ${provider} key`,
     );
   }
-  assert.deepEqual(await selfManagedModels(OPUS), [OPUS], 'with no key an Agent managing itself lists only its own pin');
+  assert.deepEqual(await selfManagedModels(OPUS), [], 'with no key Admin offers no model to pick');
 }
 
 test('a workspace on its own key still needs a key for the pinned provider', async (t) => {

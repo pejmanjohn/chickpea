@@ -3,7 +3,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { defineSkill, useSkill } from '@flue/runtime';
 
 export const AGENT_AUTHORING_SKILL_NAME = 'agent-authoring' as const;
-export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.42' as const;
+export const AGENT_AUTHORING_GUIDE_VERSION = '1.0.43' as const;
 export const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1' as const;
 export const AGENT_AUTHORING_REASONS = [
   'agent_creation',
@@ -55,7 +55,7 @@ Use each inspected revision only for the object it belongs to. A Channel's top-l
 
 For a routine that posts to the current Slack Channel, reuse that destination when \`inspect_workspace\` shows the Channel is active and its grant for the acting Agent is active. Put the inspected \`workspaceId\` and \`channelId\` directly in \`save_routine\`; do not add \`put_channel\`, \`grant_agent_channel\`, or Channel discovery to the proposal. A Channel operation is needed only when the destination or grant is actually missing or inactive. Do not turn an already-satisfied destination into a workspace-authority handoff.
 
-In a one-to-one Chickpea DM, call \`inspect_routines\` with the workspace and let the trusted Slack origin supply the private conversation. Create private scheduled work with \`destination: { kind: "current_dm_thread" }\` and omit \`channelId\`; never copy or invent a DM ID, thread timestamp, or member ID. A user Agent may create and manage only schedules it owns. Chickpea may manage every schedule belonging to that member in the same DM, but must name an eligible user Agent as owner and never use itself. Use \`reassign_routine_agent\` only through Chickpea when the member explicitly changes the owning Agent. Group DMs cannot contain scheduled work.
+In a one-to-one Chickpea DM, call \`inspect_routines\` with the workspace and let the trusted Slack origin supply the private conversation. Create private scheduled work with \`destination: { kind: "current_dm_thread" }\` and omit \`channelId\`; never copy or invent a DM ID, thread timestamp, or member ID. A user Agent may create and manage only schedules it owns. Chickpea may manage every schedule belonging to that member in the same DM, but must name an eligible user Agent as owner and never use itself. For a member, \`inspect_workspace\` lists those Agents in \`usableAgents\`, shared ones they cannot edit included; any of them may own that member's DM routine. Use \`reassign_routine_agent\` only through Chickpea when the member explicitly changes the owning Agent. Group DMs cannot contain scheduled work.
 
 Never request credentials, OAuth codes, tokens, private keys, or secret-bearing URLs in conversation or management operations. Use \`prepare_connector_setup\` and return its Chickpea handoff URL when setup is needed.
 
@@ -71,7 +71,7 @@ Place each part of the request according to its lifetime and execution semantics
 - **Memory**: durable facts, decisions, preferences, and context, plus requester-supplied scoped standing notes or preferences whose scope, exceptions, and precedence stay in the requester's words. Memory is not a repeatable procedure that belongs in a skill or a substitute for broad Agent instructions.
 - **Connections and repositories**: grants to tools and information sources. They describe access, not desired behavior. A repository grant names one repository (\`fullName\` "owner/repo") or, with \`allRepos: true\`, every repository of one account: set \`fullName\` to "" and keep its \`installationId\` and \`accountLogin\`.
 - **Schedules**: recurring or one-time future work with a cadence, timezone, destination, and empty-result behavior. Mentioning a cadence does not by itself authorize a schedule.
-- **Model choice**: a supported live model selected for the workload; do not invent model availability.
+- **Model choice**: a model from \`modelCatalog\` in \`inspect_workspace\`, selected for the workload; set \`modelEffort\` only to a level the requester chose from that model's \`efforts\`. Do not invent model availability. \`effectiveModels\` says what each Agent runs and whether it follows the Workspace. An Agent's image model is \`set_agent_image_model\`. The Workspace default, image and coding models (\`workspaceModels\`) are Owner and Admin settings, changed with \`set_workspace_model\`; do not change them when the request is about one Agent.
 - **Slack presence and Channel reach**: where the Agent can appear and act. They do not teach the Agent what to do.
 - **Editing authority**: who may edit the Agent. It is authority, not personality or knowledge.
 

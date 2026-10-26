@@ -70,6 +70,19 @@ import { platformBilling } from '../config/platform-billing.ts';
 import { runReview } from '../review/port.ts';
 import { installationFunding } from '../config/platform-funding.ts';
 import {
+  activeCatalogModels,
+  availableRoleModels,
+  chatModelPickerProviders,
+  codingModelChoiceError,
+  IMAGE_ROLE_PROVIDER_IDS,
+  modelDefaultInstallation,
+  modelRoleChoiceError,
+  uniqueStrings,
+  workspaceModelChoiceRefusal,
+  type RoleModelChoice,
+  type WorkspaceModelChoiceRefusal,
+} from '../config/model-choices.ts';
+import {
   BROWSER_ENV_VARS,
   clearBrowserSettings,
   looksLikeBrowserbaseKey,
@@ -358,18 +371,14 @@ import {
 } from '../config/model-effort-capability.ts';
 import { MODEL_EFFORTS, standardModelEffort, type ModelEffort } from '../config/model-effort.ts';
 import {
-  modelProviderUnavailable,
-  pricedModelRoute,
   resolveAgentModel,
   resolveAgentModelPolicy,
   type ModelResolvableAgent,
 } from '../config/model-policy.ts';
 import {
   activeCatalogCompatibilityError,
-  chatModelProviderReady,
   chatSubscriptionStatus,
   openAiSubscriptionIsReady,
-  PLATFORM_NOT_OFFERED_TEXT,
   resolveModelReadiness,
   workersAiStatus,
 } from '../config/model-readiness.ts';
@@ -479,7 +488,6 @@ import {
 } from '../browser/logins.ts';
 import {
   findImageModel,
-  listImageModels,
   OPENAI_SUBSCRIPTION_IMAGE_MODEL_ID,
   type ImageModelId,
 } from '../model-catalog/image-profiles.ts';
@@ -502,7 +510,9 @@ import {
 } from '../routines/scheduler-adapter.ts';
 import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
+import { routineUpcomingRunAt } from '../routines/message-format.ts';
 import {
+  AUTHORITY_PAUSE_REASONS,
   reassignRoutineAgentAuthority,
   RoutineAuthorityError,
 } from '../routines/agent-authority.ts';
@@ -6860,85 +6870,13 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
   // Settings managers), so this route folds those favorites into their
   // suggestions — the per-provider search/favorites endpoints stay the editors.
   const chatPickerProviders = async (c: Context, funding?: ModelRequestFundingSource) => {
-    const settingsStore = settings(c);
     await refreshCatalog(c, false);
-    // A deployment serving many offers its installations no subscription lane.
-    const subscriptionAvailable = !deploymentServesManyInstallations(c.env as PlatformEnv | undefined);
-    const [subscription, activeAuthMethod, workersAiEnabled] = await Promise.all([
-      subscriptionAvailable ? chatSubscriptionStatus(settingsStore, c.env as PlatformEnv | undefined) : undefined,
-      resolveOpenAiAuthMethod(settingsStore),
-      getWorkersAiEnabled(settingsStore),
-    ]);
-    const openAiApiModels = activeCatalogModels('openai_api_key', c.env as PlatformEnv | undefined);
-    const subscriptionModels = !subscriptionAvailable
-      ? []
-      : isCloudflareTarget()
-      ? (await planStatus(planDependencies(c.env as PlatformEnv | undefined, settingsStore))).models.map(model => ({ ...model, canonical: `openai/${model.id}` }))
-      : activeCatalogModels('openai_subscription', c.env as PlatformEnv | undefined);
-    const anthropicApiModels = activeCatalogModels('anthropic_api_key', c.env as PlatformEnv | undefined);
-    const runtimeProviders = await modelProviders(c);
-    const providers = await Promise.all(
-      runtimeProviders
-        .filter((provider) => provider.id !== 'cloudflare' || workersAiEnabled)
-        .map(async (provider) => {
-        if (provider.id === 'openai') {
-          const subscriptionActive = activeAuthMethod === 'subscription';
-          return {
-            ...provider,
-            configured: subscriptionActive
-              ? subscription !== undefined && openAiSubscriptionIsReady(subscription)
-              : provider.configured,
-            source: subscriptionActive ? 'ChatGPT subscription' : provider.source,
-            suggestions: subscriptionActive
-              ? subscriptionModels.map((model) => model.canonical)
-              : uniqueStrings([
-                  ...openAiApiModels.map((model) => model.canonical),
-                  ...provider.suggestions,
-                ]),
-            authMethods: {
-              activeMethod: activeAuthMethod,
-              apiKeyConfigured: provider.configured,
-              ...(subscription ? { subscription } : {}),
-              subscriptionAvailable,
-            },
-          };
-        }
-        if (provider.id === 'openrouter') {
-          const favorites = await getProviderFavorites('openrouter', settingsStore);
-          return { ...provider, suggestions: favorites.map((model) => `openrouter/${model}`) };
-        }
-        // The binding-backed CF provider surfaces as `cloudflare`; its favorites
-        // live under the `workers-ai` key and pin as `cloudflare/<model>`.
-        if (provider.id === 'cloudflare') {
-          const favorites = await getProviderFavorites('workers-ai', settingsStore);
-          return { ...provider, suggestions: favorites.map((model) => `cloudflare/${model}`) };
-        }
-        if (provider.id === 'anthropic') {
-          return {
-            ...provider,
-            suggestions: uniqueStrings([
-              ...anthropicApiModels.map((model) => model.canonical),
-              ...provider.suggestions,
-            ]),
-          };
-        }
-        return provider;
-        }),
-    );
-    const resolvedFunding = funding ?? await installationFunding(c.env as PlatformEnv | undefined);
-    if (resolvedFunding !== 'platform') return providers;
-    // Chickpea's models are a lane like the ChatGPT subscription. They need no
-    // key or starred model, and serve only the models with a current price.
-    const unavailable = await chatModelReadiness(c, resolvedFunding);
-    return Promise.all(providers.map(async (provider) => {
-      const candidates = uniqueStrings([
-        ...provider.suggestions,
-        ...(runtimeProviders.find(({ id }) => id === provider.id)?.suggestions ?? []),
-      ]);
-      const served = await Promise.all(candidates.map(async (model) => !(await unavailable(model))));
-      const suggestions = candidates.filter((_, index) => served[index]);
-      return { ...provider, configured: suggestions.length > 0, source: PLATFORM_MODELS_SOURCE, suggestions };
-    }));
+    return chatModelPickerProviders({
+      settings: settings(c),
+      env: c.env as PlatformEnv | undefined,
+      runtimeProviders: await modelProviders(c),
+      ...(funding ? { funding } : {}),
+    });
   };
 
   app.get('/admin/api/models', async (c) => c.json({ providers: await chatPickerProviders(c) }));
@@ -7020,19 +6958,16 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!principal || (principal.role !== 'owner' && principal.role !== 'admin')) {
       return c.json({ error: 'forbidden' }, 403);
     }
-    await loadModelCatalog(settings(c), c.env as PlatformEnv | undefined);
-    const compatibilityError = await activeCatalogCompatibilityError(
-      parsed.output.modelId,
-      await resolveOpenAiAuthMethod(settings(c)),
-      settings(c), c.env as PlatformEnv | undefined,
-    );
-    if (compatibilityError) return invalidRequest(c, compatibilityError);
     const effort = parsed.output.effort ?? undefined;
-    const effortRejection = effort && await modelEffortChoiceError(parsed.output.modelId, effort, {
+    const refusal = await workspaceModelChoiceRefusal({
+      role: 'chat',
+      modelId: parsed.output.modelId,
+      effort,
       settings: settings(c),
       env: c.env as PlatformEnv | undefined,
+      runtimeProviders: await modelProviders(c),
     });
-    if (effortRejection) return modelEffortRejected(c, effortRejection);
+    if (refusal) return modelChoiceRefused(c, refusal);
     try {
       await configStore.putWorkspaceModelDefault({
         workspaceId: installation.workspaceId,
@@ -7094,9 +7029,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!isNonChatModelRole(role)) return c.json({ error: 'not_found' }, 404);
     const parsed = v.safeParse(workspaceModelRoleSchema, await readJson(c.req));
     if (!parsed.success) return invalidRequest(c);
-    if (role === 'image' && parsed.output.effort !== undefined) {
-      return invalidRequest(c, 'The image model has no effort setting.');
-    }
     const configStore = store(c);
     const installation = await modelDefaultInstallation(configStore);
     if (!installation) {
@@ -7113,30 +7045,17 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       settings(c),
       c.env as PlatformEnv | undefined,
     );
-    // A clear has no model to validate; only a chosen model meets the catalog.
-    if (parsed.output.modelId !== null) {
-      const rejection = role === 'coding'
-        ? await codingModelChoiceError({
-            modelId: parsed.output.modelId,
-            settingsStore: settings(c),
-            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-            runtimeProviders: await modelProviders(c),
-          })
-        : await modelRoleChoiceError({
-            settingsStore: settings(c),
-            ...(c.env ? { platformEnv: c.env as PlatformEnv } : {}),
-            role,
-            modelId: parsed.output.modelId,
-            availableModels,
-          });
-      if (rejection) return invalidRequest(c, rejection);
-    }
     const effort = parsed.output.effort ?? undefined;
-    const effortRejection = effort && await modelEffortChoiceError(parsed.output.modelId ?? undefined, effort, {
+    const refusal = await workspaceModelChoiceRefusal({
+      role,
+      modelId: parsed.output.modelId,
+      effort,
       settings: settings(c),
       env: c.env as PlatformEnv | undefined,
+      runtimeProviders: await modelProviders(c),
+      availableImageModels: availableModels,
     });
-    if (effortRejection) return modelEffortRejected(c, effortRejection);
+    if (refusal) return modelChoiceRefused(c, refusal);
     try {
       await configStore.putWorkspaceModelRole({
         workspaceId: installation.workspaceId,
@@ -9458,7 +9377,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             channelLabel: readable ? channel?.label ?? null : null,
             workspaceId: readable ? routine.workspaceId : null,
             channelId: readable ? routine.channelId : null,
-            nextRunAt: routine.nextRunAt,
+            nextRunAt: routineUpcomingRunAt(routine),
             lastFinishedAt: routine.lastFinishedAt,
             actions,
           };
@@ -9631,12 +9550,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         identity: identity(c),
       });
       const routine = await routines(c).getRoutine(current.scheduleId);
-      const repairedAuthorityPause = routine?.pausedReason === 'schedule_authority_missing' ||
-        routine?.pausedReason === 'assignment_missing' ||
-        routine?.pausedReason === 'creator_ineligible' ||
-        routine?.pausedReason === 'credential_unavailable';
       const resumed = reference.state === 'active' && routine?.state === 'paused' &&
-          repairedAuthorityPause
+          AUTHORITY_PAUSE_REASONS.has(routine.pausedReason ?? '')
         ? await new RoutineService(routines(c)).control({
             routineId: routine.id,
             expectedVersion: routine.version,
@@ -12935,6 +12850,15 @@ function modelEffortRejected(
   return c.json({ error: rejection.code, message: rejection.message }, 422);
 }
 
+function modelChoiceRefused(
+  c: { json(body: { error: string; message: string }, status: 400 | 422): Response },
+  refusal: WorkspaceModelChoiceRefusal,
+): Response {
+  return refusal.code === 'invalid_request'
+    ? invalidRequest(c, refusal.message)
+    : modelEffortRejected(c, { code: refusal.code, message: refusal.message });
+}
+
 interface ModelEffortProjection {
   /** The stored effort; null runs the model's standard level. */
   effort: ModelEffort | null;
@@ -13006,85 +12930,10 @@ async function workspaceModelRoleProjection(input: {
   };
 }
 
-/**
- * the shape-only `modelSpecifier` regex would accept a chat model in the
- * image role, so a role choice is accepted only when the role's own catalog
- * knows it and its own credential lane is ready.
- */
-async function modelRoleChoiceError(input: {
-  settingsStore: SettingsStore;
-  platformEnv?: PlatformEnv;
-  role: NonChatModelRole;
-  modelId: string;
-  /** The role's picker list when the caller already built it for this request. */
-  availableModels?: readonly RoleModelChoice[];
-}): Promise<string | undefined> {
-  const available = input.availableModels ?? await availableRoleModels(
-    input.role,
-    input.settingsStore,
-    input.platformEnv,
-  );
-  if (available.some(({ id }) => id === input.modelId)) return undefined;
-  const profile = findImageModel(input.modelId);
-  if (!profile) return `${input.modelId} is not an image model.`;
-  if (profile.authMethod === 'subscription') {
-    return openAiSubscriptionAvailable()
-      ? `Connect a ChatGPT subscription before choosing ${input.modelId}.`
-      : `${input.modelId} is not available on this installation.`;
-  }
-  return `Add an OpenAI API key before choosing ${input.modelId}.`;
-}
-
-/** One entry of a role's picker list: a catalog model an Owner may choose now. */
-interface RoleModelChoice {
-  id: string;
-  name: string;
-  providerId: string;
-  acceptsImageInput: boolean;
-  authMethod: 'api_key' | 'subscription';
-  maxOutputs: number;
-  supportsOutputControls: boolean;
-}
-
-async function availableRoleModels(
-  role: NonChatModelRole,
-  settingsStore: SettingsStore,
-  platformEnv?: PlatformEnv,
-): Promise<RoleModelChoice[]> {
-  if (role !== 'image') return [];
-  const models = [];
-  for (const provider of IMAGE_ROLE_PROVIDER_IDS) {
-    for (const profile of listImageModels(provider)) {
-      if (!await imageModelProfileReady(profile, platformEnv, settingsStore)) continue;
-      models.push({
-        id: profile.id,
-        name: profile.name,
-        providerId: provider,
-        acceptsImageInput: profile.input.includes('image'),
-        authMethod: profile.authMethod,
-        maxOutputs: profile.maxOutputs,
-        supportsOutputControls: profile.supportsOutputControls,
-      });
-    }
-  }
-  return models;
-}
-
-// The image catalog is provider-agnostic by shape; only OpenAI ships an
-// adapter in this release, so only its entries can be offered.
-const IMAGE_ROLE_PROVIDER_IDS = ['openai'] as const;
-
 // Model choice is the only cost lever in this release, so the Owner-facing
 // picker says which entry is the faster, cheaper one. Held here rather than on
 // the profile: it is a purchasing note for Admin, not a model capability.
 const FASTER_CHEAPER_IMAGE_MODEL_IDS = new Set<string>(['openai/gpt-image-2.5-flare']);
-
-async function modelDefaultInstallation(
-  configStore: ConfigStore,
-): Promise<WorkspaceInstallation | undefined> {
-  const installations = await configStore.listWorkspaceInstallations();
-  return installations.length === 1 ? installations[0] : undefined;
-}
 
 function cutoverEnvironmentModel(platformEnv: PlatformEnv | undefined): string | undefined {
   const platformValue = (platformEnv as unknown as Record<string, unknown> | undefined)
@@ -13108,60 +12957,6 @@ interface WorkspaceModelDefaultProjection extends ModelEffortProjection {
     code?: 'workspace_default_missing' | 'model_unsupported' | 'provider_unavailable' | 'funding_not_offered';
     repairPath?: '/admin/settings/providers';
   };
-}
-
-/**
- * Why a chat model cannot fill the coding role right now, if it cannot: the
- * active catalog must serve it and its provider must be ready, exactly as for
- * the chat default. The turn still falls back to the Agent's own model if the
- * provider later disappears.
- */
-async function codingModelChoiceError(input: {
-  modelId: string;
-  settingsStore: SettingsStore;
-  platformEnv?: PlatformEnv;
-  runtimeProviders: RuntimeModelProvider[];
-}): Promise<string | undefined> {
-  const providerId = chatModelProviderId(input.modelId);
-  if (!providerId) return 'Choose a provider/model value.';
-  await loadModelCatalog(input.settingsStore, input.platformEnv);
-  const [openAiAuthMethod, workersAiEnabled, openAiSubscription] = await Promise.all([
-    resolveOpenAiAuthMethod(input.settingsStore),
-    getWorkersAiEnabled(input.settingsStore),
-    chatSubscriptionStatus(input.settingsStore, input.platformEnv),
-  ]);
-  const incompatible = await activeCatalogCompatibilityError(input.modelId, openAiAuthMethod, input.settingsStore, input.platformEnv);
-  if (incompatible) return incompatible;
-  const unavailable = await modelProviderUnavailable(
-    pricedModelRoute(input.modelId, 'standard_input_output'),
-    async () => {
-      // A key-lane provider is ready when the turn's own key lookup finds a key,
-      // so Admin never calls ready what a turn would silently replace.
-      if (isProviderKeyId(providerId) &&
-          !(providerId === 'openai' && openAiAuthMethod === 'subscription')) {
-        return (await describeProviderKeySources(input.platformEnv, input.settingsStore))[providerId] !== 'missing';
-      }
-      return chatModelProviderReady(providerId, {
-        runtimeProviders: input.runtimeProviders,
-        platformEnv: input.platformEnv,
-        openAiAuthMethod,
-        workersAiEnabled,
-        openAiSubscription,
-      });
-    },
-    installationFunding(input.platformEnv),
-  );
-  if (!unavailable) return undefined;
-  return unavailable === 'funding_not_offered'
-    ? PLATFORM_NOT_OFFERED_TEXT
-    : `Set up ${providerId} in Model providers before choosing ${input.modelId}.`;
-}
-
-const PLATFORM_MODELS_SOURCE = 'Chickpea’s models';
-
-function chatModelProviderId(modelId: string): string | undefined {
-  const separator = modelId.indexOf('/');
-  return separator > 0 && separator < modelId.length - 1 ? modelId.slice(0, separator) : undefined;
 }
 
 async function workspaceModelDefaultProjection(input: {
@@ -13312,29 +13107,6 @@ function providerWarnings(
   return {
     warnings: [{ code: 'unknown_provider', provider: prefix, knownProviders: [...known].sort() }],
   };
-}
-
-function activeCatalogModels(
-  lane: 'anthropic_api_key' | 'openai_api_key' | 'openai_subscription',
-  env: PlatformEnv | undefined,
-): Array<{
-  canonical: string;
-  id: string;
-  name?: string;
-}> {
-  return activeModelCatalogSnapshot(env).entries.flatMap((entry) => {
-    const provider = lane === 'anthropic_api_key' ? 'anthropic' : 'openai';
-    if (!entry.lanes[lane] || !entry.id.startsWith(`${provider}/`)) return [];
-    return [{
-      canonical: entry.id,
-      id: entry.id.slice(provider.length + 1),
-      ...(entry.displayName ? { name: entry.displayName } : {}),
-    }];
-  });
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }
 
 async function safeModelCatalogStatus(settingsStore: SettingsStore, env: PlatformEnv | undefined): Promise<{

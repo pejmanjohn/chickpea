@@ -41,6 +41,7 @@ import {
   type RevokeManagementSetupInput,
   type ReserveManagementRequestInput,
   type SettlePrivateChannelSetupIntentInput,
+  isRoutineOperation,
 } from './types.ts';
 
 function actingAgentIdFromOriginKey(originKey: string): string | undefined {
@@ -54,7 +55,9 @@ function managementAuditTarget(operation: ManagementOperation): string {
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
       operation.kind === 'update_agent_memory' || operation.kind === 'disconnect_connection' ||
-      operation.kind === 'remove_website_login') return `agent:${operation.agentId}`;
+      operation.kind === 'remove_website_login' ||
+      operation.kind === 'set_agent_image_model') return `agent:${operation.agentId}`;
+  if (operation.kind === 'set_workspace_model') return `workspace_model:${operation.role}`;
   if (operation.kind === 'put_channel') {
     return `channel:${operation.channel.workspaceId}:${operation.channel.channelId}`;
   }
@@ -63,9 +66,7 @@ function managementAuditTarget(operation: ManagementOperation): string {
   }
   if (operation.kind === 'update_member') return `membership:${operation.membershipId}`;
   if (operation.kind === 'remove_provider_credential') return `provider:${operation.providerId}`;
-  if (operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-      operation.kind === 'run_routine' ||
-      operation.kind === 'delete_routine' || operation.kind === 'reassign_routine_agent') {
+  if (isRoutineOperation(operation)) {
     return `routine:${operation.routineId ?? `${operation.workspaceId}:${'channelId' in operation ? operation.channelId : 'current_dm_thread'}`}`;
   }
   return operation.target.kind === 'provider_credential'

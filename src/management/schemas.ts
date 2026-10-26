@@ -4,6 +4,7 @@ import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
+import { MODEL_ROLES } from '../config/types.ts';
 import {
   isValidRepositoryGrantShape,
   REPOSITORY_GRANT_SHAPE_MESSAGE,
@@ -12,28 +13,6 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
   AGENT_AUTHORING_REASONS,
 } from './agent-authoring/index.ts';
-
-export const MANAGEMENT_OPERATION_KINDS = [
-  'create_agent',
-  'update_agent',
-  'delete_agent',
-  'archive_agent',
-  'restore_agent',
-  'disconnect_connection',
-  'remove_website_login',
-  'put_channel',
-  'grant_agent_channel',
-  'revoke_agent_channel',
-  'update_member',
-  'remove_provider_credential',
-  'update_agent_memory',
-  'save_routine',
-  'control_routine',
-  'run_routine',
-  'delete_routine',
-  'reassign_routine_agent',
-  'request_setup',
-] as const;
 
 const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
@@ -51,6 +30,11 @@ const zModelEffort = z.enum(MODEL_EFFORTS);
 const disconnectConnectionIdDescription = 'The connection to disconnect: its id from the Agent\'s connections, mcpServers or apiConnections in inspect_workspace.';
 const websiteLoginIdDescription = 'The loginId from the Agent\'s websiteLogins in inspect_workspace.';
 const WEBSITE_LOGIN_ID_PATTERN = /^wl_[a-f0-9]{32}$/;
+const workspaceModelRoleDescription = 'chat is the Workspace default model; image and coding are the Workspace image and coding models.';
+const workspaceModelDescription = 'A model from inspect_workspace modelCatalog: chat models for chat and coding, image models for image. null clears the image or coding model; the chat default cannot be cleared.';
+const workspaceModelEffortDescription = 'Chat and coding only, one of the model\'s efforts in modelCatalog. Omit to run the model\'s standard effort.';
+const workspaceModelRevisionDescription = 'The role\'s revision from inspect_workspace workspaceModels; 0 when it was never set.';
+const agentImageModelDescription = 'An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model.';
 
 export const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 export const zSkillImportSource = z.strictObject({
@@ -269,6 +253,21 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
+    kind: z.literal('set_workspace_model'),
+    role: z.enum(MODEL_ROLES).describe(workspaceModelRoleDescription),
+    model: zModelSpecifier.nullable().describe(workspaceModelDescription),
+    modelEffort: zModelEffort.optional().describe(workspaceModelEffortDescription),
+    expectedRevision: zRevision.describe(workspaceModelRevisionDescription),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('set_agent_image_model'),
+    agentId: zAgentId,
+    expectedRevision: zRevision.describe('The Agent revision from inspection.'),
+    model: zModelSpecifier.nullable().describe(agentImageModelDescription),
+  }),
+  z.strictObject({
+    ...zOperationBase,
     kind: z.literal('update_agent_memory'),
     agentId: zAgentId,
     expectedRevision: zRevision,
@@ -317,12 +316,12 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
   }),
   z.strictObject({
     ...zOperationBase,
-    kind: z.literal('reassign_routine_agent'),
+    kind: z.literal('take_over_routine'),
     requiredConnectionAccountIds: z.array(zId).max(100).optional(),
     workspaceId: zId,
+    channelId: zId.optional(),
     routineId: zId,
     expectedVersion: z.number().int().positive(),
-    agentId: zAgentId,
   }),
   z.strictObject({
     ...zOperationBase,
@@ -330,6 +329,14 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     target: zSetupTarget,
   }),
 ]);
+
+/**
+ * The MCP door's operations. Changing a DM routine's Agent needs Chickpea in
+ * that DM, so only Slack has reassign_routine_agent; take_over_routine is the
+ * Admin Runs as repair, which Slack does not offer.
+ */
+export const MCP_MANAGEMENT_OPERATION_KINDS = managementOperationZodSchema.options
+  .map((option) => option.shape.kind.value);
 
 export const applyWorkspaceChangesZodSchema = z.strictObject({
   idempotencyKey: zText(256),
@@ -611,6 +618,21 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('remove_provider_credential'),
     providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('set_workspace_model'),
+    role: v.pipe(v.picklist(MODEL_ROLES), v.description(workspaceModelRoleDescription)),
+    model: v.pipe(v.nullable(vModelSpecifier), v.description(workspaceModelDescription)),
+    modelEffort: v.pipe(v.optional(vModelEffort), v.description(workspaceModelEffortDescription)),
+    expectedRevision: v.pipe(vr, v.description(workspaceModelRevisionDescription)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('set_agent_image_model'),
+    agentId: vAgentId,
+    expectedRevision: v.pipe(vr, v.description('The Agent revision from inspection.')),
+    model: v.pipe(v.nullable(vModelSpecifier), v.description(agentImageModelDescription)),
   }),
   v.strictObject({
     ...vOperationBase,

@@ -214,6 +214,14 @@ export async function checkRoutineAgentAuthority(
   return { current, destinationBindingDigest };
 }
 
+/** Pauses a Runs as repair resumes: the schedule stopped because its authority broke. */
+export const AUTHORITY_PAUSE_REASONS: ReadonlySet<string> = new Set([
+  'schedule_authority_missing',
+  'assignment_missing',
+  'creator_ineligible',
+  'credential_unavailable',
+]);
+
 /** Reassignment is the only operation allowed to change a schedule's Runs as actor. */
 export async function reassignRoutineAgentAuthority(input: {
   scheduleId: string;

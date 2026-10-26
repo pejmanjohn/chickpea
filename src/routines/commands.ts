@@ -337,7 +337,9 @@ async function executeRoutineCommand(
       store.listRevisions(routine.id),
     ]);
     const provenance = revisions.find((revision) => revision.version === routine.version)?.provenance ?? null;
-    return renderRoutineDetail(routine, runs, provenance);
+    const userGroupHandles = new Map((await config.listUserAgents()).flatMap(({ slackPresence }) =>
+      slackPresence?.userGroupId ? [[slackPresence.userGroupId, slackPresence.normalizedHandle] as const] : []));
+    return renderRoutineDetail(routine, runs, provenance, userGroupHandles);
   }
   if (command.kind === 'control') {
     const result = await executeSlackScheduleCommand({
