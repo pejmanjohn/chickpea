@@ -3,6 +3,7 @@ import { test } from 'node:test';
 
 import type { ParsedSkillSource } from '../src/config/skill-import.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import type { ManagementApiConnection, ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
 import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import {
@@ -13,6 +14,7 @@ import {
 import type {
   ImportSkillResult,
   ManagementActorContext,
+  ManagementAgentPatch,
   ManagementApplyResult,
   ManagementOperation,
 } from '../src/management/types.ts';
@@ -21,21 +23,18 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type Person = Fixture['owner'] | Fixture['admin'];
 
-const knowledgeServer = {
+const knowledgeServer: ManagementMcpConnection = {
   id: 'knowledge',
   displayName: 'Knowledge',
   url: 'https://mcp.example.test/mcp',
-  transport: 'streamable-http' as const,
-  authMode: 'none' as const,
+  transport: 'streamable-http',
+  authMode: 'none',
   headerNames: [],
   enabled: true,
-  lifecycleStatus: 'ready' as const,
-  statusText: 'Ready',
-  discoveredTools: [],
   allowedTools: [],
 };
 
-const billingApi = {
+const billingApi: ManagementApiConnection = {
   id: 'billing',
   displayName: 'Billing',
   allowedHosts: ['billing.example.test'],
@@ -147,6 +146,39 @@ async function createAgent(
   });
 }
 
+/** Removing a connection revokes its account, which is found through the workspace installation. */
+async function installWorkspace(f: Fixture): Promise<void> {
+  const workspaceId = f.owner.binding.slackTeamId;
+  await f.config.ensureWorkspaceInstallation({
+    workspaceId, teamId: workspaceId, transportMode: 'gateway', appId: 'A_AUTHORITY', botUserId: 'U_BOT',
+    gatewayBindingId: 'binding_authority',
+  });
+}
+
+/** Provider ids of the connection accounts the Agent uses in one lane. */
+async function connectedIds(f: Fixture, agentId: string, kind: 'mcp' | 'api'): Promise<string[]> {
+  const bound = new Set((await f.config.listAgentConnectionBindings(agentId))
+    .map(({ connectionAccountId }) => connectionAccountId));
+  return (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId))
+    .filter((account) => bound.has(account.id) && account.policy.kind === kind && account.lifecycle !== 'revoked')
+    .map(({ providerId }) => providerId);
+}
+
+async function connectAgent(
+  f: Fixture,
+  agent: CustomAgentConfig,
+  patch: Pick<ManagementAgentPatch, 'mcpServers' | 'apiConnections'>,
+): Promise<CustomAgentConfig> {
+  assertApplied(await apply(f, f.owner, `connect-${agent.id}`, [{
+    itemId: 'connect',
+    kind: 'update_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+    patch,
+  }]), 'connection addition');
+  return f.config.getAgent(agent.id);
+}
+
 async function withFixture(
   suffix: string,
   run: (f: Fixture) => Promise<void>,
@@ -206,7 +238,7 @@ test('MCP applies every allowed non-destructive change in one call', () => withF
     patch: { mcpServers: [knowledgeServer] },
   }]), 'mcpServers addition');
   agent = await f.config.getAgent(agent.id);
-  assert.deepEqual(agent.mcpServers.map(({ id }) => id), ['knowledge']);
+  assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), ['knowledge']);
 
   assertApplied(await apply(f, f.owner, 'grant', [{
     itemId: 'grant',
@@ -314,6 +346,7 @@ test('MCP keeps revision protection on a direct archive', () => withFixture('mcp
 test('MCP asks before each destructive change and applies it on confirmation', () => {
   let storedKey = true;
   return withFixture('mcp-destructive', async (f) => {
+    await installWorkspace(f);
     const workspaceId = f.owner.binding.slackTeamId;
     const member = (await f.identity.provisionSlackMember({
       slackTeamId: workspaceId,
@@ -375,13 +408,15 @@ test('MCP asks before each destructive change and applies it on confirmation', (
     assert.equal((await confirm(f, f.owner, keyProposal)).status, 'completed');
     assert.equal(storedKey, false);
 
-    for (const [field, entry] of [
-      ['mcpServers', knowledgeServer],
-      ['apiConnections', billingApi],
+    for (const [field, kind, entry] of [
+      ['mcpServers', 'mcp', knowledgeServer],
+      ['apiConnections', 'api', billingApi],
     ] as const) {
-      const connected = await createAgent(f, f.owner, `agent_remove_${field.toLowerCase()}`, {
-        [field]: [entry],
-      });
+      const connected = await connectAgent(
+        f,
+        await createAgent(f, f.owner, `agent_remove_${field.toLowerCase()}`),
+        { [field]: [entry] },
+      );
       const removal = pendingConfirmation(await apply(f, f.owner, `remove-${field}`, [{
         itemId: `remove-${field}`,
         kind: 'update_agent',
@@ -389,9 +424,9 @@ test('MCP asks before each destructive change and applies it on confirmation', (
         expectedRevision: connected.revision,
         patch: { [field]: [] },
       }]), `${field} removal`);
-      assert.equal((await f.config.getAgent(connected.id))[field].length, 1);
+      assert.deepEqual(await connectedIds(f, connected.id, kind), [entry.id]);
       assert.equal((await confirm(f, f.owner, removal)).status, 'completed');
-      assert.equal((await f.config.getAgent(connected.id))[field].length, 0);
+      assert.deepEqual(await connectedIds(f, connected.id, kind), []);
     }
 
     const scheduled = await createAgent(f, f.owner, 'agent_scheduled');
@@ -509,6 +544,7 @@ test('MCP grants a member exactly the Admin UI authority', () => withFixture('mc
 }));
 
 test('MCP undo applies directly unless the inverse removes a connection', () => withFixture('mcp-undo', async (f) => {
+  await installWorkspace(f);
   let agent = await createAgent(f, f.owner, 'agent_undo');
   const edited = await apply(f, f.owner, 'edit-instructions', [{
     itemId: 'instructions',
@@ -537,9 +573,9 @@ test('MCP undo applies directly unless the inverse removes a connection', () => 
     operationId: added.operationId,
     idempotencyKey: 'undo-connection',
   }), 'undo that removes a connection');
-  assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 1);
+  assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), ['knowledge']);
   assert.equal((await confirm(f, f.owner, proposalId)).status, 'completed');
-  assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 0);
+  assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), []);
 }));
 
 test('MCP import_skill installs from the authenticated call itself', () => {
@@ -603,7 +639,9 @@ test('MCP import_skill installs from the authenticated call itself', () => {
 });
 
 test('MCP sends back a destructive change that cannot share a confirmation with its call', () => withFixture('mcp-own-call', async (f) => {
-  const agent = await createAgent(f, f.owner, 'agent_own_call', { mcpServers: [knowledgeServer] });
+  const agent = await connectAgent(f, await createAgent(f, f.owner, 'agent_own_call'), {
+    mcpServers: [knowledgeServer],
+  });
   const result = await apply(f, f.owner, 'remove-then-edit', [
     {
       itemId: 'remove-mcp',
@@ -626,7 +664,7 @@ test('MCP sends back a destructive change that cannot share a confirmation with 
   ]);
   assert.match(result.outcomes[0]?.instruction ?? '', /other operations in this call were handled without it/);
   assert.match(result.outcomes[0]?.instruction ?? '', /Resend only this operation, in its own apply_workspace_changes call/);
-  assert.equal((await f.config.getAgent(agent.id)).mcpServers.length, 1);
+  assert.deepEqual(await connectedIds(f, agent.id, 'mcp'), ['knowledge']);
 }));
 
 test('MCP keeps only the newest destructive change confirmable', () => withFixture('mcp-supersede', async (f) => {
