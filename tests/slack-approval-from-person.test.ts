@@ -265,6 +265,10 @@ test('"rewrite Desk and connect Zendesk": the person\'s approval applies the rew
     });
     assert.deepEqual(outcomes(call).map(({ itemId, disposition }) => [itemId, disposition]),
       [['profile', 'applied'], ['zendesk-setup', 'setup_required']], 'the call the change set held is settled');
+    const setup = await f.management.getSetup(outcomes(call)[1]!.setupOperationId!);
+    assert.equal(setup?.origin.kind, 'slack');
+    assert.equal(setup?.origin.kind === 'slack' ? setup.origin.approvedProposalId : 'not slack', undefined,
+      'the setup record keeps no approval stamp');
   } finally {
     f.close();
   }

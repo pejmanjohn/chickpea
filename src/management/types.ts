@@ -37,7 +37,8 @@ export type ManagementOrigin =
       /**
        * Set only by the Slack host when it resolved the person's typed
        * approval or Approve click to this proposal for the current turn.
-       * Nothing the model sends, and nothing in the delivery, can carry it.
+       * Nothing the model sends, and nothing in the delivery, can carry it,
+       * and a stored setup record drops it.
        */
       approvedProposalId?: string;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
@@ -682,8 +683,8 @@ export type ManagementOperationResult = ManagementApplyResult | ManagementSetupP
  * the one-time link issued once the set applied, or why none was issued.
  */
 export type ManagementDeferredSetup =
-  | { itemId: string; label: string; setupUrl: string }
-  | { itemId: string; code: string };
+  | { kind: 'issued'; itemId: string; label: string; setupUrl: string }
+  | { kind: 'not_issued'; itemId: string; code: string };
 
 export interface ManagementApplyResult {
   operationId: string;

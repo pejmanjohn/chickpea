@@ -8,7 +8,7 @@ export function slackTurnSignal(input: {
   turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk' | 'eventId' | 'messageTs' | 'uiResponse'>;
   agentId: string;
   conversation: { workspaceId: string; channelId: string; threadTs: string };
-  conversationKind: 'channel' | 'im';
+  conversationKind: 'channel' | 'im' | 'mpim';
   slackUserId: string;
 }): SlackManagementSignal {
   const requesterText = personRequestText(input.turn);

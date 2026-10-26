@@ -1765,7 +1765,7 @@ export class WorkspaceManagementService {
       const settled = await this.settleChangeSetRequest(actor, request);
       if (settled) return emitOperationOutcomes(actor.origin.kind, settled.result);
       const pending = await this.resultFor(request.operationId, input.idempotencyKey, progress.outcomes);
-      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(pending));
+      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(actor, pending));
     }
 
     const readiness = this.requestModelReadiness();
@@ -1944,7 +1944,7 @@ export class WorkspaceManagementService {
       ? { ...baseResult, receiptMetadata: input.receiptMetadata }
       : baseResult;
     if (progress.outcomes.some(({ disposition }) => disposition === 'confirmation_required')) {
-      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(result));
+      return emitOperationOutcomes(actor.origin.kind, await this.withChangeSetPreview(actor, result));
     }
     await this.stores.management.completeRequest(
       request.operationId,
@@ -2110,9 +2110,11 @@ export class WorkspaceManagementService {
     applied: ReadonlySet<string>,
   ): Promise<{ outcome: ManagementItemOutcome; deferred: ManagementDeferredSetup }> {
     const item = { itemId, operationKind: 'request_setup' as const };
-    const notIssued = (outcome: ManagementItemOutcome) => ({
+    const notIssued = (
+      outcome: ManagementItemOutcome,
+    ): { outcome: ManagementItemOutcome; deferred: ManagementDeferredSetup } => ({
       outcome,
-      deferred: { itemId, code: outcome.code ?? outcome.disposition },
+      deferred: { kind: 'not_issued', itemId, code: outcome.code ?? outcome.disposition },
     });
     const stored = request.operations.find((operation) => operation.itemId === itemId);
     if (stored?.kind !== 'request_setup') {
@@ -2122,7 +2124,7 @@ export class WorkspaceManagementService {
       return notIssued({ ...item, disposition: 'skipped', code: 'dependency_not_applied' });
     }
     try {
-      const operation = resolveClientReferences(stored, agentClientRefs(request.operations)) as typeof stored;
+      const operation = resolveSetupClientReference(stored, agentClientRefs(request.operations));
       const handoff = await this.actingAgentOperationHandoff(actor, operation);
       if (handoff) return notIssued({ ...item, disposition: 'chickpea_handoff', handoff });
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation, {
@@ -2145,7 +2147,7 @@ export class WorkspaceManagementService {
           setupOperationId: setup.record.setupOperationId,
           setupUrl: setup.url,
         },
-        deferred: { itemId, label: setup.record.target.targetLabel, setupUrl: setup.url },
+        deferred: { kind: 'issued', itemId, label: setup.record.target.targetLabel, setupUrl: setup.url },
       };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
@@ -2153,15 +2155,30 @@ export class WorkspaceManagementService {
     }
   }
 
-  /** The preview of the pending change set a confirmation waits on, for the person to read. */
-  private async withChangeSetPreview(result: ManagementApplyResult): Promise<ManagementApplyResult> {
+  /**
+   * The preview of the pending change set a confirmation waits on, for the
+   * person to read. A replayed Slack call shows it from a later message, which
+   * the set then waits on, as a fresh proposal of the same set would.
+   */
+  private async withChangeSetPreview(
+    actor: LiveManagementActor,
+    result: ManagementApplyResult,
+  ): Promise<ManagementApplyResult> {
     const proposalId = result.outcomes.find(({ disposition }) =>
       disposition === 'confirmation_required')?.proposalId;
     const changeSet = proposalId
       ? await this.stores.management.getChangeSetProposal(proposalId)
       : undefined;
     if (changeSet?.status !== 'pending') return result;
-    return { ...result, presentation: publicChangeSetProposal(changeSet).presentation };
+    const messageTs = actor.origin.kind === 'slack' ? actor.origin.messageTs : undefined;
+    const shown = messageTs && changeSet.proposedMessageTs !== messageTs
+      ? await this.stores.management.putChangeSetProposal({
+          ...changeSet,
+          proposedMessageTs: messageTs,
+          at: this.now(),
+        })
+      : changeSet;
+    return { ...result, presentation: publicChangeSetProposal(shown).presentation };
   }
 
   async proposeWorkspaceChanges(
@@ -5713,15 +5730,22 @@ function resolveClientReferences(
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
     return { ...operation, agentId };
   }
-  if (operation.kind === 'request_setup' &&
-      ['api_connection', 'mcp_connection', 'repository_access'].includes(operation.target.kind) &&
-      'agentClientRef' in operation.target && operation.target.agentClientRef) {
-    const agentId = clientRefs.get(operation.target.agentClientRef);
-    if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
-    const { agentClientRef: _agentClientRef, ...target } = operation.target;
-    return { ...operation, target: { ...target, agentId } };
-  }
+  if (operation.kind === 'request_setup') return resolveSetupClientReference(operation, clientRefs);
   return operation;
+}
+
+function resolveSetupClientReference(
+  operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
+  clientRefs: Map<string, string>,
+): Extract<ManagementOperation, { kind: 'request_setup' }> {
+  if (!['api_connection', 'mcp_connection', 'repository_access'].includes(operation.target.kind) ||
+      !('agentClientRef' in operation.target) || !operation.target.agentClientRef) {
+    return operation;
+  }
+  const agentId = clientRefs.get(operation.target.agentClientRef);
+  if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
+  const { agentClientRef: _agentClientRef, ...target } = operation.target;
+  return { ...operation, target: { ...target, agentId } };
 }
 
 /**

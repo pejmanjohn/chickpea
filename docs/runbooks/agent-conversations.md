@@ -106,9 +106,11 @@ exchange, in that thread:
   An Agent's message never counts as one of those, whatever it says.
 - On a turn an ask started, every workspace change waits in one proposal
   covering everything the turn would write: scheduled work, memory, skills,
-  undo, and Agent settings alike. The person approves
-  it with the card's Approve button or by replying that they approve it,
-  whichever Agent proposed it. A click on a guest's card goes to that guest.
+  undo, and Agent settings alike. The person approves it with the card's
+  Approve button, or with a reply addressed to the Agent that proposed it,
+  such as `@desk approve`. A reply that names no Agent goes to the thread's
+  own Agent, so it approves only that Agent's proposals. A click on a guest's
+  card goes to that guest.
 - Asks happen only on the current runtime.
 
 An ask that cannot be admitted, for example to an Agent without a grant in

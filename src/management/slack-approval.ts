@@ -391,10 +391,10 @@ async function formatHostSlackManagementReceipt(input: {
   const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
     const lines = [
       ...details,
-      ...deferredSetup.flatMap((setup) => 'code' in setup
+      ...deferredSetup.flatMap((setup) => setup.kind === 'not_issued'
         ? [`Issue: ${escapeSlackControlCharacters(setup.code)}`]
         : []),
-      ...deferredSetup.flatMap((setup) => 'setupUrl' in setup
+      ...deferredSetup.flatMap((setup) => setup.kind === 'issued'
         ? [renderSlackMarkdownActionLink(slackActionLink(setup.setupUrl, `Connect ${setup.label}`))]
         : []),
     ];
