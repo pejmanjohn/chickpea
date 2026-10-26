@@ -5472,6 +5472,9 @@ export class WorkspaceManagementService {
             current?.revision ?? 0;
         }
       }
+      if (operation.kind === 'update_agent' && (operation.patch.mcpServers || operation.patch.apiConnections)) {
+        target[`agent_connections:${operation.agentId}`] = await this.agentConnectionsRevision(operation.agentId);
+      }
       return target;
     }
     if (operation.kind === 'put_channel') {
@@ -5546,6 +5549,9 @@ export class WorkspaceManagementService {
     if (key.startsWith('agent:')) {
       return (await optionalAgent(this.stores.config, key.slice('agent:'.length)))?.revision ?? 0;
     }
+    if (key.startsWith('agent_connections:')) {
+      return this.agentConnectionsRevision(key.slice('agent_connections:'.length));
+    }
     if (key.startsWith('channel:')) {
       const [workspaceId, channelId] = parseChannelKey(key.slice('channel:'.length));
       return (await this.stores.config.getChannel(workspaceId, channelId))?.revision ?? 0;
@@ -5573,6 +5579,24 @@ export class WorkspaceManagementService {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
+  }
+
+  /**
+   * Connection accounts change without an Agent revision, so a held edit of
+   * an Agent's connections also fences on every account bound to it.
+   */
+  private async agentConnectionsRevision(agentId: string): Promise<number> {
+    const [bindings, installations] = await Promise.all([
+      this.stores.config.listAgentConnectionBindings(agentId),
+      this.stores.config.listWorkspaceInstallations(),
+    ]);
+    const accounts = (await Promise.all(installations.map(({ workspaceId }) =>
+      this.stores.config.listConnectionAccounts(workspaceId)))).flat();
+    const bound = bindings.map((binding) => {
+      const account = accounts.find(({ id }) => id === binding.connectionAccountId);
+      return [binding.connectionAccountId, binding.enabled, account?.revision ?? 0, account?.lifecycle ?? null];
+    });
+    return Number.parseInt(createHash('sha256').update(canonicalJson(bound)).digest('hex').slice(0, 12), 16);
   }
 
   private async providerRevision(providerId: ManagedProviderId): Promise<number> {

@@ -217,9 +217,21 @@ test('on a turn another Agent\'s ask started, an instruction edit waits for the 
   }
 });
 
+/** The Agent's live connections, as provider id and status, from its connection accounts. */
+async function agentConnections(
+  f: Awaited<ReturnType<typeof setup>>['f'],
+  agentId: string,
+): Promise<Array<[string, string]>> {
+  const bindings = await f.config.listAgentConnectionBindings(agentId);
+  return (await f.config.listConnectionAccounts(f.owner.binding.slackTeamId))
+    .filter(({ id, lifecycle }) => lifecycle !== 'revoked' &&
+      bindings.some(({ connectionAccountId }) => connectionAccountId === id))
+    .map(({ providerId, lifecycle }) => [providerId, lifecycle]);
+}
+
 const ZENDESK: CustomAgentConfig['mcpServers'][number] = {
   id: 'zendesk', displayName: 'Zendesk', url: 'https://mcp.zendesk.example/mcp', transport: 'streamable-http',
-  authMode: 'bearer', headerNames: ['Authorization'], enabled: true, lifecycleStatus: 'pending',
+  authMode: 'bearer', headerNames: [], enabled: true, lifecycleStatus: 'pending',
   statusText: 'Setup required', discoveredTools: [], allowedTools: [], presetId: 'zendesk',
 };
 
@@ -422,12 +434,12 @@ test('the person\'s typed undo that would remove a connection waits for their ap
     const proposalId = heldProposalId(await tool(signal(desk.id, turn('Undo that.')), 'undo_workspace_change', {
       operationId: added.operationId, idempotencyKey: 'person-undo-connection',
     }));
-    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers.map(({ id }) => id), ['zendesk'],
+    assert.deepEqual(await agentConnections(f, desk.id), [['zendesk', 'pending']],
       'the connection stays until the person approves');
 
     const approval = await hostApproves(desk, turn('approve'), proposalId);
     assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
-    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers, []);
+    assert.deepEqual(await agentConnections(f, desk.id), []);
   } finally {
     f.close();
   }
@@ -569,14 +581,13 @@ test('a recipe imported in Slack creates the bare Agent and its capabilities wai
     ]);
     assert.ok(result.every(({ setupUrl }) => setupUrl === undefined), 'no setup link is issued in the import call');
     const scout = (await f.config.listUserAgents()).find(({ name }) => name === 'Scout')!;
-    assert.deepEqual(scout.mcpServers, [], 'the Agent exists without its capabilities');
+    assert.deepEqual(await agentConnections(f, scout.id), [], 'the Agent exists without its capabilities');
 
     const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
     assert.match(approval.kind === 'message' ? approval.text : '',
       /^Applied the approved changes\.\n\n\[Connect tracker\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
       'the approval receipt carries the setup link');
-    assert.deepEqual((await f.config.getAgent(scout.id)).mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]),
-      [['tracker', 'pending']]);
+    assert.deepEqual(await agentConnections(f, scout.id), [['tracker', 'pending']]);
   } finally {
     f.close();
   }
@@ -604,8 +615,11 @@ test('in Slack, a later new Agent in the same recipe is created by the approval 
     assert.match(approval.kind === 'message' ? approval.text : '',
       /^Applied the approved changes\.\n\n\[Connect wiki\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
       'the receipt carries the one setup link the approval issues and no setup issue');
-    const imported = new Map((await f.config.listUserAgents()).map((agent) => [agent.name, agent.mcpServers.map(({ id }) => id)]));
-    assert.deepEqual([imported.get('Pilot'), imported.get('Ranger')], [['wiki'], []]);
+    const agents = new Map((await f.config.listUserAgents()).map((agent) => [agent.name, agent.id]));
+    assert.deepEqual([
+      (await agentConnections(f, agents.get('Pilot')!)).map(([id]) => id),
+      (await agentConnections(f, agents.get('Ranger')!)).map(([id]) => id),
+    ], [['wiki'], []]);
   } finally {
     f.close();
   }
