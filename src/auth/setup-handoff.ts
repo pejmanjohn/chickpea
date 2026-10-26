@@ -1,3 +1,5 @@
+import type { SlackOidcPurpose } from '../identity/types.ts';
+
 const SLACK_SETUP_STORAGE_KEY = 'chickpea.slack-setup.v1';
 
 /** Only a same-origin Admin path may survive an interrupted setup handoff. */
@@ -24,6 +26,11 @@ export function safeSlackLoginDestination(value: string | null | undefined): str
   if (/^\/auth\/mcp\/resume\/[A-Za-z0-9_-]{43,128}$/.test(candidate)) return candidate;
   if (/^\/setup\/setup_[A-Za-z0-9_-]{1,128}$/.test(candidate)) return candidate;
   return safeSetupDestination(candidate);
+}
+
+/** Only normal login may resume MCP authorization; setup and invitations return to Admin. */
+export function safeSlackOidcDestination(purpose: SlackOidcPurpose, value: string | null | undefined): string {
+  return purpose === 'login' ? safeSlackLoginDestination(value) : safeSetupDestination(value);
 }
 
 /** Fragment capability handoff for the seven-day Slack bootstrap transaction. */

@@ -25,11 +25,14 @@ import {
   mountMcpOAuthBrowserRoutes,
   renderMcpConsentPage,
 } from '../src/auth/mcp-oauth-routes.ts';
-import type { SlackAdmissionService } from '../src/auth/slack-admission.ts';
+import { SlackAdmissionService } from '../src/auth/slack-admission.ts';
+import type { SlackOidcProvider } from '../src/auth/slack-oidc.ts';
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
+import { generateCredentialKeyring } from '../src/slack/credential-keyring.ts';
 import { logout, type AuthDeps } from '../packages/cli/src/oauth.ts';
 import { CredentialStore, withExpiry, type StoredDeployment } from '../packages/cli/src/store.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const ORIGIN = 'https://chickpea.example.test';
 const RESOURCE = `${ORIGIN}/mcp`;
@@ -137,7 +140,7 @@ async function fixture({
       .run(JSON.stringify([WORKSPACE_SCOPE]), clientId);
   }
   return {
-    backend, options, cookie, handler, form, register, beginAuthorize, approve, authorize, token, revoke,
+    backend, options, person, cookie, handler, form, register, beginAuthorize, approve, authorize, token, revoke,
     recordWorkspaceOnlyConsent,
   };
 }
@@ -508,29 +511,32 @@ test('a signed-out person who signs in with Slack lands on the MCP consent scree
   t.after(() => f.backend.close());
   const identity = new SqliteIdentityStore(':memory:');
   t.after(() => identity.close());
+  await createSlackOwner(identity, {
+    betterAuthUserId: f.person.userId,
+    betterAuthOrganizationId: f.person.organizationId,
+    betterAuthMembershipId: f.person.membershipId,
+  });
   const browser = new Hono();
   mountMcpOAuthBrowserRoutes(browser, async () => f.options);
-  const state = 'mcp-login-state-0123456789abcdefghijklmnop';
-  let signInDestination = '';
+  const slack: SlackOidcProvider = {
+    authorizationUrl: ({ state }) => `https://slack.com/openid/connect/authorize?state=${state}`,
+    async exchangeAndVerify({ code }) {
+      assert.equal(code, 'oidc-code');
+      return { slackTeamId: 'T12345678', slackUserId: 'U12345678', displayName: 'Fixture Owner' };
+    },
+  };
   const admin = createAdminRoutes({
     identity,
     authSecret: randomBytes(32).toString('base64url'),
-    slackAdmissionService: {
-      async startLogin(input: { destination: string }) {
-        signInDestination = input.destination;
-        return {
-          attemptId: 'slackoidc_mcp', state, nonce: 'mcp-login-nonce-0123456789abcdefghijklmnop',
-          expiresAt: Date.now() + 900_000,
-          authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
-        };
-      },
-      async callback() {
-        return {
-          destination: signInDestination,
-          sessionResponse: new Response('{}', { headers: { 'set-cookie': `${f.cookie}; Path=/; HttpOnly; Secure` } }),
-        };
-      },
-    } as unknown as SlackAdmissionService,
+    slackAdmissionService: new SlackAdmissionService({
+      identity,
+      credentials: { state: identity, keyring: generateCredentialKeyring('key_v1') },
+      environment: { backend: f.backend, baseURL: ORIGIN, secret: f.options.secret },
+      gateway: slack,
+      credentialProvider: async () => ({
+        appId: 'A12345678', clientId: '123.456', teamId: 'T12345678', connectionRevision: 'slack_rev_1',
+      }),
+    }),
   });
 
   const client = await (await f.register({ scope: RENEWABLE_SCOPE })).json() as { client_id: string };
@@ -545,12 +551,16 @@ test('a signed-out person who signs in with Slack lands on the MCP consent scree
     body: new URLSearchParams({ purpose: 'login', destination }),
   });
   assert.equal(start.status, 200);
+  const slackUrl = /data-slack-authorization-link href="([^"]*)"/.exec(await start.text())?.[1] ?? '';
+  const state = new URL(slackUrl).searchParams.get('state');
   const callback = await admin.request(`${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=oidc-code`, {
     headers: { cookie: start.headers.get('set-cookie')!.split(';', 1)[0]! },
   });
+  assert.equal(callback.status, 303);
   const resume = callback.headers.get('location') ?? '';
   assert.match(resume, /^\/auth\/mcp\/resume\/[A-Za-z0-9_-]{43}$/, 'Slack sign-in returns to the MCP authorization');
+  const session = callback.headers.getSetCookie().find((value) => value.includes('session_token='))!.split(';', 1)[0]!;
   const authorization = (await browser.request(`${ORIGIN}${resume}`)).headers.get('location')!;
-  const consent = await f.handler(new Request(`${ORIGIN}${authorization}`, { headers: { cookie: f.cookie } }));
+  const consent = await f.handler(new Request(`${ORIGIN}${authorization}`, { headers: { cookie: session } }));
   assert.equal(new URL(consent.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent');
 });
