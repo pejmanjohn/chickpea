@@ -355,9 +355,7 @@ export const prepareProviderSetupZodSchema = z.strictObject({
   providerId: z.enum(['anthropic', 'openai', 'openrouter']),
   replaceExisting: z.boolean().optional(),
 });
-export const discoverSlackChannelsZodSchema = z.strictObject({
-  refresh: z.boolean().optional(),
-});
+export const discoverSlackChannelsZodSchema = z.strictObject({});
 export const testMcpConnectionZodSchema = z.strictObject({
   agentId: zAgentId,
   connectionId: zId,
@@ -702,9 +700,7 @@ export const prepareConnectorSetupValibotSchema = v.strictObject({
   connector: vt(128),
   ownerKind: v.picklist(['team', 'member']),
 });
-export const discoverSlackChannelsValibotSchema = v.strictObject({
-  refresh: v.optional(v.boolean()),
-});
+export const discoverSlackChannelsValibotSchema = v.strictObject({});
 export const testMcpConnectionValibotSchema = v.strictObject({
   agentId: vAgentId,
   connectionId: vid,

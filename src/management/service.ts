@@ -329,10 +329,7 @@ export interface WorkspaceManagementServiceInput {
     agent: CustomAgentConfig;
     patch: ConfigAgentPatch;
   }) => Promise<CustomAgentConfig>;
-  discoverSlackChannels?: (
-    refresh: boolean,
-    actor: LiveManagementActor,
-  ) => Promise<unknown>;
+  discoverSlackChannels?: (actor: LiveManagementActor) => Promise<unknown>;
   testMcpConnection?: (
     agentId: string,
     connectionId: string,
@@ -1602,7 +1599,6 @@ export class WorkspaceManagementService {
 
   async discoverSlackChannels(
     context: ApplyWorkspaceChangesInput['context'],
-    refresh = false,
   ): Promise<unknown> {
     const actor = await this.requireLiveActor(context);
     this.assertActingAgentScope(actor, {
@@ -1614,7 +1610,7 @@ export class WorkspaceManagementService {
     if (!this.stores.discoverSlackChannels) {
       throw new ManagementError('invalid_request', 'Slack Channel discovery is unavailable.');
     }
-    return this.stores.discoverSlackChannels(refresh, actor);
+    return this.stores.discoverSlackChannels(actor);
   }
 
   async testMcpConnection(

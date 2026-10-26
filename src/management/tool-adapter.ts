@@ -146,7 +146,7 @@ export type WorkspaceManagementToolArguments = {
     agentId?: string | undefined;
   };
   prepare_provider_setup: PrepareProviderSetupInput;
-  discover_slack_channels: { refresh?: boolean | undefined };
+  discover_slack_channels: Record<never, never>;
   test_mcp_connection: { agentId: string; connectionId: string };
   inspect_memory: { agentId: string };
   inspect_routines: ManagementRoutineInspectionInput;
@@ -301,10 +301,8 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
             : {}),
         });
       }
-      case 'discover_slack_channels': {
-        const value = args as WorkspaceManagementToolArguments['discover_slack_channels'];
-        return service.discoverSlackChannels(context, value.refresh ?? false);
-      }
+      case 'discover_slack_channels':
+        return service.discoverSlackChannels(context);
       case 'test_mcp_connection': {
         const value = args as WorkspaceManagementToolArguments['test_mcp_connection'];
         return service.testMcpConnection(context, value.agentId, value.connectionId);
