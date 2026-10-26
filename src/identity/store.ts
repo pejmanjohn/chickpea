@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { AuditStoreLogic } from '../audit/store.ts';
+import { safeSetupDestination, safeSlackOidcDestination } from '../auth/setup-handoff.ts';
 import { WORKSPACE_SLACK_INSTALLATION_ID } from '../config/types.ts';
 import { promisify } from '../state/async-facade.ts';
 import { openStateDb } from '../state/node-state-db.ts';
@@ -915,7 +916,7 @@ export class IdentityStoreLogic {
     if (input.expiresAt <= input.issuedAt) {
       throw identityError('identity_invalid', 'Slack setup expiry is invalid.');
     }
-    const destination = safeStoredAdminDestination(input.destination);
+    const destination = safeSetupDestination(input.destination);
     const control = this.ensureAuthControl();
     if (control.canonicalAdminOrigin && control.canonicalAdminOrigin !== canonicalAdminOrigin) {
       throw identityError('auth_control_conflict', 'Slack setup is bound to another Admin origin.');
@@ -1116,7 +1117,7 @@ export class IdentityStoreLogic {
           setup.id, setup.revision, oauthHash(input.stateHash, 'Slack OAuth state hash'),
           oauthHash(input.browserHash, 'Slack OAuth browser hash'), input.appId,
           strictText(input.clientId, 'Slack client ID', 256), input.credentialRevision,
-          input.baseRevision, validHttpsCallback(input.redirectUri), safeStoredAdminDestination(input.destination),
+          input.baseRevision, validHttpsCallback(input.redirectUri), safeSetupDestination(input.destination),
           input.expectedTeamId ?? null, input.expectedInstallerSlackUserId ?? null,
           input.expiresAt, at, at,
         );
@@ -1609,7 +1610,7 @@ export class IdentityStoreLogic {
         oauthHash(input.browserHash, 'Slack OIDC browser hash'),
         slackId(input.appId, 'Slack app ID'), strictText(input.clientId, 'Slack client ID', 256),
         nonEmpty(input.credentialRevision, 'Slack credential revision'),
-        validHttpsCallback(input.redirectUri), safeStoredAdminDestination(input.destination),
+        validHttpsCallback(input.redirectUri), safeSlackOidcDestination(input.purpose, input.destination),
         teamId, expectedUserId, input.expiresAt, at, at,
       );
     } catch {
@@ -3250,7 +3251,6 @@ function validateSlackOAuthAttemptInput(input: CreateSlackOAuthAttemptInput): vo
     slackId(input.expectedInstallerSlackUserId, 'Slack installer user ID');
   }
   validHttpsCallback(input.redirectUri);
-  safeStoredAdminDestination(input.destination);
   nonEmpty(input.credentialRevision, 'Slack credential revision');
   nonEmpty(input.baseRevision, 'Slack base revision');
   if (input.credentialRevision !== input.baseRevision) {
@@ -3556,23 +3556,6 @@ function validateSetupTime(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw identityError('identity_invalid', `${field} is invalid.`);
   }
-}
-function safeStoredAdminDestination(value: string): string {
-  const destination = value.trim();
-  if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(destination)) return '/admin';
-  try {
-    const base = new URL('https://chickpea.invalid');
-    const parsed = new URL(destination, base);
-    if (parsed.origin === base.origin && parsed.pathname === destination && !parsed.search && !parsed.hash &&
-        !parsed.username && !parsed.password && parsed.pathname !== '/admin/api' &&
-        !parsed.pathname.startsWith('/admin/api/') &&
-        (parsed.pathname === '/admin' || parsed.pathname.startsWith('/admin/'))) {
-      return parsed.pathname;
-    }
-  } catch {
-    // Fall through to the neutral Admin destination.
-  }
-  return '/admin';
 }
 function credentialPrefix(value: string): string {
   const normalized = value.trim();

@@ -176,6 +176,7 @@ import type { OAuthContinuation } from '../connections/types.ts';
 import {
   safeSetupDestination,
   safeSlackLoginDestination,
+  safeSlackOidcDestination,
   slackAuthorizationHandoffScript,
   slackManualSetupClientScript,
   slackSetupClientScript,
@@ -12322,10 +12323,7 @@ function encodeSlackOidcCookie(
   nonce: string,
   destination: string,
 ): string {
-  const safeDestination = purpose === 'login'
-    ? safeSlackLoginDestination(destination)
-    : safeSetupDestination(destination);
-  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeDestination)}`;
+  return `${purpose}.${browserBinding}.${nonce}.${encodeURIComponent(safeSlackOidcDestination(purpose, destination))}`;
 }
 
 function decodeSlackOidcCookie(value: string | undefined): {
@@ -12343,10 +12341,7 @@ function decodeSlackOidcCookie(value: string | undefined): {
       /\s/.test(browserBinding) || /\s/.test(nonce)) return undefined;
   let destination: string;
   try {
-    const decoded = decodeURIComponent(destinationParts.join('.'));
-    destination = purpose === 'login'
-      ? safeSlackLoginDestination(decoded)
-      : safeSetupDestination(decoded);
+    destination = safeSlackOidcDestination(purpose, decodeURIComponent(destinationParts.join('.')));
   }
   catch { return undefined; }
   return { purpose, browserBinding, nonce, destination };
