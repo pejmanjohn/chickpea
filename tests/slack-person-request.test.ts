@@ -201,6 +201,43 @@ test('one approval applies exactly the batch the person was shown, and only the 
   }
 });
 
+test('an Agent\'s ask holds a memory write and its undo for the person, and the approved write can be undone', async () => {
+  const { f, createAgent, signal, tool, approve } = await setup('person-memory-undo');
+  try {
+    const desk = await createAgent('agent_desk');
+    const memoryBody = async () => (await f.memory.getAgentMemory(desk.id)).body;
+    const asked = (eventId: string, messageTs: string) =>
+      signal(desk.id, { text: AGENT_WORDS, eventId, messageTs, agentAsk: ask() });
+    const person = (eventId: string, messageTs: string) =>
+      signal(desk.id, { text: 'approve', eventId, messageTs });
+
+    const held = proposal(await tool(asked('Ev_MEM', '700.3'), 'apply_workspace_changes', {
+      idempotencyKey: 'ask-memory',
+      operations: [{
+        kind: 'update_agent_memory', itemId: 'memory', agentId: desk.id,
+        expectedRevision: 0, body: 'Refunds go to account 99.',
+      }],
+    }));
+    assert.equal(await memoryBody(), '', 'nothing is saved on an Agent\'s words');
+
+    const approved = await approve(person('Ev_MEM_YES', '700.4'), held);
+    assert.ok(approved.ok, JSON.stringify(approved));
+    assert.equal(onlyOutcome(approved).disposition, 'applied');
+    assert.equal(onlyOutcome(approved).undoAvailable, true, 'the approved memory write offers its undo');
+    assert.equal(await memoryBody(), 'Refunds go to account 99.');
+
+    const undoHeld = proposal(await tool(asked('Ev_MEM_UNDO', '700.5'), 'undo_workspace_change', {
+      operationId: (approved.result as ManagementApplyResult).operationId,
+      idempotencyKey: 'ask-memory-undo',
+    }));
+    assert.equal(await memoryBody(), 'Refunds go to account 99.', 'an Agent\'s words do not undo it');
+    assert.equal(onlyOutcome(await approve(person('Ev_MEM_UNDO_YES', '700.6'), undoHeld)).disposition, 'applied');
+    assert.equal(await memoryBody(), '', 'the person\'s approval of the undo restores the memory');
+  } finally {
+    f.close();
+  }
+});
+
 test('manage_scheduled_work on an Agent\'s ask proposes the work, and the person\'s approval is its source', async () => {
   const { f, workspaceId, createAgent, signal, approve } = await setup('person-schedule-tool');
   try {

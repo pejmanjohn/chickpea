@@ -29,6 +29,7 @@ import type {
   ManagementConnectionStatus,
   ManagementMcpConnection,
 } from './agent-connections.ts';
+import type { GroupDmEligibility } from '../slack/agent-access.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
 
 export type ManagementOrigin =
@@ -771,7 +772,8 @@ export type ManagementDeferredSetup =
 export interface ManagementApplyResult {
   operationId: string;
   idempotencyKey: string;
-  status: 'completed' | 'partial' | 'confirmation_required';
+  /** `failed` when no item applied; `partial` when some did and another failed or was skipped. */
+  status: 'completed' | 'partial' | 'failed' | 'confirmation_required';
   outcomes: ManagementItemOutcome[];
   /** Links of the first outcome that changed an Agent; response-only. */
   links?: ManagementResultLinks;
@@ -848,6 +850,14 @@ export type ManagementConnectionReconnect =
 
 export interface ManagementWorkspaceSnapshot {
   organizationId: string;
+  /** The Slack workspace's team ID, which `inspect_routines` takes as `workspaceId`. */
+  slackTeamId?: string;
+  /** The signed-in person asking. */
+  caller: {
+    membershipId: string;
+    role: OrganizationRole;
+    displayName: string | null;
+  };
   /** Present only when inspection is scoped by a trusted Slack Agent route. */
   currentAgentId?: string;
   /** Secret-free catalog of connector handoffs available to management agents. */
@@ -913,6 +923,10 @@ export interface ManagementWorkspaceSnapshot {
     /** Website logins granted to this Agent and visible to the requester; never a password or TOTP seed. */
     websiteLogins?: WebsiteLoginView[];
     repositories: AgentCreateInput['repositories'];
+    /** Only an Agent every workspace member may use answers in Slack group DMs; `unknown` when Slack could not say. */
+    groupDms: GroupDmEligibility;
+    /** Present while the Agent answers as its own Slack app. */
+    ownSlackApp?: { handle: string };
   }>;
   channels: Array<{
     workspaceId: string;
@@ -959,6 +973,7 @@ export interface ManagementWorkspaceSnapshot {
       channelGrants: { active: number; pending: number; needsAttention: number };
     };
   };
+  /** Present for the people Admin shows the Team page: Owners and Admins. */
   team?: {
     members: Array<{
       id: string;
@@ -975,6 +990,29 @@ export interface ManagementWorkspaceSnapshot {
   websiteLoginSetup: string;
   /** Revision of this actor-visible snapshot, including its visible Agent-owned connections. */
   effectiveRevision: string;
+}
+
+/** The coding agents and other MCP clients the signed-in person connected; no token or secret. */
+export interface ManagementMcpClientList {
+  clients: Array<{
+    clientId: string;
+    /** The name the client registered with. */
+    name: string | null;
+    /** ISO 8601 time the person first allowed it. */
+    connectedAt: string;
+    /** ISO 8601 time it last signed in or renewed its access, which an active client does every 15 minutes. */
+    lastUsedAt: string | null;
+    /** The client making this request. */
+    current: boolean;
+  }>;
+}
+
+export interface ManagementMcpClientRevocation {
+  clientId: string;
+  name: string | null;
+  current: boolean;
+  /** What changed, for the coding agent to tell the person. */
+  message: string;
 }
 
 export type ManagementModelSource = 'pinned' | 'workspace_default';
@@ -1413,7 +1451,8 @@ export class ManagementError extends Error {
       | 'setup_session_mismatch'
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
-      | 'slack_unavailable',
+      | 'slack_unavailable'
+      | 'mcp_client_not_found',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

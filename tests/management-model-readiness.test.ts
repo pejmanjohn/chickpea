@@ -170,7 +170,7 @@ test('a workspace on Chickpea\'s models with no key of its own creates Agents pi
 
     const refused = await changeModels([{ agentId: 'agent_pinned_1', expectedRevision: 1, model: UNPRICED }]);
     assert.ok('outcomes' in refused);
-    assert.equal(refused.status, 'partial');
+    assert.equal(refused.status, 'failed');
     assert.equal(refused.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(
       refused.outcomes[0]?.warning ?? '',
@@ -221,7 +221,7 @@ test('Chickpea\'s models refuse a pin they do not serve, and say why, with no pr
     const { createPinned, previewPinned } = await workspace(t, hosted());
     fundedBy('platform');
     const { result } = await createPinned(UNPRICED);
-    assert.equal(result.status, 'partial');
+    assert.equal(result.status, 'failed');
     assert.equal(result.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(result.outcomes[0]?.warning ?? '', /not available on Chickpea's models/);
     assert.match(result.outcomes[0]?.warning ?? '', /omit the model field to inherit the workspace default/);
@@ -246,7 +246,7 @@ async function refusedForMissingKey(
     assert.equal((await f.config.getAgent(inheriting.id)).model, undefined);
 
     const { result } = await createPinned(model);
-    assert.equal(result.status, 'partial', `${model} with no key`);
+    assert.equal(result.status, 'failed', `${model} with no key`);
     assert.equal(result.outcomes[0]?.code, 'model_provider_unavailable');
     assert.match(result.outcomes[0]?.warning ?? '', /provider \w+ is not configured/);
     const provider = model.slice(0, model.indexOf('/'));

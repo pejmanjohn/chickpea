@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   revokeBetterAuthUserAccess,
   type BetterAuthAccessRevoker,
+  type BetterAuthMcpOAuthClients,
 } from '../auth/better-auth-backend.ts';
 import {
   AuthorizationError,
@@ -128,7 +129,9 @@ import {
   listPrivatelyUsableAgents,
   logUnavailableFacts,
   memberChannelViews,
+  resolveGroupDmEligibility,
   resolvePrivateAgentAccess,
+  type GroupDmEligibility,
   type PrivateAgentAccessResult,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
@@ -249,6 +252,8 @@ import {
   type ManagementSetupRecord,
   type ManagementSetupTarget,
   type ManagementUndoRecord,
+  type ManagementMcpClientList,
+  type ManagementMcpClientRevocation,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
@@ -297,6 +302,18 @@ const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
   lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
   listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
 };
+
+function oneLookupPerChannel(facts: PrivateAgentPlacementFacts): PrivateAgentPlacementFacts {
+  const channels = new Map<string, ReturnType<PrivateAgentPlacementFacts['lookupChannel']>>();
+  return {
+    lookupChannel(channelId) {
+      let channel = channels.get(channelId);
+      if (!channel) channels.set(channelId, channel = facts.lookupChannel(channelId));
+      return channel;
+    },
+    listMemberChannels: (slackUserId) => facts.listMemberChannels(slackUserId),
+  };
+}
 
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
@@ -481,6 +498,8 @@ export interface WorkspaceManagementServiceInput {
   withBetterAuthAccessRevoker?: <T>(
     use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
   ) => Promise<T>;
+  /** Better Auth's record of people's MCP clients; undefined where Better Auth does not sign people in. */
+  mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -686,6 +705,72 @@ export class WorkspaceManagementService {
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
     return this.snapshot(actor);
+  }
+
+  async listMcpClients(
+    context: ApplyWorkspaceChangesInput['context'],
+  ): Promise<ManagementMcpClientList> {
+    const { clients, betterAuthUserId, currentClientId } = await this.ownMcpClients(context);
+    return {
+      clients: (await clients.listOAuthClientsForUser(betterAuthUserId)).map((client) => ({
+        clientId: client.clientId,
+        name: client.name,
+        connectedAt: client.connectedAt.toISOString(),
+        lastUsedAt: client.lastTokenAt?.toISOString() ?? null,
+        current: client.clientId === currentClientId,
+      })),
+    };
+  }
+
+  /** Ends one of the person's own MCP clients at once; there is no Admin UI to confirm in. */
+  async revokeMcpClient(
+    context: ApplyWorkspaceChangesInput['context'],
+    clientId: string,
+  ): Promise<ManagementMcpClientRevocation> {
+    const { clients, betterAuthUserId, currentClientId } = await this.ownMcpClients(context);
+    const client = (await clients.listOAuthClientsForUser(betterAuthUserId))
+      .find((candidate) => candidate.clientId === clientId);
+    if (!client) {
+      throw new ManagementError(
+        'mcp_client_not_found',
+        'None of your connected MCP clients has that clientId. Call list_mcp_clients for the current list.',
+      );
+    }
+    await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
+    // Refresh tokens rotate: a refresh that validated the old token before the delete can store
+    // its replacement after it, so the grants go once more, as on a member's suspension.
+    await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
+    const current = clientId === currentClientId;
+    const name = client.name ?? 'The client';
+    return {
+      clientId,
+      name: client.name,
+      current,
+      message: current
+        ? `Revoked ${name}, the client you are using now. Its access ends within 15 minutes; then it must sign in to Chickpea again.`
+        : `Revoked ${name}. It can no longer renew its access to Chickpea, and the access it holds ends within 15 minutes. To use it again, sign in to Chickpea from it.`,
+    };
+  }
+
+  private async ownMcpClients(context: ApplyWorkspaceChangesInput['context']): Promise<{
+    clients: BetterAuthMcpOAuthClients;
+    betterAuthUserId: string;
+    currentClientId: string;
+  }> {
+    const actor = await this.requireLiveActor(context);
+    if (actor.origin.kind !== 'mcp') {
+      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP.');
+    }
+    const [clients, bindings] = await Promise.all([
+      this.stores.mcpOAuthClients?.(),
+      this.stores.identity.listExternalIdentities(),
+    ]);
+    const betterAuthUserId = bindings.find(({ membershipId }) =>
+      membershipId === actor.membershipId)?.betterAuthUserId;
+    if (!clients || !betterAuthUserId) {
+      throw new ManagementError('invalid_request', 'This deployment does not sign MCP clients in with Chickpea accounts.');
+    }
+    return { clients, betterAuthUserId, currentClientId: actor.origin.clientId };
   }
 
   async proposeSkillImport(
@@ -2155,19 +2240,7 @@ export class WorkspaceManagementService {
             readiness,
           );
           progress = appendOutcome(progress, index, appliedOutcome(operation, mutation));
-          if (request.operations.length === 1 &&
-              operation.kind !== 'create_agent' && mutation.inverse) {
-            await this.stores.management.putUndo({
-              operationId: request.operationId,
-              organizationId: actor.organizationId,
-              actorUserId: actor.userId,
-              inverse: mutation.inverse,
-              resultingRevisions: mutation.resultingRevisions,
-              ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
-              status: 'available',
-              createdAt: this.now(),
-              updatedAt: this.now(),
-            });
+          if (await this.offerUndo(actor, request.operationId, request.operations, mutation)) {
             progress.outcomes[progress.outcomes.length - 1]!.undoAvailable = true;
           }
         }
@@ -2675,6 +2748,8 @@ export class WorkspaceManagementService {
     }
     let proposal = existing;
     let recovered = false;
+    // The frozen preview keeps no inverse; the recheck before the claim derives it from the same state.
+    const rechecked = new Map<string, ManagementPreparedItem>();
     if (proposal.status === 'applying') {
       if (this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS) {
         throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
@@ -2719,6 +2794,7 @@ export class WorkspaceManagementService {
             currentPrepared,
           );
           await this.assertReviewedAgentReach(operation, proposal.targetRevisions);
+          rechecked.set(operation.itemId, currentPrepared);
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -2747,6 +2823,11 @@ export class WorkspaceManagementService {
       await this.stores.management.markChangeSetProposalStale(proposal.proposalId, this.now());
       throw new ManagementError('proposal_stale', 'The saved confirmation progress is invalid.');
     }
+    // The one-change rule covers the whole call, so an undo of the held item alone is not offered
+    // when the call also changed something else.
+    const callOperations = proposal.requestOperationId
+      ? (await this.stores.management.getRequest(proposal.requestOperationId))?.operations ?? []
+      : proposal.operations;
     const progressEffectiveRevision = proposal.result?.effectiveRevision ?? await this.effectiveRevision();
     for (let index = outcomes.length; index < proposal.operations.length; index += 1) {
       const operation = proposal.operations[index]!;
@@ -2793,8 +2874,22 @@ export class WorkspaceManagementService {
         }
         if (!recoveryDenied) {
           try {
-            mutation ??= await this.executeChangeSetOperation(actor, proposal, operation);
-            outcomes.push(appliedOutcome(operation, mutation));
+            mutation ??= await this.executeChangeSetOperation(
+              actor,
+              proposal,
+              operation,
+              rechecked.get(operation.itemId)?.inverse,
+            );
+            const applied = appliedOutcome(operation, mutation);
+            if (await this.offerUndo(
+              actor,
+              proposal.requestOperationId ?? proposal.proposalId,
+              callOperations,
+              mutation,
+            )) {
+              applied.undoAvailable = true;
+            }
+            outcomes.push(applied);
           } catch (error) {
             const reconciled = await this.reconcileChangeSetOperation(
               actor,
@@ -2868,12 +2963,18 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     proposal: ManagementChangeSetProposalRecord,
     operation: ManagementOperation,
+    inverse: ManagementOperation | undefined,
   ): Promise<ImmediateMutation> {
     const reconciled = await this.reconcileChangeSetOperation(actor, proposal, operation);
     if (reconciled) return reconciled;
     const prepared = changeSetPreparedItem(proposal, operation);
     if (canExecuteImmediately(operation)) {
-      return this.executeImmediate(actor, proposal.proposalId, operation, prepared);
+      return this.executeImmediate(
+        actor,
+        proposal.proposalId,
+        operation,
+        inverse ? { ...prepared, inverse } : prepared,
+      );
     }
     return this.executeConfirmed(actor, operation, proposal.proposalId, prepared);
   }
@@ -3029,9 +3130,46 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * One change applied on its own, other than a creation, can be undone while
+   * its target still holds what the change left.
+   */
+  private async offerUndo(
+    actor: LiveManagementActor,
+    operationId: string,
+    operations: readonly ManagementOperation[],
+    mutation: ImmediateMutation,
+  ): Promise<boolean> {
+    if (operations.length !== 1 || operations[0]!.kind === 'create_agent' || !mutation.inverse) {
+      return false;
+    }
+    await this.stores.management.putUndo({
+      operationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      inverse: mutation.inverse,
+      resultingRevisions: mutation.resultingRevisions,
+      ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
+      status: 'available',
+      createdAt: this.now(),
+      updatedAt: this.now(),
+    });
+    return true;
+  }
+
+  /** A confirmed change's undo belongs to its call, so its confirmation ID finds it too. */
+  private async findUndo(operationId: string): Promise<ManagementUndoRecord | undefined> {
+    const undo = await this.stores.management.getUndo(operationId);
+    if (undo) return undo;
+    const changeSet = await this.stores.management.getChangeSetProposal(operationId);
+    return changeSet?.requestOperationId
+      ? this.stores.management.getUndo(changeSet.requestOperationId)
+      : undefined;
+  }
+
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
-    const undo = await this.stores.management.getUndo(input.operationId);
+    const undo = await this.findUndo(input.operationId);
     if (!undo || undo.status !== 'available' || undo.organizationId !== actor.organizationId ||
         undo.actorUserId !== actor.userId) {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
@@ -3049,7 +3187,7 @@ export class WorkspaceManagementService {
         : {}),
     }));
     if (result.status === 'completed') {
-      await this.stores.management.consumeUndo(input.operationId, this.now());
+      await this.stores.management.consumeUndo(undo.operationId, this.now());
     }
     return result.links ? result : await this.withAgentLinks(input.context, result);
   }
@@ -4110,12 +4248,13 @@ export class WorkspaceManagementService {
     // As in Admin, provider and Workspace model settings are for Owners and Admins.
     const showsSettings = actor.role !== 'member' && !userAgentScoped;
     const [
-      allAgents, channels, allGrants, organization, keySources, models, currentAgent, workspaceModels,
+      allAgents, channels, allGrants, organization, caller, keySources, models, currentAgent, workspaceModels,
     ] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
       this.stores.identity.getOrganization(),
+      this.stores.identity.getUser(actor.userId),
       showsSettings
         ? Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
             id,
@@ -4297,8 +4436,11 @@ export class WorkspaceManagementService {
         refs.push({ kind: 'workspace_model', id: role, revision: workspaceModels[role]?.revision ?? 0 });
       }
     }
-    const [team, routineSchedulingAvailable, imagePins] = await Promise.all([
-      actor.role === 'owner' && !userAgentScoped ? this.teamSnapshot(actor.organizationId) : undefined,
+    const [team, groupDms, routineSchedulingAvailable, imagePins] = await Promise.all([
+      permissionForRole(actor.role).has('team.view') && !userAgentScoped
+        ? this.teamSnapshot(actor.organizationId)
+        : undefined,
+      this.groupDmEligibility(agents, allGrants, organization?.slackTeamId ?? undefined),
       userAgentScoped ? this.isRoutineSchedulingAvailable() : false,
       Promise.all(agents.map(async ({ id }) => {
         const imageModel = (await this.stores.config.getAgentModelRole(id, 'image'))?.modelId;
@@ -4311,6 +4453,12 @@ export class WorkspaceManagementService {
       : undefined;
     return {
       organizationId: actor.organizationId,
+      ...(organization?.slackTeamId ? { slackTeamId: organization.slackTeamId } : {}),
+      caller: {
+        membershipId: actor.membershipId,
+        role: actor.role,
+        displayName: caller?.displayName ?? null,
+      },
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
         ? { currentAgentId: actor.origin.agentId }
         : {}),
@@ -4390,6 +4538,8 @@ export class WorkspaceManagementService {
         ...(grants?.length
           ? { websiteLogins: projectAgentWebsiteLogins(grants, websiteLogins, principal) }
           : {}),
+        groupDms: groupDms.get(id)!,
+        ...(agentAppIsLive(slackPresence) ? { ownSlackApp: { handle: slackPresence.normalizedHandle } } : {}),
       })),
       channels: visibleChannels.map((channel) => ({
         workspaceId: channel.workspaceId,
@@ -4446,6 +4596,29 @@ export class WorkspaceManagementService {
       websiteLoginSetup: WEBSITE_LOGIN_SETUP,
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
+  }
+
+  /** One Slack lookup per Channel serves every Agent but those with their own Slack app. */
+  private async groupDmEligibility(
+    agents: readonly CustomAgentConfig[],
+    grants: readonly AgentChannelGrant[],
+    workspaceId: string | undefined,
+  ): Promise<ReadonlyMap<string, GroupDmEligibility>> {
+    if (!workspaceId) return new Map(agents.map(({ id }) => [id, 'unknown']));
+    let shared: Promise<PrivateAgentPlacementFacts> | undefined;
+    const facts = (agent: CustomAgentConfig) => agent.slackPresence?.kind === 'agent_app'
+      ? this.slackFactsFor(workspaceId, agent)
+      : shared ??= this.slackFactsFor(workspaceId).then(oneLookupPerChannel);
+    return new Map(await Promise.all(agents.map(async (agent) => {
+      const placed = grants.some((grant) => grant.agentId === agent.id &&
+        grant.workspaceId === workspaceId && grant.status === 'active');
+      return [agent.id, await resolveGroupDmEligibility({
+        agent,
+        workspaceId,
+        grants,
+        ...(placed ? { transport: await facts(agent) } : {}),
+      })] as const;
+    })));
   }
 
   /** The Workspace models Admin Settings edits, from the only installation, as Admin reads them. */
@@ -4739,12 +4912,16 @@ export class WorkspaceManagementService {
   ): Promise<ManagementApplyResult> {
     const effectiveRevision = knownEffectiveRevision ?? await this.effectiveRevision();
     const hasConfirmation = outcomes.some(({ disposition }) => disposition === 'confirmation_required');
-    const hasFailure = outcomes.some(({ disposition }) =>
-      disposition === 'failed' || disposition === 'skipped' || disposition === 'chickpea_handoff');
+    const unapplied = ({ disposition }: ManagementItemOutcome) =>
+      disposition === 'failed' || disposition === 'skipped';
+    const hasFailure = outcomes.some((outcome) =>
+      unapplied(outcome) || outcome.disposition === 'chickpea_handoff');
     return {
       operationId,
       idempotencyKey,
-      status: hasFailure ? 'partial' : hasConfirmation ? 'confirmation_required' : 'completed',
+      status: outcomes.every(unapplied)
+        ? 'failed'
+        : hasFailure ? 'partial' : hasConfirmation ? 'confirmation_required' : 'completed',
       outcomes,
       effectiveRevision,
       activation: 'next_turn',
@@ -4932,6 +5109,7 @@ export class WorkspaceManagementService {
 
   private async executeMemoryMutation(
     operation: Extract<ManagementOperation, { kind: 'update_agent_memory' }>,
+    inverse: ManagementOperation | undefined,
   ): Promise<ImmediateMutation> {
     try {
       await this.requireAgentMemory(operation.agentId);
@@ -4940,7 +5118,7 @@ export class WorkspaceManagementService {
         expectedRevision: operation.expectedRevision,
         body: operation.body,
       });
-      return memoryMutation(memory);
+      return memoryMutation(memory, inverse);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
       throw new ManagementError('revision_conflict', 'The Agent memory changed.');
@@ -5734,7 +5912,7 @@ export class WorkspaceManagementService {
         return mutationForGrant(current, prepared.inverse, true);
       }
       case 'update_agent_memory':
-        return this.executeMemoryMutation(operation);
+        return this.executeMemoryMutation(operation, prepared.inverse);
       case 'set_workspace_model':
         return workspaceModelMutation(operation.role, await this.writeWorkspaceModel(actor, operation), prepared);
       case 'set_agent_image_model': {

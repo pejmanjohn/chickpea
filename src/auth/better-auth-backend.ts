@@ -47,6 +47,16 @@ export interface BetterAuthOAuthGrantRevocation {
   refreshTokens: number;
 }
 
+/** One MCP client a person signed in with, read from their consents and tokens; never a token value. */
+export interface BetterAuthMcpOAuthClient {
+  clientId: string;
+  /** The name the client registered with. */
+  name: string | null;
+  connectedAt: Date;
+  /** When it last received a token: at sign-in, then each renewal. */
+  lastTokenAt: Date | null;
+}
+
 /**
  * Rows removed by erasing one installation's Better Auth organization. A
  * former member whose login another organization still holds (the same
@@ -127,6 +137,41 @@ DELETE FROM oauthClient WHERE clientId IN (
 )`,
   count: `WITH ${SQLITE_PENDING_MCP_CLIENTS} SELECT count(*) AS count FROM pending`,
 } as const;
+
+/** One person's consents and tokens, a row each, with the client they belong to; bind the user ID as ?1. */
+export const SQLITE_MCP_OAUTH_CLIENT_GRANTS = `SELECT g.clientId AS clientId, c.name AS name, g.kind AS kind, g.createdAt AS createdAt
+FROM (
+  SELECT clientId, 'consent' AS kind, createdAt FROM oauthConsent WHERE userId = ?1
+  UNION ALL SELECT clientId, 'token' AS kind, createdAt FROM oauthRefreshToken WHERE userId = ?1
+  UNION ALL SELECT clientId, 'token' AS kind, createdAt FROM oauthAccessToken WHERE userId = ?1
+) AS g JOIN oauthClient AS c ON c.clientId = g.clientId`;
+
+/**
+ * One entry per client: connected at its first consent (or first token when
+ * none survives), last given a token at its newest one. Most recent first.
+ */
+export function mcpOAuthClientsFromGrants(rows: readonly unknown[]): BetterAuthMcpOAuthClient[] {
+  const clients = new Map<string, { name: string | null; consents: Date[]; tokens: Date[] }>();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const { clientId, name, kind, createdAt } = row as Record<string, unknown>;
+    const at = parseBetterAuthDate(createdAt);
+    if (typeof clientId !== 'string' || !at) continue;
+    const client = clients.get(clientId) ??
+      { name: typeof name === 'string' ? name : null, consents: [], tokens: [] };
+    (kind === 'consent' ? client.consents : client.tokens).push(at);
+    clients.set(clientId, client);
+  }
+  const earliest = (dates: Date[]) => dates.reduce((a, b) => a <= b ? a : b);
+  const latest = (dates: Date[]) => dates.reduce((a, b) => a >= b ? a : b);
+  return [...clients].map(([clientId, { name, consents, tokens }]) => ({
+    clientId,
+    name,
+    connectedAt: earliest(consents.length ? consents : tokens),
+    lastTokenAt: tokens.length ? latest(tokens) : null,
+  })).sort((left, right) =>
+    (right.lastTokenAt ?? right.connectedAt).getTime() - (left.lastTokenAt ?? left.connectedAt).getTime());
+}
 
 /** The erasure's counts, from SQLite's count row. */
 export function sqliteOrganizationErasure(counts: Record<string, unknown> | undefined): BetterAuthOrganizationErasure {
@@ -234,6 +279,14 @@ export interface BetterAuthDatabaseBackend {
    * refused at the MCP resource, which checks membership on every request.
    */
   revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation>;
+  /** The MCP clients one canonical user holds a consent or token for. */
+  listOAuthClientsForUser(userId: string): Promise<BetterAuthMcpOAuthClient[]>;
+  /**
+   * Remove one user's consent and tokens for one client together. The client's
+   * registration and anyone else's grants stay; an access token already issued
+   * as a JWT works until it expires.
+   */
+  revokeOAuthClientForUser(userId: string, clientId: string): Promise<BetterAuthOAuthGrantRevocation>;
   getUser(userId: string): Promise<BetterAuthUserRecord | null>;
   findUserByEmail(email: string): Promise<BetterAuthUserRecord | null>;
   getOrganization(organizationId: string): Promise<BetterAuthOrganizationRecord | null>;
@@ -268,6 +321,9 @@ export interface BetterAuthDatabaseBackend {
 
 export type BetterAuthAccessRevoker =
   Pick<BetterAuthDatabaseBackend, 'deleteSessionsForUser' | 'revokeOAuthGrantsForUser'>;
+
+export type BetterAuthMcpOAuthClients =
+  Pick<BetterAuthDatabaseBackend, 'listOAuthClientsForUser' | 'revokeOAuthClientForUser'>;
 
 /**
  * Ends one user's MCP OAuth grants and browser sessions when their membership

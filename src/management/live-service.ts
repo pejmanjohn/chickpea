@@ -1,4 +1,4 @@
-import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
+import { resolveBetterAuthEnvironment, withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
   getAgentSnapshotStore,
   getConfigStore,
@@ -389,6 +389,10 @@ export function createLiveWorkspaceManagementService(
       { control: await identity.getAuthControl(), platformEnv: env },
       use,
     ),
+    mcpOAuthClients: async () => {
+      const control = await identity.getAuthControl();
+      return control ? (await resolveBetterAuthEnvironment({ control, platformEnv: env }))?.backend : undefined;
+    },
     ...agentAvatarInstallationField(env),
     ...overrides,
   });

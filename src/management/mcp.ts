@@ -11,6 +11,7 @@ import {
   confirmWorkspaceChangeZodSchema,
   getOperationZodSchema,
   inspectWorkspaceZodSchema,
+  listMcpClientsZodSchema,
   prepareConnectorSetupZodSchema,
   prepareProviderSetupZodSchema,
   discoverSlackChannelsZodSchema,
@@ -20,6 +21,7 @@ import {
   exportRecipeZodSchema,
   previewRecipeZodSchema,
   MCP_MANAGEMENT_OPERATION_KINDS,
+  revokeMcpClientZodSchema,
   revokeSetupLinkZodSchema,
   undoWorkspaceChangeZodSchema,
 } from './schemas.ts';
@@ -43,7 +45,7 @@ import type { ManagementActorContext, ManagementOperation } from './types.ts';
 
 export const WORKSPACE_MANAGEMENT_SERVER_INFO = {
   name: 'chickpea-workspace',
-  version: '3.0.0',
+  version: '3.1.0',
 } as const;
 /** The coding-agent door has no propose tools: it acts with the person's Admin authority. */
 export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
@@ -63,6 +65,8 @@ export const WORKSPACE_MANAGEMENT_MCP_TOOL_NAMES = [
   'undo_workspace_change',
   'get_operation',
   'revoke_setup_link',
+  'list_mcp_clients',
+  'revoke_mcp_client',
 ] as const satisfies readonly WorkspaceManagementToolName[];
 const READ_ONLY = { readOnlyHint: true } as const;
 /** destructiveHint defaults to true, so a write the person need not confirm says false. */
@@ -291,6 +295,28 @@ export function createWorkspaceManagementMcpServer(
   }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
     adapter,
     'revoke_setup_link',
+    args,
+  )));
+
+  server.registerTool('list_mcp_clients', {
+    title: 'List connected MCP clients',
+    description: workspaceManagementToolDescription('list_mcp_clients', 'mcp'),
+    inputSchema: listMcpClientsZodSchema,
+    annotations: READ_ONLY,
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'list_mcp_clients',
+    args,
+  )));
+
+  server.registerTool('revoke_mcp_client', {
+    title: 'Revoke a connected MCP client',
+    description: workspaceManagementToolDescription('revoke_mcp_client', 'mcp'),
+    inputSchema: revokeMcpClientZodSchema,
+    annotations: WRITE,
+  }, async (args) => mcpResult(await invokeWorkspaceManagementTool(
+    adapter,
+    'revoke_mcp_client',
     args,
   )));
 

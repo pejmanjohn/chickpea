@@ -157,7 +157,7 @@ test('management-created schedules accept active grant-only destinations and bin
         outputPolicy: 'post',
       }],
     });
-    assert.equal(invalidSchedule.status, 'partial');
+    assert.equal(invalidSchedule.status, 'failed');
     assert.equal(invalidSchedule.outcomes[0]?.code, 'invalid_request');
     assert.equal((await routines.listRoutines('T_MANAGEMENT_ROUTINE', 'C_SUPPORT')).length, 1);
   } finally {

@@ -634,7 +634,7 @@ export class ManagementStoreLogic {
         eventId: `management:${operationId}`,
         domain: 'management',
         eventType: 'management.request.completed',
-        outcome: result.status === 'completed' ? 'success' : 'requested',
+        outcome: result.status === 'completed' ? 'success' : result.status === 'failed' ? 'failure' : 'requested',
         actorClass: 'chickpea_user',
         actorId: request.actorUserId,
         workspaceId: request.organizationId,
@@ -1650,9 +1650,10 @@ export class ManagementStoreLogic {
         boundedLimit,
       );
       remove(
+        // An unused undo goes too: it can hold what a change replaced, such as forgotten memory.
         `DELETE FROM management_undo WHERE operation_id IN (
            SELECT operation_id FROM management_undo
-           WHERE status = 'consumed' AND updated_at < ?
+           WHERE updated_at < ?
            ORDER BY updated_at LIMIT ?
          )`,
         cutoff,

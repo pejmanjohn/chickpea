@@ -789,6 +789,31 @@ test('management retention removes terminal rows but preserves proposals awaitin
   }
 });
 
+test('management retention deletes undo records after 30 days, used or not', async () => {
+  const store = new SqliteManagementStore(':memory:');
+  const old = NOW - 31 * 24 * 60 * 60_000;
+  const undo = (operationId: string, at: number) => store.putUndo({
+    operationId, organizationId: 'org_1', actorUserId: 'user_1',
+    inverse: {
+      itemId: 'restore', kind: 'update_agent_memory', agentId: 'agent_test',
+      expectedRevision: 2, body: 'The forgotten note.',
+    },
+    resultingRevisions: {}, status: 'available', createdAt: at, updatedAt: at,
+  });
+  try {
+    await undo('old_unused', old);
+    await undo('old_used', old);
+    await store.consumeUndo('old_used', old);
+    await undo('recent_unused', NOW - 60_000);
+    assert.equal(await store.cleanupRetention(NOW), 2);
+    assert.equal(await store.getUndo('old_unused'), undefined);
+    assert.equal(await store.getUndo('old_used'), undefined);
+    assert.equal((await store.getUndo('recent_unused'))?.status, 'available');
+  } finally {
+    store.close();
+  }
+});
+
 test('terminal management writes append one allowlisted, secret-free audit receipt', () => {
   const db = openStateDb(':memory:');
   try {

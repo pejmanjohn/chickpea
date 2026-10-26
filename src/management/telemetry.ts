@@ -110,6 +110,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
     'import_skill', 'manage_agent_skill', 'propose_skill_import',
     'propose_workspace_changes', 'apply_workspace_changes', 'confirm_workspace_change',
     'undo_workspace_change', 'get_operation', 'revoke_setup_link',
+    'list_mcp_clients', 'revoke_mcp_client',
   ]),
 };
 
@@ -124,7 +125,7 @@ const REASON_TOKENS = new Set([
   'proposal_not_found', 'proposal_stale', 'revision_conflict', 'setup_expired',
   'base_agent_capabilities_require_setup',
   'setup_failed', 'setup_not_found', 'setup_session_mismatch', 'setup_unavailable',
-  'target_changed', 'undo_unavailable', 'validation_failed',
+  'target_changed', 'undo_unavailable', 'validation_failed', 'mcp_client_not_found',
   'routines_unavailable_on_target', 'schedule_authority_missing',
   'archive_agent_reach', 'restore_agent_reach',
   'schedule_agent_reassignment',

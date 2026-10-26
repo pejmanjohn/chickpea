@@ -41,6 +41,8 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'undo_workspace_change',
   'get_operation',
   'revoke_setup_link',
+  'list_mcp_clients',
+  'revoke_mcp_client',
 ] as const;
 
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
@@ -67,6 +69,8 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   undo_workspace_change: unknownSemanticDescriptor(),
   get_operation: unknownSemanticDescriptor(),
   revoke_setup_link: unknownSemanticDescriptor(),
+  list_mcp_clients: unknownSemanticDescriptor(),
+  revoke_mcp_client: unknownSemanticDescriptor(),
 };
 
 export function workspaceManagementSemanticDescriptor(
@@ -87,7 +91,7 @@ export function workspaceManagementSemanticInvocation(
 }
 
 const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
-  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. The connectors field is a setup catalog, not current access; currentAgent.effectiveConnections lists ready connections eligible for the routed Agent, while request selection and surface policy can narrow the current turn, and an empty array means none. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
+  inspect_workspace: 'Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, the caller\'s role, slackTeamId (the workspaceId inspect_routines takes), each Agent\'s groupDms eligibility and ownSlackApp, and, for Owners and Admins, the team. The connectors field is a setup catalog, not current access; currentAgent.effectiveConnections lists ready connections eligible for the routed Agent, while request selection and surface policy can narrow the current turn, and an empty array means none. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.',
   prepare_connector_setup: 'Create a safe browser handoff URL for connecting one catalog service to an editable Agent. Set ownerKind to "member" for a personal connection or "team" for a team-owned connection. The resulting connection belongs only to that Agent. In a specific Agent Slack conversation, agentId may be omitted to target that Agent.',
   prepare_provider_setup: 'Create a safe browser handoff URL for adding or replacing one workspace model provider API key (anthropic, openai, or openrouter). Owner or Admin only, the same as Admin Settings → Model providers. The requester types the key on the Chickpea page; it never passes through this tool. When a key is already stored, pass replaceExisting true to issue a link that replaces it. A deployment-provided key is read-only and cannot be replaced here. The link expires after 24 hours and only the requester, signed in to Chickpea as an Owner or Admin, can complete it. Never ask for or relay the key itself.',
   discover_slack_channels: 'Discover Channels in the connected Slack workspace before publishing a Chickpea Agent.',
@@ -105,6 +109,8 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision. A trusted connector call immediately reverses an exact manage_agent_skill receipt; other inverses still use consequence-based policy.',
   get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
   revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
+  list_mcp_clients: 'List the coding agents and other MCP clients the signed-in person connected to Chickpea: each one\'s clientId, registered name, when they connected it, when it last signed in or renewed its access, and whether it is the one making this call. Only the person\'s own clients are listed.',
+  revoke_mcp_client: 'Revoke one of the signed-in person\'s connected MCP clients by its clientId from list_mcp_clients. It applies at once: the client\'s refresh tokens and the person\'s consent end, and an access token it already holds works until it expires, within 15 minutes. Revoking the client making this call is allowed; it must then sign in to Chickpea again. Tell the person the returned message.',
 };
 
 /**
@@ -119,7 +125,7 @@ const MCP_TOOL_DESCRIPTION_OVERLAY: Partial<Record<WorkspaceManagementToolName, 
   inspect_routines: 'Inspect routine schedules and safely projected content for one workspace, Channel, or routine. It also lists the signed-in person\'s own direct-message routines, never anyone else\'s: their destination kind is direct_message, its label names the Agent, and their channelId is null, so omit channelId when you change one. pausedReason and disabledReason say why a routine stopped. When reporting the next due time, use nextRunTime.display. Respect explicit user preferences for language, timezone, and clock format while preserving the instant. Do not append an IANA timezone identifier to the display value unless the requester asks for the identifier itself. When a machine-readable timestamp is requested or required, copy nextRunTime.isoUtc exactly in code formatting, preserving its ASCII punctuation; do not calculate a date from nextRunAt epoch milliseconds. A null nextRunTime means no next scheduled occurrence, as for a paused or disabled routine. lastRun is the latest occurrence\'s outcome: a completed one-time routine can still have a failed or skipped lastRun, so report its status and publicError when asked whether the work ran.',
   import_skill: 'Install one exact public GitHub-hosted SKILL.md on an editable Agent. This call is the person\'s request, so a bounded scriptless skill installs immediately and returns a receipt plus undo. Pass the exact source the person supplied unchanged. When they name a skill alongside a repository or parent URL, pass that name separately as skillName; never synthesize an @name source. File URLs, directory URLs and a named repository resolve in one operation. Ask the person to choose only when the tool returns several matches, then call again with the chosen sourceUrl. If the Agent has a skill with that name and different content, the tool says so; call again with replaceExisting true only if the person wants it replaced. Show presentation.markdown, including its omission warnings.',
   manage_agent_skill: 'Enable, disable, or remove one named existing Agent skill immediately. The narrow authenticated tool resolves current Agent state, verifies authority, preserves every other skill, and returns a receipt plus undo. An authenticated MCP invocation is already the exact typed command. Use it instead of sending a rewritten skills array through apply_workspace_changes. Show the returned presentation.markdown to the person.',
-  apply_workspace_changes: 'Apply typed Chickpea workspace configuration changes with durable idempotency and per-item outcomes. You act with the signed-in person\'s Admin authority, so every change they may make applies in this call. It does not execute actions in Slack or connected services. Create one sufficiently understood base Agent as a standalone create_agent operation and send capability and follow-on configuration as later operations. If the person asks to preview or draft a new Agent first, show a textual draft and wait for their approval in this conversation before calling this tool. Like the Admin UI, a destructive change asks first: deleting an Agent or routine, suspending or removing a member or changing an Owner, removing a model provider key, removing an Agent\'s MCP server or API connection, or disabling an Agent that answers in Channels. Such an item returns confirmation_required with presentation.markdown and a proposalId, and the rest of the call waits with it. Show the preview, ask the person, and call confirm_workspace_change only after they agree. Another destructive change makes an earlier confirmation_required change stale, so get the person\'s answer before you send one. Receipts carry links.admin (open the Agent in Admin) and links.slack (open Chickpea in Slack); share them so the person can try the Agent by mentioning @handle.',
+  apply_workspace_changes: 'Apply typed Chickpea workspace configuration changes with durable idempotency and per-item outcomes. You act with the signed-in person\'s Admin authority, so every change they may make applies in this call. It does not execute actions in Slack or connected services. Create one sufficiently understood base Agent as a standalone create_agent operation and send capability and follow-on configuration as later operations. If the person asks to preview or draft a new Agent first, show a textual draft and wait for their approval in this conversation before calling this tool. Like the Admin UI, a destructive change asks first: deleting an Agent or routine, suspending or removing a member or changing an Owner, removing a model provider key, removing or disconnecting an Agent\'s connection, removing a website login, or disabling an Agent that answers in Channels. Such an item returns confirmation_required with presentation.markdown and a proposalId, and the rest of the call waits with it. Show the preview, ask the person, and call confirm_workspace_change only after they agree. Another destructive change makes an earlier confirmation_required change stale, so get the person\'s answer before you send one. Receipts carry links.admin (open the Agent in Admin) and links.slack (open Chickpea in Slack); share them so the person can try the Agent by mentioning @handle.',
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision. The undo applies immediately unless reversing it is destructive, such as removing a connection the change added; then it returns confirmation_required with presentation.markdown for the person to confirm.',
 };
 
@@ -184,6 +190,8 @@ export type WorkspaceManagementToolArguments = {
   undo_workspace_change: { operationId: string; idempotencyKey: string };
   get_operation: { operationId: string };
   revoke_setup_link: { setupOperationId: string; reissue?: boolean | undefined };
+  list_mcp_clients: Record<never, never>;
+  revoke_mcp_client: { clientId: string };
 };
 
 export type WorkspaceManagementToolResult =
@@ -386,6 +394,12 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
           value.setupOperationId,
           value.reissue ?? false,
         );
+      }
+      case 'list_mcp_clients':
+        return service.listMcpClients(context);
+      case 'revoke_mcp_client': {
+        const value = args as WorkspaceManagementToolArguments['revoke_mcp_client'];
+        return service.revokeMcpClient(context, value.clientId);
       }
   }
 }

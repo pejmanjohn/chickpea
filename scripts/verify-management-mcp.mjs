@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const REQUEST_TIMEOUT_MS = 15_000;
 const AGENT_AUTHORING_GUIDE_URI = 'chickpea://guide/agent-authoring/v1';
 const AGENT_AUTHORING_GUIDE_VERSION = '1.0.43';
-const MANAGEMENT_MCP_SERVER_VERSION = '3.0.0';
+const MANAGEMENT_MCP_SERVER_VERSION = '3.1.0';
 const MANAGEMENT_MCP_TOOL_NAMES = [
   'inspect_workspace',
   'prepare_connector_setup',
@@ -22,6 +22,8 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'undo_workspace_change',
   'get_operation',
   'revoke_setup_link',
+  'list_mcp_clients',
+  'revoke_mcp_client',
 ];
 
 function fetchWithDeadline(input, init = {}) {

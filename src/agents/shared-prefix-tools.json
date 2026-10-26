@@ -439,7 +439,7 @@
   },
   {
    "name": "inspect_workspace",
-   "description": "Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, and Owner-only team authority. The connectors field is a setup catalog, not current access; currentAgent.effectiveConnections lists ready connections eligible for the routed Agent, while request selection and surface policy can narrow the current turn, and an empty array means none. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.",
+   "description": "Inspect current non-secret Chickpea Agents, skills, connections, repositories, Channels, provider availability, the caller's role, slackTeamId (the workspaceId inspect_routines takes), each Agent's groupDms eligibility and ownSlackApp, and, for Owners and Admins, the team. The connectors field is a setup catalog, not current access; currentAgent.effectiveConnections lists ready connections eligible for the routed Agent, while request selection and surface policy can narrow the current turn, and an empty array means none. Required before recommending specific capabilities for Agent design or answering what services an Agent can use.",
    "eager_input_streaming": true,
    "input_schema": {
     "type": "object",

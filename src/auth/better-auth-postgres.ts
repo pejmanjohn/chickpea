@@ -3,6 +3,7 @@ import pg, { type Pool, type PoolConfig, type QueryResultRow } from 'pg';
 
 import type {
   BetterAuthDatabaseBackend,
+  BetterAuthMcpOAuthClient,
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthMembershipRecord,
   BetterAuthOAuthGrantRevocation,
@@ -16,6 +17,7 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  mcpOAuthClientsFromGrants,
   parseBetterAuthDate,
 } from './better-auth-backend.ts';
 
@@ -72,6 +74,37 @@ export class PostgresBetterAuthBackend implements BetterAuthDatabaseBackend {
               (SELECT count(*) FROM refresh)::int AS "refreshTokens",
               (SELECT count(*) FROM consent)::int AS "consents"`,
       [userId],
+    );
+    return {
+      consents: row?.consents ?? 0,
+      accessTokens: row?.accessTokens ?? 0,
+      refreshTokens: row?.refreshTokens ?? 0,
+    };
+  }
+
+  async listOAuthClientsForUser(userId: string): Promise<BetterAuthMcpOAuthClient[]> {
+    if (!UUID.test(userId)) return [];
+    return mcpOAuthClientsFromGrants(await this.rows(
+      `SELECT g."clientId", c.name, g.kind, g."createdAt"
+       FROM (
+         SELECT "clientId", 'consent' AS kind, "createdAt" FROM "oauthConsent" WHERE "userId" = $1
+         UNION ALL SELECT "clientId", 'token', "createdAt" FROM "oauthRefreshToken" WHERE "userId" = $1
+         UNION ALL SELECT "clientId", 'token', "createdAt" FROM "oauthAccessToken" WHERE "userId" = $1
+       ) AS g JOIN "oauthClient" AS c ON c."clientId" = g."clientId"`,
+      [userId],
+    ));
+  }
+
+  async revokeOAuthClientForUser(userId: string, clientId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    if (!UUID.test(userId)) return { consents: 0, accessTokens: 0, refreshTokens: 0 };
+    const [row] = await this.rows<BetterAuthOAuthGrantRevocation>(
+      `WITH access AS (DELETE FROM "oauthAccessToken" WHERE "userId" = $1 AND "clientId" = $2 RETURNING 1),
+            refresh AS (DELETE FROM "oauthRefreshToken" WHERE "userId" = $1 AND "clientId" = $2 RETURNING 1),
+            consent AS (DELETE FROM "oauthConsent" WHERE "userId" = $1 AND "clientId" = $2 RETURNING 1)
+       SELECT (SELECT count(*) FROM access)::int AS "accessTokens",
+              (SELECT count(*) FROM refresh)::int AS "refreshTokens",
+              (SELECT count(*) FROM consent)::int AS "consents"`,
+      [userId, clientId],
     );
     return {
       consents: row?.consents ?? 0,

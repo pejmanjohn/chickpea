@@ -116,6 +116,18 @@ export async function resolveTurnAgentAccess(
   return { status, audience };
 }
 
+/** Whether an Agent answers in group DMs, by the rule resolveTurnAgentAccess applies to each turn. */
+export type GroupDmEligibility = 'eligible' | 'not_eligible' | 'unknown';
+
+export async function resolveGroupDmEligibility(
+  input: PrivateAgentAudienceInput,
+): Promise<GroupDmEligibility> {
+  if (!agentIsEligible(input.agent)) return 'not_eligible';
+  const audience = await resolvePrivateAgentAudience(input);
+  if (audience === 'workspace_members') return 'eligible';
+  return audience === 'unavailable' ? 'unknown' : 'not_eligible';
+}
+
 /** Derive the non-sensitive audience explanation used by Agent Admin. */
 export async function resolvePrivateAgentAudience(
   input: PrivateAgentAudienceInput,
