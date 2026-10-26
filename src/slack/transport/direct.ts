@@ -1,4 +1,5 @@
 import type { View } from '@slack/types';
+import type { WebClient } from '@slack/web-api';
 
 import { withUserGroupAuthority, type OwnerUserGroupToken } from '../user-group-authority.ts';
 import { createSlackWebClient } from '../web-client.ts';
@@ -62,6 +63,11 @@ export function createDirectSlackTransport(botToken: string, owner: OwnerUserGro
     ? createSlackWebClient(owner.token) as unknown as DirectSlackApiClient
     : undefined;
   return createDirectSlackTransportFromClient(client, ownerClient, owner?.dead);
+}
+
+/** Wrap an SDK client the caller already holds, such as a workspace installation's. */
+export function createDirectSlackTransportFromWebClient(client: WebClient): SlackTransport {
+  return createDirectSlackTransportFromClient(client as unknown as DirectSlackApiClient);
 }
 
 /**

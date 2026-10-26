@@ -1,5 +1,10 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+
+import { CHICKPEA_AGENT_ID } from '../../src/config/agent-id.ts';
 import { SqliteSettingsStore } from '../../src/config/settings-store.ts';
 import { SqliteConfigStore } from '../../src/config/store.ts';
+import type { CustomAgentConfig } from '../../src/config/types.ts';
 import { ConnectionAccountService } from '../../src/connections/store.ts';
 import { SqliteIdentityStore } from '../../src/identity/store.ts';
 import { SqliteManagementStore } from '../../src/management/store.ts';
@@ -7,6 +12,12 @@ import {
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
 } from '../../src/management/service.ts';
+import { invokeWorkspaceManagementTool } from '../../src/management/tool-adapter.ts';
+import type {
+  ManagementActorContext,
+  ManagementApplyResult,
+  ManagementOperation,
+} from '../../src/management/types.ts';
 import { SqliteMemoryStateStore } from '../../src/memory/store.ts';
 import { SqliteRoutineStore } from '../../src/routines/store.ts';
 import { createSlackOwner } from './slack-owner.ts';
@@ -84,4 +95,88 @@ export async function createManagementAdapterFixture(
   };
 }
 
-import { createHash } from 'node:crypto';
+export type ManagementAdapterFixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
+
+export async function withManagementAdapterFixture(
+  suffix: string,
+  run: (f: ManagementAdapterFixture) => Promise<void>,
+  overrides: Partial<WorkspaceManagementServiceInput> = {},
+): Promise<void> {
+  const f = await createManagementAdapterFixture(suffix, overrides);
+  try {
+    await run(f);
+  } finally {
+    f.close();
+  }
+}
+
+/** The owner asking from an MCP client. */
+export function ownerMcpContext(
+  f: ManagementAdapterFixture,
+  clientId = 'adapter-test',
+): ManagementActorContext {
+  return {
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    origin: { kind: 'mcp', clientId },
+  };
+}
+
+/** The owner asking Chickpea in a Slack DM. */
+export function ownerSlackDmContext(f: ManagementAdapterFixture): ManagementActorContext {
+  return {
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    actingAgentId: CHICKPEA_AGENT_ID,
+    origin: {
+      kind: 'slack',
+      workspaceId: f.owner.binding.slackTeamId,
+      channelId: 'D_ADAPTER',
+      threadTs: '900.1',
+      messageTs: '900.1',
+      requestText: 'Please make this change.',
+      conversationKind: 'im',
+      agentId: CHICKPEA_AGENT_ID,
+    },
+  };
+}
+
+/** Calls apply_workspace_changes through the tool adapter, as both doors do. */
+export async function applyThroughAdapter(
+  f: ManagementAdapterFixture,
+  context: ManagementActorContext,
+  idempotencyKey: string,
+  operations: ManagementOperation[],
+): Promise<ManagementApplyResult> {
+  const response = await invokeWorkspaceManagementTool({
+    service: f.service,
+    resolveContext: async () => context,
+  }, 'apply_workspace_changes', { idempotencyKey, operations });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  return (response as { result: ManagementApplyResult }).result;
+}
+
+/** An active user Agent created by the owner, with no connections. */
+export async function createFixtureAgent(
+  f: ManagementAdapterFixture,
+  id: string,
+  extra: Partial<CustomAgentConfig> = {},
+): Promise<CustomAgentConfig> {
+  return f.config.createAgent({
+    id,
+    name: 'Research',
+    instructions: 'Find and cite sources.',
+    enabled: true,
+    lifecycle: 'active',
+    creatorMembershipId: f.owner.membership.id,
+    editPolicy: 'creator_and_admins',
+    configurationGeneration: 1,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+    ...extra,
+  });
+}

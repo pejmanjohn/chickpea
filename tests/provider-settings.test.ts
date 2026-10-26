@@ -176,6 +176,11 @@ test('Workspace default reads expose live inheritance health and exclude drafts 
       id: 'agent_draft', name: 'Draft', instructions: 'Wait.', enabled: false,
       lifecycle: 'draft', skills: [], mcpServers: [], apiConnections: [], repositories: [],
     });
+    await config.putWorkspaceModelRole({
+      workspaceId: installation.workspaceId,
+      role: 'coding',
+      modelId: 'openai/gpt-5.6-sol',
+    }, 0);
 
     const response = await app.request('/admin/api/workspace-model-default', { headers: auth() });
     assert.equal(response.status, 200);
@@ -207,6 +212,7 @@ test('Workspace default reads expose live inheritance health and exclude drafts 
       pinnedAgentCount: 0,
       workspaceDefaultAffected: true,
       inheritingAgentCount: 2,
+      affectedWorkspaceRoles: ['coding'],
     });
   } finally {
     close();
@@ -697,6 +703,7 @@ test('provider settings endpoint matrix reports sources, enforces env read-only 
           pinnedAgentCount: 1,
           workspaceDefaultAffected: false,
           inheritingAgentCount: 0,
+          affectedWorkspaceRoles: [],
         });
         assert.equal(await settings.getSetting(PROVIDER_KEY_SETTING_KEYS.openai), undefined);
 

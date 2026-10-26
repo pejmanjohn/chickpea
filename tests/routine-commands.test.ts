@@ -94,6 +94,7 @@ async function handleRoutineSlackRequest(
         updatedAt: NOW,
       },
       agent: assignment.agent,
+      agentGrants: [],
       assignment: assignment as ResolvedAssignment & {
         model: string;
         modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']>;
@@ -385,6 +386,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
     const resolveAuthority = async (target: RoutineDefinition) => ({
       reference: (await config.getAgentScheduleReference(target.id))!,
       agent: supportAgent,
+      agentGrants: [],
       assignment: supportAssignment as ResolvedAssignment & {
         model: string;
         modelAttribution: NonNullable<ResolvedAssignment['modelAttribution']>;

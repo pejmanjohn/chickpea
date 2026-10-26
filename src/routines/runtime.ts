@@ -26,6 +26,9 @@ import {
 } from '../slack/user-classification.ts';
 import { createSlackWebClient } from '../slack/web-client.ts';
 import { slackPendingExternalShare } from '../slack/transport/shared.ts';
+import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
+import { agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
+import { createDirectSlackTransportFromWebClient } from '../slack/transport/direct.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
@@ -214,6 +217,32 @@ export async function resolveRoutineRuntimeAccess(
         'channel_ineligible',
         'The direct-message destination is no longer eligible.',
       );
+    }
+    const privateUse = await resolvePrivateAgentAccess({
+      agent: authority.agent,
+      workspaceId: routine.workspaceId,
+      grants: authority.agentGrants,
+      actor: {
+        fullMember: true,
+        membershipId: authority.reference.runsAsMembershipId,
+        slackUserId: actorSlackUserId,
+      },
+      transport: await agentDmPlacementFacts(
+        env,
+        authority.agent,
+        createDirectSlackTransportFromWebClient(directClient),
+      ),
+    });
+    if (privateUse.status === 'denied') {
+      throw new RoutineRuntimeError(
+        'access_denied',
+        'The direct schedule owner can no longer use this Agent.',
+      );
+    }
+    // Slack could not answer. Like a rate limit, this counts toward the
+    // three failures that pause the routine; one outage never disables it.
+    if (privateUse.status === 'unavailable') {
+      throw unverifiedAccess(true, 'Current direct-message access could not be verified.');
     }
     const directAccessHash = (configHash: string) => hashRoutineValue(JSON.stringify({
       config: configHash,

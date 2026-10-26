@@ -234,6 +234,8 @@ test('a private once occurrence reattaches a legacy catalog hash and delivers to
       authority: async () => ({
         reference,
         agent,
+        agentGrants: (await fixture.configStore.listAgentChannelGrants(routine.workspaceId))
+          .filter(({ agentId }) => agentId === agent.id),
         assignment: {
           workspaceId: routine.workspaceId,
           channelId: routine.channelId,

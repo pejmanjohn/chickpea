@@ -2,6 +2,10 @@ import { describeSkillPaths } from '../config/skill-package.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
+  revokeBetterAuthUserAccess,
+  type BetterAuthAccessRevoker,
+} from '../auth/better-auth-backend.ts';
+import {
   AuthorizationError,
   canEditAgent,
   permissionForRole,
@@ -28,7 +32,10 @@ import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
 import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
-import { resolveProviderRuntimeImpacts } from '../config/provider-impact.ts';
+import {
+  resolveProviderRuntimeImpact,
+  resolveProviderRuntimeImpacts,
+} from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
 import {
@@ -76,16 +83,23 @@ import type {
 import { RoutineService } from '../routines/service.ts';
 import { formatRoutineLocalDateTime, routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
-import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
+import { isActiveUserAgent, reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
   type SlackScheduleCommand,
 } from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
+import { RoutineContentAccessResolver, routineContentReadable } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import {
+  logUnavailableFacts,
+  memberChannelViews,
+  resolvePrivateAgentAccess,
+  type PrivateAgentPlacementFacts,
+} from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { THREAD_TTL_MS } from '../slack/state-limits.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
@@ -122,10 +136,11 @@ import {
   managementOperationDigest,
   managementOriginKey,
   assertValidRepositoryGrants,
+  managementIdempotencyScope,
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation } from './policy.ts';
+import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import {
   exportWorkspaceRecipe,
   previewWorkspaceRecipe,
@@ -135,13 +150,16 @@ import {
 } from './recipes.ts';
 import type { McpConnectionTestActor } from './discovery.ts';
 import type { ManagementStore } from './store.ts';
+import { changeSetAccessFits } from './change-set-presentation.ts';
 import {
   formatMarkdownChangeSetProposal,
   formatMarkdownSkillImportProposal,
+  MARKDOWN_PRESENTATION_DIALECT,
 } from './markdown-presentation.ts';
 import {
   formatSlackChangeSetProposal,
   formatSlackSkillImportProposal,
+  SLACK_PRESENTATION_DIALECT,
 } from './slack-presentation.ts';
 import type { SlackManagementSignal } from './slack-tools.ts';
 import {
@@ -158,9 +176,11 @@ import {
   type ApplyWorkspaceChangesInput,
   type ConfirmWorkspaceChangeInput,
   type LiveManagementActor,
+  type ManagementAgentLabel,
   type ManagementApplyResult,
   type ManagementChangeSetPreview,
   type ManagementChangeSetRecordPreview,
+  type ManagementChangeStatement,
   type ManagementChangeSetProposalRecord,
   type ManagementDeferredSetup,
   type ChickpeaManagementHandoff,
@@ -215,6 +235,26 @@ const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
+const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
+const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
+
+/**
+ * Slack revokes Channel reach from inside Slack, so it rechecks that the
+ * person is in the Channel. Admin's detach, and MCP with the same authority,
+ * need only editor rights.
+ */
+const REVOKE_NEEDS_CHANNEL_MEMBERSHIP = {
+  slack: true,
+  mcp: false,
+  admin: false,
+} as const satisfies Record<ManagementOrigin['kind'], boolean>;
+
+const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
+  lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+  listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+};
+
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
@@ -346,6 +386,15 @@ export interface WorkspaceManagementServiceInput {
     workspaceId: string;
     channelId: string;
   }) => Promise<void>;
+  /**
+   * Slack's live Channel facts, read with Chickpea's bot, or for an Agent
+   * with its own Slack app the way its DMs are admitted. Without them, every
+   * check that needs Slack fails closed.
+   */
+  slackFacts?: (input: {
+    workspaceId: string;
+    agent?: CustomAgentConfig;
+  }) => Promise<PrivateAgentPlacementFacts>;
   archiveAgent?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -375,6 +424,14 @@ export interface WorkspaceManagementServiceInput {
     grants: RepositoryGrant[],
     stored: RepositoryGrant[],
   ) => Promise<RepositoryGrant[] | 'github_account_not_connected'>;
+  /**
+   * Runs a membership change with the Better Auth backend that ends the
+   * member's sessions and MCP grants (withBetterAuthAccessRevoker). `use`
+   * receives undefined where Better Auth does not sign people in.
+   */
+  withBetterAuthAccessRevoker?: <T>(
+    use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
+  ) => Promise<T>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -398,6 +455,17 @@ type ActingAgentScopeTarget = {
   | { scope: 'agent'; agentId: string }
   | { scope: 'authority' }
 );
+
+/**
+ * A Slack model reuses keys such as `disable-foo` in later turns. Scoping a
+ * skill key to the requester's message keeps a retry within the turn
+ * idempotent without replaying an earlier turn's receipt.
+ */
+function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
+  return actor.origin.kind === 'slack' && actor.origin.eventId
+    ? `${key}@${actor.origin.eventId}`
+    : key;
+}
 
 /**
  * One requester-bound control plane shared by MCP, Slack, and Admin adapters.
@@ -587,7 +655,7 @@ export class WorkspaceManagementService {
         expectedRevision: agent.revision,
         patch: { skills },
       }],
-    });
+    }, skill.sourceUrl);
     const { preview: _privatePreview, ...publicProposal } = proposal;
     return {
       ...publicProposal,
@@ -607,8 +675,11 @@ export class WorkspaceManagementService {
     };
   }
 
-  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult | ProposeSkillImportResult> {
-    const actor = await this.requireLiveActor(input.context);
+  async importSkill(
+    request: ImportSkillInput,
+  ): Promise<ImportSkillResult | ProposeSkillImportResult> {
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     if (startedByAgentAsk(actor)) return await this.proposeSkillImport(input);
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
@@ -686,9 +757,10 @@ export class WorkspaceManagementService {
   }
 
   async manageAgentSkill(
-    input: ManageAgentSkillInput,
+    request: ManageAgentSkillInput,
   ): Promise<ManageAgentSkillResult | ProposeWorkspaceChangesResult> {
-    const actor = await this.requireLiveActor(input.context);
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     const agentId = input.agentId ??
       (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
     if (!agentId || !isAgentId(agentId)) {
@@ -923,7 +995,7 @@ export class WorkspaceManagementService {
         itemId: operation.itemId,
         operationKind: 'update_agent',
         disposition: 'skipped',
-        code: reason === 'missing' ? 'skill_missing' : 'skill_already_set',
+        ...unappliedReason(reason === 'missing' ? 'skill_missing' : 'skill_already_set'),
       }],
       effectiveRevision: await this.effectiveRevision(),
       activation: 'next_turn',
@@ -1829,7 +1901,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'skipped',
-          code: 'dependency_not_applied',
+          ...unappliedReason('dependency_not_applied'),
         });
         request = await this.stores.management.saveRequestProgress(
           request.operationId,
@@ -1881,7 +1953,7 @@ export class WorkspaceManagementService {
             itemId: operation.itemId,
             operationKind: operation.kind,
             disposition: 'failed',
-            code: policy.reason,
+            ...unappliedReason(policy.reason),
           });
         } else if (actor.origin.kind === 'slack' && operation.kind === 'request_setup' &&
             policy.posture === 'confirmation') {
@@ -1959,8 +2031,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'failed',
-          code: mutationErrorCode(error),
-          ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
+          ...mutationFailure(error),
           ...(error instanceof ManagementError && (error.code === 'model_provider_unavailable' ||
               error.code === 'effort_not_supported' || error.code === 'effort_requires_model')
             ? { warning: error.message }
@@ -2094,10 +2165,12 @@ export class WorkspaceManagementService {
         agentCreatedInProposal: operation.kind === 'grant_agent_channel' &&
           proposalAgentIds.has(operation.agentId!),
       }));
-      return policy.allowed ? undefined : { ...item, disposition: 'failed', code: policy.reason };
+      return policy.allowed
+        ? undefined
+        : { ...item, disposition: 'failed', ...unappliedReason(policy.reason) };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
-      return { ...item, disposition: 'failed', code: mutationErrorCode(error) };
+      return { ...item, disposition: 'failed', ...mutationFailure(error) };
     }
   }
 
@@ -2137,7 +2210,7 @@ export class WorkspaceManagementService {
         itemId: operation.itemId,
         operationKind: operation.kind,
         disposition: 'failed',
-        code: 'proposal_stale',
+        ...unappliedReason('proposal_stale'),
       }));
     } else {
       return undefined;
@@ -2177,7 +2250,7 @@ export class WorkspaceManagementService {
       return notIssued({ ...item, disposition: 'failed', code: 'invalid_state' });
     }
     if ((stored.dependsOn ?? []).some((dependency) => !applied.has(dependency))) {
-      return notIssued({ ...item, disposition: 'skipped', code: 'dependency_not_applied' });
+      return notIssued({ ...item, disposition: 'skipped', ...unappliedReason('dependency_not_applied') });
     }
     try {
       const operation = resolveSetupClientReference(stored, agentClientRefs(request.operations));
@@ -2186,7 +2259,7 @@ export class WorkspaceManagementService {
       const policy = classifyManagementOperation(await this.policyFacts(actor, operation, {
         operationCount: request.operations.length,
       }));
-      if (!policy.allowed) return notIssued({ ...item, disposition: 'failed', code: policy.reason });
+      if (!policy.allowed) return notIssued({ ...item, disposition: 'failed', ...unappliedReason(policy.reason) });
       if (policy.posture === 'confirmation') {
         return notIssued({
           ...item,
@@ -2207,7 +2280,7 @@ export class WorkspaceManagementService {
       };
     } catch (error) {
       if (!isExpectedMutationError(error)) throw error;
-      return notIssued({ ...item, disposition: 'failed', code: mutationErrorCode(error) });
+      return notIssued({ ...item, disposition: 'failed', ...mutationFailure(error) });
     }
   }
 
@@ -2250,8 +2323,10 @@ export class WorkspaceManagementService {
     return { ...result, presentation: publicChangeSetProposal(shown).presentation };
   }
 
+  /** `skillSourceUrl` is the Source a skill import's preview leads with. */
   async proposeWorkspaceChanges(
     input: ProposeWorkspaceChangesInput,
+    skillSourceUrl?: string,
   ): Promise<ProposeWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     if (input.guideVersion !== AGENT_AUTHORING_GUIDE_VERSION) {
@@ -2280,6 +2355,7 @@ export class WorkspaceManagementService {
       idempotencyKey: input.idempotencyKey,
       guideVersion: input.guideVersion,
       authoringReason: input.authoringReason,
+      ...(skillSourceUrl === undefined ? {} : { skillSourceUrl }),
     }, async (operation) => {
       if (operations.length !== 1 || operation.kind !== 'update_agent') return;
       const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
@@ -2312,7 +2388,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operations: ManagementOperation[],
     meta: Pick<ProposeWorkspaceChangesInput, 'idempotencyKey' | 'guideVersion' | 'authoringReason'> &
-      { requestOperationId?: string },
+      { requestOperationId?: string; skillSourceUrl?: string },
     checkOperation?: (operation: ManagementOperation) => Promise<void>,
   ): Promise<ManagementChangeSetProposalRecord> {
     const proposalId = `changeset_${this.randomId()}`;
@@ -2352,6 +2428,7 @@ export class WorkspaceManagementService {
         targetRevisions[key] = revision;
       }
       const prepared = await this.preflightProposalItem(actor, operation, proposalId, readiness);
+      const statement = await this.changeStatement(actor, operation);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -2361,6 +2438,7 @@ export class WorkspaceManagementService {
           : {}),
         ...(prepared.before === undefined ? {} : { before: prepared.before }),
         ...(prepared.intendedAfter === undefined ? {} : { after: prepared.intendedAfter }),
+        ...(statement ? { statement } : {}),
       });
       if (operation.kind === 'request_setup') {
         const setup = await this.resolveSetupTarget(actor, operation.target);
@@ -2376,7 +2454,7 @@ export class WorkspaceManagementService {
       summary: `${operations.length} reviewed workspace change${operations.length === 1 ? '' : 's'}`,
       changes,
       missingSetup,
-    });
+    }, meta.skillSourceUrl);
     const at = this.now();
     const proposal = await this.stores.management.putChangeSetProposal({
       proposalId,
@@ -2575,6 +2653,7 @@ export class WorkspaceManagementService {
             changeSetPreparedItem(proposal, operation),
             currentPrepared,
           );
+          await this.assertReviewedAgentReach(operation, proposal.targetRevisions);
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -2613,7 +2692,7 @@ export class WorkspaceManagementService {
           itemId: operation.itemId,
           operationKind: operation.kind,
           disposition: 'skipped',
-          code: 'dependency_not_applied',
+          ...unappliedReason('dependency_not_applied'),
         });
       } else {
         let mutation = recovered
@@ -2642,7 +2721,7 @@ export class WorkspaceManagementService {
               itemId: operation.itemId,
               operationKind: operation.kind,
               disposition: 'failed',
-              code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
+              ...mutationFailure(error),
             });
             recoveryDenied = true;
           }
@@ -2663,8 +2742,7 @@ export class WorkspaceManagementService {
                   itemId: operation.itemId,
                   operationKind: operation.kind,
                   disposition: 'failed',
-                  code: isExpectedMutationError(error) ? mutationErrorCode(error) : 'operation_failed',
-                  ...(error instanceof AgentUpdateRefused ? { instruction: error.message } : {}),
+                  ...mutationFailure(error),
                 });
           }
         }
@@ -2809,6 +2887,9 @@ export class WorkspaceManagementService {
       }];
     }
     if (operation.kind === 'update_member') {
+      // The revoke after the write may not have run, so a membership that
+      // already holds an access-ending status is not yet applied.
+      if (removesMemberAccess(operation.status)) return undefined;
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       return membership && (!operation.role || membership.role === operation.role) &&
         (!operation.status || membership.status === operation.status)
@@ -3416,6 +3497,101 @@ export class WorkspaceManagementService {
     return canEditAgent(managementActorPrincipal(actor), agent);
   }
 
+  private async slackFactsFor(
+    workspaceId: string,
+    agent?: CustomAgentConfig,
+  ): Promise<PrivateAgentPlacementFacts> {
+    if (!this.stores.slackFacts) return UNAVAILABLE_SLACK_FACTS;
+    return this.stores.slackFacts({ workspaceId, ...(agent ? { agent } : {}) })
+      .catch((error: unknown) => {
+        logUnavailableFacts('transport', error);
+        return UNAVAILABLE_SLACK_FACTS;
+      });
+  }
+
+  /**
+   * A member sees a public Channel, and a private one only while Slack shows
+   * them in it, as on the Admin Agent page.
+   */
+  private async channelsSlackShowsMember<TChannel extends { workspaceId: string; channelId: string }>(
+    actor: LiveManagementActor,
+    channels: TChannel[],
+  ): Promise<TChannel[]> {
+    if (channels.length === 0) return channels;
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) return [];
+    const inWorkspace = channels.filter(({ workspaceId }) => workspaceId === user.slackTeamId);
+    const views = await memberChannelViews(
+      inWorkspace.map(({ channelId }) => channelId),
+      user.slackUserId,
+      await this.slackFactsFor(user.slackTeamId),
+    );
+    return inWorkspace.filter(({ channelId }) => views.get(channelId) === 'shown');
+  }
+
+  /** A member's new Channel routine needs them in its Channel when it is private. */
+  private async requireMemberInChannel(
+    actor: LiveManagementActor,
+    workspaceId: string,
+    channelId: string,
+  ): Promise<void> {
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+    const views = await memberChannelViews(
+      [channelId],
+      user.slackUserId,
+      await this.slackFactsFor(workspaceId),
+    );
+    const view = views.get(channelId);
+    if (view === 'unavailable') throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    if (view !== 'shown') throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+  }
+
+  /** Whether the person may read a Channel routine, as Admin's schedules page decides. */
+  private async routineReadable(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+  ): Promise<boolean> {
+    const access = await new RoutineContentAccessResolver({
+      work: this.stores.work,
+      actor: async () => {
+        const user = await this.stores.identity.getUser(actor.userId);
+        if (!user) throw new Error('The routine reader has no Slack account.');
+        return { slackTeamId: user.slackTeamId, slackUserId: user.slackUserId };
+      },
+      transport: (workspaceId) => this.slackFactsFor(workspaceId),
+    }).resolve(routine);
+    return routineContentReadable(access);
+  }
+
+  /** A DM routine needs the private use the person would need to DM its Agent. */
+  private async requirePrivateAgentUse(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    workspaceId: string,
+  ): Promise<void> {
+    const [user, grants, facts] = await Promise.all([
+      this.stores.identity.getUser(actor.userId),
+      this.stores.config.listAgentChannelGrants(workspaceId),
+      this.slackFactsFor(workspaceId, agent),
+    ]);
+    if (!user) throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
+    const access = await resolvePrivateAgentAccess({
+      agent,
+      workspaceId,
+      grants,
+      // Only full Slack members are provisioned, and every run asks Slack again.
+      actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
+      transport: facts,
+    });
+    if (access.status === 'unavailable') {
+      throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    }
+    if (access.status === 'denied') {
+      throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
+    }
+  }
+
   private async requireEditableAgent(
     actor: LiveManagementActor,
     agentId: string,
@@ -3839,12 +4015,15 @@ export class WorkspaceManagementService {
       });
       projectedChannelKeys.add(key);
     }
-    const visibleChannels = userAgentScoped || actor.role === 'member'
+    const grantedChannels = userAgentScoped || actor.role === 'member'
       ? projectedChannels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
         )))
       : projectedChannels;
+    const visibleChannels = actor.role === 'member'
+      ? await this.channelsSlackShowsMember(actor, grantedChannels)
+      : grantedChannels;
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
       ...visibleChannels.map((channel) => ({
@@ -4090,8 +4269,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'save_routine') {
       const agent = await optionalAgent(this.stores.config, operation.agentId);
       if (directRoutine) {
-        if (!agent || agent.kind !== 'user' || !agent.enabled ||
-            agent.lifecycle === 'draft' || agent.lifecycle === 'archived') {
+        if (!agent || !isActiveUserAgent(agent)) {
           throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
         }
         if (isUserAgentScoped(actor) && operation.agentId !== actor.actingAgentId) {
@@ -4099,6 +4277,7 @@ export class WorkspaceManagementService {
             kind: 'agent', id: operation.agentId,
           }));
         }
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       } else {
         const grants = await this.stores.config.listAgentChannelGrants(
           operation.workspaceId,
@@ -4112,13 +4291,20 @@ export class WorkspaceManagementService {
           );
         }
         if (!this.actorCanEditAgent(actor, agent)) {
-          throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+          throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
         }
       }
     }
+    // Admin's schedules page acts only on a routine the person can read, and
+    // keeps disable on its audit route, which needs admin.configure. A member's
+    // new Channel routine follows the same read rule for its Channel.
+    const readsEveryRoutine = permissionForRole(actor.role).has('admin.configure');
     if (operation.kind === 'save_routine' && !operation.routineId) {
       if (operation.expectedVersion !== undefined) {
         throw new ManagementError('invalid_request', 'A new routine cannot have an expected version.');
+      }
+      if (!directRoutine && !readsEveryRoutine) {
+        await this.requireMemberInChannel(actor, operation.workspaceId, channelId);
       }
       return;
     }
@@ -4149,13 +4335,26 @@ export class WorkspaceManagementService {
           'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
         );
       }
-      if (operation.kind === 'reassign_routine_agent' &&
-          (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack')) {
-        throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+      if (operation.kind === 'reassign_routine_agent') {
+        if (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack') {
+          throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+        }
+        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        if (!agent || !isActiveUserAgent(agent)) {
+          throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        }
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       }
       return;
     }
     await this.requireEditableAgent(actor, reference.agentId);
+    if (readsEveryRoutine) return;
+    if (operation.kind === 'control_routine' && operation.action === 'disable') {
+      throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
+    }
+    if (!await this.routineReadable(actor, routine)) {
+      throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+    }
   }
 
   private async isRoutineSchedulingAvailable(): Promise<boolean> {
@@ -4828,15 +5027,22 @@ export class WorkspaceManagementService {
         const before = operation.routineId
           ? await this.stores.routines?.getRoutine(operation.routineId)
           : undefined;
-        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        const afterChannelId = operation.channelId ?? before?.channelId;
+        const [agent, beforeChannel, afterChannel] = await Promise.all([
+          optionalAgent(this.stores.config, operation.agentId),
+          before?.destination.kind === 'channel'
+            ? this.channelLabel(before.workspaceId, before.destination.channelId)
+            : undefined,
+          afterChannelId ? this.channelLabel(operation.workspaceId, afterChannelId) : undefined,
+        ]);
         return {
           itemId: operation.itemId,
           operation,
           ...(agent
             ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) }
             : {}),
-          ...(before ? { before: routinePreview(before, agent?.name) } : {}),
-          intendedAfter: routineOperationPreview(operation, agent?.name, before),
+          ...(before ? { before: routinePreview(before, agent?.name, beforeChannel) } : {}),
+          intendedAfter: routineOperationPreview(operation, agent?.name, before, afterChannel),
         };
       }
       case 'reassign_routine_agent': {
@@ -4881,7 +5087,8 @@ export class WorkspaceManagementService {
       await this.assertAgentDeletable(await this.stores.config.getAgent(operation.agentId));
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
-        operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+        operation.kind === 'grant_agent_channel' ||
+        (operation.kind === 'revoke_agent_channel' && REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind])) {
       const workspaceId = operation.kind === 'put_channel'
         ? operation.channel.workspaceId
         : operation.workspaceId;
@@ -4891,6 +5098,104 @@ export class WorkspaceManagementService {
       await this.stores.assertAgentChannelMembership?.({ actor, workspaceId, channelId });
     }
     return prepared;
+  }
+
+  /** The names and counts a preview states for an operation whose records mean nothing to a person. */
+  private async changeStatement(
+    actor: LiveManagementActor,
+    operation: ManagementOperation,
+  ): Promise<ManagementChangeStatement | undefined> {
+    switch (operation.kind) {
+      case 'archive_agent': {
+        const [agent, references] = await Promise.all([
+          this.stores.config.getAgent(operation.agentId),
+          this.stores.config.getAgentReferences(operation.agentId),
+        ]);
+        return {
+          kind: operation.kind,
+          agent: agentLabel(agent),
+          channelCount: references.channelGrants.length,
+        };
+      }
+      case 'restore_agent':
+      case 'delete_agent':
+      case 'update_agent_memory':
+        return {
+          kind: operation.kind,
+          agent: agentLabel(await this.stores.config.getAgent(operation.agentId)),
+        };
+      case 'update_member': {
+        const membership = await this.stores.identity.getMembership(operation.membershipId);
+        const member = membership
+          ? (await this.stores.identity.getUser(membership.userId))?.displayName
+          : undefined;
+        return {
+          kind: operation.kind,
+          ...(member ? { member } : {}),
+          ...(operation.role ? { role: operation.role } : {}),
+          ...(operation.status ? { status: operation.status } : {}),
+        };
+      }
+      case 'remove_provider_credential': {
+        const impact = await resolveProviderRuntimeImpact(this.stores.config, operation.providerId);
+        const answering = new Map([...impact.pinnedAgents, ...impact.inheritingAgents]
+          .filter((agent) => agent.enabled && agent.lifecycle !== 'archived')
+          .map((agent) => [agent.id, agent.name]));
+        return {
+          kind: operation.kind,
+          provider: providerLabel(operation.providerId),
+          affectedAgents: [...answering.values()],
+          workspaceDefaultAffected: impact.workspaceDefaultAffected,
+          affectedWorkspaceRoles: impact.affectedWorkspaceRoles,
+        };
+      }
+      case 'grant_agent_channel':
+      case 'revoke_agent_channel': {
+        const [agent, label] = await Promise.all([
+          operation.agentId ? optionalAgent(this.stores.config, operation.agentId) : undefined,
+          this.channelLabel(operation.workspaceId, operation.channelId),
+        ]);
+        return {
+          kind: operation.kind,
+          ...(agent ? { agent: agentLabel(agent) } : {}),
+          ...(label ? { channel: label } : {}),
+        };
+      }
+      case 'delete_routine':
+      case 'run_routine':
+      case 'control_routine':
+      case 'reassign_routine_agent': {
+        const name = (await this.stores.routines?.getRoutine(operation.routineId))?.name;
+        const routine = name ? { routine: name } : {};
+        if (operation.kind === 'control_routine') {
+          return { kind: operation.kind, ...routine, action: operation.action };
+        }
+        if (operation.kind === 'reassign_routine_agent') {
+          const agent = await optionalAgent(this.stores.config, operation.agentId);
+          return { kind: operation.kind, ...routine, ...(agent ? { agent: agentLabel(agent) } : {}) };
+        }
+        return { kind: operation.kind, ...routine };
+      }
+      case 'request_setup':
+        return {
+          kind: operation.kind,
+          setup: (await this.resolveSetupTarget(actor, operation.target)).target.targetLabel,
+        };
+      case 'create_agent':
+      case 'update_agent':
+      case 'put_channel':
+      case 'save_routine':
+        return undefined;
+    }
+  }
+
+  /** A Channel's name as people see it: the stored Channel, else the label a grant cached. */
+  private async channelLabel(workspaceId: string, channelId: string): Promise<string | undefined> {
+    const [channel, grants] = await Promise.all([
+      this.stores.config.getChannel(workspaceId, channelId),
+      this.stores.config.listAgentChannelGrants(workspaceId, channelId),
+    ]);
+    return channel?.label ?? grants.find(({ channelLabel }) => channelLabel)?.channelLabel;
   }
 
   private async executeImmediate(
@@ -5001,11 +5306,13 @@ export class WorkspaceManagementService {
         if (!current || current.revision !== operation.expectedRevision) {
           throw new ManagementError('revision_conflict', 'The Channel grant changed.');
         }
-        await this.stores.assertAgentChannelMembership?.({
-          actor,
-          workspaceId: operation.workspaceId,
-          channelId: operation.channelId,
-        });
+        if (REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind]) {
+          await this.stores.assertAgentChannelMembership?.({
+            actor,
+            workspaceId: operation.workspaceId,
+            channelId: operation.channelId,
+          });
+        }
         await this.stores.config.deleteAgentChannelGrant(
           operation.workspaceId,
           operation.channelId,
@@ -5334,18 +5641,52 @@ export class WorkspaceManagementService {
       return mutationForChanged([{ kind: 'agent', id: operation.agentId }]);
     }
     if (operation.kind === 'update_member') {
-      const result = await this.stores.identity.updateMembershipAuthority({
-        membershipId: operation.membershipId,
-        ...(operation.role ? { role: operation.role } : {}),
-        ...(operation.status ? { status: operation.status } : {}),
-        actorMembershipId: actor.membershipId,
-        correlationId: proposalId,
-        authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
-        reasonCode: basis === 'direct'
-          ? 'workspace_management_direct'
-          : 'workspace_management_confirmation',
-        idempotencyKey: `management:${proposalId}`,
-      });
+      const [before, bindings] = await Promise.all([
+        this.stores.identity.getMembership(operation.membershipId),
+        this.stores.identity.listExternalIdentities(),
+      ]);
+      const betterAuthUserId = bindings.find(({ membershipId }) =>
+        membershipId === operation.membershipId)?.betterAuthUserId;
+      const statusChanges = operation.status !== undefined && operation.status !== before?.status;
+      const roleChanges = operation.role !== undefined && operation.role !== before?.role;
+      // A retry finds the status already held and must still end access.
+      const endsGrants = statusChanges || removesMemberAccess(operation.status);
+      const change = async (revoker: BetterAuthAccessRevoker | undefined) => {
+        // Access ends before the membership changes, so a failed revoke
+        // leaves the change unapplied for a retry, never applied with the
+        // person still signed in. A status change revokes again after the
+        // write, because a client can refresh in between while the membership
+        // is still active; a failure there fails the change, and the retry
+        // revokes again. A status change ends MCP grants too; a role change
+        // only needs new sessions, because the MCP resource rereads the role
+        // on every request.
+        if (revoker && betterAuthUserId) {
+          if (endsGrants) {
+            await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+          } else if (roleChanges) {
+            await revoker.deleteSessionsForUser(betterAuthUserId);
+          }
+        }
+        const result = await this.stores.identity.updateMembershipAuthority({
+          membershipId: operation.membershipId,
+          ...(operation.role ? { role: operation.role } : {}),
+          ...(operation.status ? { status: operation.status } : {}),
+          actorMembershipId: actor.membershipId,
+          correlationId: proposalId,
+          authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
+          reasonCode: basis === 'direct'
+            ? 'workspace_management_direct'
+            : 'workspace_management_confirmation',
+          idempotencyKey: `management:${proposalId}`,
+        });
+        if (endsGrants && revoker && betterAuthUserId) {
+          await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+        }
+        return result;
+      };
+      const result = this.stores.withBetterAuthAccessRevoker
+        ? await this.stores.withBetterAuthAccessRevoker(change)
+        : await change(undefined);
       return mutationForChanged([{
         kind: 'membership',
         id: result.membership.id,
@@ -5460,8 +5801,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
-      if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
-          (operation.kind === 'update_agent' && operation.patch.enabled === false)) {
+      if (reachEndingAgentId(operation)) {
         const references = await this.stores.config.getAgentReferences(operation.agentId);
         for (const grant of references.channelGrants) {
           const current = (await this.stores.config.listAgentChannelGrants(
@@ -5501,22 +5841,26 @@ export class WorkspaceManagementService {
   private async assertTargetRevisions(proposal: ManagementProposalRecord): Promise<void> {
     await this.assertRevisionMap(proposal.targetRevisions);
     await this.assertLegacyProposalAgentIdentity(proposal, false);
-    if (proposal.operation.kind === 'delete_agent' || proposal.operation.kind === 'archive_agent' ||
-        (proposal.operation.kind === 'update_agent' && proposal.operation.patch.enabled === false)) {
-      const agentId = proposal.operation.agentId;
-      const references = await this.stores.config.getAgentReferences(agentId);
-      const expectedChannelKeys = Object.keys(proposal.targetRevisions)
-        .filter((key) => key.startsWith('channel_grant:')).sort();
-      const actualChannelKeys = references.channelGrants
-        .map((grant) => `channel_grant:${grantKey(
-          grant.workspaceId,
-          grant.channelId,
-          agentId,
-        )}`)
-        .sort();
-      if (canonicalJson(expectedChannelKeys) !== canonicalJson(actualChannelKeys)) {
-        throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
-      }
+    await this.assertReviewedAgentReach(proposal.operation, proposal.targetRevisions);
+  }
+
+  /**
+   * The revision map catches a reviewed grant that changed; this catches one
+   * added since the review. Only unreviewed current grants count, because a
+   * grant the same change set creates has a reviewed key but no grant yet.
+   */
+  private async assertReviewedAgentReach(
+    operation: ManagementOperation,
+    targetRevisions: Record<string, number>,
+  ): Promise<void> {
+    const agentId = reachEndingAgentId(operation);
+    if (!agentId) return;
+    const references = await this.stores.config.getAgentReferences(agentId);
+    const added = references.channelGrants.some((grant) =>
+      targetRevisions[`channel_grant:${grantKey(grant.workspaceId, grant.channelId, agentId)}`] === undefined
+    );
+    if (added) {
+      throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
     }
   }
 
@@ -5730,11 +6074,10 @@ export class WorkspaceManagementService {
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       if (membership && (!operation.role || membership.role === operation.role) &&
           (!operation.status || membership.status === operation.status)) {
-        changed = [{
-          kind: 'membership',
-          id: membership.id,
-          revision: membershipRevision(membership),
-        }];
+        // The revoke after the write may not have run, so run the change again.
+        changed = removesMemberAccess(operation.status)
+          ? (await this.executeConfirmed(actor, operation, proposal.proposalId, prepared)).changed
+          : [{ kind: 'membership', id: membership.id, revision: membershipRevision(membership) }];
       }
     } else if (operation.kind === 'remove_provider_credential') {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
@@ -5815,10 +6158,9 @@ export function managementActorPrincipal(actor: LiveManagementActor): AuthPrinci
 }
 
 function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
-  if (!actor.actingAgentId) return storageKey;
-  const prefix = `agent.${actor.actingAgentId}.`;
+  const prefix = managementIdempotencyScope(actor);
   if (!storageKey.startsWith(prefix)) {
-    throw new ManagementError('idempotency_conflict', 'The management request Agent changed.');
+    throw new ManagementError('idempotency_conflict', 'The management request belongs to another conversation.');
   }
   return storageKey.slice(prefix.length);
 }
@@ -6223,9 +6565,6 @@ function refusedUpdatePutBack(
   return Object.keys(putBack).length > 0 ? putBack as ConfigAgentPatch : undefined;
 }
 
-/** Slack refused an Agent's new handle or name; the message tells the model why. */
-class AgentUpdateRefused extends AgentPresenceError {}
-
 function refusedAgentUpdate(
   error: unknown,
   kept: CustomAgentConfig | undefined,
@@ -6238,7 +6577,7 @@ function refusedAgentUpdate(
     const next = error.suggestions.length > 0
       ? `Free handles: ${error.suggestions.map((suggestion) => `@${suggestion}`).join(', ')}. Offer these, or ask for another handle.`
       : 'Ask for another handle.';
-    return new AgentUpdateRefused(
+    return new AgentPresenceError(
       error.code,
       kept
         ? `@${handle} is already taken in this Slack workspace, so nothing changed and the Agent keeps @${kept.slackPresence?.normalizedHandle}. ${next}`
@@ -6247,7 +6586,7 @@ function refusedAgentUpdate(
     );
   }
   if (error.slackCode === 'name_too_long') {
-    return new AgentUpdateRefused(
+    return new AgentPresenceError(
       error.code,
       kept
         ? 'Slack refused this name because it is too long for a Slack user group, so nothing changed and the Agent keeps its name. Ask for a shorter name.'
@@ -6687,6 +7026,13 @@ function preparedAgentId(operation: ManagementOperation): string | undefined {
   return undefined;
 }
 
+/** The Agent whose Channel reach this operation ends: archive, delete, or disable. */
+function reachEndingAgentId(operation: ManagementOperation): string | undefined {
+  if (operation.kind === 'archive_agent' || operation.kind === 'delete_agent') return operation.agentId;
+  if (operation.kind === 'update_agent' && operation.patch.enabled === false) return operation.agentId;
+  return undefined;
+}
+
 function assertPreparedAgentIdentity(
   reviewed: ManagementPreparedItem,
   current: ManagementPreparedItem,
@@ -6861,6 +7207,7 @@ function managementPreviewTarget(operation: ManagementOperation): string {
 function routinePreview(
   routine: RoutineDefinition,
   agentName?: string,
+  channelLabel?: string,
 ): Record<string, unknown> {
   return {
     name: routine.name,
@@ -6873,7 +7220,7 @@ function routinePreview(
     timezone: routine.timezone,
     destination: routine.destination.kind === 'direct_thread'
       ? 'Current DM thread'
-      : `${routine.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${routine.destination.channelId}`,
+      : channelDestination(Boolean(routine.destination.threadTs), channelLabel),
     delivery: routine.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
 }
@@ -6882,6 +7229,7 @@ function routineOperationPreview(
   operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
   agentName: string | undefined,
   existing: RoutineDefinition | undefined,
+  channelLabel: string | undefined,
 ): Record<string, unknown> {
   const direct = operation.destination?.kind === 'current_dm_thread' ||
     existing?.destination.kind === 'direct_thread';
@@ -6900,18 +7248,35 @@ function routineOperationPreview(
     timezone: operation.timezone,
     destination: direct
       ? 'Current DM thread'
-      : `${operation.destination?.kind === 'current_channel_thread' || existing?.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${operation.channelId ?? existing?.channelId ?? 'unavailable'}`,
+      : channelDestination(
+          operation.destination?.kind === 'current_channel_thread' || Boolean(existing?.destination.threadTs),
+          channelLabel,
+        ),
     delivery: operation.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
 }
 
+/** Where a Channel routine posts, by the Channel's name; never its Slack ID. */
+function channelDestination(savedThread: boolean, channelLabel: string | undefined): string {
+  const channel = channelLabel ? `#${channelLabel.replace(/^#/, '')}` : 'a Slack Channel';
+  return `${savedThread ? 'Saved thread in' : 'New messages in'} ${channel}`;
+}
+
 function boundedChangeSetPreview(
   preview: ManagementChangeSetRecordPreview,
+  skillSourceUrl: string | undefined,
 ): ManagementChangeSetRecordPreview {
   if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
     throw new ManagementError(
       'invalid_request',
       'The reviewed change diff is too large. Split it into smaller proposals.',
+    );
+  }
+  if (!changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT, skillSourceUrl) ||
+      !changeSetAccessFits(preview, MARKDOWN_PRESENTATION_DIALECT, skillSourceUrl)) {
+    throw new ManagementError(
+      'invalid_request',
+      'The access this proposal grants is too long to show in one preview. Split it into smaller proposals.',
     );
   }
   return preview;
@@ -7004,6 +7369,7 @@ function publicChangeSetPreview(
       target: change.target,
       ...('before' in change ? { before: scrubPrivatePreviewValue(change.before) } : {}),
       ...('after' in change ? { after: scrubPrivatePreviewValue(change.after) } : {}),
+      ...(change.statement ? { statement: change.statement } : {}),
     })),
     missingSetup: preview.missingSetup.map((setup) => ({ ...setup })),
   };
@@ -7020,6 +7386,11 @@ function scrubPrivatePreviewValue(value: unknown): unknown {
 
 function capabilityDigest(capability: string): string {
   return createHash('sha256').update(capability).digest('base64url');
+}
+
+function agentLabel(agent: Pick<CustomAgentConfig, 'name' | 'slackPresence'>): ManagementAgentLabel {
+  const handle = agent.slackPresence?.normalizedHandle || agent.slackPresence?.requestedHandle;
+  return handle ? { name: agent.name, handle } : { name: agent.name };
 }
 
 function providerLabel(providerId: 'anthropic' | 'openai' | 'openrouter'): string {
@@ -7720,14 +8091,39 @@ function isExpectedMutationError(error: unknown): boolean {
     error instanceof AgentStillReferencedError;
 }
 
-function mutationErrorCode(error: unknown): string {
-  if (error instanceof ManagementError) return error.code;
-  if (error instanceof AgentPresenceError) return error.code;
-  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
-    return 'revision_conflict';
+type UnappliedReason = Pick<ManagementItemOutcome, 'code' | 'instruction'>;
+
+/** The code clients branch on and, for the model, why the item did not apply. */
+function mutationFailure(error: unknown): UnappliedReason {
+  // These messages are written for people and carry no internal identifiers;
+  // the config errors below name Agent IDs, so they get a fixed explanation.
+  if (error instanceof ManagementError || error instanceof AgentPresenceError) {
+    return { code: error.code, instruction: error.message };
   }
-  if (error instanceof UnknownAgentError) return 'not_found';
-  if (error instanceof AgentExistsError) return 'already_exists';
-  if (error instanceof AgentStillReferencedError) return 'still_referenced';
-  return 'mutation_failed';
+  if (error instanceof AgentRevisionConflictError || error instanceof ChannelRevisionConflictError) {
+    return unappliedReason('revision_conflict');
+  }
+  if (error instanceof UnknownAgentError) return unappliedReason('not_found');
+  if (error instanceof AgentExistsError) return unappliedReason('already_exists');
+  if (error instanceof AgentStillReferencedError) return unappliedReason('still_referenced');
+  return unappliedReason('operation_failed');
+}
+
+const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
+  dependency_not_applied: 'A change in this call that this one depends on did not apply, so this one was not attempted.',
+  proposal_stale: 'This reviewed change went out of date, so nothing in it applied. Inspect again and send a new change.',
+  owner_required: 'Only a workspace Owner can make this change.',
+  operational_access_required: 'The person’s Chickpea role or this Agent’s edit policy does not allow this change.',
+  revision_conflict: 'This changed after it was inspected. Inspect again and resend the change.',
+  not_found: 'The Agent no longer exists. Inspect the workspace again.',
+  already_exists: 'An Agent with this ID already exists. Inspect the workspace before choosing another ID.',
+  still_referenced: 'The Agent is still in use, so it was not deleted. Archive it and remove its Slack reach first.',
+  operation_failed: 'The change did not apply. Inspect again before retrying.',
+  skill_missing: 'The Agent has no skill with this name, so nothing changed. Inspect the Agent to see its skills.',
+  skill_already_set: 'The skill was already enabled or disabled as asked, so nothing changed.',
+};
+
+function unappliedReason(code: string): UnappliedReason {
+  const instruction = UNAPPLIED_INSTRUCTIONS[code];
+  return instruction ? { code, instruction } : { code };
 }

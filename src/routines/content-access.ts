@@ -1,4 +1,4 @@
-import type { RoutineDefinition } from '../routines/types.ts';
+import type { RoutineDefinition } from './types.ts';
 import type { SlackTransport } from '../slack/transport/types.ts';
 import type { WorkStore } from '../work/types.ts';
 
@@ -8,15 +8,15 @@ export type RoutineContentAccess =
   | 'private_nonmember'
   | 'authorization_unknown';
 
-interface RoutineAdminSlackActor {
+interface RoutineSlackActor {
   slackTeamId: string;
   slackUserId: string;
 }
 
 interface RoutineContentAccessResolverOptions {
-  work?: WorkStore | undefined;
-  actor?: (() => Promise<RoutineAdminSlackActor>) | undefined;
-  transport?: ((workspaceId: string) => Promise<SlackTransport>) | undefined;
+  work?: Pick<WorkStore, 'getWork' | 'getBinding'> | undefined;
+  actor?: (() => Promise<RoutineSlackActor>) | undefined;
+  transport?: ((workspaceId: string) => Promise<Pick<SlackTransport, 'listMemberChannels'>>) | undefined;
 }
 
 /**
@@ -25,7 +25,7 @@ interface RoutineContentAccessResolverOptions {
  * every routine projected for the same authenticated actor and workspace.
  */
 export class RoutineContentAccessResolver {
-  private actorResult?: Promise<RoutineAdminSlackActor | undefined>;
+  private actorResult?: Promise<RoutineSlackActor | undefined>;
   private readonly membershipResults = new Map<string, Promise<ReadonlySet<string> | undefined>>();
   private readonly accessResults = new Map<string, Promise<RoutineContentAccess>>();
 
@@ -82,7 +82,7 @@ export class RoutineContentAccessResolver {
     return channels.has(routine.channelId) ? 'private_member' : 'private_nonmember';
   }
 
-  private resolveActor(): Promise<RoutineAdminSlackActor | undefined> {
+  private resolveActor(): Promise<RoutineSlackActor | undefined> {
     if (!this.actorResult) {
       this.actorResult = this.options.actor
         ? this.options.actor().catch(() => undefined)
@@ -92,7 +92,7 @@ export class RoutineContentAccessResolver {
   }
 
   private resolveMemberChannels(
-    actor: RoutineAdminSlackActor,
+    actor: RoutineSlackActor,
   ): Promise<ReadonlySet<string> | undefined> {
     const key = `${actor.slackTeamId}\0${actor.slackUserId}`;
     const current = this.membershipResults.get(key);

@@ -1317,3 +1317,33 @@ test('an effort level the Admin cannot name is skipped and never rendered raw', 
   assert.deepEqual(effortRadios(html, 'profile-effort').map(([level]) => level), ['low', 'high']);
   assert.doesNotMatch(html, /<img src=x>/);
 });
+
+test('removing a provider key names the default coding model that uses it', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    codingRole: { workspaceId: 'T_DESIGN', role: 'coding', modelId: 'openai/gpt-5.6', revision: 1, ready: true },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
+  assert.match(
+    harness.app.innerHTML,
+    /Default coding model<\/b> uses an OpenAI model\. Coding workspaces use each Agent's own model until the credential returns\./,
+  );
+});
+
+test('removing a provider key leaves out a default coding model on another provider', async () => {
+  const harness = runHarness({
+    initialPath: '/admin/settings/providers',
+    codingRole: { workspaceId: 'T_DESIGN', role: 'coding', modelId: OPUS, revision: 1, ready: true },
+  });
+  await flushAsync();
+  const click = harness.listeners.click;
+  assert.ok(click);
+
+  click({ target: actionTarget({ 'data-action': 'prov-remove', 'data-provider': 'openai' }) });
+  assert.match(harness.app.innerHTML, /Remove the stored OpenAI key\?/);
+  assert.doesNotMatch(harness.app.innerHTML, /Default coding model<\/b> uses/);
+});

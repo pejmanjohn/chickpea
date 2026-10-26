@@ -237,7 +237,7 @@ test('blank Agent fields and internal Slack presence state do not create proposa
   ].join('\n'));
 });
 
-test('new Agent internals stay hidden even when explicitly configured', () => {
+test('new Agent internals stay hidden, while its skills and an all-member edit policy show', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
@@ -263,23 +263,115 @@ test('new Agent internals stay hidden even when explicitly configured', () => {
 
   assert.doesNotMatch(
     presentation,
-    /Model|Editing Authority|Skills|anthropic\/claude-opus-5|budget-review|copy-review|private detail|\"instructions\"/,
+    /Model|Editing Authority|anthropic\/claude-opus-5|private detail|\"instructions\"/,
   );
+  assert.match(presentation, /^\*Who can edit\*\n> Any workspace member$/m);
+  assert.match(presentation, /^\*Paid Marketing — Skills\*\n> budget-review, copy-review$/m);
 });
 
-test('destructive proposals name the target and action without fake before and after values', () => {
+test('a preview frozen before statements names the action, never the record or target', () => {
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
-      itemId: 'delete',
-      operationKind: 'delete_agent',
+      itemId: 'archive',
+      operationKind: 'archive_agent',
       target: 'agent:agent_paid_marketing',
+      before: {
+        id: 'agent_paid_marketing',
+        kind: 'user',
+        name: 'Paid Marketing',
+        lifecycle: 'active',
+        slackPresence: {
+          normalizedHandle: 'paid-marketing',
+          avatar: { kind: 'generated', revision: 1, seed: 'private-seed' },
+          userGroupId: 'S0PRIVATE',
+          observedAt: 1_792_968_987_675,
+        },
+      },
     }],
     missingSetup: [],
   });
 
-  assert.match(presentation, /\*agent:agent_paid_marketing — Delete Agent\*/);
-  assert.doesNotMatch(presentation, /\*Before\*|\*After\*|\(not set\)/);
+  assert.equal(presentation, [
+    '*Proposed changes*',
+    '*Paid Marketing — Archive Agent*',
+    '',
+    'Reply `approve` to apply these exact changes, or tell me what to adjust.',
+  ].join('\n'));
+});
+
+test('Agent edits render only person-facing fields, in Admin words', () => {
+  // Every internal field differs between before and after, so allowlisting
+  // any one of them renders a section and fails the exact match below.
+  const internalsBefore = {
+    id: 'agent_paid_marketing',
+    kind: 'user',
+    configurationGeneration: 4,
+    creatorMembershipId: 'membership_creator',
+    credentialIncarnation: 'incarnation_private',
+  };
+  const internalsAfter = {
+    id: 'agent_paid_marketing_copy',
+    kind: 'system',
+    configurationGeneration: 5,
+    creatorMembershipId: 'membership_other',
+    credentialIncarnation: 'incarnation_rotated',
+  };
+  const presentation = formatSlackChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'update',
+      operationKind: 'update_agent',
+      target: 'agent:agent_paid_marketing',
+      before: {
+        ...internalsBefore,
+        revision: 3,
+        name: 'Paid Marketing',
+        enabled: true,
+        lifecycle: 'active',
+        editPolicy: 'creator_and_admins',
+        websiteLogins: [{ loginId: 'login_private', level: 'check' }],
+        slackPresence: {
+          normalizedHandle: 'paid-marketing',
+          avatar: { kind: 'generated', revision: 1, seed: 'private-seed' },
+          userGroupId: 'S0PRIVATE',
+        },
+      },
+      after: {
+        ...internalsAfter,
+        revision: 4,
+        name: 'Paid Marketing',
+        enabled: false,
+        lifecycle: 'needs_attention',
+        editPolicy: 'all_workspace_members',
+        websiteLogins: [],
+        slackPresence: {
+          normalizedHandle: 'paid-marketing',
+          avatar: { kind: 'generated', revision: 2, seed: 'other-seed' },
+          userGroupId: 'S0PRIVATE',
+          observedAt: 1_792_968_987_675,
+        },
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(presentation, [
+    '*Proposed changes*',
+    '*Paid Marketing — Who can edit*',
+    '*Before*',
+    '> Creator and workspace admins',
+    '*After*',
+    '> Any workspace member',
+    '',
+    '*Paid Marketing — Status*',
+    '*Before*',
+    '> Enabled',
+    '*After*',
+    '> Disabled',
+    '',
+    'Reply `approve` to apply these exact changes, or tell me what to adjust.',
+  ].join('\n'));
 });
 
 test('new Agent identity stays visible when long instructions truncate the preview', () => {
@@ -526,20 +618,228 @@ test('Markdown skill import proposals show the source and only the changed skill
   assert.ok(markdown.endsWith(MARKDOWN_APPROVAL_INSTRUCTION));
 });
 
-test('Markdown destructive proposals name the target and action', () => {
+test('connection changes name each connection and the Agent', () => {
   const markdown = formatMarkdownChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
-      itemId: 'delete',
-      operationKind: 'delete_agent',
-      target: 'agent:agent_paid_marketing',
+      itemId: 'connections',
+      operationKind: 'update_agent',
+      target: 'agent:agent_research',
+      before: {
+        name: 'Research',
+        slackPresence: { normalizedHandle: 'research' },
+        mcpServers: [{ id: 'mcp_wiki', displayName: 'DeepWiki', lifecycleStatus: 'ready', enabled: true }],
+        apiConnections: [{ id: 'api_billing', displayName: 'Billing', enabled: true }],
+        repositories: [{ id: 'repo_docs', accountLogin: 'acme', fullName: 'acme/docs', enabled: true }],
+      },
+      after: {
+        name: 'Research',
+        slackPresence: { normalizedHandle: 'research' },
+        mcpServers: [],
+        apiConnections: [{ id: 'api_billing', displayName: 'Billing', enabled: false }],
+        repositories: [
+          { id: 'repo_docs', accountLogin: 'acme', fullName: 'acme/docs', enabled: true },
+          { id: 'repo_all', accountLogin: 'acme', fullName: '', allRepos: true, enabled: true },
+        ],
+      },
     }],
     missingSetup: [],
   });
 
   assert.equal(markdown, [
     '**Proposed changes**',
-    '**agent:agent_paid_marketing — Delete Agent**',
+    'Remove **DeepWiki** from **Research** (@research).',
+    '',
+    'Update **Billing** on **Research** (@research).',
+    'Status changes from Enabled to Disabled.',
+    '',
+    'Add **All repositories for acme** to **Research** (@research).',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+});
+
+test('Channel, routine, memory and setup changes read as statements without internal records', () => {
+  const research = { name: 'Research', handle: 'research' };
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '9 reviewed workspace changes',
+    changes: [{
+      itemId: 'grant',
+      operationKind: 'grant_agent_channel',
+      target: 'channel_grant:T123:C123:agent_research',
+      after: { workspaceId: 'T123', channelId: 'C123', agentId: 'agent_research', revision: 1, status: 'active' },
+      statement: { kind: 'grant_agent_channel', agent: research, channel: 'launch' },
+    }, {
+      itemId: 'revoke',
+      operationKind: 'revoke_agent_channel',
+      target: 'channel_grant:T123:C456:agent_research',
+      before: { workspaceId: 'T123', channelId: 'C456', agentId: 'agent_research', revision: 2, status: 'active' },
+      after: null,
+      statement: { kind: 'revoke_agent_channel', agent: research },
+    }, {
+      itemId: 'archive-channel',
+      operationKind: 'put_channel',
+      target: 'channel:T123:C123',
+      before: { workspaceId: 'T123', channelId: 'C123', revision: 1, label: 'launch', lifecycle: 'active' },
+      after: { workspaceId: 'T123', channelId: 'C123', revision: 2, label: 'launch', lifecycle: 'archived' },
+    }, {
+      itemId: 'memory',
+      operationKind: 'update_agent_memory',
+      target: 'agent:agent_research',
+      before: { agentId: 'agent_research', body: 'Prefers primary sources.', revision: 2 },
+      after: { agentId: 'agent_research', body: 'Prefers primary sources and recent papers.', revision: 3 },
+      statement: { kind: 'update_agent_memory', agent: research },
+    }, {
+      itemId: 'pause',
+      operationKind: 'control_routine',
+      target: 'routine:routine_triage',
+      statement: { kind: 'control_routine', routine: 'Morning triage', action: 'pause' },
+    }, {
+      itemId: 'run',
+      operationKind: 'run_routine',
+      target: 'routine:routine_triage',
+      statement: { kind: 'run_routine', routine: 'Morning triage' },
+    }, {
+      itemId: 'reassign',
+      operationKind: 'reassign_routine_agent',
+      target: 'routine:routine_triage',
+      statement: { kind: 'reassign_routine_agent', routine: 'Morning triage', agent: research },
+    }, {
+      itemId: 'delete-routine',
+      operationKind: 'delete_routine',
+      target: 'routine:routine_triage',
+      statement: { kind: 'delete_routine', routine: 'Morning triage' },
+    }, {
+      itemId: 'setup',
+      operationKind: 'request_setup',
+      target: 'agent:agent_research',
+      statement: { kind: 'request_setup', setup: 'DeepWiki' },
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(markdown, [
+    '**Proposed changes**',
+    'Add **Research** (@research) to **#launch**.',
+    '',
+    'Remove **Research** (@research) from a Channel. It stops answering there.',
+    '',
+    '**#launch — Status**',
+    '**Before**',
+    '> Active',
+    '**After**',
+    '> Archived',
+    '',
+    '**Research — Memory**',
+    '**Before**',
+    '> Prefers primary sources.',
+    '**After**',
+    '> Prefers primary sources and recent papers.',
+    '',
+    'Pause **Morning triage**.',
+    '',
+    'Run **Morning triage** now.',
+    '',
+    'Run **Morning triage** with **Research** (@research) from now on.',
+    '',
+    'Delete **Morning triage** permanently. This stops all future runs and cannot be undone.',
+    '',
+    'Set up **DeepWiki**.',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+});
+
+test('a provider key removal names at most eight Agents, the Workspace default and the roles', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'remove-key',
+      operationKind: 'remove_provider_credential',
+      target: 'provider:openai',
+      statement: {
+        kind: 'remove_provider_credential',
+        provider: 'OpenAI',
+        affectedAgents: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10'],
+        workspaceDefaultAffected: true,
+        affectedWorkspaceRoles: ['image', 'coding'],
+      },
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(markdown, [
+    '**Proposed changes**',
+    'Remove the stored **OpenAI** key. The Workspace default uses OpenAI, so Chickpea stops answering too. ' +
+      '**A1**, **A2**, **A3**, **A4**, **A5**, **A6**, **A7**, **A8**, and 2 more use OpenAI and stop answering until a key is available. ' +
+      'The default image model uses OpenAI, so image generation stops until a key is available. ' +
+      'The default coding model uses OpenAI, so coding workspaces use each Agent’s own model until a key is available.',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+});
+
+test('Slack bold shows names as stored and neutralizes Slack control sequences in them', () => {
+  const preview: ManagementChangeSetPreview = {
+    summary: '2 reviewed workspace changes',
+    changes: [{
+      itemId: 'grant',
+      operationKind: 'grant_agent_channel',
+      target: 'channel_grant:T123:C123:agent_rd',
+      statement: {
+        kind: 'grant_agent_channel',
+        agent: { name: 'R&D <!channel>', handle: 'rd_ops' },
+        channel: 'eng_oncall',
+      },
+    }, {
+      itemId: 'skill',
+      operationKind: 'update_agent',
+      target: 'agent:agent_research',
+      before: { name: 'Research', skills: [] },
+      after: {
+        name: 'Research',
+        skills: [{
+          name: 'release_notes',
+          description: 'Draft release notes.',
+          instructions: 'Summarize merged changes.',
+          enabled: true,
+        }],
+      },
+    }],
+    missingSetup: [],
+  };
+
+  const slack = formatSlackChangeSetProposal(preview);
+  assert.match(slack, /^Add \*R&amp;D &lt;!channel&gt;\* \(@rd_ops\) to \*#eng_oncall\*\.$/m);
+  assert.match(slack, /^\*Research — Skill: release_notes\*\n\*Add\*$/m);
+  assert.doesNotMatch(slack, /<!channel>/);
+  const markdown = formatMarkdownChangeSetProposal(preview);
+  assert.match(markdown, /^Add \*\*R&D <!channel>\*\* \(@rd_ops\) to \*\*#eng_oncall\*\*\.$/m);
+  assert.match(markdown, /^\*\*Research — Skill: release_notes\*\*\n\*\*Add\*\*$/m);
+});
+
+test('a member change with neither role nor status falls back to its heading', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '2 reviewed workspace changes',
+    changes: [{
+      itemId: 'named',
+      operationKind: 'update_member',
+      target: 'membership:membership_alex',
+      statement: { kind: 'update_member', member: 'Alex Rivera' },
+    }, {
+      itemId: 'unnamed',
+      operationKind: 'update_member',
+      target: 'membership:membership_unknown',
+      statement: { kind: 'update_member' },
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(markdown, [
+    '**Proposed changes**',
+    '**Alex Rivera — Update Member**',
+    '',
+    '**Update Member**',
     '',
     MARKDOWN_APPROVAL_INSTRUCTION,
   ].join('\n'));

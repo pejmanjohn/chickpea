@@ -147,7 +147,7 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
         : 'Installed skill `unslop` on Sprout. It’s active from the next message. You can undo this change.');
 
     const replayed = await invokeSlackWorkspaceManagementTool({
-      signal: { ...signal, eventId: 'Ev_SKILL_REPLAY', turnJobId: 'turn_SKILL_REPLAY' },
+      signal: { ...signal, turnJobId: 'turn_SKILL_REPLAY' },
       identity: f.identity,
       service: f.service,
       name: 'import_skill',
@@ -160,6 +160,22 @@ test(`Slack imports an exact public skill with an undoable receipt (supporting f
     });
     assert.equal(replayed.ok, true);
     assert.deepEqual((replayed as { ok: true; result: unknown }).result, result);
+
+    const reusedKey = await invokeSlackWorkspaceManagementTool({
+      signal: { ...signal, eventId: 'Ev_SKILL_LATER', turnJobId: 'turn_SKILL_LATER' },
+      identity: f.identity,
+      service: f.service,
+      name: 'import_skill',
+      args: {
+        source: requestSource,
+        ...selector,
+        idempotencyKey: 'import-unslop',
+        guideVersion: AGENT_AUTHORING_GUIDE_VERSION,
+      },
+    });
+    assert.equal(reusedKey.ok, true);
+    assert.equal((reusedKey as { ok: true; result: { status: string } }).result.status,
+      'already_installed', 'a later turn reports the current skill, not the earlier receipt');
 
     const alreadyInstalled = await invokeSlackWorkspaceManagementTool({
       signal: { ...signal, eventId: 'Ev_SKILL_PRESENT', turnJobId: 'turn_SKILL_PRESENT' },

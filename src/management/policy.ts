@@ -1,6 +1,11 @@
 import type { AgentReferenceSummary, CustomAgentConfig } from '../config/types.ts';
-import type { OrganizationRole } from '../identity/types.ts';
+import type { MembershipStatus, OrganizationRole } from '../identity/types.ts';
 import type { LiveManagementActor, ManagementOperation, ManagementOrigin } from './types.ts';
+
+/** Suspending or removing a membership ends the person's access. */
+export function removesMemberAccess(status: MembershipStatus | undefined): boolean {
+  return status === 'suspended' || status === 'removed';
+}
 
 interface ManagementPolicyFacts {
   actor: LiveManagementActor;
@@ -97,7 +102,7 @@ function managementPolicyReason(
   }
   if (operation.kind === 'update_member') {
     if (actor.role !== 'owner') return { allowed: false, reason: 'owner_required' };
-    const removesAccess = operation.status === 'suspended' || operation.status === 'removed';
+    const removesAccess = removesMemberAccess(operation.status);
     const changesOwnership = operation.role !== undefined &&
       (operation.role === 'owner' || facts.currentMemberRole === 'owner');
     return {

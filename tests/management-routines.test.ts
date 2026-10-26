@@ -169,7 +169,17 @@ test('management-created schedules accept active grant-only destinations and bin
 });
 
 test('an edit the schedule\'s Runs as authority refuses leaves the routine as it was', async () => {
-  const f = await createManagementAdapterFixture('routine-edit-atomic');
+  // A member's new Channel routine needs Slack to show them the Channel.
+  const f = await createManagementAdapterFixture('routine-edit-atomic', {
+    slackFacts: async () => ({
+      async lookupChannel(channelId) {
+        return { id: channelId, name: 'digest', private: false, member: true, archived: false };
+      },
+      async listMemberChannels() {
+        return new Set<string>();
+      },
+    }),
+  });
   try {
     const workspaceId = f.owner.binding.slackTeamId;
     const member = (await f.identity.provisionSlackMember({

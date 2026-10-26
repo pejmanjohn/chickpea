@@ -31,7 +31,7 @@ import {
   RoutineContentAccessResolver,
   routineContentReadable,
   type RoutineContentAccess,
-} from './routine-content-access.ts';
+} from '../routines/content-access.ts';
 
 interface RoutineAdminApiOptions {
   store: (c: Context) => RoutineStore;

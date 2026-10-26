@@ -34,7 +34,11 @@ interface TeamAdminApiOptions {
     slackTeamId: string,
     slackUserId: string,
   ) => Promise<SlackMember | undefined>;
-  /** This request's Better Auth backend; a changed membership ends its sessions and MCP grants. */
+  /**
+   * This request's Better Auth backend; a membership changed without the
+   * management service ends its sessions and MCP grants here. The service
+   * ends them itself.
+   */
   betterAuthBackend?: (c: Context) => Promise<BetterAuthAccessRevoker | undefined>;
   management?: (c: Context) => WorkspaceManagementService;
   rateLimiter?: (c: Context) => Promise<AuthRateLimiter | undefined>;
@@ -153,11 +157,6 @@ export function createTeamAdminApi(options: TeamAdminApiOptions): Hono {
         if (outcome?.disposition !== 'applied') return managementFailure(c, outcome?.code);
         const membership = await identity.getMembership(membershipId);
         if (!membership) return c.json({ error: 'membership_unavailable' }, 404);
-        if (membership.role !== target.role || membership.status !== target.status) {
-          if (binding.betterAuthUserId) {
-            await revokeAccess(c, binding.betterAuthUserId, membership.status !== target.status);
-          }
-        }
         return c.json({ membership });
       }
       const result = await identity.updateMembershipAuthority({
