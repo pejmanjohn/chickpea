@@ -11,6 +11,7 @@ import { SqliteConfigStore } from '../src/config/store.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
 import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { AGENT_AUTHORING_GUIDE_VERSION } from '../src/management/agent-authoring/index.ts';
+import { managementActorOriginKey } from '../src/management/contracts.ts';
 import {
   WorkspaceManagementService,
   type WorkspaceManagementServiceInput,
@@ -654,24 +655,31 @@ test('a suspension whose revoke after the write fails is not applied, and asking
   }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
 });
 
-test('a single-operation suspension whose revoke after the write fails ends grants when confirmed again', async () => {
+test('a single-write suspension proposed before change sets ends grants when confirmed again after a failed revoke', async () => {
   const betterAuth = refreshingBetterAuth({ failRevoke: 2 });
   await withFixture('member-access-revoke-single', async (f) => {
     betterAuth.watchMember(f);
-    const context = chickpeaDm(f, f.owner);
-    // A setup request beside the suspension keeps it out of a change set.
-    const proposed = await apply(f, context, 'suspend-with-setup', [{
+    const context = mcp(f.owner);
+    const proposed = await apply(f, context, 'suspend', [{
       itemId: 'member',
       kind: 'update_member',
       membershipId: f.member.membership.id,
       status: 'suspended',
-    }, {
-      itemId: 'setup',
-      kind: 'request_setup',
-      target: { kind: 'provider_credential', providerId: 'openai' },
     }]);
-    const proposalId = proposed.outcomes[0]?.proposalId;
-    assert.ok(proposalId, JSON.stringify(proposed.outcomes));
+    const changeSet = await f.management.getChangeSetProposal(proposed.outcomes[0]!.proposalId!);
+    assert.ok(changeSet, JSON.stringify(proposed.outcomes));
+    // Only rows written before change sets still apply through the single-write path.
+    const { proposalId } = await f.management.putProposal({
+      proposalId: 'proposal_legacy_suspension',
+      organizationId: context.organizationId,
+      actorUserId: context.userId,
+      actorMembershipId: context.membershipId,
+      originKey: managementActorOriginKey(context),
+      operation: changeSet.operations[0]!,
+      summary: `update_member:${f.member.membership.id}`,
+      targetRevisions: changeSet.targetRevisions,
+      at: NOW,
+    });
 
     await assert.rejects(
       f.service.confirmWorkspaceChange({ context, proposalId }),
