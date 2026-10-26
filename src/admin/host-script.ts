@@ -11,7 +11,7 @@ export function configureHostPageScript(path: string | undefined): void {
     scriptPath = null;
     return;
   }
-  if (typeof path !== 'string' || !/^\/(?![/\\])[A-Za-z0-9/_.~-]{0,255}$/.test(path)) {
+  if (!/^\/(?![/\\])[A-Za-z0-9/_.~-]{0,255}$/.test(path)) {
     throw new Error('The host page script must be a same-origin path.');
   }
   scriptPath = path;

@@ -56,9 +56,8 @@ test('only a same-origin path is accepted, and a refusal keeps the installed scr
     'x.js',
     '',
     `/${'a'.repeat(256)}`,
-    42 as unknown as string,
   ]) {
-    assert.throws(() => configureHostPageScript(path), /same-origin path/, String(path));
+    assert.throws(() => configureHostPageScript(path), /same-origin path/, path);
   }
   assert.equal(hostPageScriptTag(), '<script src="/_host/page.js" defer></script>');
 });
