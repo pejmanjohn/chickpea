@@ -9,8 +9,15 @@ import {
   isValidRepositoryGrantShape,
   REPOSITORY_GRANT_SHAPE_MESSAGE,
 } from '../config/github-app.ts';
-import type { RepositoryGrant } from '../config/types.ts';
 import {
+  apiConnectionsWriteProblem,
+  mcpConnectionsWriteProblem,
+  skillsWriteProblem,
+} from '../config/agent-write-rules.ts';
+import type { RepositoryGrant } from '../config/types.ts';
+import type { ManagementApiConnection, ManagementMcpConnection } from './agent-connections.ts';
+import {
+  AgentWriteRuleError,
   ManagementError,
   type ManagementActorContext,
   type ManagementApplyResult,
@@ -90,15 +97,11 @@ export function validateManagementOperations(
           ? operation.patch.repositories
           : undefined,
     );
-    const skills = operation.kind === 'create_agent'
-      ? operation.agent.skills
-      : operation.kind === 'update_agent'
-        ? operation.patch.skills
-        : undefined;
-    // The runtime keeps the last skill of a name, so a preview of both would mislead.
-    if (skills && new Set(skills.map(({ name }) => name)).size !== skills.length) {
-      throw invalid('Skill names on an Agent must be unique.');
-    }
+    const agentFields = operation.kind === 'create_agent'
+      ? operation.agent
+      : operation.kind === 'update_agent' ? operation.patch : undefined;
+    const problem = agentFields && agentWriteProblem(agentFields);
+    if (problem) throw new AgentWriteRuleError(problem);
     if (operation.kind === 'create_agent' && !isAgentId(operation.agent.id)) {
       throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
     }
@@ -277,6 +280,37 @@ function rejectSecretKeys(value: unknown): void {
     }
     rejectSecretKeys(member);
   }
+}
+
+/**
+ * The Agent write rules Admin enforces, plus the shape a connection account
+ * can hold. The runtime keeps the last skill of a name, so duplicates would
+ * also make a preview mislead.
+ */
+function agentWriteProblem(fields: {
+  skills?: Parameters<typeof skillsWriteProblem>[0] | undefined;
+  mcpServers?: ManagementMcpConnection[] | undefined;
+  apiConnections?: ManagementApiConnection[] | undefined;
+}): string | undefined {
+  return (fields.skills && skillsWriteProblem(fields.skills)) ??
+    (fields.mcpServers && (mcpConnectionsWriteProblem(fields.mcpServers) ??
+      fields.mcpServers.map(connectionAccountShapeProblem).find(Boolean))) ??
+    (fields.apiConnections && (apiConnectionsWriteProblem(fields.apiConnections) ??
+      fields.apiConnections.map(connectionAccountShapeProblem).find(Boolean)));
+}
+
+function connectionAccountShapeProblem(
+  connection: ManagementMcpConnection | ManagementApiConnection,
+): string | undefined {
+  if (!connection.enabled) {
+    return `Connection ${connection.id} cannot be turned off. Remove it to stop the Agent using it.`;
+  }
+  if ('url' in connection && (connection.authMode === 'none'
+    ? connection.headerNames.length > 1
+    : connection.headerNames.length > 0)) {
+    return `Connection ${connection.id} holds one credential: a bearer token, an OAuth sign-in, or with authMode none the value of one header.`;
+  }
+  return undefined;
 }
 
 function invalid(message: string): ManagementError {

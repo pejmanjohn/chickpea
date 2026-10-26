@@ -38,12 +38,7 @@ import {
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
-import {
-  apiConnectionsWriteProblem,
-  mcpConnectionsWriteProblem,
-  REVIEWED_CONNECTOR_SETUP_MESSAGE,
-  skillsWriteProblem,
-} from '../config/agent-write-rules.ts';
+import { REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
   type AgentReferenceSummary,
@@ -1827,7 +1822,6 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
-    assertAgentWriteRules(requestedOperations);
     assertCreationCallScope(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
       actor,
@@ -2337,7 +2331,6 @@ export class WorkspaceManagementService {
     }
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
-    assertAgentWriteRules(requestedOperations);
     if (requestedOperations.some(({ kind }) => kind === 'create_agent')) {
       throw new ManagementError(
         'invalid_request',
@@ -7081,36 +7074,6 @@ function reviewedConnectorError(
   return isMetaAdsMcpConnection(connection)
     ? new MetaAdsCatalogSetupRequiredError()
     : new AgentWriteRuleError(REVIEWED_CONNECTOR_SETUP_MESSAGE);
-}
-
-/** The Agent write rules Admin enforces, plus the shape a connection account can hold. */
-function assertAgentWriteRules(operations: readonly ManagementOperation[]): void {
-  for (const operation of operations) {
-    const fields = operation.kind === 'create_agent'
-      ? operation.agent
-      : operation.kind === 'update_agent' ? operation.patch : undefined;
-    if (!fields) continue;
-    const problem = (fields.skills && skillsWriteProblem(fields.skills)) ??
-      (fields.mcpServers && (mcpConnectionsWriteProblem(fields.mcpServers) ??
-        fields.mcpServers.map(connectionAccountShapeProblem).find(Boolean))) ??
-      (fields.apiConnections && (apiConnectionsWriteProblem(fields.apiConnections) ??
-        fields.apiConnections.map(connectionAccountShapeProblem).find(Boolean)));
-    if (problem) throw new AgentWriteRuleError(problem);
-  }
-}
-
-function connectionAccountShapeProblem(
-  connection: ManagementMcpConnection | ManagementApiConnection,
-): string | undefined {
-  if (!connection.enabled) {
-    return `Connection ${connection.id} cannot be turned off. Remove it to stop the Agent using it.`;
-  }
-  if ('url' in connection && (connection.authMode === 'none'
-    ? connection.headerNames.length > 1
-    : connection.headerNames.length > 0)) {
-    return `Connection ${connection.id} holds one credential: a bearer token, an OAuth sign-in, or with authMode none the value of one header.`;
-  }
-  return undefined;
 }
 
 const CREATION_CALL_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([
