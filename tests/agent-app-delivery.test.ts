@@ -482,6 +482,39 @@ test("a stop phrase in a DM thread keeps its host meaning and is never judged as
   assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
 }));
 
+test("a stop phrase that hands the thread to another Agent is never judged against that Agent's waiting change", async (t) => withHarness(t, async (h) => {
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.ok(owner);
+  const root = '1900001100.000100';
+  assert.equal((await h.deliverToChickpea(channelMessage(root, '<!subteam^SFINANCE|@finance> remember that refunds go to account 99').chickpea)).status, 200);
+  assert.ok(await pendingTurn(h.stores, (pending) => pending.assignment.agentId === 'agent_finance' && pending.turn.messageTs === root),
+    "Finance's turn proposed the change");
+  const proposalId = 'changeset_routed_stop_phrase';
+  const scope = `slack:${TEAM}:C1:${root}:agent:agent_finance`;
+  await h.stores.management.putChangeSetProposal({
+    proposalId, organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: scope, approvalScopeKey: scope, idempotencyKey: proposalId,
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_finance', expectedRevision: 0, body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'memory:agent_finance': 0 }, at: Date.now(),
+    proposedMessageTs: root,
+  });
+  const route = await h.stores.config.getAgentThreadRoute(TEAM, 'C1', root);
+  assert.equal(route?.agentId, 'agent_finance');
+  await h.stores.config.putAgentThreadRoute({ workspaceId: TEAM, channelId: 'C1', threadTs: root, agentId: 'agent_support', agentGeneration: 1 }, route!.revision);
+
+  const stop = '1900001101.000100';
+  const heard = channelMessage(stop, '<!subteam^SFINANCE|@finance> cancel that').chickpea;
+  assert.equal((await h.deliverToChickpea({ ...heard, event: { ...heard.event, thread_ts: root } })).status, 200);
+  assert.equal((await h.stores.config.getAgentThreadRoute(TEAM, 'C1', root))?.agentId, 'agent_finance',
+    'the message names Finance, so it is a handoff from the thread\'s owner');
+  assert.equal(await h.stores.usage.getOperation(`management_approval:${TEAM}:C1:${heard.event_id}`), undefined,
+    'a stop phrase is never judged, handed to another Agent or not');
+  assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
+}));
+
 test("a click on the app Agent's approval card reaches that Agent, as the thread's owner or its guest, and runs as its bot", async (t) => withHarness(t, async (h) => {
   const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
   assert.ok(owner);

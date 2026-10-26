@@ -3196,9 +3196,13 @@ async function processSlackEvent(
   // @Chickpea in another Agent's thread) hands the thread over and is not
   // steering: routing checked the sender against the new Agent only, and a
   // stop must come from someone who may use the running one (R3). A click or
-  // form answer on an interactive surface is never steering.
-  const steeringCommand = typedByPerson && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
-    ? slackSteeringCommand(turn.text, commandAddress)
+  // form answer on an interactive surface is never steering. The phrase is
+  // read even where steering does not act on it, because a stop phrase handed
+  // to another Agent, or heard with no Slack client, is still never an answer
+  // to a waiting change.
+  const steeringPhrase = typedByPerson ? slackSteeringCommand(turn.text, commandAddress) : undefined;
+  const steeringCommand = steeringPhrase && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
+    ? steeringPhrase
     : undefined;
   if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
       turn.messageTs === turn.threadTs) {
@@ -3244,7 +3248,7 @@ async function processSlackEvent(
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
   // A stop phrase or check-in keeps its host meaning and is never judged.
-  const typedApproval = typedByPerson && !browserActionAnswered && !steeringCommand &&
+  const typedApproval = typedByPerson && !browserActionAnswered && !steeringPhrase &&
       admissionTruth.eligible && admittedActorMembershipId
     ? await resolveTypedSlackManagementApproval({
         turn,
