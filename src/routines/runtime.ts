@@ -233,10 +233,18 @@ export async function resolveRoutineRuntimeAccess(
         createDirectSlackTransportFromClient(directClient as unknown as DirectSlackApiClient),
       ),
     });
-    if (privateUse.status !== 'allowed') {
+    if (privateUse.status === 'denied') {
       throw new RoutineRuntimeError(
         'access_denied',
         'The direct schedule owner can no longer use this Agent.',
+      );
+    }
+    // Slack could not answer. Like a rate limit, this counts toward the
+    // three failures that pause the routine; one outage never disables it.
+    if (privateUse.status === 'unavailable') {
+      throw new RoutineRuntimeError(
+        'slack_rate_limited',
+        'Current direct-message access could not be verified.',
       );
     }
     const directAccessHash = (configHash: string) => hashRoutineValue(JSON.stringify({
