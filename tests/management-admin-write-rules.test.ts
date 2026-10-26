@@ -318,7 +318,64 @@ test('a management edit that changes or removes a connection retires its credent
     assert.deepEqual((await inspectAgent(f, agent.id)).apiConnections, []);
   }));
 
-const skill = { name: 'triage', description: 'Triage new issues.', instructions: 'Sort by severity.', enabled: true };
+test('an API connection added over MCP leaves the Agent saveable in Admin and takes its key there', () =>
+  withFixture('accounts-admin-key', async (f) => {
+    const agent = await seedAgent(f);
+    await f.config.putWorkspaceModelDefault({
+      workspaceId: TEAM,
+      modelId: 'local-stub/workspace',
+      provenance: 'admin_selected',
+      lastChangedByMembershipId: f.owner.membership.id,
+    }, (await f.config.getWorkspaceModelDefault(TEAM))?.revision);
+    const smoke: ManagementApiConnection = {
+      ...billing, id: 'api_smoke_example', displayName: 'Smoke example', allowedHosts: ['smoke.example.test'],
+    };
+    const result = await apply(f, 'add-smoke', [{
+      itemId: 'add',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch: { apiConnections: [smoke] },
+    }]);
+    assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(result));
+
+    const app = adminApp(f);
+    const headers = testAdminHeaders(TOKEN, { 'content-type': 'application/json' });
+    const current = await f.config.getAgent(agent.id);
+    const saved = await app.request(`http://localhost/admin/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        expectedRevision: current.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(current.credentialIncarnation),
+        instructions: 'Help the team with smoke checks.',
+      }),
+    });
+    assert.equal(saved.status, 200, await saved.clone().text());
+
+    const [entry] = await adminAttached(app, agent.id);
+    assert.deepEqual([entry?.account.label, entry?.account.lifecycle], ['Smoke example', 'pending']);
+    const keyed = await app.request(`http://localhost/admin/api/agents/${agent.id}/connections/${entry!.account.id}/credential`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ expectedRevision: entry!.account.revision, credential: 'sk-smoke' }),
+    });
+    assert.equal(keyed.status, 200, await keyed.clone().text());
+    assert.deepEqual((await adminAttached(app, agent.id)).map(({ account }) => account.lifecycle), ['ready']);
+    const account = await accountFor(f, agent.id, entry!.account.providerId);
+    assert.equal(await f.settings.getSetting(connectionAccountSecretSettingKey(account.secretRefId)), 'sk-smoke');
+
+    const effective = await resolveEffectiveConnectionAccounts({
+      config: f.config,
+      workspaceId: TEAM,
+      agentId: agent.id,
+      actorMembershipId: f.owner.membership.id,
+    });
+    assert.deepEqual(planFor(await f.config.getAgent(agent.id), effective).apiConnections.map(({ allowedHosts }) => allowedHosts),
+      [['smoke.example.test']]);
+  }));
+
+const skill ={ name: 'triage', description: 'Triage new issues.', instructions: 'Sort by severity.', enabled: true };
 const adminMcp = { lifecycleStatus: 'pending', statusText: '', discoveredTools: [] };
 
 /** One bad input, written the way each door takes it. */

@@ -92,6 +92,7 @@ import { prepareSeededCatalogConnection, replaceCatalogConnection } from '../man
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
+  ConnectionCredentialEntryUnavailableError,
   deleteRevokedConnectionOAuthSettings,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
@@ -9081,6 +9082,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
       if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
       if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict' }, 409);
+      return internalError(c, error);
+    }
+  });
+
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/credential', async (c) => {
+    const parsed = v.safeParse(v.object({
+      expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      credential: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(32_768)),
+    }), await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const agentId = c.req.param('agentId');
+      const connectionAccountId = c.req.param('connectionAccountId');
+      const { principal } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      const updated = await connectionAccounts(c).setCredentialForAgent({
+        principal, agentId, connectionAccountId, ...parsed.output,
+      });
+      return c.json({ account: toConnectionAccountView(updated) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      const message = 'This connection changed. Reload it before saving the credential.';
+      if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message }, 409);
+      if (error instanceof ConnectionCredentialEntryUnavailableError) return c.json({ error: 'credential_entry_unavailable', message }, 409);
       return internalError(c, error);
     }
   });

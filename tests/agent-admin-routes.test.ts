@@ -44,8 +44,10 @@ import {
 } from '../src/config/mcp-secrets.ts';
 import {
   connectorCredentialSettingKey,
+  resolveConnectionAccountSecret,
   resolveConnectorCredential,
 } from '../src/config/connector-secrets.ts';
+import type { ConnectionAccount, ConnectionAccountPolicy } from '../src/config/types.ts';
 import {
   agentCredentialConfigurationBinding,
   boundApiCredentialRef,
@@ -72,6 +74,7 @@ import {
   saveStoredComposioProjectKey,
 } from '../src/config/composio-settings.ts';
 import type { ComposioClientLike } from '../src/connections/providers/composio.ts';
+import { ConnectionAccountService } from '../src/connections/store.ts';
 import {
   createManagedConnectionProviderRegistry,
   resolveDefaultManagedConnectionProviderRegistry,
@@ -6901,6 +6904,148 @@ test(`custom MCP ${recoverFromToken ? 'token recovery' : 'OAuth creation'} requi
 });
 
 }
+
+const keyOwner: AuthPrincipal = {
+  userId: 'user_key_owner', membershipId: 'membership_key_owner', organizationId: 'org_oss',
+  role: 'owner', authenticatorKind: 'test_slack_session', credentialId: 'session_key_owner',
+  correlationId: 'request_key_owner', machine: false,
+};
+
+const keyedApiPolicy: ConnectionAccountPolicy = {
+  kind: 'api', allowedHosts: ['billing.example.test'], pathPrefixes: ['/v1'],
+  headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+};
+
+const keyedMcpPolicy: ConnectionAccountPolicy = {
+  kind: 'mcp', url: 'https://mcp.tracker.example/mcp', transport: 'streamable-http', authMode: 'bearer',
+  headerNames: [], discoveredTools: [], allowedTools: ['search'],
+};
+
+async function seedKeyAgent(fixture: ReturnType<typeof harness>, editPolicy: 'creator_and_admins' | 'all_workspace_members' = 'creator_and_admins') {
+  await fixture.store.ensureWorkspaceInstallation({ workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct' });
+  await fixture.store.createAgent({
+    id: 'agent_support', name: 'Support', instructions: 'Answer support questions.', enabled: true,
+    lifecycle: 'active', creatorMembershipId: keyOwner.membershipId, editPolicy, configurationGeneration: 1,
+    skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+}
+
+async function createKeyAccount(
+  fixture: ReturnType<typeof harness>,
+  policy: ConnectionAccountPolicy,
+  options: { principal?: AuthPrincipal; ownerKind?: 'team' | 'member'; credential?: string } = {},
+): Promise<ConnectionAccount> {
+  const { account } = await new ConnectionAccountService({ config: fixture.store, settings: fixture.settings }).createForAgent({
+    principal: options.principal ?? keyOwner, agentId: 'agent_support', workspaceId: 'T_TEST',
+    ownerKind: options.ownerKind ?? 'team', providerId: policy.kind === 'api' ? 'billing' : 'tracker', label: 'Billing',
+    policy, pendingSetup: true, ...(options.credential ? { credential: options.credential } : {}),
+  });
+  return account;
+}
+
+function putAccountKey(app: Hono, accountId: string, expectedRevision: number, credential: string) {
+  return app.request(`http://localhost/admin/api/agents/agent_support/connections/${accountId}/credential`, {
+    method: 'PUT', headers: auth(), body: JSON.stringify({ expectedRevision, credential }),
+  });
+}
+
+async function storedAccount(fixture: ReturnType<typeof harness>, accountId: string): Promise<ConnectionAccount> {
+  const account = (await fixture.store.listConnectionAccounts('T_TEST')).find(({ id }) => id === accountId);
+  assert.ok(account, `${accountId} is stored`);
+  return account;
+}
+
+for (const policy of [keyedApiPolicy, keyedMcpPolicy]) {
+  test(`Admin saves the key a pending ${policy.kind === 'api' ? 'API credential' : 'MCP bearer'} account waits for`, async () => {
+    const fixture = harness();
+    try {
+      await seedKeyAgent(fixture);
+      const pending = await createKeyAccount(fixture, policy);
+      assert.equal(pending.lifecycle, 'pending');
+
+      const stale = await putAccountKey(fixture.app, pending.id, pending.revision + 1, 'sk-stale');
+      assert.equal(stale.status, 409);
+      assert.equal((await stale.json() as { error: string }).error, 'revision_conflict');
+      assert.equal(await resolveConnectionAccountSecret(pending, undefined, fixture.settings), undefined,
+        'a stale revision writes no secret');
+      assert.equal((await storedAccount(fixture, pending.id)).lifecycle, 'pending');
+
+      const keyed = await putAccountKey(fixture.app, pending.id, pending.revision, '  sk-live  ');
+      const text = await keyed.text();
+      assert.equal(keyed.status, 200, text);
+      assert.equal(text.includes('sk-live'), false, 'the key is never echoed');
+      assert.equal(text.includes(pending.secretRefId), false);
+      const { account } = JSON.parse(text) as { account: Record<string, unknown> };
+      assert.deepEqual([account.id, account.lifecycle, account.credentialConfigured], [pending.id, 'ready', true]);
+      assert.equal((await storedAccount(fixture, pending.id)).lifecycle, 'ready');
+      assert.equal(await resolveConnectionAccountSecret(pending, undefined, fixture.settings), 'sk-live');
+
+      const again = await putAccountKey(fixture.app, pending.id, account.revision as number, 'sk-replaced');
+      assert.equal(again.status, 409, 'a ready account is refused');
+      assert.equal((await again.json() as { error: string }).error, 'credential_entry_unavailable');
+      assert.equal(await resolveConnectionAccountSecret(pending, undefined, fixture.settings), 'sk-live');
+    } finally {
+      fixture.store.close();
+      fixture.settings.close();
+    }
+  });
+}
+
+test('Admin refuses a key for OAuth, keyless, ready and disconnected accounts', async () => {
+  const fixture = harness();
+  try {
+    await seedKeyAgent(fixture);
+    const refused: Array<[string, ConnectionAccount]> = [
+      ['API OAuth', await createKeyAccount(fixture, { ...keyedApiPolicy, authMode: 'oauth', oauthProvider: 'google' })],
+      ['MCP OAuth', await createKeyAccount(fixture, { ...keyedMcpPolicy, authMode: 'oauth' })],
+      ['MCP without a credential', await createKeyAccount(fixture, { ...keyedMcpPolicy, authMode: 'none' })],
+      ['ready API', await createKeyAccount(fixture, keyedApiPolicy, { credential: 'sk-existing' })],
+    ];
+    const disconnected = await createKeyAccount(fixture, keyedMcpPolicy);
+    const revoked = await fixture.app.request(`http://localhost/admin/api/agents/agent_support/connections/${disconnected.id}`, {
+      method: 'DELETE', headers: auth(),
+    });
+    assert.equal(revoked.status, 200, await revoked.clone().text());
+    refused.push(['disconnected', await storedAccount(fixture, disconnected.id)]);
+
+    for (const [name, account] of refused) {
+      const secretBefore = await resolveConnectionAccountSecret(account, undefined, fixture.settings);
+      const response = await putAccountKey(fixture.app, account.id, account.revision, 'sk-refused');
+      assert.equal(response.status, 409, name);
+      assert.equal((await response.json() as { error: string }).error, 'credential_entry_unavailable', name);
+      assert.equal(await resolveConnectionAccountSecret(account, undefined, fixture.settings), secretBefore, name);
+      assert.deepEqual(await storedAccount(fixture, account.id), account, `${name} is unchanged`);
+    }
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('a Member keys their personal account but not a Team account', async () => {
+  const member: AuthPrincipal = {
+    ...keyOwner, userId: 'user_key_member', membershipId: 'membership_key_member', role: 'member',
+    credentialId: 'session_key_member', correlationId: 'request_key_member',
+  };
+  const fixture = harness(new FakeTransport(), {}, {}, member);
+  try {
+    await seedKeyAgent(fixture, 'all_workspace_members');
+    const team = await createKeyAccount(fixture, keyedApiPolicy);
+    const personal = await createKeyAccount(fixture, keyedApiPolicy, { principal: member, ownerKind: 'member' });
+
+    const refused = await putAccountKey(fixture.app, team.id, team.revision, 'sk-member');
+    assert.equal(refused.status, 403);
+    assert.equal(await resolveConnectionAccountSecret(team, undefined, fixture.settings), undefined);
+    assert.equal((await storedAccount(fixture, team.id)).lifecycle, 'pending');
+
+    const keyed = await putAccountKey(fixture.app, personal.id, personal.revision, 'sk-member');
+    assert.equal(keyed.status, 200, await keyed.clone().text());
+    assert.equal(await resolveConnectionAccountSecret(personal, undefined, fixture.settings), 'sk-member');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
 
 test('BugSnag requires authenticated discovery and explicit tool access without Meta configuration', async () => {
   const fixture = harness(new FakeTransport(), { startMcpOAuth: async () => ({

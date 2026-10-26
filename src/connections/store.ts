@@ -73,6 +73,10 @@ export class ConnectionScheduleConflictError extends Error {
   readonly name = 'ConnectionScheduleConflictError';
 }
 
+export class ConnectionCredentialEntryUnavailableError extends Error {
+  readonly name = 'ConnectionCredentialEntryUnavailableError';
+}
+
 /** Browser-safe projection shared by every Admin response carrying an account. */
 export function toConnectionAccountView(account: ConnectionAccount): ConnectionAccountView {
   const { secretRefId: _secretRefId, policy, ...safeAccount } = account;
@@ -197,6 +201,49 @@ export class ConnectionAccountService {
         ? account.lifecycle
         : nativeCredentialRequired(input.policy) ? 'pending' : 'ready',
     }, account.revision);
+  }
+
+  /**
+   * Store the key a native account is waiting for and mark it ready, fenced on
+   * the revision the caller read.
+   */
+  async setCredentialForAgent(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    credential: string;
+  }): Promise<ConnectionAccount> {
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
+    const { policy } = account;
+    const awaitsCredential = account.lifecycle !== 'ready' && account.lifecycle !== 'revoked' && (
+      policy.kind === 'api'
+        ? policy.authMode === 'credential'
+        : policy.kind === 'mcp' && policy.authMode !== 'oauth' &&
+          (policy.authMode === 'bearer' || policy.credentialHeaderName !== undefined)
+    );
+    if (!awaitsCredential) {
+      throw new ConnectionCredentialEntryUnavailableError(`Connection account ${account.id} is not waiting for a credential`);
+    }
+    if (account.revision !== input.expectedRevision) {
+      throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, account.revision);
+    }
+    await saveConnectionAccountSecret(account.secretRefId, input.credential, undefined, this.dependencies.settings);
+    let ready: ConnectionAccount;
+    try {
+      ready = await this.dependencies.config.putConnectionAccount({ ...account, lifecycle: 'ready' }, account.revision);
+    } catch (error) {
+      // After a lost revision race the slot may already hold another writer's key.
+      if (!(error instanceof ConnectionAccountRevisionConflictError)) {
+        await tombstoneConnectionAccountSecret(account.secretRefId, undefined, this.dependencies.settings)
+          .catch((cleanupError: unknown) => {
+            throw new AggregateError([error, cleanupError], 'Connection setup failed and its credential could not be removed');
+          });
+      }
+      throw error;
+    }
+    this.captureConnectionReady(account.lifecycle, ready, binding);
+    return ready;
   }
 
   async createForAgent(input: {
