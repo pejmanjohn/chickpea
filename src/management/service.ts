@@ -1,7 +1,11 @@
 import { describeSkillPaths } from '../config/skill-package.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import { canEditAgent } from '../auth/permissions.ts';
+import {
+  revokeBetterAuthUserAccess,
+  type BetterAuthAccessRevoker,
+} from '../auth/better-auth-backend.ts';
+import { canEditAgent, permissionForRole } from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
@@ -70,16 +74,23 @@ import type {
 import { RoutineService } from '../routines/service.ts';
 import { formatRoutineLocalDateTime, routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
-import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
+import { isActiveUserAgent, reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
   type SlackScheduleCommand,
 } from '../routines/slack-command.ts';
 import { RoutineStateError, type RoutineDefinition, type RoutineStore } from '../routines/types.ts';
+import { RoutineContentAccessResolver, routineContentReadable } from '../routines/content-access.ts';
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
+import {
+  logUnavailableFacts,
+  memberChannelViews,
+  resolvePrivateAgentAccess,
+  type PrivateAgentPlacementFacts,
+} from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
@@ -108,10 +119,11 @@ import {
   managementOperationDigest,
   managementOriginKey,
   assertValidRepositoryGrants,
+  managementIdempotencyScope,
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation } from './policy.ts';
+import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import {
   exportWorkspaceRecipe,
   previewWorkspaceRecipe,
@@ -204,6 +216,26 @@ const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
+const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
+const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
+
+/**
+ * Slack revokes Channel reach from inside Slack, so it rechecks that the
+ * person is in the Channel. Admin's detach, and MCP with the same authority,
+ * need only editor rights.
+ */
+const REVOKE_NEEDS_CHANNEL_MEMBERSHIP = {
+  slack: true,
+  mcp: false,
+  admin: false,
+} as const satisfies Record<ManagementOrigin['kind'], boolean>;
+
+const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
+  lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+  listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+};
+
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
@@ -335,6 +367,15 @@ export interface WorkspaceManagementServiceInput {
     workspaceId: string;
     channelId: string;
   }) => Promise<void>;
+  /**
+   * Slack's live Channel facts, read with Chickpea's bot, or for an Agent
+   * with its own Slack app the way its DMs are admitted. Without them, every
+   * check that needs Slack fails closed.
+   */
+  slackFacts?: (input: {
+    workspaceId: string;
+    agent?: CustomAgentConfig;
+  }) => Promise<PrivateAgentPlacementFacts>;
   archiveAgent?: (input: {
     actor: LiveManagementActor;
     agentId: string;
@@ -355,6 +396,14 @@ export interface WorkspaceManagementServiceInput {
     expectedCredentialIncarnation: string;
     idempotencyKey: string;
   }) => Promise<boolean>;
+  /**
+   * Runs a membership change with the Better Auth backend that ends the
+   * member's sessions and MCP grants (withBetterAuthAccessRevoker). `use`
+   * receives undefined where Better Auth does not sign people in.
+   */
+  withBetterAuthAccessRevoker?: <T>(
+    use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
+  ) => Promise<T>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -378,6 +427,17 @@ type ActingAgentScopeTarget = {
   | { scope: 'agent'; agentId: string }
   | { scope: 'authority' }
 );
+
+/**
+ * A Slack model reuses keys such as `disable-foo` in later turns. Scoping a
+ * skill key to the requester's message keeps a retry within the turn
+ * idempotent without replaying an earlier turn's receipt.
+ */
+function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
+  return actor.origin.kind === 'slack' && actor.origin.eventId
+    ? `${key}@${actor.origin.eventId}`
+    : key;
+}
 
 /**
  * One requester-bound control plane shared by MCP, Slack, and Admin adapters.
@@ -587,8 +647,11 @@ export class WorkspaceManagementService {
     };
   }
 
-  async importSkill(input: ImportSkillInput): Promise<ImportSkillResult | ProposeSkillImportResult> {
-    const actor = await this.requireLiveActor(input.context);
+  async importSkill(
+    request: ImportSkillInput,
+  ): Promise<ImportSkillResult | ProposeSkillImportResult> {
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     if (startedByAgentAsk(actor)) return await this.proposeSkillImport(input);
     assertExplicitSkillImportRequest(actor, input);
     const replayOperationId = skillImportOperationId(actor, input);
@@ -666,9 +729,10 @@ export class WorkspaceManagementService {
   }
 
   async manageAgentSkill(
-    input: ManageAgentSkillInput,
+    request: ManageAgentSkillInput,
   ): Promise<ManageAgentSkillResult | ProposeWorkspaceChangesResult> {
-    const actor = await this.requireLiveActor(input.context);
+    const actor = await this.requireLiveActor(request.context);
+    const input = { ...request, idempotencyKey: turnIdempotencyKey(actor, request.idempotencyKey) };
     const agentId = input.agentId ??
       (actor.origin.kind === 'slack' ? actor.origin.agentId : undefined);
     if (!agentId || !isAgentId(agentId)) {
@@ -2792,6 +2856,9 @@ export class WorkspaceManagementService {
       }];
     }
     if (operation.kind === 'update_member') {
+      // The revoke after the write may not have run, so a membership that
+      // already holds an access-ending status is not yet applied.
+      if (removesMemberAccess(operation.status)) return undefined;
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       return membership && (!operation.role || membership.role === operation.role) &&
         (!operation.status || membership.status === operation.status)
@@ -3395,6 +3462,101 @@ export class WorkspaceManagementService {
     return canEditAgent(managementActorPrincipal(actor), agent);
   }
 
+  private async slackFactsFor(
+    workspaceId: string,
+    agent?: CustomAgentConfig,
+  ): Promise<PrivateAgentPlacementFacts> {
+    if (!this.stores.slackFacts) return UNAVAILABLE_SLACK_FACTS;
+    return this.stores.slackFacts({ workspaceId, ...(agent ? { agent } : {}) })
+      .catch((error: unknown) => {
+        logUnavailableFacts('transport', error);
+        return UNAVAILABLE_SLACK_FACTS;
+      });
+  }
+
+  /**
+   * A member sees a public Channel, and a private one only while Slack shows
+   * them in it, as on the Admin Agent page.
+   */
+  private async channelsSlackShowsMember<TChannel extends { workspaceId: string; channelId: string }>(
+    actor: LiveManagementActor,
+    channels: TChannel[],
+  ): Promise<TChannel[]> {
+    if (channels.length === 0) return channels;
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) return [];
+    const inWorkspace = channels.filter(({ workspaceId }) => workspaceId === user.slackTeamId);
+    const views = await memberChannelViews(
+      inWorkspace.map(({ channelId }) => channelId),
+      user.slackUserId,
+      await this.slackFactsFor(user.slackTeamId),
+    );
+    return inWorkspace.filter(({ channelId }) => views.get(channelId) === 'shown');
+  }
+
+  /** A member's new Channel routine needs them in its Channel when it is private. */
+  private async requireMemberInChannel(
+    actor: LiveManagementActor,
+    workspaceId: string,
+    channelId: string,
+  ): Promise<void> {
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+    const views = await memberChannelViews(
+      [channelId],
+      user.slackUserId,
+      await this.slackFactsFor(workspaceId),
+    );
+    const view = views.get(channelId);
+    if (view === 'unavailable') throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    if (view !== 'shown') throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+  }
+
+  /** Whether the person may read a Channel routine, as Admin's schedules page decides. */
+  private async routineReadable(
+    actor: LiveManagementActor,
+    routine: RoutineDefinition,
+  ): Promise<boolean> {
+    const access = await new RoutineContentAccessResolver({
+      work: this.stores.work,
+      actor: async () => {
+        const user = await this.stores.identity.getUser(actor.userId);
+        if (!user) throw new Error('The routine reader has no Slack account.');
+        return { slackTeamId: user.slackTeamId, slackUserId: user.slackUserId };
+      },
+      transport: (workspaceId) => this.slackFactsFor(workspaceId),
+    }).resolve(routine);
+    return routineContentReadable(access);
+  }
+
+  /** A DM routine needs the private use the person would need to DM its Agent. */
+  private async requirePrivateAgentUse(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+    workspaceId: string,
+  ): Promise<void> {
+    const [user, grants, facts] = await Promise.all([
+      this.stores.identity.getUser(actor.userId),
+      this.stores.config.listAgentChannelGrants(workspaceId),
+      this.slackFactsFor(workspaceId, agent),
+    ]);
+    if (!user) throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
+    const access = await resolvePrivateAgentAccess({
+      agent,
+      workspaceId,
+      grants,
+      // Only full Slack members are provisioned, and every run asks Slack again.
+      actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
+      transport: facts,
+    });
+    if (access.status === 'unavailable') {
+      throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    }
+    if (access.status === 'denied') {
+      throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
+    }
+  }
+
   private async requireEditableAgent(
     actor: LiveManagementActor,
     agentId: string,
@@ -3658,12 +3820,15 @@ export class WorkspaceManagementService {
       });
       projectedChannelKeys.add(key);
     }
-    const visibleChannels = userAgentScoped || actor.role === 'member'
+    const grantedChannels = userAgentScoped || actor.role === 'member'
       ? projectedChannels.filter((channel) => grantsByChannel.has(channelKey(
           channel.workspaceId,
           channel.channelId,
         )))
       : projectedChannels;
+    const visibleChannels = actor.role === 'member'
+      ? await this.channelsSlackShowsMember(actor, grantedChannels)
+      : grantedChannels;
     const refs: ManagementObjectRef[] = [
       ...agents.map((agent) => ({ kind: 'agent' as const, id: agent.id, revision: agent.revision })),
       ...visibleChannels.map((channel) => ({
@@ -3911,8 +4076,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'save_routine') {
       const agent = await optionalAgent(this.stores.config, operation.agentId);
       if (directRoutine) {
-        if (!agent || agent.kind !== 'user' || !agent.enabled ||
-            agent.lifecycle === 'draft' || agent.lifecycle === 'archived') {
+        if (!agent || !isActiveUserAgent(agent)) {
           throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
         }
         if (isUserAgentScoped(actor) && operation.agentId !== actor.actingAgentId) {
@@ -3920,6 +4084,7 @@ export class WorkspaceManagementService {
             kind: 'agent', id: operation.agentId,
           }));
         }
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       } else {
         const grants = await this.stores.config.listAgentChannelGrants(
           operation.workspaceId,
@@ -3933,13 +4098,20 @@ export class WorkspaceManagementService {
           );
         }
         if (!this.actorCanEditAgent(actor, agent)) {
-          throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+          throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
         }
       }
     }
+    // Admin's schedules page acts only on a routine the person can read, and
+    // keeps disable on its audit route, which needs admin.configure. A member's
+    // new Channel routine follows the same read rule for its Channel.
+    const readsEveryRoutine = permissionForRole(actor.role).has('admin.configure');
     if (operation.kind === 'save_routine' && !operation.routineId) {
       if (operation.expectedVersion !== undefined) {
         throw new ManagementError('invalid_request', 'A new routine cannot have an expected version.');
+      }
+      if (!directRoutine && !readsEveryRoutine) {
+        await this.requireMemberInChannel(actor, operation.workspaceId, channelId);
       }
       return;
     }
@@ -3970,13 +4142,26 @@ export class WorkspaceManagementService {
           'Use Chickpea Agent reassignment instead of changing schedule ownership during an edit.',
         );
       }
-      if (operation.kind === 'reassign_routine_agent' &&
-          (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack')) {
-        throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+      if (operation.kind === 'reassign_routine_agent') {
+        if (actor.actingAgentId !== CHICKPEA_AGENT_ID || actor.origin.kind !== 'slack') {
+          throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
+        }
+        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        if (!agent || !isActiveUserAgent(agent)) {
+          throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        }
+        await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       }
       return;
     }
     await this.requireEditableAgent(actor, reference.agentId);
+    if (readsEveryRoutine) return;
+    if (operation.kind === 'control_routine' && operation.action === 'disable') {
+      throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
+    }
+    if (!await this.routineReadable(actor, routine)) {
+      throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+    }
   }
 
   private async isRoutineSchedulingAvailable(): Promise<boolean> {
@@ -4708,7 +4893,8 @@ export class WorkspaceManagementService {
       );
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
-        operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
+        operation.kind === 'grant_agent_channel' ||
+        (operation.kind === 'revoke_agent_channel' && REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind])) {
       const workspaceId = operation.kind === 'put_channel'
         ? operation.channel.workspaceId
         : operation.workspaceId;
@@ -4934,11 +5120,13 @@ export class WorkspaceManagementService {
         if (!current || current.revision !== operation.expectedRevision) {
           throw new ManagementError('revision_conflict', 'The Channel grant changed.');
         }
-        await this.stores.assertAgentChannelMembership?.({
-          actor,
-          workspaceId: operation.workspaceId,
-          channelId: operation.channelId,
-        });
+        if (REVOKE_NEEDS_CHANNEL_MEMBERSHIP[actor.origin.kind]) {
+          await this.stores.assertAgentChannelMembership?.({
+            actor,
+            workspaceId: operation.workspaceId,
+            channelId: operation.channelId,
+          });
+        }
         await this.stores.config.deleteAgentChannelGrant(
           operation.workspaceId,
           operation.channelId,
@@ -5268,18 +5456,52 @@ export class WorkspaceManagementService {
       return mutationForChanged([{ kind: 'agent', id: operation.agentId }]);
     }
     if (operation.kind === 'update_member') {
-      const result = await this.stores.identity.updateMembershipAuthority({
-        membershipId: operation.membershipId,
-        ...(operation.role ? { role: operation.role } : {}),
-        ...(operation.status ? { status: operation.status } : {}),
-        actorMembershipId: actor.membershipId,
-        correlationId: proposalId,
-        authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
-        reasonCode: basis === 'direct'
-          ? 'workspace_management_direct'
-          : 'workspace_management_confirmation',
-        idempotencyKey: `management:${proposalId}`,
-      });
+      const [before, bindings] = await Promise.all([
+        this.stores.identity.getMembership(operation.membershipId),
+        this.stores.identity.listExternalIdentities(),
+      ]);
+      const betterAuthUserId = bindings.find(({ membershipId }) =>
+        membershipId === operation.membershipId)?.betterAuthUserId;
+      const statusChanges = operation.status !== undefined && operation.status !== before?.status;
+      const roleChanges = operation.role !== undefined && operation.role !== before?.role;
+      // A retry finds the status already held and must still end access.
+      const endsGrants = statusChanges || removesMemberAccess(operation.status);
+      const change = async (revoker: BetterAuthAccessRevoker | undefined) => {
+        // Access ends before the membership changes, so a failed revoke
+        // leaves the change unapplied for a retry, never applied with the
+        // person still signed in. A status change revokes again after the
+        // write, because a client can refresh in between while the membership
+        // is still active; a failure there fails the change, and the retry
+        // revokes again. A status change ends MCP grants too; a role change
+        // only needs new sessions, because the MCP resource rereads the role
+        // on every request.
+        if (revoker && betterAuthUserId) {
+          if (endsGrants) {
+            await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+          } else if (roleChanges) {
+            await revoker.deleteSessionsForUser(betterAuthUserId);
+          }
+        }
+        const result = await this.stores.identity.updateMembershipAuthority({
+          membershipId: operation.membershipId,
+          ...(operation.role ? { role: operation.role } : {}),
+          ...(operation.status ? { status: operation.status } : {}),
+          actorMembershipId: actor.membershipId,
+          correlationId: proposalId,
+          authenticationSurface: actor.origin.kind === 'slack' ? 'slack_event' : 'better_auth',
+          reasonCode: basis === 'direct'
+            ? 'workspace_management_direct'
+            : 'workspace_management_confirmation',
+          idempotencyKey: `management:${proposalId}`,
+        });
+        if (endsGrants && revoker && betterAuthUserId) {
+          await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+        }
+        return result;
+      };
+      const result = this.stores.withBetterAuthAccessRevoker
+        ? await this.stores.withBetterAuthAccessRevoker(change)
+        : await change(undefined);
       return mutationForChanged([{
         kind: 'membership',
         id: result.membership.id,
@@ -5671,11 +5893,10 @@ export class WorkspaceManagementService {
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       if (membership && (!operation.role || membership.role === operation.role) &&
           (!operation.status || membership.status === operation.status)) {
-        changed = [{
-          kind: 'membership',
-          id: membership.id,
-          revision: membershipRevision(membership),
-        }];
+        // The revoke after the write may not have run, so run the change again.
+        changed = removesMemberAccess(operation.status)
+          ? (await this.executeConfirmed(actor, operation, proposal.proposalId, prepared)).changed
+          : [{ kind: 'membership', id: membership.id, revision: membershipRevision(membership) }];
       }
     } else if (operation.kind === 'remove_provider_credential') {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';
@@ -5757,10 +5978,9 @@ export function managementActorPrincipal(actor: LiveManagementActor): AuthPrinci
 }
 
 function publicManagementIdempotencyKey(actor: LiveManagementActor, storageKey: string): string {
-  if (!actor.actingAgentId) return storageKey;
-  const prefix = `agent.${actor.actingAgentId}.`;
+  const prefix = managementIdempotencyScope(actor);
   if (!storageKey.startsWith(prefix)) {
-    throw new ManagementError('idempotency_conflict', 'The management request Agent changed.');
+    throw new ManagementError('idempotency_conflict', 'The management request belongs to another conversation.');
   }
   return storageKey.slice(prefix.length);
 }

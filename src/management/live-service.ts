@@ -1,3 +1,4 @@
+import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
   getConfigStore,
   getIdentityStore,
@@ -11,7 +12,7 @@ import {
   isCloudflareTarget,
   type PlatformEnv,
 } from '../config/state-backend.ts';
-import { agentAppPresenceHooks } from '../slack/agent-apps/index.ts';
+import { agentAppPresenceHooks, agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
 import type { ConfigStore } from '../config/store.ts';
 import {
   deleteProviderApiKey,
@@ -286,6 +287,10 @@ export function createLiveWorkspaceManagementService(
         }),
       });
     },
+    slackFacts: async ({ workspaceId, agent }) => {
+      const transport = await slackTransport(workspaceId);
+      return agent ? agentDmPlacementFacts(env, agent, transport) : transport;
+    },
     assertAgentChannelMembership: async ({ actor, workspaceId, channelId }) => {
       const user = await actorSlackUser(actor, workspaceId);
       if (!await (await slackTransport(workspaceId)).channelHasMember(channelId, user.slackUserId)) {
@@ -378,6 +383,10 @@ export function createLiveWorkspaceManagementService(
           )
         : config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
     },
+    withBetterAuthAccessRevoker: async (use) => withBetterAuthAccessRevoker(
+      { control: await identity.getAuthControl(), platformEnv: env },
+      use,
+    ),
     ...agentAvatarInstallationField(env),
     ...overrides,
   });

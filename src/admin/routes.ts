@@ -45,7 +45,7 @@ import { createRoutineAdminApi } from './routines-api.ts';
 import {
   RoutineContentAccessResolver,
   routineContentReadable,
-} from './routine-content-access.ts';
+} from '../routines/content-access.ts';
 import {
   readIdempotencyKey as readAdminIdempotencyKey,
   safeMutationRequest as safeAdminMutationRequest,
@@ -1946,6 +1946,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         work: work(c),
         setupBaseUrl: requestOrigin(c),
         ...(telemetry ? { productTelemetry: telemetry } : {}),
+        withBetterAuthAccessRevoker: async (use) =>
+          use((await betterAuthContext(c))?.environment.backend),
       },
     });
   };

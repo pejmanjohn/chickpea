@@ -31,6 +31,12 @@ type AgentAccessTransport = Pick<
 /** The Slack facts one Agent's access is decided from: its placed Channels, and the person's. */
 export type PrivateAgentPlacementFacts = Pick<SlackTransport, 'lookupChannel' | 'listMemberChannels'>;
 
+/**
+ * Whether Slack shows a person a Channel: `shown` for a public one, or a
+ * private one they are in; `unavailable` when Slack could not answer.
+ */
+export type MemberChannelView = 'shown' | 'hidden' | 'unavailable';
+
 interface PrivateAgentAccessInput {
   agent: CustomAgentConfig;
   workspaceId: string;
@@ -68,25 +74,33 @@ export async function resolvePrivateAgentAccess(
   input: PrivateAgentAccessInput,
 ): Promise<PrivateAgentAccessResult> {
   const grants = activeAgentGrants(input);
-  const facts = await collectTargetedFacts(grants, input.transport);
+  const facts = await collectTargetedFacts(grants.map(({ channelId }) => channelId), input.transport);
   const placement = placementState(grants, facts);
-  let memberChannels: ReadonlySet<string> | undefined;
-  let memberChannelsUnavailable = false;
-  if (
-    input.actor.fullMember && input.actor.slackUserId &&
-    !placement.verifiedPublic && placement.verifiedPrivateChannelIds.size > 0
-  ) {
-    try {
-      memberChannels = await input.transport.listMemberChannels(input.actor.slackUserId);
-    } catch (error) {
-      memberChannelsUnavailable = true;
-      logUnavailableFacts('member-channels', error);
-    }
-  }
-  return evaluateAccess(input.agent, input.actor, placement, {
-    memberChannelsUnavailable,
-    ...(memberChannels ? { memberChannels } : {}),
-  });
+  const memberChannels = input.actor.fullMember && input.actor.slackUserId &&
+      !placement.verifiedPublic && placement.verifiedPrivateChannelIds.size > 0
+    ? await listMemberChannels(input.transport, input.actor.slackUserId)
+    : undefined;
+  return evaluateAccess(input.agent, input.actor, placement, memberChannels);
+}
+
+/** Slack's view of these Channels for one person, read the way Agent placement is. */
+export async function memberChannelViews(
+  channelIds: readonly string[],
+  slackUserId: string,
+  transport: PrivateAgentPlacementFacts,
+): Promise<ReadonlyMap<string, MemberChannelView>> {
+  const facts = await collectTargetedFacts(channelIds, transport);
+  const memberChannels = [...facts.values()].some((channel) => channel?.private)
+    ? await listMemberChannels(transport, slackUserId)
+    : undefined;
+  return new Map(channelIds.map((channelId) => {
+    const channel = facts.get(channelId);
+    if (!channel) return [channelId, 'unavailable'];
+    if (channel.archived) return [channelId, 'hidden'];
+    if (!channel.private) return [channelId, 'shown'];
+    if (!memberChannels) return [channelId, 'unavailable'];
+    return [channelId, channel.member && memberChannels.has(channelId) ? 'shown' : 'hidden'];
+  }));
 }
 
 /**
@@ -114,7 +128,7 @@ export async function resolvePrivateAgentAudience(
   const grants = activeAgentGrants(input);
   if (grants.length === 0) return 'creator_only';
   if (!input.transport) return 'unavailable';
-  const facts = await collectTargetedFacts(grants, input.transport);
+  const facts = await collectTargetedFacts(grants.map(({ channelId }) => channelId), input.transport);
   return audienceForPlacement(placementState(grants, facts));
 }
 
@@ -147,25 +161,15 @@ export async function listPrivatelyUsableAgents(
     ));
   }
 
-  let memberChannels: ReadonlySet<string> | undefined;
-  let memberChannelsUnavailable = false;
   const privateMembershipNeeded = [...placements.values()].some((placement) =>
     !placement.verifiedPublic && placement.verifiedPrivateChannelIds.size > 0
   );
-  if (privateMembershipNeeded && input.actor.slackUserId) {
-    try {
-      memberChannels = await input.transport.listMemberChannels(input.actor.slackUserId);
-    } catch (error) {
-      memberChannelsUnavailable = true;
-      logUnavailableFacts('member-channels', error);
-    }
-  }
+  const memberChannels = privateMembershipNeeded && input.actor.slackUserId
+    ? await listMemberChannels(input.transport, input.actor.slackUserId)
+    : undefined;
 
   return agents.filter((agent) =>
-    evaluateAccess(agent, input.actor, placements.get(agent.id)!, {
-      memberChannelsUnavailable,
-      ...(memberChannels ? { memberChannels } : {}),
-    }).status === 'allowed'
+    evaluateAccess(agent, input.actor, placements.get(agent.id)!, memberChannels).status === 'allowed'
   );
 }
 
@@ -188,13 +192,13 @@ function agentIsEligible(agent: CustomAgentConfig): boolean {
 }
 
 async function collectTargetedFacts(
-  grants: readonly AgentChannelGrant[],
+  channelIds: readonly string[],
   transport: Pick<SlackTransport, 'lookupChannel'>,
 ): Promise<ReadonlyMap<string, SlackChannel | undefined>> {
   const facts = new Map<string, SlackChannel | undefined>();
   let firstFailure: unknown;
   let failed = false;
-  await Promise.all([...new Set(grants.map(({ channelId }) => channelId))].map(
+  await Promise.all([...new Set(channelIds)].map(
     async (channelId) => {
       try {
         const channel = await transport.lookupChannel(channelId);
@@ -216,7 +220,7 @@ async function collectDirectoryFacts(
 ): Promise<ReadonlyMap<string, SlackChannel | undefined>> {
   const channelIds = [...new Set(grants.map(({ channelId }) => channelId))];
   if (channelIds.length < DIRECTORY_CROSSOVER) {
-    return collectTargetedFacts(grants, transport);
+    return collectTargetedFacts(channelIds, transport);
   }
 
   const wanted = new Set(channelIds);
@@ -231,9 +235,8 @@ async function collectDirectoryFacts(
     // Targeted lookups below recover any placement Slack can still verify.
   }
 
-  const unresolved = new Set(channelIds.filter((channelId) => !facts.has(channelId)));
   const targeted = await collectTargetedFacts(
-    grants.filter((grant) => unresolved.has(grant.channelId)),
+    channelIds.filter((channelId) => !facts.has(channelId)),
     transport,
   );
   for (const [channelId, channel] of targeted) facts.set(channelId, channel);
@@ -272,14 +275,24 @@ function audienceForPlacement(placement: PlacementState): PrivateAgentAudience {
   return 'unavailable';
 }
 
+/** The person's Channels, or undefined when Slack could not list them. */
+async function listMemberChannels(
+  transport: Pick<SlackTransport, 'listMemberChannels'>,
+  slackUserId: string,
+): Promise<ReadonlySet<string> | undefined> {
+  try {
+    return await transport.listMemberChannels(slackUserId);
+  } catch (error) {
+    logUnavailableFacts('member-channels', error);
+    return undefined;
+  }
+}
+
 function evaluateAccess(
   agent: CustomAgentConfig,
   actor: PrivateAgentActor,
   placement: PlacementState,
-  membership: {
-    memberChannels?: ReadonlySet<string>;
-    memberChannelsUnavailable: boolean;
-  },
+  memberChannels: ReadonlySet<string> | undefined,
 ): PrivateAgentAccessResult {
   if (!agentIsEligible(agent)) return { status: 'unavailable', audience: 'unavailable' };
   if (placement.verifiedPublic) {
@@ -289,8 +302,7 @@ function evaluateAccess(
     };
   }
   if (placement.verifiedPrivateChannelIds.size > 0) {
-    const memberChannels = membership.memberChannels;
-    if (membership.memberChannelsUnavailable || !memberChannels) {
+    if (!memberChannels) {
       return { status: 'unavailable', audience: 'unavailable' };
     }
     const isMember = [...placement.verifiedPrivateChannelIds].some((channelId) =>
@@ -316,8 +328,8 @@ function evaluateAccess(
   return { status: 'unavailable', audience: 'unavailable' };
 }
 
-function logUnavailableFacts(
-  category: 'placement' | 'directory' | 'member-channels',
+export function logUnavailableFacts(
+  category: 'placement' | 'directory' | 'member-channels' | 'transport',
   error: unknown,
 ): void {
   const reason = error instanceof SlackTransportError

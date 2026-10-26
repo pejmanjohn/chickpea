@@ -112,6 +112,7 @@ test('the shared schedule command replays save and immediate run effects once', 
       resolveAuthority: async () => ({
         reference: authority,
         agent,
+        agentGrants: [],
         assignment: {
           workspaceId: 'T_SCHEDULE_COMMAND',
           channelId: 'C_SCHEDULE_COMMAND',
