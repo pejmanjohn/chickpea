@@ -807,7 +807,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
               url: 'https://mcp.zendesk.example/mcp',
               transport: 'streamable-http',
               authMode: 'bearer',
-              headerNames: ['Authorization'],
+              headerNames: [],
               enabled: true,
               allowedTools: [],
               presetId: 'zendesk',
@@ -823,7 +823,7 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
         }],
       },
     });
-    assert.equal(skillProposal.ok, true);
+    assert.equal(skillProposal.ok, true, JSON.stringify(skillProposal));
     assert.deepEqual((await f.config.getAgent(support.id)).skills, []);
     const skillProposalId = (skillProposal as { ok: true; result: {
       proposalId: string;
@@ -840,7 +840,11 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     assert.equal(configuredSelf.model, 'anthropic/claude-sonnet-4-6');
     assert.equal(configuredSelf.slackPresence?.normalizedHandle, 'support-escalations');
     assert.equal(configuredSelf.editPolicy, 'all_workspace_members');
-    assert.equal(configuredSelf.mcpServers[0]?.id, 'zendesk-self');
+    const [selfBinding] = await f.config.listAgentConnectionBindings(support.id);
+    const selfConnection = (await f.config.listConnectionAccounts(workspaceId))
+      .find(({ id }) => id === selfBinding?.connectionAccountId);
+    assert.deepEqual([selfConnection?.providerId, selfConnection?.ownerKind, selfConnection?.lifecycle],
+      ['zendesk-self', 'team', 'pending'], 'the Agent connected its own Zendesk account, waiting for setup');
     assert.equal(configuredSelf.repositories[0]?.fullName, 'acme/support');
 
     const setup = await invokeSlackWorkspaceManagementTool({

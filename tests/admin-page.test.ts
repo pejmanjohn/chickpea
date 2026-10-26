@@ -651,6 +651,10 @@ function runAdminPageHarness(
       connectionId: string,
       body: Record<string, unknown>,
     ) => Promise<FakeResponse>;
+    connectionKeyPutFetch?: (
+      connectionId: string,
+      body: Record<string, unknown>,
+    ) => Promise<FakeResponse>;
     composioSettings?: Record<string, unknown>;
     composioSettingsError?: {
       status: number;
@@ -771,6 +775,7 @@ function runAdminPageHarness(
     connectionId: string;
     body: Record<string, unknown>;
   }>;
+  connectionKeyPuts: Array<{ connectionId: string; body: Record<string, unknown> }>;
   managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }>;
   composioSetupPosts: Array<Record<string, unknown>>;
   composioRetryCalls(): number;
@@ -1056,6 +1061,7 @@ function runAdminPageHarness(
     connectionId: string;
     body: Record<string, unknown>;
   }> = [];
+  const connectionKeyPuts: Array<{ connectionId: string; body: Record<string, unknown> }> = [];
   const managedAuthorizationPosts: Array<{ agentId: string; body: Record<string, unknown> }> = [];
   const composioSetupPosts: Array<Record<string, unknown>> = [];
   let composioRetryCalls = 0;
@@ -1963,6 +1969,18 @@ function runAdminPageHarness(
       connectionToolsPuts.push({ agentId, connectionId, body });
       if (harnessOptions.connectionToolsPutFetch) {
         return harnessOptions.connectionToolsPutFetch(agentId, connectionId, body);
+      }
+      return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
+    }
+    const connectionKeyMatch = path.match(
+      /^\/admin\/api\/agents\/[^/]+\/connections\/([^/]+)\/credential$/,
+    );
+    if (connectionKeyMatch && method === 'PUT') {
+      const connectionId = decodeURIComponent(connectionKeyMatch[1] as string);
+      const body = JSON.parse(options?.body ?? '{}') as Record<string, unknown>;
+      connectionKeyPuts.push({ connectionId, body });
+      if (harnessOptions.connectionKeyPutFetch) {
+        return harnessOptions.connectionKeyPutFetch(connectionId, body);
       }
       return Promise.resolve(jsonResponse({ error: 'not_found' }, 404));
     }
@@ -3274,6 +3292,7 @@ function runAdminPageHarness(
     mcpTestPosts,
     connectionAccountPosts,
     connectionToolsPuts,
+    connectionKeyPuts,
     managedAuthorizationPosts,
     composioSetupPosts,
     composioRetryCalls: () => composioRetryCalls,
@@ -18493,6 +18512,111 @@ test('background connection refresh closes a tool editor when the account loses 
 
   assert.doesNotMatch(harness.app.innerHTML, /data-action="custom-mcp-tools-save"/);
   assert.match(harness.app.innerHTML, />Disconnected</);
+});
+
+const keyApiPolicy = {
+  kind: 'api', allowedHosts: ['billing.example.test'], pathPrefixes: ['/v1'], headerName: 'Authorization',
+  headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
+};
+
+function keyConnection(
+  id: string,
+  lifecycle: string,
+  policy: Record<string, unknown>,
+  ownerKind: 'team' | 'member' = 'team',
+): Record<string, unknown> {
+  return ownedConnection({
+    id, workspaceId: 'T_DESIGN', revision: 4, ownerKind, providerId: id, label: id,
+    lifecycle, credentialConfigured: lifecycle === 'ready', policy,
+  });
+}
+
+test('only a connection waiting for its key offers key entry', async () => {
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [
+      keyConnection('pending_api', 'pending', keyApiPolicy),
+      keyConnection('header_mcp', 'needs_attention', {
+        kind: 'mcp', url: 'https://mcp.firecrawl.example/mcp', transport: 'streamable-http', authMode: 'bearer',
+        headerNames: [], discoveredTools: [], allowedTools: [], presetId: 'firecrawl',
+      }),
+      keyConnection('ready_api', 'ready', keyApiPolicy),
+      keyConnection('oauth_api', 'pending', { ...keyApiPolicy, authMode: 'oauth', oauthProvider: 'google' }),
+      keyConnection('revoked_api', 'revoked', keyApiPolicy),
+    ] },
+  });
+  await flushAsync();
+  const offered = [...harness.app.innerHTML.matchAll(
+    /data-action="connection-account-key-open" data-connection-id="([^"]+)">Set up</g,
+  )].map((match) => match[1]);
+  assert.deepEqual(offered, ['pending_api', 'header_mcp']);
+
+  harness.listeners.click?.({ target: actionTarget({
+    'data-action': 'connection-account-key-open', 'data-connection-id': 'header_mcp',
+  }) });
+  assert.match(harness.app.innerHTML,
+    /type="password"[^>]*placeholder="fc-…" data-action="connection-account-key-input"/);
+});
+
+test('a Member is offered key entry for their own connection and not for a team one', async () => {
+  const harness = runAdminPageHarness({
+    workspaceAdminUi: false,
+    agentsWorkspaceId: 'T_DESIGN',
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [
+      keyConnection('team_api', 'pending', keyApiPolicy),
+      keyConnection('own_api', 'pending', keyApiPolicy, 'member'),
+    ] },
+  });
+  await flushAsync();
+  const offered = [...harness.app.innerHTML.matchAll(
+    /data-action="connection-account-key-open" data-connection-id="([^"]+)">Set up</g,
+  )].map((match) => match[1]);
+  assert.deepEqual(offered, ['own_api']);
+  assert.match(harness.app.innerHTML, /team_api[\s\S]*?Setup required/);
+});
+
+test('key entry saves the credential at the account revision and shows a refusal inline', async () => {
+  let attached = [keyConnection('pending_api', 'pending', keyApiPolicy)];
+  const harness = runAdminPageHarness({
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccountsFetch: () => Promise.resolve(jsonResponse({ attached })),
+    connectionKeyPutFetch(_connectionId, body) {
+      if (body.credential === 'sk-stale') {
+        return Promise.resolve(jsonResponse({ error: 'revision_conflict', message: 'This connection changed.' }, 409));
+      }
+      attached = [keyConnection('pending_api', 'ready', keyApiPolicy)];
+      return Promise.resolve(jsonResponse({ account: (attached[0] as { account: unknown }).account }));
+    },
+  });
+  await flushAsync();
+  const { click, input } = harness.listeners;
+  assert.ok(click && input);
+  click({ target: actionTarget({ 'data-action': 'connection-account-key-open', 'data-connection-id': 'pending_api' }) });
+  assert.match(harness.app.innerHTML, /placeholder="Paste a token" data-action="connection-account-key-input"/);
+  assert.match(harness.app.innerHTML, /Stored once outside the Agent record and never returned to this browser\./);
+
+  input({ target: inputTarget({ 'data-action': 'connection-account-key-input' }, 'sk-stale') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-key-save' }) });
+  await flushAsync();
+  assert.match(harness.app.innerHTML, /role="alert">This connection changed\.</);
+  assert.match(harness.app.innerHTML, /data-action="connection-account-key-save"/);
+
+  input({ target: inputTarget({ 'data-action': 'connection-account-key-input' }, 'sk-live') });
+  click({ target: actionTarget({ 'data-action': 'connection-account-key-save' }) });
+  await flushAsync();
+  assert.deepEqual(harness.connectionKeyPuts.map(({ connectionId, body }) => [connectionId, body]), [
+    ['pending_api', { expectedRevision: 4, credential: 'sk-stale' }],
+    ['pending_api', { expectedRevision: 4, credential: 'sk-live' }],
+  ]);
+  assert.doesNotMatch(harness.app.innerHTML, /data-action="connection-account-key-(open|save)"/);
+  assert.doesNotMatch(harness.app.innerHTML, /Setup required/);
 });
 
 test('Meta tool save applies its response before refresh and ignores the older in-flight snapshot', async () => {

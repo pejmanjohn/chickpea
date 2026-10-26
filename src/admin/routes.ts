@@ -58,7 +58,10 @@ import {
   connectOrigin,
   firstAgentPrompt,
 } from '../management/connect.ts';
-import { apiConnectionStateKept } from '../management/agent-connections.ts';
+import {
+  API_CONNECTION_AWAITING_CREDENTIAL,
+  apiConnectionStateKept,
+} from '../management/agent-connections.ts';
 import { mcpClientsPayload } from '../management/mcp-client-config.ts';
 import { channelLabelKey, createUsageAdminApi } from './usage-api.ts';
 import { createBillingAdminApi, PLAN_PATH } from './billing-api.ts';
@@ -89,7 +92,7 @@ import { prepareSeededCatalogConnection, replaceCatalogConnection } from '../man
 import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
-  deleteRevokedConnectionOAuthSettings,
+  ConnectionCredentialEntryUnavailableError,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
@@ -215,6 +218,19 @@ import {
   type ApiOAuthRef,
 } from '../config/api-oauth.ts';
 import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
+import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
+import {
+  apiConnectionsWriteProblem,
+  CONNECTION_ID_PATTERN,
+  GITHUB_API_CONNECTION_ERROR,
+  isAllowedConnectorHost,
+  mcpConnectionsWriteProblem,
+  platformRepositoryGrants,
+  REVIEWED_CONNECTOR_SETUP_MESSAGE,
+  SKILL_NAME_MAX_LENGTH,
+  SKILL_NAME_PATTERN,
+  skillsWriteProblem,
+} from '../config/agent-write-rules.ts';
 import type {
   OAuthAuthorizationAuthority,
   OAuthAuthorizationOwnerKind,
@@ -236,7 +252,6 @@ import {
   connectorCredentialEnvVar,
   deleteConnectorSecrets,
   describeConnectorCredentialSource,
-  finishConnectorSecretCleanup,
   saveConnectorCredential,
   stageConnectorSecretCleanup,
   stageConnectorSettingCleanup,
@@ -283,7 +298,6 @@ import {
   isValidRepositoryGrantShape,
   listInstallationRepos,
   listInstallations,
-  mintableInstallation,
   normalizePrivateKeyPem,
   saveGithubSetupState,
 } from '../config/github-app.ts';
@@ -324,7 +338,6 @@ import {
   buildMcpRequestHeaders,
   deleteMcpSecrets,
   describeMcpSecretSources,
-  finishMcpSecretCleanup,
   mcpBearerEnvVar,
   mcpBearerSettingKey,
   mcpCredentialBindingEnvVar,
@@ -1034,7 +1047,7 @@ const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
 const modelEffortSchema = v.picklist(MODEL_EFFORTS);
-const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MCP_CONNECTION_ID_PATTERN = CONNECTION_ID_PATTERN;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const openAiSubscriptionAttemptSchema = v.object({
   attemptCapability: v.pipe(v.string(), v.minLength(32), v.maxLength(512)),
@@ -1083,28 +1096,22 @@ const modelCatalogModeSchema = v.strictObject({
 // and instructions are bounded to keep a skill focused and the prompt sane.
 const skillName = v.pipe(
   v.string(),
-  v.regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'lowercase letters, digits, and single hyphens only'),
-  v.maxLength(64),
+  v.regex(SKILL_NAME_PATTERN, 'lowercase letters, digits, and single hyphens only'),
+  v.maxLength(SKILL_NAME_MAX_LENGTH),
 );
 const skillSchema = v.object({
   name: skillName,
-  // Trim before the non-empty check so a whitespace-only value can't pass the
-  // write boundary yet throw at defineSkill (which trims) and be silently
-  // skipped at turn time. The stored value is the normalized one.
-  description: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024)),
-  instructions: v.pipe(v.string(), v.trim(), v.minLength(1)),
+  // Trim so the stored value is the normalized one; skillsWriteProblem
+  // refuses a whitespace-only value, which defineSkill would skip at turn time.
+  description: v.pipe(v.string(), v.trim()),
+  instructions: v.pipe(v.string(), v.trim()),
   enabled: v.boolean(),
   suggestedSkillId: v.optional(skillName),
   importSource: v.optional(skillImportSourceSchema),
 });
-// Reject duplicate names at the write boundary — duplicates are a turn-killer
-// downstream, so they must never reach the store.
 const skillsSchema = v.pipe(
   v.array(skillSchema),
-  v.check(
-    (skills) => new Set(skills.map((skill) => skill.name)).size === skills.length,
-    'skill names must be unique',
-  ),
+  v.check((skills) => skillsWriteProblem(skills) === undefined, 'skills are invalid'),
 );
 
 // A single discovered-tool record stored on a Connection's last successful
@@ -1159,45 +1166,15 @@ const mcpServerSchema = v.pipe(
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
-  v.check((s) => validateMcpUrl(s.url).ok, 'URL not allowed'),
-  v.check(
-    (s) => s.credentialHeaderName === undefined ||
-      s.headerNames.some((name) => name.toLowerCase() === s.credentialHeaderName!.toLowerCase()),
-    'credential header must be declared in headerNames',
-  ),
+  v.check((s) => mcpConnectionsWriteProblem([s]) === undefined, 'MCP connection is invalid'),
 );
 
-// Reject duplicate connection ids at the write boundary — a per-profile id must
-// be unique because it becomes the `mcp__<id>__` tool prefix (and the
-// profile-scoped secret-key suffix). Mirrors the unique-skill-names check.
+// A per-profile id must be unique because it becomes the `mcp__<id>__` tool
+// prefix and the profile-scoped secret-key suffix.
 const mcpServersSchema = v.pipe(
   v.array(mcpServerSchema),
-  v.check(
-    (servers) => new Set(servers.map((server) => server.id)).size === servers.length,
-    'connection ids must be unique',
-  ),
+  v.check((servers) => mcpConnectionsWriteProblem(servers) === undefined, 'connection ids must be unique'),
 );
-
-function isAllowedConnectorHost(host: string): boolean {
-  // Wildcards need a custom SecureFetch wrapper (documented follow-up).
-  // Exact hosts cover the target connectors: Asana app.asana.com, Zendesk
-  // <subdomain>.zendesk.com, and GitHub api.github.com.
-  if (host.includes('*')) return false;
-  const hostname = host;
-
-  const result = validateMcpUrl(`https://${hostname}`);
-  if (!result.ok) return false;
-
-  // `allowedHosts` stores hosts, not URLs. Keep the SSRF validation above as
-  // the security boundary, then reject values that smuggle in URL components.
-  const url = new URL(result.url);
-  return (
-    url.hostname.toLowerCase() === hostname.toLowerCase() &&
-    url.port === '' &&
-    url.pathname === '/' &&
-    url.search === ''
-  );
-}
 
 const connectorHost = v.pipe(
   v.string(),
@@ -1207,12 +1184,9 @@ const connectorHost = v.pipe(
   v.check(isAllowedConnectorHost, 'Host not allowed'),
 );
 
-const GITHUB_API_CONNECTION_ERROR =
-  'GitHub is managed by the GitHub App integration; connect it in Settings → GitHub';
-
 const apiConnectionSchema = v.pipe(
   v.object({
-    id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    id: v.pipe(v.string(), v.regex(CONNECTION_ID_PATTERN)),
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
     allowedHosts: v.pipe(
       v.array(connectorHost),
@@ -1246,76 +1220,18 @@ const apiConnectionSchema = v.pipe(
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
   }),
-  v.check((connection) => connection.allowedHosts.length > 0, 'allowed hosts must not be empty'),
   v.check(
-    (connection) => connection.authMode === 'oauth'
-      ? isValidApiOAuthConnectionPolicy(connection) && connection.oauthAppType !== undefined
-      : connection.oauthProvider === undefined &&
-        connection.oauthScopes === undefined &&
-        connection.oauthAppType === undefined &&
-        connection.identity === undefined,
-    'OAuth connection policy is invalid',
+    (connection) => apiConnectionsWriteProblem([connection]) === undefined,
+    (issue) => apiConnectionsWriteProblem([issue.input]) ?? 'API connection is invalid',
   ),
 );
-
-// just-bash applies EVERY allow-list transform whose prefix matches a request,
-// so two connections that cover an overlapping URL space would inject both
-// credentials into one request (or silently overwrite when the header names
-// match), leaking one connection's secret to the other's endpoint. Reject
-// overlapping scopes at the write boundary — the only place connection scopes
-// are ever set — so each connection governs a distinct URL space.
-type ConnectionScope = { allowedHosts: string[]; pathPrefixes: string[]; enabled: boolean };
-
-function normalizePathPrefix(prefix: string): string {
-  return prefix.replace(/\/+$/, '');
-}
-
-// Two path prefixes overlap when they are equal or one is a segment-ancestor of
-// the other (`/v1` vs `/v1/tasks`, but NOT `/v1` vs `/v10`). An empty prefix
-// list means "whole host", which overlaps every path.
-function pathPrefixesOverlap(left: string[], right: string[]): boolean {
-  if (left.length === 0 || right.length === 0) return true;
-  return left.some((rawLeft) =>
-    right.some((rawRight) => {
-      const a = normalizePathPrefix(rawLeft);
-      const b = normalizePathPrefix(rawRight);
-      if (a === b) return true;
-      const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
-      return shorter === '' || longer.startsWith(shorter + '/');
-    }),
-  );
-}
-
-function connectionsOverlap(left: ConnectionScope, right: ConnectionScope): boolean {
-  if (!left.enabled || !right.enabled) return false;
-  const rightHosts = new Set(right.allowedHosts.map((host) => host.toLowerCase()));
-  const sharesHost = left.allowedHosts.some((host) => rightHosts.has(host.toLowerCase()));
-  return sharesHost && pathPrefixesOverlap(left.pathPrefixes, right.pathPrefixes);
-}
-
-function hasOverlappingConnections(connections: ConnectionScope[]): boolean {
-  for (let i = 0; i < connections.length; i += 1) {
-    const left = connections[i];
-    if (left === undefined) continue;
-    for (let j = i + 1; j < connections.length; j += 1) {
-      const right = connections[j];
-      if (right !== undefined && connectionsOverlap(left, right)) return true;
-    }
-  }
-  return false;
-}
 
 const apiConnectionsSchema = v.pipe(
   v.array(apiConnectionSchema),
   v.maxLength(50),
   v.check(
-    (connections) =>
-      new Set(connections.map((connection) => connection.id)).size === connections.length,
-    'connection ids must be unique',
-  ),
-  v.check(
-    (connections) => !hasOverlappingConnections(connections),
-    'enabled connections must not cover overlapping URLs; narrow their hosts or path prefixes so each connection governs a distinct URL space',
+    (connections) => apiConnectionsWriteProblem(connections) === undefined,
+    (issue) => apiConnectionsWriteProblem(issue.input) ?? 'API connections are invalid',
   ),
 );
 
@@ -8182,7 +8098,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     if (!parsed.success) {
       return invalidRequest(c, githubApiConnectionValidationMessage(parsed.issues));
     }
-    if (parsed.output.mcpServers.some((server) => isMcpToolReviewRequired(server))) return invalidRequest(c, 'Add this connector from the Agent’s Connections tab so you can review its tool access.');
+    if (parsed.output.mcpServers.some((server) => isMcpToolReviewRequired(server))) return invalidRequest(c, REVIEWED_CONNECTOR_SETUP_MESSAGE);
     const requestedHandle = parsed.output.handle ?? parsed.output.name;
     if (reservedAgentIdentityField({
       id: parsed.output.id,
@@ -9171,6 +9087,30 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
   });
 
+  app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/credential', async (c) => {
+    const parsed = v.safeParse(v.object({
+      expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
+      credential: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(32_768)),
+    }), await readJson(c.req));
+    if (!parsed.success) return invalidRequest(c);
+    try {
+      const agentId = c.req.param('agentId');
+      const connectionAccountId = c.req.param('connectionAccountId');
+      const { principal } = await managedConnectionAccount(c, agentId, connectionAccountId);
+      const updated = await connectionAccounts(c).setCredentialForAgent({
+        principal, agentId, connectionAccountId, ...parsed.output,
+      });
+      return c.json({ account: toConnectionAccountView(updated) });
+    } catch (error) {
+      if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
+      if (error instanceof UnknownAgentError) return c.json({ error: 'not_found' }, 404);
+      const message = 'This connection changed. Reload it before saving the credential.';
+      if (error instanceof ConnectionAccountRevisionConflictError) return c.json({ error: 'revision_conflict', message }, 409);
+      if (error instanceof ConnectionCredentialEntryUnavailableError) return c.json({ error: 'credential_entry_unavailable', message }, 409);
+      return internalError(c, error);
+    }
+  });
+
   app.put('/admin/api/agents/:agentId/connections/:connectionAccountId/mcp/tools', async (c) => {
     const parsed = v.safeParse(v.object({
       expectedRevision: v.pipe(v.number(), v.integer(), v.minValue(1)),
@@ -9488,7 +9428,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
-      await deleteRevokedConnectionOAuthSettings(account, c.env as PlatformEnv | undefined, settings(c));
       return c.json({ account: toConnectionAccountView(account) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);
@@ -9867,7 +9806,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         };
       }
       if (patch.mcpServers?.some((server) => isMcpToolReviewRequired(server))) {
-        return invalidRequest(c, 'Add this connector from the Agent’s Connections tab so you can review its tool access.');
+        return invalidRequest(c, REVIEWED_CONNECTOR_SETUP_MESSAGE);
       }
       if (patch.apiConnections) {
         const resets = new Set(parsed.output.credentialResets?.api ?? []);
@@ -9877,7 +9816,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           current.apiConnections,
           patch.apiConnections.map((connection) => ({
             ...connection,
-            ...(resets.has(connection.id) ? {} : apiConnectionStateKept(stored.get(connection.id), connection)),
+            ...(resets.has(connection.id) ? undefined : apiConnectionStateKept(stored.get(connection.id), connection)) ??
+              API_CONNECTION_AWAITING_CREDENTIAL,
           })),
           settings(c),
           resets,
@@ -10200,15 +10140,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         return internalError(c, err);
       }
       try {
-        const settingsStore = settings(c);
-        const resumedMcp = await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
-        const resumedConnector = await finishConnectorSecretCleanup(
+        return await finishAgentSecretCleanup(
           agentId,
           c.env as PlatformEnv | undefined,
-          settingsStore,
+          settings(c),
           cleanupScope,
-        );
-        return resumedMcp || resumedConnector
+        )
           ? c.body(null, 204)
           : c.json({ error: 'not_found' }, 404);
       } catch (cleanupError) {
@@ -10263,35 +10200,8 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     // partial failure or an ambiguous DO/RPC response where the delete committed
     // but the caller only observed an error.
     const settingsStore = settings(c);
-    const secretKeys = new Set<string>();
-    for (const server of agent.mcpServers) {
-      const credentialRef = boundMcpCredentialRef(agentId, server);
-      secretKeys.add(mcpBearerSettingKey(credentialRef));
-      for (const name of server.headerNames) {
-        secretKeys.add(mcpHeaderSettingKey(credentialRef, name));
-      }
-      for (const key of mcpOAuthSettingKeys(credentialRef)) {
-        secretKeys.add(key);
-      }
-    }
     try {
-      await stageMcpSecretCleanup(agentId, [...secretKeys], settingsStore, cleanupScope);
-      await stageConnectorSecretCleanup(
-        agentId,
-        agent.apiConnections.map((connection) => boundApiCredentialRef(agentId, connection)),
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-        cleanupScope,
-      );
-      await stageConnectorSettingCleanup(
-        agentId,
-        agent.apiConnections.filter((connection) => connection.authMode === 'oauth').flatMap((connection) =>
-          apiOAuthSettingKeys(boundApiCredentialRef(agentId, connection)),
-        ),
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-        cleanupScope,
-      );
+      await stageAgentSecretCleanup(agent, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
     } catch (err) {
       return internalError(c, err);
     }
@@ -10313,13 +10223,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
           // The delete committed but its response was lost. Continue using the
           // durable marker rather than restoring secrets into an orphaned scope.
           try {
-            await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
-            await finishConnectorSecretCleanup(
-              agentId,
-              c.env as PlatformEnv | undefined,
-              settingsStore,
-              cleanupScope,
-            );
+            await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
             return c.body(null, 204);
           } catch (cleanupError) {
             return internalError(c, cleanupError);
@@ -10340,13 +10244,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     try {
-      await finishMcpSecretCleanup(agentId, settingsStore, cleanupScope);
-      await finishConnectorSecretCleanup(
-        agentId,
-        c.env as PlatformEnv | undefined,
-        settingsStore,
-        cleanupScope,
-      );
+      await finishAgentSecretCleanup(agentId, c.env as PlatformEnv | undefined, settingsStore, cleanupScope);
       return c.body(null, 204);
     } catch (err) {
       return internalError(c, err);
@@ -12932,31 +12830,6 @@ async function hostedGithubStatus(env: PlatformEnv | undefined, connection: Gith
  * refused. A grant left as stored keeps its account even while that account
  * is disconnected, so saving an Agent never drops its selections.
  */
-async function platformRepositoryGrants(
-  settingsStore: SettingsStore,
-  env: PlatformEnv | undefined,
-  grants: CustomAgentConfig['repositories'],
-  stored: CustomAgentConfig['repositories'] = [],
-): Promise<CustomAgentConfig['repositories'] | 'github_account_not_connected'> {
-  if (!deploymentServesManyInstallations(env) || grants.length === 0) return grants;
-  const connection = await getGithubConnection(settingsStore, env);
-  const saved: CustomAgentConfig['repositories'] = [];
-  for (const grant of grants) {
-    const installationId = mintableInstallation(connection, grant);
-    if (installationId !== undefined) {
-      saved.push({ ...grant, installationId });
-      continue;
-    }
-    const prior = stored.find(({ id }) => id === grant.id);
-    if (!prior || prior.accountLogin !== grant.accountLogin || prior.fullName !== grant.fullName ||
-        (prior.allRepos === true) !== (grant.allRepos === true) || prior.installationId !== grant.installationId) {
-      return 'github_account_not_connected';
-    }
-    saved.push({ ...prior, enabled: grant.enabled });
-  }
-  return saved;
-}
-
 function toWebsiteLogins(
   grants: v.InferOutput<typeof websiteLoginsSchema>,
 ): WebsiteLoginGrant[] {

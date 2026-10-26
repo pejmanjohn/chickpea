@@ -5,7 +5,13 @@ import {
   revokeBetterAuthUserAccess,
   type BetterAuthAccessRevoker,
 } from '../auth/better-auth-backend.ts';
-import { canEditAgent, permissionForRole } from '../auth/permissions.ts';
+import {
+  AuthorizationError,
+  canEditAgent,
+  canManageOwnedResource,
+  permissionForRole,
+  requirePermission,
+} from '../auth/permissions.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { CHICKPEA_AGENT_ID, isAgentId } from '../config/agent-id.ts';
 import {
@@ -20,6 +26,7 @@ import {
   AgentRevisionConflictError,
   AgentStillReferencedError,
   ChannelRevisionConflictError,
+  ConnectionAccountRevisionConflictError,
   UnknownAgentError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
@@ -31,6 +38,8 @@ import {
   resolveProviderRuntimeImpacts,
 } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
+import { isMcpToolReviewRequired } from '../config/mcp-access.ts';
+import { REVIEWED_CONNECTOR_SETUP_MESSAGE } from '../config/agent-write-rules.ts';
 import {
   type AgentChannelGrant,
   type AgentReferenceSummary,
@@ -43,6 +52,7 @@ import {
   type ConnectionAccountPolicy,
   agentAppIsLive,
   type CustomAgentConfig,
+  type RepositoryGrant,
   type SkillConfig,
   type WorkspaceInstallation,
 } from '../config/types.ts';
@@ -54,18 +64,13 @@ import {
   type SkillResolution,
 } from '../config/skill-import.ts';
 import { isValidRepositoryFullName } from '../config/github-app.ts';
-import {
-  boundApiCredentialRef,
-  boundMcpCredentialRef,
-  newAgentCredentialIncarnation,
-  reconcileApiCredentialRefs,
-  reconcileMcpCredentialRefs,
-} from '../config/connection-credential-binding.ts';
+import { newAgentCredentialIncarnation } from '../config/connection-credential-binding.ts';
 import {
   applyConnectionCapabilityCeiling,
   projectEffectiveConnectionAccounts,
   projectRecoverableConnectionAccounts,
 } from '../connections/runtime.ts';
+import { nativeCredentialRequired, type ConnectionAccountService } from '../connections/store.ts';
 import type { IdentityStore, Membership, Organization } from '../identity/types.ts';
 import type {
   AgentMemory,
@@ -92,6 +97,7 @@ import {
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
+import { THREAD_TTL_MS } from '../slack/state-limits.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -103,11 +109,18 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
 } from './agent-authoring/index.ts';
 import {
+  agentConnections,
+  agentConnectionWrites,
   apiConnectionsAfterWrite,
+  connectionSetupBinding,
   managementApiConnection,
   managementConnectionStatus,
   managementMcpConnection,
   mcpConnectionsAfterWrite,
+  mcpCredentialField,
+  resolveAgentConnectionId,
+  withAgentConnectionIds,
+  type AgentConnections,
   type ManagementApiConnection,
   type ManagementMcpConnection,
 } from './agent-connections.ts';
@@ -153,6 +166,7 @@ import {
 import { selectAgentCreationConnectors } from './agent-creation-welcome.ts';
 import {
   ChickpeaHandoffRequired,
+  AgentWriteRuleError,
   ManagementError,
   type ApplyWorkspaceChangesResult,
   type ApplyWorkspaceChangesInput,
@@ -213,8 +227,10 @@ import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
+const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
 const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
@@ -248,9 +264,9 @@ const keyLaneUnconfigured: ModelReadiness = async (modelId) =>
 /** One request's model readiness, resolved on first use; undefined when the runtime has none. */
 type RequestModelReadiness = () => Promise<ModelReadiness | undefined>;
 
-class MetaAdsCatalogSetupRequiredError extends ManagementError {
+class MetaAdsCatalogSetupRequiredError extends AgentWriteRuleError {
   constructor() {
-    super('invalid_request', META_ADS_CATALOG_SETUP_MESSAGE);
+    super(META_ADS_CATALOG_SETUP_MESSAGE);
   }
 }
 
@@ -333,7 +349,7 @@ export interface WorkspaceManagementServiceInput {
   testMcpConnection?: (
     agentId: string,
     connectionId: string,
-    actor: McpConnectionTestActor | undefined,
+    actor: McpConnectionTestActor,
   ) => Promise<unknown>;
   managedConnectorAvailable?: (input: {
     toolkit: string;
@@ -392,6 +408,15 @@ export interface WorkspaceManagementServiceInput {
     expectedCredentialIncarnation: string;
     idempotencyKey: string;
   }) => Promise<boolean>;
+  /** Admin's connection account service; management connection writes go through it. */
+  connectionAccounts?: ConnectionAccountService;
+  /** Threads whose frozen runtime still names the Agent; Admin refuses to delete it while any remain. */
+  agentLiveThreadCount?: (agentId: string) => Promise<number>;
+  /** Admin's hosted repository-grant mapping (platformRepositoryGrants). */
+  repositoryGrants?: (
+    grants: RepositoryGrant[],
+    stored: RepositoryGrant[],
+  ) => Promise<RepositoryGrant[] | 'github_account_not_connected'>;
   /**
    * Runs a membership change with the Better Auth backend that ends the
    * member's sessions and MCP grants (withBetterAuthAccessRevoker). `use`
@@ -1190,7 +1215,7 @@ export class WorkspaceManagementService {
         links,
       );
     }
-    const setup = await this.resolveSetupTarget({ kind: 'provider_credential', providerId });
+    const setup = await this.resolveSetupTarget(actor, { kind: 'provider_credential', providerId });
     if (setup.target.replacement && !input.replaceExisting) {
       throw new ManagementError(
         'invalid_request',
@@ -1368,9 +1393,10 @@ export class WorkspaceManagementService {
     }
 
     const baseUrl = await this.resolveSetupBaseUrl().catch(() => undefined);
+    const { connections } = await this.agentWithConnections(actor, agent);
     const attachedPresetIds = new Set([
-      ...agent.mcpServers.flatMap(({ presetId }) => presetId ? [presetId] : []),
-      ...agent.apiConnections.flatMap(({ presetId }) => presetId ? [presetId] : []),
+      ...connections.mcpServers.flatMap(({ presetId }) => presetId ? [presetId] : []),
+      ...connections.apiConnections.flatMap(({ presetId }) => presetId ? [presetId] : []),
     ]);
     const connectorPlan = await selectAgentCreationConnectors({
       requestText: actor.origin.requestText ?? '',
@@ -1625,15 +1651,20 @@ export class WorkspaceManagementService {
       requestedAction: 'test_mcp_connection',
       target: { kind: 'agent', id: agentId },
     });
-    await this.requireEditableAgent(actor, agentId);
+    const { connections } = await this.agentWithConnections(
+      actor,
+      await this.requireEditableAgent(actor, agentId),
+    );
     if (!this.stores.testMcpConnection) {
       throw new ManagementError('invalid_request', 'MCP connection testing is unavailable.');
     }
     const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (!workspaceId) throw new ManagementError('invalid_request', 'The MCP connection was not found.');
+    const resolved = resolveAgentConnectionId(connections, 'mcp', connectionId);
     return this.stores.testMcpConnection(
       agentId,
-      connectionId,
-      workspaceId ? { workspaceId, actorMembershipId: actor.membershipId } : undefined,
+      resolved === undefined ? connectionId : connections.mcp.get(resolved)!.account.id,
+      { workspaceId, actorMembershipId: actor.membershipId },
     );
   }
 
@@ -1739,7 +1770,7 @@ export class WorkspaceManagementService {
       requestedAction: 'export_workspace_recipe',
       target: { kind: 'workspace', id: actor.organizationId },
     });
-    const editable = await this.editableAgents(actor);
+    const editable = await this.editableAgentsWithConnections(actor);
     return exportWorkspaceRecipe({ listUserAgents: async () => editable }, input);
   }
 
@@ -1753,7 +1784,7 @@ export class WorkspaceManagementService {
       requestedAction: 'preview_workspace_recipe',
       target: { kind: 'workspace', id: actor.organizationId },
     });
-    const editable = await this.editableAgents(actor);
+    const editable = await this.editableAgentsWithConnections(actor);
     const readiness = actor.role === 'member' || !this.stores.modelReadiness
       ? keyLaneUnconfigured
       : await this.stores.modelReadiness();
@@ -1887,9 +1918,6 @@ export class WorkspaceManagementService {
           );
           continue;
         }
-        if (operation.kind === 'update_agent') {
-          assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
-        }
         const facts = await this.policyFacts(actor, operation, {
           ...(operation.kind === 'save_routine' &&
               progress.prepared?.itemId === operation.itemId
@@ -1999,9 +2027,7 @@ export class WorkspaceManagementService {
               error.code === 'effort_not_supported' || error.code === 'effort_requires_model')
             ? { warning: error.message }
             : {}),
-          ...(error instanceof MetaAdsCatalogSetupRequiredError
-            ? { warning: error.message }
-            : {}),
+          ...(error instanceof AgentWriteRuleError ? { warning: error.message } : {}),
           ...(error instanceof ManagementError && error.changed
             ? { changed: error.changed }
             : {}),
@@ -2391,7 +2417,7 @@ export class WorkspaceManagementService {
         targetRevisions[key] = revision;
       }
       const prepared = await this.preflightProposalItem(actor, operation, proposalId, readiness);
-      const statement = await this.changeStatement(operation);
+      const statement = await this.changeStatement(actor, operation);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -2404,7 +2430,7 @@ export class WorkspaceManagementService {
         ...(statement ? { statement } : {}),
       });
       if (operation.kind === 'request_setup') {
-        const setup = await this.resolveSetupTarget(operation.target);
+        const setup = await this.resolveSetupTarget(actor, operation.target);
         missingSetup.push({
           itemId: operation.itemId,
           kind: operation.target.kind,
@@ -2967,7 +2993,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, { kind: 'request_setup' }>,
   ): Promise<{ record: ManagementSetupRecord; url: string }> {
-    const frozen = await this.resolveSetupTarget(operation.target);
+    const frozen = await this.resolveSetupTarget(actor, operation.target);
     return this.issueSetupRecord(actor, frozen);
   }
 
@@ -3046,6 +3072,7 @@ export class WorkspaceManagementService {
   }
 
   private async resolveSetupTarget(
+    actor: LiveManagementActor,
     request: Extract<ManagementOperation, { kind: 'request_setup' }>['target'],
   ): Promise<{
     action: ManagementSetupRecord['action'];
@@ -3080,54 +3107,61 @@ export class WorkspaceManagementService {
     if (!request.agentId) {
       throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
     }
-    const agent = await this.stores.config.getAgent(request.agentId);
-    if (request.kind === 'api_connection') {
-      const connection = agent.apiConnections.find(({ id }) => id === request.connectionId);
-      if (!connection) throw new ManagementError('invalid_request', 'The API connection was not found.');
-      const oauth = connection.authMode === 'oauth';
-      return {
-        action: oauth ? 'api_oauth' : 'api_credential',
-        target: {
-          kind: request.kind,
-          provider: connection.oauthProvider ?? connection.presetId ?? connection.displayName,
-          targetId: `agent:${agent.id}:api:${connection.id}`,
-          targetLabel: connection.displayName,
-          expectedRevision: agent.revision,
-          credentialBinding: boundApiCredentialRef(agent.id, connection).credentialBinding,
-          agentId: agent.id,
-          agentName: agent.name,
-          connectionId: connection.id,
-          replacement: connection.lifecycleStatus === 'ready',
-          formFields: oauth ? ['clientId', 'clientSecret'] : ['credential'],
-        },
-        scopes: oauth ? [...connection.oauthScopes ?? []] : [`header:${connection.headerName}`],
+    const { agent, connections } = await this.agentWithConnections(
+      actor,
+      await this.stores.config.getAgent(request.agentId),
+    );
+    if (request.kind === 'api_connection' || request.kind === 'mcp_connection') {
+      const lane = request.kind === 'api_connection' ? 'api' : 'mcp';
+      const connectionId = resolveAgentConnectionId(connections, lane, request.connectionId);
+      const entry = connectionId === undefined ? undefined : connections[lane].get(connectionId);
+      if (!entry) {
+        throw new ManagementError(
+          'invalid_request',
+          lane === 'api' ? 'The API connection was not found.' : 'The MCP connection was not found.',
+        );
+      }
+      const { account } = entry;
+      // Setup completion refuses a Member on a team connection, so never issue them its link.
+      if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+        throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+      }
+      const target = {
+        kind: request.kind,
+        targetId: `agent:${agent.id}:${lane}:${account.id}`,
+        targetLabel: account.label,
+        expectedRevision: agent.revision,
+        credentialBinding: connectionSetupBinding(entry),
+        agentId: agent.id,
+        agentName: agent.name,
+        connectionId: account.id,
+        replacement: account.lifecycle === 'ready',
       };
-    }
-    if (request.kind === 'mcp_connection') {
-      const connection = agent.mcpServers.find(({ id }) => id === request.connectionId);
-      if (!connection) throw new ManagementError('invalid_request', 'The MCP connection was not found.');
-      const oauth = connection.authMode === 'oauth';
-      if (connection.authMode === 'none') {
+      if (account.policy.kind === 'api') {
+        const oauth = account.policy.authMode === 'oauth';
+        return {
+          action: oauth ? 'api_oauth' : 'api_credential',
+          target: {
+            ...target,
+            provider: account.policy.oauthProvider ?? account.policy.presetId ?? account.label,
+            formFields: oauth ? ['clientId', 'clientSecret'] : ['credential'],
+          },
+          scopes: oauth ? [...account.policy.oauthScopes ?? []] : [`header:${account.policy.headerName}`],
+        };
+      }
+      const policy = account.policy;
+      if (!nativeCredentialRequired(policy)) {
         throw new ManagementError('invalid_request', 'This MCP connection does not require setup.');
       }
+      const oauth = policy.authMode === 'oauth';
       return {
         action: oauth ? 'mcp_oauth' : 'mcp_credentials',
         target: {
-          kind: request.kind,
-          provider: connection.presetId ?? connection.displayName,
-          targetId: `agent:${agent.id}:mcp:${connection.id}`,
-          targetLabel: connection.displayName,
-          expectedRevision: agent.revision,
-          credentialBinding: boundMcpCredentialRef(agent.id, connection).credentialBinding,
-          agentId: agent.id,
-          agentName: agent.name,
-          connectionId: connection.id,
-          replacement: connection.lifecycleStatus === 'ready',
-          formFields: oauth
-            ? []
-            : ['bearerToken', ...connection.headerNames.map((name) => `header:${name}`)],
+          ...target,
+          provider: policy.presetId ?? account.label,
+          formFields: oauth ? [] : [mcpCredentialField(policy)],
         },
-        scopes: oauth ? scopeTokens(connection.oauthScope) : [...connection.allowedTools],
+        scopes: oauth ? scopeTokens(policy.oauthScope) : [...policy.allowedTools],
       };
     }
     const repository = agent.repositories.find(({ id }) => id === request.repositoryId);
@@ -3404,6 +3438,167 @@ export class WorkspaceManagementService {
     return agent;
   }
 
+  /** Admin's delete preconditions: the Agent has left Slack and no recent thread still uses it. */
+  private async assertAgentDeletable(agent: CustomAgentConfig): Promise<void> {
+    assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(agent.id));
+    if ((await this.stores.agentLiveThreadCount?.(agent.id) ?? 0) > 0) {
+      throw new AgentWriteRuleError(
+        `${agent.name} was used in a Slack thread in the last ${THREAD_TTL_DAYS} days, so it cannot be deleted yet. Keep it archived, then delete it once its threads have been quiet for ${THREAD_TTL_DAYS} days.`,
+      );
+    }
+  }
+
+  /** The Agent with the MCP servers and API connections this member manages on it. */
+  private async agentWithConnections(
+    actor: LiveManagementActor,
+    agent: CustomAgentConfig,
+  ): Promise<{ agent: CustomAgentConfig; connections: AgentConnections }> {
+    const workspaceIds = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    const [accounts, bindings] = await Promise.all([
+      Promise.all(workspaceIds.map((workspaceId) =>
+        this.stores.config.listConnectionAccounts(workspaceId))).then((groups) => groups.flat()),
+      this.stores.config.listAgentConnectionBindings(agent.id),
+    ]);
+    const connections = agentConnections(accounts, bindings, actor.membershipId);
+    return {
+      agent: { ...agent, mcpServers: connections.mcpServers, apiConnections: connections.apiConnections },
+      connections,
+    };
+  }
+
+  /** The Agent edit as the Agent's connections stand: every existing connection named by its id. */
+  private async agentEdit(
+    actor: LiveManagementActor,
+    agentId: string,
+    patch: ManagementAgentPatch,
+  ): Promise<{ agent: CustomAgentConfig; connections: AgentConnections; patch: ManagementAgentPatch }> {
+    const { agent, connections } = await this.agentWithConnections(
+      actor,
+      await this.stores.config.getAgent(agentId),
+    );
+    const edit = agentPatchWithConnectionIds(connections, patch);
+    // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
+    const reviewedPolicy = (connection: ManagementMcpConnection) =>
+      canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
+    for (const connection of edit.mcpServers ?? []) {
+      const stored = connections.mcpServers.find(({ id }) => id === connection.id);
+      if ((isMcpToolReviewRequired(connection) || (stored && isMcpToolReviewRequired(stored))) &&
+          (!stored || reviewedPolicy(connection) !== reviewedPolicy(stored))) {
+        throw reviewedConnectorError(stored ?? connection);
+      }
+    }
+    if (!edit.repositories || !this.stores.repositoryGrants) return { agent, connections, patch: edit };
+    const repositories = await this.stores.repositoryGrants(edit.repositories, agent.repositories);
+    if (repositories === 'github_account_not_connected') {
+      throw new AgentWriteRuleError('Connect GitHub in Admin Settings before granting these repositories.');
+    }
+    return { agent, connections, patch: { ...edit, repositories } };
+  }
+
+  /** The Agent when it already shows this edit, connections included. */
+  private async appliedAgentEdit(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'update_agent' }>,
+  ): Promise<CustomAgentConfig | undefined> {
+    const stored = await optionalAgent(this.stores.config, operation.agentId);
+    if (!stored) return undefined;
+    const { agent, connections } = await this.agentWithConnections(actor, stored);
+    try {
+      return agentPatchMatches(agent, agentPatchWithConnectionIds(connections, operation.patch))
+        ? agent
+        : undefined;
+    } catch (error) {
+      if (error instanceof ManagementError) return undefined;
+      throw error;
+    }
+  }
+
+  /** Write an Agent edit: the Agent's own fields, then its connections as Admin's connection accounts. */
+  private async writeAgentEdit(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'update_agent' }>,
+    credentialIncarnation: string | undefined,
+  ): Promise<CustomAgentConfig> {
+    const edit = await this.agentEdit(actor, operation.agentId, operation.patch);
+    const { mcpServers, apiConnections, ...agentPatch } = projectManagementAgentPatch(edit.agent, edit.patch);
+    const writes = agentConnectionWrites(edit.connections, {
+      ...(mcpServers ? { mcpServers } : {}),
+      ...(apiConnections ? { apiConnections } : {}),
+    });
+    const accounts = this.stores.connectionAccounts;
+    const [workspaceId] = connectionWorkspaceIds(actor, await this.stores.identity.getOrganization());
+    if (writes.length > 0 && (!accounts || !workspaceId)) {
+      throw new ManagementError('invalid_request', 'Connection changes are unavailable in this workspace.');
+    }
+    const principal = managementActorPrincipal(actor);
+    // Refuse before the first write what Admin would refuse the member.
+    if (writes.some((write) => write.kind !== 'create' && !canManageOwnedResource(principal, write.entry.account))) {
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+    }
+    const agent = await this.updateAgent(
+      actor,
+      operation.agentId,
+      withAgentCredentialRequirement(agentPatch, credentialIncarnation),
+      operation.expectedRevision,
+    );
+    if (writes.length === 0 || !accounts || !workspaceId) return agent;
+    const ownerKind = permissionForRole(actor.role).has('connection.create_team') ? 'team' : 'member';
+    try {
+      // Removals go last, so a failed write never leaves the Agent with fewer working connections.
+      for (const write of [...writes].sort((left, right) =>
+        Number(left.kind === 'revoke') - Number(right.kind === 'revoke'))) {
+        if (write.kind === 'create') {
+          await accounts.createForAgent({
+            principal,
+            agentId: agent.id,
+            workspaceId,
+            ownerKind,
+            providerId: write.providerId,
+            label: write.label,
+            policy: write.policy,
+            pendingSetup: true,
+            allowedCapabilities: [],
+          });
+        } else if (write.kind === 'update') {
+          await accounts.updateForAgent({
+            principal,
+            agentId: agent.id,
+            connectionAccountId: write.entry.account.id,
+            expectedRevision: write.entry.account.revision,
+            label: write.label,
+            policy: write.policy,
+            ...(write.identity ? { identity: write.identity } : {}),
+            resetCredential: write.resetCredential,
+          });
+        } else {
+          requirePermission(
+            principal,
+            write.entry.account.ownerKind === 'team' ? 'connection.create_team' : 'connection.create_personal',
+          );
+          await accounts.disconnectForAgent({
+            principal,
+            agentId: agent.id,
+            connectionAccountId: write.entry.account.id,
+          });
+        }
+      }
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+      }
+      if (error instanceof ConnectionAccountRevisionConflictError) {
+        throw new ManagementError('revision_conflict', 'A connection changed. Inspect the Agent again.');
+      }
+      throw error;
+    }
+    return agent;
+  }
+
+  private async editableAgentsWithConnections(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
+    return Promise.all((await this.editableAgents(actor)).map(async (agent) =>
+      (await this.agentWithConnections(actor, agent)).agent));
+  }
+
   private async editableAgents(actor: LiveManagementActor): Promise<CustomAgentConfig[]> {
     const agents = await this.stores.config.listUserAgents();
     const editable = actor.role === 'member'
@@ -3576,6 +3771,11 @@ export class WorkspaceManagementService {
         left.id.localeCompare(right.id))] as const;
     }));
     const bindingsByAgent = new Map(agentBindingEntries);
+    const connectionViews = new Map(agents.map(({ id }) => [
+      id,
+      agentConnections(allConnectionAccounts, bindingsByAgent.get(id) ?? [], actor.membershipId),
+    ]));
+    const connectionsOf = (agentId: string) => connectionViews.get(agentId)!;
     const effectiveCurrentConnections = currentAgent
       ? projectEffectiveConnectionAccounts(
           allConnectionAccounts,
@@ -3718,8 +3918,6 @@ export class WorkspaceManagementService {
         model,
         modelEffort,
         skills,
-        mcpServers,
-        apiConnections,
         repositories,
       }) => ({
         id,
@@ -3747,9 +3945,9 @@ export class WorkspaceManagementService {
         ...(model ? { model } : {}),
         ...(modelEffort ? { modelEffort } : {}),
         skills,
-        mcpServers: mcpServers.map(managementMcpConnection),
-        apiConnections: apiConnections.map(managementApiConnection),
-        connectionStatus: managementConnectionStatus({ mcpServers, apiConnections }),
+        mcpServers: connectionsOf(id).mcpServers.map(managementMcpConnection),
+        apiConnections: connectionsOf(id).apiConnections.map(managementApiConnection),
+        connectionStatus: managementConnectionStatus(connectionsOf(id)),
         ...((connectionsByAgent.get(id)?.length ?? 0) > 0
           ? { connections: connectionsByAgent.get(id)!.map(({
               accountRevision: _accountRevision,
@@ -3788,7 +3986,7 @@ export class WorkspaceManagementService {
               availableModels,
               routineSchedulingAvailable,
               capabilityHealth: selfCapabilityHealth(
-                selfAgent,
+                { ...connectionsOf(selfAgent.id), repositories: selfAgent.repositories },
                 grants,
                 connectionsByAgent.get(selfAgent.id) ?? [],
               ),
@@ -4143,7 +4341,7 @@ export class WorkspaceManagementService {
         }
         await this.requireEditableAgent(actor, operation.target.agentId);
       }
-      const setup = await this.resolveSetupTarget(operation.target);
+      const setup = await this.resolveSetupTarget(actor, operation.target);
       return {
         actor,
         operation,
@@ -4154,7 +4352,8 @@ export class WorkspaceManagementService {
       };
     }
     if (operation.kind === 'update_agent') {
-      const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
+      await this.requireEditableAgent(actor, operation.agentId);
+      const { agent: currentAgent, patch } = await this.agentEdit(actor, operation.agentId, operation.patch);
       const agentReferences = 'enabled' in operation.patch
         ? await this.stores.config.getAgentReferences(operation.agentId)
         : undefined;
@@ -4166,8 +4365,8 @@ export class WorkspaceManagementService {
         operation,
         currentAgent,
         ...(agentReferences ? { agentReferences } : {}),
-        capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, operation.patch),
-        connectionRemoved: connectionRemoved(currentAgent, operation.patch),
+        capabilityScopeExpanded: capabilityScopeExpanded(currentAgent, patch),
+        connectionRemoved: connectionRemoved(currentAgent, patch),
         agentEditable: true,
         ...(options.approvalBasis || requesterAuthorized
           ? { approvalBasis: 'explicit_requester_command' as const }
@@ -4484,9 +4683,12 @@ export class WorkspaceManagementService {
         };
       }
       case 'update_agent': {
-        const before = await this.stores.config.getAgent(operation.agentId);
+        const { agent: before, patch: connectionPatch } = await this.agentEdit(
+          actor,
+          operation.agentId,
+          operation.patch,
+        );
         requireExpectedRevision(operation.expectedRevision, before.revision);
-        assertNoLegacyMetaAdsConnections(operation.patch.mcpServers);
         // Also guards proposals stored before submission-time validation existed.
         assertValidRepositoryGrants(operation.patch.repositories);
         if (operation.patch.model && operation.patch.model !== before.model) {
@@ -4496,7 +4698,7 @@ export class WorkspaceManagementService {
           const model = operation.patch.model === undefined ? before.model : operation.patch.model ?? undefined;
           await this.assertModelEffortChoice(before.kind === 'system' ? undefined : model, operation.patch.modelEffort);
         }
-        const patch = projectManagementAgentPatch(before, operation.patch);
+        const patch = projectManagementAgentPatch(before, connectionPatch);
         return {
           itemId: operation.itemId,
           operation,
@@ -4508,7 +4710,7 @@ export class WorkspaceManagementService {
             kind: 'update_agent',
             agentId: before.id,
             expectedRevision: before.revision + 1,
-            patch: agentPatchInverse(before, operation.patch),
+            patch: agentPatchInverse(before, connectionPatch),
           },
         };
       }
@@ -4673,7 +4875,7 @@ export class WorkspaceManagementService {
         if (operation.target.kind === 'provider_credential') {
           return { itemId: operation.itemId, operation };
         }
-        const setup = await this.resolveSetupTarget(operation.target);
+        const setup = await this.resolveSetupTarget(actor, operation.target);
         if (setup.target.kind === 'provider_credential') {
           return { itemId: operation.itemId, operation };
         }
@@ -4700,10 +4902,7 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     const prepared = await this.prepareItem(actor, operation, proposalId, readiness);
     if (operation.kind === 'delete_agent') {
-      assertAgentLeftSlack(
-        await this.stores.config.getAgent(operation.agentId),
-        await this.stores.config.getAgentReferences(operation.agentId),
-      );
+      await this.assertAgentDeletable(await this.stores.config.getAgent(operation.agentId));
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
         operation.kind === 'grant_agent_channel' ||
@@ -4721,6 +4920,7 @@ export class WorkspaceManagementService {
 
   /** The names and counts a preview states for an operation whose records mean nothing to a person. */
   private async changeStatement(
+    actor: LiveManagementActor,
     operation: ManagementOperation,
   ): Promise<ManagementChangeStatement | undefined> {
     switch (operation.kind) {
@@ -4797,7 +4997,7 @@ export class WorkspaceManagementService {
       case 'request_setup':
         return {
           kind: operation.kind,
-          setup: (await this.resolveSetupTarget(operation.target)).target.targetLabel,
+          setup: (await this.resolveSetupTarget(actor, operation.target)).target.targetLabel,
         };
       case 'create_agent':
       case 'update_agent':
@@ -4850,16 +5050,7 @@ export class WorkspaceManagementService {
         );
       }
       case 'update_agent': {
-        const current = await this.stores.config.getAgent(operation.agentId);
-        const agent = await this.updateAgent(
-          actor,
-          operation.agentId,
-          withAgentCredentialRequirement(
-            projectManagementAgentPatch(current, operation.patch),
-            prepared.agentCredentialIncarnation,
-          ),
-          operation.expectedRevision,
-        );
+        const agent = await this.writeAgentEdit(actor, operation, prepared.agentCredentialIncarnation);
         return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
@@ -4966,12 +5157,11 @@ export class WorkspaceManagementService {
     const operation = prepared.operation;
     if (!prepared.intendedAfter) return undefined;
     if (operation.kind === 'update_agent') {
-      const current = await optionalAgent(this.stores.config, operation.agentId);
+      const current = await this.appliedAgentEdit(actor, operation);
       const before = prepared.before as CustomAgentConfig | undefined;
       if (current && before?.credentialIncarnation !== undefined &&
           current.credentialIncarnation === before.credentialIncarnation &&
-          current.revision >= operation.expectedRevision + 1 &&
-          agentPatchMatches(current, operation.patch)) {
+          current.revision >= operation.expectedRevision + 1) {
         return mutationForAgentEdit(current, prepared.inverse as AgentEditInverse | undefined);
       }
       return undefined;
@@ -5242,7 +5432,7 @@ export class WorkspaceManagementService {
           agent.credentialIncarnation !== expectedCredentialIncarnation) {
         throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
       }
-      assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(operation.agentId));
+      await this.assertAgentDeletable(agent);
       try {
         if (this.stores.deleteAgent) {
           await this.stores.deleteAgent({
@@ -5398,36 +5588,6 @@ export class WorkspaceManagementService {
         throw new ManagementError('invalid_request', 'The schedule Agent could not be reassigned.');
       }
     }
-    if (operation.kind === 'update_agent' && operation.patch.enabled === false) {
-      const references = await this.stores.config.getAgentReferences(operation.agentId);
-      const changed: ManagementObjectRef[] = [];
-      for (const grant of references.channelGrants) {
-        await this.stores.config.deleteAgentChannelGrant(
-          grant.workspaceId,
-          grant.channelId,
-          operation.agentId,
-        );
-        changed.push({
-          kind: 'channel_grant',
-          id: grantKey(grant.workspaceId, grant.channelId, operation.agentId),
-          revision: 0,
-        });
-      }
-      const agent = await this.updateAgent(
-        actor,
-        operation.agentId,
-        withAgentCredentialRequirement(
-          projectManagementAgentPatch(
-            await this.stores.config.getAgent(operation.agentId),
-            operation.patch,
-          ),
-          prepared?.agentCredentialIncarnation,
-        ),
-        operation.expectedRevision,
-      );
-      changed.push({ kind: 'agent', id: agent.id, revision: agent.revision });
-      return mutationForChanged(changed);
-    }
     const freshPrepared = await this.prepareItem(actor, operation, proposalId);
     assertPreparedAgentIdentity(prepared ?? freshPrepared, freshPrepared);
     const immediatePrepared = prepared?.agentCredentialIncarnation
@@ -5456,10 +5616,12 @@ export class WorkspaceManagementService {
       return { [`provider:${operation.providerId}`]: await this.providerRevision(operation.providerId) };
     }
     if (operation.kind === 'request_setup') {
-      const setup = await this.resolveSetupTarget(operation.target);
-      return setup.target.kind === 'provider_credential'
-        ? { [setup.target.targetId]: setup.target.expectedRevision }
-        : { [`agent:${setup.target.agentId}`]: setup.target.expectedRevision };
+      const { target } = operation;
+      if (target.kind === 'provider_credential') {
+        return { [`provider:${target.providerId}`]: await this.providerRevision(target.providerId) };
+      }
+      if (!target.agentId) throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
+      return { [`agent:${target.agentId}`]: (await this.stores.config.getAgent(target.agentId)).revision };
     }
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
@@ -5474,6 +5636,9 @@ export class WorkspaceManagementService {
           target[`channel_grant:${grantKey(grant.workspaceId, grant.channelId, operation.agentId)}`] =
             current?.revision ?? 0;
         }
+      }
+      if (operation.kind === 'update_agent' && (operation.patch.mcpServers || operation.patch.apiConnections)) {
+        target[`agent_connections:${operation.agentId}`] = await this.agentConnectionsRevision(operation.agentId);
       }
       return target;
     }
@@ -5531,6 +5696,9 @@ export class WorkspaceManagementService {
     if (key.startsWith('agent:')) {
       return (await optionalAgent(this.stores.config, key.slice('agent:'.length)))?.revision ?? 0;
     }
+    if (key.startsWith('agent_connections:')) {
+      return this.agentConnectionsRevision(key.slice('agent_connections:'.length));
+    }
     if (key.startsWith('channel:')) {
       const [workspaceId, channelId] = parseChannelKey(key.slice('channel:'.length));
       return (await this.stores.config.getChannel(workspaceId, channelId))?.revision ?? 0;
@@ -5558,6 +5726,24 @@ export class WorkspaceManagementService {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
     }
     throw new ManagementError('invalid_request', 'Unknown revision target.');
+  }
+
+  /**
+   * Connection accounts change without an Agent revision, so a held edit of
+   * an Agent's connections also fences on every account bound to it.
+   */
+  private async agentConnectionsRevision(agentId: string): Promise<number> {
+    const [bindings, installations] = await Promise.all([
+      this.stores.config.listAgentConnectionBindings(agentId),
+      this.stores.config.listWorkspaceInstallations(),
+    ]);
+    const accounts = (await Promise.all(installations.map(({ workspaceId }) =>
+      this.stores.config.listConnectionAccounts(workspaceId)))).flat();
+    const bound = bindings.map((binding) => {
+      const account = accounts.find(({ id }) => id === binding.connectionAccountId);
+      return [binding.connectionAccountId, binding.enabled, account?.revision ?? 0, account?.lifecycle ?? null];
+    });
+    return Number.parseInt(createHash('sha256').update(canonicalJson(bound)).digest('hex').slice(0, 12), 16);
   }
 
   private async providerRevision(providerId: ManagedProviderId): Promise<number> {
@@ -6217,7 +6403,7 @@ function uniqueModelChoices(
 }
 
 function selfCapabilityHealth(
-  agent: CustomAgentConfig,
+  agent: Pick<CustomAgentConfig, 'mcpServers' | 'apiConnections' | 'repositories'>,
   grants: AgentChannelGrant[],
   agentConnections: NonNullable<ManagementWorkspaceSnapshot['agents'][number]['connections']>,
 ): NonNullable<ManagementWorkspaceSnapshot['selfManagement']>['capabilityHealth'] {
@@ -6477,12 +6663,19 @@ function normalizeAgentIdentityName(name: string): string {
 function agentPatchMatches(agent: CustomAgentConfig, patch: ManagementAgentPatch): boolean {
   const before = { ...agent, revision: agent.revision - 1 };
   const expected = applyAgentPatch(before, projectManagementAgentPatch(before, patch));
-  expected.mcpServers = reconcileMcpCredentialRefs(agent.mcpServers, expected.mcpServers);
-  expected.apiConnections = reconcileApiCredentialRefs(
-    agent.apiConnections,
-    expected.apiConnections,
-  );
   return canonicalJson(agent) === canonicalJson(expected);
+}
+
+function agentPatchWithConnectionIds(
+  connections: AgentConnections,
+  patch: ManagementAgentPatch,
+): ManagementAgentPatch {
+  const { mcpServers, apiConnections } = patch;
+  return {
+    ...patch,
+    ...(mcpServers ? { mcpServers: withAgentConnectionIds(connections, 'mcp', mcpServers) } : {}),
+    ...(apiConnections ? { apiConnections: withAgentConnectionIds(connections, 'api', apiConnections) } : {}),
+  };
 }
 
 function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
@@ -6563,7 +6756,8 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
       );
     }
     if (operation.kind !== 'create_agent') continue;
-    assertNoLegacyMetaAdsConnections(operation.agent.mcpServers);
+    const reviewed = operation.agent.mcpServers.find(isMcpToolReviewRequired);
+    if (reviewed) throw reviewedConnectorError(reviewed);
     if (operation.agent.mcpServers.length || operation.agent.apiConnections.length ||
         operation.agent.repositories.length) {
       throw new ManagementError(
@@ -6574,12 +6768,13 @@ function assertBaseAgentCreationContract(operations: readonly ManagementOperatio
   }
 }
 
-function assertNoLegacyMetaAdsConnections(
-  connections: readonly Pick<CustomAgentConfig['mcpServers'][number], 'presetId' | 'url'>[] | undefined,
-): void {
-  if (connections?.some(isMetaAdsMcpConnection)) {
-    throw new MetaAdsCatalogSetupRequiredError();
-  }
+/** Reviewed connectors are added in Admin, where a person reviews their tool access. */
+function reviewedConnectorError(
+  connection: Pick<CustomAgentConfig['mcpServers'][number], 'presetId' | 'url'>,
+): AgentWriteRuleError {
+  return isMetaAdsMcpConnection(connection)
+    ? new MetaAdsCatalogSetupRequiredError()
+    : new AgentWriteRuleError(REVIEWED_CONNECTOR_SETUP_MESSAGE);
 }
 
 const CREATION_CALL_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([

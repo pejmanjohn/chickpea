@@ -186,6 +186,30 @@ test('a managed account whose provider fails stays fail-closed, is reported by a
   assert.equal((await a.state()).accounts.connection_managed, 'revoked');
 });
 
+test('an account revoked but still holding OAuth settings is reported by its own code and finished on the next call', async (t) => {
+  t.mock.method(console, 'warn', () => undefined);
+  const a = await installation(t, 'inst_revoke_oauth');
+  const providers = createManagedConnectionProviderRegistry([provider([])]);
+  const oauthKeys: readonly string[] = mcpOAuthSettingKeys({ agentId: 'connection_mcp', connectionId: 'account' });
+  const apply = a.settings.applySettingsPatch.bind(a.settings);
+  const unavailable = t.mock.method(a.settings, 'applySettingsPatch', (patch: Parameters<typeof apply>[0]) => {
+    if (patch.delete?.some((key) => oauthKeys.includes(key))) throw new Error('settings unavailable');
+    return apply(patch);
+  });
+
+  const first = await revokeInstallationConnections(a.env, { config: a.config, settings: a.settings, providers });
+  assert.deepEqual(first.accounts.filter(({ outcome }) => outcome === 'failed').map(({ connectionAccountId, code }) => [connectionAccountId, code]),
+    [['connection_mcp', 'oauth_settings_cleanup_failed']]);
+  assert.equal((await a.state()).accounts.connection_mcp, 'revoked', 'the account is already unusable');
+  assert.equal(first.done, false);
+
+  unavailable.mock.restore();
+  const second = await revokeInstallationConnections(a.env, { config: a.config, settings: a.settings, providers });
+  assert.equal(second.done, true);
+  assert.equal(second.accounts.find(({ connectionAccountId }) => connectionAccountId === 'connection_mcp')?.outcome, 'already_revoked');
+  assert.deepEqual((await a.state()).secrets, [undefined, undefined, undefined], 'the retry deletes the OAuth settings');
+});
+
 test('a host may revoke only one member\'s connections, or the listed ones, and standalone is refused', async (t) => {
   const a = await installation(t, 'inst_revoke_scoped');
   const deleted: string[] = [];

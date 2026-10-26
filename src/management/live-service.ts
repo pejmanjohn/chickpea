@@ -1,5 +1,6 @@
 import { withBetterAuthAccessRevoker } from '../auth/better-auth-environment.ts';
 import {
+  getAgentSnapshotStore,
   getConfigStore,
   getIdentityStore,
   getManagementStore,
@@ -27,6 +28,9 @@ import { activeModelCatalogSnapshot } from '../model-catalog/index.ts';
 import { managedProviderAvailability } from '../connections/managed.ts';
 import { resolveManagedAuthorizationProviderContext } from '../connections/managed-provider-context.ts';
 import { ConnectionAccountService } from '../connections/store.ts';
+import { platformRepositoryGrants } from '../config/agent-write-rules.ts';
+import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
+import { agentCredentialConfigurationBinding } from '../config/connection-credential-binding.ts';
 import { createPlatformProductTelemetry } from '../telemetry/platform.ts';
 import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import type { IdentityStore } from '../identity/types.ts';
@@ -131,6 +135,12 @@ export function createLiveWorkspaceManagementService(
   return new WorkspaceManagementService({
     identity: overrides.identity ?? identity,
     config,
+    connectionAccounts: new ConnectionAccountService({
+      config: config as ConfigStore,
+      settings,
+      productTelemetry,
+    }),
+    repositoryGrants: (grants, stored) => platformRepositoryGrants(settings, env, grants, stored),
     management,
     memory: getMemoryStateStore(env),
     routines: getRoutineStore(env),
@@ -204,7 +214,7 @@ export function createLiveWorkspaceManagementService(
     testMcpConnection: (agentId, connectionId, actor) => testManagedMcpConnection({
       agentId,
       connectionId,
-      ...(actor ? { actor } : {}),
+      actor,
       ...(env ? { env } : {}),
       config: config as ConfigStore,
       identity,
@@ -374,15 +384,21 @@ export function createLiveWorkspaceManagementService(
         expectedRevision,
         expectedCredentialIncarnation,
       });
-      return config.deleteAgentWithMemory
-        ? config.deleteAgentWithMemory(
+      const cleanupScope = agentCredentialConfigurationBinding(expectedCredentialIncarnation);
+      await stageAgentSecretCleanup(await config.getAgent(agentId), env, settings, cleanupScope);
+      const deleted = config.deleteAgentWithMemory
+        ? await config.deleteAgentWithMemory(
             agentId,
             idempotencyKey,
             expectedRevision,
             expectedCredentialIncarnation,
           )
-        : config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
+        : await config.deleteAgent(agentId, expectedRevision, expectedCredentialIncarnation);
+      await finishAgentSecretCleanup(agentId, env, settings, cleanupScope);
+      return deleted;
     },
+    agentLiveThreadCount: async (agentId) =>
+      (await getAgentSnapshotStore(env).listLiveRootsByAgent(agentId)).length,
     withBetterAuthAccessRevoker: async (use) => withBetterAuthAccessRevoker(
       { control: await identity.getAuthControl(), platformEnv: env },
       use,

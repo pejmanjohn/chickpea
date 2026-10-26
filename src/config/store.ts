@@ -2391,10 +2391,9 @@ export class ConfigStoreLogic {
         avatar: { ...avatar, ...(history.length ? { generatedSeedHistory: history } : {}) },
       };
     }
+    // A disabled Agent keeps its Channel grants; routing treats it as
+    // unavailable until it is enabled again.
     validateUserAgent(next);
-    if (current.enabled && !next.enabled) {
-      this.requireAgentHasNoBlockingReferences(agentId);
-    }
     const write = this.db.run(
       `UPDATE config_agents
        SET name = ?, description = ?, instructions = ?, enabled = ?, lifecycle = ?,

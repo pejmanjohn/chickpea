@@ -1276,6 +1276,13 @@ export class ManagementError extends Error {
   }
 }
 
+/** An Agent write that Admin refuses too; the message says what to change. */
+export class AgentWriteRuleError extends ManagementError {
+  constructor(message: string) {
+    super('invalid_request', message);
+  }
+}
+
 /** A successful, non-mutating transfer instruction for a user Agent. */
 export class ChickpeaHandoffRequired extends Error {
   readonly name = 'ChickpeaHandoffRequired';

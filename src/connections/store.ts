@@ -28,6 +28,8 @@ import type {
   AgentConnectionBinding,
   AgentScheduleReference,
   ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
   ConnectionAccountPolicy,
   ManagedAccountResourceConstraints,
   ManagedBindingResourceConstraints,
@@ -69,6 +71,10 @@ export class ManagedConnectionConflictError extends Error {
 
 export class ConnectionScheduleConflictError extends Error {
   readonly name = 'ConnectionScheduleConflictError';
+}
+
+export class ConnectionCredentialEntryUnavailableError extends Error {
+  readonly name = 'ConnectionCredentialEntryUnavailableError';
 }
 
 /** Browser-safe projection shared by every Admin response carrying an account. */
@@ -124,11 +130,20 @@ export class ManagedResourceSelectionError extends Error {
   }
 }
 
+/** The account is revoked, but its OAuth settings remain. Revoking again finishes the cleanup. */
+export class ConnectionOAuthCleanupError extends Error {
+  readonly name = 'ConnectionOAuthCleanupError';
+
+  constructor(cause: unknown) {
+    super('The connection is disconnected, but its stored sign-in remains. Retry to finish cleanup.', { cause });
+  }
+}
+
 /**
  * After a revoke, a connection's OAuth settings (its client registration,
  * pending authorization and tokens) are deleted behind a durable cleanup
- * marker, so a retry after a failure finishes the job. Admin's revoke and a
- * host's revocation both run it.
+ * marker, so a retry after a failure finishes the job. Every revoke runs it,
+ * as does a policy change that resets the credential.
  */
 export async function deleteRevokedConnectionOAuthSettings(
   account: ConnectionAccount,
@@ -148,8 +163,97 @@ export async function deleteRevokedConnectionOAuthSettings(
   }
 }
 
+/** Whether a native account needs a stored credential or a sign-in before an Agent can use it. */
+export function nativeCredentialRequired(
+  policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy,
+): boolean {
+  return policy.kind === 'api' || policy.authMode !== 'none' ||
+    (policy.credentialHeaderName !== undefined && policy.credentialOptional !== true);
+}
+
 export class ConnectionAccountService {
   constructor(private readonly dependencies: ConnectionAccountServiceDependencies) {}
+
+  /**
+   * Replace a native account's label and policy for the Agent it belongs to.
+   * A policy whose credential no longer applies loses its stored credential
+   * and OAuth tokens and waits for setup again.
+   */
+  async updateForAgent(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    label: string;
+    policy: ConnectionAccountApiPolicy | ConnectionAccountMcpPolicy;
+    identity?: McpConnectionIdentity;
+    resetCredential: boolean;
+  }): Promise<ConnectionAccount> {
+    const { account } = await this.requireAgentOwnedAccount(input);
+    if (account.revision !== input.expectedRevision) {
+      throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, account.revision);
+    }
+    if (account.policy.kind !== input.policy.kind || account.lifecycle === 'revoked') {
+      throw new Error('Only a connected native account can change its policy');
+    }
+    if (input.resetCredential) {
+      await tombstoneConnectionAccountSecret(account.secretRefId, undefined, this.dependencies.settings);
+      await deleteRevokedConnectionOAuthSettings(account, undefined, this.dependencies.settings);
+    }
+    const { identity: _identity, ...withoutIdentity } = account;
+    return this.dependencies.config.putConnectionAccount({
+      ...withoutIdentity,
+      label: input.label,
+      policy: input.policy,
+      ...(input.identity ? { identity: input.identity } : {}),
+      lifecycle: !input.resetCredential
+        ? account.lifecycle
+        : nativeCredentialRequired(input.policy) ? 'pending' : 'ready',
+    }, account.revision);
+  }
+
+  /**
+   * Store the key a native account is waiting for and mark it ready, fenced on
+   * the revision the caller read.
+   */
+  async setCredentialForAgent(input: {
+    principal: AuthPrincipal;
+    agentId: string;
+    connectionAccountId: string;
+    expectedRevision: number;
+    credential: string;
+  }): Promise<ConnectionAccount> {
+    const { account, binding } = await this.requireAgentOwnedAccount(input);
+    const { policy } = account;
+    const awaitsCredential = account.lifecycle !== 'ready' && account.lifecycle !== 'revoked' && (
+      policy.kind === 'api'
+        ? policy.authMode === 'credential'
+        : policy.kind === 'mcp' && policy.authMode !== 'oauth' &&
+          (policy.authMode === 'bearer' || policy.credentialHeaderName !== undefined)
+    );
+    if (!awaitsCredential) {
+      throw new ConnectionCredentialEntryUnavailableError(`Connection account ${account.id} is not waiting for a credential`);
+    }
+    if (account.revision !== input.expectedRevision) {
+      throw new ConnectionAccountRevisionConflictError(account.id, input.expectedRevision, account.revision);
+    }
+    await saveConnectionAccountSecret(account.secretRefId, input.credential, undefined, this.dependencies.settings);
+    let ready: ConnectionAccount;
+    try {
+      ready = await this.dependencies.config.putConnectionAccount({ ...account, lifecycle: 'ready' }, account.revision);
+    } catch (error) {
+      // After a lost revision race the slot may already hold another writer's key.
+      if (!(error instanceof ConnectionAccountRevisionConflictError)) {
+        await tombstoneConnectionAccountSecret(account.secretRefId, undefined, this.dependencies.settings)
+          .catch((cleanupError: unknown) => {
+            throw new AggregateError([error, cleanupError], 'Connection setup failed and its credential could not be removed');
+          });
+      }
+      throw error;
+    }
+    this.captureConnectionReady(account.lifecycle, ready, binding);
+    return ready;
+  }
 
   async createForAgent(input: {
     principal: AuthPrincipal;
@@ -162,6 +266,8 @@ export class ConnectionAccountService {
     identity?: McpConnectionIdentity;
     policy: ConnectionAccountPolicy;
     credential?: string;
+    /** A native account without its credential waits for a setup link (pending), not an Admin re-entry. */
+    pendingSetup?: boolean;
     allowedCapabilities?: string[];
     resourceConstraints?: ManagedBindingResourceConstraints;
   }): Promise<{ account: ConnectionAccount; binding: AgentConnectionBinding }> {
@@ -512,6 +618,7 @@ export class ConnectionAccountService {
           'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
         );
       }
+      await this.deleteOAuthSettings(account);
       return account;
     }
 
@@ -556,7 +663,16 @@ export class ConnectionAccountService {
         'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
       );
     }
+    await this.deleteOAuthSettings(revoked);
     return revoked;
+  }
+
+  private async deleteOAuthSettings(account: ConnectionAccount): Promise<void> {
+    try {
+      await deleteRevokedConnectionOAuthSettings(account, undefined, this.dependencies.settings);
+    } catch (cause) {
+      throw new ConnectionOAuthCleanupError(cause);
+    }
   }
 
   async disconnectForAgent(input: {
@@ -789,6 +905,7 @@ export class ConnectionAccountService {
     identity?: McpConnectionIdentity;
     policy: ConnectionAccountPolicy;
     credential?: string;
+    pendingSetup?: boolean;
   }) {
     requirePermission(
       input.principal,
@@ -827,9 +944,9 @@ export class ConnectionAccountService {
       secretRefId,
       lifecycle: policy.kind === 'managed'
         ? requiresManagedResourceSelection ? 'pending' as const : 'ready' as const
-        : input.credential || input.policy.kind === 'mcp' && input.policy.authMode === 'none'
+        : input.credential || !nativeCredentialRequired(policy)
           ? 'ready' as const
-          : 'needs_attention' as const,
+          : input.pendingSetup ? 'pending' as const : 'needs_attention' as const,
     };
   }
 

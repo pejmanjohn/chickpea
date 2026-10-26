@@ -2,23 +2,29 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import * as v from 'valibot';
 
+import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
-  apiCredentialBinding,
-  mcpCredentialBinding,
-} from '../src/config/connection-credential-binding.ts';
+  resolveConnectionAccountSecret,
+  saveConnectionAccountSecret,
+} from '../src/config/connector-secrets.ts';
 import type {
-  ApiConnectionConfig,
+  ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
   CustomAgentConfig,
   McpConnectionConfig,
+  McpConnectionIdentity,
   McpToolInputSchemaProjection,
   RepositoryGrant,
   SkillConfig,
 } from '../src/config/types.ts';
 import { allowedToolsAfterMcpDiscovery } from '../src/config/mcp-access.ts';
+import { ConnectionAccountService } from '../src/connections/store.ts';
 import {
   API_CLIENT_FIELDS,
   MCP_CLIENT_FIELDS,
   mcpConnectionsAfterWrite,
+  type ManagementApiConnection,
   type ManagementMcpConnection,
 } from '../src/management/agent-connections.ts';
 import type { WorkspaceRecipe, WorkspaceRecipePreview } from '../src/management/recipes.ts';
@@ -56,59 +62,71 @@ function schemaProjection(seed: string): McpToolInputSchemaProjection {
   return { propertyNames: ['query'], accountFields: [], ambiguous: false, fingerprint: seed.repeat(64) };
 }
 
-const tracker: McpConnectionConfig = {
-  id: 'tracker',
-  displayName: 'Tracker',
-  url: 'https://mcp.tracker.example/mcp',
-  transport: 'streamable-http',
-  authMode: 'bearer',
-  headerNames: ['X-Api-Key'],
-  credentialHeaderName: 'X-Api-Key',
-  credentialValuePrefix: 'Token ',
-  credentialOptional: true,
-  enabled: true,
-  lifecycleStatus: 'ready',
-  statusText: 'Connected · 2 tools',
-  discoveredTools: [
-    { name: 'search', readOnlyHint: true, inputSchema: schemaProjection('a') },
-    { name: 'file_issue', inputSchema: schemaProjection('b') },
-  ],
-  toolAccessMode: 'review',
-  allowedTools: ['search'],
-  lastCheckedAt: 1_700_000_000_000,
+/** A connection as Admin stores it, with the server-owned state a management client never writes. */
+interface ConnectionSeed<TPolicy extends ConnectionAccountMcpPolicy | ConnectionAccountApiPolicy =
+  ConnectionAccountMcpPolicy | ConnectionAccountApiPolicy> {
+  providerId: string;
+  label: string;
+  policy: TPolicy;
+  identity?: McpConnectionIdentity;
+  credential?: string;
+  lifecycle?: ConnectionAccount['lifecycle'];
+}
+
+const tracker: ConnectionSeed<ConnectionAccountMcpPolicy> = {
+  providerId: 'tracker',
+  label: 'Tracker',
+  policy: {
+    kind: 'mcp',
+    url: 'https://mcp.tracker.example/mcp',
+    transport: 'streamable-http',
+    authMode: 'none',
+    headerNames: ['X-Api-Key'],
+    credentialHeaderName: 'X-Api-Key',
+    credentialValuePrefix: 'Token ',
+    discoveredTools: [
+      { name: 'search', readOnlyHint: true, inputSchema: schemaProjection('a') },
+      { name: 'file_issue', inputSchema: schemaProjection('b') },
+    ],
+    allowedTools: ['search'],
+  },
   identity: { accountName: 'tracker-bot' },
+  credential: 'tracker-key',
 };
 
-const notion: McpConnectionConfig = {
-  id: 'notion',
-  displayName: 'Notion',
-  url: 'https://mcp.notion.com/mcp',
-  transport: 'streamable-http',
-  authMode: 'oauth',
-  headerNames: [],
-  enabled: true,
-  lifecycleStatus: 'ready',
-  statusText: 'Connected',
-  discoveredTools: [{ name: 'search', inputSchema: schemaProjection('c') }],
-  allowedTools: ['search'],
-  oauthScope: 'read',
-  oauthAttemptId: 'attempt_1',
+const notion: ConnectionSeed<ConnectionAccountMcpPolicy> = {
+  providerId: 'notion',
+  label: 'Notion',
+  policy: {
+    kind: 'mcp',
+    url: 'https://mcp.notion.com/mcp',
+    transport: 'streamable-http',
+    authMode: 'oauth',
+    headerNames: [],
+    discoveredTools: [{ name: 'search', inputSchema: schemaProjection('c') }],
+    toolAccessMode: 'review',
+    allowedTools: ['search'],
+    oauthScope: 'read',
+    oauthAttemptId: '6f1c2a4e-8b3d-4c5e-9f70-1a2b3c4d5e6f',
+  },
   identity: { workspaceName: 'Northstar' },
+  lifecycle: 'ready',
 };
 
-const billing: ApiConnectionConfig = {
-  id: 'billing',
-  displayName: 'Billing',
-  allowedHosts: ['billing.example.test'],
-  pathPrefixes: ['/v1/'],
-  headerName: 'Authorization',
-  headerValuePrefix: 'Bearer ',
-  allowedMethods: ['GET'],
-  enabled: true,
-  authMode: 'credential',
-  lifecycleStatus: 'ready',
-  statusText: 'Connected',
+const billing: ConnectionSeed<ConnectionAccountApiPolicy> = {
+  providerId: 'billing',
+  label: 'Billing',
+  policy: {
+    kind: 'api',
+    allowedHosts: ['billing.example.test'],
+    pathPrefixes: ['/v1/'],
+    headerName: 'Authorization',
+    headerValuePrefix: 'Bearer ',
+    allowedMethods: ['GET'],
+    authMode: 'credential',
+  },
   identity: { accountName: 'billing@northstar.example' },
+  credential: 'sk-billing',
 };
 
 const skills: SkillConfig[] = [
@@ -216,6 +234,78 @@ async function seedAgent(
   });
 }
 
+function ownerPrincipal(f: Fixture): AuthPrincipal {
+  return {
+    userId: f.owner.user.id,
+    membershipId: f.owner.membership.id,
+    organizationId: f.owner.membership.organizationId,
+    role: 'owner',
+    authenticatorKind: 'test',
+    credentialId: 'round-trip-test',
+    correlationId: 'round-trip-test',
+    machine: false,
+  };
+}
+
+let seededIds = 0;
+
+/** Connects an account to the Agent the way Admin does, with its server-owned state already in place. */
+async function connect(f: Fixture, agentId: string, seed: ConnectionSeed): Promise<ConnectionAccount> {
+  const workspaceId = f.owner.binding.slackTeamId;
+  // Updates and removals find the account through the workspace installation.
+  await f.config.ensureWorkspaceInstallation({
+    workspaceId, teamId: workspaceId, transportMode: 'gateway', appId: 'A_ROUND_TRIP', botUserId: 'U_BOT',
+    gatewayBindingId: 'binding_round_trip',
+  });
+  const service = new ConnectionAccountService({
+    config: f.config,
+    settings: f.settings,
+    // Ascending ids keep seeded connections in the order they were connected.
+    randomId: () => (++seededIds).toString(16).padStart(32, '0'),
+  });
+  const { account } = await service.createForAgent({
+    principal: ownerPrincipal(f),
+    agentId,
+    workspaceId,
+    ownerKind: 'team',
+    providerId: seed.providerId,
+    label: seed.label,
+    policy: seed.policy,
+    ...(seed.identity ? { identity: seed.identity } : {}),
+    ...(seed.credential ? { credential: seed.credential } : {}),
+    pendingSetup: true,
+  });
+  return seed.lifecycle
+    ? f.config.putConnectionAccount({ ...account, lifecycle: seed.lifecycle }, account.revision)
+    : account;
+}
+
+/** The connection accounts bound to the Agent, revoked ones included, by provider id. */
+async function accountsOf(f: Fixture, agentId: string): Promise<Map<string, ConnectionAccount>> {
+  const bound = new Set((await f.config.listAgentConnectionBindings(agentId))
+    .map(({ connectionAccountId }) => connectionAccountId));
+  return new Map((await f.config.listConnectionAccounts(f.owner.binding.slackTeamId))
+    .filter(({ id }) => bound.has(id))
+    .map((account) => [account.providerId, account]));
+}
+
+async function accountOf(f: Fixture, agentId: string, providerId: string): Promise<ConnectionAccount> {
+  const account = (await accountsOf(f, agentId)).get(providerId);
+  assert.ok(account, `${providerId} is a connection account bound to ${agentId}`);
+  return account;
+}
+
+function secretOf(f: Fixture, account: ConnectionAccount): Promise<string | undefined> {
+  return resolveConnectionAccountSecret(account, undefined, f.settings);
+}
+
+/** What a completed setup link leaves behind: the credential, and the account in use again. */
+async function completeSetup(f: Fixture, account: ConnectionAccount, credential: string): Promise<void> {
+  await saveConnectionAccountSecret(account.secretRefId, credential, undefined, f.settings);
+  await f.config.putConnectionAccount({ ...account, lifecycle: 'ready', identity: { accountName: 'setup' } },
+    account.revision);
+}
+
 async function withFixture(
   suffix: string,
   run: (f: Fixture) => Promise<void>,
@@ -259,11 +349,13 @@ test('inspect, patch one connection field, apply and inspect again keeps every s
     const stored = await seedAgent(f, 'agent_ops', {
       name: 'Ops',
       skills,
-      mcpServers: [tracker, notion],
-      apiConnections: [billing],
       repositories: [allAcme, docsRepository],
     });
+    for (const seed of [tracker, notion, billing]) await connect(f, stored.id, seed);
+    const accountsBefore = await accountsOf(f, stored.id);
     const before = await inspect(f, stored.id);
+    assert.deepEqual(before.mcpServers.map(({ id }) => id), ['tracker', 'notion']);
+    assert.deepEqual(before.apiConnections.map(({ id }) => id), ['billing']);
     for (const connection of [...before.mcpServers, ...before.apiConnections]) {
       for (const key of SERVER_OWNED_KEYS) {
         assert.equal(key in connection, false, `inspection omits ${connection.id}.${key}`);
@@ -289,20 +381,21 @@ test('inspect, patch one connection field, apply and inspect again keeps every s
     assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'],
       JSON.stringify(result.outcomes));
 
+    const accountsAfter = await accountsOf(f, stored.id);
+    const renamed = accountsAfter.get('tracker')!;
+    const previous = accountsBefore.get('tracker')!;
+    assert.deepEqual(
+      [renamed.id, renamed.secretRefId, renamed.label, renamed.lifecycle, renamed.identity, renamed.policy],
+      [previous.id, previous.secretRefId, 'Issue tracker', 'ready', tracker.identity, tracker.policy],
+      'the renamed account keeps its secret slot, status, identity, header policy and discovered tool schemas',
+    );
+    assert.equal(await secretOf(f, renamed), tracker.credential);
+    assert.deepEqual(accountsAfter.get('notion'), accountsBefore.get('notion'),
+      'the OAuth connection in review mode is not written');
+    assert.deepEqual(accountsAfter.get('billing'), accountsBefore.get('billing'),
+      'the API connection is not written');
+    assert.equal(await secretOf(f, accountsAfter.get('billing')!), billing.credential);
     const after = await f.config.getAgent(stored.id);
-    for (const [label, previous, current] of [
-      ['tracker', stored.mcpServers[0]!, after.mcpServers[0]!],
-      ['notion', stored.mcpServers[1]!, after.mcpServers[1]!],
-    ] as const) {
-      assert.equal(current.credentialRef, previous.credentialRef, `${label} keeps its secret namespace`);
-      assert.equal(mcpCredentialBinding(current), mcpCredentialBinding(previous),
-        `${label} keeps its credential binding and header semantics`);
-    }
-    assert.deepEqual(after.mcpServers[0], { ...stored.mcpServers[0], displayName: 'Issue tracker' });
-    assert.deepEqual(after.mcpServers[1], stored.mcpServers[1]);
-    assert.equal(after.apiConnections[0]!.credentialRef, stored.apiConnections[0]!.credentialRef);
-    assert.equal(apiCredentialBinding(after.apiConnections[0]!), apiCredentialBinding(stored.apiConnections[0]!));
-    assert.deepEqual(after.apiConnections, stored.apiConnections);
     assert.deepEqual(after.skills, stored.skills);
     assert.deepEqual(after.repositories, stored.repositories);
 
@@ -313,49 +406,55 @@ test('inspect, patch one connection field, apply and inspect again keeps every s
       configurationGeneration: before.configurationGeneration! + 1,
       mcpServers: before.mcpServers.map((connection) =>
         connection.id === 'tracker' ? { ...connection, displayName: 'Issue tracker' } : connection),
+      connections: before.connections?.map((connection) =>
+        connection.providerId === 'tracker' ? { ...connection, label: 'Issue tracker' } : connection),
     });
   }));
 
 test('a client cannot forge connection status or discovered tools', () =>
   withFixture('round-trip-forgery', async (f) => {
-    const pendingTracker: McpConnectionConfig = {
-      ...tracker,
-      lifecycleStatus: 'pending',
-      statusText: 'Setup required',
-      discoveredTools: [{ name: 'search', inputSchema: schemaProjection('a') }],
-    };
-    const stored = await seedAgent(f, 'agent_guarded', { mcpServers: [pendingTracker] });
+    const { credential: _credential, ...withoutCredential } = tracker;
+    const stored = await seedAgent(f, 'agent_guarded');
+    const seeded = await connect(f, stored.id, {
+      ...withoutCredential,
+      policy: {
+        ...tracker.policy,
+        discoveredTools: [{ name: 'search', inputSchema: schemaProjection('a') }],
+        toolAccessMode: 'review',
+      },
+    });
+    assert.equal(seeded.lifecycle, 'pending', 'the tracker waits for its header credential');
     const forgedTools = [
       { name: 'search', inputSchema: schemaProjection('f') },
       { name: 'delete_everything', inputSchema: schemaProjection('f') },
     ];
 
-    const clientConnection = {
-      id: 'tracker', displayName: 'Tracker', url: tracker.url, transport: 'streamable-http',
-      authMode: 'bearer', headerNames: ['X-Api-Key'], enabled: true, allowedTools: ['search'],
-    };
+    const current = await inspect(f, stored.id);
+    const [clientConnection] = current.mcpServers;
+    assert.ok(clientConnection);
     const accepts = (connection: Record<string, unknown>) => applyWorkspaceChangesZodSchema.safeParse({
       idempotencyKey: 'forge-over-mcp',
       operations: [{
         itemId: 'forge',
         kind: 'update_agent',
         agentId: stored.id,
-        expectedRevision: stored.revision,
+        expectedRevision: current.revision,
         patch: { mcpServers: [connection] },
       }],
     }).success;
-    assert.equal(accepts(clientConnection), true, 'the MCP schema accepts the client fields');
+    assert.equal(accepts({ ...clientConnection }), true, 'the MCP schema accepts the client fields');
     assert.equal(accepts({ ...clientConnection, lifecycleStatus: 'ready' }), false,
       'the MCP schema refuses lifecycleStatus');
     assert.equal(accepts({ ...clientConnection, discoveredTools: forgedTools }), false,
       'the MCP schema refuses discoveredTools');
 
     const forgedExisting: McpConnectionConfig = {
-      ...pendingTracker,
+      ...clientConnection,
       lifecycleStatus: 'ready',
       statusText: 'Connected',
       discoveredTools: forgedTools,
       toolAccessMode: 'auto',
+      identity: { accountName: 'someone-else' },
     };
     const forgedNew: McpConnectionConfig = {
       id: 'wiki',
@@ -378,23 +477,28 @@ test('a client cannot forge connection status or discovered tools', () =>
         itemId: 'forge',
         kind: 'update_agent',
         agentId: stored.id,
-        expectedRevision: stored.revision,
+        expectedRevision: current.revision,
         patch: { mcpServers: [forgedExisting, forgedNew] },
       }],
     }) as ManagementApplyResult;
     assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'],
       JSON.stringify(result.outcomes));
 
-    const [existing, added] = (await f.config.getAgent(stored.id)).mcpServers;
-    assert.equal(existing!.lifecycleStatus, 'pending');
-    assert.equal(existing!.statusText, 'Setup required');
-    assert.deepEqual(existing!.discoveredTools, pendingTracker.discoveredTools);
-    assert.equal(existing!.toolAccessMode, 'review');
-    assert.equal(existing!.credentialRef, stored.mcpServers[0]!.credentialRef);
-    assert.equal(added!.lifecycleStatus, 'pending', 'a new bearer connection waits for its setup');
-    assert.deepEqual(added!.discoveredTools, [{ name: 'search' }],
+    const accounts = await accountsOf(f, stored.id);
+    assert.deepEqual(accounts.get('tracker'), seeded,
+      'the existing account keeps its status, discovered tools, review mode, identity and secret slot');
+    const added = accounts.get('wiki');
+    assert.ok(added?.policy.kind === 'mcp', 'the new connection is an MCP account');
+    assert.equal(added.lifecycle, 'pending', 'a new bearer connection waits for its setup');
+    assert.deepEqual(added.policy.discoveredTools, [{ name: 'search' }],
       'a new connection starts from the tools the client approved');
-    assert.equal(added!.identity, undefined);
+    assert.equal(added.policy.toolAccessMode, undefined);
+    assert.equal(added.identity, undefined);
+    assert.deepEqual((await inspect(f, stored.id)).connectionStatus.map(({ id, lifecycleStatus, statusText }) =>
+      [id, lifecycleStatus, statusText]).sort(), [
+      ['tracker', 'pending', 'Setup required'],
+      ['wiki', 'pending', 'Setup required'],
+    ]);
   }));
 
 const wikiServer: ManagementMcpConnection = {
@@ -450,7 +554,8 @@ test('a call that creates an Agent configures it at whatever revision publishing
       ['applied', 'applied', 'setup_required'], JSON.stringify(result.outcomes));
     const agent = await f.config.getAgent('agent_wiki');
     assert.equal(agent.revision, 3, 'creation, publication, then the connection');
-    assert.deepEqual(agent.mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]), [['wiki', 'pending']]);
+    assert.deepEqual([...(await accountsOf(f, agent.id)).values()].map(({ providerId, lifecycle }) =>
+      [providerId, lifecycle]), [['wiki', 'pending']]);
   } finally {
     f.close();
   }
@@ -500,10 +605,9 @@ async function seedRecipeSource(f: Fixture): Promise<{ researcher: CustomAgentCo
     model: 'openai/gpt-5.6-terra',
     modelEffort: 'high',
     skills,
-    mcpServers: [tracker, notion],
-    apiConnections: [billing],
     repositories: [allAcme, docsRepository],
   });
+  for (const seed of [tracker, notion, billing]) await connect(f, researcher.id, seed);
   const scribe = await seedAgent(f, 'agent_scribe', {
     name: 'Scribe',
     instructions: 'Take notes.',
@@ -542,7 +646,9 @@ test('a recipe exported over MCP previews and applies into another workspace in 
       { id: 'all-acme', owner: 'acme', allRepos: true, enabled: true },
       { id: 'docs', fullName: 'acme/docs', enabled: true },
     ]);
-    assert.doesNotMatch(JSON.stringify(recipe), /installationId|accountLogin|credentialRef/);
+    assert.deepEqual(exported!.mcpRequirements.map(({ id }) => id), ['tracker', 'notion'],
+      'a connection exports under its provider id');
+    assert.doesNotMatch(JSON.stringify(recipe), /installationId|accountLogin|credentialRef|secretRefId|connection_/);
 
     const preview = await previewRecipe(target, recipe);
     assert.deepEqual(preview.agents.map(({ status }) => status), ['create', 'create']);
@@ -578,19 +684,25 @@ test('a recipe exported over MCP previews and applies into another workspace in 
       .filter(({ name }) => name === 'Researcher' || name === 'Scribe');
     assert.equal(imported.length, 2);
     const reexported = await exportRecipe(target, imported.map(({ id }) => id));
+    // Connections list in account id order, which differs between workspaces.
+    const byConnectionId = (agents: WorkspaceRecipe['agents']) => agents.map((agent) => ({
+      ...agent,
+      mcpRequirements: [...agent.mcpRequirements].sort((left, right) => left.id.localeCompare(right.id)),
+    }));
     const withoutAllRepositories = recipe.agents.map((agent) => ({
       ...agent,
       repositoryRequirements: agent.repositoryRequirements.filter((requirement) => !('owner' in requirement)),
     }));
-    assert.deepEqual(reexported.agents, withoutAllRepositories,
+    assert.deepEqual(byConnectionId(reexported.agents), byConnectionId(withoutAllRepositories),
       'the imported Agents match every exported field except the grant Admin must choose');
     const importedResearcher = imported.find(({ name }) => name === 'Researcher')!;
     assert.deepEqual(importedResearcher.repositories, [
       { id: 'docs', installationId: null, accountLogin: 'unconnected', fullName: 'acme/docs', enabled: true },
     ]);
     assert.deepEqual(
-      importedResearcher.mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]),
-      [['tracker', 'pending'], ['notion', 'pending']],
+      [...(await accountsOf(target, importedResearcher.id)).values()]
+        .map(({ providerId, lifecycle }) => [providerId, lifecycle]).sort(),
+      [['billing', 'pending'], ['notion', 'pending'], ['tracker', 'pending']],
     );
   } finally {
     source.close();
@@ -639,6 +751,7 @@ test('a recipe never binds a GitHub installation the workspace already has', asy
 test('a recipe overwrite keeps the existing connections\' secrets and status', () =>
   withFixture('recipe-overwrite', async (f) => {
     const { researcher } = await seedRecipeSource(f);
+    const accountsBefore = await accountsOf(f, researcher.id);
     const recipe = await exportRecipe(f, [researcher.id]);
     recipe.agents[0]!.instructions = 'Cite every source twice.';
     const preview = await previewRecipe(f, recipe, 'update');
@@ -647,27 +760,34 @@ test('a recipe overwrite keeps the existing connections\' secrets and status', (
     assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
     const after = await f.config.getAgent(researcher.id);
     assert.equal(after.instructions, 'Cite every source twice.');
-    assert.deepEqual(after.mcpServers, researcher.mcpServers);
-    assert.deepEqual(after.apiConnections, researcher.apiConnections);
+    assert.deepEqual(await accountsOf(f, researcher.id), accountsBefore, 'no connection account is written');
+    assert.equal(await secretOf(f, accountsBefore.get('tracker')!), tracker.credential);
+    assert.equal(await secretOf(f, accountsBefore.get('billing')!), billing.credential);
     assert.deepEqual(after.repositories, researcher.repositories);
   }, readyModels));
 
 test('a recipe overwrite that drops a connection asks first over MCP, then keeps the rest on confirm', () =>
   withFixture('recipe-overwrite-removal', async (f) => {
     const { researcher } = await seedRecipeSource(f);
+    const accountsBefore = await accountsOf(f, researcher.id);
     const recipe = await exportRecipe(f, [researcher.id]);
     recipe.agents[0]!.mcpRequirements = recipe.agents[0]!.mcpRequirements.filter(({ id }) => id !== 'notion');
     const preview = await previewRecipe(f, recipe, 'update');
     const pending = await mcpApply(f, { idempotencyKey: 'overwrite-removal', operations: preview.operations });
     assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
     assert.ok((pending.presentation?.markdown ?? '').trim().length > 0, 'the removal has a readable preview');
-    assert.deepEqual((await f.config.getAgent(researcher.id)).mcpServers, researcher.mcpServers);
+    assert.deepEqual(await accountsOf(f, researcher.id), accountsBefore, 'nothing changes before the confirmation');
 
     const confirmed = await mcpTool(f, 'confirm_workspace_change', {
       proposalId: pending.outcomes[0]!.proposalId!,
     }) as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
-    assert.deepEqual((await f.config.getAgent(researcher.id)).mcpServers, [researcher.mcpServers[0]]);
+    const after = await accountsOf(f, researcher.id);
+    assert.equal(after.get('notion')?.lifecycle, 'revoked');
+    assert.deepEqual(after.get('tracker'), accountsBefore.get('tracker'));
+    assert.deepEqual(after.get('billing'), accountsBefore.get('billing'));
+    assert.equal(await secretOf(f, after.get('tracker')!), tracker.credential);
+    assert.deepEqual((await inspect(f, researcher.id)).mcpServers.map(({ id }) => id), ['tracker']);
   }, readyModels));
 
 test('a recipe overwrite that disables an Agent in Channels asks first over MCP', () =>
@@ -695,11 +815,15 @@ test('a recipe overwrite that disables an Agent in Channels asks first over MCP'
     }) as ManagementApplyResult;
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.equal((await f.config.getAgent(researcher.id)).enabled, false);
+    assert.deepEqual((await f.config.listAgentChannelGrants(workspaceId, 'C_RESEARCH'))
+      .map(({ agentId, status }) => [agentId, status]), [[researcher.id, 'active']], 'the Channel grant stays');
   }, readyModels));
 
 test('a changed credential policy resets the secret and status, and header policy follows the auth mode', () =>
   withFixture('round-trip-credential-reset', async (f) => {
-    const stored = await seedAgent(f, 'agent_reset', { mcpServers: [tracker], apiConnections: [billing] });
+    const stored = await seedAgent(f, 'agent_reset');
+    const seededTracker = await connect(f, stored.id, tracker);
+    const seededBilling = await connect(f, stored.id, billing);
     const write = async (key: string, patch: (agent: SnapshotAgent) => ManagementAgentPatch) => {
       const current = await inspect(f, stored.id);
       const result = await mcpApply(f, {
@@ -710,38 +834,54 @@ test('a changed credential policy resets the secret and status, and header polic
         }],
       });
       assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(result.outcomes));
-      return await f.config.getAgent(stored.id);
     };
-    const headerPolicy = (connection: McpConnectionConfig) =>
-      [connection.credentialHeaderName, connection.credentialValuePrefix, connection.credentialOptional];
+    const statusOf = async (id: string) => {
+      const status = (await inspect(f, stored.id)).connectionStatus.find((connection) => connection.id === id);
+      return [status?.lifecycleStatus, status?.statusText, status?.identity];
+    };
+    const trackerAccount = async () => {
+      const account = await accountOf(f, stored.id, 'tracker');
+      assert.equal(account.id, seededTracker.id, 'the tracker stays one connection account');
+      assert.ok(account.policy.kind === 'mcp');
+      return { account, policy: account.policy };
+    };
+    const headerPolicy = (policy: ConnectionAccountMcpPolicy) =>
+      [policy.credentialHeaderName, policy.credentialValuePrefix, policy.credentialOptional];
 
-    const moved = (await write('repoint', (agent) => ({
+    await write('repoint', (agent) => ({
       mcpServers: [{ ...agent.mcpServers[0]!, url: 'https://mcp.tracker.example/v2/mcp' }],
-    }))).mcpServers[0]!;
-    assert.notEqual(moved.credentialRef, stored.mcpServers[0]!.credentialRef, 'a new URL gets a new secret namespace');
-    assert.deepEqual([moved.lifecycleStatus, moved.statusText, moved.identity], ['pending', 'Setup required', undefined]);
-    assert.deepEqual(moved.discoveredTools, [{ name: 'search' }], 'discovery restarts from the approved tools');
-    assert.deepEqual(headerPolicy(moved), ['X-Api-Key', 'Token ', true], 'the header policy stays with the same auth mode');
-    assert.equal(moved.toolAccessMode, 'review');
+    }));
+    const moved = await trackerAccount();
+    assert.equal(await secretOf(f, moved.account), undefined, 'a new URL retires the stored credential');
+    assert.deepEqual([moved.account.lifecycle, moved.account.identity], ['pending', undefined]);
+    assert.deepEqual(await statusOf('tracker'), ['pending', 'Setup required', undefined]);
+    assert.deepEqual(moved.policy.discoveredTools, [{ name: 'search' }], 'discovery restarts from the approved tools');
+    assert.deepEqual(headerPolicy(moved.policy), ['X-Api-Key', 'Token ', undefined],
+      'the header policy stays with the same auth mode');
 
-    const unauthenticated = (await write('no-auth', (agent) => ({
-      mcpServers: [{ ...agent.mcpServers[0]!, authMode: 'none' }],
-    }))).mcpServers[0]!;
-    assert.deepEqual(headerPolicy(unauthenticated), [undefined, undefined, undefined], 'a new auth mode drops it');
-    assert.notEqual(unauthenticated.credentialRef, moved.credentialRef);
+    await completeSetup(f, moved.account, 'tracker-key-2');
+    await write('bearer', (agent) => ({
+      mcpServers: [{ ...agent.mcpServers[0]!, authMode: 'bearer', headerNames: [] }],
+    }));
+    const bearer = await trackerAccount();
+    assert.deepEqual(headerPolicy(bearer.policy), [undefined, undefined, undefined], 'a new auth mode drops it');
+    assert.equal(await secretOf(f, bearer.account), undefined, 'a new auth mode retires the stored credential');
+    assert.deepEqual(await statusOf('tracker'), ['pending', 'Setup required', undefined]);
 
-    const apiChanges: Array<[string, Partial<ApiConnectionConfig>]> = [
+    const apiChanges: Array<[string, Partial<ManagementApiConnection>]> = [
       ['add-host', { allowedHosts: ['billing.example.test', 'invoices.example.test'] }],
       ['add-path', { pathPrefixes: ['/v1/', '/v2/'] }],
     ];
     for (const [key, change] of apiChanges) {
-      const before = (await f.config.getAgent(stored.id)).apiConnections[0]!;
-      const after = (await write(key, (agent) => ({
+      await completeSetup(f, await accountOf(f, stored.id, 'billing'), `sk-${key}`);
+      await write(key, (agent) => ({
         apiConnections: [{ ...agent.apiConnections[0]!, ...change }],
-      }))).apiConnections[0]!;
-      assert.notEqual(after.credentialRef, before.credentialRef, `${key} gets a new secret namespace`);
-      assert.deepEqual([after.lifecycleStatus, after.statusText, after.identity], ['pending', 'Setup required', undefined],
-        `${key} waits for setup`);
+      }));
+      const after = await accountOf(f, stored.id, 'billing');
+      assert.equal(after.id, seededBilling.id);
+      assert.equal(await secretOf(f, after), undefined, `${key} retires the stored credential`);
+      assert.deepEqual([after.lifecycle, after.identity], ['pending', undefined], `${key} waits for setup`);
+      assert.deepEqual(await statusOf('billing'), ['pending', 'Setup required', undefined]);
     }
   }));
 
@@ -801,27 +941,46 @@ test('expectedRevision 0 never reaches an Agent the call has not created', () =>
     assert.deepEqual(await f.config.getAgent(taken.id), taken, 'the existing Agent with that id is untouched');
   }));
 
-test('a recipe overwrite names a header credential only Admin can set, without a setup link apply would refuse', () =>
+test('a recipe overwrite sends a setup link for a header credential, and none for a connection without one', () =>
   withFixture('recipe-header-credential', async (f) => {
-    const keyed: McpConnectionConfig = {
-      id: 'keyed', displayName: 'Keyed', url: 'https://mcp.keyed.example/mcp', transport: 'streamable-http',
-      authMode: 'none', headerNames: ['X-Api-Key'], credentialHeaderName: 'X-Api-Key', credentialOptional: false,
-      enabled: true, lifecycleStatus: 'ready', statusText: 'Connected',
-      discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    const keyed: ConnectionSeed<ConnectionAccountMcpPolicy> = {
+      providerId: 'keyed',
+      label: 'Keyed',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.keyed.example/mcp', transport: 'streamable-http', authMode: 'none',
+        headerNames: ['X-Api-Key'], credentialHeaderName: 'X-Api-Key',
+        discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      },
+      credential: 'keyed-key',
     };
-    const unreachable: McpConnectionConfig = {
-      id: 'open', displayName: 'Open', url: 'https://mcp.open.example/mcp', transport: 'streamable-http',
-      authMode: 'none', headerNames: [], enabled: true, lifecycleStatus: 'failed', statusText: 'Unreachable',
-      discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    const unreachable: ConnectionSeed<ConnectionAccountMcpPolicy> = {
+      providerId: 'open',
+      label: 'Open',
+      policy: {
+        kind: 'mcp', url: 'https://mcp.open.example/mcp', transport: 'streamable-http', authMode: 'none',
+        headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+      },
+      lifecycle: 'needs_attention',
     };
-    const agent = await seedAgent(f, 'agent_keyed', { name: 'Keyed', mcpServers: [keyed, unreachable] });
+    const agent = await seedAgent(f, 'agent_keyed', { name: 'Keyed' });
+    const seededKeyed = await connect(f, agent.id, keyed);
+    await connect(f, agent.id, unreachable);
     const recipe = await exportRecipe(f, [agent.id]);
     recipe.agents[0]!.mcpRequirements[0]!.url = 'https://mcp.keyed.example/v2/mcp';
     const preview = await previewRecipe(f, recipe, 'update');
-    assert.deepEqual(preview.agents[0]!.setupRequired, ['Keyed (set its credential in Admin)', 'Open'],
-      'a connection without a credential is named without the Admin credential note');
-    assert.deepEqual(preview.operations.map(({ kind }) => kind), ['update_agent']);
+    assert.deepEqual(preview.agents[0]!.setupRequired, ['Keyed', 'Open']);
+    assert.deepEqual(preview.operations.map((operation) => operation.kind === 'request_setup'
+      ? [operation.kind, operation.target.kind === 'mcp_connection' && operation.target.connectionId]
+      : [operation.kind]), [['update_agent'], ['request_setup', 'keyed']],
+    'only the connection with a credential to enter gets a setup link');
     const applied = await mcpApply(f, { idempotencyKey: 'overwrite-keyed', operations: preview.operations });
     assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));
-    assert.equal((await f.config.getAgent(agent.id)).mcpServers[0]!.lifecycleStatus, 'pending');
+    const setup = applied.outcomes.find(({ operationKind }) => operationKind === 'request_setup');
+    assert.ok(setup, JSON.stringify(applied.outcomes));
+    assert.equal(setup.disposition, 'setup_required');
+    assert.match(setup.setupUrl ?? '', /\/setup\/setup_/);
+    const repointed = await accountOf(f, agent.id, 'keyed');
+    assert.equal(repointed.id, seededKeyed.id);
+    assert.equal(repointed.lifecycle, 'pending');
+    assert.equal(await secretOf(f, repointed), undefined, 'the new URL retires the stored header credential');
   }, readyModels));
