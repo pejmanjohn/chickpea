@@ -905,6 +905,12 @@ export class ManagementStoreLogic {
     return this.requireChangeSetProposal(input.proposalId);
   }
 
+  /**
+   * A pending set proposed again, or shown from a later Slack message, moves
+   * to that message and call. A re-anchor from a second `apply_workspace_changes`
+   * call moves `request_operation_id` to the newer call, and the earlier call
+   * stays unsettled, as a superseded call did before.
+   */
   private reanchorChangeSetProposal(
     proposal: ManagementChangeSetProposalRecord,
     input: Pick<PutManagementChangeSetProposalInput, 'proposedMessageTs' | 'requestOperationId' | 'at'>,

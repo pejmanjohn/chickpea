@@ -2173,7 +2173,20 @@ export class WorkspaceManagementService {
     const messageTs = actor.origin.kind === 'slack' ? actor.origin.messageTs : undefined;
     const shown = messageTs && changeSet.proposedMessageTs !== messageTs
       ? await this.stores.management.putChangeSetProposal({
-          ...changeSet,
+          proposalId: changeSet.proposalId,
+          organizationId: changeSet.organizationId,
+          actorUserId: changeSet.actorUserId,
+          actorMembershipId: changeSet.actorMembershipId,
+          originKey: changeSet.originKey,
+          approvalScopeKey: changeSet.approvalScopeKey,
+          idempotencyKey: changeSet.idempotencyKey,
+          guideVersion: changeSet.guideVersion,
+          authoringReason: changeSet.authoringReason,
+          operations: changeSet.operations,
+          digest: changeSet.digest,
+          preview: changeSet.preview,
+          targetRevisions: changeSet.targetRevisions,
+          ...(changeSet.requestOperationId !== undefined ? { requestOperationId: changeSet.requestOperationId } : {}),
           proposedMessageTs: messageTs,
           at: this.now(),
         })
