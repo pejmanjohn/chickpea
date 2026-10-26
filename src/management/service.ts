@@ -4594,6 +4594,7 @@ export class WorkspaceManagementService {
 
   private async executeMemoryMutation(
     operation: Extract<ManagementOperation, { kind: 'update_agent_memory' }>,
+    inverse: ManagementOperation | undefined,
   ): Promise<ImmediateMutation> {
     try {
       await this.requireAgentMemory(operation.agentId);
@@ -4602,7 +4603,7 @@ export class WorkspaceManagementService {
         expectedRevision: operation.expectedRevision,
         body: operation.body,
       });
-      return memoryMutation(memory);
+      return memoryMutation(memory, inverse);
     } catch (error) {
       if (error instanceof ManagementError) throw error;
       throw new ManagementError('revision_conflict', 'The Agent memory changed.');
@@ -5316,7 +5317,7 @@ export class WorkspaceManagementService {
         return mutationForGrant(current, prepared.inverse, true);
       }
       case 'update_agent_memory':
-        return this.executeMemoryMutation(operation);
+        return this.executeMemoryMutation(operation, prepared.inverse);
       case 'save_routine':
       case 'control_routine':
       case 'run_routine':

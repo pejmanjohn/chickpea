@@ -253,6 +253,41 @@ test('a call that changed more than the confirmed item offers no undo, as an imm
     assert.equal(after.instructions, 'Answer in French.');
   }));
 
+test('forgetting an Agent\'s memory over MCP can be undone', () =>
+  withFixture('memory-undo', async (f) => {
+    const agent = await createAgent(f, 'agent_memory');
+    const saved = await f.memory.putAgentMemory({ agentId: agent.id, expectedRevision: 0, body: 'Refunds go to account 99.' });
+    const forgotten = await apply(f, mcp(f.owner), 'forget', [{
+      itemId: 'forget',
+      kind: 'update_agent_memory',
+      agentId: agent.id,
+      expectedRevision: saved.revision,
+      body: '',
+    }]);
+    assert.deepEqual(forgotten.outcomes.map(({ disposition }) => disposition), ['applied']);
+    assert.equal(forgotten.outcomes[0]?.undoAvailable, true);
+    assert.equal((await f.memory.getAgentMemory(agent.id)).body, '');
+
+    const undone = await succeed<ManagementApplyResult>(f, mcp(f.owner), 'undo_workspace_change', {
+      operationId: forgotten.operationId,
+      idempotencyKey: 'undo-forget',
+    });
+    assert.equal(undone.status, 'completed', JSON.stringify(undone.outcomes));
+    assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'Refunds go to account 99.');
+
+    const again = await call(f, mcp(f.owner), 'undo_workspace_change', {
+      operationId: forgotten.operationId,
+      idempotencyKey: 'undo-forget-again',
+    });
+    assert.ok(!again.ok && again.error.code === 'undo_unavailable', 'the undo is used once');
+
+    const other = await call(f, mcp(f.admin), 'undo_workspace_change', {
+      operationId: forgotten.operationId,
+      idempotencyKey: 'undo-forget-admin',
+    });
+    assert.ok(!other.ok && other.error.code === 'undo_unavailable', 'another person cannot use it');
+  }));
+
 test('inspection names the Slack team, the caller, and the team list only for people Admin shows the Team page', () =>
   withFixture('snapshot-caller', async (f) => {
     const member = (await f.identity.provisionSlackMember({
