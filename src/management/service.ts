@@ -105,6 +105,7 @@ import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
+  listPrivatelyUsableAgents,
   logUnavailableFacts,
   memberChannelViews,
   resolvePrivateAgentAccess,
@@ -3481,16 +3482,30 @@ export class WorkspaceManagementService {
     }
   }
 
-  /** The Agents a member may DM, and so schedule DM work with, editable or shared. */
+  /**
+   * The Agents a member may DM, and so schedule DM work with, editable or
+   * shared: the App Home directory's set, from one snapshot of Slack's facts.
+   */
   private async usableAgents(
     actor: LiveManagementActor,
     agents: readonly CustomAgentConfig[],
     workspaceId: string,
   ): Promise<NonNullable<ManagementWorkspaceSnapshot['usableAgents']>> {
-    const usable = await Promise.all(agents.filter(isActiveUserAgent).map(async (agent) =>
-      await this.privateAgentUse(actor, agent, workspaceId) === 'allowed' ? [agent] : []));
-    return usable.flat()
-      .sort((left, right) => left.name.localeCompare(right.name))
+    const [user, grants, facts] = await Promise.all([
+      this.stores.identity.getUser(actor.userId),
+      this.stores.config.listAgentChannelGrants(workspaceId),
+      this.slackFactsFor(workspaceId),
+    ]);
+    if (!user) return [];
+    const usable = await listPrivatelyUsableAgents({
+      agents,
+      workspaceId,
+      grants,
+      // Only full Slack members are provisioned, and every run asks Slack again.
+      actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
+      transport: facts,
+    });
+    return usable
       .map((agent) => ({
         id: agent.id,
         name: agent.name,
@@ -4139,6 +4154,17 @@ export class WorkspaceManagementService {
     const existingRoutine = operation.routineId
       ? await this.stores.routines.getRoutine(operation.routineId)
       : undefined;
+    // An ID that names no routine, or another person's DM routine, gets this one answer
+    // whatever version or Channel is sent, so no error shows that the routine exists.
+    if (operation.routineId && !(existingRoutine && (
+      existingRoutine.destination.kind !== 'direct_thread' || this.directRoutineIsVisible(
+        actor,
+        existingRoutine,
+        await this.stores.config.getAgentScheduleReference(existingRoutine.id),
+      )
+    ))) {
+      throw new ManagementError('invalid_request', 'The routine was not found.');
+    }
     const channelId = this.routineMutationChannelId(actor, operation, existingRoutine);
     const directRequest = operation.kind === 'save_routine' &&
       operation.destination?.kind === 'current_dm_thread';
@@ -4217,9 +4243,6 @@ export class WorkspaceManagementService {
     if (routine.destination.kind === 'direct_thread') {
       if ('channelId' in operation && operation.channelId !== undefined) {
         throw new ManagementError('invalid_request', 'The private DM destination is unavailable.');
-      }
-      if (!this.directRoutineIsVisible(actor, routine, reference)) {
-        throw new ManagementError('invalid_request', 'The routine was not found.');
       }
       if (operation.kind === 'take_over_routine') {
         throw new ManagementError('invalid_request', DM_ROUTINE_RUNS_AS_OWNER);

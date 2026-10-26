@@ -176,6 +176,27 @@ export function chickpeaDm(f: Fixture, person: Person): ManagementActorContext {
   };
 }
 
+/** One Slack turn: a fresh requester message in a Channel, where the answer reaches everyone in it. */
+export function chickpeaChannel(f: Fixture, person: Person, channelId: string): ManagementActorContext {
+  turn += 1;
+  return {
+    userId: person.user.id,
+    membershipId: person.membership.id,
+    organizationId: person.membership.organizationId,
+    origin: {
+      kind: 'slack',
+      workspaceId: f.workspaceId,
+      channelId,
+      threadTs: `${turn}.1`,
+      messageTs: `${turn}.1`,
+      eventId: `Ev_AUTHORITY_${turn}`,
+      requestText: 'Please make that change.',
+      conversationKind: 'channel',
+      agentId: CHICKPEA_AGENT_ID,
+    },
+  };
+}
+
 export async function apply(
   f: Fixture,
   context: ManagementActorContext,

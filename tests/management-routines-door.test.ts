@@ -18,6 +18,7 @@ import {
   MEMBER_SLACK_USER,
   apply,
   channelRoutine,
+  chickpeaChannel,
   chickpeaDm,
   createAgent,
   disposition,
@@ -28,6 +29,7 @@ import {
   withFixture,
   type Fixture,
   type Person,
+  type SlackFacts,
 } from './helpers/management-authority-fixture.ts';
 
 const OWNER_SLACK_USER = 'U12345678';
@@ -281,4 +283,116 @@ test('a member\'s inspection lists the shared Agents they may schedule with, mar
 
     const saved = await apply(f, chickpeaDm(f, f.member), 'shared-dm', [dmRoutine(f, shared.id)]);
     assert.equal(disposition(saved), 'applied', JSON.stringify(saved.outcomes));
+  }, { slackFacts: ROOMS }));
+
+test('a member\'s usable Agents cost a bounded number of Slack reads, however many Agents are shared', async () => {
+  const reads = { lookupChannel: 0, listMemberChannels: 0 };
+  const base = slackFacts({
+    C_LOBBY: { name: 'lobby', private: false, member: true, archived: false },
+    G_ROOM: { name: 'room', private: true, member: true, archived: false },
+    G_SECOND: { name: 'second', private: true, member: true, archived: false },
+    G_OTHER: { name: 'other', private: true, member: true, archived: false },
+  }, { [MEMBER_SLACK_USER]: ['C_LOBBY', 'G_ROOM', 'G_SECOND'] });
+  const counting: SlackFacts = async (input) => {
+    const facts = await base(input);
+    return {
+      async lookupChannel(channelId) {
+        reads.lookupChannel += 1;
+        return facts.lookupChannel(channelId);
+      },
+      async listMemberChannels(userId) {
+        reads.listMemberChannels += 1;
+        return facts.listMemberChannels(userId);
+      },
+    };
+  };
+  await withFixture('member-usable-agents-reads', async (f) => {
+    const shared: string[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const agent = await createAgent(f, f.owner, `agent_shared_${index}`, { name: `Shared ${index}` });
+      await grant(f, agent.id, index % 2 === 0 ? 'G_ROOM' : 'G_SECOND');
+      shared.push(agent.id);
+    }
+    for (const [id, patch] of [
+      ['agent_archived', { lifecycle: 'archived' }],
+      ['agent_disabled', { enabled: false }],
+      ['agent_draft', { lifecycle: 'draft' }],
+    ] as const) {
+      const agent = await createAgent(f, f.owner, id);
+      await grant(f, agent.id, 'G_ROOM');
+      await f.config.updateAgent(agent.id, patch, agent.revision);
+    }
+    await createAgent(f, f.owner, 'agent_owners_only');
+    const hidden = await createAgent(f, f.owner, 'agent_hidden');
+    await grant(f, hidden.id, 'G_OTHER');
+
+    reads.lookupChannel = 0;
+    reads.listMemberChannels = 0;
+    const snapshot = await f.service.inspectWorkspace(chickpeaDm(f, f.member));
+    assert.deepEqual(snapshot.usableAgents?.map(({ id }) => id), shared);
+    assert.ok(reads.listMemberChannels <= 1, `listMemberChannels ran ${reads.listMemberChannels} times`);
+    assert.ok(reads.lookupChannel <= 4, `lookupChannel ran ${reads.lookupChannel} times for 4 Channels`);
+  }, { slackFacts: counting });
+});
+
+test('a Slack Channel answer shows a private routine\'s name and task only for that Channel\'s own routines', () =>
+  withFixture('channel-routine-privacy', async (f) => {
+    const digest = await createAgent(f, f.owner, 'agent_owner_digest', { name: 'Owner digest' });
+    await grant(f, digest.id, 'G_ROOM');
+    await grant(f, digest.id, 'G_OTHER');
+    await grant(f, digest.id, 'C_LOBBY');
+    for (const channelId of ['G_ROOM', 'G_OTHER']) {
+      const saved = await apply(f, mcp(f.owner), `owner-${channelId}`, [channelRoutine(f, digest.id, channelId)]);
+      assert.equal(disposition(saved), 'applied', JSON.stringify(saved.outcomes));
+    }
+    const dmSaved = await apply(f, chickpeaDm(f, f.owner), 'owner-dm', [dmRoutine(f, digest.id)]);
+    assert.equal(disposition(dmSaved), 'applied', JSON.stringify(dmSaved.outcomes));
+    const content = (routines: InspectedRoutine[]) => Object.fromEntries(
+      routines.map((routine) => [routine.channelId, { name: routine.name, taskText: routine.taskText }]),
+    );
+
+    // The Owner is in both private Channels, so over MCP and in their DM each routine shows.
+    assert.deepEqual(content(await routinesFor(f, mcp(f.owner))), {
+      G_ROOM: { name: 'Pulse G_ROOM', taskText: 'Summarize the Channel.' },
+      G_OTHER: { name: 'Pulse G_OTHER', taskText: 'Summarize the Channel.' },
+      null: { name: 'Morning check', taskText: 'Summarize what changed overnight.' },
+    });
+
+    // Asked inside G_ROOM, everyone in G_ROOM reads the answer: G_OTHER's content stays out,
+    // and the Owner's DM routine is not listed there at all.
+    const inRoom = await routinesFor(f, chickpeaChannel(f, f.owner, 'G_ROOM'));
+    assert.deepEqual(content(inRoom), {
+      G_ROOM: { name: 'Pulse G_ROOM', taskText: 'Summarize the Channel.' },
+      G_OTHER: { name: null, taskText: null },
+    });
+    assert.equal(inRoom.some(({ destination }) => destination.kind === 'direct_message'), false);
+  }, { slackFacts: ROOMS }));
+
+test('another person\'s DM routine ID gets one not-found answer, whatever version or Channel is sent', () =>
+  withFixture('dm-routine-existence', async (f) => {
+    const helper = await createAgent(f, f.owner, 'agent_lobby', { name: 'Lobby helper' });
+    await grant(f, helper.id, 'C_LOBBY');
+    const saved = await apply(f, chickpeaDm(f, f.member), 'member-dm', [dmRoutine(f, helper.id)]);
+    assert.equal(disposition(saved), 'applied', JSON.stringify(saved.outcomes));
+    const memberRoutine = await dmRoutineOf(f, f.member);
+
+    const ownerPauses = async (routineId: string, expectedVersion: number, channelId?: string) => {
+      const result = await apply(f, mcp(f.owner), `owner-pause-${routineId}-${expectedVersion}-${channelId ?? ''}`, [{
+        itemId: 'control', kind: 'control_routine', workspaceId: f.workspaceId,
+        ...(channelId ? { channelId } : {}), routineId, expectedVersion, action: 'pause',
+      }]);
+      assert.equal(disposition(result), 'failed', JSON.stringify(result.outcomes));
+      const [outcome] = result.outcomes;
+      return { code: outcome?.code, instruction: outcome?.instruction };
+    };
+    const answers = [
+      await ownerPauses(memberRoutine.id, memberRoutine.version + 7),
+      await ownerPauses(memberRoutine.id, memberRoutine.version),
+      await ownerPauses('routine_nobody_made_this', memberRoutine.version),
+      await ownerPauses(memberRoutine.id, memberRoutine.version, 'C_LOBBY'),
+      await ownerPauses('routine_nobody_made_this', memberRoutine.version, 'C_LOBBY'),
+    ];
+    for (const answer of answers) assert.deepEqual(answer, answers[0]);
+    assert.match(answers[0]?.instruction ?? '', /The routine was not found\./);
+    assert.equal((await f.routines.getRoutine(memberRoutine.id))?.state, 'active');
   }, { slackFacts: ROOMS }));
