@@ -442,13 +442,11 @@ export class WorkspaceManagementService {
     operations?: readonly ManagementOperation[],
   ): Promise<ManagementApplyResult> {
     try {
-      const applied = result.outcomes.map((outcome) => outcome.disposition === 'applied'
-        ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
-        : undefined);
-      const deletedAgentIds = new Set(applied.filter((_, index) =>
-        result.outcomes[index]!.operationKind === 'delete_agent'));
-      const targets = applied.map((agentId) =>
-        agentId && !deletedAgentIds.has(agentId) ? agentId : undefined);
+      // A deleted Agent has no page to link to.
+      const targets = result.outcomes.map((outcome) =>
+        outcome.disposition === 'applied' && outcome.operationKind !== 'delete_agent'
+          ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
+          : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
       const adminUrls = new Map<string, string>();
@@ -4725,7 +4723,7 @@ export class WorkspaceManagementService {
           ),
           operation.expectedRevision,
         );
-        return mutationForAgentEdit(agent, prepared.inverse);
+        return mutationForAgentEdit(agent, prepared.inverse as AgentEditInverse | undefined);
       }
       case 'put_channel': {
         if (operation.channel.lifecycle === 'active') {
@@ -4835,7 +4833,7 @@ export class WorkspaceManagementService {
           current.credentialIncarnation === before.credentialIncarnation &&
           current.revision >= operation.expectedRevision + 1 &&
           agentPatchMatches(current, operation.patch)) {
-        return mutationForAgentEdit(current, prepared.inverse);
+        return mutationForAgentEdit(current, prepared.inverse as AgentEditInverse | undefined);
       }
       return undefined;
     }
@@ -5893,14 +5891,15 @@ function agentConfigurationDigest(agent: CustomAgentConfig): string {
     .digest('hex');
 }
 
+/** What prepareItem stores as the inverse of an update_agent; the prepared item types it more widely. */
+type AgentEditInverse = Extract<ManagementOperation, { kind: 'update_agent' }>;
+
 function mutationForAgentEdit(
   agent: CustomAgentConfig,
-  inverse: ManagementOperation | undefined,
+  inverse: AgentEditInverse | undefined,
 ): ImmediateMutation {
   return {
-    ...mutationForAgent(agent, inverse?.kind === 'update_agent'
-      ? { ...inverse, expectedRevision: agent.revision }
-      : inverse),
+    ...mutationForAgent(agent, inverse && { ...inverse, expectedRevision: agent.revision }),
     agentConfigurationDigest: agentConfigurationDigest(agent),
   };
 }
