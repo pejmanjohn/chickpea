@@ -1391,7 +1391,6 @@ details[open].advanced summary::before {
 .fav-provider-controls { align-items: center; display: flex; gap: 10px; }
 .help-improve-row { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; margin-top: 16px; }
 .help-improve-copy { min-width: 0; }
-.help-improve-label { font-weight: 600; margin: 0 0 4px; }
 .fav-provider-error { padding: 0 18px 14px; }
 .fav-provider-body { gap: 0; padding: 0 18px 16px; }
 .fav-summary { align-items: center; display: flex; gap: 16px; justify-content: space-between; min-height: 56px; }
