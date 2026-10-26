@@ -347,7 +347,7 @@ interface ImmediateMutation {
   changed: ManagementObjectRef[];
   inverse?: ManagementOperation;
   resultingRevisions: Record<string, number>;
-  agentConfiguration?: string;
+  agentConfigurationDigest?: string;
   handoffUrl?: string;
   warning?: string;
   handleChange?: ManagementItemOutcome['handleChange'];
@@ -444,10 +444,10 @@ export class WorkspaceManagementService {
       const applied = result.outcomes.map((outcome) => outcome.disposition === 'applied'
         ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
         : undefined);
-      // A deleted Agent has no page to link to.
-      const deleted = new Set(applied.filter((_, index) =>
+      const deletedAgentIds = new Set(applied.filter((_, index) =>
         result.outcomes[index]!.operationKind === 'delete_agent'));
-      const targets = applied.map((agentId) => agentId && !deleted.has(agentId) ? agentId : undefined);
+      const targets = applied.map((agentId) =>
+        agentId && !deletedAgentIds.has(agentId) ? agentId : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
       const adminUrls = new Map<string, string>();
@@ -1899,7 +1899,7 @@ export class WorkspaceManagementService {
               actorUserId: actor.userId,
               inverse: mutation.inverse,
               resultingRevisions: mutation.resultingRevisions,
-              ...(mutation.agentConfiguration ? { agentConfiguration: mutation.agentConfiguration } : {}),
+              ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
               status: 'available',
               createdAt: this.now(),
               updatedAt: this.now(),
@@ -2908,20 +2908,14 @@ export class WorkspaceManagementService {
     return result.links ? result : await this.withAgentLinks(input.context, result);
   }
 
-  /**
-   * The undo's inverse while its target still holds what the change left.
-   * Slack presence sync advances an Agent's revision after an edit without
-   * changing what people configure, so an Agent undo compares configuration
-   * and targets the current revision; anything else compares revisions.
-   */
   private async currentUndoInverse(undo: ManagementUndoRecord): Promise<ManagementOperation> {
     const { inverse } = undo;
-    if (inverse.kind !== 'update_agent' || undo.agentConfiguration === undefined) {
+    if (inverse.kind !== 'update_agent' || undo.agentConfigurationDigest === undefined) {
       await this.assertRevisionMap(undo.resultingRevisions);
       return inverse;
     }
     const agent = await optionalAgent(this.stores.config, inverse.agentId);
-    if (!agent || agentConfigurationDigest(agent) !== undo.agentConfiguration) {
+    if (!agent || agentConfigurationDigest(agent) !== undo.agentConfigurationDigest) {
       throw new ManagementError('proposal_stale', 'The proposed target changed.');
     }
     return { ...inverse, expectedRevision: agent.revision };
@@ -5859,13 +5853,7 @@ function projectManagementAgentPatch(
   };
 }
 
-/**
- * Puts back exactly the fields `patch` sets, as they were before it, so the
- * undo's policy sees what the undo changes. Presence and lifecycle state
- * stay as they are now.
- */
 function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatch): ManagementAgentPatch {
-  // A new model drops the effort chosen for the old one.
   const effortChanged = patch.modelEffort !== undefined ||
     agentModelEffortAfterPatch(before, patch) !== before.modelEffort;
   return {
@@ -5891,12 +5879,6 @@ function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatc
   };
 }
 
-/**
- * What people configure on an Agent. Every write advances `revision` and
- * `configurationGeneration`; Slack presence sync also rewrites
- * `slackPresence` and moves `lifecycle` between active and needs_attention.
- * A change to anything else is someone's edit.
- */
 function agentConfigurationDigest(agent: CustomAgentConfig): string {
   const {
     revision: _revision,
@@ -5910,7 +5892,6 @@ function agentConfigurationDigest(agent: CustomAgentConfig): string {
     .digest('hex');
 }
 
-/** An Agent edit; its undo targets the revision presence sync left, not the edit's own. */
 function mutationForAgentEdit(
   agent: CustomAgentConfig,
   inverse: ManagementOperation | undefined,
@@ -5919,7 +5900,7 @@ function mutationForAgentEdit(
     ...mutationForAgent(agent, inverse?.kind === 'update_agent'
       ? { ...inverse, expectedRevision: agent.revision }
       : inverse),
-    agentConfiguration: agentConfigurationDigest(agent),
+    agentConfigurationDigest: agentConfigurationDigest(agent),
   };
 }
 
@@ -6436,16 +6417,12 @@ function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
   return agent.credentialIncarnation;
 }
 
-/**
- * Delete leaves nothing in Slack that answers to the Agent. Archive ends its
- * Channel grants and retires its own Slack app, and it completes only after
- * Slack turned its user group off. Slack cannot delete a user group, so an
- * archived Agent keeps the id for restore and that group no longer blocks.
- */
 function assertAgentLeftSlack(agent: CustomAgentConfig, references: AgentReferenceSummary): void {
   const presence = agent.slackPresence;
+  // Slack cannot delete a user group, so an archived Agent still holds one, turned off.
+  const userGroupOff = presence?.desiredState === 'disabled' && presence.health === 'healthy';
   if (references.channelGrants.length > 0 || presence?.kind === 'agent_app' ||
-      (presence?.userGroupId !== undefined && agent.lifecycle !== 'archived')) {
+      (presence?.userGroupId !== undefined && !userGroupOff)) {
     throw new ManagementError(
       'invalid_request',
       `Archive ${agent.name} first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.`,

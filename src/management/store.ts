@@ -137,7 +137,7 @@ interface ManagementUndoRow {
   actor_user_id: string;
   inverse_json: string;
   resulting_revisions_json: string;
-  agent_configuration: string | null;
+  agent_configuration_digest: string | null;
   status: ManagementUndoRecord['status'];
   created_at: number;
   updated_at: number;
@@ -1092,14 +1092,14 @@ export class ManagementStoreLogic {
     this.db.run(
       `INSERT INTO management_undo (
         operation_id, organization_id, actor_user_id, inverse_json,
-        resulting_revisions_json, agent_configuration, status, created_at, updated_at
+        resulting_revisions_json, agent_configuration_digest, status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       record.operationId,
       record.organizationId,
       record.actorUserId,
       JSON.stringify(record.inverse),
       JSON.stringify(record.resultingRevisions),
-      record.agentConfiguration ?? null,
+      record.agentConfigurationDigest ?? null,
       record.status,
       record.createdAt,
       record.updatedAt,
@@ -1958,13 +1958,13 @@ export class ManagementStoreLogic {
         actor_user_id TEXT NOT NULL,
         inverse_json TEXT NOT NULL,
         resulting_revisions_json TEXT NOT NULL,
-        agent_configuration TEXT,
+        agent_configuration_digest TEXT,
         status TEXT NOT NULL CHECK (status IN ('available', 'consumed')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
     );
-    addColumnIfMissing(this.db, 'management_undo', 'agent_configuration', 'TEXT');
+    addColumnIfMissing(this.db, 'management_undo', 'agent_configuration_digest', 'TEXT');
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS management_undo_retention_idx
        ON management_undo (status, updated_at)`,
@@ -2333,7 +2333,7 @@ function undoFromRow(row: ManagementUndoRow): ManagementUndoRecord {
     actorUserId: row.actor_user_id,
     inverse: JSON.parse(row.inverse_json) as ManagementUndoRecord['inverse'],
     resultingRevisions: JSON.parse(row.resulting_revisions_json) as Record<string, number>,
-    ...(row.agent_configuration ? { agentConfiguration: row.agent_configuration } : {}),
+    ...(row.agent_configuration_digest ? { agentConfigurationDigest: row.agent_configuration_digest } : {}),
     status: row.status,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),

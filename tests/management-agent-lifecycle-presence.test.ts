@@ -20,7 +20,6 @@ import { createManagementAdapterFixture } from './helpers/management-adapter-fix
 type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 type ToolResponse = { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } };
 
-/** Slack's user-group directory: the part of Slack that publishing, renaming and archiving an Agent use. */
 class UserGroupDirectory implements SlackTransport {
   readonly mode = 'direct';
   groups: SlackUserGroup[] = [];
@@ -57,11 +56,6 @@ class UserGroupDirectory implements SlackTransport {
   }
 }
 
-/**
- * A workspace on a paid Slack plan, wired the way the live service wires
- * presence: creation publishes the handle, a name or description change syncs
- * the user group, and archive turns it off.
- */
 async function withPublishingWorkspace(
   suffix: string,
   run: (f: Fixture, slack: UserGroupDirectory, presence: AgentPresenceReconciler) => Promise<void>,
@@ -290,3 +284,45 @@ test('an Agent with its own Slack app is not deleted until archive retires the a
     assert.deepEqual(dispositions(refused), [['failed', 'invalid_request']]);
     assert.equal((await f.config.getAgent(app.id)).slackPresence?.kind, 'agent_app', 'the app Agent is kept');
   }));
+
+test('an archive that never turned the user group off leaves the Agent undeletable', async () => {
+  const f = await createManagementAdapterFixture('delete-group-still-on');
+  try {
+    const agent = await f.config.createAgent({
+      id: 'agent_relay',
+      name: 'Relay',
+      instructions: 'Relay updates.',
+      enabled: true,
+      lifecycle: 'active',
+      creatorMembershipId: f.owner.membership.id,
+      editPolicy: 'creator_and_admins',
+      configurationGeneration: 1,
+      slackPresence: {
+        requestedHandle: 'relay', normalizedHandle: 'relay', desiredState: 'active', health: 'healthy',
+        avatar: { kind: 'generated', revision: 1, seed: 'relay' }, userGroupId: 'S_RELAY',
+      },
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    const archived = await apply(f, 'archive-without-slack', [{
+      itemId: 'archive',
+      kind: 'archive_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    }]);
+    assert.equal(archived.status, 'completed', JSON.stringify(archived.outcomes));
+    const before = await f.config.getAgent(agent.id);
+    assert.equal(before.lifecycle, 'archived');
+    assert.equal(before.slackPresence?.desiredState, 'active', 'no presence port turned the group off');
+
+    const refused = await apply(f, 'delete-group-on', [{
+      itemId: 'delete',
+      kind: 'delete_agent',
+      agentId: before.id,
+      expectedRevision: before.revision,
+    }]);
+    assert.deepEqual(dispositions(refused), [['failed', 'invalid_request']]);
+    assert.equal((await f.config.getAgent(agent.id)).slackPresence?.userGroupId, 'S_RELAY');
+  } finally {
+    f.close();
+  }
+});

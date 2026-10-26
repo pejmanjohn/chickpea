@@ -1191,12 +1191,7 @@ export interface ManagementUndoRecord {
   actorUserId: string;
   inverse: ManagementOperation;
   resultingRevisions: Record<string, number>;
-  /**
-   * Digest of what people configure on the Agent an edit left. Slack presence
-   * sync advances the Agent's revision without changing it, so undo compares
-   * this instead of the revision.
-   */
-  agentConfiguration?: string;
+  agentConfigurationDigest?: string;
   status: 'available' | 'consumed';
   createdAt: number;
   updatedAt: number;

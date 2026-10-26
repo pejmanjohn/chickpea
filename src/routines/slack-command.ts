@@ -266,9 +266,6 @@ export async function executeSlackScheduleCommand(
       agentId: agent.id,
       agent,
     };
-    // A refused binding must leave the schedule as it was, so its checks run
-    // before the save. The binding after the save still guards a change
-    // that lands in between.
     await checkRoutineAgentAuthority({
       routine: existing ?? priorCreate ?? {
         id: deterministicRoutineId(command.actionKey, command.itemId),

@@ -683,7 +683,6 @@ test('the editor identity is part of the routine access hash', async () => {
   assert.notEqual(byCreator.accessHash, byEditor.accessHash);
 });
 
-/** What the Slack SDK throws when Slack gives no usable answer. */
 const slackSdkOutages = {
   rateLimited: { code: 'slack_webapi_rate_limited_error', retryAfter: 30 },
   unreachable: { code: 'slack_webapi_request_error' },

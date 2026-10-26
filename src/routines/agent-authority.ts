@@ -127,11 +127,6 @@ export async function bindRoutineAgentAuthority(input: RoutineAuthorityCheckInpu
   }, current?.revision ?? 0);
 }
 
-/**
- * The binding's checks of the Agent, the member and the destination, without
- * writing. A save runs them first, so a schedule its binding refuses is not
- * saved.
- */
 export async function checkRoutineAgentAuthority(
   input: RoutineAuthorityCheckInput,
   dependencies: { config?: ConfigStore; identity?: IdentityStore } = {},

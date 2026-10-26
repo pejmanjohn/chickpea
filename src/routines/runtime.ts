@@ -265,7 +265,9 @@ export async function resolveRoutineRuntimeAccess(
       throw new RoutineRuntimeError('channel_ineligible', 'The routine channel is no longer eligible.');
     }
     throw unverifiedAccess(
-      isTransientSlackApiError(conversation.error),
+      'slackDidNotAnswer' in conversation
+        ? conversation.slackDidNotAnswer
+        : isTransientSlackApiError(conversation.error),
       'Current Slack channel access could not be verified.',
     );
   }
@@ -391,9 +393,9 @@ async function conversationFromClient(client: WebClient, channelId: string) {
   } catch (error) {
     return {
       ok: false as const,
-      // The bot-token lookup's name for "try later", so both share isTransientSlackApiError.
-      error: isRetryableDependencyFailure(error) ? 'service_unavailable' : 'conversation_unavailable',
+      error: 'conversation_unavailable',
       retryAfterMs: undefined,
+      slackDidNotAnswer: isRetryableDependencyFailure(error),
     };
   }
 }
@@ -445,11 +447,6 @@ async function hasChannelMember(
   throw unverifiedAccess(false, MEMBERSHIP_UNVERIFIED);
 }
 
-/**
- * A check Slack gave no answer to counts, like a rate limit, toward the
- * three failures that pause the routine. Slack's own refusal, or an answer
- * too long to read, is a loss of access and disables it.
- */
 function unverifiedAccess(slackDidNotAnswer: boolean, publicError: string): RoutineRuntimeError {
   return new RoutineRuntimeError(slackDidNotAnswer ? 'slack_rate_limited' : 'access_denied', publicError);
 }
