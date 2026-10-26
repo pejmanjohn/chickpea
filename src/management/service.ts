@@ -27,10 +27,13 @@ import {
   AgentStillReferencedError,
   ChannelRevisionConflictError,
   ConnectionAccountRevisionConflictError,
+  ModelRoleRevisionConflictError,
   UnknownAgentError,
+  WorkspaceModelDefaultRevisionConflictError,
 } from '../config/errors.ts';
 import type { ConfigAgentPatch, ConfigStore } from '../config/store.ts';
 import type { ModelReadiness } from '../config/model-readiness.ts';
+import { modelDefaultInstallation } from '../config/model-choices.ts';
 import type { ModelEffortChoice } from '../config/model-effort-capability.ts';
 import { agentModelEffortAfterPatch, type ModelEffort } from '../config/model-effort.ts';
 import {
@@ -52,9 +55,13 @@ import {
   type ConnectionAccountPolicy,
   agentAppIsLive,
   type CustomAgentConfig,
+  MODEL_ROLES,
+  type ModelRole,
   type RepositoryGrant,
   type SkillConfig,
   type WorkspaceInstallation,
+  type WorkspaceModelDefault,
+  type WorkspaceModelRole,
 } from '../config/types.ts';
 import {
   parseSkillSource,
@@ -192,6 +199,9 @@ import {
   type ManageAgentSkillResult,
   type SkillActionReceiptMetadata,
   type ManagementMemorySnapshot,
+  type ManagementModelAccess,
+  type ManagementModelProviderId,
+  type ManagementModelSources,
   type ManagementAgentCreateInput,
   type ManagementAgentPatch,
   type ManagementObjectRef,
@@ -227,6 +237,7 @@ import { adminSettingsLinks, adminTeamLinks } from './admin-links.ts';
 const MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS = 30_000;
 const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
+const NO_MODEL_CATALOG: ManagementWorkspaceSnapshot['modelCatalog'] = { chat: [], image: [] };
 const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
@@ -293,8 +304,11 @@ export interface WorkspaceManagementServiceInput {
     | 'getWorkspaceInstallation'
     | 'listWorkspaceInstallations'
     | 'getWorkspaceModelDefault'
+    | 'putWorkspaceModelDefault'
     | 'getWorkspaceModelRole'
+    | 'putWorkspaceModelRole'
     | 'getAgentModelRole'
+    | 'updateAgentWithModelRoles'
     | 'listChannels'
     | 'getChannel'
     | 'putChannel'
@@ -355,7 +369,8 @@ export interface WorkspaceManagementServiceInput {
     toolkit: string;
     accessLane: 'read' | 'write';
   }) => Promise<boolean>;
-  listAvailableModels?: () => Promise<Array<{ id: string; name?: string }>>;
+  /** Admin's model catalog, provider readiness and choice checks. */
+  models?: ManagementModelSources;
   /** Test seam for the public, bounded GitHub skill resolver. */
   resolveSkillImport?: (source: ParsedSkillSource) => Promise<SkillResolution>;
   publishAgentPresence?: (input: {
@@ -581,7 +596,8 @@ export class WorkspaceManagementService {
   /**
    * Settings deep link for an outcome that names something only Admin can
    * change: a model provider key (setup link issued, replacement awaiting
-   * confirmation, removal, or a member denied) and member authority. The
+   * confirmation, removal, or a member denied), a Workspace model, and member
+   * authority. The
    * operation supplies the target when the caller has it; a setup-link
    * outcome falls back to its own setup record so confirm and replay paths
    * agree with apply.
@@ -593,7 +609,8 @@ export class WorkspaceManagementService {
   ): Promise<ManagementResultLinks | undefined> {
     try {
       if (outcome.operationKind === 'update_member') return adminTeamLinks(await baseUrl());
-      if (outcome.operationKind === 'remove_provider_credential') {
+      if (outcome.operationKind === 'remove_provider_credential' ||
+          outcome.operationKind === 'set_workspace_model') {
         return adminSettingsLinks(await baseUrl(), 'providers');
       }
       if (outcome.operationKind !== 'request_setup') return undefined;
@@ -2827,7 +2844,7 @@ export class WorkspaceManagementService {
       }
       return;
     }
-    if (operation.kind === 'remove_provider_credential' ||
+    if (operation.kind === 'remove_provider_credential' || operation.kind === 'set_workspace_model' ||
         (operation.kind === 'put_channel' && operation.channel.lifecycle === 'archived')) {
       if (actor.role === 'member') {
         throw new ManagementError('forbidden', 'Current workspace authority no longer permits this confirmation.');
@@ -2837,7 +2854,7 @@ export class WorkspaceManagementService {
     let agentId: string | undefined;
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-        operation.kind === 'update_agent_memory') {
+        operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
       agentId = operation.agentId;
     } else if (operation.kind === 'grant_agent_channel' ||
         operation.kind === 'revoke_agent_channel' || operation.kind === 'save_routine') {
@@ -3287,7 +3304,7 @@ export class WorkspaceManagementService {
   ): Promise<ActingAgentScopeTarget> {
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-        operation.kind === 'update_agent_memory') {
+        operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
       return operationAgentScopeTarget(operation.kind, operation.agentId);
     }
     if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -3699,24 +3716,36 @@ export class WorkspaceManagementService {
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
     const userAgentScoped = isUserAgentScoped(actor);
-    const [allAgents, channels, allGrants, organization, providerSources, currentAgent] = await Promise.all([
+    // As in Admin, provider and Workspace model settings are for Owners and Admins.
+    const showsSettings = actor.role !== 'member' && !userAgentScoped;
+    const [
+      allAgents, channels, allGrants, organization, keySources, models, currentAgent, workspaceModels,
+    ] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
       this.stores.identity.getOrganization(),
-      actor.role === 'member' || userAgentScoped
-        ? Promise.resolve([] as Array<readonly [ManagedProviderId, ManagedProviderSource]>)
-        : Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
+      showsSettings
+        ? Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
             id,
             await this.stores.providerCredentialSource?.(id) ?? 'missing',
-          ] as const)),
+          ] as const)).then((sources) => new Map<ManagementModelProviderId, ManagedProviderSource>(sources))
+        : undefined,
+      this.stores.models?.availability().catch(() => {
+        console.warn('[chickpea:management] model availability could not be read');
+        return undefined;
+      }),
       actor.origin.kind === 'slack' && actor.origin.agentId
         ? optionalAgent(this.stores.config, actor.origin.agentId)
         : Promise.resolve(undefined),
+      this.workspaceModelRows(),
     ]);
+    // Admin's Providers page rows; without model sources, the key providers with no known access.
+    const providerRows: Array<{ id: ManagementModelProviderId; access?: ManagementModelAccess }> =
+      models?.providers ?? MANAGED_PROVIDER_IDS.map((id) => ({ id }));
     const providerImpacts = await resolveProviderRuntimeImpacts(
       this.stores.config,
-      providerSources.map(([id]) => id),
+      keySources ? providerRows.map(({ id }) => id) : [],
     );
     const editable = actor.role === 'member'
       ? allAgents.filter((agent) => this.actorCanEditAgent(actor, agent))
@@ -3865,22 +3894,18 @@ export class WorkspaceManagementService {
           revision: connection.bindingRevision,
         }])),
     ];
-    const team = actor.role === 'owner' && !userAgentScoped
-      ? await this.teamSnapshot(actor.organizationId)
-      : undefined;
-    const [listedModels, routineSchedulingAvailable, workspaceDefault] = userAgentScoped
-      ? await Promise.all([
-          this.stores.listAvailableModels?.().catch(() => []) ?? [],
-          this.isRoutineSchedulingAvailable(),
-          actor.origin.kind === 'slack'
-            ? this.stores.config.getWorkspaceModelDefault(actor.origin.workspaceId)
-            : Promise.resolve(undefined),
-        ])
-      : [[], false, undefined] as const;
-    const availableModels = uniqueModelChoices([
-      ...listedModels,
-      ...agents.flatMap(({ model }) => model ? [{ id: model }] : []),
-      ...(workspaceDefault?.modelId ? [{ id: workspaceDefault.modelId }] : []),
+    if (workspaceModels) {
+      for (const role of MODEL_ROLES) {
+        refs.push({ kind: 'workspace_model', id: role, revision: workspaceModels[role]?.revision ?? 0 });
+      }
+    }
+    const [team, routineSchedulingAvailable, imagePins] = await Promise.all([
+      actor.role === 'owner' && !userAgentScoped ? this.teamSnapshot(actor.organizationId) : undefined,
+      userAgentScoped ? this.isRoutineSchedulingAvailable() : false,
+      Promise.all(agents.map(async ({ id }) => {
+        const imageModel = (await this.stores.config.getAgentModelRole(id, 'image'))?.modelId;
+        return [id, imageModel ? { imageModel } : {}] as const;
+      })).then((entries) => new Map<string, { imageModel?: string }>(entries)),
     ]);
     const selfAgent = userAgentScoped ? agents[0] : undefined;
     return {
@@ -3944,6 +3969,8 @@ export class WorkspaceManagementService {
           : {}),
         ...(model ? { model } : {}),
         ...(modelEffort ? { modelEffort } : {}),
+        ...imagePins.get(id),
+        effectiveModels: effectiveAgentModels(model, modelEffort, imagePins.get(id)?.imageModel, workspaceModels),
         skills,
         mcpServers: connectionsOf(id).mcpServers.map(managementMcpConnection),
         apiConnections: connectionsOf(id).apiConnections.map(managementApiConnection),
@@ -3967,12 +3994,16 @@ export class WorkspaceManagementService {
         grants: (grantsByChannel.get(channelKey(channel.workspaceId, channel.channelId)) ?? [])
           .sort((left, right) => left.agentId.localeCompare(right.agentId)),
       })),
-      providers: providerSources.map(([id, source]) => {
+      providers: !keySources ? [] : providerRows.map(({ id, access }) => {
         const impact = providerImpacts.get(id)!;
+        // Workers AI has no key of its own: the deployment provides it or not.
+        const source = id === 'workers-ai' ? access ? 'env' : 'missing' : keySources.get(id) ?? 'missing';
         return {
           id,
+          available: access !== undefined,
+          ...(access ? { access } : {}),
           source,
-          mutable: source !== 'env',
+          mutable: id !== 'workers-ai' && source !== 'env',
           workspaceDefaultAffected: impact.workspaceDefaultAffected,
           inheritingAgentCount: impact.activeInheritingAgentCount,
           affectedAgents: [...impact.pinnedAgents, ...impact.inheritingAgents]
@@ -3980,10 +4011,22 @@ export class WorkspaceManagementService {
             .map(({ id: agentId, name }) => ({ id: agentId, name })),
         };
       }),
+      ...(showsSettings && workspaceModels
+        ? {
+            workspaceModels: {
+              chat: workspaceModelChoice(workspaceModels.chat),
+              image: {
+                model: workspaceModels.image?.modelId ?? null,
+                revision: workspaceModels.image?.revision ?? 0,
+              },
+              coding: workspaceModelChoice(workspaceModels.coding),
+            },
+          }
+        : {}),
+      modelCatalog: models?.catalog ?? NO_MODEL_CATALOG,
       ...(userAgentScoped && selfAgent
         ? {
             selfManagement: {
-              availableModels,
               routineSchedulingAvailable,
               capabilityHealth: selfCapabilityHealth(
                 { ...connectionsOf(selfAgent.id), repositories: selfAgent.repositories },
@@ -3996,6 +4039,30 @@ export class WorkspaceManagementService {
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
+  }
+
+  /** The Workspace models Admin Settings edits, from the only installation, as Admin reads them. */
+  private async workspaceModelRows(): Promise<WorkspaceModelRows | undefined> {
+    const installation = await modelDefaultInstallation(this.stores.config);
+    if (!installation) return undefined;
+    const { workspaceId } = installation;
+    const [chat, image, coding] = await Promise.all([
+      this.stores.config.getWorkspaceModelDefault(workspaceId),
+      this.stores.config.getWorkspaceModelRole(workspaceId, 'image'),
+      this.stores.config.getWorkspaceModelRole(workspaceId, 'coding'),
+    ]);
+    return {
+      workspaceId,
+      ...(chat ? { chat } : {}),
+      ...(image ? { image } : {}),
+      ...(coding ? { coding } : {}),
+    };
+  }
+
+  private async workspaceModel(role: ModelRole): Promise<{ workspaceId: string; current: WorkspaceModelChoice }> {
+    const rows = await this.workspaceModelRows();
+    if (!rows) throw new ManagementError('invalid_request', 'Connect Slack before choosing a Workspace model.');
+    return { workspaceId: rows.workspaceId, current: workspaceModelChoice(rows[role]) };
   }
 
   private async teamSnapshot(
@@ -4309,6 +4376,13 @@ export class WorkspaceManagementService {
           : {}),
       });
       return { actor, operation, agentEditable: true };
+    }
+    if (operation.kind === 'set_workspace_model') {
+      return { actor, operation, adminRequired: true };
+    }
+    if (operation.kind === 'set_agent_image_model') {
+      const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
+      return { actor, operation, currentAgent, agentEditable: true };
     }
     if (operation.kind === 'remove_provider_credential') {
       if (actor.role === 'member') return { actor, operation, adminRequired: true };
@@ -4815,6 +4889,75 @@ export class WorkspaceManagementService {
           },
         };
       }
+      case 'set_workspace_model': {
+        const { current } = await this.workspaceModel(operation.role);
+        requireExpectedRevision(operation.expectedRevision, current.revision);
+        const refusal = await this.stores.models?.workspaceModelRefusal({
+          role: operation.role,
+          model: operation.model,
+          effort: operation.modelEffort,
+        });
+        if (refusal) {
+          throw new ManagementError(
+            refusal.code,
+            refusal.code === 'invalid_request'
+              ? refusal.message
+              : `${refusal.message} Omit modelEffort unless the requester chose a level this model supports; do not substitute another level.`,
+          );
+        }
+        // A chat default that was never chosen has nothing to go back to.
+        const reversible = operation.role !== 'chat' || current.model !== null;
+        return {
+          itemId: operation.itemId,
+          operation,
+          before: workspaceModelPreview(operation.role, current),
+          intendedAfter: workspaceModelPreview(operation.role, {
+            model: operation.model,
+            effort: operation.model ? operation.modelEffort ?? null : null,
+          }),
+          ...(reversible
+            ? {
+                inverse: {
+                  itemId: `undo_${operation.itemId}`,
+                  kind: 'set_workspace_model',
+                  role: operation.role,
+                  model: current.model,
+                  ...(current.effort ? { modelEffort: current.effort } : {}),
+                  expectedRevision: current.revision + 1,
+                } satisfies ManagementOperation,
+              }
+            : {}),
+        };
+      }
+      case 'set_agent_image_model': {
+        const [agent, imageRole] = await Promise.all([
+          this.stores.config.getAgent(operation.agentId),
+          this.stores.config.getAgentModelRole(operation.agentId, 'image'),
+        ]);
+        requireExpectedRevision(operation.expectedRevision, agent.revision);
+        if (operation.model) {
+          // Chickpea can pin no model, exactly as it cannot pin a chat model.
+          if (agent.kind === 'system') {
+            throw new ManagementError('invalid_request', 'Chickpea follows the Workspace image model.');
+          }
+          const refusal = await this.stores.models?.agentImageModelRefusal(operation.model);
+          if (refusal) throw new ManagementError('invalid_request', refusal);
+        }
+        return {
+          itemId: operation.itemId,
+          operation,
+          agentCredentialIncarnation: requireAgentCredentialIncarnation(agent),
+          before: { name: agent.name, imageModel: imageRole?.modelId ?? null },
+          intendedAfter: { name: agent.name, imageModel: operation.model },
+          inverse: {
+            itemId: `undo_${operation.itemId}`,
+            kind: 'set_agent_image_model',
+            agentId: agent.id,
+            expectedRevision: agent.revision + 1,
+            model: imageRole?.modelId ?? null,
+          },
+        };
+      }
       case 'update_agent_memory': {
         const [before, agent] = await Promise.all([
           this.requireAgentMemory(operation.agentId),
@@ -5003,6 +5146,8 @@ export class WorkspaceManagementService {
       case 'update_agent':
       case 'put_channel':
       case 'save_routine':
+      case 'set_workspace_model':
+      case 'set_agent_image_model':
         return undefined;
     }
   }
@@ -5140,12 +5285,56 @@ export class WorkspaceManagementService {
       }
       case 'update_agent_memory':
         return this.executeMemoryMutation(operation);
+      case 'set_workspace_model':
+        return workspaceModelMutation(operation.role, await this.writeWorkspaceModel(actor, operation), prepared);
+      case 'set_agent_image_model': {
+        const agent = await this.stores.config.updateAgentWithModelRoles(
+          operation.agentId,
+          withAgentCredentialRequirement({}, prepared.agentCredentialIncarnation),
+          [{ role: 'image', modelId: operation.model }],
+          operation.expectedRevision,
+        );
+        return mutationForAgent(agent, agentImageInverse(prepared, agent.revision));
+      }
       case 'save_routine':
       case 'control_routine':
       case 'run_routine':
         return this.executeRoutineMutation(actor, mutationId, operation);
       default:
         throw new ManagementError('invalid_request', 'This operation cannot apply immediately.');
+    }
+  }
+
+  /** Writes a Workspace model as Admin Settings does and returns the role's new revision. */
+  private async writeWorkspaceModel(
+    actor: LiveManagementActor,
+    operation: Extract<ManagementOperation, { kind: 'set_workspace_model' }>,
+  ): Promise<number> {
+    const { workspaceId } = await this.workspaceModel(operation.role);
+    const effort = operation.model ? operation.modelEffort : undefined;
+    try {
+      const written = operation.role === 'chat'
+        ? await this.stores.config.putWorkspaceModelDefault({
+            workspaceId,
+            ...(operation.model ? { modelId: operation.model } : {}),
+            ...(effort ? { effort } : {}),
+            provenance: 'admin_selected',
+            lastChangedByMembershipId: actor.membershipId,
+          }, operation.expectedRevision)
+        : await this.stores.config.putWorkspaceModelRole({
+            workspaceId,
+            role: operation.role,
+            ...(operation.model ? { modelId: operation.model } : {}),
+            ...(effort ? { effort } : {}),
+            lastChangedByMembershipId: actor.membershipId,
+          }, operation.expectedRevision);
+      return written.revision;
+    } catch (error) {
+      if (error instanceof WorkspaceModelDefaultRevisionConflictError ||
+          error instanceof ModelRoleRevisionConflictError) {
+        throw new ManagementError('revision_conflict', 'The target revision changed.');
+      }
+      throw error;
     }
   }
 
@@ -5156,6 +5345,24 @@ export class WorkspaceManagementService {
   ): Promise<ImmediateMutation | undefined> {
     const operation = prepared.operation;
     if (!prepared.intendedAfter) return undefined;
+    if (operation.kind === 'set_workspace_model') {
+      const { current } = await this.workspaceModel(operation.role);
+      const effort = operation.model ? operation.modelEffort ?? null : null;
+      return current.revision > operation.expectedRevision &&
+          current.model === operation.model && current.effort === effort
+        ? workspaceModelMutation(operation.role, current.revision, prepared)
+        : undefined;
+    }
+    if (operation.kind === 'set_agent_image_model') {
+      const [agent, imageRole] = await Promise.all([
+        optionalAgent(this.stores.config, operation.agentId),
+        this.stores.config.getAgentModelRole(operation.agentId, 'image'),
+      ]);
+      return agent && agent.credentialIncarnation === prepared.agentCredentialIncarnation &&
+          agent.revision > operation.expectedRevision && (imageRole?.modelId ?? null) === operation.model
+        ? mutationForAgent(agent, agentImageInverse(prepared, agent.revision))
+        : undefined;
+    }
     if (operation.kind === 'update_agent') {
       const current = await this.appliedAgentEdit(actor, operation);
       const before = prepared.before as CustomAgentConfig | undefined;
@@ -5615,6 +5822,9 @@ export class WorkspaceManagementService {
     if (operation.kind === 'remove_provider_credential') {
       return { [`provider:${operation.providerId}`]: await this.providerRevision(operation.providerId) };
     }
+    if (operation.kind === 'set_workspace_model') {
+      return { [`workspace_model:${operation.role}`]: operation.expectedRevision };
+    }
     if (operation.kind === 'request_setup') {
       const { target } = operation;
       if (target.kind === 'provider_credential') {
@@ -5622,6 +5832,9 @@ export class WorkspaceManagementService {
       }
       if (!target.agentId) throw new ManagementError('invalid_request', 'The setup Agent could not be resolved.');
       return { [`agent:${target.agentId}`]: (await this.stores.config.getAgent(target.agentId)).revision };
+    }
+    if (operation.kind === 'set_agent_image_model') {
+      return { [`agent:${operation.agentId}`]: operation.expectedRevision };
     }
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
@@ -5721,6 +5934,11 @@ export class WorkspaceManagementService {
     }
     if (key.startsWith('memory:')) {
       return (await this.stores.memory?.getAgentMemory(key.slice('memory:'.length)))?.revision ?? 0;
+    }
+    if (key.startsWith('workspace_model:')) {
+      const role = key.slice('workspace_model:'.length);
+      if (!isModelRole(role)) throw new ManagementError('invalid_request', 'Unknown Workspace model revision target.');
+      return (await this.workspaceModel(role)).current.revision;
     }
     if (key.startsWith('routine:')) {
       return (await this.stores.routines?.getRoutine(key.slice('routine:'.length)))?.version ?? 0;
@@ -6391,15 +6609,69 @@ function connectionRemoved(agent: CustomAgentConfig, patch: ManagementAgentPatch
   return !keeps(agent.mcpServers, patch.mcpServers) || !keeps(agent.apiConnections, patch.apiConnections);
 }
 
-function uniqueModelChoices(
-  choices: Array<{ id: string; name?: string }>,
-): Array<{ id: string; name?: string }> {
-  const byId = new Map<string, { id: string; name?: string }>();
-  for (const choice of choices) {
-    if (!choice.id || byId.has(choice.id)) continue;
-    byId.set(choice.id, choice);
-  }
-  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+/** The Workspace models Admin Settings edits, with the installation they belong to. */
+interface WorkspaceModelRows {
+  workspaceId: string;
+  chat?: WorkspaceModelDefault;
+  image?: WorkspaceModelRole;
+  coding?: WorkspaceModelRole;
+}
+
+interface WorkspaceModelChoice {
+  model: string | null;
+  effort: ModelEffort | null;
+  revision: number;
+}
+
+function workspaceModelChoice(
+  row: Pick<WorkspaceModelDefault, 'modelId' | 'effort' | 'revision'> | undefined,
+): WorkspaceModelChoice {
+  return { model: row?.modelId ?? null, effort: row?.effort ?? null, revision: row?.revision ?? 0 };
+}
+
+/** What an Agent runs, as Admin's Agent page reports it: its own pins, else the Workspace's. */
+function effectiveAgentModels(
+  model: string | undefined,
+  modelEffort: ModelEffort | undefined,
+  imageModel: string | undefined,
+  workspace: WorkspaceModelRows | undefined,
+): ManagementWorkspaceSnapshot['agents'][number]['effectiveModels'] {
+  return {
+    model: model ?? workspace?.chat?.modelId ?? null,
+    modelSource: model ? 'pinned' : 'workspace_default',
+    effort: (model ? modelEffort : workspace?.chat?.effort) ?? null,
+    imageModel: imageModel ?? workspace?.image?.modelId ?? null,
+    imageModelSource: imageModel ? 'pinned' : 'workspace_default',
+  };
+}
+
+/** How a Workspace model change reads in a preview: the role's model, and its effort where it has one. */
+function workspaceModelPreview(
+  role: ModelRole,
+  choice: Pick<WorkspaceModelChoice, 'model' | 'effort'>,
+): Record<string, string | null> {
+  if (role === 'image') return { defaultImageModel: choice.model };
+  return role === 'chat'
+    ? { defaultModel: choice.model, defaultModelEffort: choice.effort }
+    : { defaultCodingModel: choice.model, defaultCodingModelEffort: choice.effort };
+}
+
+/** A Workspace model change at the revision it left, with its undo aimed there. */
+function workspaceModelMutation(
+  role: ModelRole,
+  revision: number,
+  prepared: ManagementPreparedItem,
+): ImmediateMutation {
+  const inverse = prepared.inverse;
+  return {
+    changed: [{ kind: 'workspace_model', id: role, revision }],
+    ...(inverse?.kind === 'set_workspace_model' ? { inverse: { ...inverse, expectedRevision: revision } } : {}),
+    resultingRevisions: { [`workspace_model:${role}`]: revision },
+  };
+}
+
+function isModelRole(value: string): value is ModelRole {
+  return (MODEL_ROLES as readonly string[]).includes(value);
 }
 
 function selfCapabilityHealth(
@@ -6522,8 +6794,11 @@ function handoffTargetForOperation(
   }
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-      operation.kind === 'update_agent_memory') {
+      operation.kind === 'update_agent_memory' || operation.kind === 'set_agent_image_model') {
     return { kind: 'agent', id: operation.agentId };
+  }
+  if (operation.kind === 'set_workspace_model') {
+    return { kind: 'workspace', id: operation.role };
   }
   if (operation.kind === 'put_channel') {
     return {
@@ -6708,7 +6983,7 @@ function preparedAgentId(operation: ManagementOperation): string | undefined {
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
       operation.kind === 'update_agent_memory' || operation.kind === 'save_routine' ||
-      operation.kind === 'reassign_routine_agent') {
+      operation.kind === 'reassign_routine_agent' || operation.kind === 'set_agent_image_model') {
     return operation.agentId;
   }
   if (operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -6842,7 +7117,9 @@ function managementPreviewTarget(operation: ManagementOperation): string {
   if (operation.kind === 'create_agent') return `agent:${operation.agent.id}`;
   if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
       operation.kind === 'archive_agent' || operation.kind === 'restore_agent' ||
-      operation.kind === 'update_agent_memory') return `agent:${operation.agentId}`;
+      operation.kind === 'update_agent_memory' ||
+      operation.kind === 'set_agent_image_model') return `agent:${operation.agentId}`;
+  if (operation.kind === 'set_workspace_model') return `workspace_model:${operation.role}`;
   if (operation.kind === 'put_channel') {
     return `channel:${channelKey(operation.channel.workspaceId, operation.channel.channelId)}`;
   }
@@ -6981,7 +7258,17 @@ function canExecuteImmediately(operation: ManagementOperation): boolean {
     operation.kind === 'put_channel' || operation.kind === 'grant_agent_channel' ||
     operation.kind === 'revoke_agent_channel' || operation.kind === 'update_agent_memory' ||
     operation.kind === 'save_routine' || operation.kind === 'control_routine' ||
-    operation.kind === 'run_routine';
+    operation.kind === 'run_routine' || operation.kind === 'set_workspace_model' ||
+    operation.kind === 'set_agent_image_model';
+}
+
+/** The image-model undo, aimed at the revision the change left. */
+function agentImageInverse(
+  prepared: ManagementPreparedItem,
+  revision: number,
+): ManagementOperation | undefined {
+  const inverse = prepared.inverse;
+  return inverse?.kind === 'set_agent_image_model' ? { ...inverse, expectedRevision: revision } : undefined;
 }
 
 function invalidatesChangeSetProposal(error: unknown): boolean {

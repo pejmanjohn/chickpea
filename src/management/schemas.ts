@@ -4,6 +4,7 @@ import { skillImportSourceSchema } from '../config/skill-provenance.ts';
 
 import { AGENT_ID_PATTERN } from '../config/agent-id.ts';
 import { MODEL_EFFORTS } from '../config/model-effort.ts';
+import { MODEL_ROLES } from '../config/types.ts';
 import {
   isValidRepositoryGrantShape,
   REPOSITORY_GRANT_SHAPE_MESSAGE,
@@ -24,6 +25,8 @@ export const MANAGEMENT_OPERATION_KINDS = [
   'revoke_agent_channel',
   'update_member',
   'remove_provider_credential',
+  'set_workspace_model',
+  'set_agent_image_model',
   'update_agent_memory',
   'save_routine',
   'control_routine',
@@ -46,6 +49,11 @@ const creationModelEffortDescription = 'Set only when the requester chose a reas
 const modelEffortDescription = 'Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it.';
 const updateRevisionDescription = 'The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn.';
 const zModelEffort = z.enum(MODEL_EFFORTS);
+const workspaceModelRoleDescription = 'chat is the Workspace default model; image and coding are the Workspace image and coding models.';
+const workspaceModelDescription = 'A model from inspect_workspace modelCatalog: chat models for chat and coding, image models for image. null clears the image or coding model; the chat default cannot be cleared.';
+const workspaceModelEffortDescription = 'Chat and coding only, one of the model\'s efforts in modelCatalog. Omit to run the model\'s standard effort.';
+const workspaceModelRevisionDescription = 'The role\'s revision from inspect_workspace workspaceModels; 0 when it was never set.';
+const agentImageModelDescription = 'An image model from inspect_workspace modelCatalog.image. null follows the Workspace image model.';
 
 export const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 export const zSkillImportSource = z.strictObject({
@@ -249,6 +257,21 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     ...zOperationBase,
     kind: z.literal('remove_provider_credential'),
     providerId: z.enum(['anthropic', 'openai', 'openrouter']),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('set_workspace_model'),
+    role: z.enum(MODEL_ROLES).describe(workspaceModelRoleDescription),
+    model: zModelSpecifier.nullable().describe(workspaceModelDescription),
+    modelEffort: zModelEffort.optional().describe(workspaceModelEffortDescription),
+    expectedRevision: zRevision.describe(workspaceModelRevisionDescription),
+  }),
+  z.strictObject({
+    ...zOperationBase,
+    kind: z.literal('set_agent_image_model'),
+    agentId: zAgentId,
+    expectedRevision: zRevision.describe('The Agent revision from inspection.'),
+    model: zModelSpecifier.nullable().describe(agentImageModelDescription),
   }),
   z.strictObject({
     ...zOperationBase,
@@ -582,6 +605,21 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('remove_provider_credential'),
     providerId: v.picklist(['anthropic', 'openai', 'openrouter']),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('set_workspace_model'),
+    role: v.pipe(v.picklist(MODEL_ROLES), v.description(workspaceModelRoleDescription)),
+    model: v.pipe(v.nullable(vModelSpecifier), v.description(workspaceModelDescription)),
+    modelEffort: v.pipe(v.optional(vModelEffort), v.description(workspaceModelEffortDescription)),
+    expectedRevision: v.pipe(vr, v.description(workspaceModelRevisionDescription)),
+  }),
+  v.strictObject({
+    ...vOperationBase,
+    kind: v.literal('set_agent_image_model'),
+    agentId: vAgentId,
+    expectedRevision: v.pipe(vr, v.description('The Agent revision from inspection.')),
+    model: v.pipe(v.nullable(vModelSpecifier), v.description(agentImageModelDescription)),
   }),
   v.strictObject({
     ...vOperationBase,

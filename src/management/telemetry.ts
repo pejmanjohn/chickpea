@@ -71,7 +71,7 @@ const METRIC_TOKENS: Readonly<Record<string, ReadonlySet<string>>> = {
   operation: new Set([
     'create_agent', 'update_agent', 'delete_agent', 'archive_agent', 'restore_agent', 'put_channel',
     'grant_agent_channel', 'revoke_agent_channel',
-    'update_member', 'remove_provider_credential',
+    'update_member', 'remove_provider_credential', 'set_workspace_model', 'set_agent_image_model',
     'update_agent_memory', 'save_routine', 'control_routine', 'run_routine', 'delete_routine',
     'reassign_routine_agent',
     'request_setup',
@@ -196,6 +196,10 @@ export function agentAuthoringArtifactClass(
         break;
       case 'update_agent_memory':
         classes.add('memory');
+        break;
+      case 'set_workspace_model':
+      case 'set_agent_image_model':
+        classes.add('model');
         break;
       case 'save_routine':
       case 'control_routine':

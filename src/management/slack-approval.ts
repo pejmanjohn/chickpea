@@ -189,6 +189,8 @@ const APPROVAL_OPERATION_LABELS: Readonly<Record<ManagementOperation['kind'], st
   revoke_agent_channel: 'Remove an Agent from a Channel',
   update_member: 'Change a member\'s access',
   remove_provider_credential: 'Remove a model provider key',
+  set_workspace_model: 'Change a Workspace model',
+  set_agent_image_model: 'Change an Agent\'s image model',
   update_agent_memory: 'Change an Agent\'s memory',
   save_routine: 'Save a routine',
   control_routine: 'Pause, resume or turn off a routine',
