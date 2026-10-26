@@ -763,14 +763,16 @@ test('expectedRevision 0 never reaches an Agent the call has not created', () =>
         skills: [], mcpServers: [], apiConnections: [], repositories: [],
       },
     });
-    const connect = (id: string): ManagementOperation => ({
+    const connect = (id: string, dependsOn?: string[]): ManagementOperation => ({
       itemId: `connect_${id}`,
-      dependsOn: [`create_${id}`],
+      ...(dependsOn ? { dependsOn } : {}),
       kind: 'update_agent',
       agentId: id,
       expectedRevision: 0,
       patch: { mcpServers: [wikiServer] },
     });
+    // No dependsOn, so the generic rule that a dependency must come earlier
+    // cannot be what refuses the call.
     const response = await invokeWorkspaceManagementTool({
       service: f.service,
       resolveContext: async () => mcpContext(f),
@@ -778,14 +780,19 @@ test('expectedRevision 0 never reaches an Agent the call has not created', () =>
       idempotencyKey: 'connect-before-create',
       operations: [connect('agent_early'), create('agent_early')],
     });
-    assert.equal(response.ok, false, JSON.stringify(response));
-    assert.equal((response as { error: { code: string } }).error.code, 'invalid_request');
-    await assert.rejects(() => f.config.getAgent('agent_early'));
+    assert.deepEqual(response, {
+      ok: false,
+      error: {
+        code: 'invalid_request',
+        message: 'An update_agent with expectedRevision 0 must depend on the create_agent of that Agent earlier in the call.',
+      },
+    });
+    await assert.rejects(() => f.config.getAgent('agent_early'), 'the call writes nothing');
 
     const taken = await seedAgent(f, 'agent_taken', { name: 'Taken' });
     const failed = await mcpApply(f, {
       idempotencyKey: 'failed-create',
-      operations: [create(taken.id), connect(taken.id)],
+      operations: [create(taken.id), connect(taken.id, [`create_${taken.id}`])],
     });
     assert.deepEqual(failed.outcomes.map(({ itemId, disposition, code }) => [itemId, disposition, code]), [
       ['create_agent_taken', 'failed', 'already_exists'],
@@ -802,11 +809,17 @@ test('a recipe overwrite names a header credential only Admin can set, without a
       enabled: true, lifecycleStatus: 'ready', statusText: 'Connected',
       discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
     };
-    const agent = await seedAgent(f, 'agent_keyed', { name: 'Keyed', mcpServers: [keyed] });
+    const unreachable: McpConnectionConfig = {
+      id: 'open', displayName: 'Open', url: 'https://mcp.open.example/mcp', transport: 'streamable-http',
+      authMode: 'none', headerNames: [], enabled: true, lifecycleStatus: 'failed', statusText: 'Unreachable',
+      discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+    };
+    const agent = await seedAgent(f, 'agent_keyed', { name: 'Keyed', mcpServers: [keyed, unreachable] });
     const recipe = await exportRecipe(f, [agent.id]);
     recipe.agents[0]!.mcpRequirements[0]!.url = 'https://mcp.keyed.example/v2/mcp';
     const preview = await previewRecipe(f, recipe, 'update');
-    assert.deepEqual(preview.agents[0]!.setupRequired, ['Keyed (set its credential in Admin)']);
+    assert.deepEqual(preview.agents[0]!.setupRequired, ['Keyed (set its credential in Admin)', 'Open'],
+      'a connection without a credential is named without the Admin credential note');
     assert.deepEqual(preview.operations.map(({ kind }) => kind), ['update_agent']);
     const applied = await mcpApply(f, { idempotencyKey: 'overwrite-keyed', operations: preview.operations });
     assert.equal(applied.status, 'completed', JSON.stringify(applied.outcomes));

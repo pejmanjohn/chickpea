@@ -2009,8 +2009,13 @@ export class WorkspaceManagementService {
     const refused: Array<{ index: number; outcome: ManagementItemOutcome }> = [];
     for (const [offset, operation] of tail.entries()) {
       if (offset === 0) continue;
-      const outcome = waitingOnApproval(operation) ??
-        await this.refusedLaterOperation(actor, operation, proposalAgentIds);
+      // The approval applies only the held items, so a setup that waits on a
+      // refused one could never be issued.
+      const dependencyRefused = operation.kind === 'request_setup' &&
+        refused.some(({ outcome }) => operation.dependsOn?.includes(outcome.itemId));
+      const outcome: ManagementItemOutcome | undefined = dependencyRefused
+        ? { itemId: operation.itemId, operationKind: operation.kind, disposition: 'skipped', code: 'dependency_not_applied' }
+        : waitingOnApproval(operation) ?? await this.refusedLaterOperation(actor, operation, proposalAgentIds);
       if (outcome) refused.push({ index: index + offset, outcome });
       else held.push({ index: index + offset, operation });
     }

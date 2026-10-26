@@ -366,7 +366,9 @@ async function compileRecipeAgent(
     if (connection.lifecycleStatus === 'ready') continue;
     // Management has no setup link for a header credential without bearer or OAuth auth.
     if (connection.authMode === 'none') {
-      setupRequired.push(`${connection.displayName} (set its credential in Admin)`);
+      setupRequired.push(connection.credentialHeaderName && !connection.credentialOptional
+        ? `${connection.displayName} (set its credential in Admin)`
+        : connection.displayName);
       continue;
     }
     setups.push({ kind: 'mcp_connection', connectionId: connection.id });

@@ -500,12 +500,15 @@ test('in Slack, a later new Agent in the same recipe is created by the approval 
       ['configure_b', 'confirmation_required', undefined],
       ['setup_b_mcp_wiki', 'skipped', 'setup_after_approval'],
       ['configure_c', 'skipped', 'revision_conflict'],
-      ['setup_c_mcp_notes', 'skipped', 'setup_after_approval'],
-    ], 'an edit of an Agent the change set creates waits instead of failing the call');
+      ['setup_c_mcp_notes', 'skipped', 'dependency_not_applied'],
+    ], 'an edit of an Agent the change set creates waits, and so does not promise the setup that depends on it');
     assert.deepEqual((await f.management.getChangeSetProposal(result[1]!.proposalId!))?.operations.map(({ itemId }) => itemId),
       ['configure_b', 'create_c']);
 
-    await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
+    const approval = await hostApproves(chickpea, turn('approve'), result[1]!.proposalId!);
+    assert.match(approval.kind === 'message' ? approval.text : '',
+      /^Applied the approved changes\.\n\n\[Connect wiki\]\(http:\/\/localhost\/setup\/[^)]+\)$/,
+      'the receipt carries the one setup link the approval issues and no setup issue');
     const imported = new Map((await f.config.listUserAgents()).map((agent) => [agent.name, agent.mcpServers.map(({ id }) => id)]));
     assert.deepEqual([imported.get('Pilot'), imported.get('Ranger')], [['wiki'], []]);
   } finally {
