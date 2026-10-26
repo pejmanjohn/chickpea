@@ -1243,7 +1243,8 @@
           },
           "expectedRevision": {
            "type": "integer",
-           "minimum": 0
+           "minimum": 0,
+           "description": "The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn."
           },
           "confirmationReason": {
            "const": "recipe_overwrite"
@@ -3089,7 +3090,8 @@
           },
           "expectedRevision": {
            "type": "integer",
-           "minimum": 0
+           "minimum": 0,
+           "description": "The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn."
           },
           "confirmationReason": {
            "const": "recipe_overwrite"

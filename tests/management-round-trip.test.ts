@@ -14,7 +14,11 @@ import type {
   RepositoryGrant,
   SkillConfig,
 } from '../src/config/types.ts';
-import { API_CLIENT_FIELDS, MCP_CLIENT_FIELDS } from '../src/management/agent-connections.ts';
+import {
+  API_CLIENT_FIELDS,
+  MCP_CLIENT_FIELDS,
+  type ManagementMcpConnection,
+} from '../src/management/agent-connections.ts';
 import {
   applyWorkspaceChangesValibotSchema,
   applyWorkspaceChangesZodSchema,
@@ -383,4 +387,98 @@ test('a client cannot forge connection status or discovered tools', () =>
     assert.deepEqual(added!.discoveredTools, [{ name: 'search' }],
       'a new connection starts from the tools the client approved');
     assert.equal(added!.identity, undefined);
+  }));
+
+const wikiServer: ManagementMcpConnection = {
+  id: 'wiki',
+  displayName: 'Wiki',
+  url: 'https://mcp.wiki.example/mcp',
+  transport: 'streamable-http',
+  authMode: 'bearer',
+  headerNames: [],
+  enabled: true,
+  allowedTools: ['search'],
+};
+
+test('a call that creates an Agent configures it at whatever revision publishing left', async () => {
+  let config: Fixture['config'] | undefined;
+  const f = await createManagementAdapterFixture('create-then-configure', {
+    // Publishing a Slack handle writes the new Agent again before the next item runs.
+    publishAgentPresence: async ({ agentId }) => {
+      const agent = await config!.getAgent(agentId);
+      return { agent: await config!.updateAgent(agentId, { description: 'Published.' }, agent.revision) };
+    },
+  });
+  config = f.config;
+  try {
+    const result = await mcpApply(f, {
+      idempotencyKey: 'create-and-configure',
+      operations: [
+        {
+          itemId: 'create',
+          kind: 'create_agent',
+          agent: {
+            id: 'agent_wiki', name: 'Wiki', instructions: 'Answer from the wiki.', enabled: true,
+            skills: [], mcpServers: [], apiConnections: [], repositories: [],
+          },
+        },
+        {
+          itemId: 'connect',
+          dependsOn: ['create'],
+          kind: 'update_agent',
+          agentId: 'agent_wiki',
+          expectedRevision: 0,
+          patch: { mcpServers: [wikiServer] },
+        },
+        {
+          itemId: 'setup',
+          dependsOn: ['connect'],
+          kind: 'request_setup',
+          target: { kind: 'mcp_connection', agentId: 'agent_wiki', connectionId: 'wiki' },
+        },
+      ],
+    });
+    assert.deepEqual(result.outcomes.map(({ disposition }) => disposition),
+      ['applied', 'applied', 'setup_required'], JSON.stringify(result.outcomes));
+    const agent = await f.config.getAgent('agent_wiki');
+    assert.equal(agent.revision, 3, 'creation, publication, then the connection');
+    assert.deepEqual(agent.mcpServers.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]), [['wiki', 'pending']]);
+  } finally {
+    f.close();
+  }
+});
+
+test('expectedRevision 0 names only an Agent the same call creates first', () =>
+  withFixture('revision-zero-scope', async (f) => {
+    const existing = await seedAgent(f, 'agent_existing');
+    const refused = async (idempotencyKey: string, operations: ManagementOperation[]) => {
+      const response = await invokeWorkspaceManagementTool({
+        service: f.service,
+        resolveContext: async () => mcpContext(f),
+      }, 'apply_workspace_changes', { idempotencyKey, operations });
+      assert.equal(response.ok, false, JSON.stringify(response));
+      return (response as { error: { code: string } }).error.code;
+    };
+    const connect = (agentId: string, dependsOn?: string[]): ManagementOperation => ({
+      itemId: 'connect',
+      ...(dependsOn ? { dependsOn } : {}),
+      kind: 'update_agent',
+      agentId,
+      expectedRevision: 0,
+      patch: { mcpServers: [wikiServer] },
+    });
+    assert.equal(await refused('existing-agent', [connect(existing.id)]), 'invalid_request');
+    assert.equal(await refused('no-dependency', [
+      {
+        itemId: 'create',
+        kind: 'create_agent',
+        agent: {
+          id: 'agent_wiki', name: 'Wiki', instructions: 'Answer.', enabled: true,
+          skills: [], mcpServers: [], apiConnections: [], repositories: [],
+        },
+      },
+      connect('agent_wiki'),
+    ]), 'invalid_request');
+    assert.deepEqual((await f.config.getAgent(existing.id)).mcpServers, []);
+    await assert.rejects(() => f.config.getAgent('agent_wiki'));
   }));

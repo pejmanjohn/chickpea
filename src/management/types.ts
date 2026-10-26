@@ -112,6 +112,7 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'update_agent';
       agentId: string;
+      /** 0 names the Agent a create_agent earlier in the same call creates, as that call left it. */
       expectedRevision: number;
       /** Forces confirmation when a portable recipe replaces the Agent definition. */
       confirmationReason?: 'recipe_overwrite';

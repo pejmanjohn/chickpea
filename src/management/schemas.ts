@@ -44,6 +44,7 @@ const repositoryAllReposDescription = 'true grants every repository of accountLo
 const creationModelDescription = 'Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin.';
 const creationModelEffortDescription = 'Set only when the requester chose a reasoning effort for this model.';
 const modelEffortDescription = 'Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it.';
+const updateRevisionDescription = 'The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn.';
 const zModelEffort = z.enum(MODEL_EFFORTS);
 
 export const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
@@ -196,7 +197,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     ...zOperationBase,
     kind: z.literal('update_agent'),
     agentId: zAgentId,
-    expectedRevision: zRevision,
+    expectedRevision: zRevision.describe(updateRevisionDescription),
     confirmationReason: z.literal('recipe_overwrite').optional(),
     patch: zAgentPatch,
   }),
@@ -531,7 +532,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('update_agent'),
     agentId: vAgentId,
-    expectedRevision: vr,
+    expectedRevision: v.pipe(vr, v.description(updateRevisionDescription)),
     confirmationReason: v.optional(v.literal('recipe_overwrite')),
     patch: vAgentPatch,
   }),

@@ -1730,7 +1730,7 @@ export class WorkspaceManagementService {
       );
     }
     assertBaseAgentCreationContract(requestedOperations);
-    assertStandaloneBaseAgentCreation(requestedOperations);
+    assertCreationCallScope(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
       actor,
       requestedOperations,
@@ -1795,7 +1795,7 @@ export class WorkspaceManagementService {
     const readiness = this.requestModelReadiness();
     for (let index = progress.nextIndex; index < request.operations.length; index += 1) {
       const storedOperation = request.operations[index]!;
-      const operation = resolveClientReferences(storedOperation, clientRefs);
+      const operation = resolveClientReferences(storedOperation, clientRefs, progress.outcomes);
       const dependencyFailed = (storedOperation.dependsOn ?? []).some((itemId) =>
         progress.outcomes.find((outcome) => outcome.itemId === itemId)?.disposition !== 'applied');
       if (dependencyFailed) {
@@ -2010,8 +2010,16 @@ export class WorkspaceManagementService {
     changeSet: ManagementChangeSetProposalRecord;
     refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
   } | undefined> {
-    const tail = confirmationTail(request.operations, index, progress.outcomes);
-    if (tail.some(({ kind }) => kind === 'request_setup')) return undefined;
+    const clientRefs = agentClientRefs(request.operations);
+    const tail = confirmationTail(
+      request.operations.map((operation) =>
+        resolveClientReferences(operation, clientRefs, progress.outcomes)),
+      index,
+      progress.outcomes,
+    );
+    if (tail.some(({ kind }) => kind === 'request_setup') || tail.some(editsAgentCreatedLater)) {
+      return undefined;
+    }
     const proposalAgentIds = new Set(tail.flatMap((operation) =>
       operation.kind === 'create_agent' ? [operation.agent.id] : []
     ));
@@ -5699,7 +5707,12 @@ function agentClientRefs(operations: readonly ManagementOperation[]): Map<string
 function resolveClientReferences(
   operation: ManagementOperation,
   clientRefs: Map<string, string>,
+  outcomes: readonly ManagementItemOutcome[],
 ): ManagementOperation {
+  if (editsAgentCreatedLater(operation)) {
+    const revision = agentRevisionWrittenInCall(outcomes, operation.agentId);
+    return revision === undefined ? operation : { ...operation, expectedRevision: revision };
+  }
   if (operation.kind === 'grant_agent_channel' && operation.agentClientRef) {
     const agentId = clientRefs.get(operation.agentClientRef);
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
@@ -5714,6 +5727,25 @@ function resolveClientReferences(
     return { ...operation, target: { ...target, agentId } };
   }
   return operation;
+}
+
+/** An edit of an Agent this call creates, whose revision is known only once the creation applies. */
+function editsAgentCreatedLater(
+  operation: ManagementOperation,
+): operation is Extract<ManagementOperation, { kind: 'update_agent' }> {
+  return operation.kind === 'update_agent' && operation.expectedRevision === 0;
+}
+
+function agentRevisionWrittenInCall(
+  outcomes: readonly ManagementItemOutcome[],
+  agentId: string,
+): number | undefined {
+  for (const outcome of [...outcomes].reverse()) {
+    if (outcome.disposition !== 'applied') continue;
+    const revision = outcome.changed?.find(({ kind, id }) => kind === 'agent' && id === agentId)?.revision;
+    if (revision !== undefined) return revision;
+  }
+  return undefined;
 }
 
 /**
@@ -6459,13 +6491,19 @@ function assertNoLegacyMetaAdsConnections(
   }
 }
 
-function assertStandaloneBaseAgentCreation(
-  operations: readonly ManagementOperation[],
-): void {
-  if (!operations.some(({ kind }) => kind === 'create_agent') || operations.length === 1) return;
+const CREATION_CALL_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([
+  'create_agent',
+  'update_agent',
+  'request_setup',
+]);
+
+/** A call that creates Agents may configure them, but Channel reach and schedules wait for a later call. */
+function assertCreationCallScope(operations: readonly ManagementOperation[]): void {
+  if (!operations.some(({ kind }) => kind === 'create_agent') ||
+      operations.every(({ kind }) => CREATION_CALL_KINDS.has(kind))) return;
   throw new ManagementError(
     'base_agent_capabilities_require_setup',
-    'Create the base Agent in its own request. Add reach, connections, repositories, and schedules afterward.',
+    'A call that creates an Agent can also edit Agents and request setup. Add Channel reach, schedules, and other changes in a later call.',
   );
 }
 
