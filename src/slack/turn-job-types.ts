@@ -49,6 +49,8 @@ interface FlueDispatchEnvelopeV2 extends FlueDispatchEnvelopeBase {
       turnJobId: string;
       /** Authenticated triggering Slack text, kept separate from the assembled model prompt. */
       requesterText?: string;
+      /** Set when requesterText is the host's description of a click or form answer. */
+      requesterTextSource?: 'click';
       requesterTimezone?: string;
       /** Comma-separated Slack file ids; bytes and private URLs remain outside durable state. */
       attachmentFileIds?: string;
