@@ -112,7 +112,7 @@ import {
   managementStorageIdempotencyKey,
   validateManagementOperations,
 } from './contracts.ts';
-import { classifyManagementOperation } from './policy.ts';
+import { classifyManagementOperation, removesMemberAccess } from './policy.ts';
 import {
   exportWorkspaceRecipe,
   previewWorkspaceRecipe,
@@ -2721,6 +2721,9 @@ export class WorkspaceManagementService {
       }];
     }
     if (operation.kind === 'update_member') {
+      // The revoke after the write may not have run, so a membership that
+      // already holds an access-ending status is not yet applied.
+      if (removesMemberAccess(operation.status)) return undefined;
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       return membership && (!operation.role || membership.role === operation.role) &&
         (!operation.status || membership.status === operation.status)
@@ -5279,20 +5282,25 @@ export class WorkspaceManagementService {
         membershipId === operation.membershipId)?.betterAuthUserId;
       const statusChanges = operation.status !== undefined && operation.status !== before?.status;
       const roleChanges = operation.role !== undefined && operation.role !== before?.role;
+      // A retry finds the status already held and must still end access.
+      const endsGrants = statusChanges || removesMemberAccess(operation.status);
       const change = async (revoker: BetterAuthAccessRevoker | undefined) => {
         // Access ends before the membership changes, so a failed revoke
         // leaves the change unapplied for a retry, never applied with the
-        // person still signed in. A status change ends MCP grants too; a role
-        // change only needs new sessions, because the MCP resource rereads
-        // the role on every request.
+        // person still signed in. A status change revokes again after the
+        // write, because a client can refresh in between while the membership
+        // is still active; a failure there fails the change, and the retry
+        // revokes again. A status change ends MCP grants too; a role change
+        // only needs new sessions, because the MCP resource rereads the role
+        // on every request.
         if (revoker && betterAuthUserId) {
-          if (statusChanges) {
+          if (endsGrants) {
             await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
           } else if (roleChanges) {
             await revoker.deleteSessionsForUser(betterAuthUserId);
           }
         }
-        return this.stores.identity.updateMembershipAuthority({
+        const result = await this.stores.identity.updateMembershipAuthority({
           membershipId: operation.membershipId,
           ...(operation.role ? { role: operation.role } : {}),
           ...(operation.status ? { status: operation.status } : {}),
@@ -5304,6 +5312,10 @@ export class WorkspaceManagementService {
             : 'workspace_management_confirmation',
           idempotencyKey: `management:${proposalId}`,
         });
+        if (endsGrants && revoker && betterAuthUserId) {
+          await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+        }
+        return result;
       };
       const result = this.stores.withBetterAuthAccessRevoker
         ? await this.stores.withBetterAuthAccessRevoker(change)
@@ -5696,11 +5708,10 @@ export class WorkspaceManagementService {
       const membership = await this.stores.identity.getMembership(operation.membershipId);
       if (membership && (!operation.role || membership.role === operation.role) &&
           (!operation.status || membership.status === operation.status)) {
-        changed = [{
-          kind: 'membership',
-          id: membership.id,
-          revision: membershipRevision(membership),
-        }];
+        // The revoke after the write may not have run, so run the change again.
+        changed = removesMemberAccess(operation.status)
+          ? (await this.executeConfirmed(actor, operation, proposal.proposalId, prepared)).changed
+          : [{ kind: 'membership', id: membership.id, revision: membershipRevision(membership) }];
       }
     } else if (operation.kind === 'remove_provider_credential') {
       const source = await this.stores.providerCredentialSource?.(operation.providerId) ?? 'missing';

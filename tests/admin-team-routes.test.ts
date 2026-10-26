@@ -283,7 +283,12 @@ test('membership updates delegate to the shared management service', async () =>
     );
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal((await identity.getMembership(member.resolution!.membership.id))?.status, 'suspended');
-    assert.deepEqual(revoked, ['oauth-grants:ba_user_managed', 'sessions:ba_user_managed']);
+    assert.deepEqual(revoked, [
+      'oauth-grants:ba_user_managed',
+      'sessions:ba_user_managed',
+      'oauth-grants:ba_user_managed',
+      'sessions:ba_user_managed',
+    ]);
   } finally {
     identity.close();
     config.close();

@@ -515,7 +515,9 @@ test('a management status change ends Better Auth grants; a role change ends ses
       'sessions:ba_user_member-access-revoke_member',
       'oauth-grants:ba_user_member-access-revoke_member',
       'sessions:ba_user_member-access-revoke_member',
-    ]);
+      'oauth-grants:ba_user_member-access-revoke_member',
+      'sessions:ba_user_member-access-revoke_member',
+    ], 'a status change revokes before the write and again after it');
   }, {
     withBetterAuthAccessRevoker: (use) => use({
       async deleteSessionsForUser(userId: string) {
@@ -560,6 +562,8 @@ test('a suspension whose sign-out fails is not applied, and asking again ends gr
     assert.deepEqual(revoked, [
       'oauth-grants:ba_user_member-access-revoke-retry_member',
       'sessions:ba_user_member-access-revoke-retry_member',
+      'oauth-grants:ba_user_member-access-revoke-retry_member',
+      'sessions:ba_user_member-access-revoke-retry_member',
     ]);
   }, {
     withBetterAuthAccessRevoker: (use) => use({
@@ -574,6 +578,111 @@ test('a suspension whose sign-out fails is not applied, and asking again ends gr
       },
     }),
   });
+});
+
+/**
+ * Better Auth holding MCP refresh tokens. A client refreshes right after each
+ * revoke, and a token is issued only while the membership is still active.
+ * Revoke number `failRevoke` throws before it removes anything.
+ */
+function refreshingBetterAuth(options: { failRevoke?: number } = {}) {
+  const grants = new Set<string>();
+  let revokes = 0;
+  let memberStatus: () => Promise<string | undefined> = async () => undefined;
+  const withBetterAuthAccessRevoker: WorkspaceManagementServiceInput['withBetterAuthAccessRevoker'] =
+    (use) => use({
+      async deleteSessionsForUser() {
+        return 1;
+      },
+      async revokeOAuthGrantsForUser() {
+        revokes += 1;
+        if (revokes === options.failRevoke) throw new Error('Better Auth is unavailable.');
+        grants.clear();
+        if (await memberStatus() === 'active') grants.add(`refresh-after-revoke-${revokes}`);
+        return { consents: 1, accessTokens: 1, refreshTokens: 1 };
+      },
+    });
+  return {
+    grants,
+    withBetterAuthAccessRevoker,
+    watchMember(f: Fixture) {
+      memberStatus = async () => (await f.identity.getMembership(f.member.membership.id))?.status;
+    },
+  };
+}
+
+async function suspendMember(f: Fixture, key: string): Promise<ManagementApplyResult> {
+  const proposed = await apply(f, mcp(f.owner), key, [{
+    itemId: 'member',
+    kind: 'update_member',
+    membershipId: f.member.membership.id,
+    status: 'suspended',
+  }]);
+  assert.equal(proposed.status, 'confirmation_required', JSON.stringify(proposed.outcomes));
+  return f.service.confirmWorkspaceChange({
+    context: mcp(f.owner),
+    proposalId: proposed.outcomes[0]!.proposalId!,
+  });
+}
+
+test('a token issued between the first revoke and the suspension does not outlive it', async () => {
+  const betterAuth = refreshingBetterAuth();
+  await withFixture('member-access-revoke-window', async (f) => {
+    betterAuth.watchMember(f);
+    const suspended = await suspendMember(f, 'suspend');
+    assert.equal(suspended.outcomes[0]?.disposition, 'applied', JSON.stringify(suspended.outcomes));
+    assert.equal((await f.identity.getMembership(f.member.membership.id))?.status, 'suspended');
+    assert.deepEqual([...betterAuth.grants], [], 'a grant issued while the member was active outlived the suspension');
+  }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
+});
+
+test('a suspension whose revoke after the write fails is not applied, and asking again ends grants', async () => {
+  const betterAuth = refreshingBetterAuth({ failRevoke: 2 });
+  await withFixture('member-access-revoke-after', async (f) => {
+    betterAuth.watchMember(f);
+    const failed = await suspendMember(f, 'suspend');
+    assert.equal(failed.outcomes[0]?.disposition, 'failed', JSON.stringify(failed.outcomes));
+    assert.equal(
+      (await f.identity.getMembership(f.member.membership.id))?.status,
+      'suspended',
+      'the write stands; only the sign-out is left to finish',
+    );
+
+    const retried = await suspendMember(f, 'suspend-again');
+    assert.equal(retried.outcomes[0]?.disposition, 'applied', JSON.stringify(retried.outcomes));
+    assert.deepEqual([...betterAuth.grants], [], 'the retry ended the grants the failed attempt left');
+  }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
+});
+
+test('a single-operation suspension whose revoke after the write fails ends grants when confirmed again', async () => {
+  const betterAuth = refreshingBetterAuth({ failRevoke: 2 });
+  await withFixture('member-access-revoke-single', async (f) => {
+    betterAuth.watchMember(f);
+    const context = chickpeaDm(f, f.owner);
+    // A setup request beside the suspension keeps it out of a change set.
+    const proposed = await apply(f, context, 'suspend-with-setup', [{
+      itemId: 'member',
+      kind: 'update_member',
+      membershipId: f.member.membership.id,
+      status: 'suspended',
+    }, {
+      itemId: 'setup',
+      kind: 'request_setup',
+      target: { kind: 'provider_credential', providerId: 'openai' },
+    }]);
+    const proposalId = proposed.outcomes[0]?.proposalId;
+    assert.ok(proposalId, JSON.stringify(proposed.outcomes));
+
+    await assert.rejects(
+      f.service.confirmWorkspaceChange({ context, proposalId }),
+      /Better Auth is unavailable/,
+    );
+    assert.equal((await f.identity.getMembership(f.member.membership.id))?.status, 'suspended');
+
+    const retried = await f.service.confirmWorkspaceChange({ context, proposalId });
+    assert.equal(retried.outcomes[0]?.disposition, 'applied', JSON.stringify(retried.outcomes));
+    assert.deepEqual([...betterAuth.grants], [], 'the retry ended the grants the failed attempt left');
+  }, { withBetterAuthAccessRevoker: betterAuth.withBetterAuthAccessRevoker });
 });
 
 test('an idempotency key is scoped to the client that sent it', () =>
