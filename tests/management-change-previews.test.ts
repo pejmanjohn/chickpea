@@ -3,7 +3,14 @@ import { test } from 'node:test';
 import * as v from 'valibot';
 
 import { allowedToolsAfterMcpDiscovery } from '../src/config/mcp-access.ts';
-import type { CustomAgentConfig } from '../src/config/types.ts';
+import type {
+  ConnectionAccount,
+  ConnectionAccountApiPolicy,
+  ConnectionAccountMcpPolicy,
+  CustomAgentConfig,
+  McpConnectionToolInfo,
+} from '../src/config/types.ts';
+import type { ManagementApiConnection, ManagementMcpConnection } from '../src/management/agent-connections.ts';
 import {
   applyWorkspaceChangesZodSchema,
   slackApplyWorkspaceChangesValibotSchema,
@@ -49,21 +56,18 @@ const PUBLISHED_PRESENCE: NonNullable<CustomAgentConfig['slackPresence']> = {
   observedAt: 1_792_968_987_675,
 };
 
-const knowledgeServer = {
+const knowledge: ManagementMcpConnection = {
   id: 'mcp_knowledge',
   displayName: 'Knowledge',
   url: 'https://mcp.example.test/mcp',
-  transport: 'streamable-http' as const,
-  authMode: 'none' as const,
+  transport: 'streamable-http',
+  authMode: 'none',
   headerNames: [],
   enabled: true,
-  lifecycleStatus: 'pending' as const,
-  statusText: '',
-  discoveredTools: [],
   allowedTools: [],
 };
 
-const billingApi = {
+const billingApi: ManagementApiConnection = {
   id: 'api_billing',
   displayName: 'Billing',
   allowedHosts: ['billing.example.test'],
@@ -124,7 +128,7 @@ function assertNoInternals(text: string): void {
     /\bU[A-Z0-9]{8,}\b/,
     new RegExp(USER_GROUP_ID),
     new RegExp(SECRET_SEED),
-    /\bmcp_knowledge\b|\bapi_billing\b/,
+    /\bmcp_knowledge\b|\bapi_billing\b|\b(?:connection|secret)_[a-z0-9]/,
     /userGroupId|observedAt|normalizedHandle|desiredState|credentialRef|lifecycleStatus/,
     /configurationGeneration|creatorMembershipId|credentialIncarnation/,
     /\b(?:Id|Kind|Slack Presence|Avatar|Revision|Lifecycle|Generation|Creator|Credential|Incarnation)\b/,
@@ -157,6 +161,64 @@ async function grant(f: Fixture, agentId: string, channelId: string, channelLabe
     createdByMembershipId: f.owner.membership.id,
     channelLabel,
   });
+}
+
+type StoredAccount = Omit<ConnectionAccount, 'revision' | 'updatedAt'>;
+
+/** Binds a team connection account to the Agent with server-owned state a client cannot write. */
+async function bindConnection(
+  f: Fixture,
+  agentId: string,
+  connection: ManagementMcpConnection | ManagementApiConnection,
+  state: {
+    lifecycle?: Exclude<ConnectionAccount['lifecycle'], 'revoked'>;
+    discoveredTools?: McpConnectionToolInfo[];
+  } = {},
+): Promise<StoredAccount> {
+  const workspaceId = f.owner.binding.slackTeamId;
+  await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', teamId: workspaceId });
+  const id = `connection_${agentId}_${connection.id}`;
+  const { account } = await f.config.createAgentOwnedConnection({
+    account: {
+      id,
+      workspaceId,
+      ownerKind: 'team',
+      createdByMembershipId: f.owner.membership.id,
+      providerId: connection.id,
+      label: connection.displayName,
+      policy: accountPolicy(connection, state.discoveredTools ?? []),
+      secretRefId: `secret_${agentId}_${connection.id}`,
+      lifecycle: state.lifecycle ?? 'ready',
+    },
+    binding: { agentId, connectionAccountId: id, providerId: connection.id, allowedCapabilities: [], enabled: true },
+  });
+  return withoutBookkeeping(account);
+}
+
+function accountPolicy(
+  connection: ManagementMcpConnection | ManagementApiConnection,
+  discoveredTools: McpConnectionToolInfo[],
+): ConnectionAccountMcpPolicy | ConnectionAccountApiPolicy {
+  if ('url' in connection) {
+    const { id: _id, displayName: _displayName, enabled: _enabled, ...policy } = connection;
+    return { kind: 'mcp', ...policy, discoveredTools };
+  }
+  const { id: _id, displayName: _displayName, enabled: _enabled, ...policy } = connection;
+  return { kind: 'api', authMode: 'credential', ...policy };
+}
+
+/** The Agent's live connection accounts by provider id. */
+async function boundAccounts(f: Fixture, agentId: string): Promise<Map<string, StoredAccount>> {
+  const bound = new Set((await f.config.listAgentConnectionBindings(agentId))
+    .map(({ connectionAccountId }) => connectionAccountId));
+  const accounts = await f.config.listConnectionAccounts(f.owner.binding.slackTeamId);
+  return new Map(accounts
+    .filter(({ id, lifecycle }) => bound.has(id) && lifecycle !== 'revoked')
+    .map((account) => [account.providerId, withoutBookkeeping(account)]));
+}
+
+function withoutBookkeeping({ revision: _revision, updatedAt: _updatedAt, ...account }: ConnectionAccount): StoredAccount {
+  return account;
 }
 
 test('archive and restore previews state the operation and its reach, not field diffs', () =>
@@ -430,10 +492,11 @@ test('a member change with no role or status names the member and the operation'
 test('a connection removal preview names the connection and the Agent', () =>
   withFixture('preview-connection', async (f) => {
     for (const [field, entry, name] of [
-      ['mcpServers', knowledgeServer, 'Knowledge'],
+      ['mcpServers', knowledge, 'Knowledge'],
       ['apiConnections', billingApi, 'Billing'],
     ] as const) {
-      const agent = await createAgent(f, `agent_remove_${field.toLowerCase()}`, { [field]: [entry] });
+      const agent = await createAgent(f, `agent_remove_${field.toLowerCase()}`);
+      await bindConnection(f, agent.id, entry);
       const removal = await preview(f, mcpContext(f), `remove-${field}`, [{
         itemId: 'remove',
         kind: 'update_agent',
@@ -450,15 +513,13 @@ test('a connection removal preview names the connection and the Agent', () =>
     }
   }));
 
-const reviewedKnowledge = {
-  ...knowledgeServer,
-  lifecycleStatus: 'ready' as const,
-  discoveredTools: [{ name: 'search' }],
-  allowedTools: ['search'],
-  oauthScope: 'read',
-};
+const reviewedKnowledge: ManagementMcpConnection = { ...knowledge, allowedTools: ['search'], oauthScope: 'read' };
 
-const repointedKnowledge = {
+function bindReviewedKnowledge(f: Fixture, agentId: string): Promise<StoredAccount> {
+  return bindConnection(f, agentId, reviewedKnowledge, { discoveredTools: [{ name: 'search' }] });
+}
+
+const repointedKnowledge: ManagementMcpConnection = {
   ...reviewedKnowledge,
   url: 'https://mcp.attacker.test/mcp',
   allowedTools: ['search', 'export_all'],
@@ -473,20 +534,10 @@ const REPOINT_LINES = [
   'Changes: Discovered tools.',
 ];
 
-/** A connection's stored credential reference must never reach the person. */
-async function assertNoCredentialReference(f: Fixture, agentId: string, presentation: ManagementPresentation) {
-  const stored = await f.config.getAgent(agentId);
-  const references = [...stored.mcpServers, ...stored.apiConnections].flatMap(({ credentialRef }) =>
-    credentialRef ? [credentialRef] : []);
-  assert.ok(references.length > 0, 'the fixture stores a credential reference');
-  for (const text of [presentation.slack, presentation.markdown]) {
-    for (const reference of references) assert.ok(!text.includes(reference), `preview leaks ${reference}`);
-  }
-}
-
 test('a Slack change set that re-points an MCP connection shows both URLs and the widened access', () =>
   withFixture('preview-repoint-slack', async (f) => {
-    const agent = await createAgent(f, 'agent_repoint_slack', { mcpServers: [reviewedKnowledge] });
+    const agent = await createAgent(f, 'agent_repoint_slack');
+    await bindReviewedKnowledge(f, agent.id);
     const shown = await preview(f, slackContext(f), 'repoint-slack', [{
       itemId: 'repoint',
       kind: 'update_agent',
@@ -497,13 +548,13 @@ test('a Slack change set that re-points an MCP connection shows both URLs and th
 
     assert.equal(shown.slack, slackPreview('Update *Knowledge* on *Research* (@research).', ...REPOINT_LINES));
     assert.equal(shown.markdown, markdownPreview('Update **Knowledge** on **Research** (@research).', ...REPOINT_LINES));
-    await assertNoCredentialReference(f, agent.id, shown);
   }));
 
 test('the MCP confirmation for a removal also shows a connection the same patch re-points', () =>
   withFixture('preview-repoint-mcp', async (f) => {
-    const other = { ...knowledgeServer, id: 'mcp_other', displayName: 'Other' };
-    const agent = await createAgent(f, 'agent_repoint_mcp', { mcpServers: [reviewedKnowledge, other] });
+    const agent = await createAgent(f, 'agent_repoint_mcp');
+    await bindReviewedKnowledge(f, agent.id);
+    await bindConnection(f, agent.id, { ...knowledge, id: 'mcp_other', displayName: 'Other' });
     const shown = await preview(f, mcpContext(f), 'repoint-mcp', [{
       itemId: 'repoint',
       kind: 'update_agent',
@@ -524,42 +575,53 @@ test('the MCP confirmation for a removal also shows a connection the same patch 
       'Update *Knowledge* on *Research* (@research).',
       ...REPOINT_LINES,
     ));
-    await assertNoCredentialReference(f, agent.id, shown);
   }));
 
 test('a proposed API connection edit shows an added host with Slack control text neutralized', () =>
   withFixture('preview-api-host', async (f) => {
-    const agent = await createAgent(f, 'agent_api_host', { apiConnections: [billingApi] });
-    const shown = await propose(f, 'api-host', [{
+    const agent = await createAgent(f, 'agent_api_host');
+    await bindConnection(f, agent.id, billingApi);
+    const widen = (edit: Partial<ManagementApiConnection>): ManagementOperation[] => [{
       itemId: 'widen',
       kind: 'update_agent',
       agentId: agent.id,
       expectedRevision: agent.revision,
-      patch: {
-        apiConnections: [{
-          ...billingApi,
-          allowedHosts: [...billingApi.allowedHosts, '<!channel>.evil.test'],
-          allowedMethods: ['GET', 'DELETE'],
-        }],
-      },
-    }]);
+      patch: { apiConnections: [{ ...billingApi, ...edit }] },
+    }];
+    const shown = await propose(f, 'api-host', widen({
+      displayName: '<!channel> Billing',
+      allowedHosts: [...billingApi.allowedHosts, 'payments.example.test'],
+      allowedMethods: ['GET', 'DELETE'],
+    }));
 
     assert.equal(shown.slack, slackPreview(
-      'Update *Billing* on *Research* (@research).',
-      'Adds hosts: `&lt;!channel&gt;.evil.test`.',
+      'Update *&lt;!channel&gt; Billing* on *Research* (@research).',
+      'Adds hosts: `payments.example.test`.',
       'Adds methods: `DELETE`.',
+      'Name changes from *Billing* to *&lt;!channel&gt; Billing*.',
     ));
     assert.equal(shown.markdown, markdownPreview(
-      'Update **Billing** on **Research** (@research).',
-      'Adds hosts: `<!channel>.evil.test`.',
+      'Update **<!channel> Billing** on **Research** (@research).',
+      'Adds hosts: `payments.example.test`.',
       'Adds methods: `DELETE`.',
+      'Name changes from **Billing** to **<!channel> Billing**.',
     ));
-    await assertNoCredentialReference(f, agent.id, shown);
+
+    const refused = await invokeWorkspaceManagementTool({
+      service: f.service,
+      resolveContext: async () => mcpContext(f),
+    }, 'propose_workspace_changes', {
+      ...authoringProposalMetadata('api-control-host'),
+      operations: widen({ allowedHosts: [...billingApi.allowedHosts, '<!channel>.evil.test'] }),
+    });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.match(JSON.stringify(refused), /Connection api_billing has a host that is not allowed\./);
   }));
 
 test('a recipe overwrite shows the access it changes on an existing connection', () =>
   withFixture('preview-recipe-overwrite', async (f) => {
-    const agent = await createAgent(f, 'agent_recipe_overwrite', { mcpServers: [reviewedKnowledge] });
+    const agent = await createAgent(f, 'agent_recipe_overwrite');
+    await bindReviewedKnowledge(f, agent.id);
     const call = async <T>(tool: string, args: Record<string, unknown>): Promise<T> => {
       const response = await invokeWorkspaceManagementTool({
         service: f.service,
@@ -590,14 +652,13 @@ test('a recipe overwrite shows the access it changes on an existing connection',
       assert.ok(shown.markdown.includes(`\n${line}\n`), `${line}\n---\n${shown.markdown}`);
       assert.ok(shown.slack.includes(`\n${line}\n`), `${line}\n---\n${shown.slack}`);
     }
-    await assertNoCredentialReference(f, agent.id, shown);
   }));
 
 test('a proposal whose widened access cannot fit in one preview is refused, not truncated', () =>
   withFixture('preview-access-overflow', async (f) => {
     const agent = await createAgent(f, 'agent_access_overflow');
     const servers = Array.from({ length: 30 }, (_, index) => ({
-      ...knowledgeServer,
+      ...knowledge,
       id: `mcp_overflow_${index}`,
       displayName: `Overflow ${index}`,
       url: `https://mcp${index}.example.test/${'a'.repeat(1_900)}`,
@@ -620,52 +681,35 @@ test('a proposal whose widened access cannot fit in one preview is refused, not 
     assert.match(JSON.stringify(response), /too long to show in one preview\. Split it into smaller proposals\./);
   }));
 
-test('a connection added turned off, then turned on, shows where it points in both previews', () =>
+test('a connection turned off, new or existing, is refused before any preview', () =>
   withFixture('preview-disabled-reach', async (f) => {
     const agent = await createAgent(f, 'agent_disabled_reach');
-    const docs = {
-      ...knowledgeServer,
-      id: 'mcp_docs',
-      displayName: 'Docs',
-      url: 'https://mcp.attacker.test/mcp',
-      allowedTools: ['export_all'],
-      enabled: false,
-    };
-    const reach = [
-      'Server URL: `https://mcp.attacker.test/mcp`.',
-      'Authentication: None.',
-      'Allowed tools: `export_all`.',
-    ];
+    const seeded = await bindConnection(f, agent.id, knowledge);
+    for (const [door, context] of [['slack', slackContext(f)], ['mcp', mcpContext(f)]] as const) {
+      for (const [id, mcpServers] of [
+        ['mcp_docs', [knowledge, { ...knowledge, id: 'mcp_docs', displayName: 'Docs', enabled: false }]],
+        ['mcp_knowledge', [{ ...knowledge, enabled: false }]],
+      ] as const) {
+        const response = await invokeWorkspaceManagementTool({
+          service: f.service,
+          resolveContext: async () => context,
+        }, 'apply_workspace_changes', {
+          idempotencyKey: `disabled-${door}-${id}`,
+          operations: [{
+            itemId: 'disable',
+            kind: 'update_agent',
+            agentId: agent.id,
+            expectedRevision: agent.revision,
+            patch: { mcpServers: [...mcpServers] },
+          }],
+        });
 
-    const added = await apply(f, slackContext(f), 'add-disabled', [{
-      itemId: 'add',
-      kind: 'update_agent',
-      agentId: agent.id,
-      expectedRevision: agent.revision,
-      patch: { instructions: 'Cite every source. '.repeat(700), mcpServers: [docs] },
-    }]);
-    assert.equal(added.status, 'confirmation_required', JSON.stringify(added.outcomes));
-    const addedSlack = added.presentation?.slack ?? '';
-    assert.match(addedSlack, /Preview truncated to fit Slack/);
-    const addSection = ['Add *Docs* to *Research* (@research).', ...reach, 'Status: Disabled.'].join('\n');
-    assert.ok(addedSlack.includes(addSection), addedSlack.slice(0, 800));
-
-    const proposalId = added.outcomes[0]?.proposalId;
-    assert.ok(proposalId);
-    await f.service.confirmWorkspaceChange({ context: withPersonApproval(slackContext(f), proposalId), proposalId });
-    const stored = await f.config.getAgent(agent.id);
-    assert.equal(stored.mcpServers[0]?.url, docs.url);
-
-    const turnedOn = await preview(f, slackContext(f), 'turn-on', [{
-      itemId: 'turn-on',
-      kind: 'update_agent',
-      agentId: agent.id,
-      expectedRevision: stored.revision,
-      patch: { mcpServers: [{ ...docs, enabled: true }] },
-    }]);
-    const lines = ['Status changes from Disabled to Enabled.', ...reach];
-    assert.equal(turnedOn.slack, slackPreview('Update *Docs* on *Research* (@research).', ...lines));
-    assert.equal(turnedOn.markdown, markdownPreview('Update **Docs** on **Research** (@research).', ...lines));
+        assert.equal(response.ok, false, `${door}: ${JSON.stringify(response).slice(0, 500)}`);
+        assert.match(JSON.stringify(response),
+          new RegExp(`Connection ${id} cannot be turned off\\. Remove it to stop the Agent using it\\.`), door);
+      }
+    }
+    assert.deepEqual(await boundAccounts(f, agent.id), new Map([[knowledge.id, seeded]]), 'nothing was written');
   }));
 
 test('an Agent with two skills of the same name is refused before any preview', () =>
@@ -707,19 +751,10 @@ const DOORS = {
   },
 } as const;
 
-const knowledgeClient = {
-  id: 'mcp_knowledge',
-  displayName: 'Knowledge',
-  url: 'https://mcp.example.test/mcp',
-  transport: 'streamable-http' as const,
-  authMode: 'bearer' as const,
-  headerNames: [],
-  enabled: true,
-  allowedTools: ['search'],
-};
+const knowledgeClient: ManagementMcpConnection = { ...knowledge, authMode: 'bearer', allowedTools: ['search'] };
 
 /** Removed by every forged edit below, so the MCP door asks for approval too. */
-const otherServer = { ...knowledgeServer, id: 'mcp_other', displayName: 'Other' };
+const otherServer: ManagementMcpConnection = { ...knowledge, id: 'mcp_other', displayName: 'Other' };
 
 /**
  * Sends an edit carrying server-owned connection fields through one door. The
@@ -733,7 +768,7 @@ async function forgedEditThroughDoor(
   agent: CustomAgentConfig,
   patches: { client: Record<string, unknown>; forged: Record<string, unknown> },
   lines: string[],
-): Promise<CustomAgentConfig> {
+): Promise<Map<string, StoredAccount>> {
   const { schemaAccepts, context, approval } = DOORS[door];
   const payload = (patch: Record<string, unknown>) => ({
     idempotencyKey: `forged-${door}`,
@@ -755,22 +790,21 @@ async function forgedEditThroughDoor(
   assert.equal(result.presentation?.markdown, markdownPreview(...lines), door);
   const proposalId = result.outcomes[0]?.proposalId;
   assert.ok(proposalId, door);
-  await f.service.confirmWorkspaceChange({ context: approval(f, proposalId), proposalId });
-  return f.config.getAgent(agent.id);
+  const confirmed = await f.service.confirmWorkspaceChange({ context: approval(f, proposalId), proposalId });
+  assert.equal(confirmed.status, 'completed', `${door}: ${JSON.stringify(confirmed)}`);
+  return boundAccounts(f, agent.id);
 }
 
 test('an edit cannot mark a pending or failed connection ready on either door', () =>
   withFixture('forged-ready', async (f) => {
     for (const door of ['mcp', 'slack'] as const) {
-      const seeded = await createAgent(f, `agent_forged_ready_${door}`, {
-        mcpServers: [{
-          ...knowledgeClient,
-          lifecycleStatus: 'pending',
-          statusText: 'Setup required',
-          discoveredTools: [{ name: 'search' }],
-        }, otherServer],
-        apiConnections: [{ ...billingApi, lifecycleStatus: 'failed', statusText: 'Unreachable' }],
+      const seeded = await createAgent(f, `agent_forged_ready_${door}`);
+      const pending = await bindConnection(f, seeded.id, knowledgeClient, {
+        lifecycle: 'pending',
+        discoveredTools: [{ name: 'search' }],
       });
+      await bindConnection(f, seeded.id, otherServer);
+      const failed = await bindConnection(f, seeded.id, billingApi, { lifecycle: 'needs_attention' });
       const client = {
         mcpServers: [{ ...knowledgeClient, displayName: 'Wiki' }],
         apiConnections: [{ ...billingApi, displayName: 'Invoices' }],
@@ -791,22 +825,21 @@ test('an edit cannot mark a pending or failed connection ready on either door', 
         'Name changes from **Billing** to **Invoices**.',
       ]);
 
-      assert.deepEqual(stored.mcpServers, [{ ...seeded.mcpServers[0]!, displayName: 'Wiki' }], door);
-      assert.deepEqual(stored.apiConnections, [{ ...seeded.apiConnections[0]!, displayName: 'Invoices' }], door);
+      assert.deepEqual(stored, new Map([
+        [knowledgeClient.id, { ...pending, label: 'Wiki' }],
+        [billingApi.id, { ...failed, label: 'Invoices' }],
+      ]), door);
     }
   }));
 
 test('an edit cannot clear a connection\'s discovered tools on either door', () =>
   withFixture('forged-discovery', async (f) => {
     for (const door of ['mcp', 'slack'] as const) {
-      const seeded = await createAgent(f, `agent_forged_discovery_${door}`, {
-        mcpServers: [{
-          ...knowledgeClient,
-          lifecycleStatus: 'ready',
-          statusText: 'Connected',
-          discoveredTools: [{ name: 'search' }, { name: 'read_page' }],
-        }, otherServer],
+      const seeded = await createAgent(f, `agent_forged_discovery_${door}`);
+      const discovered = await bindConnection(f, seeded.id, knowledgeClient, {
+        discoveredTools: [{ name: 'search' }, { name: 'read_page' }],
       });
+      await bindConnection(f, seeded.id, otherServer);
       const client = { mcpServers: [{ ...knowledgeClient, displayName: 'Wiki' }] };
       const stored = await forgedEditThroughDoor(f, door, seeded, {
         client,
@@ -818,9 +851,11 @@ test('an edit cannot clear a connection\'s discovered tools on either door', () 
         'Name changes from **Knowledge** to **Wiki**.',
       ]);
 
-      assert.deepEqual(stored.mcpServers, [{ ...seeded.mcpServers[0]!, displayName: 'Wiki' }], door);
+      assert.deepEqual(stored, new Map([[knowledgeClient.id, { ...discovered, label: 'Wiki' }]]), door);
+      const { policy } = stored.get(knowledgeClient.id)!;
+      assert.ok(policy.kind === 'mcp', door);
       const offered = ['search', 'read_page', 'delete_everything'].map((name) => ({ name }));
-      assert.deepEqual(allowedToolsAfterMcpDiscovery(stored.mcpServers[0]!, offered), ['search'],
+      assert.deepEqual(allowedToolsAfterMcpDiscovery(policy, offered), ['search'],
         `${door}: the next discovery still grants only the approved tools`);
     }
   }));
