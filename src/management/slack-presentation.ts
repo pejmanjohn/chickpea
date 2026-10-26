@@ -9,7 +9,12 @@ import {
 } from './change-set-presentation.ts';
 import type { ManagementChangeSetPreview } from './types.ts';
 
-/** Slack mrkdwn: single-asterisk bold, control-character escaping, block limit. */
+/**
+ * Slack mrkdwn: single-asterisk bold, control-character escaping, block limit.
+ * Bold text drops formatting characters, as the receipts do for names, so a
+ * name cannot end the bold early. Quoted values keep them: they are the exact
+ * text the change applies, such as a cron schedule.
+ */
 export const SLACK_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
   header: '*Proposed changes*',
   approvalInstruction: 'Reply `approve` to apply these exact changes, or tell me what to adjust.',
@@ -17,7 +22,7 @@ export const SLACK_PRESENTATION_DIALECT: ChangeSetPresentationDialect = {
     'Reply `approve` to apply the full proposed changes, or tell me what to adjust.',
   truncationNotice: '_Preview truncated to fit Slack. Approval applies the full proposed changes._',
   textLimit: slackMarkdownBlockTextLimit,
-  bold: (text) => `*${text}*`,
+  bold: (text) => `*${text.replace(/[*_~`]/g, '')}*`,
   escape: escapeSlackControlCharacters,
 };
 

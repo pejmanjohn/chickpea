@@ -890,7 +890,7 @@ export class WorkspaceManagementService {
         itemId: operation.itemId,
         operationKind: 'update_agent',
         disposition: 'skipped',
-        code: reason === 'missing' ? 'skill_missing' : 'skill_already_set',
+        ...unappliedReason(reason === 'missing' ? 'skill_missing' : 'skill_already_set'),
       }],
       effectiveRevision: await this.effectiveRevision(),
       activation: 'next_turn',
@@ -2221,12 +2221,7 @@ export class WorkspaceManagementService {
         targetRevisions[key] = revision;
       }
       const prepared = await this.preflightProposalItem(actor, operation, proposalId, readiness);
-      const setup = operation.kind === 'request_setup'
-        ? await this.resolveSetupTarget(operation.target)
-        : undefined;
-      const statement: ManagementChangeStatement | undefined = setup
-        ? { kind: 'request_setup', setup: setup.target.targetLabel }
-        : await this.changeStatement(operation, prepared);
+      const statement = await this.changeStatement(operation);
       changes.push({
         itemId: operation.itemId,
         operationKind: operation.kind,
@@ -2238,7 +2233,8 @@ export class WorkspaceManagementService {
         ...(prepared.intendedAfter === undefined ? {} : { after: prepared.intendedAfter }),
         ...(statement ? { statement } : {}),
       });
-      if (operation.kind === 'request_setup' && setup) {
+      if (operation.kind === 'request_setup') {
+        const setup = await this.resolveSetupTarget(operation.target);
         missingSetup.push({
           itemId: operation.itemId,
           kind: operation.target.kind,
@@ -2449,6 +2445,7 @@ export class WorkspaceManagementService {
             changeSetPreparedItem(proposal, operation),
             currentPrepared,
           );
+          await this.assertReviewedAgentReach(operation, proposal.targetRevisions);
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -4553,15 +4550,22 @@ export class WorkspaceManagementService {
         const before = operation.routineId
           ? await this.stores.routines?.getRoutine(operation.routineId)
           : undefined;
-        const agent = await optionalAgent(this.stores.config, operation.agentId);
+        const afterChannelId = operation.channelId ?? before?.channelId;
+        const [agent, beforeChannel, afterChannel] = await Promise.all([
+          optionalAgent(this.stores.config, operation.agentId),
+          before?.destination.kind === 'channel'
+            ? this.channelLabel(before.workspaceId, before.destination.channelId)
+            : undefined,
+          afterChannelId ? this.channelLabel(operation.workspaceId, afterChannelId) : undefined,
+        ]);
         return {
           itemId: operation.itemId,
           operation,
           ...(agent
             ? { agentCredentialIncarnation: requireAgentCredentialIncarnation(agent) }
             : {}),
-          ...(before ? { before: routinePreview(before, agent?.name) } : {}),
-          intendedAfter: routineOperationPreview(operation, agent?.name, before),
+          ...(before ? { before: routinePreview(before, agent?.name, beforeChannel) } : {}),
+          intendedAfter: routineOperationPreview(operation, agent?.name, before, afterChannel),
         };
       }
       case 'reassign_routine_agent': {
@@ -4628,20 +4632,21 @@ export class WorkspaceManagementService {
   /** The names and counts a preview states for an operation whose records mean nothing to a person. */
   private async changeStatement(
     operation: ManagementOperation,
-    prepared: ManagementPreparedItem,
   ): Promise<ManagementChangeStatement | undefined> {
     switch (operation.kind) {
       case 'archive_agent': {
-        const references = await this.stores.config.getAgentReferences(operation.agentId);
+        const [agent, references] = await Promise.all([
+          this.stores.config.getAgent(operation.agentId),
+          this.stores.config.getAgentReferences(operation.agentId),
+        ]);
         return {
           kind: operation.kind,
-          agent: agentLabel(prepared.before as CustomAgentConfig),
+          agent: agentLabel(agent),
           channelCount: references.channelGrants.length,
         };
       }
       case 'restore_agent':
       case 'delete_agent':
-        return { kind: operation.kind, agent: agentLabel(prepared.before as CustomAgentConfig) };
       case 'update_agent_memory':
         return {
           kind: operation.kind,
@@ -4669,16 +4674,15 @@ export class WorkspaceManagementService {
           provider: providerLabel(operation.providerId),
           affectedAgents: [...answering.values()],
           workspaceDefaultAffected: impact.workspaceDefaultAffected,
+          affectedWorkspaceRoles: impact.affectedWorkspaceRoles,
         };
       }
       case 'grant_agent_channel':
       case 'revoke_agent_channel': {
-        const [agent, channel, grants] = await Promise.all([
+        const [agent, label] = await Promise.all([
           operation.agentId ? optionalAgent(this.stores.config, operation.agentId) : undefined,
-          this.stores.config.getChannel(operation.workspaceId, operation.channelId),
-          this.stores.config.listAgentChannelGrants(operation.workspaceId, operation.channelId),
+          this.channelLabel(operation.workspaceId, operation.channelId),
         ]);
-        const label = channel?.label ?? grants.find(({ channelLabel }) => channelLabel)?.channelLabel;
         return {
           kind: operation.kind,
           ...(agent ? { agent: agentLabel(agent) } : {}),
@@ -4700,13 +4704,26 @@ export class WorkspaceManagementService {
         }
         return { kind: operation.kind, ...routine };
       }
+      case 'request_setup':
+        return {
+          kind: operation.kind,
+          setup: (await this.resolveSetupTarget(operation.target)).target.targetLabel,
+        };
       case 'create_agent':
       case 'update_agent':
       case 'put_channel':
       case 'save_routine':
-      case 'request_setup':
         return undefined;
     }
+  }
+
+  /** A Channel's name as people see it: the stored Channel, else the label a grant cached. */
+  private async channelLabel(workspaceId: string, channelId: string): Promise<string | undefined> {
+    const [channel, grants] = await Promise.all([
+      this.stores.config.getChannel(workspaceId, channelId),
+      this.stores.config.listAgentChannelGrants(workspaceId, channelId),
+    ]);
+    return channel?.label ?? grants.find(({ channelLabel }) => channelLabel)?.channelLabel;
   }
 
   private async executeImmediate(
@@ -5334,8 +5351,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'update_agent' || operation.kind === 'delete_agent' ||
         operation.kind === 'archive_agent' || operation.kind === 'restore_agent') {
       const target: Record<string, number> = { [`agent:${operation.agentId}`]: operation.expectedRevision };
-      if (operation.kind === 'delete_agent' || operation.kind === 'archive_agent' ||
-          (operation.kind === 'update_agent' && operation.patch.enabled === false)) {
+      if (reachEndingAgentId(operation)) {
         const references = await this.stores.config.getAgentReferences(operation.agentId);
         for (const grant of references.channelGrants) {
           const current = (await this.stores.config.listAgentChannelGrants(
@@ -5372,22 +5388,26 @@ export class WorkspaceManagementService {
   private async assertTargetRevisions(proposal: ManagementProposalRecord): Promise<void> {
     await this.assertRevisionMap(proposal.targetRevisions);
     await this.assertLegacyProposalAgentIdentity(proposal, false);
-    if (proposal.operation.kind === 'delete_agent' || proposal.operation.kind === 'archive_agent' ||
-        (proposal.operation.kind === 'update_agent' && proposal.operation.patch.enabled === false)) {
-      const agentId = proposal.operation.agentId;
-      const references = await this.stores.config.getAgentReferences(agentId);
-      const expectedChannelKeys = Object.keys(proposal.targetRevisions)
-        .filter((key) => key.startsWith('channel_grant:')).sort();
-      const actualChannelKeys = references.channelGrants
-        .map((grant) => `channel_grant:${grantKey(
-          grant.workspaceId,
-          grant.channelId,
-          agentId,
-        )}`)
-        .sort();
-      if (canonicalJson(expectedChannelKeys) !== canonicalJson(actualChannelKeys)) {
-        throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
-      }
+    await this.assertReviewedAgentReach(proposal.operation, proposal.targetRevisions);
+  }
+
+  /**
+   * The revision map catches a reviewed grant that changed; this catches one
+   * added since the review. Only unreviewed current grants count, because a
+   * grant the same change set creates has a reviewed key but no grant yet.
+   */
+  private async assertReviewedAgentReach(
+    operation: ManagementOperation,
+    targetRevisions: Record<string, number>,
+  ): Promise<void> {
+    const agentId = reachEndingAgentId(operation);
+    if (!agentId) return;
+    const references = await this.stores.config.getAgentReferences(agentId);
+    const added = references.channelGrants.some((grant) =>
+      targetRevisions[`channel_grant:${grantKey(grant.workspaceId, grant.channelId, agentId)}`] === undefined
+    );
+    if (added) {
+      throw new ManagementError('proposal_stale', 'The Agent Channel grants changed.');
     }
   }
 
@@ -6459,6 +6479,13 @@ function preparedAgentId(operation: ManagementOperation): string | undefined {
   return undefined;
 }
 
+/** The Agent whose Channel reach this operation ends: archive, delete, or disable. */
+function reachEndingAgentId(operation: ManagementOperation): string | undefined {
+  if (operation.kind === 'archive_agent' || operation.kind === 'delete_agent') return operation.agentId;
+  if (operation.kind === 'update_agent' && operation.patch.enabled === false) return operation.agentId;
+  return undefined;
+}
+
 function assertPreparedAgentIdentity(
   reviewed: ManagementPreparedItem,
   current: ManagementPreparedItem,
@@ -6619,6 +6646,7 @@ function managementPreviewTarget(operation: ManagementOperation): string {
 function routinePreview(
   routine: RoutineDefinition,
   agentName?: string,
+  channelLabel?: string,
 ): Record<string, unknown> {
   return {
     name: routine.name,
@@ -6631,7 +6659,7 @@ function routinePreview(
     timezone: routine.timezone,
     destination: routine.destination.kind === 'direct_thread'
       ? 'Current DM thread'
-      : `${routine.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${routine.destination.channelId}`,
+      : channelDestination(Boolean(routine.destination.threadTs), channelLabel),
     delivery: routine.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
 }
@@ -6640,6 +6668,7 @@ function routineOperationPreview(
   operation: Extract<ManagementOperation, { kind: 'save_routine' }>,
   agentName: string | undefined,
   existing: RoutineDefinition | undefined,
+  channelLabel: string | undefined,
 ): Record<string, unknown> {
   const direct = operation.destination?.kind === 'current_dm_thread' ||
     existing?.destination.kind === 'direct_thread';
@@ -6658,9 +6687,18 @@ function routineOperationPreview(
     timezone: operation.timezone,
     destination: direct
       ? 'Current DM thread'
-      : `${operation.destination?.kind === 'current_channel_thread' || existing?.destination.threadTs ? 'Saved thread in' : 'New messages in'} Slack Channel ${operation.channelId ?? existing?.channelId ?? 'unavailable'}`,
+      : channelDestination(
+          operation.destination?.kind === 'current_channel_thread' || Boolean(existing?.destination.threadTs),
+          channelLabel,
+        ),
     delivery: operation.outputPolicy === 'post_on_change' ? 'Only when results change' : 'Always post',
   };
+}
+
+/** Where a Channel routine posts, by the Channel's name; never its Slack ID. */
+function channelDestination(savedThread: boolean, channelLabel: string | undefined): string {
+  const channel = channelLabel ? `#${channelLabel.replace(/^#/, '')}` : 'a Slack Channel';
+  return `${savedThread ? 'Saved thread in' : 'New messages in'} ${channel}`;
 }
 
 function boundedChangeSetPreview(
@@ -7460,6 +7498,8 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
   already_exists: 'An Agent with this ID already exists. Inspect the workspace before choosing another ID.',
   still_referenced: 'The Agent is still in use, so it was not deleted. Archive it and remove its Slack reach first.',
   operation_failed: 'The change did not apply. Inspect again before retrying.',
+  skill_missing: 'The Agent has no skill with this name, so nothing changed. Inspect the Agent to see its skills.',
+  skill_already_set: 'The skill was already enabled or disabled as asked, so nothing changed.',
 };
 
 function unappliedReason(code: string): UnappliedReason {

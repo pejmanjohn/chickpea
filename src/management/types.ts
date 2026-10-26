@@ -6,6 +6,7 @@ import type {
   AgentCreateInput,
   ChannelConfig,
   ConnectionAccountOwnerKind,
+  NonChatModelRole,
 } from '../config/types.ts';
 import type {
   MembershipStatus,
@@ -1143,6 +1144,8 @@ export type ManagementChangeStatement =
       /** Active Agents that answer with this provider's models, pinned or by the Workspace default. */
       affectedAgents: string[];
       workspaceDefaultAffected: boolean;
+      /** Workspace image and coding defaults whose model needs this provider's key. */
+      affectedWorkspaceRoles: NonChatModelRole[];
     }
   | {
       kind: 'grant_agent_channel' | 'revoke_agent_channel';

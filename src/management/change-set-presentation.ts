@@ -1,3 +1,5 @@
+import type { NonChatModelRole } from '../config/types.ts';
+import type { MembershipStatus } from '../identity/types.ts';
 import type {
   ManagementAgentLabel,
   ManagementChangeSetPreview,
@@ -102,11 +104,11 @@ const OPERATION_LABELS: Readonly<Record<OperationKind, string>> = {
   update_member: 'Update Member',
   remove_provider_credential: 'Remove Provider Key',
   update_agent_memory: 'Update Memory',
-  save_routine: 'Save Routine',
-  control_routine: 'Control Routine',
-  run_routine: 'Run Routine',
-  delete_routine: 'Delete Routine',
-  reassign_routine_agent: 'Change Routine Agent',
+  save_routine: 'Save Schedule',
+  control_routine: 'Control Schedule',
+  run_routine: 'Run Schedule',
+  delete_routine: 'Delete Schedule',
+  reassign_routine_agent: 'Change Schedule Agent',
   request_setup: 'Request Setup',
 };
 
@@ -171,30 +173,35 @@ function formatChangeSections(
   const sections = (fields: readonly PresentationField[], targetName: string) =>
     formatRecordSections(change, before, after, fields, targetName, dialect);
   const statement = change.statement;
+  if (statement?.kind === 'update_agent_memory') {
+    return sections(PRESENTATION_FIELDS.memory, statement.agent.name);
+  }
+  if (statement) return [formatStatement(statement, dialect)];
   switch (change.operationKind) {
     case 'update_agent':
       return sections(PRESENTATION_FIELDS.agent, recordName(before, after) ?? 'Agent');
     case 'save_routine':
-      return sections(PRESENTATION_FIELDS.routine, recordName(before, after) ?? 'Routine');
+      return sections(PRESENTATION_FIELDS.routine, recordName(before, after) ?? 'Schedule');
     case 'put_channel':
       return sections(
         PRESENTATION_FIELDS.channel,
         channelName(stringValue(after?.label) ?? stringValue(before?.label)) ?? 'Channel',
       );
     case 'update_agent_memory':
-      return sections(
-        PRESENTATION_FIELDS.memory,
-        statement?.kind === 'update_agent_memory' ? statement.agent.name : 'Agent',
-      );
-    default: {
-      if (statement && statement.kind !== 'update_agent_memory') {
-        return [formatStatement(statement, dialect)];
-      }
-      const name = recordName(before, after);
-      const label = OPERATION_LABELS[change.operationKind];
-      return [dialect.bold(name ? `${dialect.escape(name)} — ${label}` : label)];
-    }
+      return sections(PRESENTATION_FIELDS.memory, 'Agent');
+    default:
+      return [operationHeader(change.operationKind, recordName(before, after), dialect)];
   }
+}
+
+/** The bold "Name — Operation" heading for a change with nothing more specific to say. */
+function operationHeader(
+  operationKind: OperationKind,
+  name: string | undefined,
+  dialect: ChangeSetPresentationDialect,
+): string {
+  const label = OPERATION_LABELS[operationKind];
+  return dialect.bold(name ? `${dialect.escape(name)} — ${label}` : label);
 }
 
 function formatRecordSections(
@@ -207,9 +214,7 @@ function formatRecordSections(
 ): string[] {
   const compare = change.before !== undefined;
   const changed = fields.filter((field) => !presentationValuesEqual(before?.[field], after?.[field]));
-  if (changed.length === 0) {
-    return [dialect.bold(`${dialect.escape(targetName)} — ${OPERATION_LABELS[change.operationKind]}`)];
-  }
+  if (changed.length === 0) return [operationHeader(change.operationKind, targetName, dialect)];
   return changed.flatMap((field) => {
     if (field === 'skills') {
       return formatSkillChangeSections(targetName, before?.[field], after?.[field], compare, dialect);
@@ -245,7 +250,7 @@ function formatStatement(
   const agent = (label: ManagementAgentLabel | undefined) =>
     label ? formatAgentLabel(label, dialect) : 'this Agent';
   const channel = (label: string | undefined) => named(channelName(label), 'a Channel');
-  const routine = (name: string | undefined) => named(name, 'this routine');
+  const routine = (name: string | undefined) => named(name, 'this schedule');
   switch (statement.kind) {
     case 'archive_agent': {
       const reach = statement.channelCount === 0
@@ -258,7 +263,7 @@ function formatStatement(
     case 'delete_agent':
       return `Delete ${agent(statement.agent)} permanently. This cannot be undone.`;
     case 'update_member':
-      return formatMemberStatement(statement, named(statement.member, 'this member'));
+      return formatMemberStatement(statement, dialect);
     case 'remove_provider_credential':
       return formatProviderRemoval(statement, dialect);
     case 'grant_agent_channel':
@@ -282,22 +287,33 @@ const ROUTINE_ACTIONS = { pause: 'Pause', resume: 'Resume', disable: 'Disable' }
 
 const ROLE_PHRASES = { owner: 'an Owner', admin: 'an Admin', member: 'a Member' } as const;
 
+const MEMBER_STATUS_SENTENCES: Readonly<Record<MembershipStatus, (member: string) => string>> = {
+  suspended: (member) =>
+    `Suspend ${member}’s Chickpea access. They can’t use Agents or sign in until an Owner restores it.`,
+  removed: (member) => `Remove ${member} from Chickpea. Removal is permanent.`,
+  active: (member) => `Restore ${member}’s Chickpea access.`,
+};
+
 function formatMemberStatement(
   statement: Extract<ManagementChangeStatement, { kind: 'update_member' }>,
-  member: string,
+  dialect: ChangeSetPresentationDialect,
 ): string {
+  const member = statement.member ? dialect.bold(dialect.escape(statement.member)) : 'this member';
   const sentences = [
     ...(statement.role ? [`Make ${member} ${ROLE_PHRASES[statement.role]}.`] : []),
-    ...(statement.status === 'suspended'
-      ? [`Suspend ${member}’s Chickpea access. They can’t use Agents or sign in until an Owner restores it.`]
-      : statement.status === 'removed'
-      ? [`Remove ${member} from Chickpea. Removal is permanent.`]
-      : statement.status === 'active'
-      ? [`Restore ${member}’s Chickpea access.`]
-      : []),
+    ...(statement.status ? [MEMBER_STATUS_SENTENCES[statement.status](member)] : []),
   ];
-  return sentences.join(' ');
+  return sentences.length > 0
+    ? sentences.join(' ')
+    : operationHeader('update_member', statement.member, dialect);
 }
+
+const ROLE_IMPACTS: Readonly<Record<NonChatModelRole, (provider: string) => string>> = {
+  image: (provider) =>
+    `The default image model uses ${provider}, so image generation stops until a key is available.`,
+  coding: (provider) =>
+    `The default coding model uses ${provider}, so coding workspaces use each Agent’s own model until a key is available.`,
+};
 
 function formatProviderRemoval(
   statement: Extract<ManagementChangeStatement, { kind: 'remove_provider_credential' }>,
@@ -313,6 +329,7 @@ function formatProviderRemoval(
     ...(agents.length > 0
       ? [`${joinNames(agents, dialect)} ${uses} ${provider} and ${stops} answering until a key is available.`]
       : []),
+    ...statement.affectedWorkspaceRoles.map((role) => ROLE_IMPACTS[role](provider)),
   ];
   return [
     `Remove the stored ${dialect.bold(provider)} key.`,

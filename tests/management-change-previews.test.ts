@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
-import type { WorkspaceManagementServiceInput } from '../src/management/service.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
-  ManagementApplyResult,
   ManagementOperation,
   ManagementPresentation,
 } from '../src/management/types.ts';
-import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
-
-type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
+import {
+  applyThroughAdapter as apply,
+  createFixtureAgent,
+  ownerMcpContext,
+  ownerSlackDmContext as slackContext,
+  withManagementAdapterFixture as withFixture,
+  type ManagementAdapterFixture as Fixture,
+} from './helpers/management-adapter-fixture.ts';
 
 const SLACK_APPROVAL = 'Reply `approve` to apply these exact changes, or tell me what to adjust.';
 const MARKDOWN_APPROVAL =
@@ -63,59 +66,8 @@ const billingApi = {
   enabled: true,
 };
 
-async function withFixture(
-  suffix: string,
-  run: (f: Fixture) => Promise<void>,
-  overrides: Partial<WorkspaceManagementServiceInput> = {},
-): Promise<void> {
-  const f = await createManagementAdapterFixture(suffix, overrides);
-  try {
-    await run(f);
-  } finally {
-    f.close();
-  }
-}
-
-function slackContext(f: Fixture): ManagementActorContext {
-  return {
-    userId: f.owner.user.id,
-    membershipId: f.owner.membership.id,
-    organizationId: f.owner.membership.organizationId,
-    actingAgentId: CHICKPEA_AGENT_ID,
-    origin: {
-      kind: 'slack',
-      workspaceId: f.owner.binding.slackTeamId,
-      channelId: 'D_PREVIEW',
-      threadTs: '900.1',
-      messageTs: '900.1',
-      requestText: 'Please make this change.',
-      conversationKind: 'im',
-      agentId: CHICKPEA_AGENT_ID,
-    },
-  };
-}
-
 function mcpContext(f: Fixture): ManagementActorContext {
-  return {
-    userId: f.owner.user.id,
-    membershipId: f.owner.membership.id,
-    organizationId: f.owner.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'preview-test' },
-  };
-}
-
-async function apply(
-  f: Fixture,
-  context: ManagementActorContext,
-  idempotencyKey: string,
-  operations: ManagementOperation[],
-): Promise<ManagementApplyResult> {
-  const response = await invokeWorkspaceManagementTool({
-    service: f.service,
-    resolveContext: async () => context,
-  }, 'apply_workspace_changes', { idempotencyKey, operations });
-  assert.equal(response.ok, true, JSON.stringify(response));
-  return (response as { result: ManagementApplyResult }).result;
+  return ownerMcpContext(f, 'preview-test');
 }
 
 async function preview(
@@ -130,6 +82,22 @@ async function preview(
   assertNoInternals(result.presentation.slack);
   assertNoInternals(result.presentation.markdown);
   return result.presentation;
+}
+
+async function propose(
+  f: Fixture,
+  idempotencyKey: string,
+  operations: ManagementOperation[],
+): Promise<ManagementPresentation> {
+  const response = await invokeWorkspaceManagementTool({
+    service: f.service,
+    resolveContext: async () => mcpContext(f),
+  }, 'propose_workspace_changes', { ...authoringProposalMetadata(idempotencyKey), operations });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  const { presentation } = (response as { result: { presentation: ManagementPresentation } }).result;
+  assertNoInternals(presentation.slack);
+  assertNoInternals(presentation.markdown);
+  return presentation;
 }
 
 function slackPreview(...lines: string[]): string {
@@ -151,7 +119,8 @@ function assertNoInternals(text: string): void {
     new RegExp(SECRET_SEED),
     /\bmcp_knowledge\b|\bapi_billing\b/,
     /userGroupId|observedAt|normalizedHandle|desiredState|credentialRef|lifecycleStatus/,
-    /\b(?:Id|Kind|Slack Presence|Avatar|Revision|Lifecycle)\b/,
+    /configurationGeneration|creatorMembershipId|credentialIncarnation/,
+    /\b(?:Id|Kind|Slack Presence|Avatar|Revision|Lifecycle|Generation|Creator|Credential|Incarnation)\b/,
     /avatar|seed/i,
     /\(not set\)/,
     /[{[]\s*$/m,
@@ -160,26 +129,14 @@ function assertNoInternals(text: string): void {
   }
 }
 
-async function createAgent(
+function createAgent(
   f: Fixture,
   id: string,
   extra: Partial<CustomAgentConfig> = {},
 ): Promise<CustomAgentConfig> {
-  return f.config.createAgent({
-    id,
-    name: 'Research',
+  return createFixtureAgent(f, id, {
     description: 'Finds sources for the team.',
-    instructions: 'Find and cite sources.',
-    enabled: true,
-    lifecycle: 'active',
-    creatorMembershipId: f.owner.membership.id,
-    editPolicy: 'creator_and_admins',
-    configurationGeneration: 1,
     slackPresence: PUBLISHED_PRESENCE,
-    skills: [],
-    mcpServers: [],
-    apiConnections: [],
-    repositories: [],
     ...extra,
   });
 }
@@ -227,6 +184,37 @@ test('archive and restore previews state the operation and its reach, not field 
     assert.equal(restore.markdown, markdownPreview(
       'Restore **Research** (@research). It gets back the Channels and schedules it had before the archive.',
     ));
+  }));
+
+test('an archive whose Agent gained a Channel after the preview goes stale instead of applying', () =>
+  withFixture('preview-archive-stale', async (f) => {
+    const agent = await createAgent(f, 'agent_research');
+    await grant(f, agent.id, 'C_LAUNCH', 'launch');
+    await grant(f, agent.id, 'C_SUPPORT', 'support');
+    const archive = await apply(f, slackContext(f), 'archive-two', [{
+      itemId: 'archive',
+      kind: 'archive_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    }]);
+    assert.match(archive.presentation?.slack ?? '', /It leaves 2 Channels/);
+    const proposalId = archive.outcomes[0]?.proposalId;
+    assert.ok(proposalId);
+
+    await grant(f, agent.id, 'C_HELP', 'help');
+    await assert.rejects(
+      f.service.confirmWorkspaceChange({ context: slackContext(f), proposalId }),
+      (error: unknown) => (error as { code?: string }).code === 'proposal_stale',
+    );
+    assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'active');
+
+    const fresh = await preview(f, slackContext(f), 'archive-three', [{
+      itemId: 'archive',
+      kind: 'archive_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+    }]);
+    assert.match(fresh.slack, /It leaves 3 Channels/);
   }));
 
 test('an archive without Channel reach says it stops answering', () =>
@@ -347,6 +335,90 @@ test('a provider key removal preview lists the Agents that stop answering', () =
     },
   });
 });
+
+test('a provider key removal names the Workspace image and coding models that use it', () =>
+  withFixture('preview-provider-roles', async (f) => {
+    const workspaceId = f.owner.binding.slackTeamId;
+    await f.config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', teamId: workspaceId });
+    await createAgent(f, 'agent_claude', { model: 'anthropic/claude-opus-5' });
+    await f.config.putWorkspaceModelRole({ workspaceId, role: 'image', modelId: 'openai/gpt-image-2.5-flare' }, 0);
+    await f.config.putWorkspaceModelRole({ workspaceId, role: 'coding', modelId: 'openai/gpt-5.6' }, 0);
+
+    const removal = await preview(f, mcpContext(f), 'remove-openai-roles', [{
+      itemId: 'remove-key',
+      kind: 'remove_provider_credential',
+      providerId: 'openai',
+    }]);
+    assert.equal(removal.markdown, markdownPreview(
+      'Remove the stored **OpenAI** key. ' +
+        'The default image model uses OpenAI, so image generation stops until a key is available. ' +
+        'The default coding model uses OpenAI, so coding workspaces use each Agent’s own model until a key is available.',
+    ));
+
+    // ChatGPT Image runs on the connected subscription, so removing the key leaves it working.
+    await f.config.putWorkspaceModelRole({ workspaceId, role: 'image', modelId: 'openai/chatgpt-image' }, 1);
+    await f.config.putWorkspaceModelRole({ workspaceId, role: 'coding', modelId: 'anthropic/claude-opus-5' }, 1);
+    const unaffected = await preview(f, mcpContext(f), 'remove-openai-subscription-image', [{
+      itemId: 'remove-key',
+      kind: 'remove_provider_credential',
+      providerId: 'openai',
+    }]);
+    assert.equal(unaffected.markdown, markdownPreview(
+      'Remove the stored **OpenAI** key. No Agent pin or Workspace default currently depends on OpenAI.',
+    ));
+  }, { providerCredentialSource: async () => 'stored' }));
+
+test('a saved routine preview names its Channel, never the Slack Channel ID', () =>
+  withFixture('preview-routine-channel', async (f) => {
+    const workspaceId = f.owner.binding.slackTeamId;
+    const agent = await createAgent(f, 'agent_research');
+    await grant(f, agent.id, 'C0123ABCD', 'launch');
+    const routine = {
+      itemId: 'routine',
+      kind: 'save_routine' as const,
+      requiredConnectionAccountIds: [],
+      agentId: agent.id,
+      workspaceId,
+      channelId: 'C0123ABCD',
+      name: 'Morning triage',
+      description: 'Triage the overnight queue.',
+      taskText: 'Summarize urgent requests.',
+      schedule: { kind: 'cron' as const, expression: '0 9 * * 1-5' },
+      timezone: 'UTC',
+      outputPolicy: 'post' as const,
+    };
+
+    const named = await propose(f, 'routine-launch', [routine]);
+    assert.match(named.slack, /\*Morning triage — Destination\*\n> New messages in #launch\n/);
+    assert.match(named.slack, /> 0 9 \* \* 1-5/, 'quoted values keep their formatting characters');
+    assert.doesNotMatch(named.slack, /C0123ABCD/);
+
+    await f.config.putAgentChannelGrant({
+      workspaceId,
+      channelId: 'C0UNNAMED1',
+      agentId: agent.id,
+      status: 'active',
+      createdByMembershipId: f.owner.membership.id,
+    });
+    const unnamed = await propose(f, 'routine-unnamed', [{ ...routine, channelId: 'C0UNNAMED1' }]);
+    assert.match(unnamed.markdown, /\*\*Morning triage — Destination\*\*\n> New messages in a Slack Channel\n/);
+    assert.doesNotMatch(unnamed.markdown, /C0UNNAMED1/);
+  }));
+
+test('a member change with no role or status names the member and the operation', () =>
+  withFixture('preview-member-empty', async (f) => {
+    const member = (await f.identity.provisionSlackMember({
+      slackTeamId: f.owner.binding.slackTeamId,
+      slackUserId: 'UPREVIEW02',
+      displayName: 'Alex Rivera',
+    })).resolution!;
+    const change = await propose(f, 'member-noop', [{
+      itemId: 'noop',
+      kind: 'update_member',
+      membershipId: member.membership.id,
+    }]);
+    assert.equal(change.markdown, markdownPreview('**Alex Rivera — Update Member**'));
+  }));
 
 test('a connection removal preview names the connection and the Agent', () =>
   withFixture('preview-connection', async (f) => {

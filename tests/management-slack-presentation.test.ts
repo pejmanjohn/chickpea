@@ -299,12 +299,21 @@ test('a preview frozen before statements names the action, never the record or t
 });
 
 test('Agent edits render only person-facing fields, in Admin words', () => {
-  const internals = {
+  // Every internal field differs between before and after, so allowlisting
+  // any one of them renders a section and fails the exact match below.
+  const internalsBefore = {
     id: 'agent_paid_marketing',
     kind: 'user',
     configurationGeneration: 4,
     creatorMembershipId: 'membership_creator',
     credentialIncarnation: 'incarnation_private',
+  };
+  const internalsAfter = {
+    id: 'agent_paid_marketing_copy',
+    kind: 'system',
+    configurationGeneration: 5,
+    creatorMembershipId: 'membership_other',
+    credentialIncarnation: 'incarnation_rotated',
   };
   const presentation = formatSlackChangeSetProposal({
     summary: '1 reviewed workspace change',
@@ -313,7 +322,7 @@ test('Agent edits render only person-facing fields, in Admin words', () => {
       operationKind: 'update_agent',
       target: 'agent:agent_paid_marketing',
       before: {
-        ...internals,
+        ...internalsBefore,
         revision: 3,
         name: 'Paid Marketing',
         enabled: true,
@@ -327,7 +336,7 @@ test('Agent edits render only person-facing fields, in Admin words', () => {
         },
       },
       after: {
-        ...internals,
+        ...internalsAfter,
         revision: 4,
         name: 'Paid Marketing',
         enabled: false,
@@ -738,7 +747,7 @@ test('Channel, routine, memory and setup changes read as statements without inte
   ].join('\n'));
 });
 
-test('a provider key removal names at most eight Agents and the Workspace default', () => {
+test('a provider key removal names at most eight Agents, the Workspace default and the roles', () => {
   const markdown = formatMarkdownChangeSetProposal({
     summary: '1 reviewed workspace change',
     changes: [{
@@ -750,6 +759,7 @@ test('a provider key removal names at most eight Agents and the Workspace defaul
         provider: 'OpenAI',
         affectedAgents: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10'],
         workspaceDefaultAffected: true,
+        affectedWorkspaceRoles: ['image', 'coding'],
       },
     }],
     missingSetup: [],
@@ -758,7 +768,61 @@ test('a provider key removal names at most eight Agents and the Workspace defaul
   assert.equal(markdown, [
     '**Proposed changes**',
     'Remove the stored **OpenAI** key. The Workspace default uses OpenAI, so Chickpea stops answering too. ' +
-      '**A1**, **A2**, **A3**, **A4**, **A5**, **A6**, **A7**, **A8**, and 2 more use OpenAI and stop answering until a key is available.',
+      '**A1**, **A2**, **A3**, **A4**, **A5**, **A6**, **A7**, **A8**, and 2 more use OpenAI and stop answering until a key is available. ' +
+      'The default image model uses OpenAI, so image generation stops until a key is available. ' +
+      'The default coding model uses OpenAI, so coding workspaces use each Agent’s own model until a key is available.',
+    '',
+    MARKDOWN_APPROVAL_INSTRUCTION,
+  ].join('\n'));
+});
+
+test('Slack bold drops formatting characters from names; Markdown and quoted values keep them', () => {
+  const preview: ManagementChangeSetPreview = {
+    summary: '2 reviewed workspace changes',
+    changes: [{
+      itemId: 'archive',
+      operationKind: 'archive_agent',
+      target: 'agent:agent_rd',
+      statement: { kind: 'archive_agent', agent: { name: 'R*D _Ops_ ~Team~ `x`' }, channelCount: 0 },
+    }, {
+      itemId: 'routine',
+      operationKind: 'save_routine',
+      target: 'routine:T123:C123',
+      after: { name: 'Morning *triage*', schedule: '0 9 * * 1-5' },
+    }],
+    missingSetup: [],
+  };
+
+  const slack = formatSlackChangeSetProposal(preview);
+  assert.match(slack, /^Archive \*RD Ops Team x\*\. It stops answering\./m);
+  assert.match(slack, /^\*Morning triage — Schedule\*\n> 0 9 \* \* 1-5$/m);
+  const markdown = formatMarkdownChangeSetProposal(preview);
+  assert.match(markdown, /^Archive \*\*R\*D _Ops_ ~Team~ `x`\*\*\. It stops answering\./m);
+  assert.match(markdown, /^\*\*Morning \*triage\* — Schedule\*\*\n> 0 9 \* \* 1-5$/m);
+});
+
+test('a member change with neither role nor status falls back to its heading', () => {
+  const markdown = formatMarkdownChangeSetProposal({
+    summary: '2 reviewed workspace changes',
+    changes: [{
+      itemId: 'named',
+      operationKind: 'update_member',
+      target: 'membership:membership_alex',
+      statement: { kind: 'update_member', member: 'Alex Rivera' },
+    }, {
+      itemId: 'unnamed',
+      operationKind: 'update_member',
+      target: 'membership:membership_unknown',
+      statement: { kind: 'update_member' },
+    }],
+    missingSetup: [],
+  });
+
+  assert.equal(markdown, [
+    '**Proposed changes**',
+    '**Alex Rivera — Update Member**',
+    '',
+    '**Update Member**',
     '',
     MARKDOWN_APPROVAL_INSTRUCTION,
   ].join('\n'));
