@@ -666,3 +666,30 @@ test('a recipe overwrite that drops a connection asks first over MCP, then keeps
     assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.deepEqual((await f.config.getAgent(researcher.id)).mcpServers, [researcher.mcpServers[0]]);
   }, readyModels));
+
+test('a recipe overwrite that disables an Agent in Channels asks first over MCP', () =>
+  withFixture('recipe-overwrite-disable', async (f) => {
+    const { researcher } = await seedRecipeSource(f);
+    const workspaceId = f.owner.binding.slackTeamId;
+    await f.config.putChannel({ workspaceId, channelId: 'C_RESEARCH', label: 'research', lifecycle: 'active' });
+    await f.config.putAgentChannelGrant({
+      workspaceId,
+      channelId: 'C_RESEARCH',
+      agentId: researcher.id,
+      status: 'active',
+      createdByMembershipId: f.owner.membership.id,
+      channelLabel: 'research',
+    });
+    const recipe = await exportRecipe(f, [researcher.id]);
+    recipe.agents[0]!.enabled = false;
+    const preview = await previewRecipe(f, recipe, 'update');
+    const pending = await mcpApply(f, { idempotencyKey: 'overwrite-disable', operations: preview.operations });
+    assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
+    assert.equal((await f.config.getAgent(researcher.id)).enabled, true);
+
+    const confirmed = await mcpTool(f, 'confirm_workspace_change', {
+      proposalId: pending.outcomes[0]!.proposalId!,
+    }) as ManagementApplyResult;
+    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
+    assert.equal((await f.config.getAgent(researcher.id)).enabled, false);
+  }, readyModels));
