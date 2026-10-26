@@ -128,9 +128,12 @@ test('workspace proposal guidance stays inside the typed configuration schema', 
   assert.match(apply, /typed Chickpea workspace configuration changes/i);
   assert.match(apply, /does not execute actions in Slack Lists or connected services/i);
   assert.match(apply, /confirmation-required configuration operations/i);
-  assert.match(confirm, /Chickpea workspace configuration proposal returned by propose_workspace_changes/i);
-  assert.match(confirm, /does not confirm actions in Slack Lists or connected services/i);
-  assert.match(confirm, /approval cannot make an unsupported operation available/i);
+  assert.equal(confirm, workspaceManagementToolDescription('confirm_workspace_change', 'mcp'),
+    'only MCP offers confirm_workspace_change');
+  assert.match(confirm, /"Are you sure\?" step/);
+  assert.match(confirm, /does not confirm actions in Slack or connected services/i);
+  assert.match(proposal, /the person's approval applies it/);
+  assert.doesNotMatch(proposal, /confirm_workspace_change/, 'Slack has no confirm tool');
 });
 
 test('instruction-update tool example survives both runtime schema validators', () => {
@@ -165,9 +168,9 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'Deleting scheduled work is deliberately outside `manage_scheduled_work`',
     'clear request to delete a routine',
     'call `inspect_routines`', 'one `delete_routine` operation',
-    'wait for explicit confirmation', 'Never delete a routine through `apply_workspace_changes`',
+    'the routine is deleted only when the person approves it', 'Never delete a routine through `apply_workspace_changes`',
     'Slack presence', 'Channel reach', 'editing authority',
-    'inspect_workspace', 'propose_workspace_changes', 'confirm_workspace_change',
+    'inspect_workspace', 'propose_workspace_changes', 'A proposal applies only when the person approves it',
     'call `import_skill`', 'applies one bounded new skill immediately',
     'explicit requester command executes without another confirmation',
     'Confirmation remains required', 'Ambiguity calls for clarification, not approval',
@@ -182,14 +185,15 @@ test('guide encodes posture, placement, blueprint, inspection, and proportional 
     'ordered `connectorMentions`',
     'services the requester asked this Agent to use, in this message or earlier in the conversation',
     'duplicate-identity clarification',
-    'Never re-propose unchanged content',
+    'answer, then propose the same operations unchanged and end with the request to approve it',
+    'When they approved it and it did not apply, do not propose it again',
     'without a confirmation turn',
     'up to three independently authorized `Connect X` actions',
     'ends with `View Agent`',
-    'opaque control token', 'Preserve it byte-for-byte', 'never retype',
+    'opaque control token', 'never retype',
     '`presentation.slack` value verbatim', 'new object shows concise values',
     'existing object shows before and after only for meaningful visible changes',
-    'Confirmation applies the full frozen proposal',
+    'Approval applies the full frozen proposal',
     'visible plain-language final text', 'Do not end on a tool call',
     'inspection is mandatory in that turn', 'do not offer to inspect later',
     'channels\\[\\]\\.grants\\[\\]\\.revision', 'Never substitute the parent Channel revision',
