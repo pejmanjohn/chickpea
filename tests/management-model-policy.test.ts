@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import * as v from 'valibot';
 
 import { scopeInstallationEnv } from '../src/config/installation-scope.ts';
+import { resolveModelReadiness } from '../src/config/model-readiness.ts';
 import { saveOpenAiAuthMethod } from '../src/config/openai-auth.ts';
 import {
   configurePlatformFunding,
@@ -20,25 +21,32 @@ import {
   managementOperationValibotSchema,
   managementOperationZodSchema,
 } from '../src/management/schemas.ts';
+import { resolveSlackApprovalActor } from '../src/management/slack-approval.ts';
+import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
-import type {
-  ManagementActorContext,
-  ManagementApplyResult,
-  ManagementOperation,
-  ManagementWorkspaceSnapshot,
+import {
+  ManagementError,
+  type ManagementActorContext,
+  type ManagementApplyResult,
+  type ManagementOperation,
+  type ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
+import { MODEL_CATALOG_SETTING_KEYS } from '../src/model-catalog/index.ts';
 import { commitOpenAiSubscriptionCredentials } from '../src/openai-subscription/credentials.ts';
+import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { FAKE_PROVIDER_KEYS } from './helpers/fake-providers.ts';
 import {
   createManagementAdapterFixture,
+  applyThroughAdapter,
   ownerMcpContext,
   ownerSlackDmContext,
   type ManagementAdapterFixture,
 } from './helpers/management-adapter-fixture.ts';
 import { NO_RUN_FEES } from './helpers/platform-funding.ts';
 import { withPersonApproval } from './helpers/slack-person-approval.ts';
+import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 const NOW = Date.UTC(2026, 9, 26, 12);
 /** The identity store's clock in the adapter fixture. */
@@ -65,13 +73,16 @@ const NO_DEPLOYMENT_KEYS = {
 type Snapshot = ManagementWorkspaceSnapshot;
 type SnapshotAgent = Snapshot['agents'][number];
 
-async function workspace(t: TestContext, env?: PlatformEnv) {
+async function workspace(
+  t: TestContext,
+  env?: PlatformEnv,
+  settings = new SqliteSettingsStore(':memory:'),
+) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   resetPlatformFundingForTests();
   invalidateProviderKeyCache();
   useDeploymentKeyring(t);
   const f = await createManagementAdapterFixture('model-policy');
-  const settings = new SqliteSettingsStore(':memory:');
   t.after(() => {
     f.close();
     settings.close();
@@ -178,6 +189,38 @@ async function undo(
   }, 'undo_workspace_change', { operationId, idempotencyKey: `model-policy-undo-${++keys}` });
   assert.equal(response.ok, true, JSON.stringify(response));
   return (response as { result: ManagementApplyResult }).result;
+}
+
+/** The code of the refusal an undo gets, which must leave everything as it was. */
+async function refusedUndo(
+  service: ReturnType<typeof createLiveWorkspaceManagementService>,
+  context: ManagementActorContext,
+  operationId: string,
+): Promise<string> {
+  const response = await invokeWorkspaceManagementTool({
+    service,
+    resolveContext: async () => context,
+  }, 'undo_workspace_change', { operationId, idempotencyKey: `model-policy-undo-${++keys}` });
+  assert.equal(response.ok, false, JSON.stringify(response));
+  return (response as { error: { code: string } }).error.code;
+}
+
+/** A settings store that counts how often one setting is read through it. */
+function countingReadsOf(inner: SqliteSettingsStore, settingKey: string) {
+  const counter = { reads: 0 };
+  const store = new Proxy(inner, {
+    get(target, property) {
+      if (property === 'getSetting') {
+        return (key: string) => {
+          if (key === settingKey) counter.reads += 1;
+          return target.getSetting(key);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { counter, store };
 }
 
 function agent(snapshot: Snapshot, id: string): SnapshotAgent {
@@ -523,6 +566,240 @@ test('in Slack a Workspace model change waits for the person\'s approval and an 
     }]);
     assert.equal(cleared.outcomes[0]?.disposition, 'applied', JSON.stringify(cleared));
     assert.equal((await f.config.getAgentModelRole(research.id, 'image'))?.modelId, undefined);
+  });
+});
+
+test('undoing an Agent image model still works after the Agent\'s revision moved for a reason that left its configuration alone', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { f, settings, service } = await workspace(t);
+    await storeKey(settings, 'openai');
+    const owner = ownerMcpContext(f);
+    const research = await f.config.createAgent(agentInput(f, 'agent_research'));
+    const pinned = await apply(service, owner, [{
+      itemId: 'pin', kind: 'set_agent_image_model', agentId: research.id, expectedRevision: research.revision, model: FLARE,
+    }]);
+    assert.equal(pinned.outcomes[0]?.undoAvailable, true, JSON.stringify(pinned));
+
+    // A presence sync writes the Agent row and leaves what the Agent is set up to do.
+    const pinnedAt = await f.config.getAgent(research.id);
+    const synced = await f.config.updateAgent(research.id, {}, pinnedAt.revision);
+    assert.ok(synced.revision > pinnedAt.revision, 'the Agent revision moved');
+
+    const undone = await undo(service, owner, pinned.operationId);
+    assert.equal(undone.status, 'completed', JSON.stringify(undone));
+    assert.equal((await f.config.getAgentModelRole(research.id, 'image'))?.modelId, undefined, 'the pin is gone');
+  });
+});
+
+test('undoing an Agent image model is refused once someone else has changed the pin or the Agent', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { f, settings, service } = await workspace(t);
+    await storeKey(settings, 'openai');
+    const owner = ownerMcpContext(f);
+    const elsewhere: Array<[string, (agent: CustomAgentConfig) => Promise<unknown>]> = [
+      // The Agent save in Admin writes the row and the role together, so the revision moves too.
+      ['the Agent save in Admin', (current) => f.config.updateAgentWithModelRoles(
+        current.id, {}, [{ role: 'image', modelId: CHATGPT_IMAGE }], current.revision)],
+      // The role table alone leaves the Agent's revision where it was.
+      ['the role table alone', (current) => f.config.putAgentModelRole({
+        agentId: current.id, role: 'image', modelId: CHATGPT_IMAGE })],
+      ['an edit to the Agent', (current) => f.config.updateAgent(
+        current.id, { instructions: 'Answer the team, briefly.' }, current.revision)],
+    ];
+    for (const [index, [how, change]] of elsewhere.entries()) {
+      const research = await f.config.createAgent(agentInput(f, `agent_research_${index}`));
+      const pinned = await apply(service, owner, [{
+        itemId: `pin-${index}`, kind: 'set_agent_image_model', agentId: research.id,
+        expectedRevision: research.revision, model: FLARE,
+      }]);
+      assert.equal(pinned.outcomes[0]?.undoAvailable, true, JSON.stringify(pinned));
+      await change(await f.config.getAgent(research.id));
+      const expected = how === 'an edit to the Agent' ? FLARE : CHATGPT_IMAGE;
+
+      assert.equal(await refusedUndo(service, owner, pinned.operationId), 'proposal_stale', how);
+      assert.equal((await f.config.getAgentModelRole(research.id, 'image'))?.modelId, expected,
+        `${how}: the undo changed nothing`);
+    }
+  });
+});
+
+test('inspect loads the stored model catalog a fixed number of times, however many models it lists', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    // Loading the catalog reads its mode setting once.
+    const { counter, store } = countingReadsOf(new SqliteSettingsStore(':memory:'), MODEL_CATALOG_SETTING_KEYS.mode);
+    const { f, service } = await workspace(t, undefined, store);
+    const owner = ownerMcpContext(f);
+    const inspected = async () => {
+      counter.reads = 0;
+      const snapshot = await inspect(service, owner);
+      return { loads: counter.reads, models: snapshot.modelCatalog.chat.length };
+    };
+
+    await storeKey(store, 'anthropic');
+    const anthropicOnly = await inspected();
+    await storeKey(store, 'openai');
+    const both = await inspected();
+
+    assert.ok(anthropicOnly.models >= 2, 'the Anthropic key lists models');
+    assert.ok(both.models > anthropicOnly.models, 'the OpenAI key adds more');
+    assert.equal(both.loads, anthropicOnly.loads, 'more models cost no more loads');
+    assert.ok(both.loads < anthropicOnly.models, 'and the loads are fewer than the models listed');
+  });
+});
+
+test('on Cloudflare, asking about more ChatGPT plan models reads the plan no more often', async (t) => {
+  const navigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { userAgent: 'Cloudflare-Workers' } });
+  t.after(() => {
+    if (navigator) Object.defineProperty(globalThis, 'navigator', navigator);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  });
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    resetPlatformFundingForTests();
+    invalidateProviderKeyCache();
+    // A plan status reads the plan's registration setting once.
+    const { counter, store } = countingReadsOf(new SqliteSettingsStore(':memory:'), 'chatgpt-plan.registration');
+    t.after(() => store.close?.());
+    await saveOpenAiAuthMethod(store, 'subscription');
+    const unavailable = await resolveModelReadiness({
+      settings: store, env: undefined, runtimeProviders: [], funding: 'customer',
+    });
+    const readsToResolve = counter.reads;
+
+    for (const id of ['openai/plan-a', 'openai/plan-b', 'openai/plan-c', 'openai/plan-d']) {
+      assert.match((await unavailable(id))?.unavailable ?? '', /model_unsupported/, id);
+    }
+
+    assert.ok(readsToResolve >= 1, 'resolving the check read the plan');
+    assert.equal(counter.reads, readsToResolve, 'four models cost no further reads of the plan');
+  });
+});
+
+test('without Admin\'s model sources a model change is refused rather than written unchecked', async () => {
+  const f = await createManagementAdapterFixture('model-policy-no-sources');
+  try {
+    const workspaceId = f.owner.user.slackTeamId;
+    await f.config.materializeChickpeaAgent();
+    await f.config.ensureWorkspaceInstallation({
+      workspaceId, transportMode: 'direct', runtimeContract: 'chickpea-v1',
+    });
+    await f.config.putWorkspaceModelDefault({ workspaceId, modelId: OPUS, provenance: 'admin_selected' });
+    const research = await f.config.createAgent(agentInput(f, 'agent_research'));
+    const owner = ownerMcpContext(f);
+
+    const chat = await applyThroughAdapter(f, owner, 'no-sources-chat', [{
+      itemId: 'chat', kind: 'set_workspace_model', role: 'chat', model: SOL, expectedRevision: 2,
+    }]);
+    assert.equal(chat.outcomes[0]?.disposition, 'failed', JSON.stringify(chat));
+    assert.equal(chat.outcomes[0]?.code, 'invalid_request');
+    assert.equal((await f.config.getWorkspaceModelDefault(workspaceId))?.modelId, OPUS);
+
+    const image = await applyThroughAdapter(f, owner, 'no-sources-image', [{
+      itemId: 'image', kind: 'set_agent_image_model', agentId: research.id, expectedRevision: research.revision, model: FLARE,
+    }]);
+    assert.equal(image.outcomes[0]?.disposition, 'failed', JSON.stringify(image));
+    assert.equal(image.outcomes[0]?.code, 'invalid_request');
+    assert.equal((await f.config.getAgentModelRole(research.id, 'image'))?.modelId, undefined);
+  } finally {
+    f.close();
+  }
+});
+
+test('on an ask turn an Agent image model waits for the person on its own, and their approval pins it', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { f, settings, service, workspaceId } = await workspace(t);
+    await storeKey(settings, 'openai');
+    const channelId = 'C_MODEL_ASK';
+    const desk = await f.config.createAgent(agentInput(f, 'agent_desk', { name: 'Desk' }));
+    await f.config.putAgentChannelGrant({
+      workspaceId, channelId, agentId: desk.id, status: 'active', createdByMembershipId: f.owner.membership.id,
+    });
+    const signal = (turn: Parameters<typeof slackTurnSignal>[0]['turn']) => slackTurnSignal({
+      turn,
+      agentId: desk.id,
+      conversation: { workspaceId, channelId, threadTs: '700.1' },
+      conversationKind: 'channel',
+      slackUserId: f.owner.binding.slackUserId,
+    });
+    // What an asking Agent relays is an Agent's words, never the person's.
+    const asked = signal({
+      text: '@desk use the flare image model.', eventId: 'Ev_MODEL_ASK', messageTs: '700.3',
+      agentAsk: {
+        fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '700.2',
+      },
+    });
+
+    const held = await invokeSlackWorkspaceManagementTool({
+      signal: asked,
+      identity: f.identity,
+      service,
+      name: 'apply_workspace_changes',
+      args: {
+        idempotencyKey: 'ask-image',
+        operations: [{
+          itemId: 'image', kind: 'set_agent_image_model', agentId: desk.id, expectedRevision: desk.revision, model: FLARE,
+        }],
+      },
+    });
+    assert.ok(held.ok, JSON.stringify(held));
+    const outcomes = (held.result as ManagementApplyResult).outcomes;
+    assert.deepEqual(outcomes.map(({ disposition }) => disposition), ['confirmation_required']);
+    const proposalId = outcomes[0]!.proposalId!;
+    assert.equal((await f.config.getAgentModelRole(desk.id, 'image'))?.modelId, undefined, 'nothing is pinned yet');
+
+    const personTurn = signal({ text: 'approve', eventId: 'Ev_MODEL_YES', messageTs: '700.5' });
+    const approved = await invokeWorkspaceManagementTool({
+      service,
+      resolveContext: () => resolveSlackApprovalActor(personTurn, f.identity, proposalId),
+    }, 'confirm_workspace_change', { proposalId });
+    assert.ok(approved.ok, JSON.stringify(approved));
+    assert.deepEqual((approved.result as ManagementApplyResult).outcomes.map(({ disposition }) => disposition), ['applied']);
+    assert.equal((await f.config.getAgentModelRole(desk.id, 'image'))?.modelId, FLARE);
+  });
+});
+
+test('a confirmation resumed after its requester became a Member does not change a Workspace model', async (t) => {
+  await withEnv(NO_DEPLOYMENT_KEYS, async () => {
+    const { f, settings, service, workspaceId } = await workspace(t);
+    await storeKey(settings, 'openai');
+    await f.config.putWorkspaceModelDefault({ workspaceId, modelId: OPUS, provenance: 'admin_selected' });
+    const admin: ManagementActorContext = {
+      userId: f.admin.user.id,
+      membershipId: f.admin.membership.id,
+      organizationId: f.admin.membership.organizationId,
+      origin: { kind: 'mcp', clientId: 'model-policy-resume' },
+    };
+    const proposed = await service.proposeWorkspaceChanges({
+      context: admin,
+      ...authoringProposalMetadata('model-policy-resume'),
+      operations: [{
+        itemId: 'chat', kind: 'set_workspace_model', role: 'chat', model: SOL, expectedRevision: 2,
+      }],
+    });
+    // The first attempt died while applying, longer ago than its lease.
+    await f.management.claimChangeSetProposal({
+      proposalId: proposed.proposalId,
+      organizationId: admin.organizationId,
+      actorUserId: admin.userId,
+      actorMembershipId: admin.membershipId,
+      originKey: 'mcp:model-policy-resume',
+      at: NOW - 60_000,
+    });
+    await f.identity.updateMembershipAuthority({
+      membershipId: f.admin.membership.id,
+      role: 'member',
+      actorMembershipId: f.owner.membership.id,
+      correlationId: 'demote-model-policy-resume',
+      authenticationSurface: 'better_auth',
+      reasonCode: 'model_policy_test',
+    });
+
+    await assert.rejects(
+      () => service.confirmWorkspaceChange({ context: admin, proposalId: proposed.proposalId }),
+      (error: unknown) => error instanceof ManagementError && error.code === 'forbidden',
+    );
+    assert.equal((await f.config.getWorkspaceModelDefault(workspaceId))?.modelId, OPUS, 'the default is unchanged');
+    assert.equal((await f.management.getChangeSetProposal(proposed.proposalId))?.status, 'stale');
   });
 });
 

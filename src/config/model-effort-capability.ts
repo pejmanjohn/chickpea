@@ -7,11 +7,16 @@ import { resolveOpenAiAuthMethod } from './openai-auth.ts';
 import { openRouterModelEfforts } from './openrouter-runtime-model.ts';
 import type { SettingsStore } from './settings-store.ts';
 import type { PlatformEnv } from './state-backend.ts';
+import type { OpenAiAuthMethod } from './types.ts';
 import { thinkingLevelForModel } from './workers-ai-models.ts';
 
 export interface ModelEffortDependencies {
   settings: SettingsStore;
   env?: PlatformEnv | undefined;
+  /** The caller already loaded the stored catalog for this request, so a lookup need not. */
+  catalogLoaded?: true;
+  /** The installation's OpenAI authentication, when the caller already read it for this request. */
+  openAiAuthMethod?: OpenAiAuthMethod;
 }
 
 /**
@@ -33,7 +38,7 @@ export async function resolveModelEfforts(
     // The Node subscription provider drops `max`; no live turn has proven the
     // Cloudflare plan accepts it.
     case 'openai':
-      return await resolveOpenAiAuthMethod(dependencies.settings) === 'api_key'
+      return (dependencies.openAiAuthMethod ?? await resolveOpenAiAuthMethod(dependencies.settings)) === 'api_key'
         ? catalogEfforts(canonicalModel, 'openai_api_key', dependencies)
         : catalogEfforts(canonicalModel, 'openai_subscription', dependencies, 'xhigh');
     case 'openrouter':
@@ -58,7 +63,7 @@ async function catalogEfforts(
   dependencies: ModelEffortDependencies,
   ceiling?: ModelEffort,
 ): Promise<ModelEffort[]> {
-  await loadModelCatalog(dependencies.settings, dependencies.env);
+  if (!dependencies.catalogLoaded) await loadModelCatalog(dependencies.settings, dependencies.env);
   const route = resolveActiveCatalogRoute(canonicalModel, lane, dependencies.env);
   return route ? modelEffortsFor(route.model, ceiling) : [];
 }

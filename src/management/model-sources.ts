@@ -9,6 +9,7 @@ import {
 } from '../config/model-choices.ts';
 import { resolveModelEfforts } from '../config/model-effort-capability.ts';
 import { resolveModelReadiness } from '../config/model-readiness.ts';
+import { resolveOpenAiAuthMethod } from '../config/openai-auth.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
 import { listInstallationModelProviders, PROVIDER_KEY_IDS } from '../config/provider-keys.ts';
 import type { SettingsStore } from '../config/settings-store.ts';
@@ -42,11 +43,16 @@ export function createManagementModelSources(input: {
       const candidates = uniqueStrings(providers
         .filter(({ id, configured }) => configured && id !== 'cloudflare-workers-ai')
         .flatMap(({ suggestions }) => suggestions));
-      const unavailable = await resolveModelReadiness({ settings, env, runtimeProviders });
+      const [unavailable, openAiAuthMethod] = await Promise.all([
+        resolveModelReadiness({ settings, env, runtimeProviders }),
+        resolveOpenAiAuthMethod(settings),
+      ]);
       const ready = await Promise.all(candidates.map(async (id) => !(await unavailable(id))));
+      // The catalog is loaded above and the auth method read once, not once per model.
+      const effortLookup = { settings, env, catalogLoaded: true, openAiAuthMethod } as const;
       const chat = await Promise.all(candidates.filter((_, index) => ready[index]).map(async (id) => ({
         id,
-        efforts: await resolveModelEfforts(id, { settings, env }),
+        efforts: await resolveModelEfforts(id, effortLookup),
       })));
       const access = new Map<ManagementModelProviderId, ManagementModelAccess>();
       for (const provider of providers) {

@@ -46,8 +46,12 @@ export async function resolveModelReadiness(input: {
     input.runtimeProviders ?? listInstallationModelProviders(env, settings),
   ]);
   const provider = { runtimeProviders, platformEnv: env, openAiAuthMethod, workersAiEnabled, openAiSubscription };
+  // On Cloudflare the subscription status is the plan's, which lists the plan's models.
+  const planModels = isCloudflareTarget() && 'models' in openAiSubscription
+    ? openAiSubscription.models
+    : undefined;
   return async (modelId) => {
-    const message = await activeCatalogCompatibilityError(modelId, openAiAuthMethod, settings, env);
+    const message = await activeCatalogCompatibilityError(modelId, openAiAuthMethod, settings, env, planModels);
     if (message) return { unavailable: 'model_unsupported', message };
     const providerId = modelId.slice(0, modelId.indexOf('/'));
     const unavailable = await modelProviderUnavailable(
@@ -80,11 +84,13 @@ export async function activeCatalogCompatibilityError(
   model: string | null | undefined,
   method: 'api_key' | 'subscription',
   store: SettingsStore, env?: PlatformEnv,
+  /** The ChatGPT plan's models, when the caller already read them for this request. */
+  knownPlanModels?: ReadonlyArray<{ id: string }>,
 ): Promise<string | undefined> {
   if (!model) return undefined;
   if (model.startsWith('openai/') && method === 'subscription' && isCloudflareTarget()) {
-    const status = await planStatus(planDependencies(env, store));
-    return status.models.some(item => `openai/${item.id}` === model) ? undefined : 'Choose a model available to the connected ChatGPT account.';
+    const planModels = knownPlanModels ?? (await planStatus(planDependencies(env, store))).models;
+    return planModels.some(item => `openai/${item.id}` === model) ? undefined : 'Choose a model available to the connected ChatGPT account.';
   }
   if (model.startsWith('openai/')) {
     const lane = method === 'subscription' ? 'openai_subscription' : 'openai_api_key';

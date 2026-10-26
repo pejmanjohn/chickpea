@@ -2897,12 +2897,19 @@ export class WorkspaceManagementService {
 
   private async currentUndoInverse(undo: ManagementUndoRecord): Promise<ManagementOperation> {
     const { inverse } = undo;
-    if (inverse.kind !== 'update_agent' || undo.agentConfigurationDigest === undefined) {
+    if ((inverse.kind !== 'update_agent' && inverse.kind !== 'set_agent_image_model') ||
+        undo.agentConfigurationDigest === undefined) {
       await this.assertRevisionMap(undo.resultingRevisions);
       return inverse;
     }
-    const agent = await optionalAgent(this.stores.config, inverse.agentId);
-    if (!agent || agentConfigurationDigest(agent) !== undo.agentConfigurationDigest) {
+    const [agent, imageModel] = await Promise.all([
+      optionalAgent(this.stores.config, inverse.agentId),
+      // The pin lives in the role table, outside the Agent row the digest covers.
+      inverse.kind === 'set_agent_image_model'
+        ? this.stores.config.getAgentModelRole(inverse.agentId, 'image').then((role) => role?.modelId ?? null)
+        : undefined,
+    ]);
+    if (!agent || agentConfigurationDigest(agent, imageModel) !== undo.agentConfigurationDigest) {
       throw new ManagementError('proposal_stale', 'The proposed target changed.');
     }
     return { ...inverse, expectedRevision: agent.revision };
@@ -4065,6 +4072,15 @@ export class WorkspaceManagementService {
     return { workspaceId: rows.workspaceId, current: workspaceModelChoice(rows[role]) };
   }
 
+  /** Admin's model checks; a service built without them writes no model, as an unchecked choice would pass. */
+  private requireModelSources(): ManagementModelSources {
+    const { models } = this.stores;
+    if (!models) {
+      throw new ManagementError('invalid_request', 'Model choices cannot be checked on this installation.');
+    }
+    return models;
+  }
+
   private async teamSnapshot(
     organizationId: string,
   ): Promise<NonNullable<ManagementWorkspaceSnapshot['team']>> {
@@ -4892,7 +4908,7 @@ export class WorkspaceManagementService {
       case 'set_workspace_model': {
         const { current } = await this.workspaceModel(operation.role);
         requireExpectedRevision(operation.expectedRevision, current.revision);
-        const refusal = await this.stores.models?.workspaceModelRefusal({
+        const refusal = await this.requireModelSources().workspaceModelRefusal({
           role: operation.role,
           model: operation.model,
           effort: operation.modelEffort,
@@ -4940,7 +4956,7 @@ export class WorkspaceManagementService {
           if (agent.kind === 'system') {
             throw new ManagementError('invalid_request', 'Chickpea follows the Workspace image model.');
           }
-          const refusal = await this.stores.models?.agentImageModelRefusal(operation.model);
+          const refusal = await this.requireModelSources().agentImageModelRefusal(operation.model);
           if (refusal) throw new ManagementError('invalid_request', refusal);
         }
         return {
@@ -5294,7 +5310,7 @@ export class WorkspaceManagementService {
           [{ role: 'image', modelId: operation.model }],
           operation.expectedRevision,
         );
-        return mutationForAgent(agent, agentImageInverse(prepared, agent.revision));
+        return mutationForAgentEdit(agent, agentImageInverse(prepared), operation.model);
       }
       case 'save_routine':
       case 'control_routine':
@@ -5360,7 +5376,7 @@ export class WorkspaceManagementService {
       ]);
       return agent && agent.credentialIncarnation === prepared.agentCredentialIncarnation &&
           agent.revision > operation.expectedRevision && (imageRole?.modelId ?? null) === operation.model
-        ? mutationForAgent(agent, agentImageInverse(prepared, agent.revision))
+        ? mutationForAgentEdit(agent, agentImageInverse(prepared), operation.model)
         : undefined;
     }
     if (operation.kind === 'update_agent') {
@@ -6360,7 +6376,12 @@ function agentPatchInverse(before: CustomAgentConfig, patch: ManagementAgentPatc
   };
 }
 
-function agentConfigurationDigest(agent: CustomAgentConfig): string {
+/**
+ * What an undo compares to find the Agent as the change left it, ignoring the
+ * revision moves a presence sync makes. An image-model change passes the pin it
+ * set: the role table is outside the Agent row.
+ */
+function agentConfigurationDigest(agent: CustomAgentConfig, imageModel?: string | null): string {
   const {
     revision: _revision,
     configurationGeneration: _configurationGeneration,
@@ -6369,20 +6390,27 @@ function agentConfigurationDigest(agent: CustomAgentConfig): string {
     ...configured
   } = agent;
   return createHash('sha256')
-    .update(canonicalJson({ ...configured, requestedHandle: slackPresence?.requestedHandle }))
+    .update(canonicalJson({
+      ...configured,
+      requestedHandle: slackPresence?.requestedHandle,
+      ...(imageModel === undefined ? {} : { imageModel }),
+    }))
     .digest('hex');
 }
 
 /** What prepareItem stores as the inverse of an update_agent; the prepared item types it more widely. */
 type AgentEditInverse = Extract<ManagementOperation, { kind: 'update_agent' }>;
+type AgentImageInverse = Extract<ManagementOperation, { kind: 'set_agent_image_model' }>;
 
+/** An undoable Agent write: the inverse is aimed at the revision the write left. */
 function mutationForAgentEdit(
   agent: CustomAgentConfig,
-  inverse: AgentEditInverse | undefined,
+  inverse: AgentEditInverse | AgentImageInverse | undefined,
+  imageModel?: string | null,
 ): ImmediateMutation {
   return {
     ...mutationForAgent(agent, inverse && { ...inverse, expectedRevision: agent.revision }),
-    agentConfigurationDigest: agentConfigurationDigest(agent),
+    agentConfigurationDigest: agentConfigurationDigest(agent, imageModel),
   };
 }
 
@@ -7262,13 +7290,8 @@ function canExecuteImmediately(operation: ManagementOperation): boolean {
     operation.kind === 'set_agent_image_model';
 }
 
-/** The image-model undo, aimed at the revision the change left. */
-function agentImageInverse(
-  prepared: ManagementPreparedItem,
-  revision: number,
-): ManagementOperation | undefined {
-  const inverse = prepared.inverse;
-  return inverse?.kind === 'set_agent_image_model' ? { ...inverse, expectedRevision: revision } : undefined;
+function agentImageInverse(prepared: ManagementPreparedItem): AgentImageInverse | undefined {
+  return prepared.inverse?.kind === 'set_agent_image_model' ? prepared.inverse : undefined;
 }
 
 function invalidatesChangeSetProposal(error: unknown): boolean {
