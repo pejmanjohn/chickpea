@@ -76,7 +76,8 @@ interface Harness {
   /** The hosted bot's active credential revision. */
   hostedRevision: string;
   ownerMembershipId: string;
-  deliver(kind: 'events' | 'interactions', body: unknown, options?: { env?: PlatformEnv; secret?: string }): Promise<Response>;
+  /** `settle` waits for the work the delivery detaches. */
+  deliver(kind: 'events' | 'interactions', body: unknown, options?: { env?: PlatformEnv; secret?: string; settle?: boolean }): Promise<Response>;
   /** The same Slack event or click as Chickpea's own app receives it; settles once the work it detaches is done. */
   deliverToChickpea(body: unknown, kind?: 'events' | 'interactions'): Promise<Response>;
   secrets(): { credentials: EncryptedCredentialStore; keyring: ReturnType<typeof loadCredentialKeyring>; slack: ReturnType<typeof createAgentAppSlackApi> };
@@ -247,7 +248,12 @@ async function withHarness(
     stores, calls, base, delivery, installedAt, hostedRevision, secrets, ownerMembershipId: owner.membership.id,
     async deliver(kind, body, options = {}) {
       const raw = kind === 'events' ? JSON.stringify(body) : new URLSearchParams({ payload: JSON.stringify(body) }).toString();
-      return signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery);
+      if (!options.settle) return signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery);
+      const detached: Promise<unknown>[] = [];
+      const ctx: ExecutionContext = { waitUntil: (task) => { detached.push(task); }, passThroughOnException() {}, props: {} };
+      const response = await signed(`/channels/slack/agent-apps/${kind}`, raw, options.secret ?? AGENT_SECRET, options.env ?? delivery, ctx);
+      await Promise.all(detached);
+      return response;
     },
     async deliverToChickpea(body, kind = 'events') {
       const detached: Promise<unknown>[] = [];
@@ -447,6 +453,33 @@ test("a person's reply right after a proposal is judged at admission; after anot
 
   const typed = await reply('approve', '1900000203.000100');
   assert.equal(typed.turn.managementApprovalProposalId, proposalId, 'the exact word needs no model and no adjacency');
+}));
+
+test("a stop phrase in a DM thread keeps its host meaning and is never judged as a decline", async (t) => withHarness(t, async (h) => {
+  const owner = await h.stores.identity.resolveSlackIdentity(TEAM, 'U1');
+  assert.ok(owner);
+  const root = '1900000300.000100';
+  assert.equal((await h.deliver('events', dmEvent({ event_id: `Ev${root}` }, { text: 'remember that refunds go to account 99', ts: root, event_ts: root }))).status, 200);
+  assert.ok(await pendingTurn(h.stores, (pending) => pending.turn.messageTs === root));
+  const proposalId = 'changeset_stop_phrase';
+  await h.stores.management.putChangeSetProposal({
+    proposalId, organizationId: owner.membership.organizationId,
+    actorUserId: owner.user.id, actorMembershipId: owner.membership.id,
+    originKey: `slack:${TEAM}:D1:${root}:im:agent:agent_support`,
+    approvalScopeKey: `slack:${TEAM}:D1:dm:agent:agent_support`, idempotencyKey: proposalId,
+    guideVersion: 'test', authoringReason: 'agent_edit', digest: 'd'.repeat(64),
+    operations: [{ itemId: 'memory', kind: 'update_agent_memory', agentId: 'agent_support', expectedRevision: 0, body: 'Refunds go to account 99.' }],
+    preview: { summary: 'Preview', changes: [], missingSetup: [] },
+    targetRevisions: { 'memory:agent_support': 0 }, at: Date.now(),
+    proposedMessageTs: root,
+  });
+
+  const stop = '1900000301.000100';
+  const stopEvent = dmEvent({ event_id: `Ev${stop}` }, { text: 'cancel that', ts: stop, event_ts: stop, thread_ts: root });
+  assert.equal((await h.deliver('events', stopEvent, { settle: true })).status, 200);
+  assert.equal(await h.stores.usage.getOperation(`management_approval:${TEAM}:D1:Ev${stop}`), undefined,
+    'a stop phrase is never judged');
+  assert.equal((await h.stores.management.getChangeSetProposal(proposalId))?.status, 'pending');
 }));
 
 test("a click on the app Agent's approval card reaches that Agent, as the thread's owner or its guest, and runs as its bot", async (t) => withHarness(t, async (h) => {

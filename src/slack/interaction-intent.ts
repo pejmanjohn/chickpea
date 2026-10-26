@@ -372,19 +372,23 @@ export function parseSlackManagementApproval(raw: string): SlackManagementApprov
 }
 
 /**
- * The exact approval words decide without a model. Any other message gets
- * one side call; a failure, a timeout, or a repeat call for the same message
+ * One side call judges the message; the host decides the exact approval words
+ * before it calls. A failure, a timeout, or a repeat call for the same message
  * (which `once` refuses) judges other, which applies nothing.
  */
 export async function classifySlackManagementApproval(
   context: SlackManagementApprovalContext,
-  env: PlatformEnv | undefined,
-  prompt: ManagementApprovalPrompt | undefined = undefined,
-  timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS,
-  dependencies: { settings?: SettingsStore; once?: () => Promise<boolean> } = {},
+  options: {
+    env?: PlatformEnv | undefined;
+    /** Stands in for the model call. */
+    prompt?: ManagementApprovalPrompt;
+    timeoutMs?: number;
+    settings?: SettingsStore;
+    once?: () => Promise<boolean>;
+  } = {},
 ): Promise<SlackManagementApprovalJudgment> {
-  if (shouldResolveSlackManagementApproval(context.text)) return { approval: 'approve', failed: false };
-  if (dependencies.once && !(await dependencies.once())) return { approval: 'other', failed: false };
+  const { env, prompt, timeoutMs = DEFAULT_INTERACTION_TIMEOUT_MS, settings, once } = options;
+  if (once && !(await once())) return { approval: 'other', failed: false };
   try {
     const response = await withTimeout(
       prompt
@@ -392,11 +396,7 @@ export async function classifySlackManagementApproval(
         : promptSideCall('slack-management-approval', context.requestedModel, {
             systemPrompt: SLACK_MANAGEMENT_APPROVAL_INSTRUCTIONS,
             messages: [{ role: 'user', content: slackManagementApprovalMessage(context), timestamp: Date.now() }],
-          }, {
-            answerTokens: 64,
-            env,
-            ...(dependencies.settings ? { settings: dependencies.settings } : {}),
-          }),
+          }, { answerTokens: 64, env, ...(settings ? { settings } : {}) }),
       timeoutMs,
     );
     return {

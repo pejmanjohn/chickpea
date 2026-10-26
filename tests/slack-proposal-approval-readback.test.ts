@@ -53,9 +53,9 @@ test('the latest Agent turn is read per Channel thread, or across a whole DM, an
   const db = openStateDb(':memory:');
   const turns = new TurnJobStoreLogic(db, () => 100);
   const insert = (id: string, threadKey: string, messageTs: string, agentId: string, at: number) => {
-    db.run(`INSERT INTO turn_jobs (id, evt_key, msg_key, turn_json, assignment_json, delivered, status, enqueued_at, thread_key)
-      VALUES (?, ?, ?, ?, ?, 1, 'done', ?, ?)`, id, id, id, JSON.stringify({ messageTs, text: 'PRIVATE' }),
-    JSON.stringify({ agent: { id: agentId } }), at, threadKey);
+    db.run(`INSERT INTO turn_jobs (id, evt_key, msg_key, turn_json, assignment_json, delivered, status, enqueued_at, thread_key, message_ts)
+      VALUES (?, ?, ?, ?, ?, 1, 'done', ?, ?, ?)`, id, id, id, JSON.stringify({ messageTs, text: 'PRIVATE' }),
+    JSON.stringify({ agent: { id: agentId } }), at, threadKey, messageTs);
   };
   try {
     const thread = { workspaceId: 'T1', channelId: 'C1', threadTs: '100.1', agentId: 'agent_desk' };

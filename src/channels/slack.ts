@@ -97,6 +97,7 @@ import {
   classifySlackInteraction,
   classifySlackManagementApproval,
   resolveImmediateSlackInteractionIntent,
+  shouldResolveSlackManagementApproval,
   slackSteeringCommand,
   type SlackSteeringCommand,
 } from '../slack/interaction-intent.ts';
@@ -3242,13 +3243,8 @@ async function processSlackEvent(
     : undefined;
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
-  // The requester's own message approves or declines the change set waiting
-  // on them: the exact approval words at once, other wording, when it answers
-  // the set, by one side call that reads only their message and a fixed-label
-  // summary of the set. The judgment runs here, before the TurnJob freezes
-  // the turn, so a retried job never repeats it, and the claim keeps a
-  // redelivered event from paying for it twice.
-  const typedApproval = typedByPerson && !browserActionAnswered && !candidateTurn &&
+  // A stop phrase or check-in keeps its host meaning and is never judged.
+  const typedApproval = typedByPerson && !browserActionAnswered && !steeringCommand &&
       admissionTruth.eligible && admittedActorMembershipId
     ? await resolveTypedSlackManagementApproval({
         turn,
@@ -3259,13 +3255,11 @@ async function processSlackEvent(
         latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
         judge: async (reply) => {
           const requestedModel = assignment.model ?? null;
-          const judgment = await classifySlackManagementApproval(
-            { ...reply, requestedModel },
-            platformEnv,
-            undefined,
-            undefined,
-            { settings: stores.settings, once: () => state.claim(`approval:${msgKey}`) },
-          );
+          const judgment = await classifySlackManagementApproval({ ...reply, requestedModel }, {
+            env: platformEnv,
+            settings: stores.settings,
+            once: () => state.claim(`approval:${msgKey}`),
+          });
           await recordInteractionClassifierUsage({
             turn,
             assignment,
@@ -3280,8 +3274,10 @@ async function processSlackEvent(
           });
           return judgment.approval;
         },
-      }).catch(() => {
-        console.warn('[chickpea] typed approval lookup failed; the message continues as conversation');
+      }).catch((err: unknown) => {
+        // An exact approval fails the turn as before; other wording stays conversation.
+        if (shouldResolveSlackManagementApproval(turn.text)) throw err;
+        console.warn('[chickpea] typed approval was not judged:', sanitizeError(err));
         return undefined;
       })
     : undefined;

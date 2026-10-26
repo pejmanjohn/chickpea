@@ -1340,7 +1340,7 @@ export class TurnJobStoreLogic {
     const conversation = `${input.workspaceId}:${input.channelId}`;
     const row = input.threadTs === undefined
       ? this.db.get(
-          `SELECT json_extract(turn_json, '$.messageTs') AS messageTs FROM turn_jobs
+          `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key >= ? AND thread_key < ? AND json_extract(assignment_json, '$.agent.id') = ?
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:`,
@@ -1348,7 +1348,7 @@ export class TurnJobStoreLogic {
           input.agentId,
         )
       : this.db.get(
-          `SELECT json_extract(turn_json, '$.messageTs') AS messageTs FROM turn_jobs
+          `SELECT message_ts AS messageTs FROM turn_jobs
            WHERE thread_key = ? AND json_extract(assignment_json, '$.agent.id') = ?
            ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
           `${conversation}:${validateBoundedString(input.threadTs, 'Thread timestamp', 128)}`,
