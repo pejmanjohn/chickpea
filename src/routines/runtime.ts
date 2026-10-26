@@ -26,10 +26,7 @@ import { createSlackWebClient } from '../slack/web-client.ts';
 import { slackPendingExternalShare } from '../slack/transport/shared.ts';
 import { resolvePrivateAgentAccess } from '../slack/agent-access.ts';
 import { agentDmPlacementFacts } from '../slack/agent-apps/index.ts';
-import {
-  createDirectSlackTransportFromClient,
-  type DirectSlackApiClient,
-} from '../slack/transport/direct.ts';
+import { createDirectSlackTransportFromWebClient } from '../slack/transport/direct.ts';
 import { agentAvatarInstallation } from '../slack/agent-presence/avatar-assets.ts';
 import { hashRoutineValue } from './ids.ts';
 import {
@@ -230,7 +227,7 @@ export async function resolveRoutineRuntimeAccess(
       transport: await agentDmPlacementFacts(
         env,
         authority.agent,
-        createDirectSlackTransportFromClient(directClient as unknown as DirectSlackApiClient),
+        createDirectSlackTransportFromWebClient(directClient),
       ),
     });
     if (privateUse.status === 'denied') {

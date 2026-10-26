@@ -201,6 +201,22 @@ const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to thi
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
 
+/**
+ * Slack revokes Channel reach from inside Slack, so it rechecks that the
+ * person is in the Channel. Admin's detach, and MCP with the same authority,
+ * need only editor rights.
+ */
+const REVOKE_NEEDS_CHANNEL_MEMBERSHIP = {
+  slack: true,
+  mcp: false,
+  admin: false,
+} as const satisfies Record<ManagementOrigin['kind'], boolean>;
+
+const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
+  lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+  listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
+};
+
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
@@ -391,6 +407,17 @@ type ActingAgentScopeTarget = {
   | { scope: 'agent'; agentId: string }
   | { scope: 'authority' }
 );
+
+/**
+ * A Slack model reuses keys such as `disable-foo` in later turns. Scoping a
+ * skill key to the requester's message keeps a retry within the turn
+ * idempotent without replaying an earlier turn's receipt.
+ */
+function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
+  return actor.origin.kind === 'slack' && actor.origin.eventId
+    ? `${key}@${actor.origin.eventId}`
+    : key;
+}
 
 /**
  * One requester-bound control plane shared by MCP, Slack, and Admin adapters.
@@ -7358,33 +7385,6 @@ function skillImportOperationId(
   })).digest('hex').slice(0, 32);
   return `management_skill_import_${digest}`;
 }
-
-/**
- * A Slack model reuses keys such as `disable-foo` in later turns. Scoping a
- * skill key to the requester's message keeps a retry within the turn
- * idempotent without replaying an earlier turn's receipt.
- */
-function turnIdempotencyKey(actor: LiveManagementActor, key: string): string {
-  return actor.origin.kind === 'slack' && actor.origin.eventId
-    ? `${key}@${actor.origin.eventId}`
-    : key;
-}
-
-/**
- * Slack revokes Channel reach from inside Slack, so it rechecks that the
- * person is in the Channel. Admin's detach, and MCP with the same authority,
- * need only editor rights.
- */
-const REVOKE_NEEDS_CHANNEL_MEMBERSHIP = {
-  slack: true,
-  mcp: false,
-  admin: false,
-} as const satisfies Record<ManagementOrigin['kind'], boolean>;
-
-const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
-  lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
-  listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
-};
 
 function skillActionOperationId(
   actor: LiveManagementActor,
