@@ -51,6 +51,7 @@ import {
   boundApiCredentialRef,
   boundMcpCredentialRef,
 } from '../src/config/connection-credential-binding.ts';
+import { apiConnectionsAfterWrite, managementConnectionStatus } from '../src/management/agent-connections.ts';
 import type {
   SlackAppHomeReference,
   SlackChannel,
@@ -2869,6 +2870,192 @@ test('an Agent credential reset invalidates same-policy API OAuth authorization'
     );
     assert.equal(reset.apiConnections[0]?.lifecycleStatus, 'pending');
     assert.deepEqual(await fixture.settings.getSettings(oauthKeys), oauthKeys.map(() => undefined));
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('Admin saves an Agent with a pending credential API connection and keeps the status the server set', async () => {
+  const fixture = harness();
+  try {
+    const created = await fixture.store.createAgent({
+      id: 'agent_pending_api',
+      name: 'Pending API',
+      instructions: 'Read invoices.',
+      enabled: true,
+      model: 'local-stub/security',
+      skills: [],
+      mcpServers: [],
+      apiConnections: apiConnectionsAfterWrite([], [{
+        id: 'billing', displayName: 'Billing', allowedHosts: ['billing.example.test'],
+        pathPrefixes: ['/v1/'], headerName: 'Authorization', headerValuePrefix: 'Bearer ',
+        allowedMethods: ['GET'], enabled: true, authMode: 'credential',
+      }]),
+      repositories: [],
+    });
+    assert.equal(created.apiConnections[0]?.lifecycleStatus, 'pending', 'a management write stores a status');
+    const detail = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, { headers: auth() });
+    const served = (await detail.json() as { agent: { apiConnections: Array<Record<string, unknown>> } }).agent;
+    assert.equal(served.apiConnections[0]?.lifecycleStatus, 'pending', 'Admin serves the stored status');
+
+    const save = (expectedRevision: number, apiConnections: unknown[], instructions: string) =>
+      fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, {
+        method: 'PATCH', headers: auth(),
+        body: JSON.stringify({
+          expectedRevision,
+          credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+          instructions,
+          apiConnections,
+        }),
+      });
+    const echoed = await save(created.revision, served.apiConnections, 'Read and summarize invoices.');
+    assert.equal(echoed.status, 200, await echoed.clone().text());
+    const saved = await fixture.store.getAgent(created.id);
+    assert.equal(saved.instructions, 'Read and summarize invoices.');
+    assert.deepEqual(saved.apiConnections, created.apiConnections);
+
+    const forged = await save(saved.revision, [{
+      ...served.apiConnections[0], lifecycleStatus: 'ready', statusText: 'Connected',
+    }], 'Read invoices.');
+    assert.equal(forged.status, 200, await forged.clone().text());
+    assert.deepEqual((await fixture.store.getAgent(created.id)).apiConnections, created.apiConnections,
+      'Admin input cannot set a connection status');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+type ServedConnection = { id: string; lifecycleStatus?: string; statusText?: string; credentialBinding: string };
+
+/** An Agent whose API connections a management write added, so each starts pending. */
+function createAgentWithPendingApiConnections(
+  store: SqliteConfigStore,
+  connectionIds: string[],
+  mcpServers: Parameters<SqliteConfigStore['createAgent']>[0]['mcpServers'] = [],
+) {
+  return store.createAgent({
+    id: 'agent_pending_keys',
+    name: 'Pending keys',
+    instructions: 'Read invoices.',
+    enabled: true,
+    model: 'local-stub/security',
+    skills: [],
+    mcpServers,
+    apiConnections: apiConnectionsAfterWrite([], connectionIds.map((id) => ({
+      id, displayName: id, allowedHosts: [`${id}.example.test`], pathPrefixes: ['/v1/'],
+      headerName: 'Authorization', headerValuePrefix: 'Bearer ', allowedMethods: ['GET'],
+      enabled: true, authMode: 'credential',
+    }))),
+    repositories: [],
+  });
+}
+
+async function servedAgent(app: Hono, agentId: string) {
+  const response = await app.request(`http://localhost/admin/api/agents/${agentId}`, { headers: auth() });
+  assert.equal(response.status, 200, await response.clone().text());
+  return (await response.json() as {
+    agent: { apiConnections: ServedConnection[]; mcpServers: ServedConnection[] };
+  }).agent;
+}
+
+function putApiKey(
+  app: Hono,
+  agentId: string,
+  connection: ServedConnection,
+  expectedRevision: number,
+  credential: string,
+) {
+  return app.request(`http://localhost/admin/api/agents/${agentId}/api-connections/secrets/${connection.id}`, {
+    method: 'PUT', headers: auth(),
+    body: JSON.stringify({ expectedRevision, expectedCredentialBinding: connection.credentialBinding, credential }),
+  });
+}
+
+test('a key pasted in Admin makes a pending API connection added over MCP ready', async () => {
+  const fixture = harness();
+  try {
+    const created = await createAgentWithPendingApiConnections(fixture.store, ['billing']);
+    const [served] = (await servedAgent(fixture.app, created.id)).apiConnections;
+    assert.equal(served?.lifecycleStatus, 'pending');
+
+    const saved = await putApiKey(fixture.app, created.id, served!, created.revision, 'billing-key');
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const ready = await fixture.store.getAgent(created.id);
+    assert.equal(ready.revision, created.revision + 1, 'marking the connection ready is a new revision');
+    assert.deepEqual(
+      managementConnectionStatus(ready).map(({ id, lifecycleStatus, statusText }) => ({ id, lifecycleStatus, statusText })),
+      [{ id: 'billing', lifecycleStatus: 'ready', statusText: 'Connected' }],
+      'inspect reports the connection ready to the coding agent',
+    );
+    const [servedReady] = (await servedAgent(fixture.app, created.id)).apiConnections;
+    assert.equal(servedReady?.lifecycleStatus, 'ready', 'Admin no longer shows setup required');
+    assert.equal(servedReady && 'readyRevision' in servedReady, false, 'Admin does not serve the internal revision');
+    assert.equal(
+      await resolveConnectorCredential(boundApiCredentialRef(ready.id, ready.apiConnections[0]!), undefined, fixture.settings),
+      'billing-key',
+    );
+
+    const rotated = await putApiKey(fixture.app, created.id, served!, ready.revision, 'billing-key-2');
+    assert.equal(rotated.status, 200, await rotated.clone().text());
+    assert.equal((await fixture.store.getAgent(created.id)).revision, ready.revision,
+      'a key saved for a connection that is already ready changes no revision');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
+test('one Admin save stores keys for several pending connections at one revision', async () => {
+  const fixture = harness();
+  try {
+    const created = await createAgentWithPendingApiConnections(fixture.store, ['billing', 'tickets', 'crm'], [{
+      id: 'tracker', displayName: 'Tracker', url: 'https://mcp.tracker.example/mcp', transport: 'streamable-http',
+      authMode: 'bearer', headerNames: [], enabled: true, lifecycleStatus: 'pending',
+      statusText: 'Setup required', discoveredTools: [], allowedTools: [],
+    }]);
+    const served = await servedAgent(fixture.app, created.id);
+    const api = new Map(served.apiConnections.map((connection) => [connection.id, connection]));
+
+    const parallel = await Promise.all(['billing', 'tickets'].map((id) =>
+      putApiKey(fixture.app, created.id, api.get(id)!, created.revision, `${id}-key`)));
+    for (const response of parallel) assert.equal(response.status, 200, await response.clone().text());
+
+    // A browser can hold a sibling request until earlier ones finish, so this
+    // one reads the Agent after both connections above became ready.
+    const late = await putApiKey(fixture.app, created.id, api.get('crm')!, created.revision, 'crm-key');
+    assert.equal(late.status, 200, await late.clone().text());
+    const lateMcp = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}/mcp/secrets/tracker`, {
+      method: 'PUT', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: created.revision,
+        expectedCredentialBinding: served.mcpServers[0]!.credentialBinding,
+        bearerToken: 'tracker-token',
+        headerNames: [],
+      }),
+    });
+    assert.equal(lateMcp.status, 200, await lateMcp.clone().text());
+
+    const ready = await fixture.store.getAgent(created.id);
+    assert.deepEqual(ready.apiConnections.map(({ id, lifecycleStatus }) => [id, lifecycleStatus]), [
+      ['billing', 'ready'], ['tickets', 'ready'], ['crm', 'ready'],
+    ]);
+    assert.equal(ready.revision, created.revision + 3);
+
+    const edited = await fixture.app.request(`http://localhost/admin/api/agents/${created.id}`, {
+      method: 'PATCH', headers: auth(),
+      body: JSON.stringify({
+        expectedRevision: ready.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(created.credentialIncarnation),
+        instructions: 'Read and summarize invoices.',
+      }),
+    });
+    assert.equal(edited.status, 200, await edited.clone().text());
+    const stale = await putApiKey(fixture.app, created.id, api.get('billing')!, created.revision, 'stale-key');
+    assert.equal(stale.status, 409, await stale.clone().text());
+    assert.equal((await stale.json() as { error: string }).error, 'agent_revision_conflict',
+      'an edit that is not a key save still fences the earlier save');
   } finally {
     fixture.store.close();
     fixture.settings.close();

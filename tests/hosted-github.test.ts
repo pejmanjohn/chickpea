@@ -975,8 +975,8 @@ test('an Agent imported into another deployment carries no installation ID: each
   const recipe = await exportWorkspaceRecipe(source, {});
   assert.doesNotMatch(JSON.stringify(recipe), /installationId|accountLogin|101/);
   const preview = await previewWorkspaceRecipe(target, async () => undefined, { recipe });
-  const created = preview.operations.find((operation) => operation.kind === 'create_agent') as { agent: { repositories: RepositoryGrant[] } };
-  assert.deepEqual(created.agent.repositories.map(({ installationId, fullName }) => ({ installationId, fullName })), [
+  const configured = preview.operations.find((operation) => operation.kind === 'update_agent') as { patch: { repositories: RepositoryGrant[] } };
+  assert.deepEqual(configured.patch.repositories.map(({ installationId, fullName }) => ({ installationId, fullName })), [
     { installationId: null, fullName: 'acme-a/app' },
   ]);
   // A recipe that names an installation is refused outright.

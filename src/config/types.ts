@@ -127,6 +127,11 @@ export interface ApiConnectionConfig {
   oauthAppType?: 'workspace-internal' | 'external';
   lifecycleStatus?: 'pending' | 'ready' | 'failed';
   statusText?: string;
+  /**
+   * The Agent revision an Admin credential save created when it marked this
+   * connection ready. The other credential writes of that save accept it.
+   */
+  readyRevision?: number;
   identity?: McpConnectionIdentity;
   presetId?: string;
 }

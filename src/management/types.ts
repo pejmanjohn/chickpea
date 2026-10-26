@@ -18,6 +18,11 @@ import type {
   RoutineState,
 } from '../routines/types.ts';
 import type { AgentAuthoringReason } from './agent-authoring/index.ts';
+import type {
+  ManagementApiConnection,
+  ManagementConnectionStatus,
+  ManagementMcpConnection,
+} from './agent-connections.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
 
 export type ManagementOrigin =
@@ -85,15 +90,24 @@ export type ManagementAgentCreateInput = Omit<
   | 'slackPresence'
   | 'archivedAt'
   | 'lifecycle'
+  | 'mcpServers'
+  | 'apiConnections'
 > & {
   description?: string;
   requestedHandle?: string;
   editPolicy?: AgentEditPolicy;
+  mcpServers: ManagementMcpConnection[];
+  apiConnections: ManagementApiConnection[];
 };
 
-/** Presentation-aware patch; requestedHandle is projected into Slack presence. */
-export type ManagementAgentPatch = ConfigAgentPatch & {
+/**
+ * Presentation-aware patch; requestedHandle is projected into Slack presence.
+ * Connections carry only client fields; the service keeps the server-owned rest.
+ */
+export type ManagementAgentPatch = Omit<ConfigAgentPatch, 'mcpServers' | 'apiConnections'> & {
   requestedHandle?: string;
+  mcpServers?: ManagementMcpConnection[];
+  apiConnections?: ManagementApiConnection[];
 };
 
 export type ManagementOperation =
@@ -107,6 +121,7 @@ export type ManagementOperation =
   | (ManagementOperationBase & {
       kind: 'update_agent';
       agentId: string;
+      /** 0 names the Agent a create_agent earlier in the same call creates, as that call left it. */
       expectedRevision: number;
       /** Forces confirmation when a portable recipe replaces the Agent definition. */
       confirmationReason?: 'recipe_overwrite';
@@ -793,8 +808,10 @@ export interface ManagementWorkspaceSnapshot {
     model?: string;
     modelEffort?: AgentCreateInput['modelEffort'];
     skills: AgentCreateInput['skills'];
-    mcpServers: AgentCreateInput['mcpServers'];
-    apiConnections: AgentCreateInput['apiConnections'];
+    mcpServers: ManagementMcpConnection[];
+    apiConnections: ManagementApiConnection[];
+    /** Server-observed state of each MCP server and API connection; read-only. */
+    connectionStatus: ManagementConnectionStatus[];
     /** Secret-free accounts owned by this Agent and visible to the requester. */
     connections?: ManagementConnectionSnapshot[];
     repositories: AgentCreateInput['repositories'];

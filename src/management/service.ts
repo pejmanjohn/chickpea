@@ -89,6 +89,15 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
 } from './agent-authoring/index.ts';
 import {
+  apiConnectionsAfterWrite,
+  managementApiConnection,
+  managementConnectionStatus,
+  managementMcpConnection,
+  mcpConnectionsAfterWrite,
+  type ManagementApiConnection,
+  type ManagementMcpConnection,
+} from './agent-connections.ts';
+import {
   canonicalJson,
   effectiveConfigurationRevision,
   managementApprovalScopeKey,
@@ -1712,7 +1721,7 @@ export class WorkspaceManagementService {
     const actor = await this.requireLiveActor(input.context);
     const requestedOperations = validateManagementOperations(input.operations);
     assertBaseAgentCreationContract(requestedOperations);
-    assertStandaloneBaseAgentCreation(requestedOperations);
+    assertCreationCallScope(requestedOperations);
     const duplicateIdentity = await this.duplicateAgentIdentityResult(
       actor,
       requestedOperations,
@@ -1777,7 +1786,7 @@ export class WorkspaceManagementService {
     const readiness = this.requestModelReadiness();
     for (let index = progress.nextIndex; index < request.operations.length; index += 1) {
       const storedOperation = request.operations[index]!;
-      const operation = resolveClientReferences(storedOperation, clientRefs);
+      const operation = resolveClientReferences(storedOperation, clientRefs, progress.outcomes);
       const dependencyFailed = (storedOperation.dependsOn ?? []).some((itemId) =>
         progress.outcomes.find((outcome) => outcome.itemId === itemId)?.disposition !== 'applied');
       if (dependencyFailed) {
@@ -1991,9 +2000,15 @@ export class WorkspaceManagementService {
     changeSet: ManagementChangeSetProposalRecord;
     refused: Array<{ index: number; outcome: ManagementItemOutcome }>;
   } | undefined> {
-    const tail = confirmationTail(request.operations, index, progress.outcomes);
+    const clientRefs = agentClientRefs(request.operations);
+    const tail = confirmationTail(
+      request.operations.map((operation) =>
+        resolveClientReferences(operation, clientRefs, progress.outcomes)),
+      index,
+      progress.outcomes,
+    );
     const waitsForApproval = actor.origin.kind === 'slack';
-    if (!waitsForApproval && tail.some(({ kind }) => kind === 'request_setup')) return undefined;
+    if (!waitsForApproval && tail.some(waitingOnApproval)) return undefined;
     const proposalAgentIds = new Set(tail.flatMap((operation) =>
       operation.kind === 'create_agent' ? [operation.agent.id] : []
     ));
@@ -2001,9 +2016,13 @@ export class WorkspaceManagementService {
     const refused: Array<{ index: number; outcome: ManagementItemOutcome }> = [];
     for (const [offset, operation] of tail.entries()) {
       if (offset === 0) continue;
-      const outcome = operation.kind === 'request_setup'
-        ? waitingOutcome(operation, 'setup_after_approval', SETUP_LINK_ON_APPROVAL)
-        : await this.refusedLaterOperation(actor, operation, proposalAgentIds);
+      // The approval applies only the held items, so a setup that waits on a
+      // refused one could never be issued.
+      const dependencyRefused = operation.kind === 'request_setup' &&
+        refused.some(({ outcome }) => operation.dependsOn?.includes(outcome.itemId));
+      const outcome: ManagementItemOutcome | undefined = dependencyRefused
+        ? { itemId: operation.itemId, operationKind: operation.kind, disposition: 'skipped', code: 'dependency_not_applied' }
+        : waitingOnApproval(operation) ?? await this.refusedLaterOperation(actor, operation, proposalAgentIds);
       if (outcome) refused.push({ index: index + offset, outcome });
       else held.push({ index: index + offset, operation });
     }
@@ -3736,8 +3755,9 @@ export class WorkspaceManagementService {
         ...(model ? { model } : {}),
         ...(modelEffort ? { modelEffort } : {}),
         skills,
-        mcpServers,
-        apiConnections,
+        mcpServers: mcpServers.map(managementMcpConnection),
+        apiConnections: apiConnections.map(managementApiConnection),
+        connectionStatus: managementConnectionStatus({ mcpServers, apiConnections }),
         ...((connectionsByAgent.get(id)?.length ?? 0) > 0
           ? { connections: connectionsByAgent.get(id)!.map(({
               accountRevision: _accountRevision,
@@ -5731,7 +5751,12 @@ function agentClientRefs(operations: readonly ManagementOperation[]): Map<string
 function resolveClientReferences(
   operation: ManagementOperation,
   clientRefs: Map<string, string>,
+  outcomes: readonly ManagementItemOutcome[],
 ): ManagementOperation {
+  if (editsAgentCreatedLater(operation)) {
+    const revision = agentRevisionWrittenInCall(outcomes, operation.agentId);
+    return revision === undefined ? operation : { ...operation, expectedRevision: revision };
+  }
   if (operation.kind === 'grant_agent_channel' && operation.agentClientRef) {
     const agentId = clientRefs.get(operation.agentClientRef);
     if (!agentId) throw new ManagementError('invalid_request', 'The Agent clientRef was not found.');
@@ -5739,6 +5764,23 @@ function resolveClientReferences(
   }
   if (operation.kind === 'request_setup') return resolveSetupClientReference(operation, clientRefs);
   return operation;
+}
+
+/** An edit of an Agent this call creates, whose revision is known only once the creation applies. */
+function editsAgentCreatedLater(
+  operation: ManagementOperation,
+): operation is Extract<ManagementOperation, { kind: 'update_agent' }> {
+  return operation.kind === 'update_agent' && operation.expectedRevision === 0;
+}
+
+function agentRevisionWrittenInCall(
+  outcomes: readonly ManagementItemOutcome[],
+  agentId: string,
+): number | undefined {
+  return outcomes
+    .flatMap((outcome) => outcome.disposition === 'applied' ? outcome.changed ?? [] : [])
+    .findLast(({ kind, id, revision }) => kind === 'agent' && id === agentId && revision !== undefined)
+    ?.revision;
 }
 
 function resolveSetupClientReference(
@@ -5832,7 +5874,14 @@ function projectManagementAgentPatch(
   agent: CustomAgentConfig,
   patch: ManagementAgentPatch,
 ): ConfigAgentPatch {
-  const { requestedHandle, ...configPatch } = patch;
+  const { requestedHandle, mcpServers, apiConnections, ...rest } = patch;
+  const configPatch: ConfigAgentPatch = {
+    ...rest,
+    ...(mcpServers ? { mcpServers: mcpConnectionsAfterWrite(agent.mcpServers, mcpServers) } : {}),
+    ...(apiConnections
+      ? { apiConnections: apiConnectionsAfterWrite(agent.apiConnections, apiConnections) }
+      : {}),
+  };
   if (requestedHandle === undefined) return configPatch;
   const presence = agent.slackPresence ?? {
     requestedHandle: normalizeAgentHandle(agent.name || agent.id),
@@ -6343,7 +6392,7 @@ function containsExpandedRepositories(
 
 function containsExpandedMcp(
   before: CustomAgentConfig['mcpServers'],
-  after: CustomAgentConfig['mcpServers'],
+  after: readonly ManagementMcpConnection[],
 ): boolean {
   return after.some((connection) => {
     if (!connection.enabled) return false;
@@ -6355,8 +6404,8 @@ function containsExpandedMcp(
 }
 
 function mcpSecurityBoundaryChanged(
-  before: CustomAgentConfig['mcpServers'][number],
-  after: CustomAgentConfig['mcpServers'][number],
+  before: ManagementMcpConnection,
+  after: ManagementMcpConnection,
 ): boolean {
   return before.url !== after.url ||
     before.transport !== after.transport ||
@@ -6366,7 +6415,7 @@ function mcpSecurityBoundaryChanged(
 
 function containsExpandedApi(
   before: CustomAgentConfig['apiConnections'],
-  after: CustomAgentConfig['apiConnections'],
+  after: readonly ManagementApiConnection[],
 ): boolean {
   return after.some((connection) => {
     if (!connection.enabled) return false;
@@ -6500,13 +6549,19 @@ function assertNoLegacyMetaAdsConnections(
   }
 }
 
-function assertStandaloneBaseAgentCreation(
-  operations: readonly ManagementOperation[],
-): void {
-  if (!operations.some(({ kind }) => kind === 'create_agent') || operations.length === 1) return;
+const CREATION_CALL_KINDS: ReadonlySet<ManagementOperation['kind']> = new Set([
+  'create_agent',
+  'update_agent',
+  'request_setup',
+]);
+
+/** A call that creates Agents may configure them, but Channel reach and schedules wait for a later call. */
+function assertCreationCallScope(operations: readonly ManagementOperation[]): void {
+  if (!operations.some(({ kind }) => kind === 'create_agent') ||
+      operations.every(({ kind }) => CREATION_CALL_KINDS.has(kind))) return;
   throw new ManagementError(
     'base_agent_capabilities_require_setup',
-    'Create the base Agent in its own request. Add reach, connections, repositories, and schedules afterward.',
+    'A call that creates an Agent can also edit Agents and request setup. Add Channel reach, schedules, and other changes in a later call.',
   );
 }
 
@@ -6772,6 +6827,21 @@ function memoryMutation(memory: AgentMemory, inverse?: ManagementOperation): Imm
 const SETUP_LINK_ON_APPROVAL = 'The person gets this setup link with the receipt when they approve the change set. Tell them it follows their approval, and do not prepare it yourself.';
 const CHANGE_AFTER_APPROVAL = 'This change conflicts with the pending change set. Make it in a new request after the person approves that one.';
 const SLACK_SETUP_APPROVAL_UNAVAILABLE = 'Replacing saved credentials needs an approval Slack cannot collect for a setup link. Ask the person to replace them from Admin.';
+
+/**
+ * A later operation a change set can't hold: a setup request, whose link the
+ * approval issues, and an edit of an Agent the set itself creates, whose
+ * revision exists only once the set applies.
+ */
+function waitingOnApproval(operation: ManagementOperation): ManagementItemOutcome | undefined {
+  if (operation.kind === 'request_setup') {
+    return waitingOutcome(operation, 'setup_after_approval', SETUP_LINK_ON_APPROVAL);
+  }
+  if (editsAgentCreatedLater(operation)) {
+    return waitingOutcome(operation, 'revision_conflict', CHANGE_AFTER_APPROVAL);
+  }
+  return undefined;
+}
 
 /** An operation a Slack change set leaves for after the person's approval. */
 function waitingOutcome(

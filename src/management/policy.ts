@@ -136,17 +136,18 @@ function managementPolicyReason(
     return { allowed: true, reason: 'credential_replacement' };
   }
   if (operation.kind === 'update_agent') {
+    // A destructive edit keeps its confirmation even inside a recipe overwrite.
     if (facts.connectionRemoved) {
       return { allowed: true, reason: 'connection_removal' };
-    }
-    if (operation.confirmationReason === 'recipe_overwrite') {
-      return { allowed: true, reason: 'recipe_overwrite' };
     }
     const disablingActive = facts.currentAgent?.enabled === true &&
       operation.patch.enabled === false &&
       Boolean(facts.agentReferences?.channelGrants.length);
     if (disablingActive) {
       return { allowed: true, reason: 'disable_active_agent' };
+    }
+    if (operation.confirmationReason === 'recipe_overwrite') {
+      return { allowed: true, reason: 'recipe_overwrite' };
     }
     if (facts.capabilityScopeExpanded) {
       return { allowed: true, reason: 'capability_scope_expansion' };
