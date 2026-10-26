@@ -90,6 +90,15 @@ import {
   AGENT_AUTHORING_GUIDE_VERSION,
 } from './agent-authoring/index.ts';
 import {
+  apiConnectionsAfterWrite,
+  managementApiConnection,
+  managementConnectionStatus,
+  managementMcpConnection,
+  mcpConnectionsAfterWrite,
+  type ManagementApiConnection,
+  type ManagementMcpConnection,
+} from './agent-connections.ts';
+import {
   canonicalJson,
   effectiveConfigurationRevision,
   managementApprovalScopeKey,
@@ -3623,8 +3632,9 @@ export class WorkspaceManagementService {
         ...(model ? { model } : {}),
         ...(modelEffort ? { modelEffort } : {}),
         skills,
-        mcpServers,
-        apiConnections,
+        mcpServers: mcpServers.map(managementMcpConnection),
+        apiConnections: apiConnections.map(managementApiConnection),
+        connectionStatus: managementConnectionStatus({ mcpServers, apiConnections }),
         ...((connectionsByAgent.get(id)?.length ?? 0) > 0
           ? { connections: connectionsByAgent.get(id)!.map(({
               accountRevision: _accountRevision,
@@ -5783,7 +5793,14 @@ function projectManagementAgentPatch(
   agent: CustomAgentConfig,
   patch: ManagementAgentPatch,
 ): ConfigAgentPatch {
-  const { requestedHandle, ...configPatch } = patch;
+  const { requestedHandle, mcpServers, apiConnections, ...rest } = patch;
+  const configPatch: ConfigAgentPatch = {
+    ...rest,
+    ...(mcpServers ? { mcpServers: mcpConnectionsAfterWrite(agent.mcpServers, mcpServers) } : {}),
+    ...(apiConnections
+      ? { apiConnections: apiConnectionsAfterWrite(agent.apiConnections, apiConnections) }
+      : {}),
+  };
   if (requestedHandle === undefined) return configPatch;
   const presence = agent.slackPresence ?? {
     requestedHandle: normalizeAgentHandle(agent.name || agent.id),
@@ -6266,7 +6283,7 @@ function containsExpandedRepositories(
 
 function containsExpandedMcp(
   before: CustomAgentConfig['mcpServers'],
-  after: CustomAgentConfig['mcpServers'],
+  after: readonly ManagementMcpConnection[],
 ): boolean {
   return after.some((connection) => {
     if (!connection.enabled) return false;
@@ -6278,8 +6295,8 @@ function containsExpandedMcp(
 }
 
 function mcpSecurityBoundaryChanged(
-  before: CustomAgentConfig['mcpServers'][number],
-  after: CustomAgentConfig['mcpServers'][number],
+  before: ManagementMcpConnection,
+  after: ManagementMcpConnection,
 ): boolean {
   return before.url !== after.url ||
     before.transport !== after.transport ||
@@ -6289,7 +6306,7 @@ function mcpSecurityBoundaryChanged(
 
 function containsExpandedApi(
   before: CustomAgentConfig['apiConnections'],
-  after: CustomAgentConfig['apiConnections'],
+  after: readonly ManagementApiConnection[],
 ): boolean {
   return after.some((connection) => {
     if (!connection.enabled) return false;

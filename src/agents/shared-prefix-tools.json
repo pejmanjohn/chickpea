@@ -881,6 +881,11 @@
                "enabled": {
                 "type": "boolean"
                },
+               "suggestedSkillId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+               },
                "importSource": {
                 "type": "object",
                 "properties": {
@@ -968,47 +973,6 @@
                "enabled": {
                 "type": "boolean"
                },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "discoveredTools": {
-                "type": "array",
-                "items": {
-                 "type": "object",
-                 "properties": {
-                  "name": {
-                   "type": "string",
-                   "minLength": 1,
-                   "maxLength": 120
-                  },
-                  "title": {
-                   "type": "string",
-                   "maxLength": 160
-                  },
-                  "description": {
-                   "type": "string",
-                   "maxLength": 400
-                  },
-                  "readOnlyHint": {
-                   "type": "boolean"
-                  }
-                 },
-                 "required": [
-                  "name"
-                 ],
-                 "additionalProperties": false
-                },
-                "maxItems": 500
-               },
                "toolPolicies": {
                 "type": "object",
                 "propertyNames": {
@@ -1063,25 +1027,6 @@
                 "type": "string",
                 "maxLength": 2000
                },
-               "lastCheckedAt": {
-                "type": "integer",
-                "minimum": 0
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
-               },
                "presetId": {
                 "type": "string",
                 "minLength": 1,
@@ -1096,9 +1041,6 @@
                "authMode",
                "headerNames",
                "enabled",
-               "lifecycleStatus",
-               "statusText",
-               "discoveredTools",
                "allowedTools"
               ],
               "additionalProperties": false
@@ -1184,33 +1126,6 @@
                  "external"
                 ],
                 "type": "string"
-               },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
                },
                "presetId": {
                 "type": "string",
@@ -1416,6 +1331,11 @@
                "enabled": {
                 "type": "boolean"
                },
+               "suggestedSkillId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+               },
                "importSource": {
                 "type": "object",
                 "properties": {
@@ -1503,47 +1423,6 @@
                "enabled": {
                 "type": "boolean"
                },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "discoveredTools": {
-                "type": "array",
-                "items": {
-                 "type": "object",
-                 "properties": {
-                  "name": {
-                   "type": "string",
-                   "minLength": 1,
-                   "maxLength": 120
-                  },
-                  "title": {
-                   "type": "string",
-                   "maxLength": 160
-                  },
-                  "description": {
-                   "type": "string",
-                   "maxLength": 400
-                  },
-                  "readOnlyHint": {
-                   "type": "boolean"
-                  }
-                 },
-                 "required": [
-                  "name"
-                 ],
-                 "additionalProperties": false
-                },
-                "maxItems": 500
-               },
                "toolPolicies": {
                 "type": "object",
                 "propertyNames": {
@@ -1598,25 +1477,6 @@
                 "type": "string",
                 "maxLength": 2000
                },
-               "lastCheckedAt": {
-                "type": "integer",
-                "minimum": 0
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
-               },
                "presetId": {
                 "type": "string",
                 "minLength": 1,
@@ -1631,9 +1491,6 @@
                "authMode",
                "headerNames",
                "enabled",
-               "lifecycleStatus",
-               "statusText",
-               "discoveredTools",
                "allowedTools"
               ],
               "additionalProperties": false
@@ -1719,33 +1576,6 @@
                  "external"
                 ],
                 "type": "string"
-               },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
                },
                "presetId": {
                 "type": "string",
@@ -2897,6 +2727,11 @@
                "enabled": {
                 "type": "boolean"
                },
+               "suggestedSkillId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+               },
                "importSource": {
                 "type": "object",
                 "properties": {
@@ -2984,47 +2819,6 @@
                "enabled": {
                 "type": "boolean"
                },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "discoveredTools": {
-                "type": "array",
-                "items": {
-                 "type": "object",
-                 "properties": {
-                  "name": {
-                   "type": "string",
-                   "minLength": 1,
-                   "maxLength": 120
-                  },
-                  "title": {
-                   "type": "string",
-                   "maxLength": 160
-                  },
-                  "description": {
-                   "type": "string",
-                   "maxLength": 400
-                  },
-                  "readOnlyHint": {
-                   "type": "boolean"
-                  }
-                 },
-                 "required": [
-                  "name"
-                 ],
-                 "additionalProperties": false
-                },
-                "maxItems": 500
-               },
                "toolPolicies": {
                 "type": "object",
                 "propertyNames": {
@@ -3079,25 +2873,6 @@
                 "type": "string",
                 "maxLength": 2000
                },
-               "lastCheckedAt": {
-                "type": "integer",
-                "minimum": 0
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
-               },
                "presetId": {
                 "type": "string",
                 "minLength": 1,
@@ -3112,9 +2887,6 @@
                "authMode",
                "headerNames",
                "enabled",
-               "lifecycleStatus",
-               "statusText",
-               "discoveredTools",
                "allowedTools"
               ],
               "additionalProperties": false
@@ -3200,33 +2972,6 @@
                  "external"
                 ],
                 "type": "string"
-               },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
                },
                "presetId": {
                 "type": "string",
@@ -3432,6 +3177,11 @@
                "enabled": {
                 "type": "boolean"
                },
+               "suggestedSkillId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+               },
                "importSource": {
                 "type": "object",
                 "properties": {
@@ -3519,47 +3269,6 @@
                "enabled": {
                 "type": "boolean"
                },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "discoveredTools": {
-                "type": "array",
-                "items": {
-                 "type": "object",
-                 "properties": {
-                  "name": {
-                   "type": "string",
-                   "minLength": 1,
-                   "maxLength": 120
-                  },
-                  "title": {
-                   "type": "string",
-                   "maxLength": 160
-                  },
-                  "description": {
-                   "type": "string",
-                   "maxLength": 400
-                  },
-                  "readOnlyHint": {
-                   "type": "boolean"
-                  }
-                 },
-                 "required": [
-                  "name"
-                 ],
-                 "additionalProperties": false
-                },
-                "maxItems": 500
-               },
                "toolPolicies": {
                 "type": "object",
                 "propertyNames": {
@@ -3614,25 +3323,6 @@
                 "type": "string",
                 "maxLength": 2000
                },
-               "lastCheckedAt": {
-                "type": "integer",
-                "minimum": 0
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
-               },
                "presetId": {
                 "type": "string",
                 "minLength": 1,
@@ -3647,9 +3337,6 @@
                "authMode",
                "headerNames",
                "enabled",
-               "lifecycleStatus",
-               "statusText",
-               "discoveredTools",
                "allowedTools"
               ],
               "additionalProperties": false
@@ -3735,33 +3422,6 @@
                  "external"
                 ],
                 "type": "string"
-               },
-               "lifecycleStatus": {
-                "enum": [
-                 "pending",
-                 "ready",
-                 "failed"
-                ],
-                "type": "string"
-               },
-               "statusText": {
-                "type": "string",
-                "maxLength": 1000
-               },
-               "identity": {
-                "type": "object",
-                "properties": {
-                 "workspaceName": {
-                  "type": "string",
-                  "maxLength": 240
-                 },
-                 "accountName": {
-                  "type": "string",
-                  "maxLength": 240
-                 }
-                },
-                "required": [],
-                "additionalProperties": false
                },
                "presetId": {
                 "type": "string",
