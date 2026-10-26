@@ -221,6 +221,7 @@ import { isValidApiOAuthConnectionPolicy } from '../config/api-oauth-policy.ts';
 import { finishAgentSecretCleanup, stageAgentSecretCleanup } from '../config/agent-secret-cleanup.ts';
 import {
   apiConnectionsWriteProblem,
+  CONNECTION_ID_PATTERN,
   GITHUB_API_CONNECTION_ERROR,
   isAllowedConnectorHost,
   mcpConnectionsWriteProblem,
@@ -1046,7 +1047,7 @@ const MAX_ADMIN_MUTATION_BODY_BYTES = 1024 * 1024;
 const nonEmptyString = v.pipe(v.string(), v.minLength(1));
 const modelSpecifier = v.pipe(v.string(), v.regex(/^[^/]+\/.+$/));
 const modelEffortSchema = v.picklist(MODEL_EFFORTS);
-const MCP_CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const MCP_CONNECTION_ID_PATTERN = CONNECTION_ID_PATTERN;
 const agentIdSchema = v.pipe(v.string(), v.regex(AGENT_ID_PATTERN));
 const openAiSubscriptionAttemptSchema = v.object({
   attemptCapability: v.pipe(v.string(), v.minLength(32), v.maxLength(512)),
@@ -1185,7 +1186,7 @@ const connectorHost = v.pipe(
 
 const apiConnectionSchema = v.pipe(
   v.object({
-    id: v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/)),
+    id: v.pipe(v.string(), v.regex(CONNECTION_ID_PATTERN)),
     displayName: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(80)),
     allowedHosts: v.pipe(
       v.array(connectorHost),

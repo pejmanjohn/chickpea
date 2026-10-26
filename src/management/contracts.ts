@@ -305,10 +305,9 @@ function connectionAccountShapeProblem(
   if (!connection.enabled) {
     return `Connection ${connection.id} cannot be turned off. Remove it to stop the Agent using it.`;
   }
-  if ('url' in connection && (connection.authMode === 'none'
-    ? connection.headerNames.length > 1
-    : connection.headerNames.length > 0)) {
-    return `Connection ${connection.id} holds one credential: a bearer token, an OAuth sign-in, or with authMode none the value of one header.`;
+  // A connection account stores one credential, so setup can fill one header at most.
+  if ('url' in connection && connection.authMode === 'none' && connection.headerNames.length > 1) {
+    return `Connection ${connection.id} can take its credential in one header. Name one header, or use bearer or OAuth auth.`;
   }
   return undefined;
 }

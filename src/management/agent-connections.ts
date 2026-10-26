@@ -14,6 +14,7 @@ import type {
   McpConnectionIdentity,
   McpConnectionToolInfo,
 } from '../config/types.ts';
+import { CONNECTION_ID_PATTERN } from '../config/agent-write-rules.ts';
 import { canonicalJson } from './contracts.ts';
 import { AgentWriteRuleError } from './types.ts';
 
@@ -124,7 +125,7 @@ export function mcpConnectionsAfterWrite(
       const carried: McpConnectionConfig = { ...pickDefined(previous, MCP_OBSERVED_FIELDS), ...kept };
       if (sameMcpCredentialPolicy(previous, carried)) return carried;
     }
-    // A connection holds one credential: a bearer token, or the value of its one header.
+    // An account stores one credential; with no bearer or OAuth auth it goes in the one header.
     const [onlyHeader] = kept.headerNames;
     if (!kept.credentialHeaderName && kept.authMode === 'none' && onlyHeader !== undefined) {
       kept.credentialHeaderName = onlyHeader;
@@ -225,8 +226,6 @@ export interface AgentConnections {
   api: ReadonlyMap<string, AgentConnectionEntry>;
 }
 
-/** Ids a management write may give a new connection; it becomes the account's provider id. */
-export const NEW_CONNECTION_ID_PATTERN = /^(?!connection_)[a-z0-9][a-z0-9_-]{0,63}$/;
 
 const ACCOUNT_STATUS = {
   ready: { lifecycleStatus: 'ready', statusText: 'Connected' },
@@ -294,7 +293,8 @@ export function withAgentConnectionIds<T extends { id: string }>(
         `More than one connection uses ${connection.id}. Name the one to change by its id from inspect_workspace.`,
       );
     }
-    if (!NEW_CONNECTION_ID_PATTERN.test(connection.id)) {
+    // A new connection's id becomes its account's provider id; account ids start with connection_.
+    if (!CONNECTION_ID_PATTERN.test(connection.id) || connection.id.startsWith('connection_')) {
       throw new AgentWriteRuleError(
         `Connection ${connection.id} is not on this Agent. A new connection needs a short id of lowercase letters, digits, "-" or "_".`,
       );

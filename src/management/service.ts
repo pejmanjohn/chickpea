@@ -3636,11 +3636,13 @@ export class WorkspaceManagementService {
       await this.stores.config.getAgent(agentId),
     );
     const edit = agentPatchWithConnectionIds(connections, patch);
+    // Admin changes a reviewed connector's tools only through its review; a rename is harmless.
+    const reviewedPolicy = (connection: ManagementMcpConnection) =>
+      canonicalJson({ ...managementMcpConnection(connection), displayName: '' });
     for (const connection of edit.mcpServers ?? []) {
       const stored = connections.mcpServers.find(({ id }) => id === connection.id);
       if ((isMcpToolReviewRequired(connection) || (stored && isMcpToolReviewRequired(stored))) &&
-          (!stored || canonicalJson(managementMcpConnection(connection)) !==
-            canonicalJson(managementMcpConnection(stored)))) {
+          (!stored || reviewedPolicy(connection) !== reviewedPolicy(stored))) {
         throw reviewedConnectorError(stored ?? connection);
       }
     }

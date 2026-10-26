@@ -504,3 +504,48 @@ test('a Member adds a personal connection and cannot change a team one, as in Ad
     const personal = await accountFor(f, agent.id, 'tracker');
     assert.deepEqual([personal.ownerKind, personal.ownerMembershipId], ['member', member.membership.id]);
   }));
+
+test('Admin-made connections round-trip through management: a reviewed connector renames but keeps its tools', () =>
+  withFixture('write-rules-admin-shapes', async (f) => {
+    const agent = await seedAgent(f);
+    const bind = (id: string, providerId: string, label: string, policy: ConnectionAccount['policy']) =>
+      f.config.createAgentOwnedConnection({
+        account: {
+          id, workspaceId: TEAM, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+          providerId, label, policy, secretRefId: `secret_${providerId}`, lifecycle: 'ready',
+        },
+        binding: {
+          agentId: agent.id, connectionAccountId: id, providerId, allowedCapabilities: [], enabled: true,
+        },
+      });
+    await bind('connection_bugsnag', 'bugsnag', 'Bugsnag', {
+      kind: 'mcp', url: BUGSNAG_MCP_SERVER_URL, transport: 'streamable-http', authMode: 'oauth', headerNames: [],
+      oauthScope: 'api', toolAccessMode: 'review', discoveredTools: [{ name: 'list_errors' }, { name: 'delete_project' }],
+      allowedTools: ['list_errors'],
+    });
+    await bind('connection_keyed', 'keyed', 'Keyed', {
+      kind: 'mcp', url: 'https://mcp.keyed.example/mcp', transport: 'streamable-http', authMode: 'bearer',
+      headerNames: ['X-Api-Key'], credentialHeaderName: 'X-Api-Key', discoveredTools: [{ name: 'search' }],
+      allowedTools: ['search'],
+    });
+    const edit = async (idempotencyKey: string, mcpServers: ManagementMcpConnection[]) => {
+      const current = await inspectAgent(f, agent.id);
+      return apply(f, idempotencyKey, [{
+        itemId: 'edit', kind: 'update_agent', agentId: agent.id, expectedRevision: current.revision, patch: { mcpServers },
+      }]);
+    };
+
+    const inspected = (await inspectAgent(f, agent.id)).mcpServers;
+    const renamed = await edit('rename', inspected.map((connection) =>
+      connection.id === 'bugsnag' ? { ...connection, displayName: 'Errors' } : connection));
+    assert.deepEqual(renamed.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(renamed));
+    assert.equal((await accountFor(f, agent.id, 'bugsnag')).label, 'Errors');
+    assert.equal((await accountFor(f, agent.id, 'keyed')).lifecycle, 'ready', 'a bearer account with a header round-trips');
+
+    const widened = await edit('widen', (await inspectAgent(f, agent.id)).mcpServers.map((connection) =>
+      connection.id === 'bugsnag' ? { ...connection, allowedTools: ['list_errors', 'delete_project'] } : connection));
+    assert.equal(widened.outcomes[0]?.disposition, 'failed', JSON.stringify(widened.outcomes));
+    const bugsnag = await accountFor(f, agent.id, 'bugsnag');
+    assert.deepEqual(bugsnag.policy.kind === 'mcp' ? bugsnag.policy.allowedTools : undefined, ['list_errors'],
+      'tools change only through Admin\'s review');
+  }));

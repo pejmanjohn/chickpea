@@ -11,6 +11,12 @@ import type { RepositoryGrant } from './types.ts';
  * check returns what is wrong in words a person can act on, or undefined.
  */
 
+/**
+ * Every connection id an Agent write may name, on both doors: a provider id
+ * for a connection account, or the id of a legacy Agent-row connection.
+ */
+export const CONNECTION_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
 /** Flue's `defineSkill` name rule, so a stored skill never fails a turn. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SKILL_NAME_MAX_LENGTH = 64;
