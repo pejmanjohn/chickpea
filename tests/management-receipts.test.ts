@@ -9,6 +9,7 @@ import {
   formatManagementSetupReceipt,
   reconcileScheduleActionReceipts,
 } from '../src/management/receipts.ts';
+import { formatSlackChangeSetProposal } from '../src/management/slack-presentation.ts';
 import { createSlackAgentCreationTurnCoordinator } from '../src/management/slack-tools.ts';
 import { SqliteManagementStore } from '../src/management/store.ts';
 import { SqliteRoutineStore } from '../src/routines/store.ts';
@@ -406,6 +407,79 @@ test('immediate Agent welcome renders connector actions in order and View Agent 
   assert.ok(text.indexOf('|Connect Notion>') < text.indexOf('|View Agent>'));
   assert.equal(text.match(/\|View Agent>/g)?.length, 1);
   assert.ok(text.endsWith('<https://example.test/admin/agents/agent_deck|View Agent>'));
+});
+
+test('Agent welcome shows a follow-on preview once, exactly as Slack rendered it', () => {
+  const coordinator = createSlackAgentCreationTurnCoordinator(
+    'turn_welcome_preview',
+    { turnJobId: 'turn_welcome_preview' },
+  );
+  coordinator.prepare({
+    idempotencyKey: 'create',
+    operations: [{
+      itemId: 'create',
+      kind: 'create_agent',
+      agent: {
+        id: 'agent_ads',
+        name: 'Ads',
+        requestedHandle: 'ads',
+        instructions: 'Review ad spend.',
+        enabled: true,
+        skills: [],
+        mcpServers: [],
+        apiConnections: [],
+        repositories: [],
+      },
+    }],
+  });
+  coordinator.record({
+    ok: true,
+    result: {
+      operationId: 'management_create_ads',
+      idempotencyKey: 'create',
+      status: 'completed',
+      outcomes: [{
+        itemId: 'create',
+        operationKind: 'create_agent',
+        disposition: 'applied',
+        changed: [{ kind: 'agent', id: 'agent_ads', revision: 1 }],
+      }],
+      effectiveRevision: 'rev_1',
+      activation: 'next_turn',
+    },
+  });
+  const proposal = formatSlackChangeSetProposal({
+    summary: '1 reviewed workspace change',
+    changes: [{
+      itemId: 'describe',
+      operationKind: 'update_agent',
+      target: 'agent:agent_ads',
+      before: { name: 'Ads', description: 'Reviews spend.' },
+      after: { name: 'Ads', description: 'Reviews budgets & spend <weekly>.\nFlags risks.' },
+    }],
+    missingSetup: [],
+  });
+  const intent = coordinator.recordFollowOn({
+    ok: true,
+    result: { proposalId: 'changeset_ads', status: 'pending', presentation: { slack: proposal } },
+  });
+  assert.ok(intent);
+  const text = formatManagementSetupReceipt({
+    kind: 'agent_created_welcome',
+    creationOperationId: 'management_create_ads',
+    agentId: 'agent_ads',
+    agentName: 'Ads',
+    agentHandle: 'ads',
+    requesterMembershipId: 'membership_ads',
+    surface: 'channel',
+    persona: { name: 'Ads' },
+    publication: { status: 'complete', incomplete: [] },
+    followOnNotices: intent.followOnNotices,
+    viewAgentUrl: 'https://example.test/admin/agents/agent_ads',
+  });
+  assert.ok(text.includes(`\n\n${proposal}\n\n`), text);
+  assert.equal(text.split('*Proposed changes*').length, 2, 'the preview renders once');
+  assert.doesNotMatch(text, /&amp;(?:amp|lt|gt);/);
 });
 
 test('Agent welcome never repeats a recovered follow-on tool error', () => {

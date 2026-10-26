@@ -768,7 +768,7 @@ function formatAgentCreatedWelcome(receipt: ManagementAgentCreatedWelcome, group
     ));
   }
   if (receipt.followOnNotices?.length) {
-    lines.push(...receipt.followOnNotices.map(boundedFollowOnNoticeText));
+    lines.push(...receipt.followOnNotices.map(({ text }) => text));
   }
   if (groupDm) {
     lines.push(`${GROUP_DM_ANSWER_RULE} Once I’m in a public Channel, mention me here. Until then, you can message me directly.`);
@@ -819,7 +819,7 @@ function formatAgentWelcomeFallback(receipt: ManagementAgentCreatedWelcome, grou
     ...(receipt.connectorActions ?? []).map(({ label, setupUrl }) =>
       renderSlackActionLink(setupUrl, `Connect ${boundedSlackText(label, 80)}`)
     ),
-    ...(receipt.followOnNotices ?? []).map(boundedFollowOnNoticeText),
+    ...(receipt.followOnNotices ?? []).map(({ text }) => text),
     ...(viewAgentUrl ? [renderSlackActionLink(viewAgentUrl, VIEW_AGENT_LINK_LABEL)] : []),
   ];
   return lines.join('\n\n');
@@ -859,12 +859,6 @@ function escapeSlackText(value: string): string {
 
 function boundedSlackText(value: string, max: number): string {
   return escapeSlackText(value).slice(0, max).trim();
-}
-
-function boundedFollowOnNoticeText(
-  notice: NonNullable<ManagementAgentCreatedWelcome['followOnNotices']>[number],
-): string {
-  return boundedSlackText(notice.text, notice.kind === 'proposal' ? 3_000 : 500);
 }
 
 function isConnectorConnectedReceipt(

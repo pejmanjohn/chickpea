@@ -11171,6 +11171,10 @@
       impacts.push("Flare and Sunburst image models become unavailable until an OpenAI API key is available." +
         (IS_CLOUDFLARE ? "" : " ChatGPT Image uses a connected ChatGPT subscription instead."));
     }
+    if (state.workspaceCodingRole && modelBelongsToProvider(state.workspaceCodingRole.modelId, id)) {
+      impacts.push('<b style="font-weight:500; color:var(--text);">Default coding model</b> uses an ' + esc(meta.name) +
+        " model. Coding workspaces use each Agent's own model until the credential returns.");
+    }
     var consequence = lead + (impacts.length
       ? impacts.join(' ')
       : 'No Agent pin or Workspace default currently depends on ' + esc(meta.name) + '.') +

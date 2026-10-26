@@ -601,7 +601,11 @@ test('management provider impact includes the Workspace default and inheriting A
     });
     requireMutationResult(proposed);
     assert.equal(proposed.status, 'confirmation_required');
-    assert.match(proposed.presentation?.markdown ?? '', /provider:anthropic/);
+    assert.match(
+      proposed.presentation?.markdown ?? '',
+      /^Remove the stored \*\*Anthropic\*\* key\. The Workspace default uses Anthropic, so Chickpea stops answering too\. \*\*Support\*\* uses Anthropic and stops answering until a key is available\.$/m,
+    );
+    assert.doesNotMatch(proposed.presentation?.markdown ?? '', /provider:|agent_support/);
   } finally {
     identity.close();
     config.close();
