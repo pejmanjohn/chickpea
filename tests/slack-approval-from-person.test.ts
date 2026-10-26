@@ -338,6 +338,60 @@ test('on an ask turn, undo, skill changes and skill imports wait for the person 
   }
 });
 
+test('the person\'s typed undo of a one-field edit applies at once, as the edit did', async () => {
+  const { f, desk, turn, signal, tool } = await setup('approval-person-undo');
+  try {
+    const edit = await tool(signal(desk.id, turn('Set your instructions to: Answer in French.')), 'apply_workspace_changes', {
+      idempotencyKey: 'person-instructions',
+      operations: [{
+        itemId: 'instructions', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { instructions: 'Answer in French.' },
+      }],
+    });
+    const operationId = (edit.ok ? edit.result as ManagementApplyResult : undefined)!.operationId;
+
+    const undone = await tool(signal(desk.id, turn('Undo that instructions change.')), 'undo_workspace_change', {
+      operationId, idempotencyKey: 'person-undo',
+    });
+    assert.deepEqual(outcomes(undone).map(({ disposition }) => disposition), ['applied'], JSON.stringify(undone));
+    const restored = await f.config.getAgent(desk.id);
+    assert.equal(restored.instructions, desk.instructions);
+    assert.deepEqual(restored.skills, desk.skills, 'the undo puts back only the field the edit changed');
+  } finally {
+    f.close();
+  }
+});
+
+test('the person\'s typed undo that would remove a connection waits for their approval', async () => {
+  const { f, desk, turn, signal, tool, hostApproves } = await setup('approval-person-undo-connection');
+  try {
+    const added = await f.service.applyWorkspaceChanges({
+      context: {
+        userId: f.owner.user.id, membershipId: f.owner.membership.id,
+        organizationId: f.owner.membership.organizationId, origin: { kind: 'mcp', clientId: 'person-undo-connection' },
+      },
+      idempotencyKey: 'add-zendesk',
+      operations: [{
+        itemId: 'zendesk', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { mcpServers: [ZENDESK] },
+      }],
+    });
+    assert.equal(added.status, 'completed', JSON.stringify(added));
+
+    const proposalId = heldProposalId(await tool(signal(desk.id, turn('Undo that.')), 'undo_workspace_change', {
+      operationId: added.operationId, idempotencyKey: 'person-undo-connection',
+    }));
+    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers.map(({ id }) => id), ['zendesk'],
+      'the connection stays until the person approves');
+
+    const approval = await hostApproves(desk, turn('approve'), proposalId);
+    assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
+    assert.deepEqual((await f.config.getAgent(desk.id)).mcpServers, []);
+  } finally {
+    f.close();
+  }
+});
+
 test('a click whose host-written text quotes a skill URL installs nothing; the person\'s typed message does', async () => {
   const { f, desk, turn, signal, tool } = await setup('approval-click-import');
   try {
