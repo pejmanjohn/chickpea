@@ -8,6 +8,11 @@ import {
   resolveConnectionAccountSecret,
 } from '../src/config/connector-secrets.ts';
 import type { OAuthAuthorizationAuthority } from '../src/config/oauth-authorization.ts';
+import {
+  META_ADS_OAUTH_DEFAULT_SCOPE,
+  META_ADS_OAUTH_MANAGEMENT_SCOPE,
+} from '../src/config/mcp-oauth-clients.ts';
+import type { ConnectionAccount } from '../src/config/types.ts';
 import { McpOAuthError, type StartMcpOAuthInput } from '../src/config/mcp-oauth.ts';
 import { SqliteConfigStore, type ConfigStore } from '../src/config/store.ts';
 import { SqliteSettingsStore } from '../src/config/settings-store.ts';
@@ -824,27 +829,15 @@ test('catalog replacement requires management authority and rolls back failed wr
       ownerKind: 'member',
       credential: 'personal-token',
     });
-    assert.equal(personal.status, 200, await personal.clone().text());
-    assert.deepEqual(await personal.json(), { completed: true });
+    // A reconnect link keeps its account's owner, so naming the other owner is refused.
+    assert.equal(personal.status, 422, await personal.clone().text());
+    assert.equal((await personal.json()).error, 'target_changed');
+    assert.equal(discoverCalls, 0);
     await assertOriginalState();
-    const personalAccount = (await config.listConnectionAccounts(owner.user.slackTeamId))
-      .find(({ ownerKind, ownerMembershipId }) =>
-        ownerKind === 'member' && ownerMembershipId === secondEditor.membershipId
-      );
-    assert.ok(personalAccount);
-    assert.notEqual(personalAccount.id, accountId);
-    assert.equal(personalAccount.lifecycle, 'ready');
-    assert.equal(
-      await resolveConnectionAccountSecret(
-        { secretRefId: personalAccount.secretRefId },
-        undefined,
-        settings,
-      ),
-      'personal-token',
-    );
-    assert.equal(
-      (await config.getAgentConnectionBindingForAccount(personalAccount.id))?.agentId,
-      agent.id,
+    assert.deepEqual(
+      (await config.listConnectionAccounts(owner.user.slackTeamId)).map(({ id }) => id),
+      [accountId],
+      'no personal account was minted',
     );
 
     for (const failurePoint of ['account', 'binding'] as const) {
@@ -890,6 +883,236 @@ test('catalog replacement requires management authority and rolls back failed wr
     config.close();
     management.close();
     settings.close();
+  }
+});
+
+/** A team connection that needs attention on an Agent, and the reconnect links Slack gives for it. */
+async function catalogReconnectHarness(input: {
+  suffix: string;
+  providerId: string;
+  label: string;
+  policy: ConnectionAccount['policy'];
+  role: AuthPrincipal['role'];
+}) {
+  const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix: input.suffix });
+  const config = new SqliteConfigStore(':memory:', { agents: [] });
+  const management = new SqliteManagementStore(':memory:');
+  const settings = new SqliteSettingsStore(':memory:');
+  const workspaceId = owner.user.slackTeamId;
+  const agent = await config.createAgent({
+    id: 'agent_reconnect',
+    name: 'Billing Guide',
+    creatorMembershipId: owner.membership.id,
+    editPolicy: 'all_workspace_members',
+    lifecycle: 'active',
+    configurationGeneration: 1,
+    instructions: 'Help the team manage billing.',
+    enabled: true,
+    skills: [],
+    mcpServers: [],
+    apiConnections: [],
+    repositories: [],
+  });
+  await config.ensureWorkspaceInstallation({ workspaceId, transportMode: 'direct', defaultAgentId: agent.id });
+  const accountId = `connection_reconnect_${input.providerId}`;
+  const secretRefId = `secret_reconnect_${input.providerId}`;
+  await config.createAgentOwnedConnection({
+    account: {
+      id: accountId,
+      workspaceId,
+      ownerKind: 'team',
+      createdByMembershipId: owner.membership.id,
+      providerId: input.providerId,
+      label: input.label,
+      policy: input.policy,
+      secretRefId,
+      lifecycle: 'needs_attention',
+    },
+    binding: {
+      agentId: agent.id,
+      connectionAccountId: accountId,
+      providerId: input.providerId,
+      allowedCapabilities: [],
+      enabled: true,
+    },
+  });
+  await settings.setSetting(connectionAccountSecretSettingKey(secretRefId), 'original-token');
+  const principal: AuthPrincipal = {
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    role: input.role,
+    authenticatorKind: 'better_auth',
+    credentialId: 'session_reconnect',
+    correlationId: 'catalog_reconnect',
+    machine: false,
+  };
+  let discoverCalls = 0;
+  const app = createManagementSetupRoutes({
+    identity,
+    config,
+    management,
+    settings,
+    now: () => NOW,
+    authenticatePrincipal: async () => principal,
+    discoverMcp: async () => {
+      discoverCalls += 1;
+      return { tools: [{ name: 'replacement_tool' }] };
+    },
+    identifyMcp: async () => ({ workspaceName: 'Replacement', accountName: 'replacement@example.test' }),
+    deliverReceipt: async () => ({ deliveryRef: 'slack:D_RECONNECT:receipt.1' }),
+  });
+  let sequence = 0;
+  /** A reconnect link for the account, opened in a signed-in browser. */
+  const openLink = async () => {
+    const setupId = `setup_catalog_reconnect_${++sequence}`;
+    await management.putSetup({
+      record: {
+        setupOperationId: setupId,
+        organizationId: owner.membership.organizationId,
+        actorUserId: owner.user.id,
+        actorMembershipId: owner.membership.id,
+        origin: {
+          kind: 'slack',
+          workspaceId,
+          channelId: 'D_RECONNECT',
+          threadTs: `1800200000.0006${sequence}`,
+          agentId: agent.id,
+        },
+        action: 'catalog_connection',
+        target: {
+          kind: 'catalog_connection',
+          provider: input.providerId,
+          targetId: `agent:${agent.id}:catalog:${input.providerId}`,
+          targetLabel: input.label,
+          expectedRevision: agent.revision,
+          agentId: agent.id,
+          agentName: agent.name,
+          connectionId: accountId,
+          replacement: true,
+          ownerKind: 'team',
+          presetId: input.providerId,
+        },
+        scopes: ['read', 'write'],
+        tokenDigest: createHash('sha256').update(CAPABILITY).digest('base64url'),
+        status: 'pending',
+        expiresAt: NOW + 60_000,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    });
+    const cookie = (await exchange(app, setupId)).headers.get('set-cookie')!.split(';')[0]!;
+    return { setupId, cookie };
+  };
+  return {
+    identity, config, management, settings, workspaceId, accountId, secretRefId, app, openLink,
+    discoverCalls: () => discoverCalls,
+    close() {
+      identity.close();
+      config.close();
+      management.close();
+      settings.close();
+    },
+  };
+}
+
+test('a catalog reconnect link keeps its account\'s owner: the other owner is refused and nothing is disconnected', async () => {
+  const h = await catalogReconnectHarness({
+    suffix: 'catalog-reconnect-owner',
+    providerId: 'stripe',
+    label: 'Stripe',
+    role: 'admin',
+    policy: {
+      kind: 'mcp',
+      url: 'https://mcp.stripe.com/',
+      transport: 'streamable-http',
+      authMode: 'bearer',
+      headerNames: [],
+      discoveredTools: [{ name: 'original_tool' }],
+      allowedTools: ['original_tool'],
+      presetId: 'stripe',
+    },
+  });
+  try {
+    const refusedLink = await h.openLink();
+    const refused = await authorize(h.app, refusedLink.setupId, refusedLink.cookie, {
+      ownerKind: 'member',
+      credential: 'personal-token',
+    });
+    assert.equal(refused.status, 422, await refused.clone().text());
+    assert.equal((await refused.json()).error, 'target_changed');
+    const accounts = await h.config.listConnectionAccounts(h.workspaceId);
+    assert.deepEqual(accounts.map(({ id, lifecycle, ownerKind }) => ({ id, lifecycle, ownerKind })),
+      [{ id: h.accountId, lifecycle: 'needs_attention', ownerKind: 'team' }],
+      'the team account is untouched and no account was minted');
+    assert.equal(await resolveConnectionAccountSecret({ secretRefId: h.secretRefId }, undefined, h.settings),
+      'original-token');
+    assert.equal((await h.config.getAgentConnectionBindingForAccount(h.accountId))?.enabled, true);
+    assert.equal(h.discoverCalls(), 0, 'nothing was prepared for the refused owner');
+
+    // The account's own owner still reconnects it in place.
+    const link = await h.openLink();
+    const reconnected = await authorize(h.app, link.setupId, link.cookie, {
+      ownerKind: 'team',
+      credential: 'replacement-token',
+    });
+    assert.equal(reconnected.status, 200, await reconnected.clone().text());
+    assert.deepEqual(await reconnected.json(), { completed: true });
+    const after = await h.config.listConnectionAccounts(h.workspaceId);
+    assert.deepEqual(after.map(({ id, lifecycle }) => ({ id, lifecycle })),
+      [{ id: h.accountId, lifecycle: 'ready' }], 'the same account is ready again; none was minted');
+    assert.equal(await resolveConnectionAccountSecret({ secretRefId: h.secretRefId }, undefined, h.settings),
+      'replacement-token');
+  } finally {
+    h.close();
+  }
+});
+
+test('a Meta Ads reconnect link shows the access the account already has, locked', async () => {
+  for (const [oauthScope, access] of [
+    [META_ADS_OAUTH_MANAGEMENT_SCOPE, 'editing'],
+    [META_ADS_OAUTH_DEFAULT_SCOPE, 'reporting'],
+  ] as const) {
+    const h = await catalogReconnectHarness({
+      suffix: `meta-reconnect-${access}`,
+      providerId: 'meta-ads',
+      label: 'Meta Ads',
+      role: 'admin',
+      policy: {
+        kind: 'mcp',
+        url: 'https://mcp.facebook.com/ads',
+        transport: 'streamable-http',
+        authMode: 'oauth',
+        headerNames: [],
+        discoveredTools: [],
+        allowedTools: [],
+        toolAccessMode: 'review',
+        oauthScope,
+        presetId: 'meta-ads',
+      },
+    });
+    try {
+      const link = await h.openLink();
+      const page = await h.app.request(`http://localhost/setup/${link.setupId}`, {
+        headers: { cookie: link.cookie },
+      });
+      assert.equal(page.status, 200);
+      const inputs = formInputs(await page.text());
+      assert.deepEqual(inputs.filter(({ name }) => name === 'access'), [
+        { type: 'radio', name: 'access', value: 'reporting', checked: access === 'reporting', disabled: true },
+        { type: 'radio', name: 'access', value: 'editing', checked: access === 'editing', disabled: true },
+        { type: 'hidden', name: 'access', value: access, checked: false, disabled: false },
+      ], `${access}: the account's access, locked`);
+      assert.deepEqual(inputs.filter(({ name }) => name === 'ownerKind').map(({ value, checked, disabled }) =>
+        ({ value, checked, disabled })), [
+        { value: 'member', checked: false, disabled: true },
+        { value: 'team', checked: true, disabled: true },
+        { value: 'team', checked: false, disabled: false },
+      ]);
+    } finally {
+      h.close();
+    }
   }
 });
 
@@ -1179,9 +1402,10 @@ test('the managed connector link is reusable and completes from the dedicated pa
   }
 });
 
-test('a Slack reconnect link re-authorizes a managed connection that needs attention in place', async () => {
+/** A HubSpot connection that needs attention on an Agent, and the reconnect link Slack gives the owner who asks for it. */
+async function managedReconnectHarness(suffix: string, allowedCapabilities: string[]) {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });
-  const owner = await createSlackOwner(identity, { now: NOW, suffix: 'managed-reconnect' });
+  const owner = await createSlackOwner(identity, { now: NOW, suffix });
   const config = new SqliteConfigStore(':memory:', { agents: [] });
   const management = new SqliteManagementStore(':memory:');
   const settings = new SqliteSettingsStore(':memory:');
@@ -1213,85 +1437,158 @@ test('a Slack reconnect link re-authorizes a managed connection that needs atten
     correlationId: 'managed_reconnect',
     machine: false,
   };
+  const agent = await config.createAgent({
+    id: 'agent_sales', name: 'Sales', creatorMembershipId: owner.membership.id,
+    editPolicy: 'creator_and_admins', lifecycle: 'active', configurationGeneration: 1,
+    instructions: 'Help sales.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
+  });
+  await config.ensureWorkspaceInstallation({
+    workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: agent.id,
+  });
+  const account = await config.putConnectionAccount({
+    id: 'connection_hubspot_team',
+    workspaceId: owner.user.slackTeamId,
+    ownerKind: 'team',
+    createdByMembershipId: owner.membership.id,
+    providerId: 'hubspot',
+    label: 'HubSpot · Team',
+    policy: {
+      kind: 'managed',
+      adapterId: 'composio',
+      toolkit: 'hubspot',
+      principalRef: managedPrincipalRef(principal, 'team', undefined)!,
+      accountRef: 'account_hubspot_expired',
+      allowedCapabilities,
+    },
+    secretRefId: 'secret_hubspot_team',
+    lifecycle: 'needs_attention',
+  });
+  const binding = await config.putAgentConnectionBinding({
+    agentId: agent.id,
+    connectionAccountId: account.id,
+    providerId: account.providerId,
+    allowedCapabilities,
+    enabled: true,
+  });
+  const service = new WorkspaceManagementService({
+    identity, config, management, setupBaseUrl: 'http://localhost', now: () => NOW,
+    randomId: () => 'managed_reconnect', randomCapability: () => CAPABILITY,
+  });
+  const prepared = await service.prepareConnectorSetup({
+    userId: owner.user.id,
+    membershipId: owner.membership.id,
+    organizationId: owner.membership.organizationId,
+    origin: {
+      kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_SALES',
+      threadTs: '1800200000.000200', agentId: agent.id,
+    },
+  }, { agentId: agent.id, connector: 'HubSpot', ownerKind: 'team' });
+  const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
+  const app = createManagementSetupRoutes({
+    identity, config, management, settings, now: () => NOW,
+    managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
+    authenticatePrincipal: async () => principal,
+    deliverReceipt: async () => ({ deliveryRef: 'slack:D_SALES:receipt.1' }),
+  });
+  return {
+    identity, config, management, settings, owner, agent, account, binding, authorized, app, setupId,
+    close() {
+      identity.close();
+      config.close();
+      management.close();
+      settings.close();
+    },
+  };
+}
+
+test('a Slack reconnect link re-authorizes a managed connection that needs attention in place', async () => {
+  const h = await managedReconnectHarness('managed-reconnect', ['hubspot.contacts.search']);
   try {
-    const agent = await config.createAgent({
-      id: 'agent_sales', name: 'Sales', creatorMembershipId: owner.membership.id,
-      editPolicy: 'creator_and_admins', lifecycle: 'active', configurationGeneration: 1,
-      instructions: 'Help sales.', enabled: true, skills: [], mcpServers: [], apiConnections: [], repositories: [],
-    });
-    await config.ensureWorkspaceInstallation({
-      workspaceId: owner.user.slackTeamId, transportMode: 'direct', defaultAgentId: agent.id,
-    });
-    const account = await config.putConnectionAccount({
-      id: 'connection_hubspot_team',
-      workspaceId: owner.user.slackTeamId,
-      ownerKind: 'team',
-      createdByMembershipId: owner.membership.id,
-      providerId: 'hubspot',
-      label: 'HubSpot · Team',
-      policy: {
-        kind: 'managed',
-        adapterId: 'composio',
-        toolkit: 'hubspot',
-        principalRef: managedPrincipalRef(principal, 'team', undefined)!,
-        accountRef: 'account_hubspot_expired',
-        allowedCapabilities: ['hubspot.contacts.search'],
-      },
-      secretRefId: 'secret_hubspot_team',
-      lifecycle: 'needs_attention',
-    });
-    const binding = await config.putAgentConnectionBinding({
-      agentId: agent.id,
-      connectionAccountId: account.id,
-      providerId: account.providerId,
-      allowedCapabilities: ['hubspot.contacts.search'],
-      enabled: true,
-    });
-    const service = new WorkspaceManagementService({
-      identity, config, management, setupBaseUrl: 'http://localhost', now: () => NOW,
-      randomId: () => 'managed_reconnect', randomCapability: () => CAPABILITY,
-    });
-    const prepared = await service.prepareConnectorSetup({
-      userId: owner.user.id,
-      membershipId: owner.membership.id,
-      organizationId: owner.membership.organizationId,
-      origin: {
-        kind: 'slack', workspaceId: owner.user.slackTeamId, channelId: 'D_SALES',
-        threadTs: '1800200000.000200', agentId: agent.id,
-      },
-    }, { agentId: agent.id, connector: 'HubSpot', ownerKind: 'team' });
-    const setupId = new URL(prepared.handoffUrl).pathname.split('/').at(-1)!;
-    const app = createManagementSetupRoutes({
-      identity, config, management, settings, now: () => NOW,
-      managedConnectionProviders: createManagedConnectionProviderRegistry([provider]),
-      authenticatePrincipal: async () => principal,
-      deliverReceipt: async () => ({ deliveryRef: 'slack:D_SALES:receipt.1' }),
-    });
-    const cookie = (await exchange(app, setupId)).headers.get('set-cookie')!.split(';')[0]!;
-    const started = await authorize(app, setupId, cookie, { ownerKind: 'team', access: 'read' });
+    const cookie = (await exchange(h.app, h.setupId)).headers.get('set-cookie')!.split(';')[0]!;
+    const started = await authorize(h.app, h.setupId, cookie, { ownerKind: 'team', access: 'read' });
     assert.equal(started.status, 200, await started.clone().text());
-    assert.deepEqual(authorized, [['hubspot.contacts.search']], 'the reconnect keeps the account\'s capabilities');
-    const poll = await app.request(`http://localhost/setup/${setupId}/managed/poll`, {
+    assert.deepEqual(h.authorized, [['hubspot.contacts.search']], 'the reconnect keeps the account\'s capabilities');
+    const poll = await h.app.request(`http://localhost/setup/${h.setupId}/managed/poll`, {
       method: 'POST',
       headers: { origin: 'http://localhost', cookie, 'content-type': 'application/json' },
       body: '{}',
     });
     assert.equal(poll.status, 200, await poll.clone().text());
 
-    const accounts = await config.listConnectionAccounts(owner.user.slackTeamId);
+    const accounts = await h.config.listConnectionAccounts(h.owner.user.slackTeamId);
     assert.deepEqual(accounts.map(({ id, lifecycle }) => ({ id, lifecycle })),
-      [{ id: account.id, lifecycle: 'ready' }], 'the same account is ready again; none was minted');
+      [{ id: h.account.id, lifecycle: 'ready' }], 'the same account is ready again; none was minted');
     assert.equal(accounts[0]!.policy.kind === 'managed' ? accounts[0]!.policy.accountRef : undefined,
       'authorization_hubspot_reconnect');
-    assert.deepEqual(await config.listAgentConnectionBindings(agent.id), [binding], 'the Agent binding is unchanged');
-    assert.equal((await management.getSetup(setupId))?.connectionAccountId, account.id);
+    assert.deepEqual(await h.config.listAgentConnectionBindings(h.agent.id), [h.binding], 'the Agent binding is unchanged');
+    assert.equal((await h.management.getSetup(h.setupId))?.connectionAccountId, h.account.id);
   } finally {
-    identity.close();
-    config.close();
-    management.close();
-    settings.close();
+    h.close();
   }
 });
+
+test('a managed reconnect link shows its account\'s owner and access, locked', async () => {
+  for (const [capabilities, access] of [
+    [['hubspot.contacts.search'], 'read'],
+    [['hubspot.contacts.create'], 'write'],
+  ] as const) {
+    const h = await managedReconnectHarness(`managed-reconnect-lock-${access}`, [...capabilities]);
+    try {
+      const cookie = (await exchange(h.app, h.setupId)).headers.get('set-cookie')!.split(';')[0]!;
+      const page = await h.app.request(`http://localhost/setup/${h.setupId}`, { headers: { cookie } });
+      assert.equal(page.status, 200);
+      const inputs = formInputs(await page.text());
+      assert.deepEqual(inputs.filter(({ name }) => name === 'ownerKind'), [
+        { type: 'radio', name: 'ownerKind', value: 'member', checked: false, disabled: true },
+        { type: 'radio', name: 'ownerKind', value: 'team', checked: true, disabled: true },
+        { type: 'hidden', name: 'ownerKind', value: 'team', checked: false, disabled: false },
+      ], `${access}: the owner is the account's and cannot be changed`);
+      assert.deepEqual(inputs.filter(({ name }) => name === 'access'), [
+        { type: 'hidden', name: 'access', value: access, checked: false, disabled: false },
+      ], `${access}: the access is the account's`);
+    } finally {
+      h.close();
+    }
+  }
+});
+
+test('a managed reconnect link refuses a post that names another owner or access', async () => {
+  for (const [capabilities, access, other] of [
+    [['hubspot.contacts.search'], 'read', 'write'],
+    [['hubspot.contacts.create'], 'write', 'read'],
+  ] as const) {
+    const h = await managedReconnectHarness(`managed-reconnect-refuse-${access}`, [...capabilities]);
+    try {
+      const cookie = (await exchange(h.app, h.setupId)).headers.get('set-cookie')!.split(';')[0]!;
+      for (const fields of [{ ownerKind: 'member', access }, { ownerKind: 'team', access: other }]) {
+        const refused = await authorize(h.app, h.setupId, cookie, fields);
+        assert.equal(refused.status, 422, `${access}: ${JSON.stringify(fields)} ${await refused.clone().text()}`);
+      }
+      assert.deepEqual(h.authorized, [], `${access}: no sign-in started for a mismatched post`);
+      assert.equal((await h.config.listConnectionAccounts(h.owner.user.slackTeamId))[0]?.lifecycle, 'needs_attention');
+
+      const accepted = await authorize(h.app, h.setupId, cookie, { ownerKind: 'team', access });
+      assert.equal(accepted.status, 200, `${access}: ${await accepted.clone().text()}`);
+      assert.deepEqual(h.authorized, [[...capabilities]], `${access}: the link still works for the account's own values`);
+    } finally {
+      h.close();
+    }
+  }
+});
+
+/** The form controls a page renders, as attributes. */
+function formInputs(html: string) {
+  return [...html.matchAll(/<input\b([^>]*)>/g)].map(([, attributes = '']) => {
+    const attribute = (name: string) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attributes)?.[1];
+    return {
+      type: attribute('type'),
+      name: attribute('name'),
+      value: attribute('value'),
+      checked: /(?:^|\s)checked(?:\s|$|=)/.test(attributes),
+      disabled: /(?:^|\s)disabled(?:\s|$|=)/.test(attributes),
+    };
+  });
+}
 
 test('BugSnag Slack setup stays pending through OAuth until reviewed tool access is saved', async () => {
   const identity = new SqliteIdentityStore(':memory:', { now: () => NOW });

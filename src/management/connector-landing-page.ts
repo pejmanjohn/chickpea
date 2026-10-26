@@ -16,6 +16,14 @@ export interface ConnectorLandingPageInput {
   avatarUrl?: string;
   failureMessage?: string;
   writeAvailable?: boolean;
+  /**
+   * A reconnect link re-authorizes one account, which keeps its owner and
+   * access, so the page shows both as that account has them, locked.
+   */
+  locked?: {
+    ownerKind: 'member' | 'team';
+    access?: 'read' | 'write' | 'reporting' | 'editing';
+  };
   accessReview?: {
     tools: Array<{
       name: string;
@@ -35,7 +43,9 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
   const connector = setup.target.targetLabel;
   const connectorCopy = managedConnectorReadCopy(setup.target.provider, connector);
   // The server checks both provider readiness and the setup link's frozen ceiling.
-  const accessLane = input.writeAvailable === true ? 'write' : 'read';
+  const accessLane = input.locked?.access === 'read' || input.locked?.access === 'write'
+    ? input.locked.access
+    : input.writeAvailable === true ? 'write' : 'read';
   const accessSummary = accessLane === 'write'
     ? managedConnectorWriteSummary(setup.target.provider, connector)
     : connectorCopy.accessSummary;
@@ -56,7 +66,7 @@ export function renderManagedConnectionSetupPage(input: ConnectorLandingPageInpu
               <strong>${escapeHtml(connector)}</strong>
             </div>
             <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
-              ${ownerChoiceBlock(agent.name)}
+              ${ownerChoiceBlock(agent.name, input.locked)}
               <section class="choice-block" aria-labelledby="access-title">
                 <h2 id="access-title">Permissions</h2>
                 <input type="hidden" name="access" value="${accessLane}">
@@ -95,11 +105,17 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
     : undefined;
   const hostTemplate = 'api' in preset && preset.api.hostTemplate === true;
   const oauth = mcpAuth?.kind === 'oauth' || 'api' in preset && Boolean(preset.api.oauth);
+  const lockedAccess = input.locked?.access === 'reporting' || input.locked?.access === 'editing'
+    ? input.locked.access
+    : undefined;
+  const accessOption = (value: 'reporting' | 'editing') => lockedAccess
+    ? `${lockedAccess === value ? ' checked' : ''} disabled`
+    : value === 'reporting' ? ' checked' : '';
   const metaAdsAccess = preset.id === 'meta-ads' && mcpAuth?.kind === 'oauth' && mcpAuth.writeScope
     ? `<div class="owner-options" role="radiogroup" aria-labelledby="access-title">
-        <label class="owner-option owner-option-plain"><input type="radio" name="access" value="reporting" checked><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>Reporting</strong><span>View reports and account details.</span></span></label>
-        <label class="owner-option owner-option-plain"><input type="radio" name="access" value="editing"><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>Reporting and editing</strong><span>Selected tools may create or change ads.</span></span></label>
-      </div><p>No tools are selected until you review them after sign-in.</p>`
+        <label class="owner-option owner-option-plain"><input type="radio" name="access" value="reporting"${accessOption('reporting')}><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>Reporting</strong><span>View reports and account details.</span></span></label>
+        <label class="owner-option owner-option-plain"><input type="radio" name="access" value="editing"${accessOption('editing')}><span class="owner-radio" aria-hidden="true"></span><span class="owner-option-copy"><strong>Reporting and editing</strong><span>Selected tools may create or change ads.</span></span></label>
+      </div>${lockedAccess ? `<input type="hidden" name="access" value="${lockedAccess}">` : ''}<p>No tools are selected until you review them after sign-in.</p>`
     : undefined;
   const accessSummary = preset.id === 'bugsnag'
     ? `${preset.notes} No tools are enabled until you save your choices after sign-in.`
@@ -123,7 +139,7 @@ export function renderCatalogConnectionSetupPage(input: ConnectorLandingPageInpu
               <strong>${escapeHtml(connector)}</strong>
             </div>
             <form id="connector-form" method="post" action="/setup/${encodeURIComponent(setup.setupOperationId)}/authorize">
-              ${ownerChoiceBlock(agent.name)}
+              ${ownerChoiceBlock(agent.name, input.locked)}
               <section class="choice-block" aria-labelledby="access-title">
                 <h2 id="access-title">Access</h2>
                 ${metaAdsAccess ?? `<p>${escapeHtml(accessSummary)}</p>`}
@@ -375,24 +391,28 @@ function connectorLogo(setup: ManagementSetupRecord, extraClass = ''): string {
   return `<span class="${className}"${style} aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor">${logo.svg}</svg></span>`;
 }
 
-function ownerChoiceBlock(agentName: string): string {
+function ownerChoiceBlock(agentName: string, locked?: ConnectorLandingPageInput['locked']): string {
+  // A disabled control is not submitted, so a locked choice also travels as a hidden field.
+  const lock = (ownerKind: 'member' | 'team') =>
+    locked ? `${locked.ownerKind === ownerKind ? ' checked' : ''} disabled` : '';
   return `<section class="choice-block owner-choice-block" aria-labelledby="owner-title">
     <h2 id="owner-title">Who uses this connection?</h2>
-    <p class="choice-instruction">Pick one to continue.</p>
+    ${locked ? '' : '<p class="choice-instruction">Pick one to continue.</p>'}
     <div class="owner-options" role="radiogroup" aria-labelledby="owner-title">
       <label class="owner-option">
-        <input type="radio" name="ownerKind" value="member" aria-describedby="owner-personal-description">
+        <input type="radio" name="ownerKind" value="member" aria-describedby="owner-personal-description"${lock('member')}>
         <span class="owner-radio" aria-hidden="true"></span>
         <span class="owner-option-icon owner-option-icon-personal" aria-hidden="true">${ownerChoiceIcon('member')}</span>
         <span class="owner-option-copy"><strong>Personal</strong><span id="owner-personal-description">Each person signs in with their own account. ${escapeHtml(agentName)} uses yours only for your requests.</span></span>
       </label>
       <label class="owner-option">
-        <input type="radio" name="ownerKind" value="team" aria-describedby="owner-team-description">
+        <input type="radio" name="ownerKind" value="team" aria-describedby="owner-team-description"${lock('team')}>
         <span class="owner-radio" aria-hidden="true"></span>
         <span class="owner-option-icon owner-option-icon-team" aria-hidden="true">${ownerChoiceIcon('team')}</span>
         <span class="owner-option-copy"><strong>Team</strong><span id="owner-team-description">One shared account for everyone who can use ${escapeHtml(agentName)}.</span></span>
       </label>
     </div>
+    ${locked ? `<input type="hidden" name="ownerKind" value="${locked.ownerKind}">` : ''}
   </section>`;
 }
 
@@ -624,6 +644,9 @@ body {
   position: relative;
 }
 .owner-option:hover { border-color: rgba(178, 126, 31, .45); }
+.owner-option:has(input:disabled) { cursor: default; }
+.owner-option:has(input:disabled:not(:checked)) { opacity: .55; }
+.owner-option:has(input:disabled:not(:checked)):hover { border-color: rgba(59, 50, 32, .18); }
 .owner-option:has(input:checked) {
   border-color: var(--gold-press);
   box-shadow: 0 0 0 1px var(--gold-press), 0 2px 0 rgba(59, 50, 32, .06);

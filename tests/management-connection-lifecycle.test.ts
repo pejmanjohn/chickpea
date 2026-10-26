@@ -23,8 +23,12 @@ type Fixture = Awaited<ReturnType<typeof createManagementAdapterFixture>>;
 
 const TEAM = 'T_TEST';
 
-async function withFixture(suffix: string, run: (f: Fixture) => Promise<void>): Promise<void> {
-  const f = await createManagementAdapterFixture(suffix, {}, { teamId: TEAM });
+async function withFixture(
+  suffix: string,
+  run: (f: Fixture) => Promise<void>,
+  overrides: Parameters<typeof createManagementAdapterFixture>[1] = {},
+): Promise<void> {
+  const f = await createManagementAdapterFixture(suffix, overrides, { teamId: TEAM });
   try {
     await run(f);
   } finally {
@@ -62,6 +66,18 @@ async function call<TName extends WorkspaceManagementToolName>(
   }, name, args);
   assert.equal(response.ok, true, JSON.stringify(response));
   return (response as { result: unknown }).result;
+}
+
+async function callRaw<TName extends WorkspaceManagementToolName>(
+  f: Fixture,
+  context: ManagementActorContext,
+  name: TName,
+  args: WorkspaceManagementToolArguments[TName],
+) {
+  return invokeWorkspaceManagementTool({
+    service: f.service,
+    resolveContext: async () => context,
+  }, name, args);
 }
 
 async function apply(
@@ -242,6 +258,84 @@ test('inspect says which connections need reconnecting and how', () =>
       'a Member cannot reconnect a team connection, so none is offered');
   }));
 
+test('a Member cannot get a reconnect link for a team connection, and gets a fresh personal setup instead', () =>
+  withFixture('reconnect-member-team', async (f) => {
+    const agent = await seedAgent(f);
+    const linear = await bindAccount(f, agent.id, linearAccount('needs_attention'));
+    const member = await addMember(f, 'U55555555');
+    const context = slackContext(member, agent.id);
+
+    const team = await callRaw(f, context, 'prepare_connector_setup', { connector: 'Linear', ownerKind: 'team' });
+    assert.equal(team.ok, false, JSON.stringify(team));
+    assert.equal(team.ok === false ? team.error.code : undefined, 'forbidden');
+
+    const personal = await call(f, context, 'prepare_connector_setup', {
+      connector: 'Linear',
+      ownerKind: 'member',
+    }) as PrepareConnectorSetupResult;
+    assert.equal(personal.reconnect, undefined, 'the team connection is not offered for reconnecting');
+    const setup = await f.management.getSetup(personal.setupOperationId!);
+    assert.equal(setup?.target.replacement, false);
+    assert.equal(setup?.target.ownerKind, 'member');
+    assert.notEqual(setup?.target.connectionId, linear.id, 'a new personal account, not the team one');
+    assert.equal((await f.config.listConnectionAccounts(TEAM))[0]?.lifecycle, 'needs_attention');
+  }));
+
+test('a reconnect finds only the asker\'s own personal account, even for an Admin', () =>
+  withFixture('reconnect-personal-lane', async (f) => {
+    const agent = await seedAgent(f);
+    const member = await addMember(f, 'U66666666');
+    const personal = await bindAccount(f, agent.id, {
+      ...linearAccount('needs_attention'),
+      id: 'connection_linear_member',
+      ownerKind: 'member',
+      ownerMembershipId: member.membership.id,
+      label: 'Linear · member',
+    });
+
+    const asAdmin = await call(f, slackContext(f.admin, agent.id), 'prepare_connector_setup', {
+      connector: 'Linear',
+      ownerKind: 'member',
+    }) as PrepareConnectorSetupResult;
+    assert.equal(asAdmin.reconnect, undefined, 'another member\'s personal account is never the Admin\'s to reconnect');
+    const adminSetup = await f.management.getSetup(asAdmin.setupOperationId!);
+    assert.equal(adminSetup?.target.replacement, false);
+    assert.notEqual(adminSetup?.target.connectionId, personal.id);
+
+    const asMember = await call(f, slackContext(member, agent.id), 'prepare_connector_setup', {
+      connector: 'Linear',
+      ownerKind: 'member',
+    }) as PrepareConnectorSetupResult;
+    assert.deepEqual(asMember.reconnect, { connectionId: personal.id, label: 'Linear · member' });
+    const memberSetup = await f.management.getSetup(asMember.setupOperationId!);
+    assert.equal(memberSetup?.target.connectionId, personal.id, 'the member gets the in-place reconnect');
+    assert.equal(memberSetup?.target.replacement, true);
+    assert.equal(memberSetup?.target.ownerKind, 'member');
+  }));
+
+test('a managed reconnect link needs the connector available, as a new connection does', async () => {
+  let available = false;
+  await withFixture('reconnect-managed-unavailable', async (f) => {
+    const agent = await seedAgent(f);
+    await bindAccount(f, agent.id, hubspotAccount('needs_attention'));
+    const context = slackContext(f.owner, agent.id);
+
+    const refused = await callRaw(f, context, 'prepare_connector_setup', { connector: 'HubSpot', ownerKind: 'team' });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(refused.ok === false ? refused.error.code : undefined, 'setup_unavailable');
+    assert.equal(refused.ok === false ? refused.error.message : undefined,
+      'HubSpot sign-in is not configured for this Chickpea deployment yet.');
+
+    available = true;
+    const issued = await call(f, context, 'prepare_connector_setup', {
+      connector: 'HubSpot',
+      ownerKind: 'team',
+    }) as PrepareConnectorSetupResult;
+    assert.ok(issued.setupOperationId, 'the link is issued once the connector is available');
+    assert.equal(issued.reconnect?.connectionId, 'connection_hubspot_team');
+  }, { managedConnectorAvailable: async () => available });
+});
+
 test('disconnect_connection confirms on MCP, then revokes the account as Admin does', () =>
   withFixture('disconnect', async (f) => {
     const agent = await seedAgent(f);
@@ -284,6 +378,76 @@ test('a Member cannot disconnect a team connection on either door', () =>
       assert.equal(result.outcomes[0]?.code, 'forbidden');
     }
     assert.equal((await f.config.listConnectionAccounts(TEAM))[0]?.lifecycle, 'ready');
+  }));
+
+test('an Owner or Admin can disconnect another member\'s personal connection, as in Admin; no one else sees it', () =>
+  withFixture('disconnect-personal', async (f) => {
+    const agent = await seedAgent(f);
+    const member = await addMember(f, 'U77777777');
+    const bystander = await addMember(f, 'U88888888');
+    const personal = await bindAccount(f, agent.id, {
+      ...linearAccount('ready'),
+      id: 'connection_linear_member',
+      ownerKind: 'member',
+      ownerMembershipId: member.membership.id,
+      label: 'Linear · member',
+    });
+    const disconnect = [{
+      itemId: 'disconnect',
+      kind: 'disconnect_connection' as const,
+      agentId: agent.id,
+      connectionId: personal.id,
+    }];
+
+    const hidden = await apply(f, mcpContext(bystander), 'bystander-disconnect', disconnect);
+    assert.equal(hidden.outcomes[0]?.disposition, 'failed', JSON.stringify(hidden.outcomes));
+    assert.equal(hidden.outcomes[0]?.code, 'invalid_request', 'another member\'s personal account stays private from a Member');
+
+    for (const [admin, key] of [[f.admin, 'admin-disconnect'], [f.owner, 'owner-disconnect']] as const) {
+      const bound = await bindAccount(f, agent.id, {
+        ...linearAccount('ready'),
+        id: `connection_linear_${key}`,
+        providerId: `linear-${key}`,
+        ownerKind: 'member',
+        ownerMembershipId: member.membership.id,
+        label: `Linear · ${key}`,
+      });
+      const pending = await apply(f, mcpContext(admin), key, [{ ...disconnect[0]!, connectionId: bound.id }]);
+      assert.equal(pending.status, 'confirmation_required', `${key}: ${JSON.stringify(pending.outcomes)}`);
+      const confirmed = await call(f, mcpContext(admin), 'confirm_workspace_change', {
+        proposalId: pending.outcomes[0]!.proposalId!,
+      }) as ManagementApplyResult;
+      assert.equal(confirmed.status, 'completed', `${key}: ${JSON.stringify(confirmed.outcomes)}`);
+      assert.equal((await f.config.listConnectionAccounts(TEAM)).find(({ id }) => id === bound.id)?.lifecycle, 'revoked');
+    }
+  }));
+
+test('disconnecting needs the right to edit the Agent, as the Agent page\'s Disconnect does', () =>
+  withFixture('disconnect-uneditable', async (f) => {
+    const agent = await seedAgent(f, 'creator_and_admins');
+    const member = await addMember(f, 'U10101010');
+    const team = await bindAccount(f, agent.id, linearAccount('ready'));
+    const own = await bindAccount(f, agent.id, {
+      ...linearAccount('ready'),
+      id: 'connection_linear_own',
+      providerId: 'linear-own',
+      ownerKind: 'member',
+      ownerMembershipId: member.membership.id,
+      label: 'Linear · own',
+    });
+    for (const connection of [team, own]) {
+      for (const context of [mcpContext(member), slackContext(member, agent.id)]) {
+        const result = await apply(f, context, `uneditable-${connection.id}-${context.origin.kind}`, [{
+          itemId: 'disconnect',
+          kind: 'disconnect_connection',
+          agentId: agent.id,
+          connectionId: connection.id,
+        }]);
+        assert.equal(result.outcomes[0]?.disposition, 'failed', JSON.stringify(result.outcomes));
+        assert.equal(result.outcomes[0]?.code, 'forbidden');
+      }
+    }
+    assert.deepEqual((await f.config.listConnectionAccounts(TEAM)).map(({ lifecycle }) => lifecycle), ['ready', 'ready']);
   }));
 
 test('tool selection applies directly and only names tools the server offers', () =>

@@ -1284,28 +1284,7 @@ export class WorkspaceManagementService {
       return this.prepareConnectorReconnect(actor, agent, connector, reconnecting, baseUrl);
     }
     if (actor.origin.kind === 'slack' && 'managedToolkit' in connector) {
-      const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(
-        connector.managedToolkit,
-        // Freeze the complete connector ceiling. The browser uses the full set
-        // when configured, otherwise only the available read tools.
-        'write',
-      ).map(({ id }) => id);
-      if (scopes.length === 0) {
-        throw new ManagementError(
-          'invalid_request',
-          `${connector.name} is not available for managed connection setup.`,
-        );
-      }
-      if (this.stores.managedConnectorAvailable &&
-          !(await this.stores.managedConnectorAvailable({
-            toolkit: connector.managedToolkit,
-            accessLane: 'read',
-          }))) {
-        throw new ManagementError(
-          'setup_unavailable',
-          `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
-        );
-      }
+      const scopes = await this.managedConnectionCeiling(connector);
       const issued = await this.issueSetupRecord(actor, {
         action: 'managed_connection',
         target: {
@@ -1535,6 +1514,35 @@ export class WorkspaceManagementService {
     return claimed;
   }
 
+  /**
+   * The complete capability ceiling a managed connection link freezes (the
+   * browser uses the full set when configured, otherwise only the available
+   * read tools), once the deployment offers the connector.
+   */
+  private async managedConnectionCeiling(
+    connector: Extract<ConnectorCatalogPreset, { managedToolkit: string }>,
+  ): Promise<string[]> {
+    const scopes = MANAGED_CONNECTOR_CATALOG.capabilities(connector.managedToolkit, 'write')
+      .map(({ id }) => id);
+    if (scopes.length === 0) {
+      throw new ManagementError(
+        'invalid_request',
+        `${connector.name} is not available for managed connection setup.`,
+      );
+    }
+    if (this.stores.managedConnectorAvailable &&
+        !(await this.stores.managedConnectorAvailable({
+          toolkit: connector.managedToolkit,
+          accessLane: 'read',
+        }))) {
+      throw new ManagementError(
+        'setup_unavailable',
+        `${connector.name} sign-in is not configured for this Chickpea deployment yet.`,
+      );
+    }
+    return scopes;
+  }
+
   /** The Agent's connection from this connector, in this owner's lane, that needs attention. */
   private async connectionNeedingReconnect(
     actor: LiveManagementActor,
@@ -1602,7 +1610,8 @@ export class WorkspaceManagementService {
             accessLane: 'read',
             presetId: connector.id,
           },
-          scopes: MANAGED_CONNECTOR_CATALOG.capabilities(connector.managedToolkit, 'write').map(({ id }) => id),
+          // As a new connection does, refuse before issuing when the connector is unavailable.
+          scopes: await this.managedConnectionCeiling(connector),
         })
       : await this.issueSetupRecord(actor, {
           action: 'catalog_connection',
@@ -3763,7 +3772,13 @@ export class WorkspaceManagementService {
     return result.tools;
   }
 
-  /** The connection a disconnect names on its Agent, after the checks Admin's Disconnect makes. */
+  /**
+   * The connection a disconnect names on its Agent, after the checks Admin's
+   * Agent-page Disconnect makes: the right to edit the Agent, then an Admin, an
+   * Owner or the account's owner. Settings' Disconnect has no Agent check, so
+   * it also reaches a Member's own connection on an Agent they cannot edit;
+   * this operation does not.
+   */
   private async agentConnectionTarget(
     actor: LiveManagementActor,
     operation: Extract<ManagementOperation, { kind: 'disconnect_connection' }>,
@@ -3782,13 +3797,14 @@ export class WorkspaceManagementService {
     })[0];
     const accountId = laneAccountId ?? operation.connectionId;
     const account = accounts.find(({ id }) => id === accountId);
-    // As in Admin, another member's personal account stays private, even from Admins.
+    const notFound = () => new ManagementError('invalid_request', `The connection was not found on ${agent.name}.`);
     if (!account || account.lifecycle === 'revoked' ||
-        !bindings.some(({ connectionAccountId }) => connectionAccountId === account.id) ||
-        (account.ownerKind === 'member' && account.ownerMembershipId !== actor.membershipId)) {
-      throw new ManagementError('invalid_request', `The connection was not found on ${agent.name}.`);
+        !bindings.some(({ connectionAccountId }) => connectionAccountId === account.id)) {
+      throw notFound();
     }
     if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+      // Another member's personal account stays private from a Member, as in Admin.
+      if (account.ownerKind === 'member') throw notFound();
       throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
     }
     return { agent, account };

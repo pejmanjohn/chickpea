@@ -551,6 +551,18 @@ export function createManagementSetupRoutes(
         if (setup.origin.kind !== 'slack' || !selection) {
           throw new ManagedAuthorizationError('invalid');
         }
+        if (setup.target.replacement && setup.target.connectionId) {
+          // A reconnect keeps its account's owner and access, so the page locks both.
+          const reconnecting = await reconnectAccount(setup, dependencies.config);
+          if (!reconnecting || selection.ownerKind !== reconnecting.ownerKind ||
+              selection.accessLane !== managedAccountAccessLane(
+                reconnecting,
+                setup.target.provider,
+                dependencies.catalog,
+              )) {
+            throw new ManagedAuthorizationError('invalid');
+          }
+        }
         const browserSession = setupSession(c, setupId);
         if (!browserSession) throw new ManagedAuthorizationError('invalid');
         const browserSecret = sha256HexNode(browserSession);
@@ -1357,10 +1369,19 @@ async function managedConnectionPageInput(
       toolkit: setup.target.provider,
       accessLane: 'write',
     }).status === 'ready';
+    const reconnecting = await reconnectAccount(setup, dependencies.config);
     return {
       setup,
       agent,
       writeAvailable: writeReady && setup.scopes.some((scope) => writeCapabilities.has(scope)),
+      ...(reconnecting
+        ? {
+            locked: {
+              ownerKind: reconnecting.ownerKind,
+              access: managedAccountAccessLane(reconnecting, setup.target.provider, dependencies.catalog),
+            },
+          }
+        : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
     };
   } catch {
@@ -1459,15 +1480,42 @@ async function catalogConnectionPageInput(
         };
       }
     }
+    const reconnecting = await reconnectAccount(setup, dependencies.config);
     return {
       setup,
       agent,
+      ...(reconnecting
+        ? {
+            locked: {
+              ownerKind: reconnecting.ownerKind,
+              ...(preset.id === 'meta-ads'
+                ? {
+                    access: catalogAccountAccessLane(reconnecting, setup.scopes) === 'write'
+                      ? 'editing' as const
+                      : 'reporting' as const,
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
       ...(failureMessage ? { failureMessage } : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+/** The account a reconnect link re-authorizes; the page and the flow keep its owner and access. */
+async function reconnectAccount(
+  setup: ManagementSetupRecord,
+  config: ConfigStore,
+): Promise<ConnectionAccount | undefined> {
+  if (!setup.target.replacement || !setup.target.connectionId || setup.origin.kind !== 'slack') {
+    return undefined;
+  }
+  return (await config.listConnectionAccounts(setup.origin.workspaceId))
+    .find(({ id }) => id === setup.target.connectionId);
 }
 
 interface CatalogSetupResult {
@@ -1518,6 +1566,8 @@ async function beginCatalogConnectionSetup(
     : undefined;
   const ownerKind = fields.ownerKind?.trim();
   if (ownerKind !== 'member' && ownerKind !== 'team') throw new Error('invalid_owner');
+  // A reconnect keeps its account's owner. The other owner would disconnect this account for a new one.
+  if (setup.target.replacement && ownerKind !== setup.target.ownerKind) throw new Error('target_changed');
   requireCatalogOwnerLanePermission(principal, ownerKind);
   const result = (account: ConnectionAccount): CatalogSetupResult => ({
     connector: preset.name,
