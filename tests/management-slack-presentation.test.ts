@@ -776,29 +776,43 @@ test('a provider key removal names at most eight Agents, the Workspace default a
   ].join('\n'));
 });
 
-test('Slack bold drops formatting characters from names; Markdown and quoted values keep them', () => {
+test('Slack bold shows names as stored and neutralizes Slack control sequences in them', () => {
   const preview: ManagementChangeSetPreview = {
     summary: '2 reviewed workspace changes',
     changes: [{
-      itemId: 'archive',
-      operationKind: 'archive_agent',
-      target: 'agent:agent_rd',
-      statement: { kind: 'archive_agent', agent: { name: 'R*D _Ops_ ~Team~ `x`' }, channelCount: 0 },
+      itemId: 'grant',
+      operationKind: 'grant_agent_channel',
+      target: 'channel_grant:T123:C123:agent_rd',
+      statement: {
+        kind: 'grant_agent_channel',
+        agent: { name: 'R&D <!channel>', handle: 'rd_ops' },
+        channel: 'eng_oncall',
+      },
     }, {
-      itemId: 'routine',
-      operationKind: 'save_routine',
-      target: 'routine:T123:C123',
-      after: { name: 'Morning *triage*', schedule: '0 9 * * 1-5' },
+      itemId: 'skill',
+      operationKind: 'update_agent',
+      target: 'agent:agent_research',
+      before: { name: 'Research', skills: [] },
+      after: {
+        name: 'Research',
+        skills: [{
+          name: 'release_notes',
+          description: 'Draft release notes.',
+          instructions: 'Summarize merged changes.',
+          enabled: true,
+        }],
+      },
     }],
     missingSetup: [],
   };
 
   const slack = formatSlackChangeSetProposal(preview);
-  assert.match(slack, /^Archive \*RD Ops Team x\*\. It stops answering\./m);
-  assert.match(slack, /^\*Morning triage — Schedule\*\n> 0 9 \* \* 1-5$/m);
+  assert.match(slack, /^Add \*R&amp;D &lt;!channel&gt;\* \(@rd_ops\) to \*#eng_oncall\*\.$/m);
+  assert.match(slack, /^\*Research — Skill: release_notes\*\n\*Add\*$/m);
+  assert.doesNotMatch(slack, /<!channel>/);
   const markdown = formatMarkdownChangeSetProposal(preview);
-  assert.match(markdown, /^Archive \*\*R\*D _Ops_ ~Team~ `x`\*\*\. It stops answering\./m);
-  assert.match(markdown, /^\*\*Morning \*triage\* — Schedule\*\*\n> 0 9 \* \* 1-5$/m);
+  assert.match(markdown, /^Add \*\*R&D <!channel>\*\* \(@rd_ops\) to \*\*#eng_oncall\*\*\.$/m);
+  assert.match(markdown, /^\*\*Research — Skill: release_notes\*\*\n\*\*Add\*\*$/m);
 });
 
 test('a member change with neither role nor status falls back to its heading', () => {
