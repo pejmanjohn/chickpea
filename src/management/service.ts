@@ -73,7 +73,7 @@ import type {
 import { RoutineService } from '../routines/service.ts';
 import { formatRoutineLocalDateTime, routineNextRunTime } from '../routines/message-format.ts';
 import { skillImportSource } from '../config/skill-provenance.ts';
-import { reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
+import { isActiveUserAgent, reassignDirectRoutineAgent } from '../routines/agent-authority.ts';
 import {
   executeSlackScheduleCommand,
   SlackScheduleCommandError,
@@ -84,7 +84,12 @@ import { RoutineContentAccessResolver, routineContentReadable } from '../routine
 import type { WorkStore } from '../work/types.ts';
 import { alternativeAgentHandles, normalizeAgentHandle } from '../slack/agent-presence/handles.ts';
 import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
-import { resolvePrivateAgentAccess, type PrivateAgentPlacementFacts } from '../slack/agent-access.ts';
+import {
+  logUnavailableFacts,
+  memberChannelViews,
+  resolvePrivateAgentAccess,
+  type PrivateAgentPlacementFacts,
+} from '../slack/agent-access.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -192,6 +197,10 @@ const SETUP_TTL_MS = 24 * 60 * 60_000;
 const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
+const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
+const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
+
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
 
@@ -3281,13 +3290,15 @@ export class WorkspaceManagementService {
   ): Promise<PrivateAgentPlacementFacts> {
     if (!this.stores.slackFacts) return UNAVAILABLE_SLACK_FACTS;
     return this.stores.slackFacts({ workspaceId, ...(agent ? { agent } : {}) })
-      .catch(() => UNAVAILABLE_SLACK_FACTS);
+      .catch((error: unknown) => {
+        logUnavailableFacts('transport', error);
+        return UNAVAILABLE_SLACK_FACTS;
+      });
   }
 
   /**
    * A member sees a public Channel, and a private one only while Slack shows
-   * them in it, as on the Admin Agent page. A Channel Slack cannot vouch for
-   * stays hidden.
+   * them in it, as on the Admin Agent page.
    */
   private async channelsSlackShowsMember<TChannel extends { workspaceId: string; channelId: string }>(
     actor: LiveManagementActor,
@@ -3296,19 +3307,31 @@ export class WorkspaceManagementService {
     if (channels.length === 0) return channels;
     const user = await this.stores.identity.getUser(actor.userId);
     if (!user) return [];
-    const facts = await this.slackFactsFor(user.slackTeamId);
-    const slack = await Promise.all(channels.map(({ workspaceId, channelId }) =>
-      workspaceId === user.slackTeamId
-        ? facts.lookupChannel(channelId).catch(() => undefined)
-        : undefined));
-    const memberChannels = slack.some((channel) => channel?.private)
-      ? await facts.listMemberChannels(user.slackUserId).catch(() => undefined)
-      : undefined;
-    return channels.filter((_, index) => {
-      const channel = slack[index];
-      return channel !== undefined && !channel.archived &&
-        (!channel.private || (channel.member && memberChannels?.has(channel.id) === true));
-    });
+    const inWorkspace = channels.filter(({ workspaceId }) => workspaceId === user.slackTeamId);
+    const views = await memberChannelViews(
+      inWorkspace.map(({ channelId }) => channelId),
+      user.slackUserId,
+      await this.slackFactsFor(user.slackTeamId),
+    );
+    return inWorkspace.filter(({ channelId }) => views.get(channelId) === 'shown');
+  }
+
+  /** A member's new Channel routine needs them in its Channel when it is private. */
+  private async requireMemberInChannel(
+    actor: LiveManagementActor,
+    workspaceId: string,
+    channelId: string,
+  ): Promise<void> {
+    const user = await this.stores.identity.getUser(actor.userId);
+    if (!user) throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
+    const views = await memberChannelViews(
+      [channelId],
+      user.slackUserId,
+      await this.slackFactsFor(workspaceId),
+    );
+    const view = views.get(channelId);
+    if (view === 'unavailable') throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    if (view !== 'shown') throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
   }
 
   /** Whether the person may read a Channel routine, as Admin's schedules page decides. */
@@ -3339,18 +3362,20 @@ export class WorkspaceManagementService {
       this.stores.config.listAgentChannelGrants(workspaceId),
       this.slackFactsFor(workspaceId, agent),
     ]);
+    if (!user) throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
     const access = await resolvePrivateAgentAccess({
       agent,
       workspaceId,
       grants,
       // Only full Slack members are provisioned, and every run asks Slack again.
-      actor: user?.slackTeamId === workspaceId
-        ? { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId }
-        : { fullMember: false },
+      actor: { fullMember: true, membershipId: actor.membershipId, slackUserId: user.slackUserId },
       transport: facts,
     });
-    if (access.status !== 'allowed') {
-      throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+    if (access.status === 'unavailable') {
+      throw new ManagementError('slack_unavailable', SLACK_ACCESS_UNCONFIRMED);
+    }
+    if (access.status === 'denied') {
+      throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
     }
   }
 
@@ -3872,8 +3897,7 @@ export class WorkspaceManagementService {
     if (operation.kind === 'save_routine') {
       const agent = await optionalAgent(this.stores.config, operation.agentId);
       if (directRoutine) {
-        if (!agent || agent.kind !== 'user' || !agent.enabled ||
-            agent.lifecycle === 'draft' || agent.lifecycle === 'archived') {
+        if (!agent || !isActiveUserAgent(agent)) {
           throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
         }
         if (isUserAgentScoped(actor) && operation.agentId !== actor.actingAgentId) {
@@ -3895,13 +3919,20 @@ export class WorkspaceManagementService {
           );
         }
         if (!this.actorCanEditAgent(actor, agent)) {
-          throw new ManagementError('forbidden', 'The schedule Agent is not available to this member.');
+          throw new ManagementError('forbidden', SCHEDULE_AGENT_NOT_AVAILABLE);
         }
       }
     }
+    // Admin's schedules page acts only on a routine the person can read, and
+    // keeps disable on its audit route, which needs admin.configure. A member's
+    // new Channel routine follows the same read rule for its Channel.
+    const readsEveryRoutine = permissionForRole(actor.role).has('admin.configure');
     if (operation.kind === 'save_routine' && !operation.routineId) {
       if (operation.expectedVersion !== undefined) {
         throw new ManagementError('invalid_request', 'A new routine cannot have an expected version.');
+      }
+      if (!directRoutine && !readsEveryRoutine) {
+        await this.requireMemberInChannel(actor, operation.workspaceId, channelId);
       }
       return;
     }
@@ -3937,22 +3968,20 @@ export class WorkspaceManagementService {
           throw new ManagementError('forbidden', 'Mention Chickpea in the private DM to reassign this schedule.');
         }
         const agent = await optionalAgent(this.stores.config, operation.agentId);
-        if (!agent) throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        if (!agent || !isActiveUserAgent(agent)) {
+          throw new ManagementError('invalid_request', 'The schedule Agent is not available.');
+        }
         await this.requirePrivateAgentUse(actor, agent, operation.workspaceId);
       }
       return;
     }
     await this.requireEditableAgent(actor, reference.agentId);
-    // Admin keeps disable on its audit route, which needs admin.configure, and
-    // its schedules page acts only on a routine the person can read.
-    if ((operation.kind === 'control_routine' || operation.kind === 'delete_routine') &&
-        !permissionForRole(actor.role).has('admin.configure')) {
-      if (operation.kind === 'control_routine' && operation.action === 'disable') {
-        throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
-      }
-      if (!await this.routineReadable(actor, routine)) {
-        throw new ManagementError('forbidden', 'The routine is in a private Channel this member is not in.');
-      }
+    if (readsEveryRoutine) return;
+    if (operation.kind === 'control_routine' && operation.action === 'disable') {
+      throw new ManagementError('forbidden', 'Only an Owner or Admin can disable a routine. Pause it instead.');
+    }
+    if (!await this.routineReadable(actor, routine)) {
+      throw new ManagementError('forbidden', PRIVATE_CHANNEL_NOT_JOINED);
     }
   }
 

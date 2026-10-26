@@ -1197,7 +1197,8 @@ export class ManagementError extends Error {
       | 'setup_expired'
       | 'setup_session_mismatch'
       | 'routines_unavailable_on_target'
-      | 'schedule_authority_missing',
+      | 'schedule_authority_missing'
+      | 'slack_unavailable',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

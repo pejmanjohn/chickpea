@@ -471,6 +471,6 @@ function authorityReceiptId(scheduleId: string, membershipId: string): string {
     .slice(0, 32)}`;
 }
 
-function isActiveUserAgent(agent: CustomAgentConfig): boolean {
+export function isActiveUserAgent(agent: CustomAgentConfig): boolean {
   return agent.kind === 'user' && agent.enabled && agent.lifecycle !== 'draft' && agent.lifecycle !== 'archived';
 }
