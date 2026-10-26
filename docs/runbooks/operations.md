@@ -417,6 +417,9 @@ the current `expectedAuthorityRevision`. Omit account IDs to retain the existing
 exact set, or explicitly supply its intended replacement. The route revalidates
 authority and resumes only recognized authority-related pauses. It does not
 repair an unbound saved revision, so complete the binding repair first.
+Over the management MCP, the same repair is the `take_over_routine` operation:
+the signed-in editor becomes the Runs as member, with the same account and
+resume rules.
 
 For a private DM schedule, the owner can ask Chickpea to reassign its owning
 Agent through the existing `reassign_routine_agent` operation, retaining the same
