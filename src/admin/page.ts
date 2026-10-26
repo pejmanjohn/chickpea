@@ -32,6 +32,7 @@ import {
   type OnboardingSceneId,
 } from './onboarding-scenes.ts';
 import type { SlackAppManifest } from '../slack/app-manifest.ts';
+import { hostPageScriptTag } from './host-script.ts';
 import { ADMIN_FONTS, fontFaceCss, JOURNEY_FONTS } from '../assets/fonts.ts';
 import {
   ADMIN_UI_SCRIPT_PATH,
@@ -188,7 +189,7 @@ export function renderAdminPage(
 <title>Chickpea · /admin</title>
 ${CHICKPEA_FAVICON_HTML}
 <style>:root{${CHICKPEA_WORDMARK_CSS}}</style>
-<link rel="stylesheet" href="${adminUiAssetUrl(ADMIN_UI_STYLESHEET_PATH, assetVersion)}">
+<link rel="stylesheet" href="${adminUiAssetUrl(ADMIN_UI_STYLESHEET_PATH, assetVersion)}">${hostPageScriptTag()}
 </head>
 <body>
 ${onboarding ? `<div id="app" class="frame onboarding-frame" aria-busy="true"><main class="onboarding-shell">${onboardingScene}<div class="onboarding-shell-inner"><div class="onboarding-brand-row"><div class="onboarding-brand">${CHICKPEA_MARK_HTML}${CHICKPEA_WORDMARK_HTML}</div>${targetChip ? `<span class="onboarding-environment">${escapeHtml(targetChip)}</span>` : ''}</div>${onboardingProgress}</div></main></div>` : `<div id="app" class="frame primary-admin-shell" aria-busy="true">
@@ -277,7 +278,7 @@ export function renderSlackJourneyPage(input: {
     : `<body><main class="auth-card" aria-labelledby="auth-title">${AUTH_BRAND_HTML}${progress}${badge}${content}</main></body>`;
   return `<!doctype html><html lang="en" data-slack-auth-surface="${escapeHtml(input.surface)}"${input.rootAttributes ? ` ${input.rootAttributes}` : ''}><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer">
-<title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}
+<title>Chickpea · ${escapeHtml(input.title)}</title>${CHICKPEA_FAVICON_HTML}${hostPageScriptTag()}
 <style>
 ${JOURNEY_FONT_FACES_CSS}
 :root{${CHICKPEA_WORDMARK_CSS}}
