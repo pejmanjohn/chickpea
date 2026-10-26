@@ -130,11 +130,20 @@ export class ManagedResourceSelectionError extends Error {
   }
 }
 
+/** The account is revoked, but its OAuth settings remain. Revoking again finishes the cleanup. */
+export class ConnectionOAuthCleanupError extends Error {
+  readonly name = 'ConnectionOAuthCleanupError';
+
+  constructor(cause: unknown) {
+    super('The connection is disconnected, but its stored sign-in remains. Retry to finish cleanup.', { cause });
+  }
+}
+
 /**
  * After a revoke, a connection's OAuth settings (its client registration,
  * pending authorization and tokens) are deleted behind a durable cleanup
- * marker, so a retry after a failure finishes the job. Admin's revoke and a
- * host's revocation both run it.
+ * marker, so a retry after a failure finishes the job. Every revoke runs it,
+ * as does a policy change that resets the credential.
  */
 export async function deleteRevokedConnectionOAuthSettings(
   account: ConnectionAccount,
@@ -609,6 +618,7 @@ export class ConnectionAccountService {
           'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
         );
       }
+      await this.deleteOAuthSettings(account);
       return account;
     }
 
@@ -653,7 +663,16 @@ export class ConnectionAccountService {
         'The connection is disconnected, but dependent schedules changed. Retry to finish cleanup.',
       );
     }
+    await this.deleteOAuthSettings(revoked);
     return revoked;
+  }
+
+  private async deleteOAuthSettings(account: ConnectionAccount): Promise<void> {
+    try {
+      await deleteRevokedConnectionOAuthSettings(account, undefined, this.dependencies.settings);
+    } catch (cause) {
+      throw new ConnectionOAuthCleanupError(cause);
+    }
   }
 
   async disconnectForAgent(input: {

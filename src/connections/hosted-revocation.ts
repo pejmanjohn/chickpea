@@ -26,8 +26,8 @@ import { ManagedProviderRequestError } from './managed-errors.ts';
 import { COMPOSIO_KEY_MISSING, COMPOSIO_REVOKE_FAILED } from './providers/composio.ts';
 import {
   ConnectionAccountService,
+  ConnectionOAuthCleanupError,
   ConnectionScheduleConflictError,
-  deleteRevokedConnectionOAuthSettings,
   ManagedConnectionProviderUnavailableError,
 } from './store.ts';
 
@@ -139,14 +139,11 @@ export async function revokeInstallationConnections(
       ...(account.policy.kind === 'managed' ? { adapterId: account.policy.adapterId } : {}),
       ownerKind: account.ownerKind,
     };
-    let stage: 'revoke' | 'oauth_cleanup' = 'revoke';
     try {
-      const revoked = await service.revokeWithSystemAuthority(account.id);
-      stage = 'oauth_cleanup';
-      await deleteRevokedConnectionOAuthSettings(revoked, env, settings);
+      await service.revokeWithSystemAuthority(account.id);
       outcomes.push({ ...described, outcome: account.lifecycle === 'revoked' ? 'already_revoked' : 'revoked' });
     } catch (error) {
-      const code = stage === 'oauth_cleanup' ? 'oauth_settings_cleanup_failed' : revocationFailureCode(error);
+      const code = revocationFailureCode(error);
       const name = error instanceof Error ? error.name : 'Error';
       outcomes.push({ ...described, outcome: 'failed', error: name, code });
       // Content-free: the kind, the provider and the code, never an ID, message or secret.
@@ -171,6 +168,7 @@ function revocationFailureCode(error: unknown): RevocationFailureCode {
   if (error instanceof ManagedConnectionProviderUnavailableError) return 'provider_not_registered';
   if (error instanceof ManagedProviderRequestError) return REMOTE_REQUEST_FAILURES[error.code];
   if (error instanceof ConnectionScheduleConflictError) return 'dependent_schedules_changed';
+  if (error instanceof ConnectionOAuthCleanupError) return 'oauth_settings_cleanup_failed';
   if (error instanceof ConnectionAccountRevisionConflictError) return 'account_changed';
   if (error instanceof Error && error.message === COMPOSIO_KEY_MISSING) return 'provider_not_configured';
   if (error instanceof Error && error.message === COMPOSIO_REVOKE_FAILED) return 'remote_revoke_failed';

@@ -4,7 +4,9 @@ import { Hono } from 'hono';
 
 import { createAdminRoutes } from '../src/admin/routes.ts';
 import { BUGSNAG_MCP_SERVER_URL } from '../src/config/bugsnag-policy.ts';
+import { apiOAuthSettingKeys, connectionAccountOAuthRef } from '../src/config/api-oauth.ts';
 import { agentCredentialConfigurationBinding } from '../src/config/connection-credential-binding.ts';
+import { mcpOAuthSettingKeys } from '../src/config/mcp-oauth.ts';
 import { compileRuntimePlanV2 } from '../src/agents/runtime-plan.ts';
 import type { AuthPrincipal } from '../src/auth/types.ts';
 import {
@@ -549,3 +551,134 @@ test('Admin-made connections round-trip through management: a reviewed connector
     assert.deepEqual(bugsnag.policy.kind === 'mcp' ? bugsnag.policy.allowedTools : undefined, ['list_errors'],
       'tools change only through Admin\'s review');
   }));
+
+const OAUTH_TOKENS = '{"refreshToken":"rt-secret"}';
+
+/** An Agent with one MCP and one API account that signed in with OAuth, each holding stored tokens. */
+async function seedOauthAccounts(f: Fixture, agent: CustomAgentConfig): Promise<{ keys: string[]; ids: string[] }> {
+  const bind = (id: string, providerId: string, label: string, policy: ConnectionAccount['policy']) =>
+    f.config.createAgentOwnedConnection({
+      account: {
+        id, workspaceId: TEAM, ownerKind: 'team', createdByMembershipId: f.owner.membership.id,
+        providerId, label, policy, secretRefId: `secret_${providerId}`, lifecycle: 'ready',
+      },
+      binding: {
+        agentId: agent.id, connectionAccountId: id, providerId, allowedCapabilities: [], enabled: true,
+      },
+    });
+  await bind('connection_docs', 'docs', 'Docs', {
+    kind: 'mcp', url: 'https://mcp.docs.example/mcp', transport: 'streamable-http', authMode: 'oauth',
+    headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'],
+  });
+  await bind('connection_calendar', 'calendar', 'Calendar', {
+    kind: 'api', allowedHosts: ['www.googleapis.com'], pathPrefixes: ['/calendar/v3'], headerName: 'Authorization',
+    headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'oauth', oauthProvider: 'google',
+    oauthScopes: ['https://www.googleapis.com/auth/calendar.readonly'], oauthAppType: 'external',
+  });
+  const keys = [
+    ...mcpOAuthSettingKeys(connectionAccountOAuthRef('connection_docs')),
+    ...apiOAuthSettingKeys(connectionAccountOAuthRef('connection_calendar')),
+  ];
+  for (const key of keys) await f.settings.setSetting(key, OAUTH_TOKENS);
+  return { keys, ids: ['connection_docs', 'connection_calendar'] };
+}
+
+async function confirmed(f: Fixture, pending: ManagementApplyResult): Promise<ManagementApplyResult> {
+  assert.equal(pending.status, 'confirmation_required', JSON.stringify(pending.outcomes));
+  const result = await mcpTool(f, 'confirm_workspace_change', {
+    proposalId: pending.outcomes[0]!.proposalId!,
+  }) as ManagementApplyResult;
+  assert.equal(result.status, 'completed', JSON.stringify(result.outcomes));
+  return result;
+}
+
+test('removing OAuth connections over MCP deletes their stored tokens', () =>
+  withFixture('accounts-oauth-remove', async (f) => {
+    const agent = await seedAgent(f);
+    const { keys, ids } = await seedOauthAccounts(f, agent);
+    const current = await inspectAgent(f, agent.id);
+    await confirmed(f, await apply(f, 'remove-oauth', [{
+      itemId: 'remove',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: current.revision,
+      patch: { mcpServers: [], apiConnections: [] },
+    }]));
+    assert.deepEqual(
+      (await f.config.listConnectionAccounts(TEAM)).filter(({ id }) => ids.includes(id)).map(({ lifecycle }) => lifecycle),
+      ['revoked', 'revoked'],
+    );
+    assert.deepEqual(await f.settings.getSettings(keys), keys.map(() => undefined),
+      'no OAuth setting survives the removal');
+  }));
+
+test('deleting an Agent deletes its connections\' stored tokens', () =>
+  withFixture('accounts-oauth-delete', async (f) => {
+    const seeded = await seedAgent(f);
+    const { keys } = await seedOauthAccounts(f, seeded);
+    const agent = await f.config.getAgent(seeded.id);
+    const deleted = await adminApp(f).request(`http://localhost/admin/api/agents/${agent.id}`, {
+      method: 'DELETE',
+      headers: testAdminHeaders(TOKEN, { 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        expectedRevision: agent.revision,
+        credentialConfigurationBinding: agentCredentialConfigurationBinding(agent.credentialIncarnation),
+      }),
+    });
+    assert.equal(deleted.status, 204, await deleted.clone().text());
+    await assert.rejects(f.config.getAgent(agent.id));
+    assert.deepEqual(await f.settings.getSettings(keys), keys.map(() => undefined),
+      'no OAuth setting survives the deletion');
+  }));
+
+test('a Member cannot ask for a setup link on a team connection, as Admin refuses them its setup', async () => {
+  const management = new SqliteManagementStore(':memory:');
+  let issued = 0;
+  const putSetup = management.putSetup.bind(management);
+  management.putSetup = (input) => {
+    issued += 1;
+    return putSetup(input);
+  };
+  try {
+    await withFixture('write-rules-member-setup', async (f) => {
+      const seeded = await seedAgent(f);
+      const agent = await f.config.updateAgent(seeded.id, { editPolicy: 'all_workspace_members' }, seeded.revision);
+      await apply(f, 'team-billing', [{
+        itemId: 'add',
+        kind: 'update_agent',
+        agentId: agent.id,
+        expectedRevision: agent.revision,
+        patch: { apiConnections: [billing] },
+      }]);
+      const member = (await f.identity.provisionSlackMember({
+        slackTeamId: TEAM,
+        slackUserId: 'U11223344',
+        displayName: 'Member',
+      })).resolution;
+      const asMember = (operation: ManagementOperation) => f.service.applyWorkspaceChanges({
+        context: {
+          userId: member.user.id,
+          membershipId: member.membership.id,
+          organizationId: member.membership.organizationId,
+          origin: { kind: 'mcp', clientId: 'write-rules-member-setup' },
+        },
+        idempotencyKey: 'member-setup',
+        operations: [operation],
+      });
+      const request: ManagementOperation = {
+        itemId: 'setup',
+        kind: 'request_setup',
+        target: { kind: 'api_connection', agentId: agent.id, connectionId: 'billing' },
+      };
+
+      const refusal = await asMember(request).then(
+        (result) => JSON.stringify(result),
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      );
+      assert.match(refusal, /Only a Chickpea Admin can change or remove a team connection\./);
+      assert.equal(issued, 0, 'no setup record was issued');
+    }, { management });
+  } finally {
+    management.close();
+  }
+});

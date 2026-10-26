@@ -230,6 +230,7 @@ const MANAGED_PROVIDER_IDS = ['anthropic', 'openai', 'openrouter'] as const;
 const THREAD_TTL_DAYS = THREAD_TTL_MS / 86_400_000;
 const META_ADS_CATALOG_SETUP_MESSAGE =
   'Add Meta Ads from the Agent’s Connections tab so you can select ad accounts and tools.';
+const TEAM_CONNECTION_ADMIN_ONLY = 'Only a Chickpea Admin can change or remove a team connection.';
 const SCHEDULE_AGENT_NOT_AVAILABLE = 'The schedule Agent is not available to this member.';
 const PRIVATE_CHANNEL_NOT_JOINED = 'The routine is in a private Channel this member is not in.';
 const SLACK_ACCESS_UNCONFIRMED = "Slack could not confirm this member's access. Try again.";
@@ -3121,6 +3122,10 @@ export class WorkspaceManagementService {
         );
       }
       const { account } = entry;
+      // Setup completion refuses a Member on a team connection, so never issue them its link.
+      if (!canManageOwnedResource(managementActorPrincipal(actor), account)) {
+        throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
+      }
       const target = {
         kind: request.kind,
         targetId: `agent:${agent.id}:${lane}:${account.id}`,
@@ -3528,7 +3533,7 @@ export class WorkspaceManagementService {
     const principal = managementActorPrincipal(actor);
     // Refuse before the first write what Admin would refuse the member.
     if (writes.some((write) => write.kind !== 'create' && !canManageOwnedResource(principal, write.entry.account))) {
-      throw new ManagementError('forbidden', 'Only a Chickpea Admin can change or remove a team connection.');
+      throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
     }
     const agent = await this.updateAgent(
       actor,
@@ -3579,7 +3584,7 @@ export class WorkspaceManagementService {
       }
     } catch (error) {
       if (error instanceof AuthorizationError) {
-        throw new ManagementError('forbidden', 'Only a Chickpea Admin can change or remove a team connection.');
+        throw new ManagementError('forbidden', TEAM_CONNECTION_ADMIN_ONLY);
       }
       if (error instanceof ConnectionAccountRevisionConflictError) {
         throw new ManagementError('revision_conflict', 'A connection changed. Inspect the Agent again.');

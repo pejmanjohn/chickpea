@@ -93,7 +93,6 @@ import {
   ConnectionScheduleConflictError,
   ConnectionAccountService,
   ConnectionCredentialEntryUnavailableError,
-  deleteRevokedConnectionOAuthSettings,
   ManagedConnectionConflictError,
   ManagedConnectionProviderUnavailableError,
   ManagedResourceSelectionError,
@@ -9428,7 +9427,6 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         principal,
         connectionAccountId: c.req.param('connectionAccountId'),
       });
-      await deleteRevokedConnectionOAuthSettings(account, c.env as PlatformEnv | undefined, settings(c));
       return c.json({ account: toConnectionAccountView(account) });
     } catch (error) {
       if (error instanceof AuthorizationError) return c.json({ error: 'forbidden' }, 403);

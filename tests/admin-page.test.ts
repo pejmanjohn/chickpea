@@ -18519,9 +18519,14 @@ const keyApiPolicy = {
   headerValuePrefix: 'Bearer ', allowedMethods: ['GET'], authMode: 'credential',
 };
 
-function keyConnection(id: string, lifecycle: string, policy: Record<string, unknown>): Record<string, unknown> {
+function keyConnection(
+  id: string,
+  lifecycle: string,
+  policy: Record<string, unknown>,
+  ownerKind: 'team' | 'member' = 'team',
+): Record<string, unknown> {
   return ownedConnection({
-    id, workspaceId: 'T_DESIGN', revision: 4, ownerKind: 'team', providerId: id, label: id,
+    id, workspaceId: 'T_DESIGN', revision: 4, ownerKind, providerId: id, label: id,
     lifecycle, credentialConfigured: lifecycle === 'ready', policy,
   });
 }
@@ -18553,6 +18558,26 @@ test('only a connection waiting for its key offers key entry', async () => {
   }) });
   assert.match(harness.app.innerHTML,
     /type="password"[^>]*placeholder="fc-…" data-action="connection-account-key-input"/);
+});
+
+test('a Member is offered key entry for their own connection and not for a team one', async () => {
+  const harness = runAdminPageHarness({
+    workspaceAdminUi: false,
+    agentsWorkspaceId: 'T_DESIGN',
+    agents: [connectionsAgent()],
+    initialPath: '/admin/agents/agent_conn',
+    initialSearch: '?tab=connections',
+    connectionAccounts: { attached: [
+      keyConnection('team_api', 'pending', keyApiPolicy),
+      keyConnection('own_api', 'pending', keyApiPolicy, 'member'),
+    ] },
+  });
+  await flushAsync();
+  const offered = [...harness.app.innerHTML.matchAll(
+    /data-action="connection-account-key-open" data-connection-id="([^"]+)">Set up</g,
+  )].map((match) => match[1]);
+  assert.deepEqual(offered, ['own_api']);
+  assert.match(harness.app.innerHTML, /team_api[\s\S]*?Setup required/);
 });
 
 test('key entry saves the credential at the account revision and shows a refusal inline', async () => {

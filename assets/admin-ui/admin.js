@@ -6845,10 +6845,12 @@
       (keyEditor ? '<div class="connection-row-editor">' + keyEditor + '</div>' : '') + '</div>';
   }
 
-  // Mirrors the server's credential route: a native account waiting for its stored key.
+  // Mirrors the server's credential route: a native account waiting for its stored key,
+  // which a Member can enter only on their own personal account (the list shows them no other).
   function connectionAccountAwaitsKey(account) {
     var policy = account && account.policy;
     if (!policy || account.lifecycle === "ready" || account.lifecycle === "revoked") return false;
+    if (!WORKSPACE_ADMIN_UI && account.ownerKind !== "member") return false;
     if (policy.kind === "api") return policy.authMode === "credential";
     return policy.kind === "mcp" && policy.authMode !== "oauth" &&
       (policy.authMode === "bearer" || !!policy.credentialHeaderName);
