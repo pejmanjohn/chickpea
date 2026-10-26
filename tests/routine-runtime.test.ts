@@ -774,5 +774,6 @@ test('a Channel run Slack cannot answer counts toward the pause; Slack refusing 
     assert.equal(await channelRun(gateway({ members: thrown })), 'slack_rate_limited', `gateway conversations.members ${label}`);
   }
   assert.equal(await channelRun(gateway({ info: () => { throw slackSdkRefusal('missing_scope'); } })), 'access_denied');
+  assert.equal(await channelRun(gateway({ info: () => { throw slackSdkRefusal('channel_not_found'); } })), 'channel_ineligible');
   assert.equal(await channelRun(gateway({ members: () => { throw slackSdkRefusal('not_in_channel'); } })), 'access_denied');
 });

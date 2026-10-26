@@ -393,11 +393,17 @@ async function conversationFromClient(client: WebClient, channelId: string) {
   } catch (error) {
     return {
       ok: false as const,
-      error: 'conversation_unavailable',
+      error: slackPlatformErrorName(error) ?? 'conversation_unavailable',
       retryAfterMs: undefined,
       slackDidNotAnswer: isRetryableDependencyFailure(error),
     };
   }
+}
+
+/** The error name in Slack's own refusal, as the SDK throws it; undefined for any other failure. */
+function slackPlatformErrorName(error: unknown): string | undefined {
+  const { code, data } = (error ?? {}) as { code?: unknown; data?: { error?: unknown } };
+  return code === 'slack_webapi_platform_error' && typeof data?.error === 'string' ? data.error : undefined;
 }
 
 async function hasChannelMemberViaClient(
