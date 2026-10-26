@@ -1149,40 +1149,6 @@ export class CfManagementStore implements ManagementStore {
     return response.request;
   }
 
-  async putProposal(input: Parameters<ManagementStore['putProposal']>[0]) {
-    const response = await this.execute({ kind: 'put_proposal', input });
-    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
-    return response.proposal;
-  }
-
-  async getProposal(proposalId: string) {
-    const response = await this.execute({ kind: 'get_proposal', proposalId });
-    if (response.kind !== 'proposal') throw unexpectedManagementResponse();
-    return orUndefined(response.proposal);
-  }
-
-  async claimProposal(input: Parameters<ManagementStore['claimProposal']>[0]) {
-    const response = await this.execute({ kind: 'claim_proposal', input });
-    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
-    return response.proposal;
-  }
-
-  async completeProposal(
-    proposalId: string,
-    result: Parameters<ManagementStore['completeProposal']>[1],
-    at: number,
-  ) {
-    const response = await this.execute({ kind: 'complete_proposal', proposalId, result, at });
-    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
-    return response.proposal;
-  }
-
-  async markProposalStale(proposalId: string, at: number) {
-    const response = await this.execute({ kind: 'mark_proposal_stale', proposalId, at });
-    if (response.kind !== 'proposal' || !response.proposal) throw unexpectedManagementResponse();
-    return response.proposal;
-  }
-
   async putChangeSetProposal(input: Parameters<ManagementStore['putChangeSetProposal']>[0]) {
     const response = await this.execute({ kind: 'put_change_set_proposal', input });
     if (response.kind !== 'change_set_proposal' || !response.proposal) {

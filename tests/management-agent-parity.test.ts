@@ -50,7 +50,6 @@ import type {
   ManagementWorkspaceSnapshot,
 } from '../src/management/types.ts';
 import { ManagementError } from '../src/management/types.ts';
-import { managementActorOriginKey } from '../src/management/contracts.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
 import { approveAsPerson, withPersonApproval } from './helpers/slack-person-approval.ts';
@@ -2993,69 +2992,6 @@ test('pending change sets do not follow an Agent id across delete and recreate',
         'stale',
       );
     }
-  } finally {
-    f.close();
-  }
-});
-
-test('a legacy pending lifecycle proposal does not follow an Agent id across delete and recreate', async () => {
-  const f = await createManagementAdapterFixture('legacy-pending-agent-replacement');
-  const context: ManagementActorContext = {
-    userId: f.admin.user.id,
-    membershipId: f.admin.membership.id,
-    organizationId: f.admin.membership.organizationId,
-    origin: { kind: 'mcp', clientId: 'legacy-pending-agent-replacement-client' },
-  };
-  const input = {
-    id: 'agent_legacy_pending_replacement',
-    name: 'Legacy identity fence',
-    instructions: 'Keep legacy proposal authority attached to one Agent identity.',
-    enabled: true,
-    lifecycle: 'active' as const,
-    creatorMembershipId: f.admin.membership.id,
-    configurationGeneration: 1,
-    skills: [],
-    mcpServers: [],
-    apiConnections: [],
-    repositories: [],
-  };
-  try {
-    const original = await f.config.createAgent(input);
-    const { proposalId } = await f.management.putProposal({
-      proposalId: 'proposal_legacy_pending_replacement',
-      organizationId: context.organizationId,
-      actorUserId: context.userId,
-      actorMembershipId: context.membershipId,
-      originKey: managementActorOriginKey(context),
-      operation: {
-        itemId: 'archive',
-        kind: 'archive_agent',
-        agentId: original.id,
-        expectedRevision: original.revision,
-      },
-      agentCredentialIncarnation: original.credentialIncarnation!,
-      summary: `archive_agent_reach:archive_agent:${original.id}`,
-      targetRevisions: { [`agent:${original.id}`]: original.revision },
-      at: 1_800_000_000_000,
-    });
-
-    await f.config.deleteAgent(
-      original.id,
-      original.revision,
-      original.credentialIncarnation,
-    );
-    const replacement = await f.config.createAgent(input);
-    assert.equal(replacement.revision, original.revision);
-    assert.notEqual(replacement.credentialIncarnation, original.credentialIncarnation);
-
-    await assert.rejects(
-      () => f.service.confirmWorkspaceChange({ context, proposalId }),
-      (error: unknown) => error instanceof ManagementError && error.code === 'revision_conflict',
-    );
-    const preserved = await f.config.getAgent(original.id);
-    assert.equal(preserved.credentialIncarnation, replacement.credentialIncarnation);
-    assert.equal(preserved.lifecycle, 'active');
-    assert.equal((await f.management.getProposal(proposalId))?.status, 'stale');
   } finally {
     f.close();
   }

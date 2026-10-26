@@ -698,6 +698,7 @@ function agentAskContext(
       heard,
       access,
       next,
+      `If your teammate's message shows a change waiting for approval, the change is your teammate's: a bare "approve" in this thread reaches you and applies nothing. Tell <@${originUserId}> to press Approve on your teammate's card${ask.fromAgentHandle ? ` or to reply "@${ask.fromAgentHandle} approve"` : ''}, never just to reply "approve".`,
       ask.fromAgentHandle
         ? `Mention @${ask.fromAgentHandle} again only if you need something more from it; never to thank or acknowledge it.`
         : 'Ask it again only if you need something more from it; never to thank or acknowledge it.',

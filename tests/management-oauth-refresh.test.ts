@@ -13,6 +13,7 @@ import {
   type OAuthClientProvider,
 } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import { Hono } from 'hono';
 import { build, resolveConfig } from 'vite';
 
 import { createBetterAuth, type BetterAuthAdmissionOperation } from '../src/auth/better-auth.ts';
@@ -21,8 +22,12 @@ import { NodeBetterAuthBackend } from '../src/auth/better-auth-node.ts';
 import {
   lookupMcpClientName,
   mcpAuthorizationChallenge,
+  mountMcpOAuthBrowserRoutes,
   renderMcpConsentPage,
 } from '../src/auth/mcp-oauth-routes.ts';
+import type { SlackAdmissionService } from '../src/auth/slack-admission.ts';
+import { createAdminRoutes } from '../src/admin/routes.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import { logout, type AuthDeps } from '../packages/cli/src/oauth.ts';
 import { CredentialStore, withExpiry, type StoredDeployment } from '../packages/cli/src/store.ts';
 
@@ -496,4 +501,56 @@ test('MCP consent names the registered app instead of its client id', async (t) 
   assert.ok(!html.includes(client.client_id), 'the dynamically registered client id stays off the page');
   assert.equal(await lookupMcpClientName(f.options, 'unknown-client', headers), undefined);
   assert.equal(await lookupMcpClientName(f.options, '', headers), undefined);
+});
+
+test('a signed-out person who signs in with Slack lands on the MCP consent screen', async (t) => {
+  const f = await fixture();
+  t.after(() => f.backend.close());
+  const identity = new SqliteIdentityStore(':memory:');
+  t.after(() => identity.close());
+  const browser = new Hono();
+  mountMcpOAuthBrowserRoutes(browser, async () => f.options);
+  const state = 'mcp-login-state-0123456789abcdefghijklmnop';
+  let signInDestination = '';
+  const admin = createAdminRoutes({
+    identity,
+    authSecret: randomBytes(32).toString('base64url'),
+    slackAdmissionService: {
+      async startLogin(input: { destination: string }) {
+        signInDestination = input.destination;
+        return {
+          attemptId: 'slackoidc_mcp', state, nonce: 'mcp-login-nonce-0123456789abcdefghijklmnop',
+          expiresAt: Date.now() + 900_000,
+          authorizationUrl: `https://slack.com/openid/connect/authorize?state=${state}`,
+        };
+      },
+      async callback() {
+        return {
+          destination: signInDestination,
+          sessionResponse: new Response('{}', { headers: { 'set-cookie': `${f.cookie}; Path=/; HttpOnly; Secure` } }),
+        };
+      },
+    } as unknown as SlackAdmissionService,
+  });
+
+  const client = await (await f.register({ scope: RENEWABLE_SCOPE })).json() as { client_id: string };
+  const signedOut = await f.beginAuthorize(client.client_id, RENEWABLE_SCOPE, { signedIn: false });
+  const login = new URL(signedOut.response.headers.get('location')!, ORIGIN);
+  const signInUrl = (await browser.request(`${ORIGIN}${login.pathname}${login.search}`)).headers.get('location')!;
+  const signInPage = await (await admin.request(new URL(signInUrl, ORIGIN).toString())).text();
+  const destination = /name="destination" value="([^"]*)"/.exec(signInPage)?.[1] ?? '';
+  const start = await admin.request(`${ORIGIN}/auth/slack/oidc/start`, {
+    method: 'POST',
+    headers: { origin: ORIGIN, 'sec-fetch-site': 'same-origin', 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ purpose: 'login', destination }),
+  });
+  assert.equal(start.status, 200);
+  const callback = await admin.request(`${ORIGIN}/auth/slack/oidc/callback?state=${state}&code=oidc-code`, {
+    headers: { cookie: start.headers.get('set-cookie')!.split(';', 1)[0]! },
+  });
+  const resume = callback.headers.get('location') ?? '';
+  assert.match(resume, /^\/auth\/mcp\/resume\/[A-Za-z0-9_-]{43}$/, 'Slack sign-in returns to the MCP authorization');
+  const authorization = (await browser.request(`${ORIGIN}${resume}`)).headers.get('location')!;
+  const consent = await f.handler(new Request(`${ORIGIN}${authorization}`, { headers: { cookie: f.cookie } }));
+  assert.equal(new URL(consent.headers.get('location')!, ORIGIN).pathname, '/auth/mcp/consent');
 });

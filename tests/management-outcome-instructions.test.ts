@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { AgentStillReferencedError } from '../src/config/errors.ts';
 import type { ManagementApplyResult, ManagementOperation } from '../src/management/types.ts';
 import { AgentPresenceError } from '../src/slack/agent-presence/errors.ts';
 import {
@@ -41,6 +42,29 @@ test('a refused delete tells the model why over MCP', () => withFixture('outcome
     'invalid_request',
     'Archive Research first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.',
   ]]);
+}));
+
+test('a delete the store finds still referenced names the Agent to archive', () => withFixture('outcome-still-referenced', async (f) => {
+  const agent = await createAgent(f, 'agent_research');
+  const proposed = await applyOverMcp(f, 'delete-referenced', [{
+    itemId: 'delete',
+    kind: 'delete_agent',
+    agentId: agent.id,
+    expectedRevision: agent.revision,
+  }]);
+  assert.equal(proposed.status, 'confirmation_required', JSON.stringify(proposed.outcomes));
+  const confirmed = await f.service.confirmWorkspaceChange({
+    context: ownerMcpContext(f, 'outcome-test'),
+    proposalId: proposed.outcomes[0]!.proposalId!,
+  });
+  assert.deepEqual(confirmed.outcomes.map(({ disposition, code, instruction }) =>
+    [disposition, code, instruction]), [[
+    'failed',
+    'still_referenced',
+    'Archive Research first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.',
+  ]]);
+}, {
+  async deleteAgent({ agentId }) { throw new AgentStillReferencedError(agentId, 'connection conn_research'); },
 }));
 
 test('code-only failures and skips still explain themselves', () => withFixture('outcome-codes', async (f) => {

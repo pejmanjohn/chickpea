@@ -311,7 +311,7 @@ test('private Channel setup claims one Agent once and preserves its terminal rep
   }
 });
 
-test('proposal schema migration reactivates legacy rows and adds provenance columns', () => {
+test('proposal schema migration drops single-write proposals, reactivates change sets and adds provenance columns', () => {
   const db = openStateDb(':memory:');
   try {
     db.exec(`CREATE TABLE management_proposals (
@@ -375,7 +375,11 @@ test('proposal schema migration reactivates legacy rows and adds provenance colu
     assert.ok(columns.has('guide_version'));
     assert.ok(columns.has('authoring_reason'));
     assert.ok(columns.has('approval_scope_key'));
-    assert.equal(store.getProposal('proposal_legacy')?.status, 'pending');
+    assert.deepEqual(
+      db.all("SELECT name FROM sqlite_master WHERE name LIKE 'management_proposals%'"),
+      [],
+      'the single-write proposal table and its indexes are gone',
+    );
     assert.deepEqual(store.getChangeSetProposal('changeset_legacy'), {
       proposalId: 'changeset_legacy',
       organizationId: 'org_1',
@@ -443,61 +447,9 @@ test('management request reservations are retry-stable and digest-bound', async 
   }
 });
 
-test('confirmation proposals are actor, origin, and single-use bound', async () => {
+test('change-set proposals preserve exact typed operations and their claim binding', async () => {
   const store = new SqliteManagementStore(':memory:');
   try {
-    const proposal = await store.putProposal({
-      proposalId: 'proposal_1',
-      organizationId: 'org_1',
-      actorUserId: 'user_1',
-      actorMembershipId: 'member_1',
-      originKey: 'slack:T1:C1:1.0',
-      operation: {
-        itemId: 'delete',
-        kind: 'delete_agent',
-        agentId: 'agent_test',
-        expectedRevision: 1,
-      },
-      summary: 'agent_deletion:delete_agent:agent_test',
-      targetRevisions: { 'agent:agent_test': 1 },
-      at: NOW,
-    });
-    assert.equal(proposal.status, 'pending');
-    await assert.rejects(
-      () => store.claimProposal({
-        proposalId: proposal.proposalId,
-        organizationId: 'org_1',
-        actorUserId: 'user_1',
-        actorMembershipId: 'member_1',
-        originKey: 'slack:T1:C2:1.0',
-        at: NOW + 1,
-      }),
-      (error: unknown) => error instanceof ManagementError &&
-        error.code === 'proposal_binding_mismatch',
-    );
-    assert.equal((await store.getProposal('proposal_1'))?.status, 'pending');
-    assert.equal((await store.claimProposal({
-      proposalId: proposal.proposalId,
-      organizationId: 'org_1',
-      actorUserId: 'user_1',
-      actorMembershipId: 'member_1',
-      originKey: 'slack:T1:C1:1.0',
-      at: NOW + 1,
-    })).status, 'applying');
-  } finally {
-    store.close();
-  }
-});
-
-test('change-set proposals coexist with legacy proposals and preserve exact typed operations', async () => {
-  const store = new SqliteManagementStore(':memory:');
-  try {
-    await store.putProposal({
-      proposalId: 'proposal_legacy',
-      organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
-      originKey: 'mcp:client_1', operation, summary: 'legacy', targetRevisions: {},
-      at: NOW,
-    });
     const changeSetInput: PutManagementChangeSetProposalInput = {
       proposalId: 'changeset_1',
       organizationId: 'org_1', actorUserId: 'user_1', actorMembershipId: 'member_1',
@@ -511,9 +463,6 @@ test('change-set proposals coexist with legacy proposals and preserve exact type
       targetRevisions: {}, at: NOW,
     };
     const changeSet = await store.putChangeSetProposal(changeSetInput);
-    assert.equal((await store.getProposal('proposal_legacy'))?.operation.kind, 'create_agent');
-    assert.equal(await store.getProposal('changeset_1'), undefined);
-    assert.equal(await store.getChangeSetProposal('proposal_legacy'), undefined);
     assert.deepEqual(changeSet.operations, [operation]);
     assert.equal(changeSet.digest, 'd'.repeat(64));
     assert.equal(changeSet.idempotencyKey, 'change-set-1');

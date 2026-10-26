@@ -14,7 +14,11 @@ export function agentStillInSlackRefusal(
   const userGroupOff = presence?.desiredState === 'disabled' && presence.health === 'healthy';
   if (references.channelGrants.length > 0 || presence?.kind === 'agent_app' ||
       (presence?.userGroupId !== undefined && !userGroupOff)) {
-    return `Archive ${agent.name} first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.`;
+    return archiveBeforeDeleting(agent.name);
   }
   return undefined;
+}
+
+export function archiveBeforeDeleting(agentName: string): string {
+  return `Archive ${agentName} first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.`;
 }

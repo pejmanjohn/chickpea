@@ -181,7 +181,7 @@ export function createLiveWorkspaceManagementService(
         return config.getAgent(agent.id);
       }
     },
-    discoverSlackChannels: async (_refresh, actor) => {
+    discoverSlackChannels: async (actor) => {
       const organization = await identity.getOrganization();
       if (!organization?.slackTeamId) {
         throw new ManagementError('invalid_request', 'The connected Slack directory is unavailable.');

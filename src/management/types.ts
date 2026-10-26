@@ -1138,24 +1138,6 @@ export interface ManagementRequestProgress {
   prepared?: ManagementPreparedItem;
 }
 
-export interface ManagementProposalRecord {
-  proposalId: string;
-  organizationId: string;
-  actorUserId: string;
-  actorMembershipId: string;
-  originKey: string;
-  operation: ManagementOperation;
-  /** Immutable identity of the existing Agent this legacy proposal reviewed. */
-  agentCredentialIncarnation?: string;
-  summary: string;
-  targetRevisions: Record<string, number>;
-  requestOperationId?: string;
-  status: 'pending' | 'applying' | 'completed' | 'stale';
-  result?: ManagementApplyResult;
-  createdAt: number;
-  updatedAt: number;
-}
-
 /** An Agent the way people know it in Slack and Admin. */
 export interface ManagementAgentLabel {
   name: string;
@@ -1277,6 +1259,7 @@ export class ManagementError extends Error {
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'
+      | 'still_referenced'
       | 'setup_not_found'
       | 'setup_unavailable'
       | 'setup_expired'
@@ -1318,20 +1301,6 @@ export interface ReserveManagementRequestInput {
   idempotencyKey: string;
   digest: string;
   operations: ManagementOperation[];
-  at: number;
-}
-
-export interface PutManagementProposalInput {
-  proposalId: string;
-  organizationId: string;
-  actorUserId: string;
-  actorMembershipId: string;
-  originKey: string;
-  operation: ManagementOperation;
-  agentCredentialIncarnation?: string;
-  summary: string;
-  targetRevisions: Record<string, number>;
-  requestOperationId?: string;
   at: number;
 }
 
@@ -1456,16 +1425,6 @@ export type ManagementRpcRequest =
       result: ManagementApplyResult;
       at: number;
     }
-  | { kind: 'put_proposal'; input: PutManagementProposalInput }
-  | { kind: 'get_proposal'; proposalId: string }
-  | { kind: 'claim_proposal'; input: ClaimManagementProposalInput }
-  | {
-      kind: 'complete_proposal';
-      proposalId: string;
-      result: ManagementApplyResult;
-      at: number;
-    }
-  | { kind: 'mark_proposal_stale'; proposalId: string; at: number }
   | { kind: 'put_change_set_proposal'; input: PutManagementChangeSetProposalInput }
   | { kind: 'get_change_set_proposal'; proposalId: string }
   | {
@@ -1548,7 +1507,6 @@ export type ManagementRpcRequest =
 export type ManagementRpcResponse =
   | { kind: 'request_reservation'; request: ManagementRequestRecord; created: boolean }
   | { kind: 'request'; request: ManagementRequestRecord | null }
-  | { kind: 'proposal'; proposal: ManagementProposalRecord | null }
   | { kind: 'change_set_proposal'; proposal: ManagementChangeSetProposalRecord | null }
   | { kind: 'change_set_proposals'; proposals: ManagementChangeSetProposalRecord[] }
   | { kind: 'undo'; undo: ManagementUndoRecord | null }
