@@ -1184,7 +1184,8 @@ export type ManagementChangeStatement =
   | { kind: 'archive_agent'; agent: ManagementAgentLabel; channelCount: number }
   | { kind: 'restore_agent' | 'delete_agent'; agent: ManagementAgentLabel }
   | { kind: 'disconnect_connection'; agent: ManagementAgentLabel; connection: string }
-  | { kind: 'remove_website_login'; agent: ManagementAgentLabel; site: string }
+  /** No site when the login itself is already gone and only the grant remains. */
+  | { kind: 'remove_website_login'; agent: ManagementAgentLabel; site?: string }
   /** Names the Agent whose memory body the preview compares. */
   | { kind: 'update_agent_memory'; agent: ManagementAgentLabel }
   | { kind: 'update_member'; member?: string; role?: OrganizationRole; status?: MembershipStatus }

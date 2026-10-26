@@ -5249,7 +5249,7 @@ export class WorkspaceManagementService {
       }
       case 'remove_website_login': {
         const { agent, login } = await this.agentWebsiteLoginTarget(actor, operation);
-        return { kind: operation.kind, agent: agentLabel(agent), site: login?.host ?? 'removed website' };
+        return { kind: operation.kind, agent: agentLabel(agent), ...(login ? { site: login.host } : {}) };
       }
       case 'update_member': {
         const membership = await this.stores.identity.getMembership(operation.membershipId);
