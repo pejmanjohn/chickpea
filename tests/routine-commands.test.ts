@@ -400,6 +400,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
       canManageChannel: async () => { throw new Error('DM commands must not authorize as Channels'); },
       isActiveActor: async () => true, assignment: currentAssignment,
       bindAuthority: bind,
+      checkAuthority: async () => ({ current: undefined, destinationBindingDigest: null }),
       resolveAuthority, ...extra,
     });
 
