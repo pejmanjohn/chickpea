@@ -5250,8 +5250,22 @@ export class WorkspaceManagementService {
       ]);
       const betterAuthUserId = bindings.find(({ membershipId }) =>
         membershipId === operation.membershipId)?.betterAuthUserId;
+      const statusChanges = operation.status !== undefined && operation.status !== before?.status;
+      const roleChanges = operation.role !== undefined && operation.role !== before?.role;
       const change = async (revoker: BetterAuthAccessRevoker | undefined) => {
-        const updated = await this.stores.identity.updateMembershipAuthority({
+        // Access ends before the membership changes, so a failed revoke
+        // leaves the change unapplied for a retry, never applied with the
+        // person still signed in. A status change ends MCP grants too; a role
+        // change only needs new sessions, because the MCP resource rereads
+        // the role on every request.
+        if (revoker && betterAuthUserId) {
+          if (statusChanges) {
+            await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
+          } else if (roleChanges) {
+            await revoker.deleteSessionsForUser(betterAuthUserId);
+          }
+        }
+        return this.stores.identity.updateMembershipAuthority({
           membershipId: operation.membershipId,
           ...(operation.role ? { role: operation.role } : {}),
           ...(operation.status ? { status: operation.status } : {}),
@@ -5263,16 +5277,6 @@ export class WorkspaceManagementService {
             : 'workspace_management_confirmation',
           idempotencyKey: `management:${proposalId}`,
         });
-        if (updated.changed && revoker && betterAuthUserId) {
-          // A status change ends MCP grants too; a role change only needs new
-          // sessions, because the MCP resource rereads the role on every request.
-          if (updated.membership.status !== before?.status) {
-            await revokeBetterAuthUserAccess(revoker, betterAuthUserId);
-          } else {
-            await revoker.deleteSessionsForUser(betterAuthUserId);
-          }
-        }
-        return updated;
       };
       const result = this.stores.withBetterAuthAccessRevoker
         ? await this.stores.withBetterAuthAccessRevoker(change)
