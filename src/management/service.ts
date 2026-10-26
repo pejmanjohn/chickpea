@@ -1994,19 +1994,7 @@ export class WorkspaceManagementService {
             readiness,
           );
           progress = appendOutcome(progress, index, appliedOutcome(operation, mutation));
-          if (request.operations.length === 1 &&
-              operation.kind !== 'create_agent' && mutation.inverse) {
-            await this.stores.management.putUndo({
-              operationId: request.operationId,
-              organizationId: actor.organizationId,
-              actorUserId: actor.userId,
-              inverse: mutation.inverse,
-              resultingRevisions: mutation.resultingRevisions,
-              ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
-              status: 'available',
-              createdAt: this.now(),
-              updatedAt: this.now(),
-            });
+          if (await this.offerUndo(actor, request.operationId, request.operations, mutation)) {
             progress.outcomes[progress.outcomes.length - 1]!.undoAvailable = true;
           }
         }
@@ -2514,6 +2502,8 @@ export class WorkspaceManagementService {
     }
     let proposal = existing;
     let recovered = false;
+    // The frozen preview keeps no inverse; the recheck before the claim derives it from the same state.
+    const rechecked = new Map<string, ManagementPreparedItem>();
     if (proposal.status === 'applying') {
       if (this.now() - proposal.updatedAt < MANAGEMENT_CHANGE_SET_APPLY_LEASE_MS) {
         throw new ManagementError('operation_in_progress', 'The confirmation is already applying.');
@@ -2558,6 +2548,7 @@ export class WorkspaceManagementService {
             currentPrepared,
           );
           await this.assertReviewedAgentReach(operation, proposal.targetRevisions);
+          rechecked.set(operation.itemId, currentPrepared);
         }
         await this.assertRevisionMap(proposal.targetRevisions);
       } catch (error) {
@@ -2632,8 +2623,22 @@ export class WorkspaceManagementService {
         }
         if (!recoveryDenied) {
           try {
-            mutation ??= await this.executeChangeSetOperation(actor, proposal, operation);
-            outcomes.push(appliedOutcome(operation, mutation));
+            mutation ??= await this.executeChangeSetOperation(
+              actor,
+              proposal,
+              operation,
+              rechecked.get(operation.itemId)?.inverse,
+            );
+            const applied = appliedOutcome(operation, mutation);
+            if (await this.offerUndo(
+              actor,
+              proposal.requestOperationId ?? proposal.proposalId,
+              proposal.operations,
+              mutation,
+            )) {
+              applied.undoAvailable = true;
+            }
+            outcomes.push(applied);
           } catch (error) {
             const reconciled = await this.reconcileChangeSetOperation(
               actor,
@@ -2707,12 +2712,18 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     proposal: ManagementChangeSetProposalRecord,
     operation: ManagementOperation,
+    inverse: ManagementOperation | undefined,
   ): Promise<ImmediateMutation> {
     const reconciled = await this.reconcileChangeSetOperation(actor, proposal, operation);
     if (reconciled) return reconciled;
     const prepared = changeSetPreparedItem(proposal, operation);
     if (canExecuteImmediately(operation)) {
-      return this.executeImmediate(actor, proposal.proposalId, operation, prepared);
+      return this.executeImmediate(
+        actor,
+        proposal.proposalId,
+        operation,
+        inverse ? { ...prepared, inverse } : prepared,
+      );
     }
     return this.executeConfirmed(actor, operation, proposal.proposalId, prepared);
   }
@@ -2853,9 +2864,46 @@ export class WorkspaceManagementService {
     }
   }
 
+  /**
+   * One change applied on its own, other than a creation, can be undone while
+   * its target still holds what the change left.
+   */
+  private async offerUndo(
+    actor: LiveManagementActor,
+    operationId: string,
+    operations: readonly ManagementOperation[],
+    mutation: ImmediateMutation,
+  ): Promise<boolean> {
+    if (operations.length !== 1 || operations[0]!.kind === 'create_agent' || !mutation.inverse) {
+      return false;
+    }
+    await this.stores.management.putUndo({
+      operationId,
+      organizationId: actor.organizationId,
+      actorUserId: actor.userId,
+      inverse: mutation.inverse,
+      resultingRevisions: mutation.resultingRevisions,
+      ...(mutation.agentConfigurationDigest ? { agentConfigurationDigest: mutation.agentConfigurationDigest } : {}),
+      status: 'available',
+      createdAt: this.now(),
+      updatedAt: this.now(),
+    });
+    return true;
+  }
+
+  /** A confirmed change's undo belongs to its call, so its confirmation ID finds it too. */
+  private async findUndo(operationId: string): Promise<ManagementUndoRecord | undefined> {
+    const undo = await this.stores.management.getUndo(operationId);
+    if (undo) return undo;
+    const changeSet = await this.stores.management.getChangeSetProposal(operationId);
+    return changeSet?.requestOperationId
+      ? this.stores.management.getUndo(changeSet.requestOperationId)
+      : undefined;
+  }
+
   async undoWorkspaceChange(input: UndoWorkspaceChangeInput): Promise<ManagementApplyResult> {
     const actor = await this.requireLiveActor(input.context);
-    const undo = await this.stores.management.getUndo(input.operationId);
+    const undo = await this.findUndo(input.operationId);
     if (!undo || undo.status !== 'available' || undo.organizationId !== actor.organizationId ||
         undo.actorUserId !== actor.userId) {
       throw new ManagementError('undo_unavailable', 'No undo action is available.');
@@ -2873,7 +2921,7 @@ export class WorkspaceManagementService {
         : {}),
     }));
     if (result.status === 'completed') {
-      await this.stores.management.consumeUndo(input.operationId, this.now());
+      await this.stores.management.consumeUndo(undo.operationId, this.now());
     }
     return result.links ? result : await this.withAgentLinks(input.context, result);
   }

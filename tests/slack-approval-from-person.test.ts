@@ -415,6 +415,32 @@ test('the person\'s typed undo of a model change applies at once when the Agent 
   }
 });
 
+test('the person\'s typed undo of a disable they approved turns the Agent back on', async () => {
+  const { f, chickpea, desk, turn, signal, tool, hostApproves } = await setup('approval-confirmed-undo');
+  try {
+    const requested = await tool(signal(CHICKPEA_AGENT_ID, turn('Disable Desk.')), 'apply_workspace_changes', {
+      idempotencyKey: 'disable-desk',
+      operations: [{
+        itemId: 'disable', kind: 'update_agent', agentId: desk.id, expectedRevision: desk.revision,
+        patch: { enabled: false },
+      }],
+    });
+    const proposalId = heldProposalId(requested);
+    const approval = await hostApproves(chickpea, turn('approve'), proposalId);
+    assert.ok(approval.kind === 'message' && /^Applied/.test(approval.text), JSON.stringify(approval));
+    assert.equal((await f.config.getAgent(desk.id)).enabled, false);
+
+    const undone = await tool(signal(CHICKPEA_AGENT_ID, turn('Undo that.')), 'undo_workspace_change', {
+      operationId: (requested.ok ? requested.result as ManagementApplyResult : undefined)!.operationId,
+      idempotencyKey: 'undo-disable-desk',
+    });
+    assert.deepEqual(outcomes(undone).map(({ disposition }) => disposition), ['applied'], JSON.stringify(undone));
+    assert.equal((await f.config.getAgent(desk.id)).enabled, true, 'the undo of the approved disable applies at once');
+  } finally {
+    f.close();
+  }
+});
+
 test('the person\'s typed undo that would remove a connection waits for their approval', async () => {
   const { f, desk, turn, signal, tool, hostApproves } = await setup('approval-person-undo-connection');
   try {
