@@ -452,6 +452,10 @@ export interface ManagementAgentCreatedWelcome {
     label: string;
     text: string;
   }>;
+  /**
+   * Slack mrkdwn the host already rendered: a follow-on tool result's
+   * presentation.slack or a fixed line. The welcome posts it as is.
+   */
   followOnNotices?: Array<{
     kind: 'proposal' | 'pending' | 'declined' | 'failure';
     text: string;
