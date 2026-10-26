@@ -15,6 +15,7 @@ import type {
   AgentModelRolePatch,
   ConfigAgentPatch,
   OAuthReauthorizationTarget,
+  ApiCredentialTarget,
 } from './store.ts';
 import type {
   ActivateChickpeaCutoverInput,
@@ -325,6 +326,7 @@ export interface TagStateRpc {
   configMarkOAuthReauthorizationRequired(
     target: OAuthReauthorizationTarget,
   ): Promise<StateRpcResult<boolean>>;
+  configMarkApiCredentialReady(target: ApiCredentialTarget): Promise<StateRpcResult<boolean>>;
   configDeleteAgent(
     agentId: string,
     expectedRevision?: number,

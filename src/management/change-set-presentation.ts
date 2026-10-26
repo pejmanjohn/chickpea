@@ -598,6 +598,7 @@ const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
   credentialRef: CREDENTIAL_REFERENCE,
   lifecycleStatus: BOOKKEEPING,
   statusText: BOOKKEEPING,
+  readyRevision: BOOKKEEPING,
 };
 
 /** A grant's account, repository and all-repositories choice are its name. */

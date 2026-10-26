@@ -61,6 +61,7 @@ export function validateManagementOperations(
 
   const seen = new Set<string>();
   const clientRefs = new Set<string>();
+  const creationItems = new Map<string, string>();
   for (const operation of operations) {
     if (!SAFE_ID.test(operation.itemId) || seen.has(operation.itemId)) {
       throw invalid('Management item IDs must be unique safe identifiers.');
@@ -74,6 +75,13 @@ export function validateManagementOperations(
       if (!SAFE_ID.test(operation.clientRef)) throw invalid('Agent clientRef is invalid.');
       if (clientRefs.has(operation.clientRef)) throw invalid('Agent clientRef values must be unique.');
       clientRefs.add(operation.clientRef);
+    }
+    if (operation.kind === 'create_agent') creationItems.set(operation.agent.id, operation.itemId);
+    if (operation.kind === 'update_agent' && operation.expectedRevision === 0) {
+      const creation = creationItems.get(operation.agentId);
+      if (!creation || !operation.dependsOn?.includes(creation)) {
+        throw invalid('An update_agent with expectedRevision 0 must depend on the create_agent of that Agent earlier in the call.');
+      }
     }
     assertValidRepositoryGrants(
       operation.kind === 'create_agent'

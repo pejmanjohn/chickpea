@@ -432,7 +432,7 @@ test('a connection change outside the listed fields still previews, and leads a 
 test('server bookkeeping alone is not a connection change', () => {
   const preview = agentChange({ mcpServers: [knowledge], apiConnections: [billing] }, {
     mcpServers: [{ ...knowledge, lifecycleStatus: 'failed', statusText: 'Timed out', lastCheckedAt: 1_800_000_000_000, oauthAttemptId: 'attempt_2' }],
-    apiConnections: [{ ...billing, lifecycleStatus: 'ready', statusText: 'Ready' }],
+    apiConnections: [{ ...billing, lifecycleStatus: 'ready', statusText: 'Ready', readyRevision: 4 }],
   });
 
   assert.equal(formatMarkdownChangeSetProposal(preview), markdown('**Research — Update Agent**'));

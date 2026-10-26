@@ -39,7 +39,7 @@ test('a refused delete tells the model why over MCP', () => withFixture('outcome
     [disposition, code, instruction]), [[
     'failed',
     'invalid_request',
-    'Archive the Agent and remove its Slack reach before deleting it.',
+    'Archive Research first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.',
   ]]);
 }));
 

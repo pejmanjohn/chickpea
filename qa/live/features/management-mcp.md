@@ -27,14 +27,14 @@ Docs: `/admin/management-mcp/`, `/reference/management-mcp-tools/`. Record areas
 - Sign a client in with `npx chickpea-cli login <lane origin>`. It prints the authorize URL; open it in the lane browser, signed in to the lane's Slack, and click Allow yourself, since consent is a declared QA action.
 - Drive tools with `chickpea-cli workspace inspect` and `chickpea-cli call <tool>`. For read-only acceptance, `npm run verify:management-mcp` takes its bearer token only from the environment and never prints it.
 - Case shape: `case-add --area agents --proof mcp --proof admin`. Add `--proof slack` once the created Agent is published and mentioned.
-- Requests: create one run-marked Agent with a caller-chosen `agent.id`; edit its instructions and grant it a channel, each in one call; archive and restore it in one call each; delete it and read the confirmation preview before confirming; `prepare_connector_setup` for a catalog connector.
+- Requests: create one run-marked Agent with a caller-chosen `agent.id`; edit its instructions and grant it a channel, each in one call; archive and restore it in one call each; archive it again, then delete it and read the confirmation preview before confirming; `prepare_connector_setup` for a catalog connector.
 - Denial variants: `confirm_workspace_change` after an edit moved the revision returns stale; `prepare_provider_setup` for an environment-managed provider returns `invalid_request`; Member-role checks need a registered Member actor, which lanes may lack.
 - Cleanup: archive created Agents (`--cleanup-preset archived-agent`), revoke unused setup links, and run `chickpea-cli logout <lane origin>` to revoke the client's refresh token. Its last access token keeps working against `/mcp` for up to 15 minutes, so a revocation readback waits for that token's expiry before expecting a 401.
 
 ## Proof and gotchas
 
 - MCP proof is the tool result envelope plus `get_operation` for its operation ID. Admin proof is the Agent page from `links.admin`. Slack proof is a real `@handle` mention answered by the new Agent.
-- A created Agent gets no Slack welcome and stays unpublished until a channel grant. `links.slack` opens the Chickpea app, not the Agent.
+- A created Agent gets no Slack welcome. On a Slack plan with user groups its handle is published at once, so `delete_agent` returns `invalid_request` ("Archive <name> first") until it is archived. The delete receipt carries no `links.admin`. `links.slack` opens the Chickpea app, not the Agent.
 - `create_agent` needs a caller-chosen `agent.id` (lowercase letters, digits, `_`, `-`). It may return a handle `warning` (free Slack plan or locked policy) while the Agent is still saved.
 - `import_skill` over MCP installs immediately: the authenticated call is the person's command.
 - The CLI also opens a default-browser tab. The loopback listener closes after the first callback, so a second Allow shows connection refused there. Check the CLI's own result before retrying.

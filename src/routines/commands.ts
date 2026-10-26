@@ -5,6 +5,7 @@ import { CHICKPEA_AGENT_ID } from '../config/agent-id.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import type { ConfigStore } from '../config/store.ts';
 import type { IdentityStore } from '../identity/types.ts';
+import { resolveEffectiveConnectionAccounts } from '../connections/runtime.ts';
 import { isCloudflareTarget } from '../config/runtime-target.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../slack/command-address.ts';
 import type { SlackInstallationExecutionContext } from '../slack/installation-execution.ts';
 import {
+  createRoutineId,
   hashRoutineValue,
   routineDestinationBindingDigest,
 } from './ids.ts';
@@ -38,8 +40,10 @@ import {
 } from './slack-command.ts';
 import {
   bindRoutineAgentAuthority,
+  checkRoutineAgentAuthority,
   isActiveRoutineActor,
   resolveRoutineAgentAuthority,
+  selectScheduleConnectionAccounts,
 } from './agent-authority.ts';
 import {
   canManageRoutineChannel,
@@ -79,6 +83,7 @@ interface RoutineCommandExecutionContext {
   slackClient?: WebClient;
   assignment?: ResolvedAssignment;
   bindAuthority: typeof bindRoutineAgentAuthority;
+  checkAuthority: typeof checkRoutineAgentAuthority;
   resolveAuthority: typeof resolveRoutineAgentAuthority;
 }
 
@@ -155,6 +160,8 @@ export async function handleRoutineSlackRequest(
     assignment?: ResolvedAssignment;
     /** Test seam; production always uses the canonical Agent authority binder. */
     bindAuthority?: typeof bindRoutineAgentAuthority;
+    /** Test seam; production always runs the canonical Agent authority check. */
+    checkAuthority?: typeof checkRoutineAgentAuthority;
     /** Test seam; production always re-resolves live Agent authority. */
     resolveAuthority?: typeof resolveRoutineAgentAuthority;
     /** Test seam; production always revalidates the canonical member. */
@@ -201,6 +208,8 @@ export async function handleRoutineSlackRequest(
         ...(dependencies.config ? { config: dependencies.config } : {}),
         identity: resolveIdentity(),
       })),
+    checkAuthority: dependencies.checkAuthority ?? ((input) =>
+      checkRoutineAgentAuthority(input, { config, identity: resolveIdentity() })),
     resolveAuthority: dependencies.resolveAuthority ?? ((routine, runtimeEnv) =>
       resolveRoutineAgentAuthority(routine, runtimeEnv, {
         ...(dependencies.config ? { config: dependencies.config } : {}),
@@ -223,7 +232,7 @@ async function executeRoutineCommand(
 ): Promise<string> {
   const {
     turn, store, config, resolveIdentity, env, capability, now, canManageChannel, botToken, slackClient, assignment,
-    bindAuthority, resolveAuthority,
+    bindAuthority, checkAuthority, resolveAuthority,
   } = context;
   const service = new RoutineService(store, { now });
   if (command.kind === 'help' || command.kind === 'invalid') return renderRoutineHelp();
@@ -394,8 +403,39 @@ async function executeRoutineCommand(
           ownerMembershipId: turn.actorMembershipId,
         }
       : undefined;
+    const actorMembershipId = turn.actorMembershipId;
+    if (!owningAssignment || !actorMembershipId) {
+      throw new RoutineStateError(
+        'routine_access_denied',
+        'The schedule was not created because its Agent or Runs as member was unavailable.',
+      );
+    }
+    // Refuse before writing: the binding after the save repeats these checks.
+    const cloneId = createRoutineId();
+    await checkAuthority({
+      routine: {
+        id: cloneId,
+        workspaceId: turn.workspaceId,
+        channelId: turn.channelId,
+        destination: destination ?? { kind: 'channel', channelId: turn.channelId },
+      },
+      assignment: owningAssignment,
+      actorMembershipId,
+      env,
+    });
+    selectScheduleConnectionAccounts(
+      sourceReference.requiredConnectionAccountIds,
+      undefined,
+      await resolveEffectiveConnectionAccounts({
+        config,
+        workspaceId: turn.workspaceId,
+        agentId: owningAssignment.agentId,
+        actorMembershipId,
+      }),
+    );
     const created = await service.save({
       action: 'create',
+      routineId: cloneId,
       actorId: turn.userId,
       workspaceId: turn.workspaceId,
       channelId: turn.channelId,
@@ -428,7 +468,8 @@ async function executeRoutineCommand(
           ),
     }, `routine:slack:${turn.eventId}:clone:${routine.id}`);
     const activated = await bindSavedRoutineAuthority(
-      created, owningAssignment, turn, env, service, store, bindAuthority, sourceReference.requiredConnectionAccountIds,
+      created, owningAssignment, actorMembershipId, turn, env, service, store, bindAuthority,
+      sourceReference.requiredConnectionAccountIds,
     );
     return renderRoutineSaved(activated, { action: 'create' });
   }
@@ -445,7 +486,8 @@ async function executeRoutineCommand(
 
 async function bindSavedRoutineAuthority(
   routine: RoutineDefinition,
-  assignment: ResolvedAssignment | undefined,
+  assignment: ResolvedAssignment,
+  actorMembershipId: string,
   turn: NormalizedSlackTurn,
   env: PlatformEnv | undefined,
   service: RoutineService,
@@ -455,30 +497,11 @@ async function bindSavedRoutineAuthority(
 ): Promise<RoutineDefinition> {
   const pendingDirect = routine.destination.kind === 'direct_thread' &&
     routine.state === 'pending_authority';
-  if (!assignment || !turn.actorMembershipId) {
-    if (!pendingDirect) {
-      await service.control({
-        routineId: routine.id,
-        expectedVersion: routine.version,
-        action: 'pause',
-        actorId: turn.userId,
-        actorClass: 'member',
-        reasonCode: 'schedule_authority_missing',
-        idempotencyKey: `routine:authority-missing:${routine.id}:${routine.version}`,
-      });
-    }
-    throw new RoutineStateError(
-      'routine_access_denied',
-      pendingDirect
-        ? 'The private schedule was saved inactive because its Agent or requesting member was unavailable.'
-        : 'The schedule was saved paused because its Agent or Runs as member was unavailable.',
-    );
-  }
   try {
     const reference = await bindAuthority({
       routine,
       assignment,
-      actorMembershipId: turn.actorMembershipId,
+      actorMembershipId,
       requiredConnectionAccountIds,
       env,
     });

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 
 import { SqliteConfigStore } from '../src/config/store.ts';
 import type { ResolvedAssignment } from '../src/config/types.ts';
+import { SqliteIdentityStore } from '../src/identity/store.ts';
 import {
   handleRoutineSlackRequest as handleRoutineSlackRequestImpl,
   parseRoutineCommand,
@@ -19,6 +20,7 @@ import { SqliteRoutineStore } from '../src/routines/store.ts';
 import type { RoutineDefinition, RoutineStore } from '../src/routines/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { withEnv } from './helpers/env.ts';
+import { createSlackOwner } from './helpers/slack-owner.ts';
 
 const NOW = Date.UTC(2026, 6, 27, 12);
 const enabled: RoutineCapability = {
@@ -398,6 +400,7 @@ test('exact DM commands need no deployment flag and stay scoped across threads',
       canManageChannel: async () => { throw new Error('DM commands must not authorize as Channels'); },
       isActiveActor: async () => true, assignment: currentAssignment,
       bindAuthority: bind,
+      checkAuthority: async () => ({ current: undefined, destinationBindingDigest: null }),
       resolveAuthority, ...extra,
     });
 
@@ -504,4 +507,72 @@ test('pre-upgrade schedule edit confirmations require a fresh request without ch
     assert.equal((await store.getRoutine(routine.id))!.version, routine.version);
     assert.equal((await store.getRoutine(routine.id))!.taskText, routine.taskText);
   } finally { store.close(); }
+});
+
+test('a clone whose required connection the member no longer holds writes nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chickpea-clone-connection-'));
+  const path = join(dir, 'state.db');
+  const store = new SqliteRoutineStore(path, () => NOW);
+  const config = new SqliteConfigStore(path, { agents: [] });
+  const identity = new SqliteIdentityStore(':memory:');
+  try {
+    const owner = await createSlackOwner(identity, { teamId: 'T_TEST', userId: 'U_MEMBER', suffix: 'clone_connection' });
+    const agent = await config.createAgent({
+      id: 'agent_clone', name: 'Clone Agent', instructions: 'Help.', enabled: true, lifecycle: 'active',
+      creatorMembershipId: owner.membership.id, editPolicy: 'creator_and_admins',
+      skills: [], mcpServers: [], apiConnections: [], repositories: [],
+    });
+    await config.putAgentChannelGrant({
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id,
+      status: 'active', createdByMembershipId: owner.membership.id,
+    });
+    const account = await config.putConnectionAccount({
+      id: 'connection_crm', workspaceId: 'T_TEST', ownerKind: 'team', createdByMembershipId: owner.membership.id,
+      providerId: 'test-provider', label: 'CRM', secretRefId: 'secret_crm', lifecycle: 'ready',
+      policy: {
+        kind: 'api', allowedHosts: ['api.example.test'], pathPrefixes: ['/'],
+        headerName: 'Authorization', allowedMethods: ['GET'], authMode: 'credential',
+      },
+    });
+    const source = await seedRoutine(store);
+    await config.putAgentScheduleReference({
+      scheduleId: source.id, agentId: agent.id, workspaceId: 'T_TEST', channelId: 'C_TEST',
+      destinationKind: 'channel', destinationBindingDigest: null,
+      createdByMembershipId: owner.membership.id, runsAsMembershipId: owner.membership.id,
+      authorityReceiptId: 'schedule_authority_clone', requiredConnectionAccountIds: [account.id],
+      boundRoutineVersion: source.version, state: 'active',
+    });
+    const channelAssignment: ResolvedAssignment = {
+      workspaceId: 'T_TEST', channelId: 'C_TEST', agentId: agent.id, agent,
+    };
+    const clone = (eventId: string) => handleRoutineSlackRequestImpl(
+      { ...turn(`!routines clone ${source.id}`, eventId), userId: owner.binding.slackUserId, actorMembershipId: owner.membership.id },
+      undefined,
+      {
+        store, config, identity, capability: enabled, now: () => NOW,
+        canManageChannel: async () => true, assignment: channelAssignment,
+      },
+    );
+
+    const refused = await clone('Ev_CLONE_REFUSED');
+    assert.doesNotMatch(refused ?? '', /Routine created/);
+    assert.deepEqual((await store.listRoutines('T_TEST', 'C_TEST')).map(({ id }) => id), [source.id],
+      'a refused clone leaves no routine behind');
+    assert.deepEqual((await config.listAgentScheduleReferences(agent.id)).map(({ scheduleId }) => scheduleId), [source.id]);
+
+    await config.putAgentConnectionBinding({
+      agentId: agent.id, connectionAccountId: account.id, providerId: account.providerId,
+      allowedCapabilities: [], enabled: true,
+    });
+    assert.match(await clone('Ev_CLONE_ACCEPTED') ?? '', /Routine created/);
+    const copies = (await store.listRoutines('T_TEST', 'C_TEST')).filter(({ id }) => id !== source.id);
+    assert.equal(copies.length, 1);
+    assert.equal(copies[0]!.state, 'active');
+    assert.deepEqual((await config.getAgentScheduleReference(copies[0]!.id))?.requiredConnectionAccountIds, [account.id]);
+  } finally {
+    identity.close();
+    config.close();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

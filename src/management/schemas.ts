@@ -37,7 +37,6 @@ const zText = (max: number) => z.string().min(1).max(max);
 const zOptionalText = (max: number) => z.string().max(max);
 const zId = zText(128);
 const zAgentId = z.string().regex(AGENT_ID_PATTERN);
-const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
 const zRevision = z.number().int().nonnegative();
 const zModelSpecifier = z.string().min(1).max(500).regex(/^[^/]+\/.+$/);
 const repositoryFullNameDescription = 'One repository as "owner/repo", or "" when allRepos is true.';
@@ -45,35 +44,30 @@ const repositoryAllReposDescription = 'true grants every repository of accountLo
 const creationModelDescription = 'Omit to inherit the workspace default. Set only when the requester explicitly selected this model; never invent a model pin.';
 const creationModelEffortDescription = 'Set only when the requester chose a reasoning effort for this model.';
 const modelEffortDescription = 'Set only when the requester chose a reasoning effort; null clears it. A new model without this clears it.';
+const updateRevisionDescription = 'The Agent revision from inspection. 0 targets the Agent a create_agent earlier in this call creates; that create must be in dependsOn.';
 const zModelEffort = z.enum(MODEL_EFFORTS);
 
+export const zSkillName = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64);
+export const zSkillImportSource = z.strictObject({
+  repository: z.string().max(256).regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  commit: z.string().regex(/^[a-f0-9]{40,64}$/),
+  path: z.string().max(1024).refine((path) => !path.startsWith('/') && !path.split('/').includes('..')),
+  contentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
 const zSkill = z.strictObject({
   name: zText(64),
   description: zOptionalText(2_000),
   instructions: zOptionalText(100_000),
   enabled: z.boolean(),
-  importSource: z.strictObject({
-    repository: z.string().max(256).regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-    commit: z.string().regex(/^[a-f0-9]{40,64}$/),
-    path: z.string().max(1024).refine((path) => !path.startsWith('/') && !path.split('/').includes('..')),
-    contentSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  }).optional(),
-});
-const zMcpTool = z.strictObject({
-  name: zText(120),
-  title: zOptionalText(160).optional(),
-  description: zOptionalText(400).optional(),
-  readOnlyHint: z.boolean().optional(),
+  suggestedSkillId: zSkillName.optional(),
+  importSource: zSkillImportSource.optional(),
 });
 const zMcpToolPolicies = z.record(zText(120), z.strictObject({
   effect: z.enum(['read', 'write']),
   argumentConstraints: z.record(zText(120), z.array(zText(120)).min(1).max(50)).optional(),
 }));
-const zConnectionIdentity = z.strictObject({
-  workspaceName: zOptionalText(240).optional(),
-  accountName: zOptionalText(240).optional(),
-});
-const zMcpConnection = z.strictObject({
+/** Writable MCP server policy; the service owns status, tools, and credential binding. */
+export const zMcpConnection = z.strictObject({
   id: zId,
   displayName: zText(240),
   url: z.url().max(2_000),
@@ -81,17 +75,13 @@ const zMcpConnection = z.strictObject({
   authMode: z.enum(['none', 'bearer', 'oauth']),
   headerNames: z.array(zText(120)).max(32),
   enabled: z.boolean(),
-  lifecycleStatus: z.enum(['pending', 'ready', 'failed']),
-  statusText: zOptionalText(1_000),
-  discoveredTools: z.array(zMcpTool).max(500),
   toolPolicies: zMcpToolPolicies.optional(),
   allowedTools: z.array(zText(120)).max(500),
   oauthScope: zOptionalText(2_000).optional(),
-  lastCheckedAt: z.number().int().nonnegative().optional(),
-  identity: zConnectionIdentity.optional(),
   presetId: zId.optional(),
 });
-const zApiConnection = z.strictObject({
+/** Writable API connection policy; the service owns status and credential binding. */
+export const zApiConnection = z.strictObject({
   id: zId,
   displayName: zText(240),
   allowedHosts: z.array(zText(253)).max(100),
@@ -104,9 +94,6 @@ const zApiConnection = z.strictObject({
   oauthProvider: z.literal('google').optional(),
   oauthScopes: z.array(zText(500)).max(100).optional(),
   oauthAppType: z.enum(['workspace-internal', 'external']).optional(),
-  lifecycleStatus: z.enum(['pending', 'ready', 'failed']).optional(),
-  statusText: zOptionalText(1_000).optional(),
-  identity: zConnectionIdentity.optional(),
   presetId: zId.optional(),
 });
 const zRepository = z.strictObject({
@@ -210,7 +197,7 @@ export const managementOperationZodSchema = z.discriminatedUnion('kind', [
     ...zOperationBase,
     kind: z.literal('update_agent'),
     agentId: zAgentId,
-    expectedRevision: zRevision,
+    expectedRevision: zRevision.describe(updateRevisionDescription),
     confirmationReason: z.literal('recipe_overwrite').optional(),
     patch: zAgentPatch,
   }),
@@ -413,16 +400,10 @@ const va = <TItem extends v.BaseSchema<unknown, unknown, v.BaseIssue<unknown>>>(
 
 const vSkill = v.strictObject({
   name: vt(64), description: vot(2_000), instructions: vot(100_000), enabled: v.boolean(),
+  suggestedSkillId: v.optional(vSkillName),
   importSource: v.optional(skillImportSourceSchema),
 });
-const vMcpTool = v.strictObject({
-  name: vt(120), title: v.optional(vot(160)), description: v.optional(vot(400)),
-  readOnlyHint: v.optional(v.boolean()),
-});
-const vConnectionIdentity = v.strictObject({
-  workspaceName: v.optional(vot(240)), accountName: v.optional(vot(240)),
-});
-const vMcpConnection = v.strictObject({
+export const vMcpConnection = v.strictObject({
   id: vid,
   displayName: vt(240),
   url: v.pipe(v.string(), v.url(), v.maxLength(2_000)),
@@ -430,20 +411,15 @@ const vMcpConnection = v.strictObject({
   authMode: v.picklist(['none', 'bearer', 'oauth']),
   headerNames: va(vt(120), 32),
   enabled: v.boolean(),
-  lifecycleStatus: v.picklist(['pending', 'ready', 'failed']),
-  statusText: vot(1_000),
-  discoveredTools: va(vMcpTool, 500),
   toolPolicies: v.optional(v.record(vt(120), v.strictObject({
     effect: v.picklist(['read', 'write']),
     argumentConstraints: v.optional(v.record(vt(120), va(vt(120), 50))),
   }))),
   allowedTools: va(vt(120), 500),
   oauthScope: v.optional(vot(2_000)),
-  lastCheckedAt: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
-  identity: v.optional(vConnectionIdentity),
   presetId: v.optional(vid),
 });
-const vApiConnection = v.strictObject({
+export const vApiConnection = v.strictObject({
   id: vid,
   displayName: vt(240),
   allowedHosts: va(vt(253), 100),
@@ -456,9 +432,6 @@ const vApiConnection = v.strictObject({
   oauthProvider: v.optional(v.literal('google')),
   oauthScopes: v.optional(va(vt(500), 100)),
   oauthAppType: v.optional(v.picklist(['workspace-internal', 'external'])),
-  lifecycleStatus: v.optional(v.picklist(['pending', 'ready', 'failed'])),
-  statusText: v.optional(vot(1_000)),
-  identity: v.optional(vConnectionIdentity),
   presetId: v.optional(vid),
 });
 const vRepository = v.pipe(
@@ -559,7 +532,7 @@ export const managementOperationValibotSchema = v.variant('kind', [
     ...vOperationBase,
     kind: v.literal('update_agent'),
     agentId: vAgentId,
-    expectedRevision: vr,
+    expectedRevision: v.pipe(vr, v.description(updateRevisionDescription)),
     confirmationReason: v.optional(v.literal('recipe_overwrite')),
     patch: vAgentPatch,
   }),
