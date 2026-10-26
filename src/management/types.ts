@@ -1259,6 +1259,7 @@ export class ManagementError extends Error {
       | 'undo_unavailable'
       | 'operation_in_progress'
       | 'revision_conflict'
+      | 'still_referenced'
       | 'setup_not_found'
       | 'setup_unavailable'
       | 'setup_expired'

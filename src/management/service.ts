@@ -91,7 +91,7 @@ import {
   resolvePrivateAgentAccess,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
-import { agentStillInSlackRefusal } from '../slack/agent-presence/left-slack.ts';
+import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
 import { nextDefaultAgentAvatarSeed } from '../slack/agent-presence/default-avatar-pool.ts';
 import { stripResolvedSlackCommandAddress, type SlackCommandAddress } from '../slack/command-address.ts';
 import { escapeSlackControlCharacters } from '../slack/message-format.ts';
@@ -5243,28 +5243,35 @@ export class WorkspaceManagementService {
         throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
       }
       assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(operation.agentId));
-      if (this.stores.deleteAgent) {
-        await this.stores.deleteAgent({
-          actor,
-          agentId: operation.agentId,
-          expectedRevision: operation.expectedRevision,
-          expectedCredentialIncarnation: expectedCredentialIncarnation ??
-            requireAgentCredentialIncarnation(agent),
-          idempotencyKey: `management:${proposalId}:${operation.itemId}`,
-        });
-      } else if (this.stores.config.deleteAgentWithMemory) {
-        await this.stores.config.deleteAgentWithMemory(
-          operation.agentId,
-          `management:${proposalId}:${operation.itemId}`,
-          operation.expectedRevision,
-          expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
-        );
-      } else {
-        await this.stores.config.deleteAgent(
-          operation.agentId,
-          operation.expectedRevision,
-          expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
-        );
+      try {
+        if (this.stores.deleteAgent) {
+          await this.stores.deleteAgent({
+            actor,
+            agentId: operation.agentId,
+            expectedRevision: operation.expectedRevision,
+            expectedCredentialIncarnation: expectedCredentialIncarnation ??
+              requireAgentCredentialIncarnation(agent),
+            idempotencyKey: `management:${proposalId}:${operation.itemId}`,
+          });
+        } else if (this.stores.config.deleteAgentWithMemory) {
+          await this.stores.config.deleteAgentWithMemory(
+            operation.agentId,
+            `management:${proposalId}:${operation.itemId}`,
+            operation.expectedRevision,
+            expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
+          );
+        } else {
+          await this.stores.config.deleteAgent(
+            operation.agentId,
+            operation.expectedRevision,
+            expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
+          );
+        }
+      } catch (error) {
+        if (error instanceof AgentStillReferencedError) {
+          throw new ManagementError('still_referenced', archiveBeforeDeleting(agent.name));
+        }
+        throw error;
       }
       return mutationForChanged([{ kind: 'agent', id: operation.agentId }]);
     }
@@ -7567,7 +7574,7 @@ const UNAPPLIED_INSTRUCTIONS: Readonly<Record<string, string>> = {
   revision_conflict: 'This changed after it was inspected. Inspect again and resend the change.',
   not_found: 'The Agent no longer exists. Inspect the workspace again.',
   already_exists: 'An Agent with this ID already exists. Inspect the workspace before choosing another ID.',
-  still_referenced: 'The Agent is still in use, so it was not deleted. Archive it and remove its Slack reach first.',
+  still_referenced: archiveBeforeDeleting('this Agent'),
   operation_failed: 'The change did not apply. Inspect again before retrying.',
   skill_missing: 'The Agent has no skill with this name, so nothing changed. Inspect the Agent to see its skills.',
   skill_already_set: 'The skill was already enabled or disabled as asked, so nothing changed.',
