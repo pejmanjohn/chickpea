@@ -343,6 +343,8 @@ export const revokeSetupLinkZodSchema = z.strictObject({
   reissue: z.boolean().optional(),
 });
 export const inspectWorkspaceZodSchema = z.strictObject({});
+export const listMcpClientsZodSchema = z.strictObject({});
+export const revokeMcpClientZodSchema = z.strictObject({ clientId: zText(512) });
 export const prepareConnectorSetupZodSchema = z.strictObject({
   // External MCP clients have no trusted Slack route from which to infer the
   // target Agent. The Slack adapter uses the Valibot schema below and may omit

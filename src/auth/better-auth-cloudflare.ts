@@ -2,6 +2,7 @@ import type { D1Database } from '@cloudflare/workers-types';
 
 import type {
   BetterAuthDatabaseBackend,
+  BetterAuthMcpOAuthClient,
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
@@ -15,7 +16,9 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  mcpOAuthClientsFromGrants,
   parseBetterAuthDate,
+  SQLITE_MCP_OAUTH_CLIENT_GRANTS,
   SQLITE_ORGANIZATION_ERASURE,
   SQLITE_PENDING_MCP_CLIENT_PRUNE,
   sqliteOrganizationErasure,
@@ -54,6 +57,19 @@ export class D1BetterAuthBackend implements BetterAuthDatabaseBackend {
     const [accessTokens = 0, refreshTokens = 0, consents = 0] = (await this.database.batch(
       ['oauthAccessToken', 'oauthRefreshToken', 'oauthConsent'].map((table) =>
         this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).bind(userId)),
+    )).map((result) => Number(result.meta.changes));
+    return { accessTokens, refreshTokens, consents };
+  }
+
+  async listOAuthClientsForUser(userId: string): Promise<BetterAuthMcpOAuthClient[]> {
+    const { results } = await this.database.prepare(SQLITE_MCP_OAUTH_CLIENT_GRANTS).bind(userId).all();
+    return mcpOAuthClientsFromGrants(results);
+  }
+
+  async revokeOAuthClientForUser(userId: string, clientId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    const [accessTokens = 0, refreshTokens = 0, consents = 0] = (await this.database.batch(
+      ['oauthAccessToken', 'oauthRefreshToken', 'oauthConsent'].map((table) =>
+        this.database.prepare(`DELETE FROM ${table} WHERE userId = ? AND clientId = ?`).bind(userId, clientId)),
     )).map((result) => Number(result.meta.changes));
     return { accessTokens, refreshTokens, consents };
   }

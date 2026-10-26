@@ -22,6 +22,8 @@ const MANAGEMENT_MCP_TOOL_NAMES = [
   'undo_workspace_change',
   'get_operation',
   'revoke_setup_link',
+  'list_mcp_clients',
+  'revoke_mcp_client',
 ];
 
 function fetchWithDeadline(input, init = {}) {

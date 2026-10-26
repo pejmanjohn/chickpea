@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { resolveStateDbPath } from '../state/node-state-db.ts';
 import type {
   BetterAuthDatabaseBackend,
+  BetterAuthMcpOAuthClient,
   BetterAuthMcpOAuthContinuationRecord,
   BetterAuthOAuthGrantRevocation,
   BetterAuthMembershipRecord,
@@ -19,7 +20,9 @@ import {
   mapBetterAuthMembership,
   mapBetterAuthOrganization,
   mapBetterAuthUser,
+  mcpOAuthClientsFromGrants,
   parseBetterAuthDate,
+  SQLITE_MCP_OAUTH_CLIENT_GRANTS,
   SQLITE_ORGANIZATION_ERASURE,
   SQLITE_PENDING_MCP_CLIENT_PRUNE,
   sqliteOrganizationErasure,
@@ -66,6 +69,29 @@ export class NodeBetterAuthBackend implements BetterAuthDatabaseBackend {
   async revokeOAuthGrantsForUser(userId: string): Promise<BetterAuthOAuthGrantRevocation> {
     const remove = (table: string) =>
       Number(this.database.prepare(`DELETE FROM ${table} WHERE userId = ?`).run(userId).changes);
+    this.database.exec('BEGIN IMMEDIATE;');
+    try {
+      const revoked = {
+        accessTokens: remove('oauthAccessToken'),
+        refreshTokens: remove('oauthRefreshToken'),
+        consents: remove('oauthConsent'),
+      };
+      this.database.exec('COMMIT;');
+      return revoked;
+    } catch (error) {
+      this.database.exec('ROLLBACK;');
+      throw error;
+    }
+  }
+
+  async listOAuthClientsForUser(userId: string): Promise<BetterAuthMcpOAuthClient[]> {
+    return mcpOAuthClientsFromGrants(this.database.prepare(SQLITE_MCP_OAUTH_CLIENT_GRANTS).all(userId));
+  }
+
+  async revokeOAuthClientForUser(userId: string, clientId: string): Promise<BetterAuthOAuthGrantRevocation> {
+    const remove = (table: string) => Number(this.database.prepare(
+      `DELETE FROM ${table} WHERE userId = ? AND clientId = ?`,
+    ).run(userId, clientId).changes);
     this.database.exec('BEGIN IMMEDIATE;');
     try {
       const revoked = {

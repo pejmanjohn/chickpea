@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   revokeBetterAuthUserAccess,
   type BetterAuthAccessRevoker,
+  type BetterAuthMcpOAuthClients,
 } from '../auth/better-auth-backend.ts';
 import {
   AuthorizationError,
@@ -209,6 +210,8 @@ import {
   type ManagementSetupRecord,
   type ManagementSetupTarget,
   type ManagementUndoRecord,
+  type ManagementMcpClientList,
+  type ManagementMcpClientRevocation,
   type ManagementWorkspaceSnapshot,
   type PrepareConnectorSetupInput,
   type PrepareConnectorSetupResult,
@@ -439,6 +442,8 @@ export interface WorkspaceManagementServiceInput {
   withBetterAuthAccessRevoker?: <T>(
     use: (revoker: BetterAuthAccessRevoker | undefined) => Promise<T>,
   ) => Promise<T>;
+  /** Better Auth's record of people's MCP clients; undefined where Better Auth does not sign people in. */
+  mcpOAuthClients?: () => Promise<BetterAuthMcpOAuthClients | undefined>;
   now?: () => number;
   randomId?: () => string;
   randomCapability?: () => string;
@@ -642,6 +647,69 @@ export class WorkspaceManagementService {
   ): Promise<ManagementWorkspaceSnapshot> {
     const actor = await this.requireLiveActor(context);
     return this.snapshot(actor);
+  }
+
+  async listMcpClients(
+    context: ApplyWorkspaceChangesInput['context'],
+  ): Promise<ManagementMcpClientList> {
+    const { clients, betterAuthUserId, currentClientId } = await this.ownMcpClients(context);
+    return {
+      clients: (await clients.listOAuthClientsForUser(betterAuthUserId)).map((client) => ({
+        clientId: client.clientId,
+        name: client.name,
+        connectedAt: client.connectedAt.toISOString(),
+        lastUsedAt: client.lastTokenAt?.toISOString() ?? null,
+        current: client.clientId === currentClientId,
+      })),
+    };
+  }
+
+  /** Ends one of the person's own MCP clients at once; there is no Admin UI to confirm in. */
+  async revokeMcpClient(
+    context: ApplyWorkspaceChangesInput['context'],
+    clientId: string,
+  ): Promise<ManagementMcpClientRevocation> {
+    const { clients, betterAuthUserId, currentClientId } = await this.ownMcpClients(context);
+    const client = (await clients.listOAuthClientsForUser(betterAuthUserId))
+      .find((candidate) => candidate.clientId === clientId);
+    if (!client) {
+      throw new ManagementError(
+        'mcp_client_not_found',
+        'None of your connected MCP clients has that clientId. Call list_mcp_clients for the current list.',
+      );
+    }
+    await clients.revokeOAuthClientForUser(betterAuthUserId, clientId);
+    const current = clientId === currentClientId;
+    const name = client.name ?? 'The client';
+    return {
+      clientId,
+      name: client.name,
+      current,
+      message: current
+        ? `Revoked ${name}, the client you are using now. Its access ends within 15 minutes; then it must sign in to Chickpea again.`
+        : `Revoked ${name}. It can no longer renew its access to Chickpea, and the access it holds ends within 15 minutes. To use it again, sign in to Chickpea from it.`,
+    };
+  }
+
+  private async ownMcpClients(context: ApplyWorkspaceChangesInput['context']): Promise<{
+    clients: BetterAuthMcpOAuthClients;
+    betterAuthUserId: string;
+    currentClientId: string;
+  }> {
+    const actor = await this.requireLiveActor(context);
+    if (actor.origin.kind !== 'mcp') {
+      throw new ManagementError('forbidden', 'Connected MCP clients are listed and revoked over the Chickpea MCP.');
+    }
+    const [clients, bindings] = await Promise.all([
+      this.stores.mcpOAuthClients?.(),
+      this.stores.identity.listExternalIdentities(),
+    ]);
+    const betterAuthUserId = bindings.find(({ membershipId }) =>
+      membershipId === actor.membershipId)?.betterAuthUserId;
+    if (!clients || !betterAuthUserId) {
+      throw new ManagementError('invalid_request', 'This deployment does not sign MCP clients in with Chickpea accounts.');
+    }
+    return { clients, betterAuthUserId, currentClientId: actor.origin.clientId };
   }
 
   async proposeSkillImport(

@@ -886,6 +886,29 @@ export interface ManagementWorkspaceSnapshot {
   effectiveRevision: string;
 }
 
+/** The coding agents and other MCP clients the signed-in person connected; no token or secret. */
+export interface ManagementMcpClientList {
+  clients: Array<{
+    clientId: string;
+    /** The name the client registered with. */
+    name: string | null;
+    /** ISO 8601 time the person first allowed it. */
+    connectedAt: string;
+    /** ISO 8601 time it last signed in or renewed its access, which an active client does every 15 minutes. */
+    lastUsedAt: string | null;
+    /** The client making this request. */
+    current: boolean;
+  }>;
+}
+
+export interface ManagementMcpClientRevocation {
+  clientId: string;
+  name: string | null;
+  current: boolean;
+  /** What changed, for the coding agent to tell the person. */
+  message: string;
+}
+
 export interface PrepareConnectorSetupInput {
   agentId: string;
   connector: string;
@@ -1281,7 +1304,8 @@ export class ManagementError extends Error {
       | 'setup_session_mismatch'
       | 'routines_unavailable_on_target'
       | 'schedule_authority_missing'
-      | 'slack_unavailable',
+      | 'slack_unavailable'
+      | 'mcp_client_not_found',
     message: string,
     readonly changed?: ManagementObjectRef[],
     /** Admin deep link when the failure names something only Admin can change; response-only. */

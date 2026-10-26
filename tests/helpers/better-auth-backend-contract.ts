@@ -208,6 +208,39 @@ export function betterAuthBackendContract(contract: BetterAuthBackendContract): 
     }
   });
 
+  it('revoking one MCP client ends its refresh and spares the login\'s other clients and other people\'s', async (f) => {
+    const a = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
+    const b = await f.reconcile('TAAAA', 'U0002', 'chickpea-org_a');
+    const cookieA = await f.signIn(a, 'TAAAA', 'U0001');
+    const revoked = await f.grant(cookieA, { resource: false });
+    const kept = await f.grant(cookieA, { resource: true });
+    const theirs = await f.grant(await f.signIn(b, 'TAAAA', 'U0002'), { resource: true });
+
+    const listed = await f.backend.listOAuthClientsForUser(a.userId);
+    assert.deepEqual(new Set(listed.map(({ clientId }) => clientId)), new Set([revoked.clientId, kept.clientId]));
+    for (const client of listed) {
+      assert.equal(client.name, 'Grant');
+      assert.ok(client.connectedAt instanceof Date && !Number.isNaN(client.connectedAt.getTime()));
+      assert.ok(client.lastTokenAt instanceof Date && client.lastTokenAt >= client.connectedAt);
+    }
+    assert.deepEqual((await f.backend.listOAuthClientsForUser(b.userId)).map(({ clientId }) => clientId), [theirs.clientId]);
+
+    const removed = await f.backend.revokeOAuthClientForUser(a.userId, revoked.clientId);
+    assert.deepEqual(removed, { consents: 1, accessTokens: 1, refreshTokens: 1 });
+    const refused = await f.refresh(revoked);
+    assert.equal(refused.status, 400);
+    assert.equal((await refused.json() as { error: string }).error, 'invalid_grant');
+    assert.equal((await f.refresh(kept)).status, 200);
+    assert.equal((await f.refresh(theirs)).status, 200);
+    assert.deepEqual((await f.backend.listOAuthClientsForUser(a.userId)).map(({ clientId }) => clientId), [kept.clientId]);
+
+    for (const [userId, clientId] of [[a.userId, theirs.clientId], [a.userId, 'missing'], ['not-a-canonical-id', kept.clientId]]) {
+      assert.deepEqual(await f.backend.revokeOAuthClientForUser(userId!, clientId!),
+        { consents: 0, accessTokens: 0, refreshTokens: 0 });
+    }
+    assert.deepEqual(await f.backend.listOAuthClientsForUser('not-a-canonical-id'), []);
+  });
+
   it('revoking an installation\'s organization ends its members\' sessions and grants and spares another', async (f) => {
     const owner = await f.reconcile('TAAAA', 'U0001', 'chickpea-org_a');
     const member = await f.reconcile('TAAAA', 'U0002', 'chickpea-org_a');

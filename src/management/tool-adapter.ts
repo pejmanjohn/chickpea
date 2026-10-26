@@ -41,6 +41,8 @@ export const WORKSPACE_MANAGEMENT_TOOL_NAMES = [
   'undo_workspace_change',
   'get_operation',
   'revoke_setup_link',
+  'list_mcp_clients',
+  'revoke_mcp_client',
 ] as const;
 
 export type WorkspaceManagementToolName = typeof WORKSPACE_MANAGEMENT_TOOL_NAMES[number];
@@ -67,6 +69,8 @@ const WORKSPACE_MANAGEMENT_SEMANTICS: Record<
   undo_workspace_change: unknownSemanticDescriptor(),
   get_operation: unknownSemanticDescriptor(),
   revoke_setup_link: unknownSemanticDescriptor(),
+  list_mcp_clients: unknownSemanticDescriptor(),
+  revoke_mcp_client: unknownSemanticDescriptor(),
 };
 
 export function workspaceManagementSemanticDescriptor(
@@ -105,6 +109,8 @@ const TOOL_DESCRIPTIONS: Record<WorkspaceManagementToolName, string> = {
   undo_workspace_change: 'Undo one eligible operation at the exact resulting revision. A trusted connector call immediately reverses an exact manage_agent_skill receipt; other inverses still use consequence-based policy.',
   get_operation: 'Read the durable result of one operation or confirmation proposal owned by the requester.',
   revoke_setup_link: 'Revoke one unused requester-owned setup link and optionally issue a fresh 24-hour link.',
+  list_mcp_clients: 'List the coding agents and other MCP clients the signed-in person connected to Chickpea: each one\'s clientId, registered name, when they connected it, when it last signed in or renewed its access, and whether it is the one making this call. Only the person\'s own clients are listed.',
+  revoke_mcp_client: 'Revoke one of the signed-in person\'s connected MCP clients by its clientId from list_mcp_clients. It applies at once: the client\'s refresh tokens and the person\'s consent end, and an access token it already holds works until it expires, within 15 minutes. Revoking the client making this call is allowed; it must then sign in to Chickpea again. Tell the person the returned message.',
 };
 
 /**
@@ -184,6 +190,8 @@ export type WorkspaceManagementToolArguments = {
   undo_workspace_change: { operationId: string; idempotencyKey: string };
   get_operation: { operationId: string };
   revoke_setup_link: { setupOperationId: string; reissue?: boolean | undefined };
+  list_mcp_clients: Record<never, never>;
+  revoke_mcp_client: { clientId: string };
 };
 
 export type WorkspaceManagementToolResult =
@@ -386,6 +394,12 @@ async function executeWorkspaceManagementTool<TName extends WorkspaceManagementT
           value.setupOperationId,
           value.reissue ?? false,
         );
+      }
+      case 'list_mcp_clients':
+        return service.listMcpClients(context);
+      case 'revoke_mcp_client': {
+        const value = args as WorkspaceManagementToolArguments['revoke_mcp_client'];
+        return service.revokeMcpClient(context, value.clientId);
       }
   }
 }

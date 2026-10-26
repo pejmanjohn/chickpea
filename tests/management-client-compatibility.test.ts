@@ -82,6 +82,8 @@ const MCP_TOOL_ANNOTATIONS = {
   undo_workspace_change: WRITE,
   get_operation: READ,
   revoke_setup_link: WRITE,
+  list_mcp_clients: READ,
+  revoke_mcp_client: WRITE,
 };
 
 const CLIENTS = [
