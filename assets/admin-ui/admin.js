@@ -3602,6 +3602,7 @@
     if (!sameOwner) {
       state.connectionAccountForm = null;
       state.customMcpToolEditor = null;
+      state.connectionKeyEditor = null;
     }
     // A focus/visibility refresh must not replace a valid same-owner snapshot
     // with an empty list. Keep its rows and in-progress forms while the server
@@ -6798,13 +6799,17 @@
     var pendingResourceAction = pendingResourceSelection
       ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-resource-open" data-connection-id="' + esc(account.id) + '">Choose</button>'
       : "";
+    var awaitsKey = connectionAccountAwaitsKey(account);
+    var keyAction = awaitsKey
+      ? '<button type="button" class="btn btn-primary btn-sm connection-row-action" data-action="connection-account-key-open" data-connection-id="' + esc(account.id) + '">Set up</button>'
+      : "";
     var regularAction = '<span class="connection-row-action-placeholder" aria-hidden="true"></span>';
     var customMcpEditor = customMcpToolEditorHtml(entry);
     var customMcpAction = connectionAccountCanEditMcpTools(account)
       ? '<button type="button" class="btn btn-soft btn-sm connection-row-action" data-action="custom-mcp-tools-open" data-connection-id="' + esc(account.id) + '">' + ((account.policy.allowedTools || []).length ? 'Edit tools' : 'Choose tools') + '</button>' : '';
     var recoverMcpAction = account.policy && account.policy.kind === "mcp" && !account.policy.presetId && account.policy.authMode !== "oauth" && account.lifecycle !== "revoked"
       ? '<button type="button" class="btn btn-ghost btn-sm" data-action="custom-mcp-enable-oauth" data-connection-id="' + esc(account.id) + '">Sign in with OAuth</button>' : '';
-    var action = (managedAction || oauthAction || pendingResourceAction || customMcpAction || regularAction) + recoverMcpAction;
+    var action = (managedAction || oauthAction || pendingResourceAction || keyAction || customMcpAction || regularAction) + recoverMcpAction;
     var status = account.lifecycle === "ready"
       ? '<span class="connection-account-state-placeholder" aria-hidden="true"></span>'
       : '<span class="connection-account-state connection-account-state-warn">' + esc({
@@ -6829,13 +6834,61 @@
     var menu = '<details class="connection-row-menu"><summary aria-label="More actions for ' + esc(displayName) + '">&#8943;</summary>' +
       '<div class="connection-row-menu-panel">' + menuItems.join("") + '</div></details>';
     var resourceEditor = managedResourceEditorHtml(account);
+    var keyEditor = awaitsKey ? connectionAccountKeyEditorHtml(account) : "";
     return '<div class="connection-account-row connection-account-row-attached">' +
       connectionAccountLogoHtml(account) +
       '<span class="connection-account-copy"><span class="connection-account-name">' + esc(displayName) + '</span>' +
       '<span class="connection-account-identity">' + (identity ? esc(identity) + ' &middot; ' : '') + owner + '</span></span>' +
       status + connectionAccountCapabilitiesHtml(account, entry.binding ? entry.binding.allowedCapabilities : null) + action + menu +
       (customMcpEditor ? '<div class="connection-row-editor">' + customMcpEditor + '</div>' : '') +
-      (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') + '</div>';
+      (resourceEditor ? '<div class="connection-row-editor">' + resourceEditor + '</div>' : '') +
+      (keyEditor ? '<div class="connection-row-editor">' + keyEditor + '</div>' : '') + '</div>';
+  }
+
+  // Mirrors the server's credential route: a native account waiting for its stored key.
+  function connectionAccountAwaitsKey(account) {
+    var policy = account && account.policy;
+    if (!policy || account.lifecycle === "ready" || account.lifecycle === "revoked") return false;
+    if (policy.kind === "api") return policy.authMode === "credential";
+    return policy.kind === "mcp" && policy.authMode !== "oauth" &&
+      (policy.authMode === "bearer" || !!policy.credentialHeaderName);
+  }
+
+  function connectionAccountKeyEditorHtml(account) {
+    var editor = state.connectionKeyEditor;
+    if (!editor || editor.accountId !== account.id) return "";
+    var preset = account.policy.presetId ? presetById(account.policy.presetId) : null;
+    var lane = preset && (account.policy.kind === "api" ? preset.api : preset.auth);
+    var placeholder = lane && lane.placeholder || "Paste a token";
+    return '<div class="skill-form"><div class="field"><label class="field-label" for="connection-account-key">Credential</label>' +
+      '<input id="connection-account-key" class="input mono" type="password" autocomplete="off" value="' + esc(editor.credential) + '" placeholder="' + esc(placeholder) + '" data-action="connection-account-key-input"' + (editor.busy ? ' disabled' : '') + '>' +
+      '<p class="conn-security">Stored once outside the Agent record and never returned to this browser.</p></div>' +
+      (editor.error ? '<div class="err" role="alert">' + esc(editor.error) + '</div>' : '') +
+      '<div class="skill-form-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="connection-account-key-cancel"' + (editor.busy ? ' disabled' : '') + '>Cancel</button><button type="button" class="btn btn-primary btn-sm" data-action="connection-account-key-save"' + (editor.busy ? ' disabled' : '') + '>' + (editor.busy ? 'Saving&hellip;' : 'Save connection') + '</button></div></div>';
+  }
+
+  function saveConnectionAccountKey() {
+    var editor = state.connectionKeyEditor;
+    var agentId = state.agentConnections.agentId;
+    var workspaceId = state.agentConnections.workspaceId;
+    if (!editor || editor.busy || !editor.credential.trim()) return;
+    editor.busy = true;
+    editor.error = "";
+    invalidateAgentConnections(agentId, workspaceId);
+    render();
+    postJson('/admin/api/agents/' + encodeURIComponent(agentId) + '/connections/' + encodeURIComponent(editor.accountId) + '/credential', 'PUT', {
+      expectedRevision: editor.revision, credential: editor.credential
+    }).then(function () {
+      if (state.connectionKeyEditor !== editor) return;
+      state.connectionKeyEditor = null;
+      invalidateAgentConnections(agentId, workspaceId);
+      return loadAgentConnections(agentId);
+    }).catch(function (error) {
+      if (state.connectionKeyEditor !== editor) return;
+      editor.busy = false;
+      editor.error = error.serverMessage || "Could not save the key. Try again in a moment.";
+      render();
+    });
   }
 
   function connectionAccountCanEditMcpTools(account) {
@@ -14356,6 +14409,16 @@
     if (action === "custom-mcp-tools-open") openCustomMcpTools(target.getAttribute("data-connection-id"));
     if (action === "custom-mcp-tools-save") saveCustomMcpTools();
     if (action === "custom-mcp-tools-cancel") { state.customMcpToolEditor = null; render(); }
+    if (action === "connection-account-key-open") {
+      var keyEntry = (state.agentConnections.attached || []).find(function (entry) { return entry.account.id === target.getAttribute("data-connection-id"); });
+      if (keyEntry) {
+        state.connectionAccountForm = null;
+        state.connectionKeyEditor = { accountId: keyEntry.account.id, revision: keyEntry.account.revision, credential: "", busy: false, error: "" };
+        render();
+      }
+    }
+    if (action === "connection-account-key-save") saveConnectionAccountKey();
+    if (action === "connection-account-key-cancel" && state.connectionKeyEditor && !state.connectionKeyEditor.busy) { state.connectionKeyEditor = null; render(); }
     if (action === "connection-account-retry" && state.profileDraft) { loadAgentConnections(state.profileDraft.id); }
     if (action === "composio-setup-close" && state.composioSetup && state.composioSetup.phase !== "validating" && state.composioSetup.phase !== "preparing") {
       var returnPresetId = state.composioSetup.returnFocusPresetId;
@@ -15093,6 +15156,7 @@
     var target = event.target;
     var action = target.getAttribute && target.getAttribute("data-action");
     if (action === "meta-ads-account-ids" && state.customMcpToolEditor) state.customMcpToolEditor.accountIds = target.value;
+    if (action === "connection-account-key-input" && state.connectionKeyEditor) state.connectionKeyEditor.credential = target.value;
     if (action === "channels-index-query") {
       var channelQueryCaret = target.selectionStart;
       state.channelIndexQuery = target.value;
