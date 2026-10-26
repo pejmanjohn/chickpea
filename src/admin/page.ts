@@ -15,6 +15,7 @@ import {
 } from '../config/suggested-skills.ts';
 import { STARTER_AGENTS } from '../config/starter-agents.ts';
 import { AUTH_BRAND_HTML } from '../auth/brand.ts';
+import { safeSlackLoginDestination } from '../auth/setup-handoff.ts';
 import {
   CHICKPEA_FAVICON_HTML,
   CHICKPEA_MARK_HTML,
@@ -323,7 +324,7 @@ export function renderSlackAuthorizationHandoffPage(
 }
 
 export function renderSlackSignInPage(destination: string): string {
-  const safeDestination = safeSlackPageDestination(destination);
+  const safeDestination = safeSlackLoginDestination(destination);
   return renderSlackJourneyPage({
     surface: 'sign-in',
     eyebrow: 'Chickpea control plane',
@@ -339,7 +340,7 @@ export function renderSlackAccessDeniedPage(input: {
   reason: string;
   workspace?: SlackAuthWorkspace;
 }): string {
-  const safeDestination = safeSlackPageDestination(input.destination);
+  const safeDestination = safeSlackLoginDestination(input.destination);
   const workspace = slackWorkspaceLabel(input.workspace);
   const firstOwner = input.purpose === 'first_owner';
   const cancelled = input.reason === 'provider_denied';
@@ -368,7 +369,7 @@ export function renderSlackAccessDeniedPage(input: {
 }
 
 export function renderSlackOwnerCompletePage(destination: string): string {
-  const safeDestination = safeSlackPageDestination(destination);
+  const safeDestination = safeSlackLoginDestination(destination);
   return renderSlackJourneyPage({
     surface: 'owner-complete',
     eyebrow: 'Setup complete',
@@ -401,7 +402,7 @@ export function renderSlackInvitationMismatchPage(workspace?: SlackAuthWorkspace
 }
 
 export function renderSlackInvitationCompletePage(destination: string): string {
-  const safeDestination = safeSlackPageDestination(destination);
+  const safeDestination = safeSlackLoginDestination(destination);
   return renderSlackJourneyPage({
     surface: 'invitation-complete', eyebrow: 'Invitation accepted', title: 'You’re in',
     intro: 'Your exact Slack identity is now linked to this Chickpea workspace.',
@@ -431,7 +432,7 @@ export function renderSlackManualSetupPage(input: {
   error?: string;
 }): string {
   const state = input.setup?.state ?? input.state ?? 'capability_required';
-  const destination = safeSlackPageDestination(input.destination);
+  const destination = safeSlackLoginDestination(input.destination);
   const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
   const manifestJson = escapeHtml(JSON.stringify(input.manifest, null, 2));
   const initialStep = input.error ? 'credentials' : 'create';
@@ -484,7 +485,7 @@ export function renderSlackSetupPage(input: {
   gatewayState?: 'disconnected' | 'pending' | 'connected' | 'error';
 }): string {
   const state = input.setup?.state ?? input.state ?? 'capability_required';
-  const destination = safeSlackPageDestination(input.destination);
+  const destination = safeSlackLoginDestination(input.destination);
   const notice = input.notice ? slackSetupPageMessage(input.notice) : undefined;
   const error = input.error ? slackSetupPageMessage(input.error) : undefined;
   const hidden = `<input data-slack-setup-capability type="hidden" name="capability"><input type="hidden" name="destination" value="${escapeHtml(destination)}">`;
@@ -603,17 +604,6 @@ function slackWorkspaceLabel(workspace?: SlackAuthWorkspace): string {
   if (!workspace) return 'the connected Slack workspace';
   return workspace.teamName ? `${workspace.teamName} (${workspace.teamId})`
     : `the connected Slack workspace (${workspace.teamId})`;
-}
-
-function safeSlackPageDestination(value: string): string {
-  if (/^\/setup\/setup_[A-Za-z0-9_-]{1,128}$/.test(value)) return value;
-  if (!/^\/admin(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/.test(value)) return '/admin';
-  try {
-    const parsed = new URL(value, 'https://chickpea.invalid');
-    if (parsed.origin !== 'https://chickpea.invalid' || parsed.pathname !== value ||
-        parsed.pathname === '/admin/api' || parsed.pathname.startsWith('/admin/api/')) return '/admin';
-    return parsed.pathname;
-  } catch { return '/admin'; }
 }
 
 export function renderSlackRecoveryPage(options: {
