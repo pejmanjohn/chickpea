@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import * as v from 'valibot';
 
+import { allowedToolsAfterMcpDiscovery } from '../src/config/mcp-access.ts';
 import type { CustomAgentConfig } from '../src/config/types.ts';
+import {
+  applyWorkspaceChangesZodSchema,
+  slackApplyWorkspaceChangesValibotSchema,
+} from '../src/management/schemas.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import type {
   ManagementActorContext,
@@ -685,4 +691,136 @@ test('an Agent with two skills of the same name is refused before any preview', 
       assert.match(JSON.stringify(response), /invalid_request/, door);
     }
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
+  }));
+
+/** Each door's write schema, its actor, and the context the person's approval reaches the service with. */
+const DOORS = {
+  mcp: {
+    schemaAccepts: (payload: unknown) => applyWorkspaceChangesZodSchema.safeParse(payload).success,
+    context: mcpContext,
+    approval: (f: Fixture, _proposalId: string) => mcpContext(f),
+  },
+  slack: {
+    schemaAccepts: (payload: unknown) => v.safeParse(slackApplyWorkspaceChangesValibotSchema, payload).success,
+    context: slackContext,
+    approval: (f: Fixture, proposalId: string) => withPersonApproval(slackContext(f), proposalId),
+  },
+} as const;
+
+const knowledgeClient = {
+  id: 'mcp_knowledge',
+  displayName: 'Knowledge',
+  url: 'https://mcp.example.test/mcp',
+  transport: 'streamable-http' as const,
+  authMode: 'bearer' as const,
+  headerNames: [],
+  enabled: true,
+  allowedTools: ['search'],
+};
+
+/** Removed by every forged edit below, so the MCP door asks for approval too. */
+const otherServer = { ...knowledgeServer, id: 'mcp_other', displayName: 'Other' };
+
+/**
+ * Sends an edit carrying server-owned connection fields through one door. The
+ * door's schema must refuse it; past the schema, the service must ignore those
+ * fields, so the preview shows exactly `lines` and approving it applies only
+ * what the person read.
+ */
+async function forgedEditThroughDoor(
+  f: Fixture,
+  door: keyof typeof DOORS,
+  agent: CustomAgentConfig,
+  patches: { client: Record<string, unknown>; forged: Record<string, unknown> },
+  lines: string[],
+): Promise<CustomAgentConfig> {
+  const { schemaAccepts, context, approval } = DOORS[door];
+  const payload = (patch: Record<string, unknown>) => ({
+    idempotencyKey: `forged-${door}`,
+    operations: [{
+      itemId: 'forged',
+      kind: 'update_agent',
+      agentId: agent.id,
+      expectedRevision: agent.revision,
+      patch,
+    }],
+  });
+  assert.equal(schemaAccepts(payload(patches.client)), true, `${door}: the schema accepts the client fields`);
+  assert.equal(schemaAccepts(payload(patches.forged)), false, `${door}: the schema refuses server-owned fields`);
+
+  const forged = payload(patches.forged);
+  const result = await apply(f, context(f), forged.idempotencyKey, forged.operations as ManagementOperation[]);
+  assert.equal(result.status, 'confirmation_required', `${door}: ${JSON.stringify(result.outcomes)}`);
+  assert.equal(result.presentation?.slack, slackPreview(...lines.map((line) => line.replaceAll('**', '*'))), door);
+  assert.equal(result.presentation?.markdown, markdownPreview(...lines), door);
+  const proposalId = result.outcomes[0]?.proposalId;
+  assert.ok(proposalId, door);
+  await f.service.confirmWorkspaceChange({ context: approval(f, proposalId), proposalId });
+  return f.config.getAgent(agent.id);
+}
+
+test('an edit cannot mark a pending or failed connection ready on either door', () =>
+  withFixture('forged-ready', async (f) => {
+    for (const door of ['mcp', 'slack'] as const) {
+      const seeded = await createAgent(f, `agent_forged_ready_${door}`, {
+        mcpServers: [{
+          ...knowledgeClient,
+          lifecycleStatus: 'pending',
+          statusText: 'Setup required',
+          discoveredTools: [{ name: 'search' }],
+        }, otherServer],
+        apiConnections: [{ ...billingApi, lifecycleStatus: 'failed', statusText: 'Unreachable' }],
+      });
+      const client = {
+        mcpServers: [{ ...knowledgeClient, displayName: 'Wiki' }],
+        apiConnections: [{ ...billingApi, displayName: 'Invoices' }],
+      };
+      const stored = await forgedEditThroughDoor(f, door, seeded, {
+        client,
+        forged: {
+          mcpServers: client.mcpServers.map((connection) => ({ ...connection, lifecycleStatus: 'ready' })),
+          apiConnections: client.apiConnections.map((connection) => ({ ...connection, lifecycleStatus: 'ready' })),
+        },
+      }, [
+        'Remove **Other** from **Research** (@research).',
+        '',
+        'Update **Wiki** on **Research** (@research).',
+        'Name changes from **Knowledge** to **Wiki**.',
+        '',
+        'Update **Invoices** on **Research** (@research).',
+        'Name changes from **Billing** to **Invoices**.',
+      ]);
+
+      assert.deepEqual(stored.mcpServers, [{ ...seeded.mcpServers[0]!, displayName: 'Wiki' }], door);
+      assert.deepEqual(stored.apiConnections, [{ ...seeded.apiConnections[0]!, displayName: 'Invoices' }], door);
+    }
+  }));
+
+test('an edit cannot clear a connection\'s discovered tools on either door', () =>
+  withFixture('forged-discovery', async (f) => {
+    for (const door of ['mcp', 'slack'] as const) {
+      const seeded = await createAgent(f, `agent_forged_discovery_${door}`, {
+        mcpServers: [{
+          ...knowledgeClient,
+          lifecycleStatus: 'ready',
+          statusText: 'Connected',
+          discoveredTools: [{ name: 'search' }, { name: 'read_page' }],
+        }, otherServer],
+      });
+      const client = { mcpServers: [{ ...knowledgeClient, displayName: 'Wiki' }] };
+      const stored = await forgedEditThroughDoor(f, door, seeded, {
+        client,
+        forged: { mcpServers: client.mcpServers.map((connection) => ({ ...connection, discoveredTools: [] })) },
+      }, [
+        'Remove **Other** from **Research** (@research).',
+        '',
+        'Update **Wiki** on **Research** (@research).',
+        'Name changes from **Knowledge** to **Wiki**.',
+      ]);
+
+      assert.deepEqual(stored.mcpServers, [{ ...seeded.mcpServers[0]!, displayName: 'Wiki' }], door);
+      const offered = ['search', 'read_page', 'delete_everything'].map((name) => ({ name }));
+      assert.deepEqual(allowedToolsAfterMcpDiscovery(stored.mcpServers[0]!, offered), ['search'],
+        `${door}: the next discovery still grants only the approved tools`);
+    }
   }));
