@@ -261,7 +261,10 @@ test('legacy Agent writes direct Meta Ads through the reviewed connection catalo
     assert.equal(rejected.outcomes[0]?.disposition, 'failed');
     assert.equal(rejected.outcomes[0]?.code, 'invalid_request');
     assert.equal(rejected.outcomes[0]?.warning, catalogMessage);
-    assert.deepEqual((await f.config.getAgent(agent.id)).mcpServers.map(({ id }) => id), ['custom-mcp']);
+    assert.deepEqual(
+      (await f.config.listConnectionAccounts(f.admin.binding.slackTeamId)).map(({ providerId }) => providerId),
+      ['custom-mcp'],
+    );
   } finally {
     f.close();
   }
@@ -3137,7 +3140,7 @@ test('an unexpected preflight outage leaves the reviewed change set pending for 
   }
 });
 
-test('a confirmed disable of an Agent with Channel reach keeps its Channel grants, as Admin does', async () => {
+test('a confirmed disable of an Agent with Channel reach keeps its Channel grants', async () => {
   const f = await createManagementAdapterFixture('proposal-disable-agent');
   const context: ManagementActorContext = {
     userId: f.admin.user.id,
@@ -3176,7 +3179,7 @@ test('a confirmed disable of an Agent with Channel reach keeps its Channel grant
       context,
       proposalId: proposed.proposalId,
     });
-    assert.equal(confirmed.status, 'completed');
+    assert.equal(confirmed.status, 'completed', JSON.stringify(confirmed.outcomes));
     assert.equal((await f.config.getAgent(agent.id)).enabled, false);
     assert.deepEqual(
       (await f.config.listAgentChannelGrants(f.admin.binding.slackTeamId, 'C_DISABLE'))

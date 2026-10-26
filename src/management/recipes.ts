@@ -364,15 +364,10 @@ async function compileRecipeAgent(
   const unavailable: string[] = [];
   for (const connection of mcpConnectionsAfterWrite(existing?.mcpServers ?? [], recipe.mcpRequirements)) {
     if (connection.lifecycleStatus === 'ready') continue;
-    // Management has no setup link for a header credential without bearer or OAuth auth.
-    if (connection.authMode === 'none') {
-      setupRequired.push(connection.credentialHeaderName && !connection.credentialOptional
-        ? `${connection.displayName} (set its credential in Admin)`
-        : connection.displayName);
-      continue;
-    }
-    setups.push({ kind: 'mcp_connection', connectionId: connection.id });
     setupRequired.push(connection.displayName);
+    // A connection with no credential to enter has nothing for a setup link to do.
+    if (connection.authMode === 'none' && (!connection.credentialHeaderName || connection.credentialOptional)) continue;
+    setups.push({ kind: 'mcp_connection', connectionId: connection.id });
   }
   for (const connection of apiConnectionsAfterWrite(existing?.apiConnections ?? [], recipe.apiRequirements)) {
     if ((connection.lifecycleStatus ?? 'ready') === 'ready') continue;

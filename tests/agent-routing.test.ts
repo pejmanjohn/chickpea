@@ -869,6 +869,24 @@ test('a switched-off Agent\'s handle discloses only permitted alternatives and k
   }
 });
 
+test('a switched-off Agent that keeps its Channel grant does not answer there', async () => {
+  const { store, support, finance } = await fixture();
+  try {
+    await store.updateAgent(finance.id, { enabled: false }, finance.revision);
+    assert.ok((await store.listAgentChannelGrants('T1', 'C1')).some(({ agentId }) => agentId === finance.id));
+    const denied = await resolveAgentRoute({
+      turn: turn({ text: '<!subteam^SFINANCE|@finance> reconcile this' }),
+      surface: 'channel', actor: { channelMember: true, fullMember: true }, config: store,
+    });
+    assert.equal(denied.kind, 'denied');
+    if (denied.kind === 'denied') {
+      assert.deepEqual(denied.alternatives.map(({ id }) => id), [support.id]);
+    }
+  } finally {
+    store.close();
+  }
+});
+
 test('a non-member Channel denial never enumerates Agent alternatives', async () => {
   const { store } = await fixture();
   try {
