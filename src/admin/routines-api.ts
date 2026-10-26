@@ -13,6 +13,7 @@ import {
 } from './api-support.ts';
 import { RoutineService } from '../routines/service.ts';
 import { routineOperatorLimits } from '../routines/limits.ts';
+import { routineUpcomingRunAt } from '../routines/message-format.ts';
 import {
   requireRoutineScheduling,
   resolveRoutineCapability,
@@ -278,7 +279,7 @@ function routineSafeIdentity(routine: RoutineDefinition): Record<string, unknown
     scheduleInput: routine.scheduleInput,
     timezone: routine.timezone,
     outputPolicy: routine.outputPolicy,
-    nextRunAt: routine.nextRunAt,
+    nextRunAt: routineUpcomingRunAt(routine),
     lastScheduledAt: routine.lastScheduledAt,
     lastFinishedAt: routine.lastFinishedAt,
     consecutiveFailures: routine.consecutiveFailures,

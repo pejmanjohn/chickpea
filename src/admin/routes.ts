@@ -494,6 +494,7 @@ import {
 } from '../routines/scheduler-adapter.ts';
 import { nodeRoutineSchedulerAvailable } from '../routines/runtime-state.ts';
 import { hashRoutineValue } from '../routines/ids.ts';
+import { routineUpcomingRunAt } from '../routines/message-format.ts';
 import {
   reassignRoutineAgentAuthority,
   RoutineAuthorityError,
@@ -9482,7 +9483,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
             channelLabel: readable ? channel?.label ?? null : null,
             workspaceId: readable ? routine.workspaceId : null,
             channelId: readable ? routine.channelId : null,
-            nextRunAt: routine.nextRunAt,
+            nextRunAt: routineUpcomingRunAt(routine),
             lastFinishedAt: routine.lastFinishedAt,
             actions,
           };
