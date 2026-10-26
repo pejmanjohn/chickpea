@@ -1,29 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import {
-  fauxAssistantMessage,
-  fauxProvider,
-  fauxToolCall,
-} from '@earendil-works/pi-ai';
-import { init, useModel, useTool } from '@flue/runtime';
-import { start } from '@flue/runtime/node';
-
 import { CHICKPEA_AGENT_ID } from '../src/config/agent-id.ts';
 import { UnknownAgentError } from '../src/config/errors.ts';
 import { invokeWorkspaceManagementTool } from '../src/management/tool-adapter.ts';
 import {
-  createSlackManagementTurnGuard,
   invokeSlackWorkspaceManagementTool,
   parseSlackManagementSignal,
-  useSlackManagementTurnGuard,
-  type SlackManagementTurnGuardState,
 } from '../src/management/slack-tools.ts';
 import { safeSlackLoginDestination } from '../src/auth/setup-handoff.ts';
 import { MANAGED_CONNECTOR_CATALOG } from '../src/connections/catalog/index.ts';
 import type { ManagementActorContext, ManagementOperation } from '../src/management/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { approveAsPerson } from './helpers/slack-person-approval.ts';
 
 test('connector setup handoff and snapshot stay locked to the current Slack Agent', async () => {
   const f = await createManagementAdapterFixture('connector-handoff');
@@ -516,6 +506,7 @@ test('Slack management lets a member create an Agent and edit it through its spe
       eventId: 'Ev_AGENT_MANAGEMENT',
       messageTs: '300.1',
       turnJobId: 'turn_AGENT_MANAGEMENT',
+      requesterText: 'create an Agent',
     },
   } as Parameters<typeof parseSlackManagementSignal>[0], {
     agentId: 'agent_default',
@@ -593,6 +584,7 @@ test('Slack management lets a member create an Agent and edit it through its spe
         eventId: 'Ev_AGENT_MANAGEMENT_SPECIFIC',
         messageTs: '300.2',
         turnJobId: 'turn_AGENT_MANAGEMENT_SPECIFIC',
+        requesterText: 'edit this Agent',
       },
     } as Parameters<typeof parseSlackManagementSignal>[0], {
       agentId: agent.id,
@@ -642,275 +634,6 @@ test('Slack management lets a member create an Agent and edit it through its spe
     f.close();
   }
 });
-
-test('a stale Slack confirmation blocks same-turn writes until the requester reviews again', async () => {
-  const f = await createManagementAdapterFixture('slack-stale-turn-guard');
-  const agent = await f.config.createAgent({
-    id: 'agent_stale_guard',
-    name: 'Stale guard',
-    description: 'Original description.',
-    creatorMembershipId: f.admin.membership.id,
-    editPolicy: 'creator_and_admins',
-    lifecycle: 'active',
-    configurationGeneration: 1,
-    instructions: 'Stay safe.',
-    enabled: true,
-    skills: [],
-    mcpServers: [],
-    apiConnections: [],
-    repositories: [],
-  });
-  const signal = {
-    agentId: agent.id,
-    workspaceId: f.admin.binding.slackTeamId,
-    channelId: 'C_STALE_GUARD',
-    threadTs: '400.1',
-    slackUserId: f.admin.user.slackUserId,
-    eventId: 'Ev_STALE_GUARD',
-    messageTs: '400.1',
-    turnJobId: 'turn_STALE_GUARD',
-    requesterText: 'Yes, go ahead.',
-  };
-  const context: ManagementActorContext = {
-    userId: f.admin.user.id,
-    membershipId: f.admin.membership.id,
-    organizationId: f.admin.membership.organizationId,
-    actingAgentId: agent.id,
-    origin: {
-      kind: 'slack',
-      workspaceId: signal.workspaceId,
-      channelId: signal.channelId,
-      threadTs: signal.threadTs,
-      agentId: signal.agentId,
-      requestText: 'Yes, go ahead.',
-    },
-  };
-  let persistedGuard: SlackManagementTurnGuardState = { turnJobId: signal.turnJobId };
-  const renderGuard = (turnJobId: string) => createSlackManagementTurnGuard(
-    turnJobId,
-    persistedGuard,
-    (next) => { persistedGuard = next; },
-  );
-  try {
-    const proposed = await f.service.proposeWorkspaceChanges({
-      context,
-      ...authoringProposalMetadata('stale-description-proposal'),
-      operations: [{
-        itemId: 'description',
-        kind: 'update_agent',
-        agentId: agent.id,
-        expectedRevision: agent.revision,
-        patch: { description: 'Requested description.' },
-      }],
-    });
-    await f.config.updateAgent(agent.id, { description: 'Interleaving description.' }, agent.revision);
-
-    const stale = await invokeSlackWorkspaceManagementTool({
-      signal,
-      identity: f.identity,
-      service: f.service,
-      turnGuard: renderGuard(signal.turnJobId),
-      name: 'confirm_workspace_change',
-      args: { proposalId: proposed.proposalId },
-    });
-    assert.deepEqual(stale, {
-      ok: false,
-      error: {
-        code: 'revision_conflict',
-        message: 'The target revision changed.',
-      },
-    });
-
-    const bypass = await invokeSlackWorkspaceManagementTool({
-      signal,
-      identity: f.identity,
-      service: f.service,
-      turnGuard: renderGuard(signal.turnJobId),
-      name: 'apply_workspace_changes',
-      args: {
-        idempotencyKey: 'same-turn-bypass',
-        operations: [{
-          itemId: 'description-bypass',
-          kind: 'update_agent',
-          agentId: agent.id,
-          expectedRevision: agent.revision + 1,
-          patch: { description: 'Requested description.' },
-        }],
-      },
-    });
-    assert.equal(bypass.ok, false);
-    assert.equal((bypass as { ok: false; error: { code: string } }).error.code, 'fresh_approval_required');
-    assert.equal((await f.config.getAgent(agent.id)).description, 'Interleaving description.');
-
-    const nextTurn = await invokeSlackWorkspaceManagementTool({
-      signal: { ...signal, eventId: 'Ev_STALE_GUARD_NEXT', messageTs: '400.2', turnJobId: 'turn_STALE_GUARD_NEXT' },
-      identity: f.identity,
-      service: f.service,
-      turnGuard: renderGuard('turn_STALE_GUARD_NEXT'),
-      name: 'apply_workspace_changes',
-      args: {
-        idempotencyKey: 'next-turn-edit',
-        operations: [{
-          itemId: 'description-next-turn',
-          kind: 'update_agent',
-          agentId: agent.id,
-          expectedRevision: agent.revision + 1,
-          patch: { description: 'Requester approved next turn.' },
-        }],
-      },
-    });
-    assert.equal(nextTurn.ok, true);
-  } finally {
-    f.close();
-  }
-});
-
-test('the Flue render lifecycle preserves the stale-confirmation barrier across model calls',
-  { timeout: 15_000 },
-  async () => {
-    const f = await createManagementAdapterFixture('slack-stale-flue-lifecycle');
-    const agent = await f.config.createAgent({
-      id: 'agent_stale_flue',
-      name: 'Stale Flue guard',
-      description: 'Original description.',
-      creatorMembershipId: f.admin.membership.id,
-      editPolicy: 'creator_and_admins',
-      lifecycle: 'active',
-      configurationGeneration: 1,
-      instructions: 'Stay safe.',
-      enabled: true,
-      skills: [],
-      mcpServers: [],
-      apiConnections: [],
-      repositories: [],
-    });
-    const signal = {
-      agentId: agent.id,
-      workspaceId: f.admin.binding.slackTeamId,
-      channelId: 'C_STALE_FLUE',
-      threadTs: '410.1',
-      slackUserId: f.admin.user.slackUserId,
-      eventId: 'Ev_STALE_FLUE',
-      messageTs: '410.1',
-      turnJobId: 'turn_STALE_FLUE',
-      requesterText: 'Yes, go ahead.',
-    };
-    const context: ManagementActorContext = {
-      userId: f.admin.user.id,
-      membershipId: f.admin.membership.id,
-      organizationId: f.admin.membership.organizationId,
-      actingAgentId: agent.id,
-      origin: {
-        kind: 'slack',
-        workspaceId: signal.workspaceId,
-        channelId: signal.channelId,
-        threadTs: signal.threadTs,
-        agentId: signal.agentId,
-        requestText: 'Yes, go ahead.',
-      },
-    };
-    const proposed = await f.service.proposeWorkspaceChanges({
-      context,
-      ...authoringProposalMetadata('stale-flue-description-proposal'),
-      operations: [{
-        itemId: 'description',
-        kind: 'update_agent',
-        agentId: agent.id,
-        expectedRevision: agent.revision,
-        patch: { description: 'Requested description.' },
-      }],
-    });
-    await f.config.updateAgent(
-      agent.id,
-      { description: 'Interleaving description.' },
-      agent.revision,
-    );
-
-    const model = 'faux/management-turn-guard';
-    const results: Array<{ ok: boolean; error?: { code: string } }> = [];
-    function TurnGuardProbe() {
-      useModel(model);
-      const turnGuard = useSlackManagementTurnGuard(signal.turnJobId);
-      useTool({
-        name: 'confirm_stale_proposal',
-        description: 'Confirm the stale proposal.',
-        async run() {
-          const result = await invokeSlackWorkspaceManagementTool({
-            signal,
-            identity: f.identity,
-            service: f.service,
-            turnGuard,
-            name: 'confirm_workspace_change',
-            args: { proposalId: proposed.proposalId },
-          });
-          results.push(result);
-          return JSON.stringify(result);
-        },
-      });
-      useTool({
-        name: 'attempt_unapproved_write',
-        description: 'Attempt a same-turn unapproved write.',
-        async run() {
-          const result = await invokeSlackWorkspaceManagementTool({
-            signal,
-            identity: f.identity,
-            service: f.service,
-            turnGuard,
-            name: 'apply_workspace_changes',
-            args: {
-              idempotencyKey: 'stale-flue-bypass',
-              operations: [{
-                itemId: 'description-bypass',
-                kind: 'update_agent',
-                agentId: agent.id,
-                expectedRevision: agent.revision + 1,
-                patch: { description: 'Requested description.' },
-              }],
-            },
-          });
-          results.push(result);
-          return JSON.stringify(result);
-        },
-      });
-      return 'Run the scripted guard lifecycle.';
-    }
-
-    const faux = fauxProvider({
-      models: [{ id: 'management-turn-guard' }],
-      tokensPerSecond: 1_000,
-    });
-    const flue = await start({
-      agents: [{ agent: TurnGuardProbe, name: 'management-turn-guard-probe' }],
-      providers: [faux.provider],
-    });
-    try {
-      faux.setResponses([
-        fauxAssistantMessage([fauxToolCall('confirm_stale_proposal', {})], {
-          stopReason: 'toolUse',
-        }),
-        fauxAssistantMessage([fauxToolCall('attempt_unapproved_write', {})], {
-          stopReason: 'toolUse',
-        }),
-        fauxAssistantMessage('The guarded lifecycle is complete.'),
-      ]);
-      const handle = init(TurnGuardProbe, { id: 'management-turn-guard-instance' });
-      const receipt = await handle.dispatch('Exercise the stale proposal guard.');
-      await handle.read(receipt);
-
-      assert.equal(results.length, 2);
-      assert.equal(results[0]?.ok, false);
-      assert.equal(results[0]?.error?.code, 'revision_conflict');
-      assert.equal(results[1]?.ok, false);
-      assert.equal(results[1]?.error?.code, 'fresh_approval_required');
-      assert.equal(
-        (await f.config.getAgent(agent.id)).description,
-        'Interleaving description.',
-      );
-    } finally {
-      await flue.stop();
-      f.close();
-    }
-  });
 
 test('activated user Agents fully self-manage while cross-Agent authority stays with Chickpea', async () => {
   const f = await createManagementAdapterFixture('activated-agent-authority');
@@ -1108,11 +831,10 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     const skillProposalId = (skillProposal as { ok: true; result: {
       proposalId: string;
     } }).result.proposalId;
-    const confirmedSkill = await invokeSlackWorkspaceManagementTool({
+    const confirmedSkill = await approveAsPerson({
       signal: signal(support.id),
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: skillProposalId },
     });
     assert.equal(confirmedSkill.ok, true);
@@ -1227,11 +949,10 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
     const proposalId = (proposal as { ok: true; result: {
       outcomes: Array<{ proposalId: string }>;
     } }).result.outcomes[0]!.proposalId;
-    const wrongOwnerConfirmation = await invokeSlackWorkspaceManagementTool({
+    const wrongOwnerConfirmation = await approveAsPerson({
       signal: signal(CHICKPEA_AGENT_ID),
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId },
     });
     assert.deepEqual(wrongOwnerConfirmation, {
@@ -1241,11 +962,10 @@ test('activated user Agents fully self-manage while cross-Agent authority stays 
         message: 'The confirmation does not match its initiating user and origin.',
       },
     });
-    const confirmed = await invokeSlackWorkspaceManagementTool({
+    const confirmed = await approveAsPerson({
       signal: signal(support.id),
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId },
     });
     assert.equal(confirmed.ok, true);
@@ -1530,11 +1250,10 @@ test('self-archive is confirmed, seals the next Agent turn, and restores from an
       outcomes: Array<{ proposalId: string; disposition: string }>;
     } }).result.outcomes[0]!;
     assert.equal(proposalId.disposition, 'confirmation_required');
-    const confirmed = await invokeSlackWorkspaceManagementTool({
+    const confirmed = await approveAsPerson({
       signal,
       identity: f.identity,
       service: f.service,
-      name: 'confirm_workspace_change',
       args: { proposalId: proposalId.proposalId },
     });
     assert.equal(confirmed.ok, true);

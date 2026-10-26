@@ -33,6 +33,15 @@ export type ManagementOrigin =
       eventId?: string;
       /** Trusted current requester text from the Slack delivery, never model-authored. */
       requestText?: string;
+      /** The host wrote requestText to describe the person's click or form answer; they did not type it. */
+      requestTextSource?: 'click';
+      /**
+       * Set only by the Slack host when it resolved the person's typed
+       * approval or Approve click to this proposal for the current turn.
+       * Nothing the model sends, and nothing in the delivery, can carry it,
+       * and a stored setup record drops it.
+       */
+      approvedProposalId?: string;
       /** Trusted normalized Slack surface. Missing legacy origins receive no implicit Channel grant. */
       conversationKind?: 'channel' | 'im' | 'mpim';
       /** Trusted Agent selected by Slack routing, never by model text. */
@@ -674,6 +683,14 @@ export interface ClaimManagementIntroductionResult {
 
 export type ManagementOperationResult = ManagementApplyResult | ManagementSetupPublicStatus;
 
+/**
+ * A setup request a Slack call held until the person approved its change set:
+ * the one-time link issued once the set applied, or why none was issued.
+ */
+export type ManagementDeferredSetup =
+  | { kind: 'issued'; itemId: string; label: string; setupUrl: string }
+  | { kind: 'not_issued'; itemId: string; code: string };
+
 export interface ManagementApplyResult {
   operationId: string;
   idempotencyKey: string;
@@ -683,6 +700,8 @@ export interface ManagementApplyResult {
   links?: ManagementResultLinks;
   /** The preview of the change set a confirmation is waiting on; response-only. */
   presentation?: ManagementPresentation;
+  /** Setup the approved change set's call held until the approval; response-only. */
+  deferredSetup?: ManagementDeferredSetup[];
   /** Workspace mutation receipt token; it is not comparable to an actor-scoped inspection token. */
   effectiveRevision: string;
   activation: 'next_turn';
@@ -1200,6 +1219,11 @@ export interface ManagementChangeSetProposalRecord {
   result?: ManagementApplyResult;
   /** The Slack call this set holds the rest of; it completes when the set is settled. */
   requestOperationId?: string;
+  /**
+   * The Slack message whose turn produced this set. A typed reply is judged
+   * as an approval only while that turn is the Agent's latest in the scope.
+   */
+  proposedMessageTs?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -1301,6 +1325,7 @@ export interface PutManagementChangeSetProposalInput {
   preview: ManagementChangeSetPreview;
   targetRevisions: Record<string, number>;
   requestOperationId?: string;
+  proposedMessageTs?: string;
   at: number;
 }
 

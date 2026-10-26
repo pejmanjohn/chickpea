@@ -241,7 +241,7 @@ function pendingConfirmation(result: WorkspaceManagementToolResult, status = 'co
   assert.ok(outcome?.proposalId, 'the confirmation names its proposal');
   const presentation = value.presentation as { slack?: unknown } | undefined;
   assert.equal(typeof presentation?.slack, 'string', 'the person gets a preview to read before the card');
-  assert.match(String(value.instruction), /Approve button/);
+  assert.match(String(value.instruction), /pressing Approve or saying in their own words that they approve it/);
   return { proposalId: outcome.proposalId, preview: presentation!.slack as string };
 }
 
@@ -500,7 +500,7 @@ test('after approval, a held operation whose dependency failed earlier in the ca
     assert.equal(value.status, 'partial');
     assert.deepEqual(value.outcomes.map(({ disposition }) => disposition), ['failed', 'confirmation_required']);
     assert.match(value.presentation?.slack ?? '', /Beta, now described/);
-    assert.match(value.instruction ?? '', /Approve button/);
+    assert.match(value.instruction ?? '', /pressing Approve or saying in their own words that they approve it/);
     const proposalId = value.outcomes[1]!.proposalId!;
 
     const card = await deliverCard(CHICKPEA_AGENT_ID, text);
@@ -642,11 +642,11 @@ test('an Agent anyone may edit, created from a Channel, waits on one card for it
   }
 });
 
-test('a setup request that replaces a stored key stays the Agent\'s to apply on a typed "approve"', async () => {
+test('a setup request that would replace a stored key is refused in Slack, leaving nothing the Agent could apply', async () => {
   const fixture = await confirmationFixture('confirm-card-setup', {
     providerCredentialSource: async () => 'stored',
   });
-  const { send, posts, deliverCard, typedApproval, requester } = fixture;
+  const { f, send, posts, deliverCard, typedApproval, requester } = fixture;
   try {
     const text = `<@${BOT_USER_ID}> replace our Anthropic key`;
     const applied = await send(CHICKPEA_AGENT_ID, text, 'apply_workspace_changes', {
@@ -658,28 +658,30 @@ test('a setup request that replaces a stored key stays the Agent\'s to apply on 
     });
     assert.equal(applied.ok, true);
     const value = (applied as { ok: true; result: Record<string, unknown> }).result;
-    assert.equal(value.status, 'confirmation_required');
-    assert.match(String(value.instruction), /ask them to reply "approve"/);
-    const proposalId = (value.outcomes as Array<{ proposalId?: string }>)[0]?.proposalId ?? '';
-    assert.match(proposalId, /^proposal_/);
+    const [outcome] = value.outcomes as Array<Record<string, unknown>>;
+    assert.equal(outcome?.disposition, 'failed', 'no person could approve a one-time link here');
+    assert.equal(outcome?.code, 'credential_replacement');
+    assert.match(String(outcome?.instruction), /from Admin/);
+    assert.equal(outcome?.proposalId, undefined);
+    assert.equal(outcome?.setupUrl, undefined, 'no replacement link was issued');
 
     await deliverCard(CHICKPEA_AGENT_ID, text);
-    assert.equal(posts.length, 0, 'a host approval could not hand over the one-time setup link');
+    assert.equal(posts.length, 0);
     assert.equal((await typedApproval(CHICKPEA_AGENT_ID, requester)).proposalId, undefined);
-    const confirmed = await send(CHICKPEA_AGENT_ID, 'approve', 'confirm_workspace_change', { proposalId });
-    assert.equal(confirmed.ok, true);
-    const [outcome] = (confirmed as { ok: true; result: { outcomes: Array<Record<string, unknown>> } })
-      .result.outcomes;
-    assert.equal(outcome?.disposition, 'setup_required');
-    assert.match(String(outcome?.setupUrl), /^http:\/\/localhost\//);
+    assert.equal(await f.management.getActiveChangeSetProposal({
+      organizationId: f.admin.membership.organizationId,
+      actorUserId: f.admin.user.id,
+      actorMembershipId: f.admin.membership.id,
+      approvalScopeKey: `slack:${f.admin.user.slackTeamId}:${CHANNEL_ID}:${THREAD_TS}:agent:${CHICKPEA_AGENT_ID}`,
+    }), undefined);
   } finally {
     fixture.close();
   }
 });
 
-test('a call a change set cannot hold keeps the proposal the Agent applies on a typed "approve"', async () => {
+test('a second change to an object the change set already changes waits for its own request', async () => {
   const fixture = await confirmationFixture('confirm-card-chained');
-  const { f, sprout, send, posts, deliverCard, approve, typedApproval, requester } = fixture;
+  const { f, sprout, send, posts, deliverCard, click, approve, typedApproval, requester } = fixture;
   try {
     // An earlier card in this thread, left unanswered.
     const older = await send(sprout.id, 'make your instructions terse', 'propose_workspace_changes', {
@@ -714,30 +716,30 @@ test('a call a change set cannot hold keeps the proposal the Agent applies on a 
         dependsOn: ['profile'],
       }],
     });
-    assert.equal(applied.ok, true);
-    const value = (applied as { ok: true; result: Record<string, unknown> }).result;
-    assert.equal(value.status, 'confirmation_required');
-    assert.equal(value.presentation, undefined);
-    assert.match(String(value.instruction), /ask them to reply "approve".*call confirm_workspace_change/);
-    const proposalId = (value.outcomes as Array<{ proposalId?: string }>)[0]?.proposalId ?? '';
-    assert.match(proposalId, /^proposal_/);
+    const { proposalId, preview } = pendingConfirmation(applied, 'partial');
+    assert.match(proposalId, /^changeset_/, 'the first change waits where the host can approve it');
+    assert.match(preview, /Rewrites drafts plainly/);
+    const shorter = ((applied as { ok: true; result: { outcomes: Array<Record<string, unknown>> } })
+      .result.outcomes).find(({ itemId }) => itemId === 'shorter');
+    assert.equal(shorter?.disposition, 'skipped');
+    assert.equal(shorter?.code, 'revision_conflict');
+    assert.match(String(shorter?.instruction), /new request after the person approves/);
+    assert.equal((await f.management.getChangeSetProposal(olderId))?.status, 'stale',
+      'the newer change set replaces the older card');
 
-    await deliverCard(sprout.id, text);
-    assert.equal(posts.length, 0, 'no card the host could not resolve');
-    const typed = await typedApproval(sprout.id, requester);
-    assert.equal(typed.proposalId, undefined, 'the typed "approve" reaches the Agent, not the older card');
-    assert.equal((await f.management.getChangeSetProposal(olderId))?.status, 'stale');
-    assert.deepEqual(await approve(sprout.id, typed.typed, olderId), {
+    const card = await deliverCard(sprout.id, text);
+    assert.ok(card);
+    assert.equal(posts.length, 1);
+    const { refusal, clicked } = await click(sprout.id, card, requester, 0);
+    assert.equal(refusal, undefined);
+    assert.equal(clicked.managementApprovalProposalId, proposalId);
+    assert.deepEqual(await approve(sprout.id, clicked, proposalId), {
       kind: 'message',
-      text: 'I couldn’t apply that proposal because it is no longer current. Ask me to prepare an updated proposal.',
+      text: 'Applied the approved changes.',
     });
-    assert.equal((await f.config.getAgent(sprout.id)).instructions, 'Help with Sprout.');
-    const confirmed = await send(sprout.id, 'approve', 'confirm_workspace_change', { proposalId });
-    assert.equal(confirmed.ok, true);
-    assert.equal((confirmed as { ok: true; result: { status: string } }).result.status, 'completed');
     const after = await f.config.getAgent(sprout.id);
     assert.equal(after.instructions, 'Rewrite drafts plainly.');
-    assert.equal(after.description, 'Rewrites drafts');
+    assert.equal(after.description, 'Rewrites drafts plainly', 'only the reviewed change applied');
   } finally {
     fixture.close();
   }

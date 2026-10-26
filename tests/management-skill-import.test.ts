@@ -650,8 +650,6 @@ test('proposal receipts disclose omitted files before approval and named request
 const ASKED_SOURCE = 'https://github.com/acme/skills/tree/main/skills/unslop';
 const PINNED_UNSLOP =
   'https://github.com/acme/skills/tree/2222222222222222222222222222222222222222/skills/unslop';
-const IMPORT_SOURCE_REFUSAL =
-  'Immediate skill import requires the exact GitHub source in the current requester message. No change was made.';
 
 async function requesterTextFixture(
   suffix: string,
@@ -698,7 +696,17 @@ async function requesterTextFixture(
   return { f, agent, askedBy, saidBy };
 }
 
-test('an ask naming the exact skill source does not import it; the person naming it does', async () => {
+/** An ask's import waits as the person's change set; the person's own approval would apply it. */
+function heldForPerson(result: Awaited<ReturnType<typeof invokeSlackWorkspaceManagementTool>>, source: string) {
+  assert.ok(result.ok, JSON.stringify(result));
+  const value = result.result as { status?: string; proposalId?: string; instruction?: string; presentation?: { slack?: string } };
+  assert.equal(value.status, 'pending');
+  assert.match(value.proposalId ?? '', /^changeset_/);
+  assert.match(value.instruction ?? '', /Another Agent's ask started this turn/);
+  assert.ok(value.presentation?.slack?.includes(source), 'the preview names the exact source');
+}
+
+test('an ask naming the exact skill source proposes the import for the person; the person naming it imports it', async () => {
   const { f, agent, askedBy, saidBy } = await requesterTextFixture('skill-import-ask');
   const words = `Install unslop skill from ${ASKED_SOURCE}`;
   const importUnslop = (signal: SlackManagementSignal, idempotencyKey: string) =>
@@ -707,10 +715,7 @@ test('an ask naming the exact skill source does not import it; the person naming
       args: { source: ASKED_SOURCE, idempotencyKey, guideVersion: AGENT_AUTHORING_GUIDE_VERSION },
     });
   try {
-    assert.deepEqual(await importUnslop(askedBy('600.2', words), 'ask-import-unslop'), {
-      ok: false,
-      error: { code: 'invalid_request', message: IMPORT_SOURCE_REFUSAL },
-    });
+    heldForPerson(await importUnslop(askedBy('600.2', words), 'ask-import-unslop'), PINNED_UNSLOP);
     assert.deepEqual((await f.config.getAgent(agent.id)).skills, []);
 
     const installed = await importUnslop(saidBy('600.3', words), 'person-import-unslop');
@@ -722,7 +727,7 @@ test('an ask naming the exact skill source does not import it; the person naming
   }
 });
 
-test('an ask cannot replace a skill with the asking Agent\'s exact replace request; the person\'s replaces it', async () => {
+test('an ask\'s exact replace request only proposes the replacement; the person\'s replaces it', async () => {
   const { f, agent, askedBy, saidBy } = await requesterTextFixture('skill-replace-ask', [{
     name: 'unslop',
     description: 'Locally edited description.',
@@ -737,10 +742,7 @@ test('an ask cannot replace a skill with the asking Agent\'s exact replace reque
     });
   const instructions = async () => (await f.config.getAgent(agent.id)).skills[0]?.instructions;
   try {
-    assert.deepEqual(await replaceUnslop(askedBy('600.2', words), 'ask-replace-unslop'), {
-      ok: false,
-      error: { code: 'invalid_request', message: IMPORT_SOURCE_REFUSAL },
-    });
+    heldForPerson(await replaceUnslop(askedBy('600.2', words), 'ask-replace-unslop'), PINNED_UNSLOP);
     assert.equal(await instructions(), 'Preserve this local procedure.');
 
     const replaced = await replaceUnslop(saidBy('600.3', words), 'person-replace-unslop');

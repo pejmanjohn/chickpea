@@ -39,7 +39,7 @@ import { parseSlackTablePresentations } from './table-presentation.ts';
 import { parseCodingWorkerUsage } from './coding-worker-run.ts';
 import { parseSlackArtifactReceipts } from './artifact-receipts.ts';
 import { parseSlackAgentCreationTerminalIntents } from './agent-creation-terminal.ts';
-import { personRequestText } from './agent-asks.ts';
+import { personRequestText, personRequestTextSource } from './agent-asks.ts';
 import type { ResolvedAssignment } from '../config/types.ts';
 import { schemaInstallRequired, type StateDb } from '../state/state-db.ts';
 import type { InstallationObjectRecorder } from '../state/object-inventory.ts';
@@ -248,6 +248,14 @@ export interface SlackProposalApprovalQuery {
   requesterUserId: string;
   requesterMembershipId: string;
   actingAgentId: string;
+}
+
+/** One Agent's conversation: a Channel thread, or a whole DM or group DM when `threadTs` is absent. */
+export interface SlackLatestAgentTurnQuery {
+  workspaceId: string;
+  channelId: string;
+  threadTs?: string;
+  agentId: string;
 }
 
 /** Content-free retained approval coordinates, including completed turns. */
@@ -1318,6 +1326,37 @@ export class TurnJobStoreLogic {
     return row ? this.decodeRow(row) : undefined;
   }
 
+  /**
+   * The message that started the latest turn this Agent was given in one
+   * conversation, while its row is retained. A row an older release left
+   * without a thread key is not found.
+   */
+  latestAgentTurnMessageTs(input: SlackLatestAgentTurnQuery): string | undefined {
+    for (const part of [input.workspaceId, input.channelId]) {
+      validateBoundedString(part, 'Slack conversation coordinate', 128);
+      if (part.includes(':')) throw new Error('Slack conversation coordinate is invalid.');
+    }
+    validateBoundedString(input.agentId, 'Agent id', 256);
+    const conversation = `${input.workspaceId}:${input.channelId}`;
+    const row = input.threadTs === undefined
+      ? this.db.get(
+          `SELECT message_ts AS messageTs FROM turn_jobs
+           WHERE thread_key >= ? AND thread_key < ? AND json_extract(assignment_json, '$.agent.id') = ?
+           ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+          `${conversation}:`,
+          `${conversation};`,
+          input.agentId,
+        )
+      : this.db.get(
+          `SELECT message_ts AS messageTs FROM turn_jobs
+           WHERE thread_key = ? AND json_extract(assignment_json, '$.agent.id') = ?
+           ORDER BY enqueued_at DESC, rowid DESC LIMIT 1`,
+          `${conversation}:${validateBoundedString(input.threadTs, 'Thread timestamp', 128)}`,
+          input.agentId,
+        );
+    return typeof row?.messageTs === 'string' ? row.messageTs : undefined;
+  }
+
   listProposalApprovalTurns(input: SlackProposalApprovalQuery): SlackProposalApprovalTurn[] {
     for (const key of ['proposalId', 'workspaceId', 'channelId', 'threadTs', 'requesterUserId',
       'requesterMembershipId', 'actingAgentId'] as const) validateBoundedString(input[key], key, 256);
@@ -1546,6 +1585,7 @@ export class TurnJobStoreLogic {
       const serializedThreadImages = serializeThreadImageRecords(threadImages);
       const serializedAdmittedListIds = serializeAdmittedSlackListIds(admittedListIds);
       const requesterText = personRequestText(turn);
+      const requesterTextSource = personRequestTextSource(turn);
       const envelope: FlueDispatchEnvelopeV1 = {
         schemaVersion: 2,
         agentName: 'chickpea-slack-v2',
@@ -1566,6 +1606,7 @@ export class TurnJobStoreLogic {
             messageTs: turn.messageTs,
             turnJobId: id,
             ...(requesterText === undefined ? {} : { requesterText: requesterText.slice(0, 40_000) }),
+            ...(requesterTextSource ? { requesterTextSource } : {}),
             ...(turn.requesterTimezone ? { requesterTimezone: turn.requesterTimezone } : {}),
             ...(turn.attachments?.length
               ? { attachmentFileIds: turn.attachments.map(({ fileId }) => fileId).join(',') }
@@ -2721,6 +2762,7 @@ function parseSlackSignalMessage(
     'workspaceId', 'channelId', 'threadTs', 'slackUserId', 'eventId', 'messageTs', 'turnJobId',
     'conversationKind',
     'requesterText',
+    'requesterTextSource',
     'requesterTimezone',
     'attachmentFileIds',
     'attachmentIntakeStatus', 'attachmentCount',
@@ -2744,6 +2786,9 @@ function parseSlackSignalMessage(
     ...(attributes.requesterText === undefined
       ? {}
       : { requesterText: validateBoundedString(attributes.requesterText, 'Slack requester text', 40_000) }),
+    ...(attributes.requesterTextSource === undefined
+      ? {}
+      : { requesterTextSource: validateRequesterTextSource(attributes.requesterTextSource) }),
     ...(attributes.attachmentFileIds === undefined
       ? {}
       : {
@@ -2801,6 +2846,11 @@ function validateAdmittedListIds(value: unknown): string {
 function validateConversationKind(value: unknown): 'channel' | 'im' | 'mpim' {
   if (value === 'channel' || value === 'im' || value === 'mpim') return value;
   throw new Error('Slack conversation kind is invalid.');
+}
+
+function validateRequesterTextSource(value: unknown): 'click' {
+  if (value === 'click') return value;
+  throw new Error('Slack requester text source is invalid.');
 }
 
 function validateAttachmentFileIds(value: unknown): string {

@@ -192,10 +192,13 @@ test('a schedule is saved with the person\'s request as its source, and an ask c
     assert.equal(person?.requestText, words);
     assert.equal(person?.eventId, 'Ev_PERSON');
 
-    await assert.rejects(save({
+    const asked = await save({
       eventId: 'Ev_ASK', messageTs: '1787874273.000100', text: words,
       agentAsk: { fromAgentId: 'agent_support', fromAgentName: 'Support', originMessageTs: '1787874270.000001' },
-    }, 'Asked digest'), /only through a proposal the person approves/);
+    }, 'Asked digest');
+    assert.ok('outcomes' in asked);
+    assert.deepEqual(asked.outcomes.map(({ disposition }) => disposition), ['confirmation_required'],
+      'the service holds an ask\'s schedule for the person\'s approval');
     assert.deepEqual((await routines.listRoutines()).map(({ name }) => name), ['Digest']);
   } finally {
     routines.close(); management.close(); config.close(); identity.close();

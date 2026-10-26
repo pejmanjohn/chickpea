@@ -7,12 +7,22 @@ import {
   type CreatedAgentHandoffConfig,
 } from '../slack/agent-routing.ts';
 import { agentAvatarUrlForPresentation } from '../slack/agent-presence/avatar-assets.ts';
-import { escapeSlackControlCharacters } from '../slack/message-format.ts';
+import { isLaterCoAddressedTurn, personRequestTextSource } from '../slack/agent-asks.ts';
+import {
+  shouldResolveSlackManagementApproval,
+  type SlackManagementApproval,
+} from '../slack/interaction-intent.ts';
+import {
+  escapeSlackControlCharacters,
+  renderSlackMarkdownActionLink,
+  slackActionLink,
+} from '../slack/message-format.ts';
 import { conversationThreadTs, slackConversationKind } from '../slack/thread-key.ts';
+import type { SlackLatestAgentTurnQuery } from '../slack/turn-jobs.ts';
 import type { NormalizedSlackTurn } from '../slack/types.ts';
 import type { ManagementStore } from './store.ts';
 import { agentWelcomeInGroupDm } from './receipts.ts';
-import { WorkspaceManagementService } from './service.ts';
+import { slackManagementOrigin, WorkspaceManagementService } from './service.ts';
 import {
   resolveSlackManagementActor,
   type SlackManagementSignal,
@@ -23,6 +33,7 @@ import {
   type ManagementActorContext,
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
+  type ManagementOperation,
   type ManagementReceiptOutboxRecord,
 } from './types.ts';
 import {
@@ -110,6 +121,131 @@ export async function resolveHostSlackManagementProposal(input: {
   return proposal;
 }
 
+/** What the person's typed message did to the change set waiting on them. */
+export type TypedSlackManagementApproval =
+  | { kind: 'approve'; proposalId: string }
+  | { kind: 'decline'; proposalId: string };
+
+/**
+ * Reads the requester's own typed message against the change set waiting on
+ * them in this conversation and Agent. The exact approval words approve it
+ * as before. Other wording is judged only when the message answers the set:
+ * the turn that proposed it is still the Agent's latest here, so the Agent
+ * has asked nothing since. The judge reads the message and a fixed-label
+ * summary of the set, never its content. An approval stamps the set for the
+ * host to apply, and a decline retires it; anything else leaves it waiting.
+ * An Agent's ask, a click, a later co-addressed turn or a reaction is never
+ * read.
+ */
+export async function resolveTypedSlackManagementApproval(input: {
+  turn: NormalizedSlackTurn;
+  assignment: ResolvedAssignment;
+  actorMembershipId: string;
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>;
+  management: Pick<ManagementStore, 'getActiveChangeSetProposal' | 'markChangeSetProposalStale'>;
+  latestAgentTurnMessageTs: (query: SlackLatestAgentTurnQuery) => Promise<string | undefined>;
+  judge: (reply: { text: string; change: string }) => Promise<SlackManagementApproval>;
+}): Promise<TypedSlackManagementApproval | undefined> {
+  const { turn } = input;
+  if (turn.agentAsk || turn.uiResponse || isLaterCoAddressedTurn(turn) || turn.source === 'reaction_added') {
+    return undefined;
+  }
+  const proposal = await resolveHostSlackManagementProposal(input);
+  if (!proposal) return undefined;
+  if (shouldResolveSlackManagementApproval(turn.text)) return { kind: 'approve', proposalId: proposal.proposalId };
+  if (!await answersProposal(input, proposal)) return undefined;
+  const approval = await input.judge({ text: turn.text, change: approvalChangeSummary(proposal) });
+  if (approval === 'approve') return { kind: 'approve', proposalId: proposal.proposalId };
+  if (approval !== 'decline' || proposal.status !== 'pending') return undefined;
+  await input.management.markChangeSetProposalStale(proposal.proposalId, Date.now());
+  return { kind: 'decline', proposalId: proposal.proposalId };
+}
+
+async function answersProposal(
+  input: Pick<Parameters<typeof resolveTypedSlackManagementApproval>[0], 'turn' | 'assignment' | 'latestAgentTurnMessageTs'>,
+  proposal: ManagementChangeSetProposalRecord,
+): Promise<boolean> {
+  if (!proposal.proposedMessageTs) return false;
+  const latest = await input.latestAgentTurnMessageTs({
+    workspaceId: input.turn.workspaceId,
+    channelId: input.turn.channelId,
+    // A DM's or group DM's approval covers the whole conversation; a Channel's, one thread.
+    ...(slackConversationKind(input.turn) === 'channel'
+      ? { threadTs: conversationThreadTs(input.turn, input.assignment.runtimeContract) }
+      : {}),
+    agentId: input.assignment.agent.id,
+  });
+  return latest === proposal.proposedMessageTs;
+}
+
+const APPROVAL_OPERATION_LABELS: Readonly<Record<ManagementOperation['kind'], string>> = {
+  create_agent: 'Create an Agent',
+  update_agent: 'Change an Agent',
+  delete_agent: 'Delete an Agent',
+  archive_agent: 'Archive an Agent',
+  restore_agent: 'Restore an Agent',
+  put_channel: 'Change Channel settings',
+  grant_agent_channel: 'Add an Agent to a Channel',
+  revoke_agent_channel: 'Remove an Agent from a Channel',
+  update_member: 'Change a member\'s access',
+  remove_provider_credential: 'Remove a model provider key',
+  update_agent_memory: 'Change an Agent\'s memory',
+  save_routine: 'Save a routine',
+  control_routine: 'Pause, resume or turn off a routine',
+  run_routine: 'Run a routine now',
+  delete_routine: 'Delete a routine',
+  reassign_routine_agent: 'Move a routine to another Agent',
+  request_setup: 'Prepare a setup link',
+};
+
+const APPROVAL_AGENT_FIELD_LABELS: Readonly<Record<string, string>> = {
+  name: 'name',
+  description: 'description',
+  instructions: 'instructions',
+  requestedHandle: 'Slack handle',
+  editPolicy: 'editing authority',
+  model: 'model',
+  modelEffort: 'effort',
+  skills: 'skills',
+  mcpServers: 'MCP servers',
+  apiConnections: 'API connections',
+  repositories: 'repositories',
+  enabled: 'on or off',
+};
+
+/**
+ * The approval judge's view of a change set: one fixed label per operation,
+ * and for an Agent change the settings it touches. Nothing a person or a
+ * model wrote reaches the judge through it, not even a name.
+ */
+export function approvalChangeSummary(proposal: Pick<ManagementChangeSetProposalRecord, 'operations'>): string {
+  return proposal.operations.map((operation) => {
+    const label = APPROVAL_OPERATION_LABELS[operation.kind];
+    if (operation.kind !== 'update_agent') return label;
+    const fields = Object.keys(operation.patch);
+    const known = fields.filter((field) => Object.hasOwn(APPROVAL_AGENT_FIELD_LABELS, field));
+    const settings = [
+      ...known.map((field) => APPROVAL_AGENT_FIELD_LABELS[field]!),
+      ...(known.length < fields.length ? ['other settings'] : []),
+    ];
+    return settings.length > 0 ? `${label}: ${settings.join(', ')}` : label;
+  }).join('\n');
+}
+
+/**
+ * The person's approval of one proposal, which the host resolved from their
+ * typed approval or Approve click. A Slack confirmation applies only with
+ * this stamp, and no model tool path can produce it.
+ */
+export async function resolveSlackApprovalActor(
+  signal: SlackManagementSignal,
+  identity: Pick<IdentityStore, 'resolveSlackIdentity'>,
+  proposalId: string,
+): Promise<ManagementActorContext> {
+  const actor = await resolveSlackManagementActor(signal, identity);
+  return { ...actor, origin: { ...slackManagementOrigin(signal), approvedProposalId: proposalId } };
+}
+
 export async function executeHostSlackManagementApproval(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
@@ -121,7 +257,7 @@ export async function executeHostSlackManagementApproval(input: {
 }): Promise<HostSlackManagementApprovalResult> {
   const signal = slackManagementSignal(input.turn, input.assignment, input.turnJobId);
   try {
-    const actor = await resolveSlackManagementActor(signal, input.dependencies.identity);
+    const actor = await resolveSlackApprovalActor(signal, input.dependencies.identity, input.proposalId);
     const result = await input.dependencies.service.confirmWorkspaceChange({
       context: actor,
       proposalId: input.proposalId,
@@ -214,6 +350,7 @@ function slackManagementSignal(
   assignment: ResolvedAssignment,
   turnJobId: string,
 ): SlackManagementSignal {
+  const requesterTextSource = personRequestTextSource(turn);
   return {
     agentId: assignment.agent.id,
     workspaceId: turn.workspaceId,
@@ -226,6 +363,7 @@ function slackManagementSignal(
     turnJobId,
     // The host resolves an approval only from the person's own message or click.
     requesterText: turn.text,
+    ...(requesterTextSource ? { requesterTextSource } : {}),
   };
 }
 
@@ -248,14 +386,25 @@ async function formatHostSlackManagementReceipt(input: {
   const attention = result.outcomes.filter(({ disposition }) => disposition !== 'applied');
   const warnings = result.outcomes.flatMap(({ warning }) => warning ? [warning] : []);
   const codes = attention.flatMap(({ code }) => code ? [code] : []);
+  // The setup the person asked for alongside the change reaches them only here.
+  const deferredSetup = result.deferredSetup ?? [];
+  const message = (text: string, details: readonly string[] = []): HostSlackManagementApprovalResult => {
+    const lines = [
+      ...details,
+      ...deferredSetup.flatMap((setup) => setup.kind === 'not_issued'
+        ? [`Issue: ${escapeSlackControlCharacters(setup.code)}`]
+        : []),
+      ...deferredSetup.flatMap((setup) => setup.kind === 'issued'
+        ? [renderSlackMarkdownActionLink(slackActionLink(setup.setupUrl, `Connect ${setup.label}`))]
+        : []),
+    ];
+    return { kind: 'message', text: lines.length > 0 ? `${text}\n\n${lines.join('\n')}` : text };
+  };
   if (applied.length === 0) {
     const detail = codes.length > 0
       ? ` (${[...new Set(codes)].map(escapeSlackControlCharacters).join(', ')})`
       : '';
-    return {
-      kind: 'message',
-      text: `I couldn’t apply the approved changes${detail}. Nothing was changed.`,
-    };
+    return message(`I couldn’t apply the approved changes${detail}. Nothing was changed.`);
   }
   const creation = result.outcomes.find(({ operationKind }) => operationKind === 'create_agent');
   const originKind = slackConversationKind(input.turn);
@@ -268,6 +417,7 @@ async function formatHostSlackManagementReceipt(input: {
     attention.length === 0 &&
     warnings.length === 0 &&
     result.outcomes.every(({ disposition }) => disposition === 'applied') &&
+    deferredSetup.length === 0 &&
     (originKind !== 'channel' || sourceGrant?.disposition === 'applied')
   );
   if (cleanCreation && creation) {
@@ -325,21 +475,17 @@ async function formatHostSlackManagementReceipt(input: {
   }
   if (result.status === 'completed' && attention.length === 0 && warnings.length === 0) {
     const skillReceipt = await formatAppliedSkillReceipt(input);
-    if (skillReceipt) return { kind: 'message', text: skillReceipt };
+    if (skillReceipt) return message(skillReceipt);
   }
   const receipt = attention.length === 0
     ? 'Applied the approved changes.'
     : `Applied some approved changes, but ${attention.length} ${
       attention.length === 1 ? 'item needs' : 'items need'
     } attention.`;
-  const details = [
+  return message(receipt, [
     ...codes.map((code) => `Issue: ${escapeSlackControlCharacters(code)}`),
     ...warnings.map(escapeSlackControlCharacters),
-  ];
-  return {
-    kind: 'message',
-    text: details.length > 0 ? `${receipt}\n\n${details.join('\n')}` : receipt,
-  };
+  ]);
 }
 
 async function formatAppliedSkillReceipt(input: {

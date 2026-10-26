@@ -12,7 +12,7 @@ import {
   slackUpdateAgentMemoryInputSchema,
   SLACK_UPDATE_AGENT_MEMORY_DESCRIPTION,
 } from '../src/management/slack-memory-actions.ts';
-import { createSlackManagementTurnGuard, invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
+import { invokeSlackWorkspaceManagementTool } from '../src/management/slack-tools.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
@@ -115,13 +115,6 @@ test('memory tool delegates scoped, idempotent writes and forget to existing man
     }));
     assert.match(JSON.stringify(stale), /revision_conflict/);
     assert.equal((await f.memory.getAgentMemory(agent.id)).body, 'The warehouse opens at nine.');
-    const guard = createSlackManagementTurnGuard('turn_guard', { turnJobId: 'turn_guard' });
-    guard.recordConfirmationFailure({ code: 'revision_conflict', proposalId: 'proposal_old' });
-    const guarded = await invokeSlackWorkspaceManagementTool({
-      signal, identity: f.identity, service: f.service, name: 'apply_workspace_changes', args,
-      turnGuard: guard,
-    });
-    assert.match(JSON.stringify(guarded), /fresh_approval_required/);
     const forget = await invoke(signal, slackMemoryUpdateArguments({ ...signal, turnJobId: 'turn_forget' }, {
       expectedRevision: 1, body: '',
     }));

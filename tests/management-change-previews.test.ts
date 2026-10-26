@@ -17,6 +17,7 @@ import {
   withManagementAdapterFixture as withFixture,
   type ManagementAdapterFixture as Fixture,
 } from './helpers/management-adapter-fixture.ts';
+import { withPersonApproval } from './helpers/slack-person-approval.ts';
 
 const SLACK_APPROVAL = 'Reply `approve` to apply these exact changes, or tell me what to adjust.';
 const MARKDOWN_APPROVAL =
@@ -203,7 +204,7 @@ test('an archive whose Agent gained a Channel after the preview goes stale inste
 
     await grant(f, agent.id, 'C_HELP', 'help');
     await assert.rejects(
-      f.service.confirmWorkspaceChange({ context: slackContext(f), proposalId }),
+      f.service.confirmWorkspaceChange({ context: withPersonApproval(slackContext(f), proposalId), proposalId }),
       (error: unknown) => (error as { code?: string }).code === 'proposal_stale',
     );
     assert.equal((await f.config.getAgent(agent.id)).lifecycle, 'active');
