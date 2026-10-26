@@ -26,6 +26,7 @@ import { resolveProviderRuntimeImpacts } from '../config/provider-impact.ts';
 import { isMetaAdsMcpConnection } from '../config/meta-ads-policy.ts';
 import {
   type AgentChannelGrant,
+  type AgentReferenceSummary,
   type AgentScheduleReference,
   type AgentConnectionBinding,
   type AgentCreateInput,
@@ -440,9 +441,13 @@ export class WorkspaceManagementService {
     operations?: readonly ManagementOperation[],
   ): Promise<ManagementApplyResult> {
     try {
-      const targets = result.outcomes.map((outcome) => outcome.disposition === 'applied'
+      const applied = result.outcomes.map((outcome) => outcome.disposition === 'applied'
         ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
         : undefined);
+      // A deleted Agent has no page to link to.
+      const deleted = new Set(result.outcomes.flatMap((outcome, index) =>
+        outcome.operationKind === 'delete_agent' && applied[index] ? [applied[index]] : []));
+      const targets = applied.map((agentId) => agentId && !deleted.has(agentId) ? agentId : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
       const adminUrls = new Map<string, string>();
@@ -4663,14 +4668,10 @@ export class WorkspaceManagementService {
   ): Promise<ManagementPreparedItem> {
     const prepared = await this.prepareItem(actor, operation, proposalId, readiness);
     if (operation.kind === 'delete_agent') {
-      const agent = await this.stores.config.getAgent(operation.agentId);
-      const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
-        throw new ManagementError(
-          'invalid_request',
-          'Archive the Agent and remove its Slack reach before deleting it.',
-        );
-      }
+      assertAgentLeftSlack(
+        await this.stores.config.getAgent(operation.agentId),
+        await this.stores.config.getAgentReferences(operation.agentId),
+      );
     }
     if ((operation.kind === 'put_channel' && operation.channel.lifecycle === 'active') ||
         operation.kind === 'grant_agent_channel' || operation.kind === 'revoke_agent_channel') {
@@ -5109,26 +5110,7 @@ export class WorkspaceManagementService {
           agent.credentialIncarnation !== expectedCredentialIncarnation) {
         throw new ManagementError('revision_conflict', 'The Agent identity changed. Review the change again.');
       }
-      const references = await this.stores.config.getAgentReferences(operation.agentId);
-      if (references.channelGrants.length > 0 || agent.slackPresence?.userGroupId) {
-        throw new ManagementError(
-          'invalid_request',
-          'Archive the Agent and remove its Slack reach before deleting it.',
-        );
-      }
-      const changed: ManagementObjectRef[] = [];
-      for (const grant of references.channelGrants) {
-        await this.stores.config.deleteAgentChannelGrant(
-          grant.workspaceId,
-          grant.channelId,
-          operation.agentId,
-        );
-        changed.push({
-          kind: 'channel_grant',
-          id: grantKey(grant.workspaceId, grant.channelId, operation.agentId),
-          revision: 0,
-        });
-      }
+      assertAgentLeftSlack(agent, await this.stores.config.getAgentReferences(operation.agentId));
       if (this.stores.deleteAgent) {
         await this.stores.deleteAgent({
           actor,
@@ -5152,8 +5134,7 @@ export class WorkspaceManagementService {
           expectedCredentialIncarnation ?? requireAgentCredentialIncarnation(agent),
         );
       }
-      changed.push({ kind: 'agent', id: operation.agentId });
-      return mutationForChanged(changed);
+      return mutationForChanged([{ kind: 'agent', id: operation.agentId }]);
     }
     if (operation.kind === 'update_member') {
       const result = await this.stores.identity.updateMembershipAuthority({
@@ -6453,6 +6434,23 @@ function requireAgentCredentialIncarnation(agent: CustomAgentConfig): string {
     throw new ManagementError('invalid_state', 'The Agent identity is unavailable.');
   }
   return agent.credentialIncarnation;
+}
+
+/**
+ * Delete leaves nothing in Slack that answers to the Agent. Archive ends its
+ * Channel grants and retires its own Slack app, and it completes only after
+ * Slack turned its user group off. Slack cannot delete a user group, so an
+ * archived Agent keeps the id for restore and that group no longer blocks.
+ */
+function assertAgentLeftSlack(agent: CustomAgentConfig, references: AgentReferenceSummary): void {
+  const presence = agent.slackPresence;
+  if (references.channelGrants.length > 0 || presence?.kind === 'agent_app' ||
+      (presence?.userGroupId !== undefined && agent.lifecycle !== 'archived')) {
+    throw new ManagementError(
+      'invalid_request',
+      `Archive ${agent.name} first, then delete it. Archiving takes it out of its Slack Channels and turns off its Slack handle.`,
+    );
+  }
 }
 
 function withAgentCredentialRequirement(
