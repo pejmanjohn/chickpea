@@ -552,7 +552,7 @@ export class WorkspaceManagementService {
         expectedRevision: agent.revision,
         patch: { skills },
       }],
-    });
+    }, skill.sourceUrl);
     const { preview: _privatePreview, ...publicProposal } = proposal;
     return {
       ...publicProposal,
@@ -2203,8 +2203,10 @@ export class WorkspaceManagementService {
     return { ...result, presentation: publicChangeSetProposal(shown).presentation };
   }
 
+  /** `skillSourceUrl` is the Source a skill import's preview leads with. */
   async proposeWorkspaceChanges(
     input: ProposeWorkspaceChangesInput,
+    skillSourceUrl?: string,
   ): Promise<ProposeWorkspaceChangesResult> {
     const actor = await this.requireLiveActor(input.context);
     if (input.guideVersion !== AGENT_AUTHORING_GUIDE_VERSION) {
@@ -2232,6 +2234,7 @@ export class WorkspaceManagementService {
       idempotencyKey: input.idempotencyKey,
       guideVersion: input.guideVersion,
       authoringReason: input.authoringReason,
+      ...(skillSourceUrl === undefined ? {} : { skillSourceUrl }),
     }, async (operation) => {
       if (operations.length !== 1 || operation.kind !== 'update_agent') return;
       const currentAgent = await this.requireEditableAgent(actor, operation.agentId);
@@ -2264,7 +2267,7 @@ export class WorkspaceManagementService {
     actor: LiveManagementActor,
     operations: ManagementOperation[],
     meta: Pick<ProposeWorkspaceChangesInput, 'idempotencyKey' | 'guideVersion' | 'authoringReason'> &
-      { requestOperationId?: string },
+      { requestOperationId?: string; skillSourceUrl?: string },
     checkOperation?: (operation: ManagementOperation) => Promise<void>,
   ): Promise<ManagementChangeSetProposalRecord> {
     const proposalId = `changeset_${this.randomId()}`;
@@ -2330,7 +2333,7 @@ export class WorkspaceManagementService {
       summary: `${operations.length} reviewed workspace change${operations.length === 1 ? '' : 's'}`,
       changes,
       missingSetup,
-    });
+    }, meta.skillSourceUrl);
     const at = this.now();
     const proposal = await this.stores.management.putChangeSetProposal({
       proposalId,
@@ -6740,6 +6743,7 @@ function channelDestination(savedThread: boolean, channelLabel: string | undefin
 
 function boundedChangeSetPreview(
   preview: ManagementChangeSetRecordPreview,
+  skillSourceUrl: string | undefined,
 ): ManagementChangeSetRecordPreview {
   if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > 128 * 1024) {
     throw new ManagementError(
@@ -6747,8 +6751,8 @@ function boundedChangeSetPreview(
       'The reviewed change diff is too large. Split it into smaller proposals.',
     );
   }
-  if (!changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT) ||
-      !changeSetAccessFits(preview, MARKDOWN_PRESENTATION_DIALECT)) {
+  if (!changeSetAccessFits(preview, SLACK_PRESENTATION_DIALECT, skillSourceUrl) ||
+      !changeSetAccessFits(preview, MARKDOWN_PRESENTATION_DIALECT, skillSourceUrl)) {
     throw new ManagementError(
       'invalid_request',
       'The access this proposal grants is too long to show in one preview. Split it into smaller proposals.',

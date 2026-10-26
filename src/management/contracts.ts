@@ -82,6 +82,15 @@ export function validateManagementOperations(
           ? operation.patch.repositories
           : undefined,
     );
+    const skills = operation.kind === 'create_agent'
+      ? operation.agent.skills
+      : operation.kind === 'update_agent'
+        ? operation.patch.skills
+        : undefined;
+    // The runtime keeps the last skill of a name, so a preview of both would mislead.
+    if (skills && new Set(skills.map(({ name }) => name)).size !== skills.length) {
+      throw invalid('Skill names on an Agent must be unique.');
+    }
     if (operation.kind === 'create_agent' && !isAgentId(operation.agent.id)) {
       throw invalid('Agent IDs must start with a lowercase letter or digit and contain only lowercase letters, digits, underscores, or hyphens.');
     }

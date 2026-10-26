@@ -133,7 +133,7 @@ export function formatChangeSetProposal(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  return formatProposal(preview, dialect, []);
+  return formatProposal(preview, dialect);
 }
 
 export function formatSkillImportProposal(
@@ -141,32 +141,29 @@ export function formatSkillImportProposal(
   sourceUrl: string,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  return formatProposal(preview, dialect, [
-    [dialect.bold('Source'), quoteValue(sourceUrl, dialect)].join('\n'),
-  ]);
+  return formatProposal(preview, dialect, sourceUrl);
 }
 
 /**
- * Whether everything a change set widens fits in one preview. When it does,
- * truncation only ever cuts sections that grant nothing.
+ * Whether everything a change set widens, and a skill import's source, fits
+ * in one preview. When it does, truncation only ever cuts sections that grant
+ * nothing.
  */
 export function changeSetAccessFits(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
+  skillSourceUrl?: string,
 ): boolean {
-  const pinned = joinParts(proposalParts(preview, dialect).filter(({ pinned }) => pinned));
+  const pinned = joinParts(proposalParts(preview, dialect, skillSourceUrl).filter(({ pinned }) => pinned));
   return pinned.length <= truncatedBodyLimit(dialect);
 }
 
 function formatProposal(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
-  leadingSections: readonly string[],
+  skillSourceUrl?: string,
 ): string {
-  const parts = [
-    ...leadingSections.map((text) => ({ text, pinned: true })),
-    ...proposalParts(preview, dialect),
-  ];
+  const parts = proposalParts(preview, dialect, skillSourceUrl);
   const body = joinParts(parts);
   const fullPresentation = [
     dialect.header,
@@ -187,9 +184,13 @@ function formatProposal(
 function proposalParts(
   preview: ManagementChangeSetPreview,
   dialect: ChangeSetPresentationDialect,
+  skillSourceUrl: string | undefined,
 ): PreviewPart[] {
   const creation = creationPreview(preview);
-  return preview.changes.flatMap((change) => {
+  const source = skillSourceUrl === undefined
+    ? []
+    : [{ text: [dialect.bold('Source'), quoteValue(skillSourceUrl, dialect)].join('\n'), pinned: true }];
+  return [...source, ...preview.changes.flatMap((change): PreviewPart[] => {
     if (creation?.originGrant === change) return [];
     if (change.operationKind === 'create_agent') {
       const after = presentationRecord(change.operationKind, change.after);
@@ -200,7 +201,7 @@ function proposalParts(
       ];
     }
     return formatChangeSections(change, dialect);
-  });
+  })];
 }
 
 function truncationSuffix(dialect: ChangeSetPresentationDialect): string {
@@ -303,7 +304,7 @@ function operationHeader(
   dialect: ChangeSetPresentationDialect,
 ): string {
   const label = OPERATION_LABELS[operationKind];
-  return dialect.bold(name ? `${dialect.escape(name)} — ${label}` : label);
+  return dialect.bold(name ? `${plainText(name, dialect)} — ${label}` : label);
 }
 
 function formatRecordSections(
@@ -353,7 +354,7 @@ function formatStatement(
   dialect: ChangeSetPresentationDialect,
 ): string {
   const named = (name: string | undefined, fallback: string) =>
-    name ? dialect.bold(dialect.escape(name)) : fallback;
+    name ? dialect.bold(plainText(name, dialect)) : fallback;
   const agent = (label: ManagementAgentLabel | undefined) =>
     label ? formatAgentLabel(label, dialect) : 'this Agent';
   const channel = (label: string | undefined) => named(channelName(label), 'a Channel');
@@ -405,7 +406,7 @@ function formatMemberStatement(
   statement: Extract<ManagementChangeStatement, { kind: 'update_member' }>,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  const member = statement.member ? dialect.bold(dialect.escape(statement.member)) : 'this member';
+  const member = statement.member ? dialect.bold(plainText(statement.member, dialect)) : 'this member';
   const sentences = [
     ...(statement.role ? [`Make ${member} ${ROLE_PHRASES[statement.role]}.`] : []),
     ...(statement.status ? [MEMBER_STATUS_SENTENCES[statement.status](member)] : []),
@@ -426,7 +427,7 @@ function formatProviderRemoval(
   statement: Extract<ManagementChangeStatement, { kind: 'remove_provider_credential' }>,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  const provider = dialect.escape(statement.provider);
+  const provider = plainText(statement.provider, dialect);
   const agents = statement.affectedAgents;
   const [uses, stops] = agents.length === 1 ? ['uses', 'stops'] : ['use', 'stop'];
   const impacts = [
@@ -448,7 +449,7 @@ function formatProviderRemoval(
 
 function joinNames(names: readonly string[], dialect: ChangeSetPresentationDialect): string {
   const shown = names.slice(0, AFFECTED_AGENT_NAME_LIMIT)
-    .map((name) => dialect.bold(dialect.escape(name)));
+    .map((name) => dialect.bold(plainText(name, dialect)));
   const hidden = names.length - shown.length;
   const items = hidden > 0 ? [...shown, `${hidden} more`] : shown;
   if (items.length <= 2) return items.join(' and ');
@@ -456,8 +457,8 @@ function joinNames(names: readonly string[], dialect: ChangeSetPresentationDiale
 }
 
 function formatAgentLabel(label: ManagementAgentLabel, dialect: ChangeSetPresentationDialect): string {
-  const name = dialect.bold(dialect.escape(label.name));
-  return label.handle ? `${name} (@${dialect.escape(label.handle)})` : name;
+  const name = dialect.bold(plainText(label.name, dialect));
+  return label.handle ? `${name} (@${plainText(label.handle, dialect)})` : name;
 }
 
 interface ConnectionEntry {
@@ -525,7 +526,7 @@ const CREDENTIAL_REFERENCE = BOOKKEEPING;
 /** In display order. Admin's labels: the MCP editor and the connection account form. */
 const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
   displayName: CONNECTION_NAME,
-  url: { show: 'value', label: 'Server URL', format: 'code', widens: true },
+  url: { show: 'value', label: 'Server URL', format: 'code', widens: true, read: urlValue },
   transport: {
     show: 'value',
     label: 'Transport',
@@ -562,7 +563,7 @@ const MCP_FIELDS: ConnectionFields<McpConnectionConfig> = {
 /** In display order. Admin's labels: the API connection editor and its Google form. */
 const API_FIELDS: ConnectionFields<ApiConnectionConfig> = {
   displayName: CONNECTION_NAME,
-  allowedHosts: { show: 'list', label: 'Allowed hosts', noun: 'hosts' },
+  allowedHosts: { show: 'list', label: 'Allowed hosts', noun: 'hosts', read: hostList },
   pathPrefixes: {
     show: 'list',
     label: 'Path prefixes',
@@ -616,7 +617,10 @@ const CONNECTION_FIELDS: Partial<Record<PresentationField, Readonly<Record<strin
   repositories: REPOSITORY_FIELDS,
 };
 
-/** List entries shown before "…and N more". */
+/**
+ * Removed or narrowing list entries shown before "…and N more". Entries that
+ * widen access all show; `changeSetAccessFits` bounds them.
+ */
 const LIST_VALUE_LIMIT = 10;
 
 function formatConnectionChangeSections(
@@ -631,7 +635,7 @@ function formatConnectionChangeSections(
   const beforeById = new Map(beforeEntries.map((entry) => [entry.id, entry]));
   const afterById = new Map(afterEntries.map((entry) => [entry.id, entry]));
   const target = formatAgentLabel(agent, dialect);
-  const name = (entry: ConnectionEntry) => dialect.bold(dialect.escape(entry.name));
+  const name = (entry: ConnectionEntry) => dialect.bold(plainText(entry.name, dialect));
   const renamed = (previous: ConnectionEntry, entry: ConnectionEntry) =>
     Object.entries(fields).some(([key, field]) =>
       field.show === 'identity' && !presentationValuesEqual(previous.record[key], entry.record[key]));
@@ -644,17 +648,24 @@ function formatConnectionChangeSections(
     }),
     ...afterEntries.flatMap((entry) => {
       const previous = beforeById.get(entry.id);
+      // Pinned even when added turned off: what it reaches is stored now and
+      // goes live with a status change alone.
       if (!previous || renamed(previous, entry)) {
         return [{
           text: [`Add ${name(entry)} to ${target}.`, ...newConnectionLines(fields, entry.record, dialect)]
             .join('\n'),
-          pinned: entry.record.enabled !== false,
+          pinned: true,
         }];
       }
       const lines = changedConnectionLines(fields, previous.record, entry.record, dialect);
       if (lines.length === 0) return [];
+      const turnedOn = previous.record.enabled === false && entry.record.enabled === true;
       return [{
-        text: [`Update ${name(entry)} on ${target}.`, ...lines.map(({ text }) => text)].join('\n'),
+        text: [
+          `Update ${name(entry)} on ${target}.`,
+          ...lines.map(({ text }) => text),
+          ...(turnedOn ? newConnectionLines(fields, entry.record, dialect) : []),
+        ].join('\n'),
         pinned: lines.some(({ pinned }) => pinned),
       }];
     }),
@@ -675,7 +686,7 @@ function newConnectionLines(
     }
     if (field.show === 'list') {
       const values = (field.read ?? stringList)(record[key]);
-      return values.length > 0 ? [`${field.label}: ${formatValueList(values, dialect)}.`] : [];
+      return values.length > 0 ? [`${field.label}: ${formatValueList(values, 'all', dialect)}.`] : [];
     }
     return [];
   });
@@ -745,12 +756,15 @@ function listChangeLines(
   const allowsAll = (values: readonly string[]) => field.emptyAllows !== undefined && values.length === 0;
   return [
     ...(added.length > 0
-      ? [{ text: `Adds ${field.noun}: ${formatValueList(added, dialect)}.`, pinned: !allowsAll(was) }]
+      ? [{
+          text: `Adds ${field.noun}: ${formatValueList(added, allowsAll(was) ? 'capped' : 'all', dialect)}.`,
+          pinned: !allowsAll(was),
+        }]
       : []),
     ...(removed.length > 0
       ? [{
           text: [
-            `Removes ${field.noun}: ${formatValueList(removed, dialect)}.`,
+            `Removes ${field.noun}: ${formatValueList(removed, 'capped', dialect)}.`,
             ...(allowsAll(now) ? [field.emptyAllows] : []),
           ].join(' '),
           pinned: allowsAll(now),
@@ -765,20 +779,56 @@ function formatConnectionValue(
   dialect: ChangeSetPresentationDialect,
 ): string {
   if (value === undefined) return 'none';
-  if (format === 'name') return dialect.bold(dialect.escape(value));
-  if (format !== 'code' && format[value] !== undefined) return dialect.escape(format[value]);
+  if (format === 'name') return dialect.bold(plainText(value, dialect));
+  if (format !== 'code' && format[value] !== undefined) return plainText(format[value], dialect);
   return formatCode(value, dialect);
 }
 
-function formatValueList(values: readonly string[], dialect: ChangeSetPresentationDialect): string {
-  const shown = values.slice(0, LIST_VALUE_LIMIT).map((value) => formatCode(value, dialect)).join(', ');
-  const hidden = values.length - LIST_VALUE_LIMIT;
-  return hidden > 0 ? `${shown}, …and ${hidden} more` : shown;
+function formatValueList(
+  values: readonly string[],
+  shown: 'all' | 'capped',
+  dialect: ChangeSetPresentationDialect,
+): string {
+  const limit = shown === 'all' ? values.length : LIST_VALUE_LIMIT;
+  const listed = values.slice(0, limit).map((value) => formatCode(value, dialect)).join(', ');
+  const hidden = values.length - limit;
+  return hidden > 0 ? `${listed}, …and ${hidden} more` : listed;
 }
 
-/** A value on one line, so it cannot start a line of its own in the preview. */
+/**
+ * Controls, line and paragraph separators, and invisible format characters
+ * such as U+202E and U+200B. Each run renders as a space, so stored text can
+ * neither start a preview line of its own, reorder one, nor hide inside a
+ * value that looks like another.
+ */
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu;
+/** As above, except the joiners that emoji and Persian or Indic names are spelled with. */
+const HIDDEN_TEXT_CHARACTERS = /[[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]--\p{Join_Control}]+/gv;
+
+/** A technical value on one line, in a code span. */
 function formatCode(value: string, dialect: ChangeSetPresentationDialect): string {
-  return dialect.code(value.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' '));
+  return dialect.code(value.replace(HIDDEN_CHARACTERS, ' '));
+}
+
+/** A name, handle, label or quoted line as stored, on one visible line. */
+function plainText(text: string, dialect: ChangeSetPresentationDialect): string {
+  return dialect.escape(text.replace(HIDDEN_TEXT_CHARACTERS, ' '));
+}
+
+/** A URL as a client connects to it: a look-alike host in punycode, an invisible path character encoded. */
+function urlValue(value: unknown): string | undefined {
+  const url = stringValue(value);
+  return url === undefined ? undefined : URL.parse(url)?.href ?? url;
+}
+
+/**
+ * Hosts as requests reach them: `https://` plus the stored host, so a
+ * look-alike name reads in punycode. A value carrying more than a host and
+ * port stays as stored.
+ */
+function hostList(value: unknown): string[] {
+  return stringList(value).map((host) =>
+    /[/?#@\\]/.test(host) ? host : URL.parse(`https://${host}`)?.host ?? host);
 }
 
 function scalarValue(value: unknown): string | undefined {
@@ -858,8 +908,8 @@ function formatSkillChangeSection(
   after: SkillPresentationRecord | undefined,
   dialect: ChangeSetPresentationDialect,
 ): string {
-  const heading = dialect.bold(`${dialect.escape(targetName)} — Skill: ${
-    dialect.escape(skillName)
+  const heading = dialect.bold(`${plainText(targetName, dialect)} — Skill: ${
+    plainText(skillName, dialect)
   }`);
   if (!before && after) {
     return [heading, dialect.bold('Add'), formatSkillDetails(after, dialect)].join('\n');
@@ -960,12 +1010,12 @@ function formatChangeSection(
 ): string {
   if (!compare) {
     return [
-      dialect.bold(`${dialect.escape(targetName)} — ${fieldLabel}`),
+      dialect.bold(`${plainText(targetName, dialect)} — ${fieldLabel}`),
       quoteValue(after, dialect),
     ].join('\n');
   }
   return [
-    dialect.bold(`${dialect.escape(targetName)} — ${fieldLabel}`),
+    dialect.bold(`${plainText(targetName, dialect)} — ${fieldLabel}`),
     dialect.bold('Before'),
     quoteValue(before, dialect),
     dialect.bold('After'),
@@ -1034,7 +1084,7 @@ function presentationValue(field: PresentationField, value: unknown): string | u
 function quoteValue(value: string | undefined, dialect: ChangeSetPresentationDialect): string {
   return (value ?? '(not set)')
     .split(/\r?\n/)
-    .map((line) => `> ${dialect.escape(line)}`)
+    .map((line) => `> ${plainText(line, dialect)}`)
     .join('\n');
 }
 
