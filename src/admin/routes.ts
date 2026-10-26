@@ -6130,7 +6130,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
       agent = await requireCurrentAgentEdit(c, agentId);
-      if (agent.revision !== parsed.output.expectedRevision) {
+      if (!credentialWriteRevisionCurrent(agent, parsed.output.expectedRevision)) {
         return c.json({ error: 'agent_revision_conflict' }, 409);
       }
       connection = agent.apiConnections.find(
@@ -8579,7 +8579,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let connection: CustomAgentConfig['mcpServers'][number] | undefined;
     try {
       agent = await requireCurrentAgentEdit(c, agentId);
-      if (agent.revision !== input.expectedRevision) {
+      if (!credentialWriteRevisionCurrent(agent, input.expectedRevision)) {
         return c.json({ error: 'agent_revision_conflict' }, 409);
       }
       connection = agent.mcpServers.find(
@@ -8718,7 +8718,7 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     let connection: CustomAgentConfig['apiConnections'][number] | undefined;
     try {
       agent = await requireCurrentAgentEdit(c, agentId);
-      if (agent.revision !== input.expectedRevision) {
+      if (!credentialWriteRevisionCurrent(agent, input.expectedRevision)) {
         return c.json({ error: 'agent_revision_conflict' }, 409);
       }
       connection = agent.apiConnections.find(
@@ -8816,6 +8816,9 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
     }
 
     await unstageConnectorSecretCleanup(agentId, [ref], platformEnv, settingsStore);
+    if (input.credential && !input.clearCredential) {
+      await store(c).markApiCredentialReady(ref);
+    }
 
     return c.json({
       source: await describeConnectorCredentialSource(
@@ -13724,6 +13727,20 @@ async function retireReplacedAgentConnectionCredentials(
   }
 }
 
+/**
+ * Whether a credential write from the Admin save that produced
+ * `expectedRevision` may proceed. That save sends its credential writes in
+ * parallel at one revision, and a key it stores can mark a pending connection
+ * ready, which is a new revision. So the write proceeds while every later
+ * revision is such a mark, and stops at any other change.
+ */
+function credentialWriteRevisionCurrent(agent: CustomAgentConfig, expectedRevision: number): boolean {
+  const readyRevisions = new Set(agent.apiConnections.map(({ readyRevision }) => readyRevision));
+  let revision = agent.revision;
+  while (revision > expectedRevision && readyRevisions.has(revision)) revision -= 1;
+  return revision === expectedRevision;
+}
+
 async function connectionCredentialWasRetired(
   configStore: ConfigStore,
   lane: 'mcp' | 'api',
@@ -13863,7 +13880,7 @@ async function agentAdminProjection(
     };
   });
   const apiConnections = agent.apiConnections.map((storedConnection) => {
-    const { credentialRef, ...connection } = storedConnection;
+    const { credentialRef, readyRevision: _readyRevision, ...connection } = storedConnection;
     if (!access.canEdit || !validConnectionCredentialRef(credentialRef)) return connection;
     const ref = boundApiCredentialRef(agent.id, storedConnection);
     return {
