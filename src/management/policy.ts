@@ -157,7 +157,9 @@ function managementPolicyReason(
     ].includes(field))) {
       return { allowed: true, reason: 'capability_or_authority_change' };
     }
-    if (fields.length > 1) {
+    // A model change that restores or sets its effort is one change.
+    const changes = fields.filter((field) => field !== 'modelEffort' || !fields.includes('model'));
+    if (changes.length > 1) {
       return { allowed: true, reason: 'compound_agent_change' };
     }
     if (fields.includes('skills')) {
