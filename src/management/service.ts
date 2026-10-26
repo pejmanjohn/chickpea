@@ -445,8 +445,8 @@ export class WorkspaceManagementService {
         ? outcome.changed?.find(({ kind }) => kind === 'agent')?.id
         : undefined);
       // A deleted Agent has no page to link to.
-      const deleted = new Set(result.outcomes.flatMap((outcome, index) =>
-        outcome.operationKind === 'delete_agent' && applied[index] ? [applied[index]] : []));
+      const deleted = new Set(applied.filter((_, index) =>
+        result.outcomes[index]!.operationKind === 'delete_agent'));
       const targets = applied.map((agentId) => agentId && !deleted.has(agentId) ? agentId : undefined);
       const changedAgentIds = [...new Set(targets.filter((agentId): agentId is string =>
         agentId !== undefined))];
