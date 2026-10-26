@@ -381,7 +381,11 @@ test('a person lists and revokes only their own connected MCP clients, over MCP 
       assert.deepEqual((await succeed<McpClientList>(f, mcp(f.owner), 'list_mcp_clients', {})).clients, []);
 
       const fromSlack = await call(f, ownerSlackDmContext(f), 'list_mcp_clients', {});
-      assert.ok(!fromSlack.ok && fromSlack.error.code === 'forbidden', 'Slack has no MCP clients to manage');
+      assert.ok(!fromSlack.ok, 'Slack has no MCP clients to manage');
+      assert.deepEqual(fromSlack.error, {
+        code: 'forbidden',
+        message: 'Connected MCP clients are listed and revoked over the Chickpea MCP.',
+      });
     }, { mcpOAuthClients: async () => backend });
   } finally {
     backend.close();
