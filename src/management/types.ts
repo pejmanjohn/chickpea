@@ -24,6 +24,7 @@ import type {
   ManagementConnectionStatus,
   ManagementMcpConnection,
 } from './agent-connections.ts';
+import type { GroupDmEligibility } from '../slack/agent-access.ts';
 import type { SlackCommandAddress } from '../slack/command-address.ts';
 
 export type ManagementOrigin =
@@ -775,6 +776,14 @@ export interface ManagementConnectionSnapshot {
 
 export interface ManagementWorkspaceSnapshot {
   organizationId: string;
+  /** The Slack workspace's team ID, which `inspect_routines` takes as `workspaceId`. */
+  slackTeamId?: string;
+  /** The signed-in person asking. */
+  caller: {
+    membershipId: string;
+    role: OrganizationRole;
+    displayName: string | null;
+  };
   /** Present only when inspection is scoped by a trusted Slack Agent route. */
   currentAgentId?: string;
   /** Secret-free catalog of connector handoffs available to management agents. */
@@ -821,6 +830,10 @@ export interface ManagementWorkspaceSnapshot {
     /** Secret-free accounts owned by this Agent and visible to the requester. */
     connections?: ManagementConnectionSnapshot[];
     repositories: AgentCreateInput['repositories'];
+    /** Only an Agent every workspace member may use answers in Slack group DMs; `unknown` when Slack could not say. */
+    groupDms: GroupDmEligibility;
+    /** Present while the Agent answers as its own Slack app. */
+    ownSlackApp?: { handle: string };
   }>;
   channels: Array<{
     workspaceId: string;
@@ -856,6 +869,7 @@ export interface ManagementWorkspaceSnapshot {
       channelGrants: { active: number; pending: number; needsAttention: number };
     };
   };
+  /** Present for the people Admin shows the Team page: Owners and Admins. */
   team?: {
     members: Array<{
       id: string;

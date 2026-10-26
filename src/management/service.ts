@@ -93,7 +93,9 @@ import { AgentPresenceError } from '../slack/agent-presence/errors.ts';
 import {
   logUnavailableFacts,
   memberChannelViews,
+  resolveGroupDmEligibility,
   resolvePrivateAgentAccess,
+  type GroupDmEligibility,
   type PrivateAgentPlacementFacts,
 } from '../slack/agent-access.ts';
 import { agentStillInSlackRefusal, archiveBeforeDeleting } from '../slack/agent-presence/left-slack.ts';
@@ -250,6 +252,18 @@ const UNAVAILABLE_SLACK_FACTS: PrivateAgentPlacementFacts = {
   lookupChannel: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
   listMemberChannels: () => Promise.reject(new Error('Slack Channel facts are unavailable.')),
 };
+
+function oneLookupPerChannel(facts: PrivateAgentPlacementFacts): PrivateAgentPlacementFacts {
+  const channels = new Map<string, ReturnType<PrivateAgentPlacementFacts['lookupChannel']>>();
+  return {
+    lookupChannel(channelId) {
+      let channel = channels.get(channelId);
+      if (!channel) channels.set(channelId, channel = facts.lookupChannel(channelId));
+      return channel;
+    },
+    listMemberChannels: (slackUserId) => facts.listMemberChannels(slackUserId),
+  };
+}
 
 type ManagedProviderId = typeof MANAGED_PROVIDER_IDS[number];
 type ManagedProviderSource = 'env' | 'stored' | 'missing';
@@ -3747,11 +3761,12 @@ export class WorkspaceManagementService {
 
   private async snapshot(actor: LiveManagementActor): Promise<ManagementWorkspaceSnapshot> {
     const userAgentScoped = isUserAgentScoped(actor);
-    const [allAgents, channels, allGrants, organization, providerSources, currentAgent] = await Promise.all([
+    const [allAgents, channels, allGrants, organization, caller, providerSources, currentAgent] = await Promise.all([
       this.stores.config.listUserAgents(),
       this.stores.config.listChannels(),
       this.stores.config.listAgentChannelGrants(),
       this.stores.identity.getOrganization(),
+      this.stores.identity.getUser(actor.userId),
       actor.role === 'member' || userAgentScoped
         ? Promise.resolve([] as Array<readonly [ManagedProviderId, ManagedProviderSource]>)
         : Promise.all(MANAGED_PROVIDER_IDS.map(async (id) => [
@@ -3913,9 +3928,12 @@ export class WorkspaceManagementService {
           revision: connection.bindingRevision,
         }])),
     ];
-    const team = actor.role === 'owner' && !userAgentScoped
-      ? await this.teamSnapshot(actor.organizationId)
-      : undefined;
+    const [team, groupDms] = await Promise.all([
+      permissionForRole(actor.role).has('team.view') && !userAgentScoped
+        ? this.teamSnapshot(actor.organizationId)
+        : undefined,
+      this.groupDmEligibility(agents, allGrants, organization?.slackTeamId ?? undefined),
+    ]);
     const [listedModels, routineSchedulingAvailable, workspaceDefault] = userAgentScoped
       ? await Promise.all([
           this.stores.listAvailableModels?.().catch(() => []) ?? [],
@@ -3933,6 +3951,12 @@ export class WorkspaceManagementService {
     const selfAgent = userAgentScoped ? agents[0] : undefined;
     return {
       organizationId: actor.organizationId,
+      ...(organization?.slackTeamId ? { slackTeamId: organization.slackTeamId } : {}),
+      caller: {
+        membershipId: actor.membershipId,
+        role: actor.role,
+        displayName: caller?.displayName ?? null,
+      },
       ...(actor.origin.kind === 'slack' && actor.origin.agentId
         ? { currentAgentId: actor.origin.agentId }
         : {}),
@@ -4005,6 +4029,8 @@ export class WorkspaceManagementService {
             }) => connection) }
           : {}),
         repositories,
+        groupDms: groupDms.get(id)!,
+        ...(agentAppIsLive(slackPresence) ? { ownSlackApp: { handle: slackPresence.normalizedHandle } } : {}),
       })),
       channels: visibleChannels.map((channel) => ({
         workspaceId: channel.workspaceId,
@@ -4044,6 +4070,29 @@ export class WorkspaceManagementService {
       ...(team ? { team } : {}),
       effectiveRevision: effectiveConfigurationRevision(refs),
     };
+  }
+
+  /** One Slack lookup per Channel serves every Agent but those with their own Slack app. */
+  private async groupDmEligibility(
+    agents: readonly CustomAgentConfig[],
+    grants: readonly AgentChannelGrant[],
+    workspaceId: string | undefined,
+  ): Promise<ReadonlyMap<string, GroupDmEligibility>> {
+    if (!workspaceId) return new Map(agents.map(({ id }) => [id, 'unknown']));
+    let shared: Promise<PrivateAgentPlacementFacts> | undefined;
+    const facts = (agent: CustomAgentConfig) => agent.slackPresence?.kind === 'agent_app'
+      ? this.slackFactsFor(workspaceId, agent)
+      : shared ??= this.slackFactsFor(workspaceId).then(oneLookupPerChannel);
+    return new Map(await Promise.all(agents.map(async (agent) => {
+      const placed = grants.some((grant) => grant.agentId === agent.id &&
+        grant.workspaceId === workspaceId && grant.status === 'active');
+      return [agent.id, await resolveGroupDmEligibility({
+        agent,
+        workspaceId,
+        grants,
+        ...(placed ? { transport: await facts(agent) } : {}),
+      })] as const;
+    })));
   }
 
   private async teamSnapshot(
