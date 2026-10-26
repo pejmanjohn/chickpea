@@ -19,6 +19,7 @@ import type { ManagementActorContext } from '../src/management/types.ts';
 import type { NormalizedSlackTurn } from '../src/slack/types.ts';
 import { authoringProposalMetadata } from './helpers/agent-authoring.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { withPersonApproval } from './helpers/slack-person-approval.ts';
 import { slackTurnSignal } from './helpers/slack-turn-signal.ts';
 
 test('catalog aliases resolve to one canonical connector', () => {
@@ -954,7 +955,7 @@ test('a same-turn Agent edit proposal stays current after the welcome publishes 
     assert.equal(publishCalls, 1);
 
     const confirmed = await f.service.confirmWorkspaceChange({
-      context,
+      context: withPersonApproval(context, proposed.proposalId),
       proposalId: proposed.proposalId,
     });
     assert.equal(confirmed.outcomes[0]?.disposition, 'applied');
@@ -1061,11 +1062,11 @@ test('the welcome retries a deferred avatar when the same-turn proposal targets 
   }
 });
 
-test('an ask\'s words never anchor a connector in the creation reply; the person\'s words do', async () => {
+test('an ask\'s words never anchor a connector in a creation reply: its creation waits for the person; the person\'s words do', async () => {
   const f = await createManagementAdapterFixture('welcome-ask-requester-text');
   try {
     const words = 'create me a support agent that will connect to zendesk';
-    const welcome = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
+    const create = async (name: 'person' | 'ask', turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
       const signal = slackTurnSignal({
         turn: { ...turn, eventId: `Ev_WELCOME_${name}`, messageTs: '910.2' },
         agentId: CHICKPEA_AGENT_ID,
@@ -1095,7 +1096,11 @@ test('an ask\'s words never anchor a connector in the creation reply; the person
           },
         }],
       });
-      if (!('operationId' in applied)) assert.fail('expected applied creation');
+      if (!('operationId' in applied)) assert.fail('expected an apply result');
+      return { signal, context, agentId, applied };
+    };
+    const welcome = async (turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>) => {
+      const { signal, context, agentId, applied } = await create('person', turn);
       const finalized = await f.service.finalizeSlackAgentCreationWelcome({
         context,
         operationId: applied.operationId,
@@ -1112,15 +1117,16 @@ test('an ask\'s words never anchor a connector in the creation reply; the person
       return receipt;
     };
 
-    const person = await welcome('person', { text: words });
+    const person = await welcome({ text: words });
     assert.deepEqual(person.connectorActions?.map(({ presetId }) => presetId), ['zendesk']);
 
-    const ask = await welcome('ask', {
+    const { applied: asked, agentId: askedAgentId } = await create('ask', {
       text: words,
       agentAsk: { fromAgentId: 'agent_helper', fromAgentName: 'Helper', fromAgentHandle: 'helper', originMessageTs: '910.1' },
     });
-    assert.deepEqual(ask.connectorActions, []);
-    assert.deepEqual(ask.connectorNotices, []);
+    assert.deepEqual(asked.outcomes.map(({ disposition }) => disposition), ['confirmation_required'],
+      'no welcome is owed: nothing is created until the person approves');
+    await assert.rejects(f.config.getAgent(askedAgentId));
   } finally {
     f.close();
   }

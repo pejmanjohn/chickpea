@@ -95,6 +95,7 @@ import {
 } from '../slack/app-home.ts';
 import {
   classifySlackInteraction,
+  classifySlackManagementApproval,
   resolveImmediateSlackInteractionIntent,
   shouldResolveSlackManagementApproval,
   slackSteeringCommand,
@@ -257,7 +258,7 @@ import {
 } from '../slack/types.ts';
 import type { AuthPrincipal } from '../auth/types.ts';
 import { emitManagementMetric } from '../management/telemetry.ts';
-import { resolveHostSlackManagementApproval } from '../management/slack-approval.ts';
+import { resolveTypedSlackManagementApproval } from '../management/slack-approval.ts';
 import { admitSlackBrowserActionReply } from '../slack/browser-action-admission.ts';
 import {
   authorizeUiResponse,
@@ -3195,9 +3196,13 @@ async function processSlackEvent(
   // @Chickpea in another Agent's thread) hands the thread over and is not
   // steering: routing checked the sender against the new Agent only, and a
   // stop must come from someone who may use the running one (R3). A click or
-  // form answer on an interactive surface is never steering.
-  const steeringCommand = typedByPerson && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
-    ? slackSteeringCommand(turn.text, commandAddress)
+  // form answer on an interactive surface is never steering. The phrase is
+  // read even where steering does not act on it, because a stop phrase handed
+  // to another Agent, or heard with no Slack client, is still never an answer
+  // to a waiting change.
+  const steeringPhrase = typedByPerson ? slackSteeringCommand(turn.text, commandAddress) : undefined;
+  const steeringCommand = steeringPhrase && !browserActionAnswered && !candidateTurn && !routedHandoff && slackClient
+    ? steeringPhrase
     : undefined;
   if (steeringCommand && slackClient && slackConversationKind(turn) === 'im' &&
       turn.messageTs === turn.threadTs) {
@@ -3242,24 +3247,50 @@ async function processSlackEvent(
     : undefined;
   let midRunReceipt: TurnMidRunReceipt | undefined;
 
-  if (
-    typedByPerson && !browserActionAnswered &&
-    admissionTruth.eligible && admittedActorMembershipId &&
-    shouldResolveSlackManagementApproval(turn.text)
-  ) {
-    const proposalId = await resolveHostSlackManagementApproval({
-      turn,
-      assignment,
-      actorMembershipId: admittedActorMembershipId,
-      identity: stores.identity,
-      management: stores.management,
-    });
-    if (proposalId) {
-      turn.managementApprovalProposalId = proposalId;
-      turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
-      deterministicCommand = true;
-    }
+  // A stop phrase or check-in keeps its host meaning and is never judged.
+  const typedApproval = typedByPerson && !browserActionAnswered && !steeringPhrase &&
+      admissionTruth.eligible && admittedActorMembershipId
+    ? await resolveTypedSlackManagementApproval({
+        turn,
+        assignment,
+        actorMembershipId: admittedActorMembershipId,
+        identity: stores.identity,
+        management: stores.management,
+        latestAgentTurnMessageTs: async (query) => await state.latestAgentTurnMessageTs?.(query),
+        judge: async (reply) => {
+          const requestedModel = assignment.model ?? null;
+          const judgment = await classifySlackManagementApproval({ ...reply, requestedModel }, {
+            env: platformEnv,
+            settings: stores.settings,
+            once: () => state.claim(`approval:${msgKey}`),
+          });
+          await recordInteractionClassifierUsage({
+            turn,
+            assignment,
+            classification: judgment,
+            requestedModel,
+            surface,
+            stores,
+            platformEnv,
+            operation: 'management_approval',
+          }).catch(() => {
+            console.warn('[chickpea] approval judgment usage was not recorded');
+          });
+          return judgment.approval;
+        },
+      }).catch((err: unknown) => {
+        // An exact approval fails the turn as before; other wording stays conversation.
+        if (shouldResolveSlackManagementApproval(turn.text)) throw err;
+        console.warn('[chickpea] typed approval was not judged:', sanitizeError(err));
+        return undefined;
+      })
+    : undefined;
+  if (typedApproval?.kind === 'approve') {
+    turn.managementApprovalProposalId = typedApproval.proposalId;
+    turn.interactionIntent = { disposition: 'reply', reason: 'substantive_request' };
+    deterministicCommand = true;
   }
+  const declinedProposalId = typedApproval?.kind === 'decline' ? typedApproval.proposalId : undefined;
 
   // A person handed the thread to another Agent while the chain was out: the
   // answer is already in the thread for that Agent, and nobody is owed it.
@@ -3656,20 +3687,21 @@ async function processSlackEvent(
   //    session-created-before-provider-call semantics. A failed turn leaves
   //    the thread registered (only the claims are released, for retry).
   if (!claimsHeldByCanonicalAdmission) await state.start(threadKey);
-  if (!ui && runtimeClient && (turn.managementApprovalProposalId || browserActionAnswered)) {
-    // A typed approve or stop settles the card offering the same approval.
+  const answeredProposalId = turn.managementApprovalProposalId ?? declinedProposalId;
+  if (!ui && runtimeClient && (answeredProposalId || browserActionAnswered)) {
+    // A typed approve, decline or stop settles the card offering the same choice.
     await retireApprovalSurfacesForTypedAnswer({
       state,
       messenger: surfaceMessenger(runtimeClient, turn.channelId),
       scope: { workspaceId: turn.workspaceId, channelId: turn.channelId, agentId: assignment.agent.id },
       match: {
-        ...(turn.managementApprovalProposalId ? { proposalId: turn.managementApprovalProposalId } : {}),
+        ...(answeredProposalId ? { proposalId: answeredProposalId } : {}),
         ...(browserActionAnswered ? { browserActionId: browserActionAnswered.id } : {}),
       },
       resolution: {
         byUserId: turn.userId,
         at: Date.now(),
-        choice: browserActionAnswered?.kind === 'stopped' ? 1 : 0,
+        choice: declinedProposalId || browserActionAnswered?.kind === 'stopped' ? 1 : 0,
       },
     }).catch(() => {
       console.warn('[chickpea] typed approval did not retire its card');
@@ -4573,20 +4605,23 @@ async function handleMemberJoinedChannel(
 async function recordInteractionClassifierUsage(input: {
   turn: NormalizedSlackTurn;
   assignment: ResolvedAssignment;
-  classification: Awaited<ReturnType<typeof classifySlackInteraction>>;
+  classification: Pick<Awaited<ReturnType<typeof classifySlackInteraction>>, 'result' | 'failed'>;
   requestedModel: string | null;
   surface: AssignmentSurface;
   stores: AppStores;
   platformEnv: PlatformEnv | undefined;
   runId?: string;
+  /** The approval judgment is its own side call; only the intent one is `classification`. */
+  operation?: 'classification' | 'management_approval';
 }): Promise<void> {
   if (!usageRuntimeRecordingEnabled(input.platformEnv)) return;
   // Deterministic edge rules invoke no provider and therefore create no usage.
   if (!input.classification.result && !input.classification.failed) return;
+  const operation = input.operation ?? 'classification';
   const recorder = new InteractionUsageRecorder({
     operationId:
-      `classification:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`,
-    executionId: `classification-exec:${input.turn.eventId}`,
+      `${operation}:${input.turn.workspaceId}:${input.turn.channelId}:${input.turn.eventId}`,
+    executionId: `${operation}-exec:${input.turn.eventId}`,
     startedAt: slackEventTimestampMs(input.turn.messageTs) ?? Date.now(),
     workspaceId: input.turn.workspaceId,
     channelId: input.turn.channelId,

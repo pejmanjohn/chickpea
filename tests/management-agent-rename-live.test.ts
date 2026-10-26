@@ -21,6 +21,7 @@ import { REQUESTED_SLACK_BOT_SCOPES } from '../src/slack/scopes.ts';
 import { useDeploymentKeyring } from './helpers/deployment-keyring.ts';
 import { withEnv } from './helpers/env.ts';
 import { createManagementAdapterFixture } from './helpers/management-adapter-fixture.ts';
+import { approveAsPerson } from './helpers/slack-person-approval.ts';
 
 const HOSTED = { CHICKPEA_TENANCY: 'installation' } as Record<string, unknown>;
 // Slack publishes no user-group name limit; this fake picks one to exercise `name_too_long`.
@@ -113,11 +114,13 @@ async function renameFixture(t: TestContext) {
       requesterText,
     };
   };
-  const tool = <TName extends 'apply_workspace_changes' | 'propose_workspace_changes' | 'confirm_workspace_change'>(
+  const tool = <TName extends 'apply_workspace_changes' | 'propose_workspace_changes'>(
     requesterText: string,
     name: TName,
     args: Parameters<typeof invokeSlackWorkspaceManagementTool<TName>>[0]['args'],
   ) => invokeSlackWorkspaceManagementTool({ signal: signalFor(requesterText), identity: f.identity, service, name, args });
+  const approve = (proposalId: string) =>
+    approveAsPerson({ signal: signalFor('approve'), identity: f.identity, service, args: { proposalId } });
   const renameArgs = async (patch: ManagementAgentPatch) => ({
     idempotencyKey: `rename-${sequence}`,
     operations: [{
@@ -144,7 +147,7 @@ async function renameFixture(t: TestContext) {
       health: agent.slackPresence?.health,
     };
   };
-  return { f, slack, tool, renameArgs, update, desk, service };
+  return { f, slack, tool, approve, renameArgs, update, desk, service };
 }
 
 const DESK = {
@@ -197,7 +200,7 @@ test('a name Slack finds too long for its user group fails to the model with the
 
 test('an approved rename onto a taken handle fails to the model and changes neither name nor handle', async (t) => {
   await withEnv({ CHICKPEA_TENANCY: undefined, SLACK_STATE_DB_PATH: ':memory:' }, async () => {
-    const { f, slack, tool, renameArgs, update, desk, service } = await renameFixture(t);
+    const { f, slack, tool, approve, renameArgs, update, desk, service } = await renameFixture(t);
     const rename = { name: 'Support', requestedHandle: 'support' };
     const kept = /^@support is already taken in this Slack workspace, so nothing changed and the Agent keeps @desk\./;
     const deskGroup = { id: 'S0DESK', name: 'Desk', handle: 'desk', description: 'Desk Agent', date_update: 1, date_delete: 0 };
@@ -214,7 +217,7 @@ test('an approved rename onto a taken handle fails to the model and changes neit
     // From Slack an inline confirmation is a change set, the same as a proposal.
     const pending = await update('rename Desk to Support with @support', rename);
     assert.equal(pending.disposition, 'confirmation_required');
-    assertRefused(await tool('approve', 'confirm_workspace_change', { proposalId: pending.proposalId! }));
+    assertRefused(await approve(pending.proposalId!));
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
 
@@ -222,9 +225,7 @@ test('an approved rename onto a taken handle fails to the model and changes neit
       ...await renameArgs(rename), guideVersion: AGENT_AUTHORING_GUIDE_VERSION, authoringReason: 'agent_edit',
     });
     if (!proposed.ok) assert.fail(inspect(proposed, { depth: 8 }));
-    assertRefused(await tool('approve', 'confirm_workspace_change', {
-      proposalId: (proposed.result as { proposalId: string }).proposalId,
-    }));
+    assertRefused(await approve((proposed.result as { proposalId: string }).proposalId));
     assert.deepEqual(await desk(), DESK);
     assert.deepEqual(slack.groups.find(({ id }) => id === 'S0DESK'), deskGroup);
 

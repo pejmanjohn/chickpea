@@ -21,6 +21,7 @@ import {
   type ManagementApplyResult,
   type ManagementChangeSetProposalRecord,
   type ManagementOperation,
+  type ManagementOrigin,
   type ManagementProposalRecord,
   type ManagementReceiptOutboxRecord,
   type ManagementIntroductionClaim,
@@ -124,6 +125,7 @@ interface ManagementChangeSetProposalRow {
   status: ManagementChangeSetProposalRecord['status'];
   result_json: string | null;
   request_operation_id: string | null;
+  proposed_message_ts: string | null;
   expires_at: number;
   created_at: number;
   updated_at: number;
@@ -231,6 +233,13 @@ export interface ManagementStore {
     at: number,
   ): Promise<ManagementProposalRecord>;
   markProposalStale(proposalId: string, at: number): Promise<ManagementProposalRecord>;
+  /**
+   * Freezes a change set and supersedes the requester's older pending one in
+   * the scope. A put that resolves to a pending set instead, by its ID, its
+   * idempotency key, or, from a later Slack message, the same operations from
+   * the same origin, returns that set, now waiting on this put's proposing
+   * message and call.
+   */
   putChangeSetProposal(
     input: PutManagementChangeSetProposalInput,
   ): Promise<ManagementChangeSetProposalRecord>;
@@ -808,7 +817,7 @@ export class ManagementStoreLogic {
   ): ManagementChangeSetProposalRecord {
     const approvalScopeKey = input.approvalScopeKey ?? input.originKey;
     const existing = this.getChangeSetProposal(input.proposalId);
-    if (existing) return existing;
+    if (existing) return this.reanchorChangeSetProposal(existing, input);
     const replayRow = this.db.get(
       `SELECT * FROM management_change_set_proposals
        WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
@@ -840,8 +849,24 @@ export class ManagementStoreLogic {
           'The prior proposal is no longer pending. Use a new idempotency key after reviewing fresh state.',
         );
       }
-      return replay;
+      return this.reanchorChangeSetProposal(replay, input);
     }
+    const sameRow = input.proposedMessageTs === undefined ? undefined : this.db.get(
+      `SELECT * FROM management_change_set_proposals
+       WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
+         AND approval_scope_key = ? AND origin_key = ? AND status = 'pending'
+         AND digest = ? AND target_revisions_json = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+      input.organizationId,
+      input.actorUserId,
+      input.actorMembershipId,
+      approvalScopeKey,
+      input.originKey,
+      input.digest,
+      JSON.stringify(input.targetRevisions),
+    ) as unknown as ManagementChangeSetProposalRow | undefined;
+    if (sameRow) return this.reanchorChangeSetProposal(changeSetProposalFromRow(sameRow), input);
     this.db.run(
       `UPDATE management_change_set_proposals SET status = 'stale', updated_at = ?
        WHERE organization_id = ? AND actor_user_id = ? AND actor_membership_id = ?
@@ -857,8 +882,8 @@ export class ManagementStoreLogic {
         proposal_id, organization_id, actor_user_id, actor_membership_id,
         origin_key, approval_scope_key, idempotency_key, guide_version, authoring_reason,
         operations_json, digest, preview_json, target_revisions_json,
-        status, result_json, request_operation_id, expires_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, 0, ?, ?)`,
+        status, result_json, request_operation_id, proposed_message_ts, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, 0, ?, ?)`,
       input.proposalId,
       input.organizationId,
       input.actorUserId,
@@ -873,10 +898,39 @@ export class ManagementStoreLogic {
       JSON.stringify(input.preview),
       JSON.stringify(input.targetRevisions),
       input.requestOperationId ?? null,
+      input.proposedMessageTs ?? null,
       input.at,
       input.at,
     );
     return this.requireChangeSetProposal(input.proposalId);
+  }
+
+  /**
+   * A pending set proposed again, or shown from a later Slack message, moves
+   * to that message and call. A re-anchor from a second `apply_workspace_changes`
+   * call moves `request_operation_id` to the newer call, and the earlier call
+   * stays unsettled, as a superseded call did before.
+   */
+  private reanchorChangeSetProposal(
+    proposal: ManagementChangeSetProposalRecord,
+    input: Pick<PutManagementChangeSetProposalInput, 'proposedMessageTs' | 'requestOperationId' | 'at'>,
+  ): ManagementChangeSetProposalRecord {
+    const proposedMessageTs = input.proposedMessageTs ?? proposal.proposedMessageTs;
+    const requestOperationId = input.requestOperationId ?? proposal.requestOperationId;
+    if (proposal.status !== 'pending' || (proposedMessageTs === proposal.proposedMessageTs &&
+        requestOperationId === proposal.requestOperationId)) {
+      return proposal;
+    }
+    this.db.run(
+      `UPDATE management_change_set_proposals
+       SET proposed_message_ts = ?, request_operation_id = ?, updated_at = ?
+       WHERE proposal_id = ? AND status = 'pending'`,
+      proposedMessageTs ?? null,
+      requestOperationId ?? null,
+      Math.max(input.at, proposal.updatedAt + 1),
+      proposal.proposalId,
+    );
+    return this.requireChangeSetProposal(proposal.proposalId);
   }
 
   getChangeSetProposal(proposalId: string): ManagementChangeSetProposalRecord | undefined {
@@ -1090,7 +1144,7 @@ export class ManagementStoreLogic {
       record.organizationId,
       record.actorUserId,
       record.actorMembershipId,
-      JSON.stringify(record.origin),
+      JSON.stringify(storedOrigin(record.origin)),
       record.action,
       JSON.stringify(record.target),
       JSON.stringify(record.scopes),
@@ -2039,6 +2093,7 @@ export class ManagementStoreLogic {
       ['authoring_reason', 'TEXT'],
       ['approval_scope_key', "TEXT NOT NULL DEFAULT ''"],
       ['request_operation_id', 'TEXT'],
+      ['proposed_message_ts', 'TEXT'],
     ];
     for (const [name, definition] of additions) {
       addColumnIfMissing(this.db, 'management_change_set_proposals', name, definition);
@@ -2222,9 +2277,17 @@ function changeSetProposalFromRow(
       ? { result: JSON.parse(row.result_json) as ManagementApplyResult }
       : {}),
     ...(row.request_operation_id ? { requestOperationId: row.request_operation_id } : {}),
+    ...(row.proposed_message_ts ? { proposedMessageTs: row.proposed_message_ts } : {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+/** The host's approval stamp holds for one turn, so no stored record keeps it. */
+function storedOrigin(origin: ManagementOrigin): ManagementOrigin {
+  if (origin.kind !== 'slack' || origin.approvedProposalId === undefined) return origin;
+  const { approvedProposalId: _turnOnly, ...stored } = origin;
+  return stored;
 }
 
 function assertProposalClaimBinding(

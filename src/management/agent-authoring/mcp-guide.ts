@@ -63,7 +63,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'Over MCP there is no standalone memory tool. For a remember or forget request, call `inspect_memory`, then send one `update_agent_memory` operation with the inspected `expectedRevision` and the complete replacement `body` through `apply_workspace_changes`; it applies immediately and returns an undoable receipt. The management service still enforces permission and revision.',
   ],
   [
-    'Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class `manage_scheduled_work` tool and are outside Agent authoring. Inspect existing routines before an edit, control, or run-now action so the operation uses an exact routine ID and current version where required. Deleting scheduled work is deliberately outside `manage_scheduled_work` because it is irreversible. For a clear request to delete a routine, activate this guide, call `inspect_routines`, and disambiguate if needed. Once the exact routine ID and current version are known, call `propose_workspace_changes` with one `delete_routine` operation, show the returned Slack preview, and wait for explicit confirmation before calling `confirm_workspace_change`. Never delete a routine through `apply_workspace_changes`. Exact `!routines` commands remain a separate deterministic control surface.',
+    'Standalone natural-language requests to create, edit, pause, resume, disable, or run scheduled work now use the first-class `manage_scheduled_work` tool and are outside Agent authoring. Inspect existing routines before an edit, control, or run-now action so the operation uses an exact routine ID and current version where required. Deleting scheduled work is deliberately outside `manage_scheduled_work` because it is irreversible. For a clear request to delete a routine, activate this guide, call `inspect_routines`, and disambiguate if needed. Once the exact routine ID and current version are known, call `propose_workspace_changes` with one `delete_routine` operation and show the returned Slack preview; the routine is deleted only when the person approves it. Never delete a routine through `apply_workspace_changes`. Exact `!routines` commands remain a separate deterministic control surface.',
     'Over MCP, scheduled work is ordinary typed configuration. Inspect existing routines with `inspect_routines` so an edit, control, or run-now action uses an exact routine ID and current version, then send `save_routine`, `control_routine`, or `run_routine` through `apply_workspace_changes`; they apply immediately. Deleting scheduled work is irreversible: call `inspect_routines`, disambiguate if needed, then send one `delete_routine` operation through `apply_workspace_changes`. It returns `confirmation_required`; show its `presentation.markdown` and call `confirm_workspace_change` only after the person agrees.',
   ],
   [
@@ -95,7 +95,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     `Send every typed Chickpea workspace configuration operation through \`apply_workspace_changes\`. It does not execute actions in Slack or connected services. Approval cannot make an unsupported operation available. You act with the person's Admin authority, so generated or inferred skill content, compound and multi-field edits, capability changes, and reach or authority changes apply in that call once the person has asked for them; when they want to review a generated change first, draft it in the conversation before you apply it. Like the Admin UI, a destructive change asks first: ${DESTRUCTIVE_CHANGES}. That item returns \`confirmation_required\` with a bounded \`presentation.markdown\` preview and a \`proposalId\`, and the rest of the call waits with it. The preview is the review; the person's agreement is the confirmation.`,
   ],
   [
-    'Treat every returned proposal handle as an opaque control token. Preserve it byte-for-byte for `confirm_workspace_change`; never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. If an explicit approval reaches you without the handle, do not repeat or reconstruct the unchanged proposal; report that there is no active proposal available to apply. Prepare a fresh proposal only after a new request or a substantive adjustment.',
+    'Treat every returned proposal handle as an opaque control token: never retype, shorten, normalize, or invent it. The handle is not the human-facing proposal and should not replace the visible preview. A proposal applies only when the person approves it; you never apply one yourself. When the person asks about a waiting proposal, answer, then propose the same operations unchanged and end with the request to approve it. When they approved it and it did not apply, do not propose it again; tell them how to approve it, or that no proposal is waiting. Prepare a different proposal only after a new request or a substantive adjustment.',
     'Treat every returned `proposalId` as an opaque control token. Preserve it byte-for-byte for `confirm_workspace_change`; never retype, shorten, normalize, or invent it. The handle is not the human-facing preview and should not replace it. If the person agrees and no change is waiting for confirmation, do not reconstruct one; report that nothing is waiting.',
   ],
   [
@@ -103,7 +103,7 @@ export const AGENT_AUTHORING_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonly [fr
     'Show the tool\'s `presentation.markdown` value to the person.',
   ],
   [
-    'When the requester approves the visible preview with `create it`, `approve`, or an equivalent unambiguous reference to that exact proposal, call `confirm_workspace_change` directly with its proposal handle.',
+    'The person\'s approval applies the proposal, never a tool call of yours.',
     'When the person agrees to the visible preview with an unambiguous reference to that exact change, call `confirm_workspace_change` directly with its `proposalId`.',
   ],
   [
@@ -171,7 +171,7 @@ export const AGENT_SKILL_CREATION_GUIDE_MCP_SUBSTITUTIONS: ReadonlyArray<readonl
     'Preserve omission warnings from presentation.markdown when you report the result.',
   ],
   [
-    'Only `confirm_workspace_change` may activate the frozen proposal. If the proposal becomes stale or permissions change, do not recreate the content silently; inspect again and propose a new revision.',
+    'Only the person\'s approval may activate the frozen proposal. If the proposal becomes stale or permissions change, do not recreate the content silently; inspect again and propose a new revision.',
     'If the Agent changed since you inspected it or permissions change, do not recreate the content silently; inspect again and draft a new revision.',
   ],
 ];

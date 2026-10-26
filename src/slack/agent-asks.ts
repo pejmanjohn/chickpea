@@ -219,3 +219,10 @@ export function createAgentAskCollector(input: {
 export function personRequestText(turn: Pick<NormalizedSlackTurn, 'text' | 'agentAsk'>): string | undefined {
   return turn.agentAsk ? undefined : turn.text;
 }
+
+/** A click's or form answer's text is the host's description of it, never words the person typed. */
+export function personRequestTextSource(
+  turn: Pick<NormalizedSlackTurn, 'agentAsk' | 'uiResponse'>,
+): 'click' | undefined {
+  return !turn.agentAsk && turn.uiResponse ? 'click' : undefined;
+}

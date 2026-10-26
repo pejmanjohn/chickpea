@@ -19,7 +19,7 @@ Docs: `/agents/agents/`, `/agents/create-an-agent/`, `/agents/instructions/`, `/
 
 - Slack: mention `@Chickpea` in the channel where the Agent should work and describe the job; for an edit, mention the Agent or `@Chickpea` and approve in the same thread.
 - Admin: **Agents → New Agent** (`/admin/agents/new`), then **Choose first channel**. The profile's overflow menu holds **Archive Agent** and **Restore Agent**; the avatar is changed only on the Agent page.
-- MCP: one `create_agent` operation in `apply_workspace_changes`. Publishing is a separate `grant_agent_channel` operation, and other changes are proposals confirmed with `confirm_workspace_change`.
+- MCP: one `create_agent` operation in `apply_workspace_changes`. Publishing is a separate `grant_agent_channel` operation that applies at once, and only a destructive change waits for `confirm_workspace_change`.
 
 ## How to drive it on a lane
 
@@ -44,7 +44,7 @@ npm run verify:live:record -- case-add --spec "$run_dir/spec.json" --output "$ru
 
 - Creation passes only when Admin shows one active Agent with a healthy handle and an active grant for the source channel, and the request thread holds exactly one welcome. Record the Agent ID from Admin, never from the display name.
 - Approval proof is the full saved value against the frozen proposal. The Slack preview may truncate; it is not the comparison.
-- The approval word must be the whole reply. A longer sentence reaches the Agent as conversation, and an approval from another person or thread applies nothing.
+- The requester's reply right after the preview approves when it clearly agrees, in any wording ("yes, go ahead"). A conditional or partial reply ("yes, but rename it first") or a question reaches the Agent as conversation, and a refusal ("no, leave it") retires the change set. When the person asks about the change, the Agent answers and proposes it again with no second card, and an "ok, go ahead" after that answer approves it. Once the Agent has answered anything else, only Approve or a typed `approve` applies it. A stop phrase such as "cancel that" keeps its steering meaning and is never judged. An approval from another person or thread applies nothing.
 - A welcome can succeed while a bad model pin breaks the first real request. Send one real request and check the model in the reply footer.
 - Insert mentions with Slack's mention control and confirm the draft holds a mention token. A plain-text `@handle` reaches no Agent, so its silence proves nothing.
 - An Admin-created Agent answers nowhere until it has a channel; a plain `@handle` typed before that goes to `@Chickpea`.

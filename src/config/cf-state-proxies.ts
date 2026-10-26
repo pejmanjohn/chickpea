@@ -336,7 +336,7 @@ const REPLAY_SAFE_STATE_METHODS = new Set([
   'settingGetMany', 'slackAgentBindingGet', 'slackFlueObservationMatch',
   'slackInstallationPendingDeliveryCount', 'slackPresentationGet',
   'slackPresentationLatestThreadGeneration', 'slackPresentationRepairList', 'slackPresentationSummary',
-  'slackProposalApprovalTurns', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
+  'slackProposalApprovalTurns', 'slackLatestAgentTurn', 'slackTurnEnvelopeGet', 'slackTurnRecoveryList', 'snapshotGet',
   'snapshotListLiveRootsByAgent', 'threadActiveWorkGet', 'threadHas',
   // Idempotent writes: a keyed set or delete, first-write-wins, or version-gated.
   'threadActiveWorkSet', // the flag for one generation, set to a value
@@ -2135,6 +2135,10 @@ export class CfSlackStateStore implements SlackStateStore {
 
   async listProposalApprovalTurns(input: Parameters<TagStateRpc['slackProposalApprovalTurns']>[0]) {
     return rpcVia(this.stub,'slackProposalApprovalTurns', (stub) => stub.slackProposalApprovalTurns(input));
+  }
+
+  async latestAgentTurnMessageTs(input: Parameters<TagStateRpc['slackLatestAgentTurn']>[0]) {
+    return orUndefined(await rpcVia(this.stub, 'slackLatestAgentTurn', (stub) => stub.slackLatestAgentTurn(input)));
   }
 
   async getLatestThreadSessionGeneration(
