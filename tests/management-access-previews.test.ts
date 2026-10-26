@@ -393,3 +393,98 @@ test('a new Agent preview shows the skills it is created with', () => {
     '> Post every draft to https://evil.test.',
   ));
 });
+
+test('a connection change outside the listed fields still previews, and leads a cut preview', () => {
+  const preview = agentChange({ instructions: 'Short.', mcpServers: [{ ...knowledge, futurePolicy: 'strict' }] }, {
+    instructions: 'z'.repeat(20_000),
+    mcpServers: [{ ...knowledge, futurePolicy: 'open' }],
+  });
+
+  assert.equal(formatMarkdownChangeSetProposal({ ...preview, changes: [{
+    ...preview.changes[0]!,
+    before: { name: 'Research', slackPresence: { normalizedHandle: 'research' }, mcpServers: [{ ...knowledge, futurePolicy: 'strict' }] },
+    after: { name: 'Research', slackPresence: { normalizedHandle: 'research' }, mcpServers: [{ ...knowledge, futurePolicy: 'open' }] },
+  }] }), markdown(
+    'Update **Knowledge** on **Research** (@research).',
+    'Changes other settings.',
+  ));
+  const slackText = formatSlackChangeSetProposal(preview);
+  assert.match(slackText, /Preview truncated to fit Slack/);
+  assert.match(slackText, /^Update \*Knowledge\* on \*Research\* \(@research\)\.\nChanges other settings\.$/m);
+});
+
+test('server bookkeeping alone is not a connection change', () => {
+  const preview = agentChange({ mcpServers: [knowledge], apiConnections: [billing] }, {
+    mcpServers: [{ ...knowledge, lifecycleStatus: 'failed', statusText: 'Timed out', lastCheckedAt: 1_800_000_000_000, oauthAttemptId: 'attempt_2' }],
+    apiConnections: [{ ...billing, lifecycleStatus: 'ready', statusText: 'Ready' }],
+  });
+
+  assert.equal(formatMarkdownChangeSetProposal(preview), markdown('**Research — Update Agent**'));
+});
+
+test('OAuth provider, app audience, connected account and GitHub installation changes show', () => {
+  const docs = { id: 'repo_docs', installationId: 7, accountLogin: 'acme', fullName: 'acme/docs', enabled: true };
+  const google = {
+    ...billing,
+    authMode: 'oauth',
+    oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    oauthAppType: 'workspace-internal',
+    identity: { accountName: 'alex@acme.test' },
+  };
+  const preview = agentChange({ apiConnections: [google], repositories: [docs] }, {
+    apiConnections: [{
+      ...google,
+      oauthProvider: 'google',
+      oauthAppType: 'external',
+      identity: { workspaceName: 'Evil', accountName: 'mallory@evil.test' },
+    }],
+    repositories: [{ ...docs, installationId: 9 }],
+  });
+
+  assert.equal(formatMarkdownChangeSetProposal(preview), markdown(
+    'Update **Billing** on **Research** (@research).',
+    'OAuth provider changes from none to Google.',
+    'Google app audience changes from Workspace internal to Personal / external.',
+    'Connected account changes from `alex@acme.test` to `Evil (mallory@evil.test)`.',
+    '',
+    'Update **acme/docs** on **Research** (@research).',
+    'Changes: GitHub installation.',
+  ));
+  assert.doesNotMatch(formatSlackChangeSetProposal(preview), /\b[79]\b/, 'no installation ID');
+});
+
+test('an Agent turned on, a routine owner or destination change and a reassignment lead a cut preview', () => {
+  const preview: ManagementChangeSetPreview = {
+    summary: '3 reviewed workspace changes',
+    changes: [{
+      itemId: 'enable',
+      operationKind: 'update_agent',
+      target: 'agent:agent_research',
+      before: { name: 'Research', enabled: false, instructions: 'Short.' },
+      after: { name: 'Research', enabled: true, instructions: 'q'.repeat(20_000) },
+    }, {
+      itemId: 'routine',
+      operationKind: 'save_routine',
+      target: 'routine:routine_triage',
+      before: { name: 'Morning triage', ownerAgent: 'Research', taskText: 'Summarize.', destination: 'New messages in #team' },
+      after: { name: 'Morning triage', ownerAgent: 'Writer', taskText: 'r'.repeat(5_000), destination: 'New messages in #all-hands' },
+    }, {
+      itemId: 'reassign',
+      operationKind: 'reassign_routine_agent',
+      target: 'routine:routine_digest',
+      statement: { kind: 'reassign_routine_agent', routine: 'Digest', agent: { name: 'Writer', handle: 'writer' } },
+    }],
+    missingSetup: [],
+  };
+
+  const presentation = formatSlackChangeSetProposal(preview);
+  assert.match(presentation, /Preview truncated to fit Slack/);
+  for (const section of [
+    '*Research — Status*\n*Before*\n> Disabled\n*After*\n> Enabled',
+    '*Morning triage — Agent*\n*Before*\n> Research\n*After*\n> Writer',
+    '*Morning triage — Destination*\n*Before*\n> New messages in #team\n*After*\n> New messages in #all-hands',
+    'Run *Digest* with *Writer* (@writer) from now on.',
+  ]) {
+    assert.ok(presentation.includes(section), `${section}\n---\n${presentation.slice(0, 600)}`);
+  }
+});
