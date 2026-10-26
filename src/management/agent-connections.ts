@@ -123,8 +123,9 @@ export function mcpConnectionsAfterWrite(
       ...kept,
       lifecycleStatus: ready ? 'ready' : 'pending',
       statusText: ready ? 'Ready' : 'Setup required',
-      // Discovery narrows a grant to these names; an empty list would let the
-      // first discovery grant every tool the server offers.
+      // Discovery narrows a non-empty grant to these names. An empty list
+      // counts as never discovered, so outside review mode the first
+      // discovery grants every tool the server offers.
       discoveredTools: kept.allowedTools.map((name) => ({ name })),
     };
   });

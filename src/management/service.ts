@@ -2001,7 +2001,7 @@ export class WorkspaceManagementService {
       progress.outcomes,
     );
     const waitsForApproval = actor.origin.kind === 'slack';
-    if (!waitsForApproval && tail.some((operation) => waitingOnApproval(operation))) return undefined;
+    if (!waitsForApproval && tail.some(waitingOnApproval)) return undefined;
     const proposalAgentIds = new Set(tail.flatMap((operation) =>
       operation.kind === 'create_agent' ? [operation.agent.id] : []
     ));
@@ -5778,12 +5778,10 @@ function agentRevisionWrittenInCall(
   outcomes: readonly ManagementItemOutcome[],
   agentId: string,
 ): number | undefined {
-  for (const outcome of [...outcomes].reverse()) {
-    if (outcome.disposition !== 'applied') continue;
-    const revision = outcome.changed?.find(({ kind, id }) => kind === 'agent' && id === agentId)?.revision;
-    if (revision !== undefined) return revision;
-  }
-  return undefined;
+  return outcomes
+    .flatMap((outcome) => outcome.disposition === 'applied' ? outcome.changed ?? [] : [])
+    .findLast(({ kind, id, revision }) => kind === 'agent' && id === agentId && revision !== undefined)
+    ?.revision;
 }
 
 function resolveSetupClientReference(

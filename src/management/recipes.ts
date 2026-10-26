@@ -293,6 +293,12 @@ function appendCreation(
   appendSetupOperations(operations, recipe.symbol, agentId, compiled.setups, lastItemId);
 }
 
+const SETUP_ITEM_LANE: Record<SetupTarget['kind'], string> = {
+  mcp_connection: 'mcp',
+  api_connection: 'api',
+  repository_access: 'repo',
+};
+
 function appendSetupOperations(
   operations: ManagementOperation[],
   symbol: string,
@@ -301,13 +307,9 @@ function appendSetupOperations(
   dependency: string,
 ): void {
   for (const target of setups) {
-    const [lane, id] = target.kind === 'mcp_connection'
-      ? ['mcp', target.connectionId]
-      : target.kind === 'api_connection'
-        ? ['api', target.connectionId]
-        : ['repo', target.repositoryId];
+    const id = target.kind === 'repository_access' ? target.repositoryId : target.connectionId;
     operations.push({
-      itemId: `setup_${symbol}_${lane}_${id}`,
+      itemId: `setup_${symbol}_${SETUP_ITEM_LANE[target.kind]}_${id}`,
       dependsOn: [dependency],
       kind: 'request_setup',
       target: { ...target, agentId },
@@ -360,14 +362,17 @@ async function compileRecipeAgent(
   const setups: SetupTarget[] = [];
   const setupRequired: string[] = [];
   const unavailable: string[] = [];
-  const mcpServers = recipe.mcpRequirements;
-  const apiConnections = recipe.apiRequirements;
-  for (const connection of mcpConnectionsAfterWrite(existing?.mcpServers ?? [], mcpServers)) {
-    if (connection.authMode === 'none' || connection.lifecycleStatus === 'ready') continue;
+  for (const connection of mcpConnectionsAfterWrite(existing?.mcpServers ?? [], recipe.mcpRequirements)) {
+    if (connection.lifecycleStatus === 'ready') continue;
+    // Management has no setup link for a header credential without bearer or OAuth auth.
+    if (connection.authMode === 'none') {
+      setupRequired.push(`${connection.displayName} (set its credential in Admin)`);
+      continue;
+    }
     setups.push({ kind: 'mcp_connection', connectionId: connection.id });
     setupRequired.push(connection.displayName);
   }
-  for (const connection of apiConnectionsAfterWrite(existing?.apiConnections ?? [], apiConnections)) {
+  for (const connection of apiConnectionsAfterWrite(existing?.apiConnections ?? [], recipe.apiRequirements)) {
     if ((connection.lifecycleStatus ?? 'ready') === 'ready') continue;
     setups.push({ kind: 'api_connection', connectionId: connection.id });
     setupRequired.push(connection.displayName);
@@ -376,9 +381,11 @@ async function compileRecipeAgent(
   for (const requirement of recipe.repositoryRequirements) {
     const grant = existing?.repositories.find((stored) => grantMeetsRequirement(stored, requirement)) ??
       unboundGrant(requirement);
-    if (grant) repositories.push(grant);
-    if (grant && grant.installationId !== null) continue;
-    if (grant) setups.push({ kind: 'repository_access', repositoryId: grant.id });
+    if (grant) {
+      repositories.push(grant);
+      if (grant.installationId !== null) continue;
+      setups.push({ kind: 'repository_access', repositoryId: grant.id });
+    }
     setupRequired.push('owner' in requirement
       ? `All repositories of ${requirement.owner} (grant in Admin)`
       : requirement.fullName);
@@ -394,7 +401,7 @@ async function compileRecipeAgent(
     unavailable.push(answer.message);
   }
   return {
-    capabilities: { mcpServers, apiConnections, repositories },
+    capabilities: { mcpServers: recipe.mcpRequirements, apiConnections: recipe.apiRequirements, repositories },
     setups,
     setupRequired: [...new Set(setupRequired)],
     unavailable,
