@@ -441,6 +441,8 @@ function deriveNode(
         ['string', 'integer', 'number', 'boolean'].includes(variant.type)
         ? deriveNode({ ...variant, description: undefined }, depth, where, context)
         : { unsupported: `${where} mixes structured types` } as const);
+    // Narrowing one branch leaves the others open, so review.allowValues needs a plain string enum.
+    context.narrowed.delete(where);
     const failed = branches.find((branch) => 'unsupported' in branch);
     if (failed || branches.length === 0) return failed ?? { unsupported: `${where} has no usable type` };
     return {

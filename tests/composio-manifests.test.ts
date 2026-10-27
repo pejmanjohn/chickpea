@@ -896,6 +896,7 @@ test('review.allowValues narrows a string enum the model can set and fails on a 
           required: ['id'],
         },
       },
+      priority: { anyOf: [{ type: 'string', enum: ['LOW', 'HIGH'] }, { type: 'integer' }] },
     },
     required: ['updates'],
   })]);
@@ -912,7 +913,9 @@ test('review.allowValues narrows a string enum the model can set and fails on a 
   assert.deepEqual(report.allowedValues, [{ tool: 'ACME_UPDATE_CAMPAIGNS', argument: 'updates[].status', values: ['PAUSED'] }]);
   assert.deepEqual(checkComposioManifest(manifest, campaigns), []);
 
-  for (const [argument, values] of [['updates[].status', ['DRAFT']], ['updates[].id', ['1']], ['status', ['PAUSED']]] as const) {
+  for (const [argument, values] of [
+    ['updates[].status', ['DRAFT']], ['updates[].id', ['1']], ['status', ['PAUSED']], ['priority', ['LOW']],
+  ] as const) {
     assert.throws(
       () => draftComposioManifest(campaigns, reviewed({ ACME_UPDATE_CAMPAIGNS: { [argument]: { ...pause, values: [...values] } } })),
       /review\.allowValues names ACME_UPDATE_CAMPAIGNS/,
