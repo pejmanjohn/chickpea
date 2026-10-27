@@ -108,10 +108,14 @@ Cloudflare installation builds from a repository in the user's GitHub or
 GitLab account.
 
 Open Chickpea Admin at the Worker's public URL and sign in with Slack as an
-Owner. Under **Settings → About & updates**, expand **Installation details**
-and confirm it describes the Worker you found. Note the Slack workspace it
-serves, and whether it uses Chickpea's shared Slack app or the user's own Slack
-app; the receipt usually records the app ID. List the Agents under **Agents**.
+Owner. Under **Settings → About & updates**, expand **Installation details**:
+it shows Cloudflare Workers and the installed version and source commit, which
+should match the receipt. Under **Destinations → Slack → Connection**, note the
+workspace name and team ID. *Connection managed by Chickpea gateway* means the
+installation uses Chickpea's shared Slack app; *Credentials stored in
+Chickpea* means it uses the user's own Slack app, whose app ID the receipt
+usually records. List the Agents under **Agents**. A new installation may have
+none; the built-in Chickpea assistant is the Slack app itself, not an Agent.
 
 Check whether this coding agent has an MCP server, usually named `chickpea`,
 that points to this deployment's `/mcp` address. Note the services the
@@ -182,45 +186,64 @@ then continue the confirmed list. Anything new needs a new confirmation.
 
 Turn off the Agents' Slack handles while Chickpea can still reach the
 workspace. Each handle is a Slack user group. It stays in the workspace after
-the app is removed unless Chickpea deactivates it first.
+the app is removed unless it is deactivated first. Slack cannot delete a user
+group; a deactivated group no longer appears when people type `@`.
 
-In Admin, open each Agent except the workspace's default Agent, open its
-actions menu (**…**), and choose **Archive Agent**. Archiving disables the
-Agent's Slack handle, removes its Channel access, and pauses its schedules.
-The default Agent, usually Chickpea, answers as the app itself and leaves with
-the app in step 5. If this coding agent is connected over MCP, it can archive
-the Agents with `apply_workspace_changes` instead.
+In Admin, open each active Agent, open its actions menu (**…**), and choose
+**Archive Agent**. Archiving disables the Agent's Slack handle, removes its
+Channel access, and pauses its schedules. An older installation may have a
+legacy default Agent; archiving it asks for a replacement default, so archive
+it last and choose any other Agent. If this coding agent is connected over MCP,
+it can archive the Agents with `apply_workspace_changes` instead.
 
-Confirm that each Agent shows **Archived**. If Admin reports that Slack did not
-allow Chickpea to deactivate a handle, ask a Slack Workspace Owner or Admin to
-deactivate that user group in Slack, then choose Retry in Admin.
+Confirm that each Agent shows **Archived**. When the workspace limits who can
+manage user groups, Slack refuses to let the user's own app deactivate a
+handle, and Admin says that Slack did not allow it. Then the handle needs a
+Slack Workspace Owner or Admin.
+If the person signed in to Slack in your browser is one, deactivate it
+yourself: in Slack, open **Directories → User Groups**, select the `@handle`,
+and choose deactivate from its **⋮** menu. Otherwise ask the user to have an
+Owner or Admin do it. Then choose **Retry** on the Agent in Admin, which
+finishes archiving it.
+
+The last active Agent cannot be archived if it is the legacy default. Deactivate
+its user group in Slack the same way, and leave the Agent; it goes with the
+Worker in step 7.
 
 ## 5. Remove the Slack app
 
-Remove the app while the Worker is still running. Slack then notifies the
-installation, and Chickpea's shared Slack gateway, that the app was removed. A
-deleted Worker cannot receive that notice.
+Remove the app while the Worker is still running. When Chickpea's shared app
+is removed, Slack's notice reaches Chickpea's shared Slack gateway through the
+running Worker, and the gateway then marks the installation removed. A deleted
+Worker cannot pass that notice on.
 
-Admin's **Disconnect** control removes only Chickpea's copy of the Slack
-credentials and leaves the app installed. Do not use it for an uninstall.
+Admin's **Disconnect this workspace** control removes only Chickpea's copy of
+the Slack credentials and leaves the app installed. Do not use it for an
+uninstall.
 
-**Chickpea's shared app.** In the browser signed in to the workspace, open the
-workspace's app management: from Slack, the workspace menu, then **Tools &
-settings → Manage apps**. Open **Chickpea**, choose **Configuration**, and then
-**Remove App**. Read the confirmation and accept it. Removing apps needs a Slack
-Workspace Owner or Admin, or a member whose workspace lets them manage apps. If
-the button is missing, ask the user who can remove apps in their workspace.
+**Chickpea's shared app.** In the browser signed in to the workspace, open
+`https://<workspace>.slack.com/apps/manage`, which shows the workspace's
+**Installed Apps**. Open **Chickpea**, then **App Details**, which opens the
+app's page in the Slack Marketplace. There, open **Configuration** and choose
+**Remove App**. Read Slack's confirmation and accept it. Removing apps needs a
+Slack Workspace Owner or Admin, or a member whose workspace lets them manage
+apps. If the button is missing, ask the user who can remove apps in their
+workspace.
 
 **The user's own app.** Open [Your Apps](https://api.slack.com/apps) and select
 the app whose app ID matches the installation. Under **Basic Information**,
-choose **Delete App** and complete Slack's confirmation. Deleting the app also
-removes it from the workspace. If the setup created an app configuration token,
-revoke it under **Your App Configuration Tokens** on the same Your Apps page.
+choose **Delete App**, then **Delete App** again in Slack's "Delete this app?"
+dialog. Deleting the app also removes it and its bot from the workspace. If the
+setup created an app configuration token, delete it under **Your App
+Configuration Tokens** on the Your Apps page: choose **Delete token**, then
+**Revoke Token**.
 
-Read back the result. The workspace's app management no longer lists the app,
-and for the user's own app, Your Apps no longer lists it either. In Admin, the
-Slack connection reports that the app was removed. Admin sign-in uses Slack, so
-a new Admin sign-in may stop working at this point; that is expected.
+Read back the result in Slack. The workspace's **Installed Apps** no longer
+lists the app; for the user's own app, Your Apps no longer lists it and its
+configuration token is gone. Slack sends Chickpea no notice when an app is
+deleted, so Admin may still show the workspace as connected; that is expected
+and ends with the Worker in step 7. Admin sign-in uses Slack, so a new Admin
+sign-in may stop working at this point.
 
 ## 6. Disconnect this coding agent
 
@@ -241,20 +264,19 @@ the user's session yourself.
 
 ## 7. Delete the Cloudflare resources
 
-Delete the Worker first so nothing new is written, then its database. Preview
-the Worker deletion, then run it:
+Delete the Worker first so nothing new is written, then its database:
 
 ```sh
-npx --no-install wrangler delete <worker-name> --dry-run
 npx --no-install wrangler delete <worker-name>
 ```
 
-Wrangler asks you to confirm. Answer yes; the user confirmed in step 3. If your
-terminal cannot answer prompts, pipe the answer:
-`printf 'y\n' | npx --no-install wrangler delete <worker-name>`. Do not add
-`--force`. If Wrangler reports that other Workers depend on this one, stop and
-ask the user. Deleting the Worker also deletes its Durable Objects with their
-stored data, its secrets, its schedule trigger, and its `workers.dev` route.
+Type the exact Worker name from step 1. In an interactive terminal, Wrangler
+asks you to confirm; answer yes, because the user confirmed in step 3. A
+terminal that cannot answer prompts gets no question: Wrangler answers yes by
+itself and deletes immediately. Do not add `--force`. If Wrangler reports that
+other Workers depend on this one, stop and ask the user. Deleting the Worker
+also deletes its Durable Objects with their stored data, its secrets, its
+schedule trigger, and its `workers.dev` route.
 
 Then delete the database:
 
@@ -288,8 +310,9 @@ npx --no-install wrangler deployments status --name <worker-name>
 npx --no-install wrangler d1 list
 ```
 
-The first command now reports that the Worker does not exist, and the database
-is gone from the list. The public URL no longer serves Chickpea.
+The first command now fails with "This Worker does not exist", and the database
+is gone from the list. The public URL answers with Cloudflare's "There is
+nothing here yet" page instead of Chickpea.
 
 ## 8. Tidy up locally
 
@@ -342,9 +365,10 @@ Do not call the uninstall complete until each confirmed item has a readback.
 | The user changes their mind partway | Stop. Report what is already removed and what remains. Deleted data cannot be restored; a new installation starts with the [install guide](INSTALL_CHICKPEA_CLOUDFLARE.md). |
 | The task stopped halfway through | Read the receipt and inspect live state. Continue the confirmed list from the first item that still exists. |
 | **Remove App** is missing in Slack | The signed-in person cannot manage apps. Ask the user to have a Workspace Owner or Admin remove it, then resume. |
-| Admin cannot deactivate an Agent's handle | Have a Workspace Owner or Admin deactivate that user group in Slack, then Retry in Admin. Do not skip it; the handle stays visible after the app is removed. |
+| Admin cannot deactivate an Agent's handle | A Workspace Owner or Admin deactivates that user group in Slack (**Directories → User Groups**, **⋮** menu), then Retry in Admin. Do it yourself when the browser's Slack person is one. Do not skip it; the handle stays visible after the app is removed. |
 | Admin sign-in no longer works | Expected after the Slack app is removed. Use Wrangler or the dashboard for the remaining Cloudflare steps. |
-| The Worker was deleted before the Slack app | Remove the Slack app anyway; it stops Slack from showing and messaging the app. |
+| Admin still shows Slack as connected after the app was deleted | Expected for the user's own app; Slack sends no notice for a deleted app. Read back in Slack instead and continue. |
+| The Worker was deleted before the Slack app | Remove the Slack app anyway; it stops Slack from showing the app. Deactivate any remaining Agent handles in Slack yourself, as above. |
 | Wrangler is signed out or reaches the wrong account | Sign in again for the account in the receipt, and run `whoami` before any delete. |
 | Wrangler reports dependent Workers | Stop and show the user which Workers depend on this one. Do not use `--force` without their decision. |
 | The R2 bucket will not delete | Delete its remaining objects first, then retry. |
