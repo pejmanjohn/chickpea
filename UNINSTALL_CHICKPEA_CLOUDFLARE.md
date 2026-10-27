@@ -102,10 +102,8 @@ npx --no-install wrangler containers list
 npx --no-install wrangler containers images list
 ```
 
-In the Cloudflare dashboard, open the Worker and check its settings for a
-custom domain or route, and for a connected Git repository. A Deploy to
-Cloudflare installation builds from a repository in the user's GitHub or
-GitLab account.
+A Deploy to Cloudflare installation also builds from a repository in the
+user's GitHub or GitLab account.
 
 Open Chickpea Admin at the Worker's public URL and sign in with Slack as an
 Owner. Under **Settings → About & updates**, expand **Installation details**:
@@ -115,7 +113,7 @@ workspace name and team ID. *Connection managed by Chickpea gateway* means the
 installation uses Chickpea's shared Slack app; *Credentials stored in
 Chickpea* means it uses the user's own Slack app, whose app ID the receipt
 usually records. List the Agents under **Agents**. A new installation may have
-none; the built-in Chickpea assistant is the Slack app itself, not an Agent.
+none; `@Chickpea` itself is the Slack app, not an Agent.
 
 Check whether this coding agent has an MCP server, usually named `chickpea`,
 that points to this deployment's `/mcp` address. Note the services the
@@ -179,43 +177,46 @@ again. If they decline, change nothing and report that the installation is
 untouched.
 
 Record the confirmed list and the time in the receipt. The confirmation covers
-that list for this task. On a resumed task, read the receipt and live state,
-then continue the confirmed list. Anything new needs a new confirmation.
+that list for this task. On a resumed task, read the receipt and the live
+state, show the user what the receipt says was confirmed and what still
+exists, and ask again before removing anything. The receipt is a record, not a
+confirmation.
 
 ## 4. Archive the Agents
 
-Turn off the Agents' Slack handles while Chickpea can still reach the
-workspace. Each handle is a Slack user group. It stays in the workspace after
-the app is removed unless it is deactivated first. Slack cannot delete a user
-group; a deactivated group no longer appears when people type `@`.
+Archive the Agents while Chickpea can still reach Slack. Each Agent's handle
+is a Slack user group. Slack cannot delete one, and an active group outlives
+the app. A deactivated group no longer appears when people type `@`.
 
 In Admin, open each active Agent, open its actions menu (**…**), and choose
 **Archive Agent**. Archiving disables the Agent's Slack handle, removes its
 Channel access, and pauses its schedules. An older installation may have a
-legacy default Agent; archiving it asks for a replacement default, so archive
-it last and choose any other Agent. If this coding agent is connected over MCP,
+legacy default Agent. Archiving it needs another active Agent as the
+replacement default, and that replacement becomes the default in turn, so the
+last active Agent in such a workspace cannot be archived; see below. If this
+coding agent is connected over MCP,
 it can archive the Agents with `apply_workspace_changes` instead.
 
 Confirm that each Agent shows **Archived**. When the workspace limits who can
 manage user groups, Slack refuses to let the user's own app deactivate a
 handle, and Admin says that Slack did not allow it. Then the handle needs a
-Slack Workspace Owner or Admin.
-If the person signed in to Slack in your browser is one, deactivate it
+Slack Workspace Owner or Admin. If the person signed in to Slack in your browser is one, deactivate it
 yourself: in Slack, open **Directories → User Groups**, select the `@handle`,
 and choose deactivate from its **⋮** menu. Otherwise ask the user to have an
 Owner or Admin do it. Then choose **Retry** on the Agent in Admin, which
 finishes archiving it.
 
-The last active Agent cannot be archived if it is the legacy default. Deactivate
-its user group in Slack the same way, and leave the Agent; it goes with the
-Worker in step 7.
+When the last active Agent is the legacy default, Admin disables **Archive
+Agent**. Deactivate its user group in Slack the same way and leave the Agent;
+it goes with the Worker in step 7.
 
 ## 5. Remove the Slack app
 
-Remove the app while the Worker is still running. When Chickpea's shared app
-is removed, Slack's notice reaches Chickpea's shared Slack gateway through the
-running Worker, and the gateway then marks the installation removed. A deleted
-Worker cannot pass that notice on.
+Remove the app while the Worker is still running. For Chickpea's shared app,
+Slack sends the removal notice to Chickpea's shared Slack gateway, which
+records the removal only after the running Worker accepts the delivery. A
+deleted Worker cannot accept it, so the gateway would keep the installation
+listed.
 
 Admin's **Disconnect this workspace** control removes only Chickpea's copy of
 the Slack credentials and leaves the app installed. Do not use it for an
@@ -231,7 +232,10 @@ apps. If the button is missing, ask the user who can remove apps in their
 workspace.
 
 **The user's own app.** Open [Your Apps](https://api.slack.com/apps) and select
-the app whose app ID matches the installation. Under **Basic Information**,
+the app whose app ID matches the installation. Before deleting, check that the
+app's **Event Subscriptions** Request URL is this Worker's
+`/channels/slack/events` address. If no app matches, ask the user which it is;
+never delete another app. Under **Basic Information**,
 choose **Delete App**, then **Delete App** again in Slack's "Delete this app?"
 dialog. Deleting the app also removes it and its bot from the workspace. If the
 setup created an app configuration token, delete it under **Your App
@@ -255,7 +259,7 @@ other server the user configured:
 | --- | --- |
 | Claude Code | `claude mcp remove chickpea` |
 | Codex | `codex mcp remove chickpea` |
-| Gemini CLI | `gemini mcp remove chickpea` from the folder where it was added, or with `--scope user` |
+| Gemini CLI | `gemini mcp remove chickpea` |
 | Cursor, VS Code, Windsurf, or another client | Delete the `chickpea` entry from the MCP configuration file it was added to |
 
 Confirm that the client's MCP server list no longer shows it. A running session
@@ -264,19 +268,20 @@ the user's session yourself.
 
 ## 7. Delete the Cloudflare resources
 
-Delete the Worker first so nothing new is written, then its database:
+Delete the Worker first so nothing new is written, then its database. Run
+`npx --no-install wrangler whoami` again first; the account must be the one in
+the receipt. Then:
 
 ```sh
 npx --no-install wrangler delete <worker-name>
 ```
 
-Type the exact Worker name from step 1. In an interactive terminal, Wrangler
-asks you to confirm; answer yes, because the user confirmed in step 3. A
-terminal that cannot answer prompts gets no question: Wrangler answers yes by
-itself and deletes immediately. Do not add `--force`. If Wrangler reports that
-other Workers depend on this one, stop and ask the user. Deleting the Worker
-also deletes its Durable Objects with their stored data, its secrets, its
-schedule trigger, and its `workers.dev` route.
+Use the exact Worker name from step 1. An interactive terminal asks for
+confirmation; answer yes, since the user confirmed in step 3. A terminal that
+cannot answer prompts gets no question: Wrangler answers yes itself and deletes
+at once. Do not add `--force`; if Wrangler reports dependent Workers, stop and
+ask. Deleting the Worker also deletes its Durable Objects with their stored
+data, its secrets, its schedule trigger, and its `workers.dev` route.
 
 Then delete the database:
 
@@ -292,16 +297,14 @@ npx --no-install wrangler containers delete <container-id>
 npx --no-install wrangler containers images delete <worker-name>-sandbox:<tag>
 ```
 
-Then, in the dashboard under **R2**, open the checkpoint bucket, delete its
-objects, and delete the bucket. R2 deletes only an empty bucket; with
-Wrangler, run `npx --no-install wrangler r2 bucket delete <bucket-name>` once
-it is empty. Remove a custom domain or route the user added only for this
-Worker. For Deploy to Cloudflare, deleting the Worker ends its builds; the
-repository stays unless the user separately asks to delete it.
+Then delete the checkpoint bucket under **R2 → Buckets** in the dashboard,
+deleting its objects first if Cloudflare asks for an empty bucket;
+`npx --no-install wrangler r2 bucket delete <bucket-name>` deletes the empty
+bucket. For Deploy to Cloudflare, the repository stays unless the user
+separately asks to delete it.
 
 Without a local folder, use the dashboard: delete the Worker from its
-settings, then the database from **Storage & databases → D1** (follow the live
-labels).
+settings, then the database from its D1 page (follow the live labels).
 
 Read back the deletion:
 
@@ -336,7 +339,7 @@ request, signed in as the user:
 
 - The model provider's API key, from that provider's API key page.
 - The ChatGPT plan connection, from the user's ChatGPT account settings.
-- The Browserbase API key, from **Settings → API keys** in Browserbase.
+- The Browserbase API key, from the Browserbase dashboard.
 - A GitHub App created for repositories: uninstall it from the account or
   organization and delete it under **Developer settings → GitHub Apps**.
 - Services an Agent connected to, from each service's list of connected or
