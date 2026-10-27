@@ -90,9 +90,9 @@ const SPEND = /(?:^|_)(BID|BIDS|BILL|BILLING|BILLS|BUDGET|BUDGETS|BUY|CHARGE|CHA
 const PUBLISH = /(?:^|_)(BROADCAST|COMMENT|COMMENTS|EMAIL|EMAILS|FORWARD|INVITE|MESSAGE|MESSAGES|NOTIFY|OUTBOUND|POST|PUBLISH|REPLY|SEND|SHARE)(?:_|$)/;
 
 /**
- * Who can see, follow, or act on a record. Company domains count: Freshdesk
- * joins new contacts to a company by domain, which widens ticket visibility.
- * Webhooks and callbacks hand record data to an outside URL.
+ * Who can see, follow, or act on a record. Company domains count, because
+ * Freshdesk joins new contacts to a company by domain, which widens ticket
+ * visibility. Webhooks and callbacks hand record data to an outside URL.
  */
 const ACCESS_TOKENS = new Set(`
   acl admin admins agent agents assignee assignees callback collaborator collaborators domain domains
@@ -106,7 +106,7 @@ const CONTAINER_TOKENS = new Set(`
   account board company folder organization parent project space team workspace
 `.trim().split(/\s+/));
 /**
- * An email address on any write, create included, is a place mail can go: a
+ * An email address on any write, create included, is a place mail can go. A
  * ticket's requester receives every reply, so a free requester email on
  * create-ticket would undo a reply bound to the requester.
  */
