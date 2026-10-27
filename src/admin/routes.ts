@@ -1132,6 +1132,10 @@ const skillsSchema = v.pipe(
   v.check((skills) => skillsWriteProblem(skills) === undefined, 'skills are invalid'),
 );
 
+// Stored scopes and the OAuth start routes share one bound, so any scope a
+// Connection can store can also start its sign-in.
+const oauthScopeSchema = v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4_096)));
+
 // A single discovered-tool record stored on a Connection's last successful
 // test. Bounded to keep the profile row small (matches types.ts limits).
 const mcpToolInfoSchema = v.object({
@@ -1179,7 +1183,7 @@ const mcpServerSchema = v.pipe(
       v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(120))),
       v.maxLength(MAX_MCP_TOOLS),
     ),
-    oauthScope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
+    oauthScope: oauthScopeSchema,
     lastCheckedAt: v.optional(v.number()),
     identity: v.optional(mcpIdentitySchema),
     presetId: v.optional(v.pipe(v.string(), v.regex(/^[a-z0-9][a-z0-9-]{0,63}$/), v.maxLength(64))),
@@ -1505,7 +1509,7 @@ const mcpSecretsPutSchema = v.object({
 });
 
 const mcpOAuthStartSchema = v.object({
-  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(4096))),
+  scope: oauthScopeSchema,
 });
 
 const mcpSecretsDeleteSchema = v.object({
@@ -1541,7 +1545,7 @@ const agentApiOAuthClientSchema = v.object({
 });
 
 const connectionAccountOAuthStartSchema = v.object({
-  scope: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(1024))),
+  scope: oauthScopeSchema,
   continuation: v.optional(v.object({
     workspaceId: v.pipe(v.string(), v.trim(), v.regex(/^[A-Z0-9_]{2,32}$/)),
     channelId: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(128)),

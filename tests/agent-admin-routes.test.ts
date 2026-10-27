@@ -7444,6 +7444,47 @@ test('MCP OAuth start accepts the full scope list a vendor preset requests', asy
   } finally { fixture.store.close(); fixture.settings.close(); }
 });
 
+test('Agent connection MCP OAuth start accepts the full scope list a vendor preset requests', async () => {
+  const preset = getConnectorPreset('apollo');
+  assert.ok(preset && 'auth' in preset && preset.auth.kind === 'oauth' && preset.auth.scope && preset.url);
+  const scope = preset.auth.scope;
+  assert.ok(scope.length > 1_024, 'the regression needs a scope longer than the old limit');
+  let startedInput: StartMcpOAuthInput | undefined;
+  const fixture = harness(new FakeTransport(), {
+    startMcpOAuth: async (input) => {
+      startedInput = input;
+      return { authorizationUrl: new URL('https://mcp.apollo.io/authorize?state=opaque'), state: 'opaque' };
+    },
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct', defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request('http://localhost/admin/api/agents/agent_support/connections', {
+      method: 'POST', headers: auth(),
+      body: JSON.stringify({
+        workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'apollo', label: preset.name,
+        allowedCapabilities: [],
+        mcp: {
+          id: 'apollo', displayName: preset.name, url: preset.url, transport: 'streamable-http',
+          authMode: 'oauth', headerNames: [], enabled: true, lifecycleStatus: 'pending', statusText: '',
+          discoveredTools: [], allowedTools: [], oauthScope: scope, presetId: 'apollo',
+        },
+      }),
+    });
+    assert.equal(created.status, 201, await created.clone().text());
+    const accountId = (await created.json() as { account: { id: string } }).account.id;
+
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: JSON.stringify({ scope }) },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    assert.equal(startedInput?.scope, scope);
+  } finally { fixture.store.close(); fixture.settings.close(); }
+});
+
 test('an Agent saves a connection whose server lists more than 50 tools', async () => {
   const fixture = harness();
   try {
