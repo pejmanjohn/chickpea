@@ -373,6 +373,8 @@ export class RoutineStoreLogic {
         return { kind: 'maintenance', result: this.cleanupRetention() };
       case 'get_routine':
         return { kind: 'routine', routine: this.getRoutine(request.routineId) ?? null };
+      case 'mark_due_now':
+        return { kind: 'routine', routine: this.markDueNow(request.routineId, request.now) ?? null };
       case 'get_routine_by_work':
         return { kind: 'routine', routine: this.getRoutineByWorkId(request.workId) ?? null };
       case 'list_routines':
@@ -1282,6 +1284,19 @@ export class RoutineStoreLogic {
   getRoutine(routineId: string): RoutineDefinition | undefined {
     const row = this.db.get('SELECT * FROM routines WHERE id = ?', routineId);
     return row ? rowToRoutine(row as unknown as RoutineRow) : undefined;
+  }
+
+  markDueNow(routineId: string, now: number): RoutineDefinition | undefined {
+    if (!isOpaqueRoutineId(routineId) || !Number.isSafeInteger(now)) {
+      throw routineError('routine_invalid_id', 'Routine identifier is invalid.');
+    }
+    this.db.run(
+      `UPDATE routines SET next_run_at = ?
+         WHERE id = ? AND state = 'active' AND deleted_at IS NULL AND next_run_at IS NOT NULL`,
+      now,
+      routineId,
+    );
+    return this.getRoutine(routineId);
   }
 
   getRoutineByWorkId(workId: string): RoutineDefinition | undefined {

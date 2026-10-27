@@ -161,6 +161,7 @@ export const liveVerifierExportPolicy = Object.freeze({
     exportPath('qa', 'live', 'operator', 'model-diagnosis.md'),
     exportPath('qa', 'live', 'operator', 'rest-probe.md'),
     exportPath('qa', 'live', 'operator', 'runner-matrix.md'),
+    exportPath('qa', 'live', 'operator', 'smoke.md'),
     exportPath('qa', 'live', 'operator', 'profiles', 'standalone.md'),
     exportPath('qa', 'live', 'privacy.ts'),
     exportPath('qa', 'live', 'private-config.ts'),
@@ -265,6 +266,10 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'google-search-console.png'), '97db2ff60097307843a6f9bfc5b936735873d3cde4262cb0283f327d3040fa46'],
   [exportPath('assets', 'connectors', 'google-analytics.png'), '424f3b1b23f36f435f3382363bf6482bfb63d3ce36a4e7ac0536b8698453502f'],
   [exportPath('assets', 'connectors', 'google-ads.png'), '5b26cc372386e3fd3cde4fd27e7edbb8d1ef53631456f27f6607880c41110e35'],
+  [exportPath('assets', 'connectors', 'honeycomb.png'), 'a5b12eddcc62b3f4739b67f68f65633f24caf18ca7b811f4e09347cb851748ba'],
+  [exportPath('assets', 'connectors', 'motherduck.png'), 'ff5203442f0da13122fd95d64e68f6949d10f7686aaf2ee9a04f39a8b9e61da1'],
+  [exportPath('assets', 'connectors', 'statsig.png'), '326e420db748304465618e09a827d194c1b56f0dc385441e4bf41b9ebdf1c0da'],
+  [exportPath('assets', 'connectors', 'amplitude.png'), 'baeef57da0019e2a25cfb8f033bc501d7660c2fc03acb8c88f0d3e61ddf373e6'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

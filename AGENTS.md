@@ -81,8 +81,9 @@
   `.agents/skills/chickpea-live-verification/SKILL.md` and
   `.claude/skills/chickpea-live-verification/SKILL.md`, point at
   `qa/live/operator/SKILL.md`.
-  Until a scripted smoke exists, run the skill once per merge batch on `main`,
-  after the batch merges and before any Chickpea Cloud pin or Core release.
+  Once per merge batch on `main`, after the batch merges and before any
+  Chickpea Cloud pin or Core release, run the scripted
+  [batch smoke](qa/live/operator/smoke.md), `npm run verify:smoke`.
   Per PR, run only the live check the [risk class](#shipping-by-risk-class)
   names: the T2 probe (the skill's `probe` mode), the T3 cycle or rehearsal,
   the T4 money proof, or the T0x dry run. Run it from the implementation commit

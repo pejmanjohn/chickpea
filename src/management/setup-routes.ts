@@ -78,7 +78,7 @@ import {
 } from '../config/meta-ads-policy.ts';
 import { BugsnagAccessPolicyError, compileBugsnagToolAccess, isBugsnagMcpConnection } from '../config/bugsnag-policy.ts';
 import { deploymentServesManyInstallations } from '../config/installation-scope.ts';
-import { validateMcpUrl } from '../config/mcp-url.ts';
+import { sameMcpServerUrl, validateMcpUrl } from '../config/mcp-url.ts';
 import type { OAuthAuthorizationAuthority } from '../config/oauth-authorization.ts';
 import { discoverMcpConnectionIdentity } from '../config/mcp-identity.ts';
 import { discoverMcpTools } from '../config/mcp-test.ts';
@@ -2501,12 +2501,9 @@ async function verifyMcpConnection(
     const currentBinding = current
       ? await dependencies.config.getAgentConnectionBindingForAccount(current.id)
       : undefined;
-    const currentUrl = current?.policy.kind === 'mcp'
-      ? validateMcpUrl(current.policy.url)
-      : undefined;
     if (!current || current.lifecycle !== 'pending' || current.policy.kind !== 'mcp' ||
-        current.policy.authMode !== 'oauth' || !currentUrl?.ok ||
-        currentUrl.url !== validated.url ||
+        current.policy.authMode !== 'oauth' ||
+        !sameMcpServerUrl(current.policy.url, validated.url) ||
         (accountRevision !== undefined && current.revision !== accountRevision) ||
         (oauthAttemptId !== undefined && current.policy.oauthAttemptId !== oauthAttemptId) ||
         currentBinding?.agentId !== setup.target.agentId) {
@@ -2798,8 +2795,7 @@ function mcpOAuthDependencies(
         : undefined;
       if (!account || account.lifecycle === 'revoked' || account.policy.kind !== 'mcp' ||
           account.policy.authMode !== 'oauth') return false;
-      const validated = validateMcpUrl(account.policy.url);
-      if (!validated.ok || validated.url !== serverUrl) return false;
+      if (!sameMcpServerUrl(account.policy.url, serverUrl)) return false;
       if (accountRevision !== undefined && account.revision !== accountRevision) {
         throw new McpOAuthError('oauth_attempt_superseded', 'OAuth attempt was superseded');
       }

@@ -4580,6 +4580,99 @@ test('Agent-owned MCP OAuth accounts start and complete against the account refe
   }
 });
 
+test('an MCP OAuth account whose server URL is a bare origin signs in and resolves its token', async () => {
+  const issuer = 'https://auth.example.test';
+  const oauthFetch: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    switch (request.url) {
+      case 'https://mcp.example.test/.well-known/oauth-protected-resource':
+        return Response.json({ resource: 'https://mcp.example.test', authorization_servers: [issuer] });
+      case `${issuer}/.well-known/oauth-authorization-server`:
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          registration_endpoint: `${issuer}/register`,
+          response_types_supported: ['code'],
+          grant_types_supported: ['authorization_code', 'refresh_token'],
+          code_challenge_methods_supported: ['S256'],
+          token_endpoint_auth_methods_supported: ['none'],
+        });
+      case `${issuer}/register`:
+        return Response.json({ ...await request.json() as Record<string, unknown>, client_id: 'registered-client' });
+      case `${issuer}/token`:
+        return Response.json({
+          access_token: 'bare-origin-access', refresh_token: 'refresh', token_type: 'Bearer', expires_in: 3_600,
+        });
+    }
+    throw new Error(`Unexpected OAuth request ${request.method} ${request.url}`);
+  };
+  let discoveryAuthorization: string | undefined;
+  const fixture = harness(new FakeTransport(), {
+    oauthFetch,
+    discoverMcp: async (input) => {
+      discoveryAuthorization = input.headers.Authorization;
+      return { tools: [{ name: 'search_logs' }] };
+    },
+    identifyMcp: async () => undefined,
+  });
+  try {
+    await createAgent(fixture.app);
+    await fixture.store.ensureWorkspaceInstallation({
+      workspaceId: 'T_TEST', teamId: 'T_TEST', transportMode: 'direct',
+      defaultAgentId: 'agent_support',
+    });
+    const created = await fixture.app.request(
+      'http://localhost/admin/api/agents/agent_support/connections',
+      {
+        method: 'POST', headers: auth(),
+        body: JSON.stringify({
+          workspaceId: 'T_TEST', ownerKind: 'team', providerId: 'logs', label: 'Logs',
+          allowedCapabilities: [],
+          mcp: {
+            id: 'logs', displayName: 'Logs', url: 'https://mcp.example.test',
+            transport: 'streamable-http', authMode: 'oauth', headerNames: [], enabled: true,
+            lifecycleStatus: 'pending', statusText: '', discoveredTools: [{ name: 'search_logs' }],
+            allowedTools: ['search_logs'],
+          },
+        }),
+      },
+    );
+    assert.equal(created.status, 201, await created.clone().text());
+    const accountId = ((await created.json()) as Record<string, any>).account.id as string;
+
+    const started = await fixture.app.request(
+      `http://localhost/admin/api/agents/agent_support/connections/${accountId}/oauth/mcp/start`,
+      { method: 'POST', headers: auth(), body: '{}' },
+    );
+    assert.equal(started.status, 200, await started.clone().text());
+    const authorizationUrl = new URL(
+      ((await started.json()) as { authorizationUrl: string }).authorizationUrl,
+    );
+    assert.equal(authorizationUrl.origin + authorizationUrl.pathname, `${issuer}/authorize`);
+
+    const callback = await fixture.app.request(
+      `http://localhost/oauth/callback?state=${encodeURIComponent(authorizationUrl.searchParams.get('state')!)}&code=accepted`,
+    );
+    assert.equal(
+      callback.headers.get('location'),
+      `/admin/agents/agent_support?oauth=connected&connection=${encodeURIComponent(accountId)}&lane=mcp`,
+    );
+    assert.equal(discoveryAuthorization, 'Bearer bare-origin-access');
+    const account = (await fixture.store.listConnectionAccounts('T_TEST'))
+      .find((candidate) => candidate.id === accountId)!;
+    assert.equal(account.lifecycle, 'ready');
+    assert.equal(account.policy.kind === 'mcp' ? account.policy.url : undefined, 'https://mcp.example.test/');
+    assert.equal(await resolveMcpOAuthAccessToken(
+      { ref: connectionAccountOAuthRef(accountId), serverUrl: 'https://mcp.example.test' },
+      { settings: fixture.settings, fetchFn: oauthFetch },
+    ), 'bare-origin-access');
+  } finally {
+    fixture.store.close();
+    fixture.settings.close();
+  }
+});
+
 test('cancelling a ready account reconnect requires attention and pauses dependent schedules', async () => {
   const oauthFetch: typeof fetch = async (input, init) => {
     const request = new Request(input, init);

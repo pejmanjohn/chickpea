@@ -1,4 +1,5 @@
 import { describeSkillPaths } from '../config/skill-package.ts';
+import { sameMcpServerUrl } from '../config/mcp-url.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import {
@@ -7627,7 +7628,7 @@ function mcpSecurityBoundaryChanged(
   before: ManagementMcpConnection,
   after: ManagementMcpConnection,
 ): boolean {
-  return before.url !== after.url ||
+  return !sameMcpServerUrl(before.url, after.url) ||
     before.transport !== after.transport ||
     before.authMode !== after.authMode ||
     canonicalJson([...before.headerNames].sort()) !== canonicalJson([...after.headerNames].sort());

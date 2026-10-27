@@ -7,6 +7,7 @@ import type { AdminFirstRun, AdminOnboardingPage } from '../src/admin/page.ts';
 import { connectorSkillsForConnections } from '../src/config/connector-skills.ts';
 import {
   CONNECTION_CATALOG_PRESETS,
+  getConnectorPreset,
 } from '../src/config/presets.ts';
 import { createDemoStarterAgent } from '../src/config/seed.ts';
 import {
@@ -8973,7 +8974,7 @@ test('Agent connection setup retains the complete preset catalog', async () => {
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
   assert.equal(
     (panel.match(/data-action="connection-account-preset"/g) ?? []).length,
-    37,
+    46,
   );
 });
 
@@ -9293,7 +9294,7 @@ test('legacy Google access does not hide fresh Google connection presets', async
   assert.match(panel, /data-action="connection-account-preset" data-preset="gmail"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-calendar"/);
   assert.match(panel, /data-action="connection-account-preset" data-preset="google-drive"/);
-  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 37);
+  assert.equal((panel.match(/data-action="connection-account-preset"/g) ?? []).length, 46);
 });
 
 test('every catalog connector opens an Agent-owned setup flow', async () => {
@@ -9338,7 +9339,7 @@ test('every catalog connector opens an Agent-owned setup flow', async () => {
     );
     click({ target: actionTarget({ 'data-action': 'connection-account-cancel' }) });
   }
-  assert.equal(presetIds.length, 37);
+  assert.equal(presetIds.length, 46);
 });
 
 test('Agent-owned Sentry accounts use OAuth and preserve an organization/project-scoped resource', async () => {
@@ -10358,9 +10359,9 @@ test('a connected preset drops out of the Available gallery until it is removed'
   // Linear and Asana are already connected, so the gallery no longer offers them...
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="linear"/);
   assert.doesNotMatch(panel, /data-action="conn-preset" data-preset="asana"/);
-  // ...other presets remain, and the Available count drops from 25 to 23.
+  // ...other presets remain, and the Available count drops from 34 to 32.
   assert.match(panel, /data-action="conn-preset" data-preset="airtable"/);
-  assert.match(panel, /<span class="gallery-head-count">23<\/span>/);
+  assert.match(panel, /<span class="gallery-head-count">32<\/span>/);
 });
 
 test('OAuth rows surface a persisted reconnect requirement instead of stale connected copy', async () => {
@@ -11142,9 +11143,9 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
   assert.match(gallery, /data-action="conn-gallery-search"/);
   assert.equal(
     (gallery.match(/data-action="conn-preset" data-preset="[^"]+">Connect<\/button>/g) ?? []).length,
-    25,
+    34,
   );
-  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">25<\/span>/);
+  assert.match(gallery, /<span>Available<\/span><span class="gallery-head-count">34<\/span>/);
   assert.doesNotMatch(gallery, /data-preset="google-workspace"/);
   assert.doesNotMatch(gallery, /data-preset="github"/);
   assert.doesNotMatch(gallery, /data-preset="context7"/);
@@ -11240,6 +11241,32 @@ test('the searchable Connections gallery is immediate, renders brand logos, and 
     /Search meeting notes and transcripts, browse folders, and extract decisions and action items\./,
   );
   assert.match(granolaRow, /<span class="gallery-lane">MCP<\/span>/);
+
+  const galleryRowShape = (id: string) => {
+    const preset = getConnectorPreset(id);
+    assert.ok(preset, id);
+    const row = gallery.match(new RegExp(
+      `<div class="gallery-row gallery-row-described">(?:(?!<div class="gallery-row)[\\s\\S])*?data-preset="${id}">Connect</button></div>`,
+    ))?.[0];
+    assert.ok(row, `${id} row should render`);
+    return {
+      logoClass: row.match(/^<div[^>]*><span class="(conn-logo[^"]*)">/)?.[1],
+      shape: row
+        .replace(/<span class="conn-logo[^"]*">[\s\S]*?<\/span><span class="gallery-row-copy">/, '<logo><span class="gallery-row-copy">')
+        .replace(`>${preset.name}<`, '>name<')
+        .replace(`>${preset.description}<`, '>description<')
+        .replace(`data-preset="${id}"`, 'data-preset="id"'),
+    };
+  };
+  const linearShape = galleryRowShape('linear');
+  const granolaShape = galleryRowShape('granola');
+  assert.deepEqual(granolaShape.shape, linearShape.shape);
+  for (const id of ['better-stack', 'clickhouse', 'datadog', 'grafana', 'netlify']) {
+    assert.deepEqual(galleryRowShape(id), linearShape, id);
+  }
+  for (const id of ['amplitude', 'honeycomb', 'motherduck', 'statsig']) {
+    assert.deepEqual(galleryRowShape(id), granolaShape, id);
+  }
 
   for (const id of ['asana', 'zendesk']) {
     const apiRow = gallery.match(
@@ -11832,6 +11859,57 @@ test('the Granola preset saves OAuth policy before requesting its MCP resource s
   assert.deepEqual(harness.assignedUrls, [
     'https://mcp-auth.granola.ai/oauth2/authorize?state=opaque-state',
   ]);
+});
+
+test('vendor-hosted OAuth MCP presets save their server and request their own scopes', async () => {
+  const ids = [
+    'amplitude', 'better-stack', 'clickhouse', 'datadog', 'grafana',
+    'honeycomb', 'motherduck', 'netlify', 'statsig',
+  ];
+  for (const id of ids) {
+    const preset = getConnectorPreset(id);
+    assert.ok(preset && 'auth' in preset && preset.auth.kind === 'oauth', id);
+    const harness = runAdminPageHarness({
+      agents: [connectionsAgent()],
+      oauthStartResult: { authorizationUrl: 'https://auth.example/authorize?state=opaque-state' },
+    });
+    await flushAsync();
+
+    const click = harness.listeners.click;
+    assert.ok(click);
+    click({ target: actionTarget({ 'data-action': 'edit-profile', 'data-agent': 'agent_conn' }) });
+    click({ target: actionTarget({ 'data-action': 'profile-tab', 'data-tab': 'connections' }) });
+    await flushAsync();
+    click({ target: actionTarget({ 'data-action': 'conn-preset', 'data-preset': id }) });
+    assert.ok(harness.app.innerHTML.includes(`<span>Sign into ${preset.name}</span>`), id);
+    assert.doesNotMatch(harness.app.innerHTML, /data-action="conn-field-bearer"/, id);
+
+    click({ target: actionTarget({ 'data-action': 'conn-oauth-start' }) });
+    await flushAsync();
+
+    const servers = harness.agentPatchBodies[0]?.body.mcpServers as Array<Record<string, unknown>>;
+    assert.deepEqual(servers, [
+      {
+        id,
+        displayName: preset.name,
+        url: preset.url,
+        transport: 'streamable-http',
+        authMode: 'oauth',
+        headerNames: [],
+        enabled: true,
+        lifecycleStatus: 'pending',
+        statusText: '',
+        discoveredTools: [],
+        allowedTools: [],
+        oauthScope: preset.auth.scope,
+        presetId: id,
+      },
+    ], id);
+    assert.deepEqual(harness.oauthStartPosts, [
+      { agentId: 'agent_conn', connectionId: id, body: { scope: preset.auth.scope } },
+    ], id);
+    assert.deepEqual(harness.assignedUrls, ['https://auth.example/authorize?state=opaque-state'], id);
+  }
 });
 
 test('the Airtable preset saves OAuth policy before requesting its documented scopes', async () => {

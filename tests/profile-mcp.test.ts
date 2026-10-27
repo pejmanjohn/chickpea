@@ -949,6 +949,44 @@ test('account-backed runtime MCP resolves OAuth and rechecks live tool and actor
   }
 });
 
+test('account-backed runtime MCP resolves OAuth for an account stored with a bare-origin URL', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'chickpea-account-mcp-origin-'));
+  try {
+    await withEnv({ SLACK_STATE_DB_PATH: join(directory, 'state.db'), CHICKPEA_AUTH_DB_PATH: join(directory, 'auth.db') }, async () => {
+      const { getIdentityStore } = await import('../src/config/state-backend.ts');
+      const { connectionAccountOAuthRef } = await import('../src/config/api-oauth.ts');
+      const config = getConfigStore();
+      const identity = getIdentityStore();
+      const policy = { kind: 'mcp', url: 'https://mcp.example.com', transport: 'streamable-http', authMode: 'oauth', headerNames: [], discoveredTools: [{ name: 'search' }], allowedTools: ['search'] };
+      const account = { id: 'connection_origin', workspaceId: 'T_TEST', providerId: 'test', label: 'Origin MCP', ownerKind: 'team', lifecycle: 'ready', policy };
+      const binding = { agentId: 'agent_test', connectionAccountId: account.id, providerId: 'test', enabled: true, allowedCapabilities: [] };
+      t.mock.method(identity, 'getOrganization', async () => ({ id: 'org', slackTeamId: 'T_TEST' }));
+      t.mock.method(identity, 'getMembership', async () => ({ id: 'member', userId: 'user', organizationId: 'org', status: 'active' }));
+      t.mock.method(identity, 'getMembershipAccessOverlay', async () => null);
+      t.mock.method(identity, 'getUser', async () => ({ id: 'user', slackTeamId: 'T_TEST', slackUserId: 'U_TEST' }));
+      t.mock.method(identity, 'resolveSlackIdentity', async () => ({ user: { id: 'user' }, membership: { id: 'member' }, binding: { membershipId: 'member' } }));
+      t.mock.method(config, 'listConnectionAccounts', async () => [account]);
+      t.mock.method(config, 'listAgentConnectionBindings', async () => [binding]);
+      await getSettingsStore().setSetting(mcpOAuthSettingKeys(connectionAccountOAuthRef(account.id))[2], JSON.stringify({
+        serverUrl: 'https://mcp.example.com/', authorizationServerUrl: 'https://auth.example.com',
+        metadata: { issuer: 'https://auth.example.com', authorization_endpoint: 'https://auth.example.com/authorize', token_endpoint: 'https://auth.example.com/token', response_types_supported: ['code'] },
+        resource: 'https://mcp.example.com/', clientInformation: { client_id: 'client' },
+        tokens: { access_token: 'origin-token', token_type: 'Bearer', expires_in: 3600 },
+        obtainedAt: Date.now(),
+      }));
+      const [definition] = resolveRuntimePlanMcpConnections('agent_test', [{
+        id: account.id, url: policy.url, transport: 'streamable-http', authMode: 'oauth', headerNames: [], allowedTools: ['search'], optional: true,
+      }], undefined, { workspaceId: 'T_TEST', actorMembershipId: 'member' });
+      assert.equal(await (definition!.auth as () => Promise<string>)(), 'origin-token');
+      t.mock.restoreAll();
+    });
+  } finally {
+    t.mock.restoreAll();
+    closeNodeStateStores();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('an MCP 401 forces one renewal of the rejected OAuth token, then throttles', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'chickpea-account-mcp-401-'));
   try {

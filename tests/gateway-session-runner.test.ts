@@ -142,6 +142,59 @@ test('a deployment serving many installations disarms the shared gateway session
   assert.equal(await storage.getAlarm(), null);
 });
 
+test('deployment readiness restarts a session object still running the previous Worker version', async () => {
+  const storage = alarmStorage();
+  const runners: FakeRunnerControl[] = [];
+  const aborts: string[] = [];
+  const source = ts.createSourceFile('cloudflare-session.ts',
+    readFileSync(new URL('../src/slack/gateway/cloudflare-session.ts', import.meta.url), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) =>
+    ts.isClassDeclaration(node) && node.name?.text === 'SlackGatewaySession');
+  assert.ok(declaration);
+  const compiled = ts.transpileModule(
+    declaration.getText(source).replace(/^export /u, '') + '\nSlackGatewaySession',
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const Probe = vm.runInNewContext(compiled, {
+    resolveSlackPublicUrl: async () => undefined,
+    parseHttpDeliveryState: () => undefined,
+    GATEWAY_HTTP_SETTING: 'slack.gateway.httpDelivery.v1',
+    Date: { now: () => NOW },
+    DurableObject: class { constructor(_context: unknown, public env: unknown) {} },
+    deploymentTenancy,
+    getSettingsStore: () => ({ getSetting: async () => 'configured' }),
+    GATEWAY_BINDING_SETTING: 'binding',
+    GATEWAY_DURABLE_ADMISSION_CAPABILITY: 'durable',
+    GATEWAY_UI_INTERACTIONS_CAPABILITY: 'ui',
+    cloudflareWorkerVersionId: () => 'previous-version',
+    GATEWAY_DELIVERY_CONFIRM_TIMEOUT_MS: 5_000,
+    reconcileGatewaySessionStatus,
+    GatewaySessionRunnerSupervisor,
+    GatewayInboundAdmission,
+    GatewaySessionRunner: class extends FakeRunnerControl {
+      constructor() { super('healthy'); runners.push(this); }
+      async confirmDelivery() { return true; }
+    },
+  }) as new (context: object, env: object) => {
+    wake(): Promise<void>;
+    confirmDelivery(deployedVersion?: string): Promise<{ healthy: boolean }>;
+  };
+  const context = {
+    storage,
+    waitUntil() {},
+    abort(reason: string) { aborts.push(reason); throw new Error('Durable Object reset'); },
+  };
+  const session = new Probe(context, {});
+  await session.wake();
+  assert.equal((await session.confirmDelivery('previous-version')).healthy, true, 'the deployed version keeps its own session');
+  assert.deepEqual(aborts, []);
+
+  await assert.rejects(session.confirmDelivery('deployed-version'), /reset/);
+  assert.deepEqual(aborts, ['Superseded by Worker version deployed-version']);
+  assert.equal(runners[0]!.stops, 1, 'the previous version closes its socket before the restart');
+});
+
 test('concurrent Durable Object wakes share one supervisor and leave no orphan session on restart', async () => {
   // Execute the real DO class with a delayed cross-object settings read. The
   // runner supervisor is real; socket transport itself is covered below.

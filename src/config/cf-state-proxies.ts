@@ -2668,6 +2668,11 @@ export class CfRoutineStore implements RoutineStore {
     if (response.kind !== 'count') throw unexpectedRoutineResponse();
     return response.count;
   }
+  async markDueNow(routineId: string, now: number): Promise<RoutineDefinition | undefined> {
+    const response = await this.execute({ kind: 'mark_due_now', routineId, now });
+    if (response.kind !== 'routine') throw unexpectedRoutineResponse();
+    return response.routine ?? undefined;
+  }
   async claimDueSchedules(input: ClaimDueRoutinesInput): Promise<RoutineDueClaimBatch> {
     const response = await this.execute({ kind: 'claim_due_schedules', input });
     if (response.kind !== 'due_claims') throw unexpectedRoutineResponse();

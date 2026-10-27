@@ -885,6 +885,29 @@ test('a changed credential policy resets the secret and status, and header polic
     }
   }));
 
+test('a bare-origin server written in either URL form keeps its secret and status', () =>
+  withFixture('round-trip-bare-origin', async (f) => {
+    const stored = await seedAgent(f, 'agent_origin');
+    const seeded = await connect(f, stored.id, {
+      ...tracker, policy: { ...tracker.policy, url: 'https://mcp.tracker.example' },
+    });
+    for (const url of ['https://mcp.tracker.example', 'https://mcp.tracker.example/']) {
+      const current = await inspect(f, stored.id);
+      const result = await mcpApply(f, {
+        idempotencyKey: `origin-${url}`,
+        operations: [{
+          itemId: 'origin', kind: 'update_agent', agentId: current.id, expectedRevision: current.revision,
+          patch: { mcpServers: [{ ...current.mcpServers[0]!, url }] },
+        }],
+      });
+      assert.deepEqual(result.outcomes.map(({ disposition }) => disposition), ['applied'], JSON.stringify(result.outcomes));
+      const account = await accountOf(f, stored.id, 'tracker');
+      assert.equal(account.revision, seeded.revision, `${url} writes nothing to the account`);
+      assert.equal(account.lifecycle, 'ready');
+      assert.equal(await secretOf(f, account), tracker.credential, `${url} keeps the stored credential`);
+    }
+  }));
+
 test('discovery narrows a non-empty approved tool list, and an empty one counts as never discovered', () => {
   const offered = [{ name: 'search' }, { name: 'delete_everything' }];
   const added = (allowedTools: string[]) => mcpConnectionsAfterWrite([], [{ ...wikiServer, allowedTools }])[0]!;
