@@ -119,6 +119,39 @@ test('destructive tools stay out unless a reviewer adds them, and then only in t
   assert.equal(reviewed.capabilities.some(({ tool: slug }) => slug === 'ACME_SEND_INVOICE'), false);
 });
 
+test('a create or update tool whose name or description is irreversible is destructive and needs review', () => {
+  const tools = [
+    tool('ACME_MERGE_TICKETS', ['updateHint']),
+    tool('ACME_MOVE_NOTE_TO_TRASH', ['updateHint']),
+    tool('ACME_VOID_RECEIPT', ['updateHint']),
+    tool('ACME_CANCEL_BOOKING', ['updateHint']),
+    tool('ACME_DELETE_DRAFT', ['createHint']),
+    { ...tool('ACME_UPDATE_RECORD_STATE', ['updateHint']), description: 'Archives a record so it no longer appears.' },
+    tool('ACME_UPDATE_NOTE', ['updateHint']),
+  ];
+  const { manifest, report } = draftComposioManifest(snapshot(tools));
+
+  assert.deepEqual(lanes(manifest), { ACME_UPDATE_NOTE: 'write', ACME_WHO_AM_I: 'read' });
+  assert.deepEqual(report.irreversible, [
+    { tool: 'ACME_CANCEL_BOOKING', verb: 'CANCEL' },
+    { tool: 'ACME_DELETE_DRAFT', verb: 'DELETE' },
+    { tool: 'ACME_MERGE_TICKETS', verb: 'MERGE' },
+    { tool: 'ACME_MOVE_NOTE_TO_TRASH', verb: 'TRASH' },
+    { tool: 'ACME_UPDATE_RECORD_STATE', verb: 'archive' },
+    { tool: 'ACME_VOID_RECEIPT', verb: 'VOID' },
+  ]);
+  for (const { tool: slug } of report.irreversible) {
+    assert.match(report.excluded.find((entry) => entry.tool === slug)!.reason, /^destructive \(irreversible verb/, slug);
+  }
+
+  const merge = draftComposioManifest(snapshot(tools), {
+    ...manifest,
+    review: { add: ['ACME_MERGE_TICKETS'], drop: {}, allowArguments: {} },
+  }).manifest.capabilities.find(({ tool: slug }) => slug === 'ACME_MERGE_TICKETS');
+  assert.equal(merge?.lane, 'write');
+  assert.equal(merge?.effect, 'destructive');
+});
+
 test('the check rejects a destructive tool slipped into a manifest without review', async () => {
   const manifest = pilotManifest('trello');
   const snapshotValue = await readSnapshot('trello', manifest.version);

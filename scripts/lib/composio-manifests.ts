@@ -51,6 +51,8 @@ export interface DraftReport {
   excluded: Array<{ tool: string; reason: string }>;
   withheldArguments: Array<{ tool: string; arguments: Record<string, string> }>;
   preconditions: Array<{ tool: string; argument: string }>;
+  /** Write tools without `destructiveHint` that the irreversibility lint made destructive. */
+  irreversible: Array<{ tool: string; verb: string }>;
 }
 
 const HINTS = ['readOnlyHint', 'createHint', 'updateHint', 'destructiveHint'] as const;
@@ -72,6 +74,12 @@ const READ_LINT_DESCRIPTION_VERBS = new Set(`
   edit forward grant import insert invite mark modify move pay ping publish purchase purge refund
   reject remove rename reply revoke schedule send share start stop submit subscribe transfer trigger
   unsubscribe update upload upsert
+`.trim().split(/\s+/));
+/** A create or update hint does not make these reversible; the lint reclassifies them as destructive. */
+const IRREVERSIBLE_MARKERS =
+  /(?:^|_)((?:ARCHIVE|CANCEL|DELETE|DESTROY|ERASE|MERGE|PURGE|REMOVE|REVOKE|TRANSFER|TRASH|VOID)(?:S|D|ED)?)(?:_|$)/;
+const IRREVERSIBLE_DESCRIPTION_VERBS = new Set(`
+  archive cancel delete destroy erase merge purge remove revoke transfer trash void
 `.trim().split(/\s+/));
 
 const REVIEW_REQUIRED_EFFECTS = new Set<ManagedEffectClass>([
@@ -147,13 +155,14 @@ function withheldArgumentReason(
 export function readLaneLintHit(name: string, description: string): string | undefined {
   const leading = name.split('_')[0] ?? '';
   if (READ_LINT_LEADING_VERBS.has(leading)) return leading;
-  const marker = READ_LINT_MARKERS.exec(name)?.[1];
-  if (marker) return marker;
-  const verb = leadingDescriptionVerb(description);
-  return verb && READ_LINT_DESCRIPTION_VERBS.has(verb) ? verb : undefined;
+  return READ_LINT_MARKERS.exec(name)?.[1] ?? leadingDescriptionVerb(description, READ_LINT_DESCRIPTION_VERBS);
 }
 
-function leadingDescriptionVerb(description: string): string | undefined {
+function irreversibleVerb(name: string, description: string): string | undefined {
+  return IRREVERSIBLE_MARKERS.exec(name)?.[1] ?? leadingDescriptionVerb(description, IRREVERSIBLE_DESCRIPTION_VERBS);
+}
+
+function leadingDescriptionVerb(description: string, verbs: ReadonlySet<string>): string | undefined {
   const text = description.trim()
     .replace(/^(?:tool|action|endpoint|api)\s+(?:to|that|which)\s+/i, '')
     .replace(/^(?:this|the)\s+(?:tool|action|endpoint)\s+/i, '')
@@ -161,13 +170,12 @@ function leadingDescriptionVerb(description: string): string | undefined {
   const word = /^[A-Za-z]+/.exec(text)?.[0]?.toLowerCase();
   if (!word) return undefined;
   for (const candidate of [word, word.replace(/ies$/, 'y'), word.replace(/es$/, ''), word.replace(/s$/, '')]) {
-    if (READ_LINT_DESCRIPTION_VERBS.has(candidate)) return candidate;
+    if (verbs.has(candidate)) return candidate;
   }
   return undefined;
 }
 
-function writeEffect(name: string, hints: readonly string[]): ManagedEffectClass {
-  if (hints.includes('destructiveHint')) return 'destructive';
+function writeEffect(name: string): ManagedEffectClass {
   if (ADMINISTRATIVE.test(name)) return 'administrative';
   if (SPEND.test(name)) return 'spend_or_budget';
   if (PUBLISH.test(name)) return 'external_publish';
@@ -176,7 +184,7 @@ function writeEffect(name: string, hints: readonly string[]): ManagedEffectClass
 
 type Classification =
   | { lane: 'read'; effect: 'read' }
-  | { lane: 'write'; effect: ManagedEffectClass }
+  | { lane: 'write'; effect: ManagedEffectClass; irreversible?: string }
   | { excluded: string };
 
 function classify(tool: ComposioSnapshotTool, name: string): Classification {
@@ -188,7 +196,11 @@ function classify(tool: ComposioSnapshotTool, name: string): Classification {
     const hit = readLaneLintHit(name, tool.description);
     return hit ? { excluded: `read lint hit "${hit}"; never reclassified` } : { lane: 'read', effect: 'read' };
   }
-  return { lane: 'write', effect: writeEffect(name, hints) };
+  if (hints.includes('destructiveHint')) return { lane: 'write', effect: 'destructive' };
+  const irreversible = irreversibleVerb(name, tool.description);
+  return irreversible
+    ? { lane: 'write', effect: 'destructive', irreversible }
+    : { lane: 'write', effect: writeEffect(name) };
 }
 
 type Derived<T> = { schema: T } | { unsupported: string };
@@ -349,7 +361,7 @@ export function draftComposioManifest(
   const prefix = `${toolkit.toUpperCase()}_`;
   const report: DraftReport = {
     toolkit, version: snapshot.toolkit.version, validationCapability: '',
-    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [],
+    read: [], write: [], excluded: [], withheldArguments: [], preconditions: [], irreversible: [],
   };
   const capabilities: ComposioManifestCapability[] = [];
   for (const tool of [...snapshot.tools].sort((left, right) => left.slug.localeCompare(right.slug))) {
@@ -365,6 +377,8 @@ export function draftComposioManifest(
       exclude(classification.excluded);
       continue;
     }
+    const irreversible = 'irreversible' in classification ? classification.irreversible : undefined;
+    if (irreversible) report.irreversible.push({ tool: tool.slug, verb: irreversible });
     const write = classification.lane === 'write';
     const input = deriveInputSchema(tool.input, {
       write,
@@ -379,7 +393,11 @@ export function draftComposioManifest(
       ? 'administrative'
       : classification.effect;
     if (REVIEW_REQUIRED_EFFECTS.has(effect) && !add.has(tool.slug)) {
-      exclude(`${effect}${input.allowedKept.length > 0 ? ` (keeps ${input.allowedKept.join(', ')})` : ''}; include only by adding it to review.add`);
+      const notes = [
+        ...(irreversible ? [`irreversible verb ${irreversible}`] : []),
+        ...(input.allowedKept.length > 0 ? [`keeps ${input.allowedKept.join(', ')}`] : []),
+      ];
+      exclude(`${effect}${notes.length > 0 ? ` (${notes.join('; ')})` : ''}; include only by adding it to review.add`);
       continue;
     }
     const toolName = `${toolkit}_${name.toLowerCase()}`;
@@ -582,6 +600,9 @@ export function renderDraftReport(report: DraftReport): string {
     '',
     `## Excluded (${report.excluded.length})`,
     ...report.excluded.map(({ tool, reason }) => `- \`${tool}\`: ${reason}`),
+    '',
+    `## Write tools made destructive by an irreversible verb (${report.irreversible.length})`,
+    ...report.irreversible.map(({ tool, verb }) => `- \`${tool}\`: ${verb}`),
     '',
     `## Arguments with a precondition (${report.preconditions.length})`,
     ...report.preconditions.map(({ tool, argument }) => `- \`${tool}\`: \`${argument}\``),
