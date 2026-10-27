@@ -20,7 +20,7 @@ const localUserPathPattern = new RegExp(
     '\\/',
     'users',
     '\\/',
-    '(?!me(?:\\/|$))',
+    '(?!me(?:\\/|$)|\\{)',
     '[^\\/\\s]+',
     '\\/',
   ),
@@ -36,7 +36,8 @@ export const denyPatterns = [
   ['private channel name', new RegExp(term('all-', 'paper', 'plane-', 'labs'), 'i')],
   // Require both a home-directory owner and a following path segment. This
   // catches case-insensitive macOS paths while allowing `/users/...` API route
-  // segments whose preceding character is part of a URL path.
+  // segments whose preceding character is part of a URL path, and templated
+  // routes such as `/users/{user_id}/` in vendor API docs.
   ['local user path', localUserPathPattern],
 ];
 
@@ -62,6 +63,7 @@ for (const value of [
   term('/api/v2/', 'users', '/', 'me.json'),
   term('https://gmail.googleapis.com/gmail/v1/', 'users', '/', 'me/messages'),
   term('/', 'users', '/', 'me', '/messages/send'),
+  term(' /', 'users', '/', '{user_id}', '/onlineMeetings'),
 ]) {
   if (localUserPathPattern.test(value)) {
     throw new Error(`API route allow fixture matched local user path pattern: ${value}`);
