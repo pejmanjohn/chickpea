@@ -45,6 +45,7 @@ test('connector preset catalog entries are valid', () => {
     assert.ok(preset.name.trim().length > 0 && preset.name.length <= 80);
     assert.ok(preset.description.trim().length > 0 && preset.description.length <= 100);
     assert.match(preset.description, /\.$/);
+    assert.ok(CONNECTOR_LOGOS[preset.logoId ?? preset.id], `missing connector logo for ${preset.id}`);
     const lanes = presetLanes(preset);
     assert.ok(lanes.mcp || lanes.api, `${preset.id} has no connector lane`);
 
@@ -106,7 +107,7 @@ test('managed Google analytics presets reference the official product-icon binar
 
 test('preset lanes classify the existing MCP catalog, the API additions, and both', () => {
   const existingMcpPresets = CONNECTOR_PRESETS.filter((preset) => !API_PRESET_IDS.has(preset.id));
-  assert.equal(existingMcpPresets.length, 23);
+  assert.equal(existingMcpPresets.length, 32);
   for (const preset of existingMcpPresets) {
     assert.deepEqual(presetLanes(preset), { mcp: true, api: false }, preset.id);
   }
@@ -317,6 +318,30 @@ test('the Granola MCP preset uses browser OAuth with the advertised resource sco
     notes:
       'Granola MCP uses personal browser OAuth. Anyone who can use this profile may query meetings available to the connected account; plan and workspace restrictions still apply.',
   });
+});
+
+test('vendor-hosted OAuth MCP presets request the scopes their servers advertise', () => {
+  // Scopes come from each server's OAuth metadata; read-only variants are left out.
+  const reviewed: Record<string, { url: string; scope: string }> = {
+    amplitude: { url: 'https://mcp.amplitude.com/mcp', scope: 'all:read all:write offline_access' },
+    'better-stack': { url: 'https://mcp.betterstack.com', scope: 'read write' },
+    clickhouse: { url: 'https://mcp.clickhouse.cloud/mcp', scope: 'mcp:access openid profile email' },
+    datadog: { url: 'https://mcp.datadoghq.com/v1/mcp', scope: 'mcp_all' },
+    grafana: { url: 'https://mcp.grafana.com/mcp', scope: 'grafana:read grafana:query grafana:write' },
+    honeycomb: { url: 'https://mcp.honeycomb.io/mcp', scope: 'mcp:read mcp:write' },
+    motherduck: { url: 'https://api.motherduck.com/mcp', scope: 'mcp:connect' },
+    netlify: { url: 'https://netlify-mcp.netlify.app/mcp', scope: 'read write offline_access' },
+    statsig: { url: 'https://api.statsig.com/v3/mcp', scope: 'personal_read_write' },
+  };
+  for (const [id, { url, scope }] of Object.entries(reviewed)) {
+    const preset = getConnectorPreset(id);
+    assert.ok(preset && 'auth' in preset, id);
+    assert.equal(preset.url, url, id);
+    assert.deepEqual(preset.auth, { kind: 'oauth', scope }, id);
+    assert.equal(preset.toolAccessMode, undefined, id);
+    assert.match(preset.tokenDocsUrl ?? '', /^https:\/\//, id);
+    assert.equal(resolveConnectorCatalogPreset(preset.name)?.id, id);
+  }
 });
 
 test('the Airtable MCP preset requests the documented read-write OAuth scopes', () => {

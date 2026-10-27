@@ -28,6 +28,7 @@ export const PUBLIC_ASSET_PATHS = [
   ...[
     'bugsnag', 'exa', 'fireflies', 'gamma', 'granola', 'incident-io', 'lunarcrush',
     'google-search-console', 'google-analytics', 'google-ads',
+    'honeycomb', 'motherduck', 'statsig', 'amplitude',
   ].map((name) => `connectors/${name}.png`),
 ];
 const publicPaths = new Set(PUBLIC_ASSET_PATHS);
