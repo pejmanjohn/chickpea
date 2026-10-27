@@ -6,7 +6,7 @@
   },
   "label": "Zoom",
   "description": "Review meetings, recordings, summaries, participants, and webinars, and schedule or update meetings.",
-  "securityDescription": "Zoom sign-in opens through Composio. Agents act as the signed-in Zoom user and can read their meetings and past participants, cloud recording lists, meeting summaries, webinars with registrants and attendees, and the company contact directory. Meeting details include join links, passcodes, and the host's start link. With write access, Agents can schedule meetings the person hosts and change the time, topic, agenda, recurrence, recording, and other settings of meetings the person can edit. Agents cannot invite or email anyone, delete meetings or recordings, add alternative hosts, schedule for another user, use the Personal Meeting ID, let people join before the host or skip the waiting room, change sign-in requirements, choose other countries' data centers, attach whiteboards, or change users, webinars, or account settings.",
+  "securityDescription": "Zoom sign-in opens through Composio. Agents act as the signed-in Zoom user and can read the meetings and recordings the connected account can reach, past participants, meeting summaries, webinars with registrants and attendees, and the company contact directory. Meeting lists include join links, and recording lists include share links and passcodes. With write access, Agents can schedule meetings the person hosts and change the time, topic, agenda, recurrence, recording, and other settings of meetings the person can edit. A meeting Agents schedule comes back with its start link. Agents cannot invite or email anyone, delete meetings or recordings, add alternative hosts, schedule for another user, use the Personal Meeting ID, let people join before the host or skip the waiting room, change sign-in requirements, choose other countries' data centers, attach whiteboards, or change users, webinars, or account settings.",
   "preset": {
     "category": "business",
     "accent": "#0B5CFF"
@@ -17,14 +17,16 @@
   },
   "review": {
     "add": [
-      "ZOOM_GET_A_WEBINAR",
       "ZOOM_GET_PAST_MEETING_PARTICIPANTS",
       "ZOOM_LIST_PAST_MEETING_INSTANCES",
       "ZOOM_LIST_WEBINARS",
       "ZOOM_LIST_WEBINAR_PARTICIPANTS",
       "ZOOM_UPDATE_A_MEETING"
     ],
-    "drop": {},
+    "drop": {
+      "ZOOM_GET_A_MEETING": "Returns start_url, the host's start link, which embeds the host's ZAK; whoever holds it starts the meeting as host, and reads run on read-only connections.",
+      "ZOOM_GET_A_WEBINAR": "Returns start_url, the host's start link, which embeds the host's ZAK; whoever holds it starts the webinar as host, and reads run on read-only connections."
+    },
     "allowArguments": {},
     "withholdArguments": {
       "ZOOM_CREATE_A_MEETING": {
@@ -348,38 +350,6 @@
       }
     },
     {
-      "id": "zoom.get_a_meeting",
-      "tool": "ZOOM_GET_A_MEETING",
-      "toolName": "zoom_get_a_meeting",
-      "lane": "read",
-      "effect": "read",
-      "description": "Retrieves detailed information about a Zoom meeting by its ID. Returns comprehensive meeting data including topic, schedule, URLs, passwords, settings, and for recurring meetings, occurrence details and recurrence patterns. For recurring meetings, defaults to the latest occurrence unless occurrence_id or show_previous_occurrences is specified. Returned start_time must be interpreted using the meeting's timezone field. Requires meeting:read scope. Rate limit: LIGHT.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "meeting_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The meeting's ID. When storing this value in your database, store it as a long format integer and **not** an integer. Meeting IDs can be more than 10 digits. UUID-style meeting IDs containing a leading '/' or '//' must be double-URL-encoded before use."
-          },
-          "occurrence_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Meeting occurrence ID. Provide this field to view meeting details of a particular occurrence of the [recurring meeting](https://support.zoom.us/hc/en-us/articles/214973206-Scheduling-Recurring-Meetings)."
-          },
-          "show_previous_occurrences": {
-            "type": "boolean",
-            "description": "Set this field's value to `true` to view meeting details of all previous occurrences of a [recurring meeting](https://support.zoom.us/hc/en-us/articles/214973206-Scheduling-Recurring-Meetings)."
-          }
-        },
-        "required": [
-          "meeting_id"
-        ],
-        "description": "Request schema for `GetAMeeting`"
-      }
-    },
-    {
       "id": "zoom.get_a_meeting_summary",
       "tool": "ZOOM_GET_A_MEETING_SUMMARY",
       "toolName": "zoom_get_a_meeting_summary",
@@ -400,38 +370,6 @@
           "meetingId"
         ],
         "description": "Request schema for `GetAMeetingSummary`"
-      }
-    },
-    {
-      "id": "zoom.get_a_webinar",
-      "tool": "ZOOM_GET_A_WEBINAR",
-      "toolName": "zoom_get_a_webinar",
-      "lane": "read",
-      "effect": "read",
-      "description": "Access Zoom Webinar details requires Pro or higher plan and Webinar add-on. Scopes include `webinar:read:admin` and `webinar:read`. Granular scopes and a 'LIGHT' rate limit also apply.",
-      "maxResultBytes": 65536,
-      "input": {
-        "type": "object",
-        "properties": {
-          "webinar_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "The webinar's ID or universally unique ID (UUID)."
-          },
-          "occurrence_id": {
-            "type": "string",
-            "maxLength": 20000,
-            "description": "Unique identifier for an occurrence of a recurring webinar. [Recurring webinars](https://support.zoom.us/hc/en-us/articles/216354763-How-to-Schedule-A-Recurring-Webinar) can have a maximum of 50 occurrences. When you create a recurring Webinar using [**Create a webinar**](https://developers.zoom.us) API, you can retrieve the Occurrence ID from the response of the API call."
-          },
-          "show_previous_occurrences": {
-            "type": "boolean",
-            "description": "Set the value of this field to `true` if you would like to view Webinar details of all previous occurrences of a recurring Webinar."
-          }
-        },
-        "required": [
-          "webinar_id"
-        ],
-        "description": "Request schema for `GetAWebinar`"
       }
     },
     {

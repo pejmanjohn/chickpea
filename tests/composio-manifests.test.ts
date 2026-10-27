@@ -951,6 +951,8 @@ test('reviewer drops stay out of their manifests', () => {
   const dropped: Array<[toolkit: string, tool: string]> = [
     ['contentful', 'CONTENTFUL_QUERY_ASSET_COLLECTION'],
     ['contentful', 'CONTENTFUL_QUERY_GRAPHQL_CONTENT_TYPE_COLLECTION'],
+    ['zoom', 'ZOOM_GET_A_MEETING'],
+    ['zoom', 'ZOOM_GET_A_WEBINAR'],
   ];
   for (const [toolkit, slug] of dropped) {
     const manifest = pilotManifest(toolkit);
