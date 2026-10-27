@@ -1,0 +1,752 @@
+{
+  "toolkit": {
+    "slug": "pinterest_ads",
+    "name": "Pinterest Ads",
+    "version": "20260826_00",
+    "description": "Pinterest Ads API for managing advertising accounts, campaigns, ad groups, ads, targeting, and reporting.",
+    "managedAuthSchemes": [
+      "OAUTH2"
+    ],
+    "authModes": [
+      {
+        "mode": "OAUTH2",
+        "fields": []
+      }
+    ],
+    "currentUserEndpoint": "https://api.pinterest.com/v5/user_account"
+  },
+  "tools": [
+    {
+      "slug": "PINTEREST_ADS_GET_ANALYTICS",
+      "name": "Get Ads Analytics",
+      "description": "Get synchronous Pinterest Ads performance metrics for an advertiser or selected campaigns, ad groups, or ads over a date range.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "analytics",
+        "ads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetAnalyticsRequest",
+        "required": [
+          "ad_account_id",
+          "entity_level",
+          "start_date",
+          "end_date",
+          "columns",
+          "granularity"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "SPEND_IN_MICRO_DOLLAR",
+                "PAID_IMPRESSION",
+                "TOTAL_IMPRESSION",
+                "TOTAL_CLICKTHROUGH",
+                "OUTBOUND_CLICK_1",
+                "CTR",
+                "OUTBOUND_CTR_1",
+                "CPC_IN_MICRO_DOLLAR",
+                "CPM_IN_MICRO_DOLLAR",
+                "COST_PER_OUTBOUND_CLICK_IN_DOLLAR",
+                "TOTAL_ENGAGEMENT",
+                "ENGAGEMENT_RATE",
+                "TOTAL_CONVERSIONS",
+                "TOTAL_PAGE_VISIT",
+                "TOTAL_SIGNUP",
+                "TOTAL_CHECKOUT",
+                "TOTAL_ADD_TO_CART",
+                "TOTAL_LEAD",
+                "CHECKOUT_ROAS",
+                "TOTAL_VIDEO_3SEC_VIEWS",
+                "TOTAL_VIDEO_P100_COMPLETE",
+                "TOTAL_WEB_CHECKOUT",
+                "TOTAL_WEB_CHECKOUT_VALUE_IN_MICRO_DOLLAR",
+                "CAMPAIGN_ID",
+                "AD_GROUP_ID",
+                "AD_ID"
+              ],
+              "type": "string"
+            },
+            "title": "Columns",
+            "minItems": 1,
+            "description": "Supported Pinterest metrics and identifiers to return. MICRO_DOLLAR values are advertiser-currency microunits."
+          },
+          "end_date": {
+            "type": "string",
+            "title": "End Date",
+            "format": "date",
+            "description": "UTC report end date; must be on or after start_date and at most 90 days after it."
+          },
+          "entity_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\d+$"
+            },
+            "title": "Entity Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Campaign, ad-group, or ad IDs for the chosen entity_level. Required unless entity_level is AD_ACCOUNT; forbidden for AD_ACCOUNT."
+          },
+          "start_date": {
+            "type": "string",
+            "title": "Start Date",
+            "format": "date",
+            "description": "UTC report start date. It may be at most 90 days before today, or 8 days before today when granularity is HOUR."
+          },
+          "granularity": {
+            "enum": [
+              "TOTAL",
+              "DAY",
+              "HOUR",
+              "WEEK",
+              "MONTH"
+            ],
+            "type": "string",
+            "title": "Granularity",
+            "description": "Time grouping for metric rows: TOTAL, DAY, HOUR, WEEK, or MONTH. HOUR no longer provides conversion metrics, is limited to the previous 8 days, and has a 3-day maximum range for campaign, ad-group, and ad reports."
+          },
+          "entity_level": {
+            "enum": [
+              "AD_ACCOUNT",
+              "CAMPAIGN",
+              "AD_GROUP",
+              "AD"
+            ],
+            "type": "string",
+            "title": "Entity Level",
+            "description": "Reporting level. Entity IDs are required for CAMPAIGN, AD_GROUP, and AD, and forbidden for AD_ACCOUNT."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^\\d+$",
+            "description": "Advertiser account whose performance data to read."
+          },
+          "view_window_days": {
+            "enum": [
+              0,
+              1,
+              7,
+              14,
+              30,
+              60
+            ],
+            "type": "integer",
+            "title": "View Window Days",
+            "default": 1,
+            "description": "Pinterest Tag view-attribution window in days."
+          },
+          "click_window_days": {
+            "enum": [
+              0,
+              1,
+              7,
+              14,
+              30,
+              60
+            ],
+            "type": "integer",
+            "title": "Click Window Days",
+            "default": 30,
+            "description": "Pinterest Tag click-attribution window in days."
+          },
+          "conversion_report_time": {
+            "enum": [
+              "TIME_OF_AD_ACTION",
+              "TIME_OF_CONVERSION"
+            ],
+            "type": "string",
+            "title": "Conversion Report Time",
+            "default": "TIME_OF_AD_ACTION",
+            "description": "Attribute conversion rows to the ad interaction date or conversion date."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_GET_METRICS_READY_STATE",
+      "name": "Get Metrics Ready State",
+      "description": "Check whether Pinterest conversion and non-conversion metrics are finalized for a UTC report date before relying on analytics results.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "analytics",
+        "ads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetMetricsReadyStateRequest",
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date",
+            "examples": [
+              "2026-08-04"
+            ],
+            "description": "UTC analytics report date to check, in YYYY-MM-DD format."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_GET_TARGETING_OPTIONS",
+      "name": "Get Targeting Options",
+      "description": "Get Pinterest's valid targeting values for a targeting type, such as age buckets, gender, locale, location, interests, or keywords.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "ads",
+        "targeting"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "GetTargetingOptionsRequest",
+        "required": [
+          "targeting_type"
+        ],
+        "properties": {
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^\\d+$",
+            "description": "Optional advertiser account context. Omit to retrieve options for the connected Pinterest user."
+          },
+          "targeting_type": {
+            "enum": [
+              "APPTYPE",
+              "GENDER",
+              "LOCALE",
+              "AGE_BUCKET",
+              "LOCATION",
+              "GEO",
+              "INTEREST",
+              "KEYWORD",
+              "AUDIENCE_INCLUDE",
+              "AUDIENCE_EXCLUDE"
+            ],
+            "type": "string",
+            "title": "Targeting Type",
+            "description": "Pinterest targeting dimension whose valid values to retrieve."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_LIST_AD_ACCOUNTS",
+      "name": "List Ad Accounts",
+      "description": "List advertiser accounts the connected Pinterest user owns or can access, including the IDs needed by all other Ads tools.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdAccountsRequest",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 25,
+            "maximum": 250,
+            "minimum": 1,
+            "description": "Maximum advertiser accounts in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "title": "Next Cursor",
+            "description": "Continuation cursor returned by a previous call. Omit for the first page."
+          },
+          "include_shared_accounts": {
+            "type": "boolean",
+            "title": "Include Shared Accounts",
+            "default": true,
+            "description": "Include ad accounts shared with the connected user through Business Access."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_LIST_AD_GROUPS",
+      "name": "List Ad Groups",
+      "description": "List ad groups for an advertiser, filter by parent campaigns, or look up specific ad groups by ID.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "ad_groups"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdGroupsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "order": {
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "type": "string",
+            "title": "Order",
+            "default": "ASCENDING",
+            "description": "Sort by ad-group ID; higher IDs are newer."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 25,
+            "maximum": 250,
+            "minimum": 1,
+            "description": "Maximum ad groups in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "title": "Next Cursor",
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "ad_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\d+$"
+            },
+            "title": "Ad Group Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional ad-group IDs to look up. Pinterest marks this filter beta, so availability may vary by advertiser."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\d+$"
+            },
+            "title": "Campaign Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional parent campaign IDs used to filter ad groups."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^\\d+$",
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ],
+              "type": "string"
+            },
+            "title": "Entity Statuses",
+            "minItems": 1,
+            "description": "Statuses to include. If omitted, Pinterest returns only ACTIVE and PAUSED ad groups."
+          },
+          "translate_interests_to_names": {
+            "type": "boolean",
+            "title": "Translate Interests To Names",
+            "default": false,
+            "description": "Return interest targeting as readable names instead of topic IDs."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_LIST_ADS",
+      "name": "List Ads",
+      "description": "List ads for an advertiser, filter by one hierarchy level, or look up specific ads by ID. Archived and draft ads must be requested explicitly with entity_statuses.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "ads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListAdsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "order": {
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "type": "string",
+            "title": "Order",
+            "default": "ASCENDING",
+            "description": "Sort by ad ID. Higher IDs are associated with more recently added ads."
+          },
+          "ad_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ad Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional ad IDs to look up. Cannot be combined with campaign_ids or ad_group_ids; omit all ID filters to list ads."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 25,
+            "maximum": 250,
+            "minimum": 1,
+            "description": "Maximum ads in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "title": "Next Cursor",
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "ad_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ad Group Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional parent ad-group IDs used to filter ads. This beta filter may not be available to every advertiser and cannot be combined with campaign_ids or ad_ids."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Campaign Ids",
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional parent campaign IDs used to filter ads. Cannot be combined with ad_group_ids or ad_ids."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ],
+              "type": "string"
+            },
+            "title": "Entity Statuses",
+            "description": "Statuses to include. If omitted, Pinterest returns only ACTIVE and PAUSED ads."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_LIST_CAMPAIGNS",
+      "name": "List Campaigns",
+      "description": "List campaigns for an advertiser, or look up specific campaigns by ID using campaign_ids. Archived and draft campaigns must be requested explicitly with entity_statuses.",
+      "version": "20260826_00",
+      "tags": [
+        "readOnlyHint",
+        "campaigns"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "ListCampaignsRequest",
+        "required": [
+          "ad_account_id"
+        ],
+        "properties": {
+          "order": {
+            "enum": [
+              "ASCENDING",
+              "DESCENDING"
+            ],
+            "type": "string",
+            "title": "Order",
+            "default": "ASCENDING",
+            "description": "Sort by campaign ID; higher IDs are newer."
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size",
+            "default": 25,
+            "maximum": 250,
+            "minimum": 1,
+            "description": "Maximum campaigns in this page (1-250)."
+          },
+          "next_cursor": {
+            "type": "string",
+            "title": "Next Cursor",
+            "description": "Continuation cursor returned by a previous call. Repeat the same filters when continuing."
+          },
+          "campaign_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "title": "Campaign Ids",
+            "examples": [
+              [
+                "123456789012",
+                "123456789013"
+              ]
+            ],
+            "maxItems": 250,
+            "minItems": 1,
+            "description": "Optional campaign IDs to look up; omit to list campaigns."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "examples": [
+              "549770611913"
+            ],
+            "description": "Advertiser account ID returned by LIST_AD_ACCOUNTS."
+          },
+          "entity_statuses": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED",
+                "DRAFT",
+                "DELETED_DRAFT"
+              ],
+              "type": "string"
+            },
+            "title": "Entity Statuses",
+            "examples": [
+              [
+                "ACTIVE",
+                "PAUSED",
+                "ARCHIVED"
+              ]
+            ],
+            "description": "Statuses to include. If omitted Pinterest returns only ACTIVE and PAUSED campaigns."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_UPDATE_AD_GROUPS",
+      "name": "Update Ad Groups",
+      "description": "Rename, pause, or resume up to 30 existing ad groups. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Budget, bid, targeting, schedule, and restricted-setting changes are not exposed.",
+      "version": "20260826_00",
+      "tags": [
+        "updateHint",
+        "destructiveHint",
+        "ad_groups"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAdGroupsRequest",
+        "required": [
+          "ad_account_id",
+          "updates"
+        ],
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AdGroupSafeUpdate",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "pattern": "^\\d+$",
+                  "description": "ID of the ad group to update."
+                },
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "description": "New ad-group name. Omit to leave the name unchanged."
+                },
+                "status": {
+                  "enum": [
+                    "ACTIVE",
+                    "PAUSED"
+                  ],
+                  "type": "string",
+                  "title": "Status",
+                  "description": "Delivery status to apply. ACTIVE can restart delivery and incur spend under existing budgets; PAUSED stops delivery."
+                }
+              }
+            },
+            "title": "Updates",
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "One to 30 ad-group changes. IDs must be unique; each item must set a new name, ACTIVE status, or PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^\\d+$",
+            "description": "Advertiser account that owns every ad group being updated."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_UPDATE_ADS",
+      "name": "Update Ads",
+      "description": "Rename, pause, or resume up to 30 existing Pinterest ads. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Creative, Pin, destination, tracking, and disclosure changes are not exposed.",
+      "version": "20260826_00",
+      "tags": [
+        "updateHint",
+        "destructiveHint",
+        "ads"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateAdsRequest",
+        "required": [
+          "ad_account_id",
+          "updates"
+        ],
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "AdSafeUpdate",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "maxLength": 18,
+                  "description": "Pinterest ad ID to update."
+                },
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "maxLength": 255,
+                  "description": "New ad name. Blank names are not accepted."
+                },
+                "status": {
+                  "enum": [
+                    "ACTIVE",
+                    "PAUSED"
+                  ],
+                  "type": "string",
+                  "title": "Status",
+                  "description": "Delivery status to set. ACTIVE can restart delivery and incur spend under existing budgets; PAUSED stops delivery."
+                }
+              }
+            },
+            "title": "Updates",
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "One to 30 ad updates. IDs must be unique, and each item must set a name, an ACTIVE status, or a PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "description": "Advertiser account that owns every ad being updated."
+          }
+        }
+      }
+    },
+    {
+      "slug": "PINTEREST_ADS_UPDATE_CAMPAIGNS",
+      "name": "Update Campaigns",
+      "description": "Rename, pause, or resume up to 30 existing campaigns. Setting status to ACTIVE can restart delivery and incur spend under existing budgets. Budget, schedule, objective, archive, and restricted-setting changes are not exposed.",
+      "version": "20260826_00",
+      "tags": [
+        "updateHint",
+        "destructiveHint",
+        "campaigns"
+      ],
+      "deprecated": false,
+      "input": {
+        "type": "object",
+        "title": "UpdateCampaignsRequest",
+        "required": [
+          "ad_account_id",
+          "updates"
+        ],
+        "properties": {
+          "updates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "title": "CampaignSafeUpdate",
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Id",
+                  "pattern": "^\\d+$",
+                  "maxLength": 18,
+                  "description": "Campaign ID to update."
+                },
+                "name": {
+                  "type": "string",
+                  "title": "Name",
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "description": "Optional non-empty replacement campaign name."
+                },
+                "status": {
+                  "enum": [
+                    "ACTIVE",
+                    "PAUSED"
+                  ],
+                  "type": "string",
+                  "title": "Status",
+                  "description": "Optional campaign status. ACTIVE can restart delivery and incur spend under the campaign's existing budget; PAUSED stops delivery."
+                }
+              }
+            },
+            "title": "Updates",
+            "maxItems": 30,
+            "minItems": 1,
+            "description": "Campaign changes (1-30). Each item requires a unique campaign ID and at least one of non-empty name or ACTIVE/PAUSED status."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "title": "Ad Account Id",
+            "pattern": "^\\d+$",
+            "maxLength": 18,
+            "description": "Advertiser account that owns every campaign being updated."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -296,6 +296,7 @@ export const allowedBinaryFiles = new Map([
   [exportPath('assets', 'connectors', 'canva.png'), '9424d7dafd5821f7dd2ea789179bcb65d8687457c350a6fbf2667601e6f8278f'],
   [exportPath('assets', 'connectors', 'trello.png'), '1e63d58fa5a2d236d7030ff0aed03f6945bc89bdc622096cd254929bd2fbafd2'],
   [exportPath('assets', 'connectors', 'zoom.png'), 'f03ede1b1edb4c247a066b7c1372b0cb358669693515dcdc109bf7f4e5c85c90'],
+  [exportPath('assets', 'connectors', 'reddit_ads.png'), 'a78c0db19fdb5aaf079423f9151a09743a5240dbaf7bbef0211d8033db6f0840'],
   [
     exportPath('assets', 'chickpea-mark.png'),
     '84864d6d3323f7d9d5491a139c0e9e0b0d92b1e076c742d5f4d50e75148b65fb',

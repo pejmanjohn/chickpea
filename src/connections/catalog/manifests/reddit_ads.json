@@ -1,0 +1,2125 @@
+{
+  "toolkit": "reddit_ads",
+  "version": "20260826_00",
+  "auth": {
+    "mode": "managed_oauth"
+  },
+  "label": "Reddit Ads",
+  "description": "Read Reddit Ads campaigns, ad groups, ads, audiences, and performance reports, pause campaigns, and draft paused campaigns.",
+  "securityDescription": "Reddit Ads sign-in opens through Composio. Agents act as the signed-in Reddit user and can read the businesses, ad accounts, campaigns, ad groups, ads, posts, audiences, lead forms, pixels, product catalogs, funding instruments, and performance reports that user can reach, along with targeting options and reach estimates. With write access, Agents can rename a campaign, set its invoice label, or pause it, and create a campaign that starts paused with no budget or bid. Agents cannot spend money: they cannot start, resume, archive, or delete campaigns, set or raise budgets, bids, or spend caps, change schedules, objectives, or payment methods, create or change ad groups, ads, posts, audiences, or targeting, upload customer lists, or change account, business, or catalog settings.",
+  "preset": {
+    "category": "business",
+    "accent": "#FF4500"
+  },
+  "validationCapability": "reddit_ads.get_me",
+  "review": {
+    "add": [
+      "REDDIT_ADS_CREATE_CAMPAIGN",
+      "REDDIT_ADS_GET_AD_ACCOUNT_HISTORY",
+      "REDDIT_ADS_GET_STRUCTURED_POST",
+      "REDDIT_ADS_LIST_ADS",
+      "REDDIT_ADS_LIST_PIXELS_BY_AD_ACCOUNT",
+      "REDDIT_ADS_LIST_PROFILES_BY_AD_ACCOUNT",
+      "REDDIT_ADS_UPDATE_CAMPAIGN"
+    ],
+    "drop": {
+      "REDDIT_ADS_GET_PRODUCT_FEED": "Feed records hold the merchant's feed URL and fetch settings, which can carry credentials; campaign work does not need them.",
+      "REDDIT_ADS_LIST_PRODUCT_FEEDS": "Feed records hold the merchant's feed URL and fetch settings, which can carry credentials; campaign work does not need them.",
+      "REDDIT_ADS_UPDATE_AD_ACCOUNT": "Account settings such as attribution windows, community exclusions, and contacts change every campaign and report in the account.",
+      "REDDIT_ADS_UPDATE_BUSINESS": "Changes the business profile and contact details Reddit uses for billing and policy notices.",
+      "REDDIT_ADS_UPDATE_PRODUCT_CATALOG": "Changes which pixels a catalog uses, which changes what catalog-sales ads track and spend on.",
+      "REDDIT_ADS_UPDATE_PRODUCT_FEED": "Points a catalog at another feed URL and credentials, which changes the products ads promote.",
+      "REDDIT_ADS_UPDATE_PRODUCT_SET": "Changes which products a product set holds, which changes what catalog-sales ads promote and spend on.",
+      "REDDIT_ADS_UPDATE_SAVED_AUDIENCE": "Changes targeting criteria, which can send running ad groups' spend to new audiences."
+    },
+    "allowArguments": {},
+    "withholdArguments": {
+      "REDDIT_ADS_CREATE_CAMPAIGN": {
+        "data.end_time": "Sets when the campaign delivers; a person schedules delivery when they start it.",
+        "data.funding_instrument_id": "Picks the payment method that pays for the campaign.",
+        "data.start_time": "Sets when the campaign delivers; a person schedules delivery when they start it."
+      },
+      "REDDIT_ADS_UPDATE_CAMPAIGN": {
+        "data.app_id": "Changes the app a live campaign promotes.",
+        "data.end_time": "Changes when the campaign delivers, which can extend its spend.",
+        "data.funding_instrument_id": "Changes the payment method that pays for the campaign.",
+        "data.objective": "Changes what a live campaign buys and optimizes for.",
+        "data.optimization_goal": "Changes what a live campaign optimizes for.",
+        "data.skadnetwork_metadata": "Changes iOS install attribution for a live campaign.",
+        "data.special_ad_categories": "Changes a live campaign's regulated ad categories, which changes who it can target.",
+        "data.start_time": "Changes when the campaign delivers, which can start its spend sooner.",
+        "data.view_through_conversion_type": "Changes how conversions are counted in reports other people rely on."
+      }
+    },
+    "allowValues": {
+      "REDDIT_ADS_CREATE_CAMPAIGN": {
+        "data.configured_status": {
+          "values": [
+            "PAUSED"
+          ],
+          "reason": "A new campaign starts paused, so nothing delivers or spends until a person starts it."
+        }
+      },
+      "REDDIT_ADS_UPDATE_CAMPAIGN": {
+        "data.configured_status": {
+          "values": [
+            "PAUSED"
+          ],
+          "reason": "ACTIVE restarts delivery and spend; ARCHIVED and DELETED cannot be undone. Agents can only pause."
+        }
+      }
+    }
+  },
+  "capabilities": [
+    {
+      "id": "reddit_ads.create_campaign",
+      "tool": "REDDIT_ADS_CREATE_CAMPAIGN",
+      "toolName": "reddit_ads_create_campaign",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to create a new Reddit Ads campaign for the specified ad account. Use when you need to set up a new advertising campaign with specific objective, budget, and targeting settings. Note: Max campaigns creation isn't currently supported - set up Max campaigns in the Ads Manager instead.",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Reddit Ads: Create Reddit Ads Campaign",
+      "withheldArguments": {
+        "data.bid_type": "sets a budget, bid, or spend amount",
+        "data.end_time": "reviewer: Sets when the campaign delivers; a person schedules delivery when they start it.",
+        "data.bid_value": "sets a budget, bid, or spend amount",
+        "data.goal_type": "sets a budget, bid, or spend amount",
+        "data.spend_cap": "sets a budget, bid, or spend amount",
+        "data.goal_value": "sets a budget, bid, or spend amount",
+        "data.start_time": "reviewer: Sets when the campaign delivers; a person schedules delivery when they start it.",
+        "data.bid_strategy": "sets a budget, bid, or spend amount",
+        "data.conversion_pixel_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "data.funding_instrument_id": "reviewer: Picks the payment method that pays for the campaign.",
+        "data.is_campaign_budget_optimization": "changes sharing, visibility, permissions, membership, or who acts"
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The name of the campaign. Required field between 3-500 characters."
+              },
+              "app_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The app ID on either the Apple App Store or Google Play Store. For use with app installs campaigns. Required when objective is APP_INSTALLS."
+              },
+              "objective": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "APP_INSTALLS",
+                  "CATALOG_SALES",
+                  "CLICKS",
+                  "CONVERSIONS",
+                  "IMPRESSIONS",
+                  "LEAD_GENERATION",
+                  "VIDEO_VIEWABLE_IMPRESSIONS"
+                ],
+                "description": "The objective type of the campaign. This determines the optimization goal and available features."
+              },
+              "invoice_label": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "A freeform editable text field for agencies that can be used for tracking and reconciliation purposes."
+              },
+              "configured_status": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "PAUSED"
+                ],
+                "description": "The status that the user has configured this entity to have. Can differ from effective_status depending on context such as pending billing information."
+              },
+              "optimization_goal": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The event you want to measure for this campaign. Required when is_campaign_budget_optimization is true for conversions or video view campaigns. This can't be changed later. Starting March 31st, 2026, this can't be set to NULL for video views campaigns."
+              },
+              "special_ad_categories": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "List of special ad categories (advertising content that require compliance with regulations and policies) related to the campaign."
+              },
+              "view_through_conversion_type": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "SEVEN_DAY_CLICKS",
+                  "SEVEN_DAY_CLICKS_ONE_DAY_VIEW"
+                ],
+                "description": "View-through conversion tracking type."
+              }
+            },
+            "required": [
+              "name",
+              "configured_status",
+              "objective"
+            ],
+            "description": "Campaign data containing name, status, objective, and optional configuration parameters."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to create the campaign under. Must match pattern ^(t2|a2)_.*"
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "data"
+        ],
+        "description": "Request model for creating a Reddit Ads campaign."
+      }
+    },
+    {
+      "id": "reddit_ads.do_geolocation_validations",
+      "tool": "REDDIT_ADS_DO_GEOLOCATION_VALIDATIONS",
+      "toolName": "reddit_ads_do_geolocation_validations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to validate a list of geolocations for use in Reddit Ads targeting. Use when you need to check if geolocation IDs or cities are valid for ad targeting before creating or updating campaigns. Rate limit: Targeting Taxonomy - 100 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "cities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of city identifiers to validate for ad targeting. Mutually exclusive with geolocation_ids parameter."
+          },
+          "geolocation_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of geolocation IDs to validate. These are location identifiers used for ad targeting (e.g., 'US', 'CA', 'GB'). Mutually exclusive with cities parameter."
+          }
+        },
+        "description": "Request model for validating geolocations used for targeting."
+      }
+    },
+    {
+      "id": "reddit_ads.get_a_report",
+      "tool": "REDDIT_ADS_GET_A_REPORT",
+      "toolName": "reddit_ads_get_a_report",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to generate a metrics report for ad performance based on specified fields and breakdowns. Use when you need detailed insights and analytics on ad performance, audience engagement, impressions, clicks, spend, and other advertising metrics. Supports up to 3 breakdowns (4 with COUNTRY and REGION combination) and provides paginated results.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "A list of fields that you want returned in your metrics. Common fields include: IMPRESSIONS, CLICKS, SPEND, CTR, CPC, CPM, CONVERSIONS. Note: CLICK_ATTRIBUTION_WINDOW, VIEW_ATTRIBUTION_WINDOW, and GALLERY_ITEM_CAPTION are deprecated."
+              },
+              "filter": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "A string to restrict results by limiting field to specific values or ranges. Format: '<entity name> : <field name> <operation> <value>'. Entity names: campaign, ad_group, ad. Field names: id, effective_status, name. Operations: == (exact match), =@ (substring match). Example: 'campaign : name =@ Summer'"
+              },
+              "ends_at": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "An ISO 8601 timestamp indicating the end of the window to fetch reporting metrics for. This field only supports UTC - adjust the date and time to account for different timezones. Example: '2025-01-07T23:59:59Z'"
+              },
+              "starts_at": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "An ISO 8601 timestamp indicating the start of the window to fetch reporting metrics for. This field only supports UTC - adjust the date and time to account for different timezones. Example: '2025-01-01T00:00:00Z'"
+              },
+              "breakdowns": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "Breakdowns are aggregations that summarize your data as metrics or statistics. Maximum 3 items (4 if COUNTRY and REGION combination is used). Examples: DATE, CAMPAIGN, AD_GROUP, AD, COUNTRY, REGION, DEVICE."
+              },
+              "time_zone_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "GMT",
+                  "UTC",
+                  "America/New_York",
+                  "America/Chicago",
+                  "America/Denver",
+                  "America/Los_Angeles",
+                  "America/Phoenix",
+                  "Europe/London",
+                  "Europe/Paris",
+                  "Europe/Berlin",
+                  "Asia/Tokyo",
+                  "Asia/Hong_Kong",
+                  "Asia/Singapore",
+                  "Australia/Sydney"
+                ],
+                "description": "Time zone IDs supported by Reddit Ads API."
+              },
+              "custom_column_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "A list of custom column IDs that you want returned in your metrics."
+              }
+            },
+            "required": [
+              "starts_at",
+              "ends_at",
+              "fields"
+            ],
+            "description": "The report data parameters including time range, fields, and optional breakdowns."
+          },
+          "page.size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Used for pagination."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to get the ads report under. Example: 'a2_imh76hh7e126'"
+          }
+        },
+        "required": [
+          "ad_account_id",
+          "data"
+        ],
+        "description": "Request model for generating a metrics report."
+      }
+    },
+    {
+      "id": "reddit_ads.get_ad_account",
+      "tool": "REDDIT_ADS_GET_AD_ACCOUNT",
+      "toolName": "reddit_ads_get_ad_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific Reddit ad account by ID. Use when you need to get account information including admin approval status, attribution settings, currency, excluded communities/keywords, and other account configuration. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to get. Must match pattern ^(t2|a2)_.*"
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request model for getting an ad account by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_ad_account_history",
+      "tool": "REDDIT_ADS_GET_AD_ACCOUNT_HISTORY",
+      "toolName": "reddit_ads_get_ad_account_history",
+      "lane": "read",
+      "effect": "read",
+      "description": "Get changelog history for a Reddit ad account with filtering options. Use when you need to track changes made to ads, campaigns, or ad groups within an account, including who made changes and when.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "end_time": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The end time of the change in ISO 8601 format (e.g., '2024-12-31T23:59:59Z')."
+              },
+              "member_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "The Reddit member IDs who made the change."
+              },
+              "start_time": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "The start time of the change in ISO 8601 format (e.g., '2024-01-01T00:00:00Z')."
+              },
+              "change_types": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "The types of changes to show (e.g., 'CREATE', 'UPDATE', 'DELETE')."
+              },
+              "entity_id_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "entity_id": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The specific entity ID to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity IDs in history changes."
+                },
+                "maxItems": 100,
+                "description": "The entity IDs to show changes for."
+              },
+              "entity_name_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "entity_name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The specific entity name to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity names in history changes."
+                },
+                "maxItems": 100,
+                "description": "The entity names to show changes for."
+              },
+              "entity_field_filters": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "field_name": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The specific field name to filter for."
+                    },
+                    "entity_type": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "The type of entity (e.g., 'ad', 'campaign', 'ad_group')."
+                    }
+                  },
+                  "description": "Filter for specific entity fields in history changes."
+                },
+                "maxItems": 100,
+                "description": "The entity fields to show changes for."
+              }
+            },
+            "description": "Data payload for ad account history request."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use this for pagination to get subsequent pages of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to get the account history for (e.g., 'a2_imh76hh7e126')."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request parameters for getting ad account history."
+      }
+    },
+    {
+      "id": "reddit_ads.get_ad_group",
+      "tool": "REDDIT_ADS_GET_AD_GROUP",
+      "toolName": "reddit_ads_get_ad_group",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get an ad group by its ID from Reddit Ads API. Use when you need to retrieve details about a specific ad group. Note: Rate limit of 400 requests per 60 seconds applies (Campaign Management Read).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ad_group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad group to get."
+          }
+        },
+        "required": [
+          "ad_group_id"
+        ],
+        "description": "Request model for retrieving an ad group by its ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_app_last_fired_at",
+      "tool": "REDDIT_ADS_GET_APP_LAST_FIRED_AT",
+      "toolName": "reddit_ads_get_app_last_fired_at",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the last time mobile conversion events were fired for a specific app ID. Use when you need to check conversion tracking status or verify that mobile events are being received. Rate limit: 30 requests per 60 seconds (Conversion Signals).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the app to get the last fired at report. This is typically the app's bundle identifier (e.g., 'com.reddit.frontpage' for Android or iOS apps)."
+          }
+        },
+        "required": [
+          "app_id"
+        ],
+        "description": "Request model for getting the last time mobile conversion events were fired for an app."
+      }
+    },
+    {
+      "id": "reddit_ads.get_business",
+      "tool": "REDDIT_ADS_GET_BUSINESS",
+      "toolName": "reddit_ads_get_business",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get business details by ID from the Reddit Ads API. Use when you need to retrieve information about a specific business entity including its name, industry, contact details, and metadata. The member must have memberships to the business to access this endpoint.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "business_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the business to get. This endpoint requires the member to have memberships to the business."
+          }
+        },
+        "required": [
+          "business_id"
+        ],
+        "description": "Request model for fetching a business by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_campaign",
+      "tool": "REDDIT_ADS_GET_CAMPAIGN",
+      "toolName": "reddit_ads_get_campaign",
+      "lane": "read",
+      "effect": "read",
+      "description": "Retrieve a specific Reddit Ads campaign by its ID. Returns comprehensive campaign information including objective, status, budget, targeting, and optimization settings. Rate limited to 400 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the campaign to retrieve."
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "description": "Request model for fetching a specific Reddit Ads campaign by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_channel_planning_reach",
+      "tool": "REDDIT_ADS_GET_CHANNEL_PLANNING_REACH",
+      "toolName": "reddit_ads_get_channel_planning_reach",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve estimated reach data for a given set of targeting parameters. Returns a series of 10 data points representing the reach curve by impressions. Use when planning ad campaigns and estimating potential audience reach based on duration, location, age, and gender targeting.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "gender": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "MALE",
+              "FEMALE",
+              "ALL"
+            ],
+            "description": "Gender for targeting."
+          },
+          "max_age": {
+            "type": "integer",
+            "maximum": 99,
+            "description": "The maximum age for targeting. Must be greater than min_age. Defaults to 99 if not specified. 99 represents ages 99 and older."
+          },
+          "min_age": {
+            "type": "integer",
+            "minimum": 18,
+            "description": "The minimum age for targeting. Must be less than max_age. Defaults to 18 if not specified."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page. Used for pagination."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Used for pagination."
+          },
+          "geolocation": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "US",
+              "CA",
+              "GB"
+            ],
+            "description": "The country code for targeting. Supported values: US (United States), CA (Canada), GB (United Kingdom)."
+          },
+          "duration_days": {
+            "type": "integer",
+            "description": "Number of days in the reach prediction window. Must be either 7 or 28 days."
+          }
+        },
+        "required": [
+          "duration_days",
+          "geolocation"
+        ]
+      }
+    },
+    {
+      "id": "reddit_ads.get_child_funding_instruments",
+      "tool": "REDDIT_ADS_GET_CHILD_FUNDING_INSTRUMENTS",
+      "toolName": "reddit_ads_get_child_funding_instruments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a list of Funding Instrument Allocations for a parent funding instrument. Use when you need to view child allocations, check billing amounts, or verify servability status. Note: This endpoint is rate-limited to 30 requests per 60 seconds under the Billing rate limit category.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page.size": {
+            "type": "integer",
+            "description": "The number of items to be returned per page"
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use this to fetch subsequent pages of results"
+          },
+          "funding_instrument_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the parent funding instrument to retrieve allocations for"
+          }
+        },
+        "required": [
+          "funding_instrument_id"
+        ],
+        "description": "Request model for getting child funding instrument allocations."
+      }
+    },
+    {
+      "id": "reddit_ads.get_custom_audience",
+      "tool": "REDDIT_ADS_GET_CUSTOM_AUDIENCE",
+      "toolName": "reddit_ads_get_custom_audience",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a custom audience by ID from Reddit Ads API. Use when you need to fetch detailed information about a specific custom audience including its configuration, status, and size estimates. Rate limit: 500 requests per 60 seconds (Targeting Taxonomy).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "audience_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the custom audience to retrieve"
+          }
+        },
+        "required": [
+          "audience_id"
+        ],
+        "description": "Request model for fetching a custom audience by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_lead_gen_form",
+      "tool": "REDDIT_ADS_GET_LEAD_GEN_FORM",
+      "toolName": "reddit_ads_get_lead_gen_form",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific lead generation form by ID from Reddit Ads. Use when you need to get form information including name, prompt, privacy link, questions, and timestamps. Rate limit: 20 requests per 60 seconds (Leads category).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "lead_gen_form_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the form to retrieve. Format: UUID (e.g., '346ac343-fbb3-4738-82db-70828af30648')."
+          }
+        },
+        "required": [
+          "lead_gen_form_id"
+        ],
+        "description": "Request model for getting a lead generation form by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_me",
+      "tool": "REDDIT_ADS_GET_ME",
+      "toolName": "reddit_ads_get_me",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get the authenticated member's information from the Reddit Ads API. Use when you need to retrieve details about the currently authenticated user including their Reddit username, email, name, and phone number. Rate limit: 100 requests per 60 seconds (Business Manager).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for getting the authenticated member. This endpoint requires no parameters - it returns info for the authenticated user."
+      }
+    },
+    {
+      "id": "reddit_ads.get_pixel_last_fired_at",
+      "tool": "REDDIT_ADS_GET_PIXEL_LAST_FIRED_AT",
+      "toolName": "reddit_ads_get_pixel_last_fired_at",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve the last time conversion events were fired for a specific conversion pixel. Use when you need to check conversion tracking status or verify that pixel events are being received. Rate limit: 30 requests per 60 seconds (Conversion Signals).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "pixel_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the pixel to get the report."
+          }
+        },
+        "required": [
+          "pixel_id"
+        ],
+        "description": "Request model for getting the last time conversion events were fired for a conversion pixel."
+      }
+    },
+    {
+      "id": "reddit_ads.get_post",
+      "tool": "REDDIT_ADS_GET_POST",
+      "toolName": "reddit_ads_get_post",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a promoted or organic Reddit post by its ID. Returns post details including type, content, headline, and metadata. Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the promoted post to get. Must match pattern ^t3_.*"
+          }
+        },
+        "required": [
+          "post_id"
+        ],
+        "description": "Request model for fetching a Reddit post by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_product_catalog",
+      "tool": "REDDIT_ADS_GET_PRODUCT_CATALOG",
+      "toolName": "reddit_ads_get_product_catalog",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a specific product catalog by ID from the Reddit Ads API. Use when you need to fetch details about a particular product catalog including its name, language, currency, attached pixels, and product statistics. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the product catalog."
+          }
+        },
+        "required": [
+          "catalog_id"
+        ],
+        "description": "Request model for retrieving a specific product catalog by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_product_set",
+      "tool": "REDDIT_ADS_GET_PRODUCT_SET",
+      "toolName": "reddit_ads_get_product_set",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve metadata for a specific product set by ID from the Reddit Ads API. Use when you need to fetch details about a particular product set including its name, filter rules, and product statistics. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "product_set_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the product set."
+          }
+        },
+        "required": [
+          "product_set_id"
+        ],
+        "description": "Request model for retrieving a specific product set by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_profile",
+      "tool": "REDDIT_ADS_GET_PROFILE",
+      "toolName": "reddit_ads_get_profile",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for a specific profile by ID from the Reddit Ads API. Use when you need to get profile information including business ID, Reddit username, and modification timestamp. Rate limit: 100 requests per 60 seconds (Business Manager).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the profile to get. Must match pattern ^t2_.*"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "description": "Request model for getting a profile by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_saved_audience",
+      "tool": "REDDIT_ADS_GET_SAVED_AUDIENCE",
+      "toolName": "reddit_ads_get_saved_audience",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a saved audience by ID from Reddit Ads API. Use when you need to fetch detailed information about a specific saved audience including its targeting criteria and status. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "saved_audience_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the saved audience to retrieve."
+          }
+        },
+        "required": [
+          "saved_audience_id"
+        ],
+        "description": "Request model for retrieving a saved audience by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.get_sk_ad_network_availability",
+      "tool": "REDDIT_ADS_GET_SK_AD_NETWORK_AVAILABILITY",
+      "toolName": "reddit_ads_get_sk_ad_network_availability",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get SKAdNetwork IDs availability quota for an iOS app. Use when you need to check how many SKAdNetwork IDs are available for campaigns, ad groups, or ads.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "App ID from the iOS App Store. Only providing the iOS app ID will return the SKAN campaign_quota for the given app ID."
+          },
+          "ad_group_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ad group ID. Required when querying SKAN ad_quota for a specific ad group within the specified app ID."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Campaign ID. Required when querying SKAN ad_group_quota for a given campaign ID."
+          }
+        },
+        "required": [
+          "app_id"
+        ],
+        "description": "Request schema for getting SKAdNetwork IDs availability quota."
+      }
+    },
+    {
+      "id": "reddit_ads.get_structured_post",
+      "tool": "REDDIT_ADS_GET_STRUCTURED_POST",
+      "toolName": "reddit_ads_get_structured_post",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve a structured post by its ID from the Reddit Ads API. Returns post details including creative content which can be image, text, video, or carousel type. Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "post_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the post to retrieve. Must match pattern ^t3_.*"
+          }
+        },
+        "required": [
+          "post_id"
+        ],
+        "description": "Request model for fetching a structured Reddit post by ID."
+      }
+    },
+    {
+      "id": "reddit_ads.list_ad_accounts_by_business",
+      "tool": "REDDIT_ADS_LIST_AD_ACCOUNTS_BY_BUSINESS",
+      "toolName": "reddit_ads_list_ad_accounts_by_business",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to get a list of ad accounts under a business on Reddit Ads. Use when you need to retrieve ad accounts associated with a specific business ID. Supports filtering by specific ad account IDs and pagination for large result sets. Rate limit: Campaign Management Read (400 requests/60s).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "IDs of ad accounts to search for within the business. Ad accounts should be comma-separated"
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "The number of items to be returned by page"
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve"
+          },
+          "business_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the business to get ad accounts for"
+          }
+        },
+        "required": [
+          "business_id"
+        ],
+        "description": "Request model for listing ad accounts under a business"
+      }
+    },
+    {
+      "id": "reddit_ads.list_ad_groups",
+      "tool": "REDDIT_ADS_LIST_AD_GROUPS",
+      "toolName": "reddit_ads_list_ad_groups",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list ad groups for a Reddit ad account. Use when you need to retrieve ad groups for campaign management. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The list of ad group IDs to filter by."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve (for pagination)."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the campaign to list ad groups under."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list ad groups for."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request parameters for listing ad groups by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_ads",
+      "tool": "REDDIT_ADS_LIST_ADS",
+      "toolName": "reddit_ads_list_ads",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list ads by ad account on Reddit Ads platform. Use when you need to retrieve advertising campaigns for a specific ad account. Note: Only 1 ad will appear for each Max campaign. Supports filtering by specific ad IDs and pagination for large result sets.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of specific ad IDs to filter by. When provided, only ads matching these IDs will be returned."
+          },
+          "page.size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of ads to return per page. Controls pagination size for the results."
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token for retrieving a specific page of results. Use the token from the pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list ads for. This is the unique identifier for the Reddit Ads account."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Parameters for listing ads by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_campaigns",
+      "tool": "REDDIT_ADS_LIST_CAMPAIGNS",
+      "toolName": "reddit_ads_list_campaigns",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list campaigns by ad account with pagination support. Use when you need to retrieve campaigns for a specific Reddit Ads account. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "The list of campaign IDs to filter by. If provided, only campaigns with matching IDs will be returned."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list campaigns for. This is a required path parameter."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Parameters for listing campaigns by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_carriers",
+      "tool": "REDDIT_ADS_LIST_CARRIERS",
+      "toolName": "reddit_ads_list_carriers",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all available carriers from Reddit Ads API for targeting purposes. Use when you need to get a list of mobile carriers for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all carriers. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "id": "reddit_ads.list_communities",
+      "tool": "REDDIT_ADS_LIST_COMMUNITIES",
+      "toolName": "reddit_ads_list_communities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list targetable communities matched by their names. Use when you need to find Reddit communities (subreddits) available for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "names": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Comma-separated list of community names to get info for. Queried community won't be in response if it is not targetable."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing targetable communities. Filter by community names and paginate through results."
+      }
+    },
+    {
+      "id": "reddit_ads.list_devices",
+      "tool": "REDDIT_ADS_LIST_DEVICES",
+      "toolName": "reddit_ads_list_devices",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all available devices from Reddit Ads API for targeting purposes. Use when you need to get a list of devices (by make and model) for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all devices. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "id": "reddit_ads.list_funding_instruments",
+      "tool": "REDDIT_ADS_LIST_FUNDING_INSTRUMENTS",
+      "toolName": "reddit_ads_list_funding_instruments",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list funding instruments (payment methods) for a Reddit Ads ad account. Use when you need to retrieve billing information or check available payment methods. Rate limit: 30 requests per 60 seconds (Billing category).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ACTIVE",
+              "INACTIVE",
+              "UPCOMING",
+              "SELECTABLE",
+              "ALL"
+            ],
+            "description": "Enum for funding instrument modes."
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of funding instrument types to filter by."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search text to filter funding instruments by name or other text fields."
+          },
+          "end_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "End time in ISO-8601 format to filter funding instruments."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to return per page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The pagination token for retrieving the next page of results. Obtained from the previous response's pagination.next_url."
+          },
+          "start_time": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Start time in ISO-8601 format to filter funding instruments."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list funding instruments for."
+          },
+          "is_selectable": {
+            "type": "boolean",
+            "description": "Deprecated parameter. Use mode=SELECTABLE or mode=ALL instead."
+          },
+          "funding_instrument_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "A list of funding instrument IDs to filter by."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request model for listing funding instruments by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_geolocations",
+      "tool": "REDDIT_ADS_LIST_GEOLOCATIONS",
+      "toolName": "reddit_ads_list_geolocations",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to fetch a list of geolocations from Reddit Ads API. Use when you need geographic targeting options. Postal code and City geolocations are excluded by default unless postal_code or cities_search parameters are provided.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "country": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The filter for retrieving all geolocations by country."
+          },
+          "postal_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The filter for retrieving postal code geolocations by substring match."
+          },
+          "cities_search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The filter for retrieving city geolocations by substring match."
+          }
+        },
+        "description": "Request model for listing geolocations. Postal code and City geolocations are excluded by default unless the respective query parameters are provided."
+      }
+    },
+    {
+      "id": "reddit_ads.list_industries",
+      "tool": "REDDIT_ADS_LIST_INDUSTRIES",
+      "toolName": "reddit_ads_list_industries",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all available industries from Reddit Ads API. Use when you need to get a complete list of industries for targeting or classification purposes. Returns industry IDs and display names.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for listing all industries. No parameters required."
+      }
+    },
+    {
+      "id": "reddit_ads.list_interests",
+      "tool": "REDDIT_ADS_LIST_INTERESTS",
+      "toolName": "reddit_ads_list_interests",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all available interests from Reddit Ads API for targeting purposes. Use when you need to get a list of interests for ad targeting. Rate limit: Targeting Taxonomy - 500 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {},
+        "description": "Request model for listing all interests. No parameters required."
+      }
+    },
+    {
+      "id": "reddit_ads.list_lead_gen_forms",
+      "tool": "REDDIT_ADS_LIST_LEAD_GEN_FORMS",
+      "toolName": "reddit_ads_list_lead_gen_forms",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list lead generation forms for a Reddit Ads ad account. Use when you need to retrieve all lead gen forms associated with a specific ad account. Rate limit: 20 requests per 60 seconds (Leads category).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to return per page. Use to control pagination size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list lead gen forms for. Format: a2_<identifier> (e.g., 'a2_imh76hh7e126')."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request parameters for listing lead generation forms by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_my_businesses",
+      "tool": "REDDIT_ADS_LIST_MY_BUSINESSES",
+      "toolName": "reddit_ads_list_my_businesses",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details of businesses associated with the provided access token. Use when you need to get a list of businesses the user has access to, with optional filters for ad account ID or user role (BUSINESS_ADMIN or CATALOG_ADMIN).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "BUSINESS_ADMIN",
+              "CATALOG_ADMIN"
+            ],
+            "description": "Enum for business role types"
+          },
+          "page_size": {
+            "type": "integer",
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional ad account ID to filter businesses by. If provided, will return businesses that give the member access to the ad account."
+          }
+        },
+        "description": "Request model for listing businesses associated with the access token."
+      }
+    },
+    {
+      "id": "reddit_ads.list_pixels_by_ad_account",
+      "tool": "REDDIT_ADS_LIST_PIXELS_BY_AD_ACCOUNT",
+      "toolName": "reddit_ads_list_pixels_by_ad_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list pixels by ad account. Use when you need to retrieve conversion pixels for a specific Reddit Ads account. Note: Rate limited to 30 requests per 60 seconds (Conversion Signals).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page.size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page."
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the value from pagination.next_url or pagination.previous_url in a previous response to navigate pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list pixels for."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request schema for listing pixels by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_posts",
+      "tool": "REDDIT_ADS_LIST_POSTS",
+      "toolName": "reddit_ads_list_posts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list up to 1,000 of the most recent posts for a specified profile. Use when you need to retrieve posts from a Reddit profile. Supports filtering by post type (CAROUSEL, IMAGE, TEXT, VIDEO) and source (ORGANIC, PROMOTED). Rate limit: 200 requests per 60 seconds (Creative Management).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "CAROUSEL",
+              "IMAGE",
+              "TEXT",
+              "VIDEO"
+            ],
+            "description": "The type of posts to be fetched."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ORGANIC",
+              "PROMOTED"
+            ],
+            "description": "The source of posts to be fetched."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Maximum 1,000 posts can be retrieved."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the next_url or previous_url from pagination response to navigate pages."
+          },
+          "profile_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the profile to list posts for. Must match pattern ^t2_.*"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "description": "Request parameters for listing posts by profile."
+      }
+    },
+    {
+      "id": "reddit_ads.list_product_catalogs",
+      "tool": "REDDIT_ADS_LIST_PRODUCT_CATALOGS",
+      "toolName": "reddit_ads_list_product_catalogs",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve details for all product catalogs belonging to a business. Use when you need to list all catalogs for a specific business ID. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "business_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the parent business."
+          }
+        },
+        "required": [
+          "business_id"
+        ],
+        "description": "Request model for listing product catalogs for a business."
+      }
+    },
+    {
+      "id": "reddit_ads.list_product_sets",
+      "tool": "REDDIT_ADS_LIST_PRODUCT_SETS",
+      "toolName": "reddit_ads_list_product_sets",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all product sets in a catalog. Use when you need to list product sets for a specific catalog ID. Rate limit: 7000 requests/300s (burst: 3000 requests/60s).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page."
+          },
+          "catalog_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the parent product catalog."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve (for pagination)."
+          }
+        },
+        "required": [
+          "catalog_id"
+        ],
+        "description": "Request model for listing product sets in a catalog."
+      }
+    },
+    {
+      "id": "reddit_ads.list_products_in_product_catalog",
+      "tool": "REDDIT_ADS_LIST_PRODUCTS_IN_PRODUCT_CATALOG",
+      "toolName": "reddit_ads_list_products_in_product_catalog",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all products in a Reddit Ads product catalog. Use when you need to list products for advertising campaigns, with optional filtering by approval status, search terms, or specific product IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of specific product IDs to filter by. When provided, only products matching these IDs will be returned."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query to filter products by title, description, or other text fields."
+          },
+          "page.size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of products to return per page. Controls pagination size for the results."
+          },
+          "catalog_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the product catalog to list products from."
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token for retrieving a specific page of results. Use the token from pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "approval_decision": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "description": "Enum for product approval decisions in Reddit Ads."
+          }
+        },
+        "required": [
+          "catalog_id"
+        ],
+        "description": "Request model for listing products in a product catalog."
+      }
+    },
+    {
+      "id": "reddit_ads.list_products_in_product_set",
+      "tool": "REDDIT_ADS_LIST_PRODUCTS_IN_PRODUCT_SET",
+      "toolName": "reddit_ads_list_products_in_product_set",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all products in a Reddit Ads product set. Use when you need to list products within a specific product set, with optional filtering by approval status, issue codes, search terms, or specific product IDs.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "Optional list of specific product IDs to filter by. When provided, only products matching these IDs will be returned."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Search query to filter products by title, description, or other text fields."
+          },
+          "page.size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Number of products to return per page. Controls pagination size for the results."
+          },
+          "issue_code": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "INVALID_ADDITIONAL_IMAGE_LINKS",
+              "INVALID_SALE_PRICE",
+              "INVALID_SALE_PRICE_EFFECTIVE_DATE",
+              "INVALID_EXPIRATION_DATE",
+              "IMAGE_PROCESSING_ERROR",
+              "IMAGE_REJECTED",
+              "LOW_IMAGE_QUALITY",
+              "INVALID_CUSTOM_LABEL_0",
+              "INVALID_CUSTOM_LABEL_1",
+              "INVALID_CUSTOM_LABEL_2",
+              "INVALID_CUSTOM_LABEL_3",
+              "INVALID_CUSTOM_LABEL_4",
+              "INVALID_GOOGLE_PRODUCT_CATEGORY",
+              "INVALID_PRODUCT_TYPE",
+              "INVALID_BRAND",
+              "INVALID_GTIN",
+              "INVALID_MPN",
+              "INVALID_ITEM_GROUP_ID",
+              "INVALID_COST_OF_GOODS_SOLD",
+              "INVALID_AVAILABILITY",
+              "INVALID_MOBILE_LINK",
+              "INVALID_PLATFORM_SPECIFIC_LINK",
+              "INVALID_AVERAGE_REVIEW_RATING",
+              "INVALID_NUMBER_OF_RATINGS",
+              "INVALID_CONDITION",
+              "INVALID_AGE_GROUP",
+              "INVALID_GENDER",
+              "INVALID_COLOR",
+              "INVALID_SIZE",
+              "INVALID_SIZE_TYPE",
+              "INVALID_MATERIAL",
+              "INVALID_PATTERN",
+              "INVALID_CUSTOM_NUMBER_0",
+              "INVALID_CUSTOM_NUMBER_1",
+              "INVALID_CUSTOM_NUMBER_2",
+              "INVALID_CUSTOM_NUMBER_3",
+              "INVALID_CUSTOM_NUMBER_4",
+              "INVALID_PRODUCT_DETAIL",
+              "INVALID_PRODUCT_HIGHLIGHT",
+              "INVALID_LIFESTYLE_IMAGE_LINK",
+              "INVALID_IS_BUNDLE",
+              "INCOMPATIBLE_WITH_FUTURE_RELEASE"
+            ],
+            "description": "Enum for product issue codes that can be used to filter products."
+          },
+          "page.token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Token for retrieving a specific page of results. Use the token from pagination.next_url or pagination.previous_url to navigate through pages."
+          },
+          "product_set_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the product set to list products from."
+          },
+          "approval_decision": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "PENDING",
+              "APPROVED",
+              "REJECTED"
+            ],
+            "description": "Enum for product approval decisions in Reddit Ads."
+          }
+        },
+        "required": [
+          "product_set_id"
+        ],
+        "description": "Request model for listing products in a product set."
+      }
+    },
+    {
+      "id": "reddit_ads.list_profiles_by_ad_account",
+      "tool": "REDDIT_ADS_LIST_PROFILES_BY_AD_ACCOUNT",
+      "toolName": "reddit_ads_list_profiles_by_ad_account",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list profiles by ad account from Reddit Ads API. Use when you need to retrieve all profiles associated with a specific ad account. Rate limit: 100 requests per 60 seconds (Business Manager tier).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "The number of items to be returned per page. Must be between 1 and 100."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the next_url or previous_url from pagination response to navigate pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list profiles for. Example: 'a2_imh76hh7e126'."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request parameters for listing profiles by ad account."
+      }
+    },
+    {
+      "id": "reddit_ads.list_saved_audiences",
+      "tool": "REDDIT_ADS_LIST_SAVED_AUDIENCES",
+      "toolName": "reddit_ads_list_saved_audiences",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list saved audiences for a Reddit ad account. Use when you need to retrieve saved audience configurations with their targeting details. Rate limit: 400 requests per 60 seconds (Campaign Management Read).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page. Must be a positive integer."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use this for pagination to fetch subsequent pages."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the ad account to list saved audiences for."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ],
+        "description": "Request model for listing saved audiences."
+      }
+    },
+    {
+      "id": "reddit_ads.list_structured_posts",
+      "tool": "REDDIT_ADS_LIST_STRUCTURED_POSTS",
+      "toolName": "reddit_ads_list_structured_posts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list structured posts for a profile or retrieve up to 10 specific structured posts by ID. Use when you need to retrieve structured posts owned by a Reddit Ads profile. Rate limit: Creative Management Read - 200 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 20000
+            },
+            "maxItems": 100,
+            "description": "List of specific post IDs to filter by. Returns up to 10 specific structured posts by ID owned by the profile."
+          },
+          "type": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "CAROUSEL",
+              "IMAGE",
+              "TEXT",
+              "VIDEO"
+            ],
+            "description": "Type of structured post."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 20000,
+            "enum": [
+              "ORGANIC",
+              "PROMOTED"
+            ],
+            "description": "Source of structured post."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          },
+          "profile_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the profile to list posts for. This is a required path parameter."
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "description": "Request parameters for listing structured posts by profile."
+      }
+    },
+    {
+      "id": "reddit_ads.list_time_zones",
+      "tool": "REDDIT_ADS_LIST_TIME_ZONES",
+      "toolName": "reddit_ads_list_time_zones",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to retrieve all available time zones from Reddit Ads API for campaign scheduling. Use when you need to get a list of time zones for setting campaign schedules or display times. Rate limit: Campaign Management Read - 400 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for listing all time zones. Supports pagination for navigating through large result sets."
+      }
+    },
+    {
+      "id": "reddit_ads.list_user_custom_audiences",
+      "tool": "REDDIT_ADS_LIST_USER_CUSTOM_AUDIENCES",
+      "toolName": "reddit_ads_list_user_custom_audiences",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to list all Custom Audiences under an ad account. Use when you need to retrieve custom audiences for targeting in Reddit Ads campaigns. Rate limit: 500 requests per 60 seconds (Targeting Taxonomy).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "Optional field used for filtering by a specific custom audience name."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve."
+          },
+          "ad_account_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the parent ad account (e.g., 'a2_imh76hh7e126')."
+          }
+        },
+        "required": [
+          "ad_account_id"
+        ]
+      }
+    },
+    {
+      "id": "reddit_ads.query_ad_accounts",
+      "tool": "REDDIT_ADS_QUERY_AD_ACCOUNTS",
+      "toolName": "reddit_ads_query_ad_accounts",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to query ad accounts by business with optional filtering by actors, assets, roles, or custom filter string. Use when you need to retrieve ad accounts for a specific business with filtering capabilities. Rate Limit: Business Manager - 100 requests per 60 seconds.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "Only return ad accounts to which specified actors do not have these roles."
+              },
+              "actors": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Actor ID to filter by."
+                    }
+                  },
+                  "description": "Filter for actor access to ad accounts."
+                },
+                "maxItems": 100,
+                "description": "Only return ad accounts to which the specified actors do not have access."
+              },
+              "assets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "maxLength": 20000,
+                      "description": "Asset ID to filter by."
+                    }
+                  },
+                  "description": "Filter for asset access to ad accounts."
+                },
+                "maxItems": 100,
+                "description": "Only return ad accounts that have access to these assets."
+              },
+              "filter": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "Filter string to query the entity. If null, the response contains all ad accounts within the business."
+              }
+            },
+            "description": "Filter criteria for querying ad accounts."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve."
+          },
+          "business_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the business to query ad accounts for."
+          }
+        },
+        "required": [
+          "business_id"
+        ],
+        "description": "Request model for querying ad accounts by business."
+      }
+    },
+    {
+      "id": "reddit_ads.query_funding_instruments_by_business",
+      "tool": "REDDIT_ADS_QUERY_FUNDING_INSTRUMENTS_BY_BUSINESS",
+      "toolName": "reddit_ads_query_funding_instruments_by_business",
+      "lane": "read",
+      "effect": "read",
+      "description": "Query funding instruments (credit lines) by business with pagination support. Use when you need to retrieve or filter funding instruments for a Reddit Ads business account. Requires adsread OAuth scope. Rate limit: 30 requests per 60 seconds (Billing category).",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "ACTIVE",
+                  "ALL"
+                ],
+                "description": "Mode for filtering funding instruments."
+              },
+              "partner_business_id": {
+                "type": "string",
+                "maxLength": 20000,
+                "description": "When a partner business ID is provided the endpoint returns funding that is shared with the given partner only. When null the endpoint lists all funding instruments owned by the business id in the path."
+              },
+              "funding_instrument_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "maxItems": 100,
+                "description": "A list of credit line IDs to filter by."
+              }
+            },
+            "description": "Data payload for querying funding instruments."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A search term to filter funding instruments by name, ID, or type."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned by page."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve."
+          },
+          "business_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the business to query funding instruments for."
+          }
+        },
+        "required": [
+          "business_id"
+        ],
+        "description": "Request schema for querying funding instruments by business."
+      }
+    },
+    {
+      "id": "reddit_ads.search_communities",
+      "tool": "REDDIT_ADS_SEARCH_COMMUNITIES",
+      "toolName": "reddit_ads_search_communities",
+      "lane": "read",
+      "effect": "read",
+      "description": "Tool to search for Reddit communities based on their name or topic. Use when you need to find subreddits for ad targeting purposes. Returns all communities if no query is provided.",
+      "maxResultBytes": 65536,
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "A string that will be used to query (search) for communities by name or by topics. If parameter is empty or not included, it will return all subreddits."
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The number of items to be returned per page. Controls pagination page size."
+          },
+          "page_token": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The token for the page to retrieve. Use the token from pagination.next_url to fetch the next page of results."
+          }
+        },
+        "description": "Request model for searching communities. Supports filtering by name or topic and pagination for large result sets."
+      }
+    },
+    {
+      "id": "reddit_ads.update_campaign",
+      "tool": "REDDIT_ADS_UPDATE_CAMPAIGN",
+      "toolName": "reddit_ads_update_campaign",
+      "lane": "write",
+      "effect": "reversible_write",
+      "description": "Tool to update a campaign by ID in Reddit Ads. Use when you need to modify campaign settings such as name, status, budget, or targeting parameters. Rate limit: 200 requests per 60 seconds (Campaign Management Write).",
+      "maxResultBytes": 65536,
+      "sideEffectLabel": "Reddit Ads: Update Campaign",
+      "withheldArguments": {
+        "data.app_id": "reviewer: Changes the app a live campaign promotes.",
+        "data.bid_type": "sets a budget, bid, or spend amount",
+        "data.end_time": "reviewer: Changes when the campaign delivers, which can extend its spend.",
+        "data.bid_value": "sets a budget, bid, or spend amount",
+        "data.goal_type": "sets a budget, bid, or spend amount",
+        "data.objective": "reviewer: Changes what a live campaign buys and optimizes for.",
+        "data.spend_cap": "sets a budget, bid, or spend amount",
+        "data.goal_value": "sets a budget, bid, or spend amount",
+        "data.start_time": "reviewer: Changes when the campaign delivers, which can start its spend sooner.",
+        "data.bid_strategy": "sets a budget, bid, or spend amount",
+        "data.ad_account_id": "moves the record to another container",
+        "data.optimization_goal": "reviewer: Changes what a live campaign optimizes for.",
+        "data.conversion_pixel_id": "changes sharing, visibility, permissions, membership, or who acts",
+        "data.skadnetwork_metadata": "reviewer: Changes iOS install attribution for a live campaign.",
+        "data.funding_instrument_id": "reviewer: Changes the payment method that pays for the campaign.",
+        "data.special_ad_categories": "reviewer: Changes a live campaign's regulated ad categories, which changes who it can target.",
+        "data.view_through_conversion_type": "reviewer: Changes how conversions are counted in reports other people rely on."
+      },
+      "input": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 3,
+                "description": "The campaign name."
+              },
+              "invoice_label": {
+                "type": "string",
+                "maxLength": 80,
+                "description": "A freeform editable text field for agencies that can be used for tracking and reconciliation purposes."
+              },
+              "configured_status": {
+                "type": "string",
+                "maxLength": 20000,
+                "enum": [
+                  "PAUSED"
+                ],
+                "description": "Configured status for the campaign."
+              }
+            },
+            "description": "Campaign data to update."
+          },
+          "campaign_id": {
+            "type": "string",
+            "maxLength": 20000,
+            "description": "The ID of the campaign to update."
+          }
+        },
+        "required": [
+          "campaign_id",
+          "data"
+        ],
+        "description": "Request model for updating a Reddit Ads campaign."
+      }
+    }
+  ]
+}

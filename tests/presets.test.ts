@@ -411,6 +411,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     accent: '#04AC38',
     logoId: 'pagerduty',
   }, {
+    id: 'pinterest-ads-managed',
+    managedToolkit: 'pinterest_ads',
+    providerId: 'pinterest_ads',
+    name: 'Pinterest Ads',
+    description: 'Read Pinterest ad accounts, campaigns, ad groups, ads, and performance analytics, and rename or pause them.',
+    category: 'business',
+    accent: '#E60023',
+    logoId: 'pinterest_ads',
+  }, {
     id: 'pipedrive-managed',
     managedToolkit: 'pipedrive',
     providerId: 'pipedrive',
@@ -428,6 +437,15 @@ test('managed connector presets make managed Notion the only reusable Notion opt
     category: 'business',
     accent: '#2CA01C',
     logoId: 'quickbooks',
+  }, {
+    id: 'reddit-ads-managed',
+    managedToolkit: 'reddit_ads',
+    providerId: 'reddit_ads',
+    name: 'Reddit Ads',
+    description: 'Read Reddit Ads campaigns, ad groups, ads, audiences, and performance reports, pause campaigns, and draft paused campaigns.',
+    category: 'business',
+    accent: '#FF4500',
+    logoId: 'reddit_ads',
   }, {
     id: 'salesforce-managed',
     managedToolkit: 'salesforce',

@@ -21,8 +21,10 @@ import microsoftTeams from './manifests/microsoft_teams.json' with { type: 'json
 import oneDrive from './manifests/one_drive.json' with { type: 'json' };
 import outlook from './manifests/outlook.json' with { type: 'json' };
 import pagerduty from './manifests/pagerduty.json' with { type: 'json' };
+import pinterestAds from './manifests/pinterest_ads.json' with { type: 'json' };
 import pipedrive from './manifests/pipedrive.json' with { type: 'json' };
 import quickbooks from './manifests/quickbooks.json' with { type: 'json' };
+import redditAds from './manifests/reddit_ads.json' with { type: 'json' };
 import salesforce from './manifests/salesforce.json' with { type: 'json' };
 import semrush from './manifests/semrush.json' with { type: 'json' };
 import sharePoint from './manifests/share_point.json' with { type: 'json' };
@@ -308,8 +310,10 @@ export const COMPOSIO_MANIFESTS: readonly ComposioManifest[] = [
   oneDrive,
   outlook,
   pagerduty,
+  pinterestAds,
   pipedrive,
   quickbooks,
+  redditAds,
   salesforce,
   semrush,
   sharePoint,

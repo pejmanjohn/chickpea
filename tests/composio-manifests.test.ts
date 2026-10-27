@@ -806,6 +806,9 @@ test('reviewed manifests keep expiry, import, credential, and system arguments f
     ['mailchimp', 'MAILCHIMP_UPDATE_CAMPAIGN_SETTINGS', 'rss__opts__feed__url'],
     ['mailchimp', 'MAILCHIMP_ADD_CAMPAIGN', 'rss__opts__feed__url'],
     ['pipedrive', 'PIPEDRIVE_UPDATE_PERSON_V2', 'phones'],
+    ...['REDDIT_ADS_CREATE_CAMPAIGN', 'REDDIT_ADS_UPDATE_CAMPAIGN'].flatMap((slug) => ['data.bid_strategy',
+      'data.bid_type', 'data.bid_value', 'data.goal_type', 'data.goal_value', 'data.spend_cap']
+      .map((argument) => ['reddit_ads', slug, argument] as [string, string, string])),
   ];
   // A rule change cannot release these: the review withholds each one by name.
   const reviewed: Array<[toolkit: string, tool: string, argument: string]> = [
@@ -916,6 +919,28 @@ test('review.allowValues narrows a string enum the model can set and fails on a 
       argument,
     );
   }
+});
+
+test('paid-ads status writes can only pause, and a new Reddit campaign starts paused', () => {
+  const pinterest = (status: string) => ({ ad_account_id: '1', updates: [{ id: '2', status }] });
+  const pauseOnly: Array<[capability: string, input: (status: string) => Record<string, unknown>]> = [
+    ['pinterest_ads.update_ad_groups', pinterest],
+    ['pinterest_ads.update_ads', pinterest],
+    ['pinterest_ads.update_campaigns', pinterest],
+    ['reddit_ads.update_campaign', (status) => ({ campaign_id: 'c', data: { configured_status: status } })],
+    ['reddit_ads.create_campaign',
+      (status) => ({ ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS', configured_status: status } })],
+  ];
+  for (const [id, input] of pauseOnly) {
+    const schema = MANAGED_CONNECTOR_CATALOG.capability(id)!.input;
+    assert.equal(v.is(schema, input('PAUSED')), true, `${id} pauses`);
+    for (const status of ['ACTIVE', 'ARCHIVED', 'DELETED']) {
+      assert.equal(v.is(schema, input(status)), false, `${id} refuses ${status}`);
+    }
+  }
+  assert.equal(v.is(MANAGED_CONNECTOR_CATALOG.capability('reddit_ads.create_campaign')!.input,
+    { ad_account_id: 'a2_x', data: { name: 'Draft', objective: 'CLICKS' } }), false,
+  'a new campaign must name its status, and PAUSED is the only one');
 });
 
 test('reviewer drops stay out of their manifests', () => {
