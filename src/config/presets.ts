@@ -708,7 +708,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://university.clay.com/docs/connect-to-clay-mcp',
     tokenDocsHint: 'Sign in to Clay and choose the workspace Chickpea should access.',
     notes:
-      'Viewers cannot connect. If Clay says the application is not permitted, a workspace admin must turn on Unknown under Allowed MCP clients. Enrichment spends the workspace\'s Clay credits.',
+      'If Clay says the application is not permitted, a workspace admin must turn on Unknown under Allowed MCP clients. Enrichment spends the workspace\'s Clay credits.',
   },
   {
     id: 'close',
@@ -783,7 +783,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://www.plain.com/docs/integrations/mcp-server',
     tokenDocsHint: 'Sign in to Plain and choose the workspace Chickpea should access.',
     notes:
-      'This Agent acts with the signed-in user\'s Plain role. Replying to customers needs a paid member seat, and replies appear to come from that user.',
+      'This Agent acts with the signed-in user\'s Plain role, and replies appear to come from that user.',
   },
   {
     id: 'pylon',
@@ -797,7 +797,7 @@ export const CONNECTOR_PRESETS: ConnectorPreset[] = [
     tokenDocsUrl: 'https://docs.usepylon.com/pylon-docs/integrations/pylon-mcp',
     tokenDocsHint: 'Sign in to the US-hosted Pylon workspace Chickpea should access.',
     notes:
-      'Members and Admins can connect while their role keeps MCP Access, which is on by default. Viewer and Integration users cannot. For an EU workspace, add a custom connection to https://mcp.eu.usepylon.com.',
+      'Members and Admins with MCP Access can connect; Viewers and Integration Users cannot. For an EU workspace, add a custom connection to https://mcp.eu.usepylon.com.',
   },
   {
     id: 'google-workspace',
