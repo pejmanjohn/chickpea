@@ -11878,7 +11878,7 @@ async function readGatewaySessionStatus(
     get(id: unknown): {
       status(): Promise<GatewaySessionStatusSnapshot>;
       observe?(): Promise<GatewaySessionStatusSnapshot>;
-      confirmDelivery?(): Promise<GatewaySessionStatusSnapshot>;
+      confirmDelivery?(deployedVersion?: string): Promise<GatewaySessionStatusSnapshot>;
     };
   } | undefined;
   // A deployment serving many installations has no shared-app session.
@@ -11892,7 +11892,7 @@ async function readGatewaySessionStatus(
       // answer on it; an Admin observation reads the snapshot and lets the
       // wake run behind the response.
       const status = await timed('gw', () =>
-        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery()
+        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery(cloudflareWorkerVersionId(rawEnv))
           : options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
       if (typeof status?.healthy === 'boolean') {
         const currentVersion = cloudflareWorkerVersionId(rawEnv);
