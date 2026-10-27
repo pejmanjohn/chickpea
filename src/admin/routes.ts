@@ -94,6 +94,7 @@ import { createWorkAdminApi } from './work-api.ts';
 import { createTeamAdminApi } from './team-api.ts';
 import { readProposalApprovalStatus } from './proposal-status.ts';
 import { ENVIRONMENT_AUTHORITY_PATH, environmentAuthorityResponse } from './environment-authority.ts';
+import { ENVIRONMENT_ROUTINE_DUE_PATH, environmentRoutineDueResponse } from './environment-routine-due.ts';
 import {
   ENVIRONMENT_MODELS_PATH,
   ENVIRONMENT_SEED_PATH,
@@ -2005,6 +2006,12 @@ export function createAdminRoutes(options: AdminRoutesOptions = {}): Hono {
         codingModel: coding?.modelId ?? null,
       };
     },
+  }));
+  app.post(ENVIRONMENT_ROUTINE_DUE_PATH, (c) => environmentRoutineDueResponse({
+    authorization: c.req.header('authorization'),
+    env: (c.env ?? {}) as PlatformEnv,
+    readBody: () => c.req.text(),
+    markDueNow: (routineId, now) => routines(c).markDueNow(routineId, now),
   }));
   app.post(ENVIRONMENT_SEED_PATH, (c) => environmentSeedResponse({
     authorization: c.req.header('authorization'),
@@ -11878,7 +11885,7 @@ async function readGatewaySessionStatus(
     get(id: unknown): {
       status(): Promise<GatewaySessionStatusSnapshot>;
       observe?(): Promise<GatewaySessionStatusSnapshot>;
-      confirmDelivery?(): Promise<GatewaySessionStatusSnapshot>;
+      confirmDelivery?(deployedVersion?: string): Promise<GatewaySessionStatusSnapshot>;
     };
   } | undefined;
   // A deployment serving many installations has no shared-app session.
@@ -11892,7 +11899,7 @@ async function readGatewaySessionStatus(
       // answer on it; an Admin observation reads the snapshot and lets the
       // wake run behind the response.
       const status = await timed('gw', () =>
-        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery()
+        options.confirm && typeof stub.confirmDelivery === 'function' ? stub.confirmDelivery(cloudflareWorkerVersionId(rawEnv))
           : options.observe && typeof stub.observe === 'function' ? stub.observe() : stub.status());
       if (typeof status?.healthy === 'boolean') {
         const currentVersion = cloudflareWorkerVersionId(rawEnv);

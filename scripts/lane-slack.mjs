@@ -15,10 +15,10 @@
  *
  * Reads with the lane's own readback app token (`<LANE>__SLACK_READBACK_TOKEN`
  * in the lane secrets file; see qa/live/operator/hosts.md). Prints JSON, or
- * writes it owner-only to a new file outside Git with --out. Never posts and
- * never prints the token.
+ * writes it owner-only to a file outside Git with --out, replacing an earlier
+ * read there. Never posts and never prints the token.
  */
-import { writeFileSync } from 'node:fs';
+import { renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -113,7 +113,10 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     if (options.out) {
       const { outsideGit } = await import('./lib/private-evidence.mjs');
       const file = outsideGit(options.out, ROOT);
-      writeFileSync(file, text, { flag: 'wx', mode: 0o600 });
+      // A poller rereads one path, so each read replaces the last; the rename never follows a planted link.
+      const staged = `${file}.${process.pid}.tmp`;
+      writeFileSync(staged, text, { flag: 'wx', mode: 0o600 });
+      renameSync(staged, file);
       stdout.write(`${JSON.stringify({ out: file })}\n`);
     } else stdout.write(text);
     if (options.command === 'whoami' && result.matchesLane === false) {

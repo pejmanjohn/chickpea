@@ -358,3 +358,32 @@ test('a one-time job outside admission grace is queued once, expired, for execut
     store.close();
   }
 });
+
+test('a QA due-now mark fires a routine through the next heartbeat at its real schedule path', async () => {
+  const store = new SqliteRoutineStore(':memory:', () => START);
+  try {
+    await createOneTimeRoutine(store, 'routine_tomorrow', START + 24 * HOUR);
+    await createRoutine(store, 'routine_hourly', START + HOUR);
+    assert.equal((await store.claimDueSchedules({ now: START, owner: 'heartbeat-0', limit: 25 })).runs.length, 0);
+
+    assert.equal((await store.markDueNow('routine_tomorrow', START))?.nextRunAt, START);
+    assert.equal((await store.markDueNow('routine_hourly', START))?.nextRunAt, START);
+    const batch = await store.claimDueSchedules({ now: START, owner: 'heartbeat-1', limit: 25 });
+    assert.deepEqual(batch.runs.map((run) => [run.routineId, run.status, run.triggerSource, run.scheduledFor]), [
+      ['routine_hourly', 'queued', 'schedule', START],
+      ['routine_tomorrow', 'queued', 'once', START],
+    ]);
+    assert.equal((await store.getRoutine('routine_hourly'))?.nextRunAt, START + HOUR, 'a recurring routine resumes its own schedule');
+
+    await store.control({
+      routineId: 'routine_hourly', action: 'pause', actorId: 'U_MEMBER', actorClass: 'member',
+      expectedVersion: (await store.getRoutine('routine_hourly'))!.version, idempotencyKey: 'pause:routine_hourly',
+    } as Parameters<SqliteRoutineStore['control']>[0]);
+    const paused = await store.markDueNow('routine_hourly', START + 1);
+    assert.equal(paused?.state, 'paused');
+    assert.notEqual(paused?.nextRunAt, START + 1, 'a paused routine is never made due');
+    assert.equal(await store.markDueNow('routine_missing', START), undefined);
+  } finally {
+    store.close();
+  }
+});

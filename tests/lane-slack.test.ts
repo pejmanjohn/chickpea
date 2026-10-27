@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -105,6 +105,12 @@ test('a lane reads only its own token, and the CLI never prints it', async (cont
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.equal(JSON.parse(readFileSync(file, 'utf8')).message.text, 'hi');
   assert.ok(![out, err, readFileSync(file, 'utf8')].some((text) => text.includes(TOKEN)));
+  const firstReadAt = JSON.parse(readFileSync(file, 'utf8')).readAt;
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(await main(['amber', 'message', 'https://lane.slack.com/archives/C0ABC12345/p1790000000123456', '--out', file], io), 0, err);
+  assert.notEqual(JSON.parse(readFileSync(file, 'utf8')).readAt, firstReadAt, 'a poller rereading one path sees the newest read');
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(dir), ['readback.json'], 'no staged file is left behind');
   assert.equal(await main(['cobalt', 'whoami'], io), 1);
   assert.match(err, /NO_READBACK_TOKEN: .*A shared SLACK_READBACK_TOKEN is ignored; name it <LANE>__SLACK_READBACK_TOKEN/);
   out = '';

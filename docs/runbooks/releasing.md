@@ -156,8 +156,8 @@ Keep identities, bindings, secrets, and evidence outside the public repository.
 - Update a QA lane in place from the prior release to the exact candidate.
   Confirm Admin reports the new version with the Owner signed in and existing
   state kept, and that a real DM or mention gets a reply from the candidate.
-- Run the batch smoke on that lane. Until a scripted smoke exists, run the
-  live-verification skill once on the candidate.
+- Run the [batch smoke](../../qa/live/operator/smoke.md) on that lane with
+  `npm run verify:smoke -- --lane <lane> --candidate <worktree> --skip-deploy`.
 - Only when installer or setup code changed, also install the exact candidate
   from a fresh public source checkout with no local private files. Complete
   Slack installation, first-Owner sign-in, provider/model selection, and a real
